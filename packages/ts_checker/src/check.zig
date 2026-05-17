@@ -1700,6 +1700,39 @@ pub const Checker = struct {
                         try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to function return type.");
                     }
                 } else if (self.current_function_return_t) |declared| {
+                    // Narrowly-scoped `return null;` / `return undefined;`
+                    // mismatch detection: when the declared return type
+                    // is one of the canonical non-nullable primitives
+                    // and strict null checks are on, emit TS2322 at the
+                    // return statement. The broader return-type
+                    // assignability path stays conservative (see the
+                    // `object_t` branch below), but this specific
+                    // null-literal case is the long-standing
+                    // `comparisonOperatorWithIdenticalObjects.ts(8,9)`
+                    // miss — upstream tsc anchors the diagnostic on
+                    // the `return` keyword.
+                    if (self.strict_flags.strict_null_checks and
+                        r.value != hir_mod.none_node_id and
+                        self.returnValueIsNullishLiteral(r.value) and
+                        self.declaredReturnRejectsNullish(declared, ret_t))
+                    {
+                        const target_name = self.simpleDiagnosticTypeName(declared) catch null;
+                        const arena = self.diag_arena.allocator();
+                        const msg = blk: {
+                            const tname = target_name orelse break :blk try arena.dupe(u8, "Type is not assignable to function return type.");
+                            const source_name = if (ret_t == types.Primitive.undefined_t) "undefined" else "null";
+                            break :blk try std.fmt.allocPrint(
+                                arena,
+                                "Type '{s}' is not assignable to type '{s}'.",
+                                .{ source_name, tname },
+                            );
+                        };
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = node,
+                            .code = TsCodes.type_not_assignable,
+                            .message = msg,
+                        });
+                    }
                     // Validate the returned expression against the
                     // declared function return type. Conservatively
                     // restricted to the `object_t` declared-return case
@@ -6587,7 +6620,16 @@ pub const Checker = struct {
                         hir_mod.identifierOf(self.hir, pp.name).name
                     else
                         null;
-                    try self.checkDefaultExprAgainstBodyVars(pp.default_value, &body_vars, param_name_id);
+                    // For object/array patterns, tsc renders the
+                    // pattern's source text as the parameter's display
+                    // name: `Parameter '{ b = a(), ...x }' cannot
+                    // reference identifier 'a' declared after it.`.
+                    // Mirrors `parameterInitializersForwardReferencing.2`.
+                    const pattern_node: ?NodeId = if (nk == .object_pattern or nk == .array_pattern)
+                        pp.name
+                    else
+                        null;
+                    try self.checkDefaultExprAgainstBodyVarsWithPattern(pp.default_value, &body_vars, param_name_id, pattern_node);
                 }
                 // TS2372: `function f(x = x) {}` — the default
                 // expression mentions the same identifier as the
@@ -6707,12 +6749,29 @@ pub const Checker = struct {
         body_vars: *std.AutoHashMapUnmanaged(hir_mod.StringId, void),
         param_name: ?hir_mod.StringId,
     ) CheckError!void {
+        try self.checkDefaultExprAgainstBodyVarsWithPattern(default_value, body_vars, param_name, null);
+    }
+
+    fn checkDefaultExprAgainstBodyVarsWithPattern(
+        self: *Checker,
+        default_value: NodeId,
+        body_vars: *std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+        param_name: ?hir_mod.StringId,
+        pattern_node: ?NodeId,
+    ) CheckError!void {
         var refs: std.ArrayListUnmanaged(NameRef) = .empty;
         defer refs.deinit(self.gpa);
         try self.collectIdentifierRefsWithNodes(default_value, &refs);
         for (refs.items) |ref| {
             if (body_vars.contains(ref.name)) {
-                try self.reportBindingDefaultReferenceNamed(ref.node, .parameter, false, param_name, ref.name);
+                try self.reportBindingDefaultReferenceNamedWithPattern(
+                    ref.node,
+                    .parameter,
+                    false,
+                    param_name,
+                    ref.name,
+                    pattern_node,
+                );
             }
         }
     }
@@ -6876,6 +6935,50 @@ pub const Checker = struct {
         param_name: ?hir_mod.StringId,
         ref_name: ?hir_mod.StringId,
     ) CheckError!void {
+        return self.reportBindingDefaultReferenceNamedWithPattern(node, mode, is_self, param_name, ref_name, null);
+    }
+
+    /// Render a binding-pattern node as a single-line snippet of its
+    /// source text. Used by TS2373 (`Parameter '<pattern>' cannot
+    /// reference identifier ...`) so the message matches upstream tsc,
+    /// which never substitutes a placeholder for destructuring
+    /// patterns. Collapses runs of internal whitespace into single
+    /// spaces and trims leading/trailing whitespace so multi-line
+    /// patterns still render compactly.
+    fn normalizedBindingPatternSourceText(self: *Checker, node: NodeId) CheckError!?[]const u8 {
+        const src = self.source orelse return null;
+        const span = self.hir.spanOf(node);
+        if (span.end > src.len or span.start >= span.end) return null;
+        const raw = src[span.start..span.end];
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(self.gpa);
+        var prev_ws = false;
+        for (raw) |ch| {
+            const is_ws = ch == ' ' or ch == '\t' or ch == '\r' or ch == '\n';
+            if (is_ws) {
+                if (buf.items.len == 0) continue;
+                if (!prev_ws) try buf.append(self.gpa, ' ');
+                prev_ws = true;
+            } else {
+                try buf.append(self.gpa, ch);
+                prev_ws = false;
+            }
+        }
+        while (buf.items.len > 0 and buf.items[buf.items.len - 1] == ' ') _ = buf.pop();
+        if (buf.items.len == 0) return null;
+        const owned = try self.diag_arena.allocator().dupe(u8, buf.items);
+        return owned;
+    }
+
+    fn reportBindingDefaultReferenceNamedWithPattern(
+        self: *Checker,
+        node: NodeId,
+        mode: BindingDefaultMode,
+        is_self: bool,
+        param_name: ?hir_mod.StringId,
+        ref_name: ?hir_mod.StringId,
+        pattern_node: ?NodeId,
+    ) CheckError!void {
         const code: u32 = switch (mode) {
             .variable => TsCodes.block_scoped_used_before_decl,
             .parameter => if (is_self) TsCodes.parameter_cannot_reference_self else TsCodes.parameter_cannot_reference_later,
@@ -6908,6 +7011,32 @@ pub const Checker = struct {
                 .message = msg,
             });
             return;
+        }
+        // Destructuring patterns (object/array binding patterns at the
+        // parameter position) have no plain identifier "name" — tsc
+        // renders the pattern's literal source text instead. Build the
+        // named TS2373 message using that text when both the pattern
+        // node and the source buffer are available. Mirrors
+        // `parameterInitializersForwardReferencing.2.ts(5,32)`:
+        // `Parameter '{ b = a(), ...x }' cannot reference identifier
+        // 'a' declared after it.`.
+        if (mode == .parameter and !is_self and param_name == null and ref_name != null) {
+            if (pattern_node) |pat| {
+                if (try self.normalizedBindingPatternSourceText(pat)) |pat_text| {
+                    const r_str = self.string_interner.get(ref_name.?);
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Parameter '{s}' cannot reference identifier '{s}' declared after it.",
+                        .{ pat_text, r_str },
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = node,
+                        .code = code,
+                        .message = msg,
+                    });
+                    return;
+                }
+            }
         }
         // For TS2448 (variable mode) tsc renders the *referenced*
         // variable name in the message ("Block-scoped variable 'X'
@@ -30105,6 +30234,68 @@ pub const Checker = struct {
         return try self.applyTypeofTargetUnion(name orelse return false, first_node, targets.items);
     }
 
+    /// Try to narrow `pred1(x) || pred2(x) [|| ...]` where every
+    /// disjunct is a call to a registered type-predicate function and
+    /// every argument is the SAME identifier. The truthy branch
+    /// narrows the identifier to the union of each predicate's target
+    /// type. Mirrors upstream tsc's `controlFlowBinaryOrExpression`
+    /// baseline where `if (isNodeList(o) || isHTMLCollection(o))`
+    /// admits `o.length` because `o` becomes `NodeList | HTMLCollection`.
+    fn applyTrueOrPredicateCallChain(self: *Checker, lhs: NodeId, rhs: NodeId) CheckError!bool {
+        var name: ?hir_mod.StringId = null;
+        var first_node: NodeId = hir_mod.none_node_id;
+        var targets: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer targets.deinit(self.gpa);
+        if (!try self.collectPredicateCallChainTargets(lhs, &name, &first_node, &targets)) return false;
+        if (!try self.collectPredicateCallChainTargets(rhs, &name, &first_node, &targets)) return false;
+        const arg_name = name orelse return false;
+        if (targets.items.len == 0) return false;
+        const union_target = if (targets.items.len == 1)
+            targets.items[0]
+        else
+            self.interner.internUnion(targets.items) catch return error.OutOfMemory;
+        const current = self.lookupNarrow(arg_name) orelse self.typeOfIdentifier(first_node);
+        const narrowed = try self.narrowTypeByPredicate(current, union_target);
+        try self.recordNarrow(arg_name, narrowed);
+        return true;
+    }
+
+    fn collectPredicateCallChainTargets(
+        self: *Checker,
+        node: NodeId,
+        name: *?hir_mod.StringId,
+        first_node: *NodeId,
+        out: *std.ArrayListUnmanaged(TypeId),
+    ) CheckError!bool {
+        // `a || b` recurses into both sides so chains of length 3+
+        // collapse into a single union narrow.
+        if (self.hir.kindOf(node) == .logical_op) {
+            const l = hir_mod.logicalOf(self.hir, node);
+            if (l.op != .@"or") return false;
+            return (try self.collectPredicateCallChainTargets(l.lhs, name, first_node, out)) and
+                (try self.collectPredicateCallChainTargets(l.rhs, name, first_node, out));
+        }
+        if (self.hir.kindOf(node) != .call_expr) return false;
+        const c = hir_mod.callOf(self.hir, node);
+        if (self.hir.kindOf(c.callee) != .identifier) return false;
+        const callee_id = hir_mod.identifierOf(self.hir, c.callee);
+        const pred = self.fn_predicates.get(callee_id.name) orelse return false;
+        const args = hir_mod.callArgs(self.hir, node);
+        if (pred.param_index >= args.len) return false;
+        const arg = args[pred.param_index];
+        if (self.hir.kindOf(arg) != .identifier) return false;
+        const arg_id = hir_mod.identifierOf(self.hir, arg);
+        if (name.*) |existing| {
+            if (existing != arg_id.name) return false;
+        } else {
+            name.* = arg_id.name;
+            first_node.* = arg;
+        }
+        const target = try self.instantiatePredicateTarget(node, pred);
+        try out.append(self.gpa, target);
+        return true;
+    }
+
     fn applyFalseAndTypeofChain(self: *Checker, lhs: NodeId, rhs: NodeId) CheckError!bool {
         var targets: std.ArrayListUnmanaged(TypeId) = .empty;
         defer targets.deinit(self.gpa);
@@ -30265,6 +30456,7 @@ pub const Checker = struct {
                 .@"or" => {
                     if (when_true) {
                         if (try self.applyTrueOrTypeofChain(l.lhs, l.rhs)) return;
+                        if (try self.applyTrueOrPredicateCallChain(l.lhs, l.rhs)) return;
                     } else {
                         try self.applyTypeGuard(l.lhs, false);
                         try self.applyTypeGuard(l.rhs, false);
@@ -52808,6 +53000,31 @@ test "checker: `asserts x is T` permits assignment to T after call" {
     }
 }
 
+test "checker: OR-chain of predicate calls narrows to union in then-branch" {
+    // `if (isA(x) || isB(x)) { x }` narrows `x` to `A | B` in the
+    // then branch. Mirrors upstream `controlFlowBinaryOrExpression`
+    // where `if (isNodeList(o) || isHTMLCollection(o)) { o.length }`
+    // type-checks against `NodeList | HTMLCollection`. Before this
+    // narrow each side reset to the broad union type and accessing a
+    // shared property like `length` raised a spurious TS2339.
+    const s = try newSetup(
+        \\interface A { length: number; tag: "a"; }
+        \\interface B { length: number; tag: "b"; }
+        \\interface C { other: string; tag: "c"; }
+        \\declare function isA(x: any): x is A;
+        \\declare function isB(x: any): x is B;
+        \\let x: A | B | C;
+        \\if (isA(x) || isB(x)) {
+        \\  x.length;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
 test "checker: type predicate negative branch subtracts" {
     const s = try newSetup(
         \\function isString(x: string | number): x is string { return true; }
@@ -58847,6 +59064,34 @@ test "checker: array binding parameter rejects non-array iterator object" {
     try T.expect(found);
 }
 
+test "checker: TS2373 renders destructuring pattern source text as parameter name" {
+    // Mirrors `parameterInitializersForwardReferencing.2.ts(5,32)`:
+    //   function b({ b = a(), ...x } = a()) { var a; }
+    // The destructuring pattern (`{ b = a(), ...x }`) sits at the
+    // parameter position. tsc uses the pattern's literal source text
+    // — not a placeholder — for the diagnostic's parameter name. The
+    // previous fallback path dropped both names and printed
+    // "Parameter cannot reference identifier declared after it.".
+    const s = try newSetup(
+        \\function a(): any { return 0; }
+        \\function b({ b = a(), ...x } = a()) {
+        \\    var a;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_named = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.parameter_cannot_reference_later) continue;
+        if (std.mem.indexOf(u8, d.message, "Parameter '{ b = a(), ...x }'") != null and
+            std.mem.indexOf(u8, d.message, "'a' declared after it.") != null)
+        {
+            found_named = true;
+        }
+    }
+    try T.expect(found_named);
+}
+
 test "checker: binding pattern defaults reject self and later references" {
     const s = try newSetup(
         \\const [c, d = c, e = e] = [1];
@@ -63367,6 +63612,33 @@ test "checker: indexer-only source still rejected against unrelated indexer targ
         if (d.code == TsCodes.type_not_assignable) saw_ts2322 += 1;
     }
     try T.expect(saw_ts2322 >= 1);
+}
+
+test "checker: TS2322 fires on `return null;` from a string-typed method" {
+    // Pins `comparisonOperatorWithIdenticalObjects.ts(8,9)` and
+    // related fixtures: a class method declared `fn(): string` that
+    // bodies `return null;` must surface TS2322 anchored at the
+    // `return` keyword. Limited to the canonical non-nullable named
+    // primitives (string/number/boolean/bigint) so the broader
+    // return-type assignability path stays conservative.
+    const s = try newSetup(
+        \\class A {
+        \\    fn(a: string): string {
+        \\        return null;
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.type_not_assignable) continue;
+        if (std.mem.indexOf(u8, d.message, "Type 'null' is not assignable to type 'string'.") != null) {
+            found = true;
+        }
+    }
+    try T.expect(found);
 }
 
 test "checker: TS2322 prose preserves method-shorthand member syntax" {

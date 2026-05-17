@@ -1298,6 +1298,17 @@ pub fn loadDirectoryWithOptions(
             })
         else
             true;
+        // Only apply the inferred strict-on to the per-state defaults
+        // when the fixture's directives include a strict-FAMILY entry
+        // without `@strict` itself. This keeps behavior identical for
+        // the much more common "@strict: false" + "@target: …" pair
+        // (where the family flags should collapse to strict-off per
+        // upstream semantics).
+        const family_strict_on = if (has_only_non_strict_family) inferred_strict_on else false;
+        const directive_flags: ?ts_driver.StrictFlags = if (directive_parsed) |p|
+            strictFlagsFromState(p.state, p.state.strict orelse family_strict_on)
+        else
+            null;
         var strict_flags =
             if (options.honor_directives)
                 directive_flags
@@ -3087,6 +3098,33 @@ test "conformance: parses strict directives into checker flags" {
     try T.expect(flags.no_unused_locals);
     try T.expect(!flags.no_unused_parameters);
     try T.expect(flags.use_unknown_in_catch_variables);
+}
+
+test "conformance: parseStrictDirectiveState exposes whether @strict was explicit" {
+    // Critical for the loadDirectory caller: when a fixture sets only
+    // a single strict-family flag (e.g. `// @noImplicitAny: false`)
+    // without `// @strict: ...`, the harness must keep the corpus's
+    // implicit strict-on default for every OTHER strict-family flag.
+    // Mirrors upstream tsc, which runs the conformance suite under
+    // `--strict` and treats per-flag directives as overrides — not as
+    // an implicit `strict: false`. Before this distinction was tracked
+    // the harness collapsed every unset strict-family flag to its
+    // strict-off default whenever ANY directive appeared, dropping
+    // TS2564 on fixtures like `typeofOperatorWithBooleanType.ts`.
+    const only_no_implicit_any = parseStrictDirectiveState(
+        \\// @target: es2015
+        \\// @noImplicitAny: false
+        \\class A { public a: boolean; }
+    ).?;
+    try T.expect(!only_no_implicit_any.strict_explicit);
+    try T.expectEqual(@as(?bool, false), only_no_implicit_any.state.no_implicit_any);
+    try T.expectEqual(@as(?bool, null), only_no_implicit_any.state.strict_property_initialization);
+
+    const explicit_strict = parseStrictDirectiveState(
+        \\// @strict: false
+        \\let x;
+    ).?;
+    try T.expect(explicit_strict.strict_explicit);
 }
 
 test "conformance: strict false directive leaves strict family disabled" {
