@@ -860,6 +860,17 @@ fn normalizeScannerDiagnostic(message: []const u8) NormalizedScannerDiagnostic {
     if (std.mem.eql(u8, message, "Unterminated Unicode escape sequence.")) {
         return .{ .code = 1199, .message = message };
     }
+    // Sentence-case + TS1002 for the scanner's lowercase
+    // "unterminated string literal" messages. Mirrors tsc which
+    // emits `Unterminated string literal.` when a string token
+    // hits EOL/EOF without its closing quote — fixture
+    // `unicodeExtendedEscapesInStrings25` baselines this exact
+    // text/code pair.
+    if (std.mem.eql(u8, message, "unterminated string literal") or
+        std.mem.eql(u8, message, "unterminated string literal at EOF"))
+    {
+        return .{ .code = 1002, .message = "Unterminated string literal." };
+    }
     if (std.mem.eql(u8, message, "Unexpected '}'. Did you mean to escape it with backslash?")) {
         return .{ .code = 1508, .message = message };
     }
