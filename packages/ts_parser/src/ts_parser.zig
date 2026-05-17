@@ -2044,6 +2044,13 @@ pub const Parser = struct {
             // the name then binds inside the async body. Gate on
             // `!require_name` (expression context).
             if (!require_name) try self.reportAwaitReservedInAsyncContext(name_tok);
+            // `function await() {}` at the top level of a MODULE binds
+            // the name into module scope where `await` is reserved. tsc
+            // emits TS1262 at the `await` token. `reportAwaitBindingIfReserved`
+            // gates on `top_level_external_module_indicator + depth = 0`,
+            // so the check is a no-op in non-module / nested contexts.
+            // Mirrors fixture `topLevelAwaitErrors.6`.
+            if (require_name) try self.reportAwaitBindingIfReserved(name_tok);
             const name_id = try self.internToken(name_tok);
             name = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
         } else if (require_name) {
@@ -15044,4 +15051,21 @@ test "parser: function body in ambient declare reports TS1183 at open brace" {
         if (d.code == 1183 and d.pos == expected_pos) saw_ts1183 = true;
     }
     try T.expect(saw_ts1183);
+}
+
+test "parser: 'export function await' at module top-level reports TS1262 on await" {
+    // `export function await() {}` — `await` is a reserved word at the
+    // top level of an external module (the `export` makes the source
+    // file a module). tsc anchors TS1262 at the function name token.
+    // Mirrors fixture `topLevelAwaitErrors.6`.
+    const src = "export function await() {}";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+    var saw_ts1262 = false;
+    const expected_pos: u32 = @intCast(std.mem.indexOf(u8, src, "await").?);
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1262 and d.pos == expected_pos) saw_ts1262 = true;
+    }
+    try T.expect(saw_ts1262);
 }

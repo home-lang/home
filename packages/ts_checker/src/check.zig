@@ -14366,6 +14366,16 @@ pub const Checker = struct {
             if (try self.isKnownAmbientModuleName(node, spec)) return;
             if (self.sourceHasVirtualFilenameSections()) {
                 try self.reportVirtualCannotFindRelativeModule(node, spec);
+            } else if (self.external_resolver != null) {
+                // Program-routed compile (driver wired an external
+                // resolver, no in-source `@filename:` sections to scan):
+                // an unresolved relative specifier is a real TS2307.
+                // Without this branch fixtures like
+                // `moduleResolutionWithoutExtension2/6/7` silently drop
+                // the diagnostic and fail exact-baseline parity even
+                // though both the legacy virtual-section path and tsc
+                // emit it.
+                try self.reportVirtualCannotFindRelativeModule(node, spec);
             }
             return;
         }
@@ -19869,6 +19879,25 @@ pub const Checker = struct {
             const parent = self.hir.parentOf(cur);
             if (parent == cur or parent == hir_mod.none_node_id) break;
             cur = parent;
+        }
+        // `import X from './x'` / `import { X } from './x'` /
+        // `import * as X from './x'` (including `import type` variants)
+        // all bind `X` as a name that can stand at the root of a
+        // qualified TYPE reference. Without this, `import type ns from './ns'`
+        // followed by `let c: ns.Class` over-reports TS2503. tsc treats
+        // the binding as a type alias for the module's namespace; we
+        // just need to confirm the binding exists in the current virtual
+        // file section. Mirrors fixtures `enums` and
+        // `filterNamespace_import` (both in conformance/externalModules/typeOnly).
+        const root_block = self.rootBlockFor(type_node);
+        if (root_block != hir_mod.none_node_id and self.hir.kindOf(root_block) == .block_stmt) {
+            const has_sections = self.sourceHasVirtualFilenameSections();
+            const anchor_section = if (has_sections) self.virtualSectionStartForNode(type_node) else 0;
+            for (hir_mod.blockStmts(self.hir, root_block)) |stmt| {
+                if (self.hir.kindOf(stmt) != .import_decl) continue;
+                if (has_sections and self.virtualSectionStartForNode(stmt) != anchor_section) continue;
+                if (self.importDeclBindsLocal(stmt, root_name)) return true;
+            }
         }
         return false;
     }
@@ -60604,6 +60633,60 @@ test "checker: boolean primitive is assignable to Boolean wrapper" {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
 }
+
+test "checker: 'import type X' makes X valid as qualified type-ref root" {
+    // `import type ns from './ns'` followed by `let c: ns.Class` must
+    // NOT raise TS2503 — tsc allows the type-only binding to stand at
+    // the root of a qualified type reference (the binding still names
+    // the module's type namespace, even though it can't be used as a
+    // value). Without this guard the `enums` and
+    // `filterNamespace_import` fixtures from
+    // conformance/externalModules/typeOnly over-report TS2503 once for
+    // every type-position usage.
+    const s = try newSetup(
+        \\import type ns from './ns';
+        \\let c: ns.Class;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_namespace);
+    }
+}
+
+test "checker: relative import with external resolver and no virtual sections still emits TS2307" {
+    // Program-routed compiles set `external_resolver` but the per-file
+    // source no longer carries `// @filename:` markers — so the
+    // virtual-section path through `reportVirtualCannotFindRelativeModule`
+    // never runs. Without an explicit fall-through, an unresolved
+    // relative import like `require("./foo")` silently passes,
+    // breaking exact-baseline parity for
+    // `moduleResolutionWithoutExtension2/6/7` (and similar). This test
+    // installs a never-resolving stub and verifies TS2307 still fires
+    // on a relative specifier.
+    const s = try newSetup(
+        \\import foo = require("./foo");
+    );
+    defer destroySetup(s);
+    var stub = NeverResolveExternalResolver{};
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &NeverResolveExternalResolver.vtable });
+    try s.checker.checkSourceFile(s.root);
+    var saw_ts2307 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_module) saw_ts2307 = true;
+    }
+    try T.expect(saw_ts2307);
+}
+
+/// Test-only `ExternalResolver` impl whose `resolve` always returns
+/// `null`. Used to simulate a program-routed compile where the bundled
+/// resolver cannot find a relative specifier.
+const NeverResolveExternalResolver = struct {
+    pub const vtable = ExternalResolver.VTable{ .resolve = resolveImpl };
+    fn resolveImpl(_: *anyopaque, _: []const u8, _: []const u8) ?ExternalResolver.Resolution {
+        return null;
+    }
+};
 
 
 
