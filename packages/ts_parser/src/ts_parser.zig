@@ -3158,10 +3158,12 @@ pub const Parser = struct {
                 var default_value: NodeId = hir_mod.none_node_id;
                 if (self.match(.equal)) default_value = try self.parseAssignmentExpression();
                 try self.consumeStatementTerminator();
-                // TS1031: `export` / `declare` on a class member property
-                // (e.g. `export Foo;`). Mirrors upstream
+                // TS1031: `export` on a class member property (e.g.
+                // `export Foo;`). `declare` is permitted on properties
+                // — it tells the type system the field is initialized
+                // externally. Mirrors upstream
                 // `parserMemberVariableDeclaration4`.
-                try self.reportInvalidClassElementModifier(mods);
+                try self.reportInvalidClassElementModifierForProperty(mods);
                 const name_id = try self.internPropertyName(name_tok, name_span);
                 const name_node = try self.builder.addIdentifier(name_span, name_id);
                 const prop = try self.builder.addObjectPropertyFullEx(
@@ -3251,6 +3253,12 @@ pub const Parser = struct {
         is_readonly: bool = false,
         is_accessor: bool = false,
         invalid_class_element_modifier: ?Token = null,
+        /// `declare` is valid on class *property* members (it tells the
+        /// type system the field is initialized externally) but invalid
+        /// on methods/constructors/accessors. Track it separately from
+        /// the unconditional-invalid `export` keyword so the
+        /// member-kind branch can decide whether to surface TS1031.
+        declare_token: ?Token = null,
         async_token: ?Token = null,
         abstract_token: ?Token = null,
         static_token: ?Token = null,
@@ -3340,8 +3348,11 @@ pub const Parser = struct {
                         mods.is_abstract = true;
                         if (mods.abstract_token == null) mods.abstract_token = self.peek();
                     },
-                    .kw_export, .kw_declare => {
+                    .kw_export => {
                         if (mods.invalid_class_element_modifier == null) mods.invalid_class_element_modifier = self.peek();
+                    },
+                    .kw_declare => {
+                        if (mods.declare_token == null) mods.declare_token = self.peek();
                     },
                     .kw_readonly => {
                         // TS1030: `'readonly' modifier already seen.`
@@ -3420,6 +3431,25 @@ pub const Parser = struct {
     }
 
     fn reportInvalidClassElementModifier(self: *Parser, mods: ClassModifiers) ParseError!void {
+        if (mods.invalid_class_element_modifier) |bad| {
+            const mod_name = self.source[bad.span.start..bad.span.end];
+            const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier cannot appear on class elements of this kind.", .{mod_name});
+            try self.reportCodeAt(bad.span.start, bad.line, 1031, msg);
+        }
+        // `declare` is invalid on methods/constructors/accessors only.
+        // Callers parsing a class *property* skip this branch entirely
+        // by using `reportInvalidClassElementModifierForProperty`.
+        if (mods.declare_token) |bad| {
+            const mod_name = self.source[bad.span.start..bad.span.end];
+            const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier cannot appear on class elements of this kind.", .{mod_name});
+            try self.reportCodeAt(bad.span.start, bad.line, 1031, msg);
+        }
+    }
+
+    /// Property-kind class members accept `declare` (the field is
+    /// initialized externally); only `export` is unconditionally
+    /// rejected with TS1031.
+    fn reportInvalidClassElementModifierForProperty(self: *Parser, mods: ClassModifiers) ParseError!void {
         const bad = mods.invalid_class_element_modifier orelse return;
         const mod_name = self.source[bad.span.start..bad.span.end];
         const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier cannot appear on class elements of this kind.", .{mod_name});
@@ -14762,6 +14792,43 @@ test "parser: TS1222 generator overload reports at asterisk column not function 
         }
     }
     try T.expect(saw_ts1222_at_asterisk);
+}
+
+test "parser: 'declare' is valid on a class property and emits no TS1031" {
+    // Mirrors conformance fixtures `override14.ts` and
+    // `decoratorInAmbientContext.ts` — tsc treats `declare` on a
+    // class field as a legal forward declaration (the type system
+    // assumes external initialization), so the parser must NOT emit
+    // TS1031 'modifier cannot appear on class elements of this kind'.
+    // `declare` on a *method* is still invalid; that branch is
+    // covered by the next test.
+    const sources = [_][]const u8{
+        "class C { declare a: number; }",
+        "class C { declare property: number }",
+        "class C { declare ['k']: number; }",
+    };
+    for (sources) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = s.parser.parseSourceFile() catch {};
+        for (s.parser.diagnostics.items) |d| {
+            try T.expect(d.code != 1031);
+        }
+    }
+}
+
+test "parser: 'declare' on a class method still reports TS1031" {
+    // `declare foo() { }` keeps the upstream diagnostic because
+    // `declare` only applies to class *fields*. This is the
+    // counter-test for the property-only carve-out above.
+    var s = try newTestSetup("class C { declare foo() { } }");
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+    var saw_ts1031 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1031) saw_ts1031 = true;
+    }
+    try T.expect(saw_ts1031);
 }
 
 test "parser: object-literal generator '*' without property name reports TS1003" {
