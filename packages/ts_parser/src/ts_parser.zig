@@ -2274,7 +2274,8 @@ pub const Parser = struct {
                     const name_id = try self.internToken(name_tok);
                     break :id_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
                 };
-                if (self.match(.question)) {
+                if (self.peek().kind == .question) {
+                    const q_tok = self.advance();
                     flags.is_optional = true;
                     const nk = self.hir.kindOf(name_node);
                     if (nk == .object_pattern or nk == .array_pattern) {
@@ -2283,6 +2284,14 @@ pub const Parser = struct {
                         // suffix. Mirrors `optionalBindingParameters1.ts(1,14)`.
                         const pat_span = self.hir.spanOf(name_node);
                         try self.reportCodeAt(pat_span.start, self.lineAt(pat_span.start), 2463, "A binding pattern parameter cannot be optional in an implementation signature.");
+                    }
+                    // TS1047: `...rest?` — rest parameters cannot also be
+                    // marked optional. Anchored at the `?` token, matching
+                    // upstream tsc's column for `parserParameterList9.ts`
+                    // (`foo(...bar?)`) and `parserParameterList11.ts`
+                    // (`(...arg?) => 102;`).
+                    if (flags.is_rest) {
+                        try self.reportCodeAt(q_tok.span.start, q_tok.line, 1047, "A rest parameter cannot be optional.");
                     }
                 }
                 if (self.hir.kindOf(name_node) == .identifier) {
@@ -2308,6 +2317,14 @@ pub const Parser = struct {
                     // Mirrors upstream `parserParameterList2`.
                     if (flags.is_optional) {
                         try self.reportCodeAt(param_start.span.start, param_start.line, 1015, "Parameter cannot have question mark and initializer.");
+                    }
+                    // TS1048: `...rest = init` — rest parameters cannot
+                    // have a default-value initializer. Anchored at the
+                    // parameter name to match upstream tsc's column for
+                    // `parserParameterList10.ts(2,11)` (`foo(...bar = 0)`).
+                    if (flags.is_rest) {
+                        const name_span = self.hir.spanOf(name_node);
+                        try self.reportCodeAt(name_span.start, self.lineAt(name_span.start), 1048, "A rest parameter cannot have an initializer.");
                     }
                 }
                 const param = try self.builder.addParameterWithDecorators(
@@ -14898,4 +14915,36 @@ test "parser: elided tuple element reports TS1110 at the comma" {
         if (d.code == 1110 and d.pos == expected_pos) saw_ts1110 = true;
     }
     try T.expect(saw_ts1110);
+}
+
+test "parser: rest parameter marked optional reports TS1047 at the question mark" {
+    // `class C { foo(...bar?) {} }` — TS1047 fires at the `?` token.
+    // Mirrors upstream `parserParameterList9.ts(2,14)` /
+    // `parserParameterList11.ts(1,8)` where the rest parameter cannot
+    // also carry the `?` optional marker.
+    const src = "class C { foo(...bar?) {} }";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+    var saw_ts1047 = false;
+    const expected_pos: u32 = @intCast(std.mem.indexOf(u8, src, "?").?);
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1047 and d.pos == expected_pos) saw_ts1047 = true;
+    }
+    try T.expect(saw_ts1047);
+}
+
+test "parser: rest parameter with initializer reports TS1048 at the parameter name" {
+    // `class C { foo(...bar = 0) {} }` — TS1048 fires at the parameter
+    // name. Mirrors upstream `parserParameterList10.ts(2,11)`.
+    const src = "class C { foo(...bar = 0) {} }";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+    var saw_ts1048 = false;
+    const expected_pos: u32 = @intCast(std.mem.indexOf(u8, src, "bar").?);
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1048 and d.pos == expected_pos) saw_ts1048 = true;
+    }
+    try T.expect(saw_ts1048);
 }
