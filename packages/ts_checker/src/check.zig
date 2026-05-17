@@ -211,6 +211,7 @@ pub const TsCodes = struct {
     pub const tuple_negative_index: u32 = 2514;
     pub const not_constructor_function_type: u32 = 2507;
     pub const computed_property_name_type: u32 = 2464;
+    pub const this_in_computed_property_name: u32 = 2465;
     pub const super_in_computed_property_name: u32 = 2466;
     pub const no_matching_index_signature: u32 = 2537;
     pub const type_cannot_be_used_to_index_type: u32 = 2536;
@@ -10629,9 +10630,13 @@ pub const Checker = struct {
                         if (self.expressionContainsSuper(op.key)) {
                             try self.report(op.key, TsCodes.super_in_computed_property_name, "'super' cannot be referenced in a computed property name.");
                         }
-                        if (!self.sourceHasStrictFalseDirective() and self.expressionContainsThis(op.key) and self.currentThisType() == null) {
-                            try self.report(op.key, TsCodes.this_implicitly_any, "'this' implicitly has type 'any' because it does not have a type annotation.");
-                        }
+                        // Note: do NOT pre-emit TS2683 for `this` inside the
+                        // key here — the `in_computed_property_name` flag
+                        // (set below before `checkExpression`) routes the
+                        // `this` identifier handler to the more specific
+                        // TS2465 ("'this' cannot be referenced in a
+                        // computed property name."). Mirrors upstream tsc
+                        // on `computedPropertyNames21_ES5/_ES6`.
                         const prev_in_computed_name = self.in_computed_property_name;
                         self.in_computed_property_name = true;
                         const key_t = try self.checkExpression(op.key);
@@ -17689,10 +17694,17 @@ pub const Checker = struct {
 
     fn isReservedKeywordTypeRefName(self: *const Checker, name: hir_mod.StringId) bool {
         const raw = self.string_interner.get(name);
+        // Reserved words that the parser still lowers to a type ref so
+        // the checker can surface a canonical TS2304 ("Cannot find
+        // name") on the original identifier — in strict mode (ES2015+
+        // target, or explicit `"use strict"`) `yield` is a reserved
+        // word in any non-generator position. Mirrors upstream tsc on
+        // `FunctionDeclaration13_es6` (`var v: yield;`).
         return std.mem.eql(u8, raw, "public") or
             std.mem.eql(u8, raw, "private") or
             std.mem.eql(u8, raw, "protected") or
-            std.mem.eql(u8, raw, "static");
+            std.mem.eql(u8, raw, "static") or
+            std.mem.eql(u8, raw, "yield");
     }
 
     fn genericAliasHasMissingRequiredArgs(self: *Checker, info: GenericAliasInfo, supplied: usize) bool {
@@ -24531,8 +24543,15 @@ pub const Checker = struct {
                         break :blk self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
                     }
                 }
+                var suppressed_ts2350_via_ts7009 = false;
                 if (self.strict_flags.no_implicit_any and self.interner.isSignature(callee_t)) {
                     try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
+                    // When TS7009 fires we've already told the user the
+                    // construct signature is missing entirely — TS2350
+                    // ("Only a void function can be called with the 'new'
+                    // keyword.") is redundant on the same node and tsc
+                    // suppresses it. Mirrors `newOperatorErrorCases_noImplicitAny`.
+                    suppressed_ts2350_via_ts7009 = true;
                 }
                 if (self.hir.kindOf(c.callee) == .template_literal and
                     callee_t != types.Primitive.any and callee_t != types.Primitive.unknown)
@@ -24540,7 +24559,7 @@ pub const Checker = struct {
                     try self.report(c.callee, 2351, "This expression is not constructable.");
                 } else if (self.typeIsDefinitelyNonConstructable(callee_t)) {
                     try self.report(c.callee, 2351, "This expression is not constructable.");
-                } else {
+                } else if (!suppressed_ts2350_via_ts7009) {
                     var call_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
                     defer call_sigs.deinit(self.gpa);
                     try self.collectCallSignatures(callee_t, &call_sigs);
@@ -29521,6 +29540,16 @@ pub const Checker = struct {
             if (self.thisInsideCheckJsPrototypeAssignmentFunction(node)) return types.Primitive.any;
             if (self.thisInsideCheckJsFunctionWithThisTag(node)) return types.Primitive.any;
             if (self.thisInsideCheckJsCallbackWithThis(node)) return types.Primitive.any;
+            // TS2465: `this` referenced inside the bracketed
+            // computed-name of a class member is illegal — the class
+            // instance doesn't exist when the key is evaluated. Fires
+            // INSTEAD of the implicit-any TS2683 since it's the more
+            // specific diagnostic. Mirrors upstream
+            // `computedPropertyNames21_ES5/_ES6`.
+            if (self.in_computed_property_name) {
+                self.report(node, TsCodes.this_in_computed_property_name, "'this' cannot be referenced in a computed property name.") catch {};
+                return types.Primitive.any;
+            }
             // TS2331: `this` referenced directly inside a namespace
             // body (without an intervening function/class frame) is
             // illegal — mirrors upstream tsc for `thisTypeErrors.ts(36)`
@@ -32297,6 +32326,12 @@ pub const Checker = struct {
         if (self.thisInsideCheckJsPrototypeAssignmentFunction(node)) return types.Primitive.any;
         if (self.thisInsideCheckJsFunctionWithThisTag(node)) return types.Primitive.any;
         if (self.thisInsideCheckJsCallbackWithThis(node)) return types.Primitive.any;
+        // TS2465 — see the matching branch in the identifier-form
+        // `this` resolver above. Mirrors `computedPropertyNames21_ES5`.
+        if (self.in_computed_property_name) {
+            self.report(node, TsCodes.this_in_computed_property_name, "'this' cannot be referenced in a computed property name.") catch {};
+            return types.Primitive.any;
+        }
         if (self.currentThisType()) |this_t| return this_t;
         if (self.nodeHasAncestorKind(node, .decorator)) return types.Primitive.any;
         if (self.thisIsGlobalScriptThis(node)) return try self.bareGlobalThisType();
@@ -42169,6 +42204,30 @@ test "checker: new expression rejects non-void call signature without construct 
     try T.expect(found);
 }
 
+test "checker: noImplicitAny suppresses TS2350 when TS7009 fires on same new-expression" {
+    // `new fnNumber()` where `fnNumber` returns `number` under
+    // `noImplicitAny`. Upstream tsc reports ONLY TS7009 — TS2350
+    // ("Only a void function...") is suppressed because the
+    // construct-signature-missing message already covers the
+    // unsoundness. Mirrors `newOperatorErrorCases_noImplicitAny`.
+    const s = try newSetup(
+        \\function fnNumber(this: void): number { return 90; }
+        \\new fnNumber();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_7009 = false;
+    var saw_2350 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.new_expression_implicitly_any) saw_7009 = true;
+        if (d.code == TsCodes.new_expression_not_void) saw_2350 = true;
+    }
+    try T.expect(saw_7009);
+    try T.expect(!saw_2350);
+}
+
 test "checker: const enum initializer resolves earlier members" {
     const s = try newSetup(
         \\const enum E {
@@ -44714,6 +44773,49 @@ test "checker: unbound this expression emits TS2683" {
         if (d.code == TsCodes.this_implicitly_any) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: yield used as a type ref emits TS2304" {
+    // `var v: yield;` inside a generator — the parser still produces
+    // a type-ref for `yield`, and tsc emits TS1212 + TS2304 at the
+    // same position. Mirrors `FunctionDeclaration13_es6`.
+    const s = try newSetup(
+        \\function * foo() {
+        \\  var v: yield;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_2304 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name) {
+            if (std.mem.indexOf(u8, d.message, "'yield'") != null) saw_2304 = true;
+        }
+    }
+    try T.expect(saw_2304);
+}
+
+test "checker: this in computed property name emits TS2465 not TS2683" {
+    // `[this.bar()]` inside a class member — `this` cannot be
+    // referenced because the class instance doesn't exist when the
+    // key is evaluated. tsc emits TS2465 INSTEAD of TS2683.
+    // Mirrors `computedPropertyNames21_ES5` / `_ES6`.
+    const s = try newSetup(
+        \\class C {
+        \\  bar() { return 0; }
+        \\  [this.bar()]() { }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_2465 = false;
+    var saw_2683 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.this_in_computed_property_name) saw_2465 = true;
+        if (d.code == TsCodes.this_implicitly_any) saw_2683 = true;
+    }
+    try T.expect(saw_2465);
+    try T.expect(!saw_2683);
 }
 
 test "checker: global script this missing property reports globalThis index diagnostic" {
