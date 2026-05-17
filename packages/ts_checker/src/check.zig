@@ -3134,29 +3134,166 @@ pub const Checker = struct {
         }
     }
 
+    /// Declaration-space bits used by the TS2652/TS2395 merge-conflict
+    /// pass — a direct port of upstream tsc's `DeclarationSpaces`
+    /// (`internal/checker/checker.go: getDeclarationSpaces`). Each
+    /// merging declaration contributes a bitset; conflicts arise when
+    /// declarations contributing to the same space disagree on
+    /// default-vs-named export or exported-vs-local status.
+    const DeclSpaces = packed struct(u4) {
+        value: bool = false,
+        ty: bool = false,
+        namespace: bool = false,
+        _pad: bool = false,
+
+        fn toInt(self: DeclSpaces) u4 {
+            return @bitCast(self);
+        }
+        fn fromInt(v: u4) DeclSpaces {
+            return @bitCast(v);
+        }
+        fn intersects(self: DeclSpaces, other: DeclSpaces) bool {
+            return (self.toInt() & other.toInt()) != 0;
+        }
+        fn unionWith(self: DeclSpaces, other: DeclSpaces) DeclSpaces {
+            return fromInt(self.toInt() | other.toInt());
+        }
+        fn intersectWith(self: DeclSpaces, other: DeclSpaces) DeclSpaces {
+            return fromInt(self.toInt() & other.toInt());
+        }
+    };
+
+    /// Return the declaration spaces a single statement contributes
+    /// to. Namespaces with instance-producing bodies (var/fn/class or
+    /// nested instantiated namespace) add `value`. Interfaces and
+    /// type aliases add only `ty`. Classes/enums add `ty | value`.
+    fn declarationSpaces(self: *Checker, node: NodeId) DeclSpaces {
+        if (node == hir_mod.none_node_id) return .{};
+        return switch (self.hir.kindOf(node)) {
+            .interface_decl, .type_alias_decl => .{ .ty = true },
+            .class_decl, .enum_decl => .{ .ty = true, .value = true },
+            .var_decl, .let_decl, .const_decl, .fn_decl => .{ .value = true },
+            .namespace_decl, .module_decl => blk: {
+                const body = hir_mod.namespaceBody(self.hir, node);
+                var has_value = false;
+                for (body) |raw| {
+                    const inner = self.unwrapExportDecl(raw);
+                    const ik = self.hir.kindOf(inner);
+                    if (ik == .interface_decl or ik == .type_alias_decl) continue;
+                    has_value = true;
+                    break;
+                }
+                if (has_value) break :blk .{ .namespace = true, .value = true };
+                break :blk .{ .namespace = true };
+            },
+            else => .{},
+        };
+    }
+
     fn checkDefaultExportMerges(self: *Checker, stmts: []const NodeId) CheckError!void {
+        // Group top-level merging declarations by name. tsc's merge
+        // resolution is per-symbol (per virtual-section in our case),
+        // so we just scan the statement list and bucket by interned
+        // name id.
+        const Bucket = struct {
+            name: hir_mod.StringId,
+            // Parallel arrays kept short to avoid an extra allocation
+            // for the common single-decl case.
+            owner_stmts: std.ArrayListUnmanaged(NodeId) = .empty,
+            inner_decls: std.ArrayListUnmanaged(NodeId) = .empty,
+            is_default: std.ArrayListUnmanaged(bool) = .empty,
+            is_exported: std.ArrayListUnmanaged(bool) = .empty,
+            spaces: std.ArrayListUnmanaged(DeclSpaces) = .empty,
+        };
+        var buckets: std.AutoArrayHashMapUnmanaged(hir_mod.StringId, Bucket) = .empty;
+        defer {
+            var it = buckets.iterator();
+            while (it.next()) |entry| {
+                entry.value_ptr.owner_stmts.deinit(self.gpa);
+                entry.value_ptr.inner_decls.deinit(self.gpa);
+                entry.value_ptr.is_default.deinit(self.gpa);
+                entry.value_ptr.is_exported.deinit(self.gpa);
+                entry.value_ptr.spaces.deinit(self.gpa);
+            }
+            buckets.deinit(self.gpa);
+        }
+
         for (stmts) |stmt| {
-            if (self.hir.kindOf(stmt) != .export_decl) continue;
-            const ex = hir_mod.exportOf(self.hir, stmt);
-            if (!ex.is_default or ex.decl == hir_mod.none_node_id) continue;
-            const name = self.declarationName(ex.decl) orelse continue;
-            for (stmts) |other_stmt| {
-                if (other_stmt == stmt) continue;
-                const other = self.unwrapExportDecl(other_stmt);
-                if (other == hir_mod.none_node_id or other == ex.decl) continue;
-                const other_name = self.declarationName(other) orelse continue;
-                if (other_name != name) continue;
-                const other_kind = self.hir.kindOf(other);
-                if (other_kind != .interface_decl and other_kind != .namespace_decl and other_kind != .module_decl) continue;
-                const name_str = self.string_interner.get(name);
-                const msg = try std.fmt.allocPrint(
-                    self.diag_arena.allocator(),
-                    "Merged declaration '{s}' cannot include a default export declaration. Consider adding a separate 'export default {s}' declaration instead.",
-                    .{ name_str, name_str },
-                );
-                try self.diagnostics.append(self.gpa, .{ .node = stmt, .code = TsCodes.default_export_merge, .message = msg });
-                try self.diagnostics.append(self.gpa, .{ .node = other_stmt, .code = TsCodes.default_export_merge, .message = msg });
-                break;
+            var is_default = false;
+            var is_exported = false;
+            var inner = stmt;
+            if (self.hir.kindOf(stmt) == .export_decl) {
+                const ex = hir_mod.exportOf(self.hir, stmt);
+                if (ex.decl == hir_mod.none_node_id) continue;
+                is_default = ex.is_default;
+                is_exported = !ex.is_default;
+                inner = ex.decl;
+            }
+            const name = self.declarationName(inner) orelse continue;
+            const sp = self.declarationSpaces(inner);
+            if (sp.toInt() == 0) continue;
+            const gop = try buckets.getOrPut(self.gpa, name);
+            if (!gop.found_existing) gop.value_ptr.* = .{ .name = name };
+            try gop.value_ptr.owner_stmts.append(self.gpa, stmt);
+            try gop.value_ptr.inner_decls.append(self.gpa, inner);
+            try gop.value_ptr.is_default.append(self.gpa, is_default);
+            try gop.value_ptr.is_exported.append(self.gpa, is_exported);
+            try gop.value_ptr.spaces.append(self.gpa, sp);
+        }
+
+        var it = buckets.iterator();
+        while (it.next()) |entry| {
+            const b = entry.value_ptr;
+            if (b.inner_decls.items.len < 2) continue;
+            // Two-`type X` aliases are handled by the dedicated type
+            // alias merge pass in `checkDeclarationSpaceDiagnostics`
+            // (which also anchors TS2300 properly). Skip here to
+            // avoid double-emitting TS2395.
+            var only_type_aliases = true;
+            for (b.inner_decls.items) |inner| {
+                if (self.hir.kindOf(inner) != .type_alias_decl) {
+                    only_type_aliases = false;
+                    break;
+                }
+            }
+            if (only_type_aliases) continue;
+            // Accumulate space totals by export status.
+            var default_exported_spaces: DeclSpaces = .{};
+            var exported_spaces: DeclSpaces = .{};
+            var non_exported_spaces: DeclSpaces = .{};
+            for (b.spaces.items, b.is_default.items, b.is_exported.items) |sp, is_def, is_exp| {
+                if (is_def) {
+                    default_exported_spaces = default_exported_spaces.unionWith(sp);
+                } else if (is_exp) {
+                    exported_spaces = exported_spaces.unionWith(sp);
+                } else {
+                    non_exported_spaces = non_exported_spaces.unionWith(sp);
+                }
+            }
+            const non_default_spaces = exported_spaces.unionWith(non_exported_spaces);
+            const common_export_local = exported_spaces.intersectWith(non_exported_spaces);
+            const common_default_non_default = default_exported_spaces.intersectWith(non_default_spaces);
+            if (common_export_local.toInt() == 0 and common_default_non_default.toInt() == 0) continue;
+
+            const name_str = self.string_interner.get(b.name);
+            const msg_2652 = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Merged declaration '{s}' cannot include a default export declaration. Consider adding a separate 'export default {s}' declaration instead.",
+                .{ name_str, name_str },
+            );
+            const msg_2395 = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Individual declarations in merged declaration '{s}' must be all exported or all local.",
+                .{name_str},
+            );
+
+            for (b.owner_stmts.items, b.inner_decls.items, b.spaces.items) |owner, inner, sp| {
+                _ = owner;
+                if (sp.intersects(common_default_non_default)) {
+                    try self.reportAt(inner, self.declarationNameSpanStart(inner), TsCodes.default_export_merge, msg_2652);
+                } else if (sp.intersects(common_export_local)) {
+                    try self.reportAt(inner, self.declarationNameSpanStart(inner), TsCodes.declarations_must_all_be_exported_or_local, msg_2395);
+                }
             }
         }
     }
@@ -40268,9 +40405,10 @@ pub const Checker = struct {
 
     fn checkForOfVarSelfReferenceDiagnostics(self: *Checker, for_node: NodeId, target: NodeId, source: NodeId) CheckError!void {
         if (target == hir_mod.none_node_id) return;
-        const name_node: NodeId = switch (self.hir.kindOf(target)) {
+        const target_kind = self.hir.kindOf(target);
+        const name_node: NodeId = switch (target_kind) {
             .identifier => target,
-            .var_decl => blk: {
+            .var_decl, .let_decl, .const_decl => blk: {
                 const v = hir_mod.varDeclOf(self.hir, target);
                 if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) return;
                 if (v.type_annotation != hir_mod.none_node_id or v.init != hir_mod.none_node_id) return;
@@ -40281,8 +40419,16 @@ pub const Checker = struct {
         const id = hir_mod.identifierOf(self.hir, name_node);
         if (std.mem.eql(u8, self.string_interner.get(id.name), "_")) return;
         if (self.sourceHasDeclareAnyVarName(id.name)) return;
-        if (self.firstTopLevelReferenceBefore(for_node, id.name)) |ref| {
-            try self.reportUsedBeforeAssignmentSimple(ref, id.name);
+        // TS2454 (`used before being assigned`) only applies to
+        // var-hoisted bindings — `let`/`const` declarations in the
+        // for-of head are block-scoped to the loop, so outer
+        // references reach the enclosing scope (where the name is
+        // either bound elsewhere or trips TS2304 alone). Mirrors
+        // upstream tsc on `for-of7`.
+        if (target_kind == .var_decl or target_kind == .identifier) {
+            if (self.firstTopLevelReferenceBefore(for_node, id.name)) |ref| {
+                try self.reportUsedBeforeAssignmentSimple(ref, id.name);
+            }
         }
         var has_self_reference = false;
         const class_name = self.newExpressionClassName(source);
@@ -61425,14 +61571,88 @@ test "checker: TS2411 renders inline object types for property and index" {
     try T.expect(saw_rich >= 1);
 }
 
-test "DEBUG: 2430 spurious on callSignatureAssignabilityInInheritance shape" {
+test "checker: for-of let-binding self-referenced in iterable emits TS7022" {
+    // Mirrors upstream `for-of55`: `let v = [1]; for (let v of v) {}` —
+    // tsc anchors TS7022 at the inner `v` binding (block-scoped to
+    // the for-loop) and keeps the separate TS2448. The TS2454
+    // "used before being assigned" diagnostic is var-only and must
+    // not fire for `let`/`const` for-of heads (see `for-of7`).
     const s = try newSetup(
-        \\interface A { a: (x: number) => number[]; }
-        \\interface I extends A { a: <T>(x: T) => T[]; }
+        \\let v = [1];
+        \\for (let v of v) { v; }
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
+    var found_7022 = false;
+    var found_2454 = false;
     for (s.checker.diagnostics.items) |d| {
-        std.debug.print("DIAG code={} msg={s}\n", .{ d.code, d.message });
+        if (d.code == TsCodes.variable_self_reference_implicitly_any) found_7022 = true;
+        if (d.code == TsCodes.used_before_assignment) found_2454 = true;
     }
+    try T.expect(found_7022);
+    try T.expect(!found_2454);
+}
+
+test "checker: default export merging with namespace and interface anchors at name" {
+    // Mirrors upstream `defaultExportsCannotMerge01`: a default
+    // exported function + interface (type-only, doesn't conflict) +
+    // namespace (instantiated, adds value-space) emits TS2652
+    // anchored at the *function name* and at the *namespace name*,
+    // skipping the interface (whose Type space doesn't intersect
+    // the function's Value-only space).
+    const s = try newSetup(
+        \\export default function Decl() { return 0; }
+        \\export interface Decl { p1: number; }
+        \\export namespace Decl { export var x = 10; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count_2652: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.default_export_merge) count_2652 += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count_2652);
+}
+
+test "checker: default export merging with class and interface emits paired TS2652" {
+    // Mirrors upstream `defaultExportsCannotMerge02`: default class
+    // + interface + uninstantiated namespace. Class (Type|Value)
+    // intersects interface (Type) on the Type space, so TS2652
+    // fires on both — the namespace's Namespace-only space does
+    // not intersect and is skipped.
+    const s = try newSetup(
+        \\export default class Decl {}
+        \\export interface Decl { p1: number; }
+        \\export namespace Decl { interface I {} }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count_2652: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.default_export_merge) count_2652 += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count_2652);
+}
+
+test "checker: default export merging with mixed export status emits TS2395 too" {
+    // Mirrors upstream `defaultExportsCannotMerge04`: default fn +
+    // namespace (Namespace|Value) yields paired TS2652, and the
+    // two interfaces that disagree on `export` status yield paired
+    // TS2395 ("all exported or all local").
+    const s = try newSetup(
+        \\export default function Foo() {}
+        \\namespace Foo { export var x; }
+        \\interface Foo {}
+        \\export interface Foo {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count_2652: usize = 0;
+    var count_2395: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.default_export_merge) count_2652 += 1;
+        if (d.code == TsCodes.declarations_must_all_be_exported_or_local) count_2395 += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count_2652);
+    try T.expectEqual(@as(usize, 2), count_2395);
 }
