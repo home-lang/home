@@ -29648,7 +29648,6 @@ pub const Checker = struct {
                 // flag it with TS2708 since the assignment targets
                 // the module shape, not a runtime value slot.
                 if (!self.identifierIsExportEqualsTarget(node)) {
-                    std.debug.print("TS2708-fire node={} parent={} parent_kind={any}\n", .{ node, self.hir.parentOf(node), if (self.hir.parentOf(node) != hir_mod.none_node_id) self.hir.kindOf(self.hir.parentOf(node)) else .none });
                     self.reportNamespaceAsValue(node, id.name) catch {};
                 }
                 return types.Primitive.any;
