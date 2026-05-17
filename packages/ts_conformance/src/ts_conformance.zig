@@ -3513,6 +3513,36 @@ test "conformance: option-deprecation diagnostic alone passes coarse expected-er
     try T.expectEqual(Outcome.passed, r.outcome);
 }
 
+test "conformance: option-deprecation filter drops spurious TS5107 for expected-clean fixtures" {
+    // Regression for amdImportAsPrimaryExpression /
+    // amdImportNotAsPrimaryExpression / importImportOnlyModule /
+    // exportAssignmentTopLevelFundule: fixtures whose ONLY upstream
+    // diagnostic is the `module=AMD` deprecation flip to expected-
+    // clean (`baselineHasOnlyOptionDeprecation` filters the baseline
+    // entry out of `expected_errors`). The driver still emits TS5107
+    // when it sees `@module: amd`; the harness must drop it from the
+    // actual stream too so the empty/empty comparison succeeds. The
+    // pre-fix behavior failed because the filter was gated on
+    // `exact_mode`, which is off when `expected_errors` is empty.
+    const r = try runOneEntry(T.allocator, .{
+        .name = "amdExpectedCleanFixture",
+        .source =
+        \\// @module: amd
+        \\const x = 1;
+        \\export {};
+        ,
+        .path = "amdExpectedCleanFixture.ts",
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = false,
+    });
+    defer {
+        T.allocator.free(r.name);
+        if (r.detail.len > 0) T.allocator.free(r.detail);
+    }
+    try T.expectEqual(Outcome.passed, r.outcome);
+}
+
 test "conformance: option-validation diagnostic filter recognizes outFile/AMD" {
     try T.expect(diagnosticIsOptionValidation(.{
         .code = @as(u32, 5101),
