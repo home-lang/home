@@ -10856,6 +10856,17 @@ pub const Checker = struct {
                                 try self.report(m, TsCodes.property_not_initialized, msg);
                             }
                         }
+                        // Even when the computed key doesn't resolve to a
+                        // static member name, the initializer expression
+                        // still has runtime semantics and must be type-
+                        // checked so embedded identifier references
+                        // (e.g. `[e] = 0[e2] = 1` where ASI fuses two
+                        // computed-key fields) surface TS2304 on each
+                        // unbound name. Mirrors upstream tsc on
+                        // `parserComputedPropertyName25.ts`.
+                        if (op.value != hir_mod.none_node_id) {
+                            _ = self.checkExpression(op.value) catch {};
+                        }
                         continue;
                     }
                     const member_name = member_name_opt.?;
