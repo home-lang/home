@@ -21,6 +21,7 @@ pub const strings = @import("strings.zig");
 pub const Output = @import("output.zig");
 pub const Global = @import("global.zig");
 pub const Environment = @import("environment.zig");
+pub const fmt = @import("fmt.zig");
 
 // Comptime string map (copied from Bun, JSC methods stripped — they'll
 // be re-added under src/jsc/ once Phase 12.2 lands).
@@ -64,4 +65,17 @@ test "home_rt: Environment flags exist" {
 
 test "home_rt: strings.indexOfChar reaches the colon-list parser" {
     try std.testing.expectEqual(@as(?usize, 3), strings.indexOfChar("foo:bar", ':'));
+}
+
+test {
+    // Pull nested module tests into the home_rt test runner so a single
+    // `zig build test -Dfilter=home_rt` exercises the whole substrate.
+    _ = strings;
+    _ = Output;
+    _ = Global;
+    _ = Environment;
+    _ = fmt;
+    _ = comptime_string_map;
+    _ = cli.which_npm_client;
+    _ = cli.yarn_commands;
 }
