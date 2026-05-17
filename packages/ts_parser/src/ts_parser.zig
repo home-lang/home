@@ -62,9 +62,13 @@ pub const Diagnostic = struct {
 /// `function_depth` records the parser's `function_depth` at the
 /// label declaration so cross-function jumps (`break LBL` from a
 /// nested function body) can be flagged with TS1107.
+/// `wraps_iteration` is set after the labeled statement parses if it
+/// turns out to be a `for`/`while`/`do-while` (any iteration form);
+/// `continue LBL` requires this to be true, otherwise TS1115 fires.
 const LabelEntry = struct {
     name: hir_mod.StringId,
     function_depth: u32,
+    wraps_iteration: bool = false,
 };
 
 pub const Parser = struct {
@@ -740,9 +744,21 @@ pub const Parser = struct {
                     break;
                 }
             }
+            // The token immediately following the `:` determines what
+            // kind of statement the label wraps. Iteration forms
+            // (`for` / `while` / `do`) are the only legal `continue`
+            // targets — record the flag so `continue LBL` can verify
+            // and fall back to TS1115 when the label binds a
+            // non-iteration statement (e.g. `LBL: continue LBL;`).
+            // Mirrors `parser_continueTarget1.ts(2,3)`.
+            const wraps_iteration = switch (self.peek().kind) {
+                .kw_for, .kw_while, .kw_do => true,
+                else => false,
+            };
             try self.label_stack.append(self.gpa, .{
                 .name = label_name,
                 .function_depth = self.function_depth,
+                .wraps_iteration = wraps_iteration,
             });
             defer _ = self.label_stack.pop();
             if (self.isAmbientContextAt(label_tok.span.start)) {
@@ -1874,6 +1890,7 @@ pub const Parser = struct {
         // Walk the label stack innermost-out so a same-named label in
         // the inner function (when present) wins before the outer one
         // would trigger TS1107.
+        const is_break = start.kind == .kw_break;
         var i: usize = self.label_stack.items.len;
         while (i > 0) {
             i -= 1;
@@ -1881,10 +1898,18 @@ pub const Parser = struct {
             if (entry.name != label_name) continue;
             if (entry.function_depth != self.function_depth) {
                 try self.reportCodeAt(start.span.start, start.line, 1107, "Jump target cannot cross function boundary.");
+                return;
+            }
+            // `continue LBL` requires `LBL` to wrap an iteration
+            // statement (for / while / do-while). A label binding a
+            // non-iteration form (block, if, expression) is a valid
+            // `break` target but not a valid `continue` target —
+            // mirrors upstream tsc on `parser_continueTarget1.ts(2,3)`.
+            if (!is_break and !entry.wraps_iteration) {
+                try self.reportCodeAt(start.span.start, start.line, 1115, "A 'continue' statement can only jump to a label of an enclosing iteration statement.");
             }
             return;
         }
-        const is_break = start.kind == .kw_break;
         if (is_break) {
             try self.reportCodeAt(start.span.start, start.line, 1116, "A 'break' statement can only jump to a label of an enclosing statement.");
         } else {
@@ -2955,6 +2980,17 @@ pub const Parser = struct {
                 if (try self.tryParseIndexSignature(&members, mods.is_static, mods.is_readonly)) {
                     if (invalid_index_modifier) |bad| {
                         try self.reportCodeAt(bad.span.start, bad.line, 1071, "'export' modifier cannot appear on an index signature.");
+                    } else if (mods.invalid_class_element_modifier) |bad| {
+                        // `skipClassModifiers` swallows `export` when the
+                        // next token can start a member (`[`, identifier,
+                        // …). For the index-signature branch tsc routes
+                        // the diagnostic through TS1071 rather than the
+                        // generic TS1031, so re-emit with the index-
+                        // specific code anchored at the export keyword.
+                        // Mirrors `parserIndexMemberDeclaration9.ts(2,4)`.
+                        const mod_name = self.source[bad.span.start..bad.span.end];
+                        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier cannot appear on an index signature.", .{mod_name});
+                        try self.reportCodeAt(bad.span.start, bad.line, 1071, msg);
                     } else if (mods.accessibility_token) |bad| {
                         const mod_name = self.source[bad.span.start..bad.span.end];
                         const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier cannot appear on an index signature.", .{mod_name});
@@ -3135,6 +3171,18 @@ pub const Parser = struct {
                         }
                         body = try self.parseBlockStatement();
                         try self.reportAmbientClassImplementationAt(body_start.span.start, body_start.line);
+                        // TS1183 also fires when the method itself carries
+                        // a `declare` modifier (per-member ambient marker)
+                        // even though the enclosing class isn't ambient.
+                        // The diagnostic is independent of the TS1031
+                        // `cannot appear on class elements of this kind`
+                        // report — tsc emits both. Mirrors upstream
+                        // `parserMemberFunctionDeclaration5.ts(2,19)`.
+                        if (mods.declare_token != null and
+                            !self.isAmbientContextAt(member_start.span.start))
+                        {
+                            try self.reportCodeAt(body_start.span.start, body_start.line, 1183, "An implementation cannot be declared in ambient contexts.");
+                        }
                     } else {
                         try self.consumeStatementTerminator();
                         if (is_generator and self.isAmbientContextAt(member_start.span.start)) {
@@ -15109,5 +15157,94 @@ test "parser: 'declare module \"Foo\" {}' does not report TS1035" {
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1035);
     }
+}
+
+test "parser: 'declare Foo() {}' inside a class body reports TS1183 at the body brace" {
+    // Per-member `declare` modifier on a method that nonetheless has
+    // an implementation body. tsc emits both TS1031 (modifier not
+    // allowed) and TS1183 (implementation in ambient context); the
+    // TS1183 anchors at the `{` of the method body. Mirrors
+    // `parserMemberFunctionDeclaration5.ts(2,19)`.
+    const src = "class C {\n    declare Foo() { }\n}";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const expected_pos: u32 = @intCast(std.mem.indexOf(u8, src, "{ }").?);
+    var saw_ts1183 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1183 and d.pos == expected_pos) saw_ts1183 = true;
+    }
+    try T.expect(saw_ts1183);
+}
+
+test "parser: 'LBL: continue LBL;' where LBL wraps a non-iteration reports TS1115" {
+    // The label binds the `continue` statement itself (not a
+    // for/while/do), so `continue LBL` has no enclosing iteration to
+    // jump to. tsc emits TS1115 on the `continue` keyword. Mirrors
+    // `parser_continueTarget1.ts`.
+    const src = "target:\n  continue target;";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var saw_ts1115 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1115) saw_ts1115 = true;
+    }
+    try T.expect(saw_ts1115);
+}
+
+test "parser: 'LBL: while (...) continue LBL;' wraps iteration so TS1115 is suppressed" {
+    // The label binds a `while` statement — a valid `continue` target.
+    // No TS1115 should fire even though the same label name appears
+    // in both the declaration and the use.
+    const src = "L: while (x) { continue L; }";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1115);
+    }
+}
+
+test "parser: single computed-name class field with chained assignment value" {
+    // `[e] = 0\n[e2] = 1` — JavaScript's `[` continuation inside an
+    // expression means the value of the first field is the chained
+    // assignment `0[e2] = 1`, not just `0`. Verify our parser
+    // matches tsc's parse shape so the checker walks the full
+    // expression chain (and reports TS2304 on both `e` and `e2`).
+    var s = try newTestSetup(
+        \\class C {
+        \\    [e] = 0
+        \\    [e2] = 1
+        \\}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.classMembers(&s.hir, top);
+    try T.expectEqual(@as(usize, 1), members.len);
+    const m0 = hir_mod.objectPropertyOf(&s.hir, members[0]);
+    try T.expect(m0.is_computed);
+    try T.expect(m0.value != hir_mod.none_node_id);
+    // The value must be a chained `0[e2] = 1`, i.e. an assignment.
+    try T.expectEqual(hir_mod.NodeKind.assignment, s.hir.kindOf(m0.value));
+}
+
+test "parser: 'export [x: string]: string' in a class body reports TS1071 on export" {
+    // `skipClassModifiers` consumes the `export` keyword (since `[`
+    // can start a member), so the dedicated TS1071 check on the
+    // unconsumed-export branch never fires. The index-signature
+    // recognizer now also walks `mods.invalid_class_element_modifier`
+    // and rewrites the would-be TS1031 to TS1071. Mirrors
+    // `parserIndexMemberDeclaration9.ts(2,4)`.
+    const src = "class C {\n   export [x: string]: string;\n}";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var saw_ts1071 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1071) saw_ts1071 = true;
+    }
+    try T.expect(saw_ts1071);
 }
 
