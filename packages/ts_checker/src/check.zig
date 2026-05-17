@@ -16438,13 +16438,16 @@ pub const Checker = struct {
                     continue;
                 }
             }
-            if (parent_number_idx != types.Primitive.none and child_string_idx != types.Primitive.none) {
-                const type_ok = try self.heritageAssignableDeep(child_string_idx, parent_number_idx);
-                if (!type_ok) {
-                    try self.reportInterfaceExtendsIndexMismatch(node);
-                    continue;
-                }
-            }
+            // The historical cross-check between the child's string
+            // indexer and the parent's number indexer (asserting that
+            // `child_string_idx` is assignable to `parent_number_idx`)
+            // does not mirror tsc and produces spurious TS2430 on
+            // fixtures like `interfaceWithStringIndexerHidingBaseTypeIndexer2.ts`.
+            // tsc enforces the "number-index value is a subtype of
+            // string-index value" rule on the *derived* shape (handled
+            // separately by the number-vs-string compatibility check
+            // farther down), not as a parent-vs-child cross-compare,
+            // so the cross-check is omitted here.
             const parent_symbol_idx = self.interner.objectSymbolIndex(parent_t);
             if (parent_symbol_idx != types.Primitive.none and child_symbol_idx != types.Primitive.none) {
                 const type_ok = try self.heritageAssignableDeep(child_symbol_idx, parent_symbol_idx);
@@ -16500,6 +16503,44 @@ pub const Checker = struct {
                     const optional_ok = pm.is_optional or !cm.is_optional;
                     const type_ok = try self.heritageAssignableDeep(cm.type, pm.type);
                     if (optional_ok and type_ok) break;
+                    // Prefer upstream's `Interface 'X' incorrectly extends
+                    // interface 'Y'.` shape — anchored at the derived
+                    // interface's name identifier — when both names
+                    // resolve. Falls back to the older terse form so
+                    // anonymous extends targets (synthesized type
+                    // references) never strand a half-formatted message.
+                    // Pins `interfaceThatHidesBaseProperty2.ts(5,11)` and
+                    // `interfaceWithMultipleBaseTypes2.ts(17,11)`.
+                    const iface_name_opt: ?NodeId = if (self.hir.kindOf(node) == .interface_decl)
+                        hir_mod.interfaceOf(self.hir, node).name
+                    else
+                        null;
+                    const iface_name_str: ?[]const u8 = blk_in: {
+                        if (iface_name_opt) |id_node| {
+                            if (id_node != hir_mod.none_node_id and self.hir.kindOf(id_node) == .identifier) {
+                                break :blk_in self.string_interner.get(hir_mod.identifierOf(self.hir, id_node).name);
+                            }
+                        }
+                        break :blk_in null;
+                    };
+                    const base_name_id = self.unqualifiedTypeRefName(ext_node);
+                    const base_name_str: ?[]const u8 = if (base_name_id) |n| self.string_interner.get(n) else null;
+                    if (iface_name_str != null and base_name_str != null) {
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Interface '{s}' incorrectly extends interface '{s}'.",
+                            .{ iface_name_str.?, base_name_str.? },
+                        );
+                        // Anchor at the interface name identifier so the
+                        // column matches upstream tsc.
+                        const name_node = iface_name_opt.?;
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = name_node,
+                            .code = TsCodes.interface_incorrectly_extends,
+                            .message = msg,
+                        });
+                        break;
+                    }
                     const prop_name = self.string_interner.get(cm.name);
                     const msg = try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
@@ -16761,6 +16802,15 @@ pub const Checker = struct {
     /// assignable to 'kind' index type 'I'.` shape when both type
     /// names resolve. Otherwise fall back to the older terse form so
     /// half-formatted output never escapes.
+    ///
+    /// Inline object types (`{ a: number; }`) — anonymous object
+    /// types with named members but no nominal identity — render via
+    /// `allocObjectTypeShape` as a structural shape because
+    /// `simpleDiagnosticTypeName` returns null for them. Mirrors
+    /// upstream tsc which includes the literal shape inside TS2411
+    /// prose for fixtures like
+    /// `interfaceWithStringIndexerHidingBaseTypeIndexer.ts(13,5)`
+    /// and `interfaceWithStringIndexerHidingBaseTypeIndexer3.ts(13,5)`.
     fn formatPropertyNotAssignableToIndexType(
         self: *Checker,
         prop_str: []const u8,
@@ -16768,14 +16818,16 @@ pub const Checker = struct {
         index_type: TypeId,
         index_kind: []const u8,
     ) ![]const u8 {
-        if (try self.simpleDiagnosticTypeName(prop_type)) |prop_type_text| {
-            if (try self.simpleDiagnosticTypeName(index_type)) |index_type_text| {
-                return try std.fmt.allocPrint(
-                    self.diag_arena.allocator(),
-                    "Property '{s}' of type '{s}' is not assignable to '{s}' index type '{s}'.",
-                    .{ prop_str, prop_type_text, index_kind, index_type_text },
-                );
-            }
+        const prop_type_text = (try self.simpleDiagnosticTypeName(prop_type)) orelse
+            (try self.allocObjectTypeShape(prop_type));
+        const index_type_text = (try self.simpleDiagnosticTypeName(index_type)) orelse
+            (try self.allocObjectTypeShape(index_type));
+        if (prop_type_text != null and index_type_text != null) {
+            return try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Property '{s}' of type '{s}' is not assignable to '{s}' index type '{s}'.",
+                .{ prop_str, prop_type_text.?, index_kind, index_type_text.? },
+            );
         }
         return try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -60605,6 +60657,82 @@ test "checker: boolean primitive is assignable to Boolean wrapper" {
     }
 }
 
+test "checker: TS2430 names derived interface and base in prose" {
+    // Pins `interfaceThatHidesBaseProperty2.ts(5,11)`: when a derived
+    // interface declares a member whose type does not assign back to
+    // the base member, tsc emits
+    // `Interface 'Derived' incorrectly extends interface 'Base'.`
+    // The diagnostic anchors at the *derived interface name* (column
+    // 11 of `interface Derived extends Base`), not the keyword
+    // column. The older terse "Interface incorrectly extends base
+    // interface; property 'x' is incompatible." shape is reserved
+    // for anonymous extends targets where no nominal name resolves.
+    const s = try newSetup(
+        \\interface Base { x: { a: number }; }
+        \\interface Derived extends Base { x: { a: string }; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_named: u32 = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.interface_incorrectly_extends) continue;
+        if (std.mem.indexOf(u8, d.message, "Interface 'Derived' incorrectly extends interface 'Base'.") != null) {
+            saw_named += 1;
+        }
+    }
+    try T.expect(saw_named >= 1);
+}
 
+test "checker: TS2430 suppresses spurious child-string vs parent-number cross-check" {
+    // Pins `interfaceWithStringIndexerHidingBaseTypeIndexer2.ts(8,1)`:
+    // when a derived interface adds a string indexer while inheriting a
+    // number indexer from its base, the parent-vs-child cross-comparison
+    // (child string assignable to parent number) must NOT run. tsc only
+    // enforces same-kind indexer assignability between parent and child;
+    // the number-vs-string subtype rule on the derived shape is checked
+    // separately on the merged type, not as a cross-direction
+    // parent/child compare. The pre-fix code raised a spurious TS2430
+    // here.
+    const s = try newSetup(
+        \\interface Base { [x: number]: { a: number; b: number }; x: { a: number; b: number; }; }
+        \\interface Derived extends Base { [x: string]: { a: number }; y: { a: number; }; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_cross_2430: u32 = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.interface_incorrectly_extends) continue;
+        if (std.mem.indexOf(u8, d.message, "index signatures are incompatible") != null) {
+            saw_cross_2430 += 1;
+        }
+    }
+    try T.expectEqual(@as(u32, 0), saw_cross_2430);
+}
 
-
+test "checker: TS2411 renders inline object types for property and index" {
+    // Pins `interfaceWithStringIndexerHidingBaseTypeIndexer.ts(13,5)`:
+    // when a derived interface declares a string indexer narrower
+    // than its base, the per-property TS2411 must render the offending
+    // property's inline object type AND the indexer's value type:
+    //   Property 'y' of type '{ a: number; }' is not assignable to
+    //   'string' index type '{ a: number; b: number; }'.
+    // `formatPropertyNotAssignableToIndexType` falls back to
+    // `allocObjectTypeShape` for anonymous object shapes, which
+    // `simpleDiagnosticTypeName` returns null for.
+    const s = try newSetup(
+        \\interface Base { [x: string]: { a: number }; x: { a: number; b: number; }; }
+        \\interface Derived extends Base { [x: string]: { a: number; b: number }; y: { a: number; }; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_rich: u32 = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.property_not_assignable_to_index_type) continue;
+        if (std.mem.indexOf(u8, d.message, "Property 'y' of type '{") != null and
+            std.mem.indexOf(u8, d.message, "'string' index type '{") != null)
+        {
+            saw_rich += 1;
+        }
+    }
+    try T.expect(saw_rich >= 1);
+}
