@@ -1293,15 +1293,36 @@ pub const Parser = struct {
     }
 
     fn reportInvalidStrictName(self: *Parser, tok: Token) ParseError!void {
-        if (!self.strict_mode or !self.isRestrictedStrictName(tok)) return;
-        const raw = self.source[tok.span.start..tok.span.end];
-        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Invalid use of '{s}' in strict mode.", .{raw});
-        try self.diagnostics.append(self.gpa, .{
-            .pos = tok.span.start,
-            .line = tok.line,
-            .code = 1100,
-            .message = msg,
-        });
+        if (!self.isRestrictedStrictName(tok)) return;
+        if (self.strict_mode) {
+            const raw = self.source[tok.span.start..tok.span.end];
+            const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Invalid use of '{s}' in strict mode.", .{raw});
+            try self.diagnostics.append(self.gpa, .{
+                .pos = tok.span.start,
+                .line = tok.line,
+                .code = 1100,
+                .message = msg,
+            });
+            return;
+        }
+        // Class bodies are implicitly strict — flag `arguments`/`eval`
+        // as restricted parameter names there even when the outer
+        // module hasn't opted into strict mode. Mirrors tsc TS1210
+        // (`emitArrowFunctionWhenUsingArguments12`).
+        if (self.class_body_depth > 0) {
+            const raw = self.source[tok.span.start..tok.span.end];
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Code contained in a class is evaluated in JavaScript's strict mode which does not allow this use of '{s}'. For more information, see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Strict_mode.",
+                .{raw},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .pos = tok.span.start,
+                .line = tok.line,
+                .code = 1210,
+                .message = msg,
+            });
+        }
     }
 
     fn isYieldReservedName(self: *const Parser, tok: Token) bool {
@@ -13843,6 +13864,33 @@ test "parser: malformed index signature forms report diagnostics" {
     try T.expectEqual(@as(u32, 1017), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 1019), s.parser.diagnostics.items[1].code);
     try T.expectEqual(@as(u32, 1096), s.parser.diagnostics.items[2].code);
+}
+
+test "parser: arguments parameter in non-strict class method reports TS1210" {
+    // Class bodies are implicitly strict — `f(arguments)` is illegal
+    // even without an outer `"use strict"`. Upstream tsc emits TS1210
+    // anchored at the parameter name. Mirrors
+    // `emitArrowFunctionWhenUsingArguments12.ts`.
+    var s = try newTestSetup("class C { f(arguments) {} }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_1210 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1210) saw_1210 = true;
+    }
+    try T.expect(saw_1210);
+}
+
+test "parser: arguments parameter outside class does not report TS1210" {
+    var s = try newTestSetup("function f(arguments) {}");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1210);
+        try T.expect(d.code != 1100);
+    }
 }
 
 test "parser: strict mode restricted names and delete operands report diagnostics" {
