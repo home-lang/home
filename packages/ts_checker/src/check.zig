@@ -3427,9 +3427,24 @@ pub const Checker = struct {
     fn checkNamedExportLocals(self: *Checker, node: NodeId, ex: hir_mod.ExportPayload) CheckError!void {
         if (ex.named_len == 0 or ex.is_namespace) return;
         if (self.string_interner.get(ex.module).len != 0) return;
+        const is_js_section = self.virtualSectionIsJsLike(node);
         const module = self.module orelse return;
         for (hir_mod.exportNamed(self.hir, node)) |spec_node| {
             const spec = hir_mod.importSpecifierOf(self.hir, spec_node);
+            // `.js` / `.jsx` files reject `export { type foo }` and
+            // `export type { foo }` entirely — TS8006 fires anchored at
+            // the specifier (column = `type` modifier start). Mirrors
+            // `exportSpecifiers_js`: tsc skips the value-locality check
+            // when the syntax itself is invalid. Module-augmentation
+            // ambient `export type` forms are handled separately.
+            if (is_js_section and (spec.is_type_only or ex.is_type_only)) {
+                try self.diagnostics.append(self.gpa, .{
+                    .node = spec_node,
+                    .code = TsCodes.ts_only_decl_in_js,
+                    .message = "'export...type' declarations can only be used in TypeScript files.",
+                });
+                continue;
+            }
             const local_name = spec.imported;
             const has_type = module.root.types.get(local_name) != null or module.root.namespaces.get(local_name) != null;
             const has_value = module.root.values.get(local_name) != null or module.root.namespaces.get(local_name) != null;
@@ -62613,6 +62628,32 @@ test "checker: for-await await-using same-name source does not emit TS7022" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.variable_self_reference_implicitly_any);
     }
+}
+
+test "checker: export type specifier in .js virtual section emits TS8006" {
+    // Mirrors upstream `exportSpecifiers_js`: `export { type foo }`
+    // (or `export type { foo }`) in a `.js` file is syntactically
+    // invalid in TypeScript — tsc emits TS8006 ('export...type'
+    // declarations can only be used in TypeScript files) on the
+    // specifier and suppresses the TS2661 value-locality check that
+    // would otherwise fire on the bare-export resolution.
+    const b = try newBoundSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: a.js
+        \\const foo = 0;
+        \\export { type foo };
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found_8006 = false;
+    var found_2661 = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.ts_only_decl_in_js) found_8006 = true;
+        if (d.code == TsCodes.export_non_local_declaration) found_2661 = true;
+    }
+    try T.expect(found_8006);
+    try T.expect(!found_2661);
 }
 
 test "checker: default export merging with namespace and interface anchors at name" {

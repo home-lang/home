@@ -292,7 +292,10 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         else
             pos.line;
         if (virtualMarkerForByte(virtual_markers.items, d.pos)) |m| {
-            diag_file = m.path;
+            // Upstream tsc strips a leading `./` from `@filename:` paths
+            // when rendering diagnostic headers (`./a.js` → `a.js(...)`).
+            // Mirrors fixtures like `exportSpecifiers_js`.
+            diag_file = if (std.mem.startsWith(u8, m.path, "./")) m.path[2..] else m.path;
             const total_strip = m.line + m.extra_strip;
             diag_line = if (pos.line > total_strip) pos.line - total_strip else 1;
         }
@@ -606,7 +609,13 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
                 return null;
             },
         };
-        const diag_path = try gpa.dupe(u8, f.path);
+        // Strip the leading `./` for the diagnostic-rendered filename
+        // — upstream tsc normalizes `@filename: ./a.js` to `a.js(...)`
+        // in error headers (it preserves any explicit leading `/`).
+        // Mirrors fixtures like `exportSpecifiers_js`.
+        var diag_src = f.path;
+        if (std.mem.startsWith(u8, diag_src, "./")) diag_src = diag_src[2..];
+        const diag_path = try gpa.dupe(u8, diag_src);
         try program_files.append(gpa, .{
             .path = canon,
             .diag_path = diag_path,
