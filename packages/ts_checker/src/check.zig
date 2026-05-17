@@ -10100,9 +10100,14 @@ pub const Checker = struct {
             .{kind},
         );
         // TS1238 (class decorators) is reported at the `@` token in
-        // tsc baselines; TS1240/TS1241 (property/method/parameter)
-        // point at the expression following `@`.
-        const dec_pos = if (code == TsCodes.class_decorator_signature_unresolved)
+        // tsc baselines; TS1240/TS1241 (property/method/parameter) usually
+        // point at the expression following `@`, but when the decorator
+        // signature requires MORE arguments than the runtime supplies
+        // (`min_required > runtime_arg_count`), tsc anchors at the `@`
+        // token instead so the squiggle covers `@dec` rather than just
+        // `dec`. Mirrors decoratorOnClassProperty7 vs decoratorOnClassProperty6.
+        const requires_more_than_runtime = runtime_arg_count < min_required;
+        const dec_pos = if (code == TsCodes.class_decorator_signature_unresolved or requires_more_than_runtime)
             self.decoratorAtPos(decorator_node)
         else
             self.decoratorExpressionPos(decorator_node);
@@ -16500,6 +16505,44 @@ pub const Checker = struct {
                     const optional_ok = pm.is_optional or !cm.is_optional;
                     const type_ok = try self.heritageAssignableDeep(cm.type, pm.type);
                     if (optional_ok and type_ok) break;
+                    // Prefer upstream's `Interface 'X' incorrectly extends
+                    // interface 'Y'.` shape — anchored at the derived
+                    // interface's name identifier — when both names
+                    // resolve. Falls back to the older terse form so
+                    // anonymous extends targets (synthesized type
+                    // references) never strand a half-formatted message.
+                    // Pins `interfaceThatHidesBaseProperty2.ts(5,11)` and
+                    // `interfaceWithMultipleBaseTypes2.ts(17,11)`.
+                    const iface_name_opt: ?hir_mod.StringId = if (self.hir.kindOf(node) == .interface_decl)
+                        hir_mod.interfaceOf(self.hir, node).name
+                    else
+                        null;
+                    const iface_name_str: ?[]const u8 = blk_in: {
+                        if (iface_name_opt) |id_node| {
+                            if (id_node != hir_mod.none_node_id and self.hir.kindOf(id_node) == .identifier) {
+                                break :blk_in self.string_interner.get(hir_mod.identifierOf(self.hir, id_node).name);
+                            }
+                        }
+                        break :blk_in null;
+                    };
+                    const base_name_id = self.unqualifiedTypeRefName(ext_node);
+                    const base_name_str: ?[]const u8 = if (base_name_id) |n| self.string_interner.get(n) else null;
+                    if (iface_name_str != null and base_name_str != null) {
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Interface '{s}' incorrectly extends interface '{s}'.",
+                            .{ iface_name_str.?, base_name_str.? },
+                        );
+                        // Anchor at the interface name identifier so the
+                        // column matches upstream tsc.
+                        const name_node = iface_name_opt.?;
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = name_node,
+                            .code = TsCodes.interface_incorrectly_extends,
+                            .message = msg,
+                        });
+                        break;
+                    }
                     const prop_name = self.string_interner.get(cm.name);
                     const msg = try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
@@ -16761,6 +16804,15 @@ pub const Checker = struct {
     /// assignable to 'kind' index type 'I'.` shape when both type
     /// names resolve. Otherwise fall back to the older terse form so
     /// half-formatted output never escapes.
+    ///
+    /// Inline object types (`{ a: number; }`) — anonymous object
+    /// types with named members but no nominal identity — render via
+    /// `allocObjectTypeShape` as a structural shape because
+    /// `simpleDiagnosticTypeName` returns null for them. Mirrors
+    /// upstream tsc which includes the literal shape inside TS2411
+    /// prose for fixtures like
+    /// `interfaceWithStringIndexerHidingBaseTypeIndexer.ts(13,5)`
+    /// and `interfaceWithStringIndexerHidingBaseTypeIndexer3.ts(13,5)`.
     fn formatPropertyNotAssignableToIndexType(
         self: *Checker,
         prop_str: []const u8,
@@ -16768,14 +16820,16 @@ pub const Checker = struct {
         index_type: TypeId,
         index_kind: []const u8,
     ) ![]const u8 {
-        if (try self.simpleDiagnosticTypeName(prop_type)) |prop_type_text| {
-            if (try self.simpleDiagnosticTypeName(index_type)) |index_type_text| {
-                return try std.fmt.allocPrint(
-                    self.diag_arena.allocator(),
-                    "Property '{s}' of type '{s}' is not assignable to '{s}' index type '{s}'.",
-                    .{ prop_str, prop_type_text, index_kind, index_type_text },
-                );
-            }
+        const prop_type_text = (try self.simpleDiagnosticTypeName(prop_type)) orelse
+            (try self.allocObjectTypeShape(prop_type));
+        const index_type_text = (try self.simpleDiagnosticTypeName(index_type)) orelse
+            (try self.allocObjectTypeShape(index_type));
+        if (prop_type_text != null and index_type_text != null) {
+            return try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Property '{s}' of type '{s}' is not assignable to '{s}' index type '{s}'.",
+                .{ prop_str, prop_type_text.?, index_kind, index_type_text.? },
+            );
         }
         return try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -44348,6 +44402,31 @@ test "checker: property decorator signature must accept runtime arity" {
     try T.expect(found);
 }
 
+test "checker: property decorator TS1240 anchors at @ when signature wants more args than runtime" {
+    // Mirrors decoratorOnClassProperty7.ts(4,5): when the decorator signature
+    // requires more arguments than the property-decorator runtime supplies
+    // (here 3 vs 2), tsc anchors TS1240 at the `@` token, not the name.
+    const source =
+        \\// @experimentalDecorators: true
+        \\declare function dec(target: Function, propertyKey: string | symbol, paramIndex: number): void;
+        \\class C {
+        \\  @dec prop;
+        \\}
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const expected_at_pos: u32 = @intCast(std.mem.indexOf(u8, source, "@dec prop").?);
+    var found_at_at = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.property_decorator_signature_unresolved) continue;
+        if (d.pos) |p| {
+            if (p == expected_at_pos) found_at_at = true;
+        }
+    }
+    try T.expect(found_at_at);
+}
+
 test "checker: property decorator optional key accepts runtime arity" {
     const s = try newSetup(
         \\// @experimentalDecorators: true
@@ -60605,6 +60684,56 @@ test "checker: boolean primitive is assignable to Boolean wrapper" {
     }
 }
 
+test "checker: TS2430 names derived interface and base in prose" {
+    // Pins `interfaceThatHidesBaseProperty2.ts(5,11)`: when a derived
+    // interface declares a member whose type does not assign back to
+    // the base member, tsc emits
+    // `Interface 'Derived' incorrectly extends interface 'Base'.`
+    // The diagnostic anchors at the *derived interface name* (column
+    // 11 of `interface Derived extends Base`), not the keyword
+    // column. The older terse "Interface incorrectly extends base
+    // interface; property 'x' is incompatible." shape is reserved
+    // for anonymous extends targets where no nominal name resolves.
+    const s = try newSetup(
+        \\interface Base { x: { a: number }; }
+        \\interface Derived extends Base { x: { a: string }; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_named: u32 = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.interface_incorrectly_extends) continue;
+        if (std.mem.indexOf(u8, d.message, "Interface 'Derived' incorrectly extends interface 'Base'.") != null) {
+            saw_named += 1;
+        }
+    }
+    try T.expect(saw_named >= 1);
+}
 
-
-
+test "checker: TS2411 renders inline object types for property and index" {
+    // Pins `interfaceWithStringIndexerHidingBaseTypeIndexer.ts(13,5)`:
+    // when a derived interface declares a string indexer narrower
+    // than its base, the per-property TS2411 must render the offending
+    // property's inline object type AND the indexer's value type:
+    //   Property 'y' of type '{ a: number; }' is not assignable to
+    //   'string' index type '{ a: number; b: number; }'.
+    // `formatPropertyNotAssignableToIndexType` falls back to
+    // `allocObjectTypeShape` for anonymous object shapes, which
+    // `simpleDiagnosticTypeName` returns null for.
+    const s = try newSetup(
+        \\interface Base { [x: string]: { a: number }; x: { a: number; b: number; }; }
+        \\interface Derived extends Base { [x: string]: { a: number; b: number }; y: { a: number; }; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_rich: u32 = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.property_not_assignable_to_index_type) continue;
+        if (std.mem.indexOf(u8, d.message, "Property 'y' of type '{") != null and
+            std.mem.indexOf(u8, d.message, "'string' index type '{") != null)
+        {
+            saw_rich += 1;
+        }
+    }
+    try T.expect(saw_rich >= 1);
+}
