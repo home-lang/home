@@ -750,10 +750,25 @@ pub const Parser = struct {
             // targets — record the flag so `continue LBL` can verify
             // and fall back to TS1115 when the label binds a
             // non-iteration statement (e.g. `LBL: continue LBL;`).
-            // Mirrors `parser_continueTarget1.ts(2,3)`.
-            const wraps_iteration = switch (self.peek().kind) {
-                .kw_for, .kw_while, .kw_do => true,
-                else => false,
+            // Mirrors `parser_continueTarget1.ts(2,3)`. Nested labels
+            // (`a: b: while (…)`) inherit the iteration flag from the
+            // innermost wrapped statement — peek past identifier-`:`
+            // pairs before classifying.
+            const wraps_iteration = blk: {
+                var look_ahead: u32 = 0;
+                while (true) {
+                    const tk = self.peekAt(look_ahead).kind;
+                    if ((tk == .identifier or tk.isContextualKeyword()) and
+                        self.peekAt(look_ahead + 1).kind == .colon)
+                    {
+                        look_ahead += 2;
+                        continue;
+                    }
+                    break :blk switch (tk) {
+                        .kw_for, .kw_while, .kw_do => true,
+                        else => false,
+                    };
+                }
             };
             try self.label_stack.append(self.gpa, .{
                 .name = label_name,
@@ -15236,6 +15251,21 @@ test "parser: 'LBL: continue LBL;' where LBL wraps a non-iteration reports TS111
         if (d.code == 1115) saw_ts1115 = true;
     }
     try T.expect(saw_ts1115);
+}
+
+test "parser: nested labels 'a: b: while(...) continue a' do not report TS1115" {
+    // `target1: target2: while (...) { continue target1; }` — the
+    // outer label wraps the inner labeled statement, which itself
+    // wraps a `while`. Peeking through chained `identifier ':'`
+    // tokens lets the iteration flag propagate. Mirrors upstream
+    // tsc on `parser_continueTarget3.ts`.
+    const src = "target1:\ntarget2:\nwhile (true) { continue target1; }";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1115);
+    }
 }
 
 test "parser: 'LBL: while (...) continue LBL;' wraps iteration so TS1115 is suppressed" {
