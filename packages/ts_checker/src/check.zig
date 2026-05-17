@@ -3294,10 +3294,20 @@ pub const Checker = struct {
     }
 
     fn checkDefaultExportMerges(self: *Checker, stmts: []const NodeId) CheckError!void {
-        // Group top-level merging declarations by name. tsc's merge
-        // resolution is per-symbol (per virtual-section in our case),
-        // so we just scan the statement list and bucket by interned
-        // name id.
+        // Group top-level merging declarations by name AND virtual
+        // section: tsc's merge resolution is per-symbol, and the
+        // conformance harness's multi-file fixtures (`// @filename:`
+        // markers) concatenate distinct modules into one source.
+        // Names that collide across virtual sections live in
+        // different modules and must NOT merge — otherwise an
+        // `export function foo()` in `0.ts` and a sibling local
+        // `function foo()` in `1.ts` would false-positive into
+        // TS2395. Regression for upstream
+        // `importCallExpression*` multi-file fixtures.
+        const BucketKey = struct {
+            name: hir_mod.StringId,
+            virtual_section_start: usize,
+        };
         const Bucket = struct {
             name: hir_mod.StringId,
             // Parallel arrays kept short to avoid an extra allocation
@@ -3308,7 +3318,7 @@ pub const Checker = struct {
             is_exported: std.ArrayListUnmanaged(bool) = .empty,
             spaces: std.ArrayListUnmanaged(DeclSpaces) = .empty,
         };
-        var buckets: std.AutoArrayHashMapUnmanaged(hir_mod.StringId, Bucket) = .empty;
+        var buckets: std.AutoArrayHashMapUnmanaged(BucketKey, Bucket) = .empty;
         defer {
             var it = buckets.iterator();
             while (it.next()) |entry| {
@@ -3335,7 +3345,11 @@ pub const Checker = struct {
             const name = self.declarationName(inner) orelse continue;
             const sp = self.declarationSpaces(inner);
             if (sp.toInt() == 0) continue;
-            const gop = try buckets.getOrPut(self.gpa, name);
+            const key: BucketKey = .{
+                .name = name,
+                .virtual_section_start = self.virtualSectionStartForNode(stmt),
+            };
+            const gop = try buckets.getOrPut(self.gpa, key);
             if (!gop.found_existing) gop.value_ptr.* = .{ .name = name };
             try gop.value_ptr.owner_stmts.append(self.gpa, stmt);
             try gop.value_ptr.inner_decls.append(self.gpa, inner);
@@ -62826,6 +62840,26 @@ test "checker: default export merging with class and interface emits paired TS26
         if (d.code == TsCodes.default_export_merge) count_2652 += 1;
     }
     try T.expectEqual(@as(usize, 2), count_2652);
+}
+
+test "checker: same-named declarations in different virtual sections do NOT trigger TS2395" {
+    // Regression for upstream `importCallExpressionES{5,6}{AMD,CJS,System,UMD}`
+    // and `importCallExpressionIn{AMD1,CJS1,System1,UMD1}`: multi-file
+    // fixtures concatenate `export function foo()` in `0.ts` with a
+    // sibling `function foo()` in `1.ts` (different modules). They
+    // are distinct symbols and must NOT bucket into a single merge
+    // candidate that fires TS2395 across the file boundary.
+    const s = try newSetup(
+        \\// @filename: 0.ts
+        \\export function foo() { return "foo"; }
+        \\// @filename: 1.ts
+        \\function foo() {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.declarations_must_all_be_exported_or_local);
+    }
 }
 
 test "checker: default export merging with mixed export status emits TS2395 too" {
