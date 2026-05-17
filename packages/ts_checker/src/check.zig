@@ -32065,7 +32065,13 @@ pub const Checker = struct {
         try map_members.append(self.gpa, .{ .name = values_id, .type = sig_values, .is_optional = false, .is_readonly = false, .is_method = true });
         try map_members.append(self.gpa, .{ .name = keys_id, .type = sig_keys, .is_optional = false, .is_readonly = false, .is_method = true });
         try map_members.append(self.gpa, .{ .name = entries_id, .type = sig_entries, .is_optional = false, .is_readonly = false, .is_method = true });
-        return self.interner.internObjectTypeWithIndex(map_members.items, types.Primitive.none, entry_t) catch return error.OutOfMemory;
+        const map_t = self.interner.internObjectTypeWithIndex(map_members.items, types.Primitive.none, entry_t) catch return error.OutOfMemory;
+        // Register the `Map<K, V>` alias display name so TS2322 / TS2345
+        // prose renders as `Map<string, number>` instead of the
+        // structural shape. Mirrors fixture `iterableArrayPattern26`.
+        const map_name = self.string_interner.intern("Map") catch return map_t;
+        self.registerAliasDisplayName(map_t, map_name, &[_]TypeId{ key_t, value_t }) catch {};
+        return map_t;
     }
 
     fn builtinSetInstanceType(self: *Checker, value_t: TypeId) CheckError!TypeId {
@@ -32090,7 +32096,13 @@ pub const Checker = struct {
         try members.append(self.gpa, .{ .name = self.string_interner.intern("values") catch return error.OutOfMemory, .type = sig_values, .is_optional = false, .is_readonly = false, .is_method = true });
         try members.append(self.gpa, .{ .name = self.string_interner.intern("keys") catch return error.OutOfMemory, .type = sig_values, .is_optional = false, .is_readonly = false, .is_method = true });
         try members.append(self.gpa, .{ .name = self.string_interner.intern("entries") catch return error.OutOfMemory, .type = sig_entries, .is_optional = false, .is_readonly = false, .is_method = true });
-        return self.interner.internObjectTypeWithIndex(members.items, types.Primitive.none, value_t) catch return error.OutOfMemory;
+        const set_t = self.interner.internObjectTypeWithIndex(members.items, types.Primitive.none, value_t) catch return error.OutOfMemory;
+        // Register the `Set<T>` alias display name so TS2322 / TS2345
+        // prose renders as `Set<string>` instead of the structural
+        // shape.
+        const set_name = self.string_interner.intern("Set") catch return set_t;
+        self.registerAliasDisplayName(set_t, set_name, &[_]TypeId{value_t}) catch {};
+        return set_t;
     }
 
     fn builtinWeakMapInstanceType(self: *Checker, key_t: TypeId, value_t: TypeId) CheckError!TypeId {
@@ -37083,6 +37095,16 @@ pub const Checker = struct {
                 if (self.builtin_object_names.get(t)) |bname| {
                     break :blk bname;
                 }
+                // Generic alias display names (`Map<string, number>`,
+                // `Set<number>`, `Foo3<string>`) — populated by
+                // `registerAliasDisplayName` whenever a generic alias is
+                // instantiated. Mirrors upstream tsc which preserves the
+                // alias spelling in TS2345 / TS2322 prose rather than
+                // collapsing to the substituted structural shape. See
+                // `iterableArrayPattern26.ts(2,21)`.
+                if (self.alias_display_names.get(t)) |display| {
+                    break :blk display;
+                }
                 if (self.interner.typeParameterName(t)) |tp_name| {
                     break :blk self.string_interner.get(tp_name);
                 }
@@ -37179,6 +37201,17 @@ pub const Checker = struct {
                 // which gates on the `length` member.
                 if (flags.is_object_type) {
                     if (self.fixedTupleLength(t)) |fixed_len_u64| {
+                        // A fixed-length tuple has a literal `length: N`
+                        // member (variadic tuples lower to `length:
+                        // number` and skip this branch). Render the
+                        // positional members in order. Note: the
+                        // synthesized number-key indexer captures the
+                        // union of all element types so dynamic indexing
+                        // resolves, but it is NOT a rest tail — emitting
+                        // `, ...T[]` here would wrongly turn a plain
+                        // `[string, number]` into
+                        // `[string, number, ...string | number[]]`.
+                        // Mirrors `iterableArrayPattern26.ts(2,21)`.
                         const fixed_len: usize = @intCast(fixed_len_u64);
                         var tuple_buf: std.ArrayListUnmanaged(u8) = .empty;
                         const arena_t = self.diag_arena.allocator();
@@ -37195,23 +37228,6 @@ pub const Checker = struct {
                             try tuple_buf.appendSlice(arena_t, elem_name);
                         }
                         if (!tuple_ok) break :blk null;
-                        // `[A, ...B[]]` rest tail — the indexer carries
-                        // the element type of the rest portion. Render
-                        // when present and we can name the element.
-                        const rest_elem_t = self.interner.objectNumberIndex(t);
-                        if (rest_elem_t != types.Primitive.none) {
-                            if (try self.simpleDiagnosticTypeName(rest_elem_t)) |rest_name| {
-                                if (fixed_len > 0) try tuple_buf.appendSlice(arena_t, ", ");
-                                try tuple_buf.appendSlice(arena_t, "...");
-                                try tuple_buf.appendSlice(arena_t, rest_name);
-                                try tuple_buf.append(arena_t, '[');
-                                try tuple_buf.append(arena_t, ']');
-                            } else {
-                                // Mixed rest with un-nameable element —
-                                // skip rendering to avoid noise.
-                                break :blk null;
-                            }
-                        }
                         try tuple_buf.append(arena_t, ']');
                         break :blk tuple_buf.items;
                     }
@@ -62609,6 +62625,7 @@ test "checker: for-of let-binding self-referenced in iterable emits TS7022" {
     try T.expect(!found_2454);
 }
 
+<<<<<<< HEAD
 test "checker: for-of let-binding self-reference under @strict:false skips TS7022" {
     // Mirrors upstream `ES5For-of20`: with `// @strict: false`
     // (noImplicitAny off), tsc's circular-initializer trigger
@@ -62641,6 +62658,37 @@ test "checker: for-await await-using same-name source does not emit TS7022" {
     // types. The TS7022 trigger would otherwise misfire here.
     const s = try newSetup(
         \\// @strict: false
+=======
+test "checker: Map instance type carries Map<K, V> alias display name" {
+    // Mirrors fixture `iterableArrayPattern26` — `new Map([...])`
+    // should preserve the alias-display name so downstream TS2345 /
+    // TS2322 prose can render the type as `Map<string, number>`
+    // rather than collapsing to the structural shape.
+    const s = try newSetup(
+        \\const m = new Map<string, number>();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_display = false;
+    var it = s.checker.alias_display_names.iterator();
+    while (it.next()) |entry| {
+        if (std.mem.indexOf(u8, entry.value_ptr.*, "Map<") != null) {
+            found_display = true;
+        }
+    }
+    try T.expect(found_display);
+}
+
+test "checker: for-await `await using` loop binding suppresses TS7022" {
+    // Mirrors fixture `awaitUsingDeclarationsInForAwaitOf.2` — TS does
+    // NOT emit TS7022 ("implicitly has type 'any' because it is
+    // referenced in its own initializer") for `using` / `await using`
+    // loop bindings because the binding carries an implicit
+    // Disposable/AsyncDisposable contract. The TS2448 "used before
+    // its declaration" diagnostic still fires through a separate
+    // path.
+    const s = try newSetup(
+>>>>>>> 393bc6f9 (fix(ts-parity): tuple rest tail + Map/Set alias display name (round 2))
         \\async function test() {
         \\  for await (await using of of of) {};
         \\}
@@ -62652,6 +62700,7 @@ test "checker: for-await await-using same-name source does not emit TS7022" {
     }
 }
 
+<<<<<<< HEAD
 test "checker: export type specifier in .js virtual section emits TS8006" {
     // Mirrors upstream `exportSpecifiers_js`: `export { type foo }`
     // (or `export type { foo }`) in a `.js` file is syntactically
@@ -62699,6 +62748,8 @@ test "checker: import = require emits TS1202 under module=es2015" {
     try T.expect(found_1202);
 }
 
+=======
+>>>>>>> 393bc6f9 (fix(ts-parity): tuple rest tail + Map/Set alias display name (round 2))
 test "checker: default export merging with namespace and interface anchors at name" {
     // Mirrors upstream `defaultExportsCannotMerge01`: a default
     // exported function + interface (type-only, doesn't conflict) +
