@@ -18890,6 +18890,13 @@ pub const Checker = struct {
         const decl: NodeId = blk: {
             if (kind == .identifier) {
                 const name = self.classExtendsName(extends_expr) orelse return;
+                // A value binding (var/let/const/fn) with the same name
+                // shadows the type for value lookup, which is the lens
+                // a `class … extends X` heritage uses. tsc emits no
+                // TS2314 when `interface Mup<K, V>` is paired with a
+                // `declare var Mup: MupConstructor` — mirrors fixture
+                // `overrideInterfaceProperty.errors.txt` (empty).
+                if (self.findVisibleSameNameValueBinding(extends_expr, name) != null) return;
                 break :blk self.findVisibleNamedTypeDecl(extends_expr, name) orelse return;
             }
             if (kind == .member_access) {
@@ -19006,6 +19013,47 @@ pub const Checker = struct {
     /// from `anchor`, walking the same scope chain
     /// `visibleTypeDeclarationExistsAt` uses but returning the decl
     /// node so callers can introspect type-parameter arity.
+    /// Walk the scope chain above `anchor` looking for a value
+    /// binding (var/let/const/fn/enum) whose name matches `name`.
+    /// Used by the class-heritage TS2314 gate so an interface and a
+    /// same-named constructor variable don't both fire the
+    /// "missing type argument" diagnostic — the heritage resolves
+    /// through the value, not the interface.
+    fn findVisibleSameNameValueBinding(
+        self: *Checker,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+    ) ?NodeId {
+        const anchor_section = self.virtualSectionStartForNode(anchor);
+        var cur: hir_mod.NodeId = self.hir.parentOf(anchor);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k != .block_stmt and k != .namespace_decl) continue;
+            const stmts = if (k == .block_stmt)
+                hir_mod.blockStmts(self.hir, cur)
+            else
+                hir_mod.namespaceBody(self.hir, cur);
+            for (stmts) |raw| {
+                const decl = self.unwrapExportDecl(raw);
+                switch (self.hir.kindOf(decl)) {
+                    .var_decl,
+                    .let_decl,
+                    .const_decl,
+                    .fn_decl,
+                    .fn_expr,
+                    .enum_decl,
+                    => {
+                        if (self.virtualSectionStartForNode(decl) != anchor_section) continue;
+                        const decl_name = self.declarationName(decl) orelse continue;
+                        if (decl_name == name) return decl;
+                    },
+                    else => {},
+                }
+            }
+        }
+        return null;
+    }
+
     fn findVisibleNamedTypeDecl(
         self: *Checker,
         anchor: NodeId,
@@ -56514,6 +56562,31 @@ test "checker: qualified bare generic type reference without defaults emits TS23
         if (d.code == TsCodes.generic_type_requires_args) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: TS2314 suppressed when same-name value shadows generic interface in extends" {
+    // `class extends Mup` resolves through the value binding when an
+    // interface and a same-named variable share the identifier, so
+    // the missing-type-argument check must not fire on the bare
+    // identifier. Mirrors fixture `overrideInterfaceProperty` whose
+    // baseline has zero errors.
+    const s = try newSetup(
+        \\interface Mup<K, V> { readonly size: number; }
+        \\interface MupConstructor {
+        \\  new(): Mup<any, any>;
+        \\  new<K, V>(): Mup<K, V>;
+        \\  readonly prototype: Mup<any, any>;
+        \\}
+        \\declare var Mup: MupConstructor;
+        \\class Sizz extends Mup {
+        \\  get size() { return 0 }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.generic_type_requires_args);
+    }
 }
 
 test "checker: non-generic type reference with type arguments emits TS2315" {
