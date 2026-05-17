@@ -737,6 +737,7 @@ pub fn compileSource(
     defer checker.deinit();
     checker.setModule(c.module);
     checker.setSource(source);
+    checker.setIsDeclarationFile(options.is_declaration_file);
     if (options.external_resolver) |er| checker.setExternalResolver(er);
     if (options.importer_path.len > 0) checker.setImporterPath(options.importer_path);
     if (options.module_resolution.len > 0) checker.setModuleResolution(options.module_resolution);

@@ -1049,6 +1049,15 @@ pub const Checker = struct {
     /// post-processing runs and the diagnostics list is left as-is.
     source: ?[]const u8 = null,
     source_has_virtual_sections: bool = false,
+    /// True when the entire compilation unit is a `.d.ts` /
+    /// `.d.mts` / `.d.cts` declaration file (set from outside via
+    /// `setIsDeclarationFile`). Used by `virtualSectionIsDeclaration
+    /// File` to treat every node as ambient when no per-`@filename:`
+    /// virtual section spells it out. Pairs with the parser's
+    /// `is_declaration_file` flag so single-file `.d.ts` fixtures
+    /// (e.g. `parserReturnStatement1.d.ts`) suppress TS1108 the same
+    /// way virtual-`@filename:`-anchored `.d.ts` sections already do.
+    whole_file_is_declaration_file: bool = false,
     virtual_section_start_cache: std.AutoHashMapUnmanaged(NodeId, usize) = .empty,
     /// 0-based source lines on which a `// @ts-ignore` directive
     /// suppresses diagnostics. Populated by `scanDirectives` before
@@ -1195,6 +1204,15 @@ pub const Checker = struct {
             std.mem.indexOf(u8, source, "@filename:") != null or
             std.mem.indexOf(u8, source, "@Filename:") != null;
         self.virtual_section_start_cache.clearRetainingCapacity();
+    }
+
+    /// Mark the whole compilation unit as a declaration file
+    /// (`.d.ts`/`.d.mts`/`.d.cts`). Driver wires this from the same
+    /// `is_declaration_file` flag it passes to the parser, so single-
+    /// file `.d.ts` fixtures activate the same ambient-context paths
+    /// the virtual-section heuristic already covers.
+    pub fn setIsDeclarationFile(self: *Checker, enabled: bool) void {
+        self.whole_file_is_declaration_file = enabled;
     }
 
     /// Install an external module-resolution hook. The hook is
@@ -2778,6 +2796,7 @@ pub const Checker = struct {
     }
 
     fn virtualSectionIsDeclarationFile(self: *Checker, node: NodeId) bool {
+        if (self.whole_file_is_declaration_file) return true;
         const filename = self.virtualSectionFilenameForNode(node) orelse return false;
         if (std.mem.endsWith(u8, filename, ".d.ts")) return true;
         if (std.mem.endsWith(u8, filename, ".d.mts")) return true;
@@ -61042,6 +61061,21 @@ test "checker: TS2430 suppresses spurious child-string vs parent-number cross-ch
         }
     }
     try T.expectEqual(@as(u32, 0), saw_cross_2430);
+}
+
+test "checker: setIsDeclarationFile suppresses TS1108 for top-level return" {
+    // Single-file `.d.ts` fixtures (e.g. `parserReturnStatement1.d.ts`)
+    // don't carry an `@filename:` marker, so the virtual-section path
+    // can't tell the source is ambient. The driver now propagates
+    // `is_declaration_file` to the checker; verify TS1108 ("'return'
+    // outside function body") is suppressed when that flag is set.
+    const s = try newSetup("return;");
+    defer destroySetup(s);
+    s.checker.setIsDeclarationFile(true);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.return_outside_function);
+    }
 }
 
 test "checker: HTMLCanvasElement is recognized as a built-in DOM global" {
