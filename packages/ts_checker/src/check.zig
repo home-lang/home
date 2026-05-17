@@ -1814,7 +1814,8 @@ pub const Checker = struct {
                                     "Block-scoped variable '{s}' used before its declaration.",
                                     .{name_str},
                                 );
-                                try self.report(fr.source, TsCodes.block_scoped_used_before_decl, msg);
+                                const anchor = self.firstIdentifierReferenceNoNested(fr.source, name) orelse fr.source;
+                                try self.report(anchor, TsCodes.block_scoped_used_before_decl, msg);
                             }
                             // tsc reports TS2481 at the `var` declarator's
                             // identifier with the conflicting name interpolated
@@ -11816,11 +11817,12 @@ pub const Checker = struct {
             if (enclosing == class_name) return;
         }
         const prop_str = self.string_interner.get(prop_name);
-        const class_str = self.string_interner.get(class_name);
+        const class_display = try self.classDisplayName(node, class_name);
+        defer self.gpa.free(class_display);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Property '{s}' is private and only accessible within class '{s}'.",
-            .{ prop_str, class_str },
+            .{ prop_str, class_display },
         );
         // Anchor TS2341 at the property-name position (col 22 of
         // `C.bar`) rather than the head of the access expression
@@ -11833,6 +11835,57 @@ pub const Checker = struct {
             .code = TsCodes.private_member_access,
             .message = msg,
         });
+    }
+
+    fn classDisplayName(
+        self: *Checker,
+        ctx_node: NodeId,
+        class_name: hir_mod.StringId,
+    ) ![]u8 {
+        const base = self.string_interner.get(class_name);
+        const decl = self.findClassDeclByName(ctx_node, class_name);
+        if (decl == hir_mod.none_node_id) {
+            return try self.gpa.dupe(u8, base);
+        }
+        const c = hir_mod.classOf(self.hir, decl);
+        if (c.type_params_len == 0) {
+            return try self.gpa.dupe(u8, base);
+        }
+        const type_params = self.hir.childSlice(c.type_params_start, c.type_params_len);
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        errdefer buf.deinit(self.gpa);
+        try buf.appendSlice(self.gpa, base);
+        try buf.append(self.gpa, '<');
+        var first = true;
+        for (type_params) |tp| {
+            if (self.hir.kindOf(tp) != .type_parameter) continue;
+            const tpp = hir_mod.typeParameterOf(self.hir, tp);
+            if (!first) try buf.appendSlice(self.gpa, ", ");
+            first = false;
+            try buf.appendSlice(self.gpa, self.string_interner.get(tpp.name));
+        }
+        try buf.append(self.gpa, '>');
+        return buf.toOwnedSlice(self.gpa);
+    }
+
+    fn findClassDeclByName(self: *Checker, ctx_node: NodeId, name: hir_mod.StringId) NodeId {
+        const root = self.rootBlockFor(ctx_node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return hir_mod.none_node_id;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            const k = self.hir.kindOf(stmt);
+            const decl = if (k == .class_decl) stmt else blk: {
+                if (k != .export_decl) break :blk hir_mod.none_node_id;
+                const ex = hir_mod.exportOf(self.hir, stmt);
+                if (ex.decl == hir_mod.none_node_id) break :blk hir_mod.none_node_id;
+                if (self.hir.kindOf(ex.decl) != .class_decl) break :blk hir_mod.none_node_id;
+                break :blk ex.decl;
+            };
+            if (decl == hir_mod.none_node_id) continue;
+            const c = hir_mod.classOf(self.hir, decl);
+            if (c.name == hir_mod.none_node_id or self.hir.kindOf(c.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, c.name).name == name) return decl;
+        }
+        return hir_mod.none_node_id;
     }
 
     /// TS2445: emit when `obj.name` reaches a member declared
@@ -17463,7 +17516,9 @@ pub const Checker = struct {
             std.mem.eql(u8, raw, "ThisParameterType") or
             std.mem.eql(u8, raw, "OmitThisParameter") or
             std.mem.eql(u8, raw, "Iterator") or
+            std.mem.eql(u8, raw, "IteratorObject") or
             std.mem.eql(u8, raw, "AsyncIterator") or
+            std.mem.eql(u8, raw, "AsyncIteratorObject") or
             std.mem.eql(u8, raw, "Iterable") or
             std.mem.eql(u8, raw, "AsyncIterable") or
             std.mem.eql(u8, raw, "IterableIterator") or
@@ -20639,7 +20694,9 @@ pub const Checker = struct {
             "Function",
             "PromiseLike",
             "Iterator",
+            "IteratorObject",
             "AsyncIterator",
+            "AsyncIteratorObject",
             "Iterable",
             "AsyncIterable",
             "IterableIterator",
@@ -42644,6 +42701,32 @@ test "checker: private member accessed outside class emits TS2341" {
     try T.expect(found);
 }
 
+test "checker: TS2341 message renders generic class with type-param suffix" {
+    // Mirrors `ClassAndModuleThatMergeWithModulesExportedStaticFunctionUsingClassPrivateStatics`:
+    // `class Foo<T> { private x: number = 1 } new Foo().x` reports
+    // `private and only accessible within class 'Foo<T>'.` — the
+    // class name carries its `<T>` type-parameter suffix.
+    const s = try newSetup(
+        \\class Foo<T> { private x: number = 1; }
+        \\const f = new Foo();
+        \\f.x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_2341 = false;
+    var saw_suffix = false;
+    var saw_plain = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.private_member_access) continue;
+        saw_2341 = true;
+        if (std.mem.indexOf(u8, d.message, "'Foo<T>'") != null) saw_suffix = true;
+        if (std.mem.indexOf(u8, d.message, "'Foo'.") != null) saw_plain = true;
+    }
+    try T.expect(saw_2341);
+    try T.expect(saw_suffix);
+    try T.expect(!saw_plain);
+}
+
 test "checker: private member accessed inside class via this is allowed" {
     const s = try newSetup(
         \\class Foo {
@@ -58166,6 +58249,31 @@ test "checker: TS2448 binding-default forward ref names the referenced variable"
     }
     try T.expect(saw_f_msg);
     try T.expect(!saw_wrong_e_msg);
+}
+
+test "checker: TS2448 for-of inner reference anchors at identifier, not array literal" {
+    // Mirrors `ES5For-of17` / `ES5For-of20` upstream baselines:
+    // `for (let v of [v])` reports TS2448 at the inner `v` (the
+    // referenced identifier), not at the `[` of the array literal.
+    const src =
+        "for (let v of []) {\n" ++
+        "    v;\n" ++
+        "    for (let v of [v]) {\n" ++
+        "        var x = v;\n" ++
+        "    }\n" ++
+        "}\n";
+    const s = try newSetup(src);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    const inner_v_offset: u32 = @intCast(std.mem.indexOf(u8, src, "[v]").? + 1);
+    var saw_at_inner = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.block_scoped_used_before_decl) continue;
+        const anchor_pos: u32 = if (d.pos) |p| p else s.hir.spanOf(d.node).start;
+        if (anchor_pos == inner_v_offset) saw_at_inner = true;
+    }
+    try T.expect(saw_at_inner);
 }
 
 // `for (k in obj)` where `k` has a type-parameter type whose

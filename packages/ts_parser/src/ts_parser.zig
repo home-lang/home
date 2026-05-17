@@ -422,10 +422,38 @@ pub const Parser = struct {
 
     fn expect(self: *Parser, kind: TokenKind, what: []const u8) ParseError!Token {
         if (self.peek().kind != kind) {
-            try self.report("expected ", what);
+            // Upstream tsc emits TS1005 `'X' expected.` whenever the
+            // parser was holding out for a specific punctuator/keyword
+            // and got something else. Detect that shape from `what` so
+            // callers don't have to thread the canonical wording, then
+            // fall back to the Home-internal `expected ...` prose for
+            // diagnostics that name a non-quoted role (e.g.
+            // `qualified-name member`).
+            if (extractLeadingQuotedToken(what)) |tok| {
+                const tok_msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "'{s}' expected.",
+                    .{tok},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .pos = self.peek().span.start,
+                    .line = self.peek().line,
+                    .code = 1005,
+                    .message = tok_msg,
+                });
+            } else {
+                try self.report("expected ", what);
+            }
             return error.UnexpectedToken;
         }
         return self.advance();
+    }
+
+    fn extractLeadingQuotedToken(what: []const u8) ?[]const u8 {
+        if (what.len < 2 or what[0] != '\'') return null;
+        const end = std.mem.indexOfScalarPos(u8, what, 1, '\'') orelse return null;
+        if (end == 1) return null;
+        return what[1..end];
     }
 
     fn report(self: *Parser, prefix: []const u8, detail: []const u8) ParseError!void {
@@ -2937,8 +2965,12 @@ pub const Parser = struct {
                         defer self.generator_depth = prev_generator_depth;
                         const is_constructor_body = name_tok.kind == .kw_constructor;
                         if (is_constructor_body) self.new_target_depth += 1;
+                        self.function_depth += 1;
+                        if (mods.is_async) self.async_function_depth += 1;
                         defer {
                             if (is_constructor_body) self.new_target_depth -= 1;
+                            self.function_depth -= 1;
+                            if (mods.is_async) self.async_function_depth -= 1;
                         }
                         body = try self.parseBlockStatement();
                         try self.reportAmbientClassImplementationAt(body_start.span.start, body_start.line);
@@ -3457,7 +3489,13 @@ pub const Parser = struct {
             if (self.peek().kind == .open_brace) {
                 const prev_generator_depth = self.generator_depth;
                 self.generator_depth = if (is_generator) prev_generator_depth + 1 else 0;
-                defer self.generator_depth = prev_generator_depth;
+                self.function_depth += 1;
+                if (mods.is_async) self.async_function_depth += 1;
+                defer {
+                    self.generator_depth = prev_generator_depth;
+                    self.function_depth -= 1;
+                    if (mods.is_async) self.async_function_depth -= 1;
+                }
                 body = try self.parseBlockStatement();
                 try self.reportAmbientClassImplementation(member_start);
             } else {
@@ -7642,17 +7680,30 @@ pub const Parser = struct {
                     // TS1212 at the keyword position in addition to
                     // the checker-side TS2304. Matches baselines like
                     // `YieldExpression1_es6` / `YieldExpression8_es6`
-                    // / `YieldExpression18_es6`. Skip TS1212 when an
-                    // `*` follows — tsc treats `yield *…` as a yield
-                    // expression form and emits only TS2304 + TS1109
-                    // (e.g. `YieldStarExpression2_es6.errors.txt`).
+                    // / `YieldExpression18_es6`. The `* operand` form
+                    // is treated by tsc as a multiplication of the
+                    // `yield` identifier by the operand, so TS1212
+                    // still fires (mirrors YieldStarExpression1_es6).
+                    // The `*` followed by a terminator is the broken
+                    // yield-star case: TS1109 fires and TS1212 does
+                    // NOT (mirrors YieldStarExpression2_es6).
                     const next_is_star = self.peek().kind == .asterisk;
-                    if (!next_is_star and self.isYieldReservedName(t)) {
+                    var star_operand_missing = false;
+                    if (next_is_star) {
+                        const after_star_kind = self.peekAt(1).kind;
+                        star_operand_missing = after_star_kind == .semicolon or
+                            after_star_kind == .eof or
+                            after_star_kind == .close_paren or
+                            after_star_kind == .close_bracket or
+                            after_star_kind == .close_brace or
+                            after_star_kind == .comma;
+                    }
+                    if (!star_operand_missing and self.isYieldReservedName(t)) {
                         try self.reportCodeAt(t.span.start, t.line, 1212, "Identifier expected. 'yield' is a reserved word in strict mode.");
                     }
                     const id = try self.internToken(t);
                     var ident = try self.builder.addIdentifier(tokenSpan(t), id);
-                    if (self.match(.asterisk)) {
+                    if (star_operand_missing and self.match(.asterisk)) {
                         const err_pos = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else t.span.end;
                         try self.reportCodeAt(err_pos, t.line, 1109, "Expression expected.");
                     }
@@ -13389,6 +13440,81 @@ test "parser: `yield` in a getter accessor body reports TS1163, not TS1212" {
     }
     try T.expectEqual(@as(usize, 1), count_1163);
     try T.expectEqual(@as(usize, 0), count_1212);
+}
+
+test "parser: `yield` in a class method body reports TS1163, not TS1212" {
+    // Mirrors YieldExpression14_es6 — a `yield foo` expression inside
+    // a non-generator class method must emit TS1163. Before the
+    // class-method function_depth fix we routed the keyword through
+    // the top-level-identifier path that emits TS1212 instead.
+    var s = try newTestSetup("class C { foo() { yield foo; } }");
+    defer destroyTestSetup(s);
+
+    s.parser.setTargetEs2015OrLater(true);
+    _ = try s.parser.parseSourceFile();
+    var count_1163: usize = 0;
+    var count_1212: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1163) count_1163 += 1;
+        if (d.code == 1212) count_1212 += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count_1163);
+    try T.expectEqual(@as(usize, 0), count_1212);
+}
+
+test "parser: `yield` in a class constructor body reports TS1163, not TS1212" {
+    // Mirrors YieldExpression12_es6 — `constructor() { yield foo }`.
+    var s = try newTestSetup("class C { constructor() { yield foo; } }");
+    defer destroyTestSetup(s);
+
+    s.parser.setTargetEs2015OrLater(true);
+    _ = try s.parser.parseSourceFile();
+    var count_1163: usize = 0;
+    var count_1212: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1163) count_1163 += 1;
+        if (d.code == 1212) count_1212 += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count_1163);
+    try T.expectEqual(@as(usize, 0), count_1212);
+}
+
+test "parser: top-level `yield * <expr>` emits TS1212, no spurious TS1109" {
+    // Mirrors YieldStarExpression1_es6: `yield * []` at module top
+    // level parses as the multiplication of the `yield` identifier
+    // (reserved in strict mode → TS1212) by the array literal. We
+    // must NOT emit TS1109 for the `*` here — that fires only when
+    // the `*` is followed by a terminator (YieldStarExpression2_es6).
+    var s = try newTestSetup("yield * [];");
+    defer destroyTestSetup(s);
+
+    s.parser.setTargetEs2015OrLater(true);
+    _ = try s.parser.parseSourceFile();
+    var count_1212: usize = 0;
+    var count_1109: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1212) count_1212 += 1;
+        if (d.code == 1109) count_1109 += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count_1212);
+    try T.expectEqual(@as(usize, 0), count_1109);
+}
+
+test "parser: `expect` emits canonical TS1005 with quoted token name" {
+    // Mirrors `invalidSyntaxNamespaceImportWithCommonjs` — `import *`
+    // missing the `as` keyword expects `'as' expected.` (TS1005), not
+    // the Home-internal `expected 'as' in namespace import` (TS1109).
+    var s = try newTestSetup("import * 'a';");
+    defer destroyTestSetup(s);
+
+    _ = s.parser.parseSourceFile() catch {};
+    var saw_canonical = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1005 and std.mem.eql(u8, d.message, "'as' expected.")) {
+            saw_canonical = true;
+        }
+    }
+    try T.expect(saw_canonical);
 }
 
 test "parser: interface can be a class method name" {
