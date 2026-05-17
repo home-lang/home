@@ -51,6 +51,31 @@ pub const cli = struct {
     pub const yarn_commands = @import("cli/list-of-yarn-commands.zig");
 };
 
+// ---- src/jsc/ ----------------------------------------------------------
+// JSC binding surface. Most of this is opaque types + enums until the
+// JSC engine is brought up (Phase 12.2). The leaves we copy now establish
+// the public-facing namespace so callers can spell things correctly.
+pub const jsc = struct {
+    pub const JSPromiseRejectionOperation = @import("jsc/JSPromiseRejectionOperation.zig").JSPromiseRejectionOperation;
+    pub const ScriptExecutionStatus = @import("jsc/ScriptExecutionStatus.zig").ScriptExecutionStatus;
+    pub const SourceType = @import("jsc/SourceType.zig").SourceType;
+    pub const sizes = @import("jsc/sizes.zig");
+    pub const JSRuntimeType = @import("jsc/JSRuntimeType.zig").JSRuntimeType;
+    pub const GetterSetter = @import("jsc/GetterSetter.zig").GetterSetter;
+    pub const StaticExport = @import("jsc/static_export.zig");
+    pub const ErrorCode = @import("jsc/ErrorCode.zig").ErrorCode;
+};
+
+// ---- src/io/ -----------------------------------------------------------
+// Event loop + file poll opaques. The Loop / KeepAlive / FilePoll names
+// are kept so callers can spell their function signatures; full impls
+// land in Phase 12.3.
+pub const io = struct {
+    pub const Loop = @import("io/stub_event_loop.zig").Loop;
+    pub const KeepAlive = @import("io/stub_event_loop.zig").KeepAlive;
+    pub const FilePoll = @import("io/stub_event_loop.zig").FilePoll;
+};
+
 test "home_rt: substrate compiles" {
     try std.testing.expectEqualStrings(
         "fd0b6f1a271fca0b8124b69f230b100f4d636af6",
@@ -95,4 +120,33 @@ test {
     _ = identity_context;
     _ = cli.which_npm_client;
     _ = cli.yarn_commands;
+    _ = jsc;
+    _ = io;
+}
+
+test "home_rt.jsc enums round-trip their tag values" {
+    try std.testing.expectEqual(@as(u32, 0), @intFromEnum(jsc.JSPromiseRejectionOperation.Reject));
+    try std.testing.expectEqual(@as(u32, 1), @intFromEnum(jsc.JSPromiseRejectionOperation.Handle));
+    try std.testing.expectEqual(@as(i32, 0), @intFromEnum(jsc.ScriptExecutionStatus.running));
+    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(jsc.SourceType.Program));
+    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(jsc.SourceType.Module));
+    try std.testing.expectEqual(@as(u16, 0x40), @intFromEnum(jsc.JSRuntimeType.String));
+}
+
+test "home_rt.jsc.sizes exposes generated layout constants" {
+    try std.testing.expectEqual(@as(comptime_int, 6), jsc.sizes.Bun_FFI_PointerOffsetToArgumentsList);
+    try std.testing.expectEqual(@as(comptime_int, 16), jsc.sizes.Bun_FFI_PointerOffsetToTypedArrayVector);
+}
+
+test "home_rt.jsc.ErrorCode round-trips through anyerror" {
+    const err: anyerror = error.OutOfMemory;
+    const code = jsc.ErrorCode.from(err);
+    try std.testing.expectEqual(err, code.toError());
+}
+
+test "home_rt.io exposes the stub event-loop opaques" {
+    // Only check that the names exist; full impl lands in Phase 12.3.
+    _ = io.Loop;
+    _ = io.KeepAlive;
+    _ = io.FilePoll;
 }
