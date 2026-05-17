@@ -10867,7 +10867,7 @@ pub const Checker = struct {
             if (self.bareTypeNodeIsTypeParam(c.extends, type_params)) {
                 try self.report(c.extends, TsCodes.cannot_find_name, "Cannot find name.");
             }
-            try self.mergeExtendedMembers(c.extends, &instance_members, string_idx, number_idx, symbol_idx);
+            try self.mergeExtendedMembers(node, c.extends, &instance_members, string_idx, number_idx, symbol_idx);
             if (try self.classExtendsInstanceType(c.extends)) |parent_t| {
                 const parent_string_idx = self.interner.objectStringIndex(parent_t);
                 const parent_number_idx = self.interner.objectNumberIndex(parent_t);
@@ -13038,6 +13038,7 @@ pub const Checker = struct {
     /// isn't a known class identifier.
     fn mergeExtendedMembers(
         self: *Checker,
+        child_node: NodeId,
         extends_expr: NodeId,
         child_members: *std.ArrayListUnmanaged(types.ObjectMember),
         child_string_idx: TypeId,
@@ -13079,13 +13080,13 @@ pub const Checker = struct {
             if (child_by_name.get(pm.name)) |cm| {
                 if (!(try self.heritageMemberAssignable(cm.type, pm.type))) {
                     const prop_str = self.string_interner.get(pm.name);
-                    const msg = try std.fmt.allocPrint(
-                        self.diag_arena.allocator(),
-                        "Property '{s}' in type is not assignable to the same property in base type.",
-                        .{prop_str},
-                    );
+                    const msg = try self.allocPropertyNotAssignableToBaseMessage(child_node, prop_str, parent_t);
+                    // Anchor at the *child's* property declaration so
+                    // TS2416 matches the upstream column (the property
+                    // name in the derived class), not the `extends`
+                    // clause. Mirrors `apparentTypeSupertype.ts(10,5)`.
                     try self.diagnostics.append(self.gpa, .{
-                        .node = extends_expr,
+                        .node = self.classOrInterfaceMemberNode(child_node, pm.name),
                         .code = TsCodes.property_not_assignable_to_base,
                         .message = msg,
                     });
@@ -13096,6 +13097,50 @@ pub const Checker = struct {
         }
         if (inherited.items.len == 0) return;
         try child_members.insertSlice(self.gpa, 0, inherited.items);
+    }
+
+    /// TS2416 prose: render `Property 'p' in type 'Child<U>' is not
+    /// assignable to the same property in base type 'Base'.` when both
+    /// type names resolve. Falls back to the terse name-less wording
+    /// upstream-compatible when either renderer returns null (e.g.
+    /// anonymous class expressions, exotic intersections), so half-
+    /// formatted prose never escapes. Mirrors `apparentTypeSupertype`,
+    /// `subtypesOfTypeParameter`, etc.
+    fn allocPropertyNotAssignableToBaseMessage(
+        self: *Checker,
+        child_node: NodeId,
+        prop_str: []const u8,
+        parent_t: TypeId,
+    ) ![]u8 {
+        const child_class_name: ?hir_mod.StringId = blk: {
+            const c = hir_mod.classOf(self.hir, child_node);
+            if (c.name == hir_mod.none_node_id) break :blk null;
+            if (self.hir.kindOf(c.name) != .identifier) break :blk null;
+            break :blk hir_mod.identifierOf(self.hir, c.name).name;
+        };
+        const arena = self.diag_arena.allocator();
+        if (child_class_name) |cname| {
+            const child_disp = self.classDisplayName(child_node, cname) catch {
+                return std.fmt.allocPrint(
+                    arena,
+                    "Property '{s}' in type is not assignable to the same property in base type.",
+                    .{prop_str},
+                );
+            };
+            defer self.gpa.free(child_disp);
+            if (try self.allocSimpleTypeName(parent_t)) |parent_name| {
+                return try std.fmt.allocPrint(
+                    arena,
+                    "Property '{s}' in type '{s}' is not assignable to the same property in base type '{s}'.",
+                    .{ prop_str, child_disp, parent_name },
+                );
+            }
+        }
+        return try std.fmt.allocPrint(
+            arena,
+            "Property '{s}' in type is not assignable to the same property in base type.",
+            .{prop_str},
+        );
     }
 
     fn mergeInheritedStaticMembers(
@@ -16252,6 +16297,56 @@ pub const Checker = struct {
         });
     }
 
+    /// Locate the declaring HIR node for the named member of a class
+    /// or interface, so per-property diagnostics (TS2411) anchor at
+    /// the property's own source position rather than the container's
+    /// opening brace. Returns the container node when the member is
+    /// inherited / synthetic with no local declaration.
+    fn classOrInterfaceMemberNode(
+        self: *Checker,
+        container: NodeId,
+        name: hir_mod.StringId,
+    ) NodeId {
+        const kind = self.hir.kindOf(container);
+        const member_ids: []const NodeId = switch (kind) {
+            .class_decl, .class_expr => hir_mod.classMembers(self.hir, container),
+            .interface_decl => hir_mod.interfaceMembers(self.hir, container),
+            else => return container,
+        };
+        for (member_ids) |mid| {
+            const mkind = self.hir.kindOf(mid);
+            if (mkind != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, mid);
+            if (op.is_computed) continue;
+            const key_kind = self.hir.kindOf(op.key);
+            if (key_kind != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, op.key).name == name) return mid;
+        }
+        return container;
+    }
+
+    /// Render a class/interface property's *source-text* name for use
+    /// inside TS2411 prose. tsc preserves the original written form
+    /// (`'2.0'` for `2.0:`, `'"e"'` for `"e":`), but our parser
+    /// interner canonicalises numeric keys (`2`) and strips literal
+    /// quotes (`e`). Re-read the key span from source so the
+    /// diagnostic message matches the baseline. Falls back to the
+    /// canonical name when the source isn't available.
+    fn classOrInterfaceMemberDisplayName(
+        self: *Checker,
+        container: NodeId,
+        name: hir_mod.StringId,
+    ) []const u8 {
+        const canonical = self.string_interner.get(name);
+        const src = self.source orelse return canonical;
+        const member_node = self.classOrInterfaceMemberNode(container, name);
+        if (member_node == container) return canonical;
+        const op = hir_mod.objectPropertyOf(self.hir, member_node);
+        const key_span = self.hir.spanOf(op.key);
+        if (key_span.start >= key_span.end or key_span.end > src.len) return canonical;
+        return src[key_span.start..key_span.end];
+    }
+
     fn checkIndexSignatureMemberCompatibility(
         self: *Checker,
         node: NodeId,
@@ -16266,10 +16361,10 @@ pub const Checker = struct {
                 if (self.isSymbolNamedMember(m.name)) continue;
                 if (m.type == types.Primitive.any or string_idx == types.Primitive.any) continue;
                 if (try self.heritageAssignableDeep(m.type, string_idx)) continue;
-                const prop_str = self.string_interner.get(m.name);
+                const prop_str = self.classOrInterfaceMemberDisplayName(node, m.name);
                 const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, string_idx, "string");
                 try self.diagnostics.append(self.gpa, .{
-                    .node = node,
+                    .node = self.classOrInterfaceMemberNode(node, m.name),
                     .code = TsCodes.property_not_assignable_to_index_type,
                     .message = msg,
                 });
@@ -16280,10 +16375,10 @@ pub const Checker = struct {
                 if (!self.memberNameIsNumeric(m.name)) continue;
                 if (m.type == types.Primitive.any or number_idx == types.Primitive.any) continue;
                 if (try self.heritageAssignableDeep(m.type, number_idx)) continue;
-                const prop_str = self.string_interner.get(m.name);
+                const prop_str = self.classOrInterfaceMemberDisplayName(node, m.name);
                 const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, number_idx, "number");
                 try self.diagnostics.append(self.gpa, .{
-                    .node = node,
+                    .node = self.classOrInterfaceMemberNode(node, m.name),
                     .code = TsCodes.property_not_assignable_to_index_type,
                     .message = msg,
                 });
@@ -40434,7 +40529,13 @@ pub const Checker = struct {
         while (i < total) : (i += 1) {
             if (self.hir.kindOf(i) != .parameter) continue;
             const pp = hir_mod.parameterOf(self.hir, i);
-            if (!pp.flags.is_parameter_property) continue;
+            // `override` on a parameter is upstream-classified as a
+            // parameter-property modifier even when it appears alone:
+            // tsc treats `m(override p: T)` outside a constructor as
+            // TS2369. Our parser sets `is_override` independently of
+            // `is_parameter_property`, so the diagnostic walker has to
+            // accept either flag to match upstream baselines.
+            if (!pp.flags.is_parameter_property and !pp.flags.is_override) continue;
             // Find the enclosing function-like.
             var cur = self.hir.parentOf(i);
             var enclosing: hir_mod.NodeId = hir_mod.none_node_id;
@@ -57671,6 +57772,74 @@ test "checker: subsequent var mismatch TS2403 renders prior and current type nam
     try T.expect(saw_2403);
 }
 
+test "checker: TS2411 anchors at the property declaration not the container" {
+    // Mirrors `stringIndexerConstrainsPropertyDeclarations.ts` —
+    // the per-property mismatch must underline the field name on its
+    // own line, not the class/interface opening brace. Confirms the
+    // diagnostic's HIR `.node` resolves to the `object_property` node.
+    const s = try newSetup(
+        \\class C {
+        \\  [k: string]: string;
+        \\  bad: number;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_2411_on_member = false;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code != TsCodes.property_not_assignable_to_index_type) continue;
+        const node_kind = s.checker.hir.kindOf(diag.node);
+        if (node_kind == .object_property) saw_2411_on_member = true;
+    }
+    try T.expect(saw_2411_on_member);
+}
+
+test "checker: TS2411 preserves the original numeric key text" {
+    // tsc renders `Property '2.0' …` (the source-written form),
+    // not the parser's canonical `'2'`. The fix wires the message
+    // through the source span of the key node.
+    const s = try newSetup(
+        \\class C {
+        \\  [k: number]: string;
+        \\  2.0: number;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_dotted = false;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code != TsCodes.property_not_assignable_to_index_type) continue;
+        if (std.mem.indexOf(u8, diag.message, "Property '2.0'") != null) saw_dotted = true;
+    }
+    try T.expect(saw_dotted);
+}
+
+test "checker: TS2416 anchors at the child property and renders both class names" {
+    // Mirrors `apparentTypeSupertype.ts(10,5)` — the diagnostic must
+    // underline the *child's* property declaration (so the column
+    // matches tsc) and the prose must name both `Derived<U>` and
+    // `Base`. Pre-fix we anchored at the extends clause and dropped
+    // the type names ("Property 'x' in type is not assignable …").
+    const s = try newSetup(
+        \\class Base { x!: string; }
+        \\class Derived<U extends String> extends Base { x!: U; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_on_member_with_names = false;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code != TsCodes.property_not_assignable_to_base) continue;
+        const node_kind = s.checker.hir.kindOf(diag.node);
+        if (node_kind == .object_property and
+            std.mem.indexOf(u8, diag.message, "in type 'Derived<U>'") != null and
+            std.mem.indexOf(u8, diag.message, "base type 'Base'") != null)
+        {
+            saw_on_member_with_names = true;
+        }
+    }
+    try T.expect(saw_on_member_with_names);
+}
+
 test "checker: TS2411 renders prop and index type names" {
     // tsc baseline shape:
     //   Property 's' of type 'string' is not assignable to 'string' index type 'number'.
@@ -58163,6 +58332,47 @@ test "checker: TS2369 does NOT fire on parameter property in constructor" {
     const s = try newSetup(
         \\class C {
         \\  constructor(public x: number, private readonly y: string) {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.param_property_outside_ctor);
+    }
+}
+
+test "checker: TS2369 fires on lone `override` parameter in non-constructor method" {
+    // Mirrors conformance fixture `overrideParameterProperty.ts` line
+    // `m(override p1: "hello") {}` — tsc classifies `override` as a
+    // parameter-property modifier, so it must trip TS2369 outside a
+    // constructor body even when no accessibility modifier is paired
+    // with it. The parser sets `is_override` independently of
+    // `is_parameter_property`, so the checker walker has to accept
+    // either flag.
+    const s = try newSetup(
+        \\class Base { p1!: string; }
+        \\class C extends Base {
+        \\  constructor() { super(); }
+        \\  m(override p1: "hello") {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var hits: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.param_property_outside_ctor) hits += 1;
+    }
+    try T.expect(hits >= 1);
+}
+
+test "checker: TS2369 does NOT fire on `override` parameter property inside constructor" {
+    // Counter-test for the override carve-out: inside a constructor,
+    // `override` may pair with accessibility modifiers (or stand
+    // alone) and must not produce TS2369.
+    const s = try newSetup(
+        \\class Base { p1!: string; }
+        \\class C extends Base {
+        \\  constructor(override p1: "hello") { super(); }
         \\}
     );
     defer destroySetup(s);
