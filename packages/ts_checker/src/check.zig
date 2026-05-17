@@ -288,6 +288,13 @@ pub const TsCodes = struct {
     pub const namespace_as_value: u32 = 2708;
     pub const self_referenced_type_annotation: u32 = 2502;
     pub const namespace_before_merged_function: u32 = 2434;
+    /// TS2433 — cross-file variant of TS2434. Emitted when a
+    /// nested namespace member `X` exists in one virtual section
+    /// of a merged outer namespace, and a class/function member
+    /// `X` lives in another virtual section of the same merged
+    /// outer namespace. tsc anchors the diagnostic at the
+    /// nested namespace's *name*.
+    pub const namespace_in_different_file: u32 = 2433;
     pub const import_conflicts_with_local: u32 = 2440;
     pub const generic_type_requires_args: u32 = 2314;
     pub const type_does_not_satisfy_constraint: u32 = 2344;
@@ -2293,6 +2300,83 @@ pub const Checker = struct {
                     }
                 }
                 try self.checkNamespaceFunctionMergeOrder(hir_mod.namespaceBody(self.hir, node));
+            }
+        }
+        try self.checkNamespaceCrossFileMerge(stmts);
+    }
+
+    /// TS2433 — when a top-level (or sibling) namespace `A` is
+    /// declared in two different virtual sections (merged), any
+    /// nested namespace member `X` in one section and any nested
+    /// class/function `X` in the other section are NOT a valid
+    /// merge (declaration merging across files is only allowed
+    /// for namespaces themselves). tsc reports TS2433 at the
+    /// earlier section's nested namespace name.
+    fn checkNamespaceCrossFileMerge(self: *Checker, stmts: []const NodeId) CheckError!void {
+        // Group sibling namespace declarations with the same name
+        // and different virtual-section starts. We only need to
+        // run this when virtual sections are present at all.
+        if (self.source == null or !self.sourceHasVirtualFilenameSections()) return;
+        for (stmts, 0..) |raw_a, i| {
+            const ns_a = self.unwrapExportDecl(raw_a);
+            if (ns_a == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(ns_a) != .namespace_decl) continue;
+            if (self.namespaceIsAmbient(ns_a)) continue;
+            const name_a = self.declarationName(ns_a) orelse continue;
+            const section_a = self.virtualSectionStartForNode(ns_a);
+            for (stmts[i + 1 ..]) |raw_b| {
+                const ns_b = self.unwrapExportDecl(raw_b);
+                if (ns_b == hir_mod.none_node_id) continue;
+                if (self.hir.kindOf(ns_b) != .namespace_decl) continue;
+                if (self.namespaceIsAmbient(ns_b)) continue;
+                const name_b = self.declarationName(ns_b) orelse continue;
+                if (name_a != name_b) continue;
+                const section_b = self.virtualSectionStartForNode(ns_b);
+                if (section_a == section_b) continue;
+                try self.reportCrossFileNamespaceMembers(
+                    hir_mod.namespaceBody(self.hir, ns_a),
+                    hir_mod.namespaceBody(self.hir, ns_b),
+                );
+                try self.reportCrossFileNamespaceMembers(
+                    hir_mod.namespaceBody(self.hir, ns_b),
+                    hir_mod.namespaceBody(self.hir, ns_a),
+                );
+            }
+        }
+    }
+
+    /// For each nested namespace `X` in `ns_body` whose sibling
+    /// merged namespace in another file (`other_body`) exposes a
+    /// class/function `X`, emit TS2433 at the nested namespace
+    /// name in `ns_body`.
+    fn reportCrossFileNamespaceMembers(
+        self: *Checker,
+        ns_body: []const NodeId,
+        other_body: []const NodeId,
+    ) CheckError!void {
+        for (ns_body) |raw_member| {
+            const member = self.unwrapExportDecl(raw_member);
+            if (member == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(member) != .namespace_decl) continue;
+            if (self.namespaceIsAmbient(member)) continue;
+            const member_name = self.declarationName(member) orelse continue;
+            for (other_body) |raw_other| {
+                const other = self.unwrapExportDecl(raw_other);
+                if (other == hir_mod.none_node_id) continue;
+                const other_kind = self.hir.kindOf(other);
+                const is_fn_or_class = other_kind == .fn_decl or other_kind == .fn_expr or
+                    other_kind == .class_decl or other_kind == .class_expr;
+                if (!is_fn_or_class) continue;
+                const other_name = self.declarationName(other) orelse continue;
+                if (other_name != member_name) continue;
+                const name_pos = self.declarationNameSpanStart(member);
+                try self.reportAt(
+                    member,
+                    name_pos,
+                    TsCodes.namespace_in_different_file,
+                    "A namespace declaration cannot be in a different file from a class or function with which it is merged.",
+                );
+                break;
             }
         }
     }
@@ -23274,6 +23358,20 @@ pub const Checker = struct {
         return null;
     }
 
+    /// True when `t` is the instance type produced for a `class X { … }`
+    /// declaration (i.e. is registered in `class_instance_types`).
+    /// Used as a gate for inheriting `Object.prototype` members
+    /// (`toString`, `hasOwnProperty`, …) so plain object literals
+    /// stay strict but class instances pick up the inherited shape.
+    fn typeIsClassInstance(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        var it = self.class_instance_types.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.* == t) return true;
+        }
+        return false;
+    }
+
     fn declaredInterfaceMember(self: *Checker, interface_name: []const u8, member_name: hir_mod.StringId) CheckError!?TypeId {
         const id = self.string_interner.intern(interface_name) catch return error.OutOfMemory;
         const iface_t = self.type_names.get(id) orelse return null;
@@ -24921,6 +25019,16 @@ pub const Checker = struct {
                     if (self.memberAccessObjectIsGlobalThisThis(m.object)) {
                         try self.reportGlobalThisNoIndexSignature(node);
                         break :blk types.Primitive.any;
+                    }
+                    // Class instances inherit Object.prototype members
+                    // (`toString`, `hasOwnProperty`, …). Only class
+                    // instance types pick this up — plain object types
+                    // still report TS2339 to match tsc's strictness on
+                    // structural shapes.
+                    if (self.typeIsClassInstance(access_obj_t)) {
+                        if (try self.broadObjectPrototypeMember(m.name)) |t| {
+                            break :blk try self.optionalChainResult(t, member_is_optional_chain);
+                        }
                     }
                     try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
                 } else if (self.interner.pool.flagsOf(access_obj_t).is_intersection) {
@@ -59243,4 +59351,24 @@ test "checker: TS2347 suppressed when callee has TS2339" {
     }
     try T.expect(saw_2339 >= 1);
     try T.expectEqual(@as(u32, 0), saw_2347);
+}
+
+test "checker: class instance member access inherits Object prototype" {
+    // `class C {}` instances pick up `toString`, `hasOwnProperty`, …
+    // from `Object.prototype` — tsc accepts these without TS2339.
+    // Mirrors upstream `classAppearsToHaveMembersOfObject`.
+    const s = try newSetup(
+        \\class C { foo: string = ""; }
+        \\var c: C = new C();
+        \\var r = c.toString();
+        \\var r2 = c.hasOwnProperty('');
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_does_not_exist) {
+            try T.expect(std.mem.indexOf(u8, d.message, "toString") == null);
+            try T.expect(std.mem.indexOf(u8, d.message, "hasOwnProperty") == null);
+        }
+    }
 }

@@ -4555,10 +4555,16 @@ pub const Parser = struct {
         // Destructuring binding (`const { a } = obj`, `const [b] = arr`)
         // stores the pattern in the var-decl's `name` slot in the same
         // way parameters stash an `object_pattern` / `array_pattern`.
+        // `name_list_was_empty` tracks the TS1123 path so the TS1155
+        // "'const' declarations must be initialized." follow-on is
+        // suppressed — tsc only reports the empty-list diagnostic on
+        // fixtures like `VariableDeclaration1_es6` (`const` alone).
+        var name_list_was_empty = false;
         const name_node: NodeId = if (self.peek().kind == .semicolon or self.peek().kind == .eof) blk: {
             const empty_pos = start.span.end;
             try self.reportCodeAt(empty_pos, start.line, 1123, "Variable declaration list cannot be empty.");
             const empty_id = self.interner.intern("") catch return error.OutOfMemory;
+            name_list_was_empty = true;
             break :blk try self.builder.addIdentifier(.{ .start = empty_pos, .end = empty_pos }, empty_id);
         } else if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
             break :blk try self.parseBindingPattern();
@@ -4588,12 +4594,15 @@ pub const Parser = struct {
         }
         try self.recoverRegexVariableDeclarationTail(init_node);
         const is_ambient_decl = self.isAmbientContextAt(start.span.start);
-        if (decl_kind == .const_decl and init_node == hir_mod.none_node_id and !is_ambient_decl) {
+        if (decl_kind == .const_decl and init_node == hir_mod.none_node_id and !is_ambient_decl and !name_list_was_empty) {
             // `const {}` and `const []` already raise TS1182
             // ("A destructuring declaration must have an
             // initializer.") from the checker; tsc does not
             // additionally surface the TS1155 ("must be
             // initialized") so we suppress the duplicate here.
+            // Similarly, `const` with no bindings already raises
+            // TS1123 (empty declaration list); suppressing TS1155
+            // here matches tsc on `VariableDeclaration1_es6`.
             const name_kind = self.hir.kindOf(name_node);
             if (name_kind != .object_pattern and name_kind != .array_pattern) {
                 try self.reportCodeAt(self.hir.spanOf(name_node).start, start.line, 1155, "'const' declarations must be initialized.");
