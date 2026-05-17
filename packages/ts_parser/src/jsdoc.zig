@@ -44,14 +44,25 @@ pub const TagKind = enum {
 pub const Tag = struct {
     kind: TagKind,
     /// Raw text of the type expression between `{` and `}`. May be
-    /// empty if the tag carries no type annotation.
+    /// empty if the tag carries no type annotation. The trailing `=`
+    /// optional-suffix marker (`{number=}`) is stripped — see
+    /// `optional` below.
     type_text: []const u8,
     /// Identifier name on the tag (`@param NAME`, `@template NAME`,
-    /// etc.). Empty when not applicable.
+    /// etc.). Empty when not applicable. For `@param {T} [name]` and
+    /// `@param {T} [name=default]` the brackets are stripped and the
+    /// inner identifier is exposed here.
     name: []const u8,
     /// Free-form description trailing the tag. Empty when not
     /// present.
     description: []const u8,
+    /// True for `@param` declarations marked optional via either the
+    /// `{T=}` type-suffix or `[name]` / `[name=default]` bracket
+    /// forms. Mirrors the JSDoc spec used by upstream tsc.
+    optional: bool = false,
+    /// Captured default-value expression when the source used the
+    /// `@param {T} [name=DEFAULT]` form. Empty otherwise.
+    default_text: []const u8 = "",
 };
 
 /// Parse a single JSDoc comment block (the bytes *between* `/**`
@@ -111,25 +122,52 @@ fn parseLine(line: []const u8) ?Tag {
         .other;
     // Optional `{T}` type expression.
     var type_text: []const u8 = "";
+    var optional = false;
     if (rest.len > 0 and rest[0] == '{') {
         const end = matchBalancedBrace(rest);
         if (end == 0) return null;
         type_text = rest[1 .. end - 1];
         rest = std.mem.trimStart(u8, rest[end..], " \t");
+        // JSDoc `{T=}` form: trailing `=` inside the braces marks the
+        // parameter as optional. Strip the marker so downstream type
+        // resolution sees the plain `T`.
+        if (type_text.len > 0 and type_text[type_text.len - 1] == '=') {
+            optional = true;
+            type_text = std.mem.trimEnd(u8, type_text[0 .. type_text.len - 1], " \t");
+        }
     }
-    // Optional name token.
+    // Optional name token. `@param`, `@template`, `@typedef` all
+    // carry a trailing identifier. `@param` additionally supports
+    // the `[name]` / `[name=default]` bracket forms to mark optional
+    // parameters.
     var name_text: []const u8 = "";
+    var default_text: []const u8 = "";
     if (kind == .param_tag or kind == .template_tag or kind == .typedef_tag) {
-        var m: usize = 0;
-        while (m < rest.len and isIdentChar(rest[m])) m += 1;
-        name_text = rest[0..m];
-        rest = std.mem.trimStart(u8, rest[m..], " \t");
+        if (kind == .param_tag and rest.len > 0 and rest[0] == '[') {
+            const close = std.mem.indexOfScalar(u8, rest, ']') orelse return null;
+            const inner = rest[1..close];
+            optional = true;
+            if (std.mem.indexOfScalar(u8, inner, '=')) |eq| {
+                name_text = std.mem.trim(u8, inner[0..eq], " \t");
+                default_text = std.mem.trim(u8, inner[eq + 1 ..], " \t");
+            } else {
+                name_text = std.mem.trim(u8, inner, " \t");
+            }
+            rest = std.mem.trimStart(u8, rest[close + 1 ..], " \t");
+        } else {
+            var m: usize = 0;
+            while (m < rest.len and isIdentChar(rest[m])) m += 1;
+            name_text = rest[0..m];
+            rest = std.mem.trimStart(u8, rest[m..], " \t");
+        }
     }
     return .{
         .kind = kind,
         .type_text = type_text,
         .name = name_text,
         .description = rest,
+        .optional = optional,
+        .default_text = default_text,
     };
 }
 
@@ -242,4 +280,74 @@ test "jsdoc: unrecognized tag preserved as .other" {
     defer T.allocator.free(tags);
     try T.expectEqual(@as(usize, 1), tags.len);
     try T.expectEqual(TagKind.other, tags[0].kind);
+}
+
+test "jsdoc: @param with bracket-optional name" {
+    const body =
+        \\ * @param {string} [s]
+    ;
+    const tags = try parse(T.allocator, body);
+    defer T.allocator.free(tags);
+    try T.expectEqual(@as(usize, 1), tags.len);
+    try T.expectEqual(TagKind.param_tag, tags[0].kind);
+    try T.expectEqualStrings("string", tags[0].type_text);
+    try T.expectEqualStrings("s", tags[0].name);
+    try T.expect(tags[0].optional);
+    try T.expectEqualStrings("", tags[0].default_text);
+}
+
+test "jsdoc: @param with bracket-default expression" {
+    const body =
+        \\ * @param {number} [r=101] explanation
+    ;
+    const tags = try parse(T.allocator, body);
+    defer T.allocator.free(tags);
+    try T.expectEqual(@as(usize, 1), tags.len);
+    try T.expectEqual(TagKind.param_tag, tags[0].kind);
+    try T.expectEqualStrings("number", tags[0].type_text);
+    try T.expectEqualStrings("r", tags[0].name);
+    try T.expect(tags[0].optional);
+    try T.expectEqualStrings("101", tags[0].default_text);
+    try T.expectEqualStrings("explanation", tags[0].description);
+}
+
+test "jsdoc: @param with type-suffix `=` optional marker" {
+    const body =
+        \\ * @param {number=} q
+    ;
+    const tags = try parse(T.allocator, body);
+    defer T.allocator.free(tags);
+    try T.expectEqual(@as(usize, 1), tags.len);
+    try T.expectEqual(TagKind.param_tag, tags[0].kind);
+    try T.expectEqualStrings("number", tags[0].type_text);
+    try T.expectEqualStrings("q", tags[0].name);
+    try T.expect(tags[0].optional);
+}
+
+test "jsdoc: @param plain name is not optional" {
+    const body =
+        \\ * @param {number} a
+    ;
+    const tags = try parse(T.allocator, body);
+    defer T.allocator.free(tags);
+    try T.expectEqual(@as(usize, 1), tags.len);
+    try T.expectEqualStrings("a", tags[0].name);
+    try T.expect(!tags[0].optional);
+}
+
+test "jsdoc: bracket-optional mixed with required parameters keeps each tag distinct" {
+    const body =
+        \\ * @param {number} a
+        \\ * @param {number} [b]
+        \\ * @param {number} c
+    ;
+    const tags = try parse(T.allocator, body);
+    defer T.allocator.free(tags);
+    try T.expectEqual(@as(usize, 3), tags.len);
+    try T.expectEqualStrings("a", tags[0].name);
+    try T.expect(!tags[0].optional);
+    try T.expectEqualStrings("b", tags[1].name);
+    try T.expect(tags[1].optional);
+    try T.expectEqualStrings("c", tags[2].name);
+    try T.expect(!tags[2].optional);
 }
