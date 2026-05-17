@@ -1996,6 +1996,18 @@ pub const Parser = struct {
 
     fn parseFunctionDeclaration(self: *Parser, require_name: bool) ParseError!NodeId {
         const start = self.advance(); // function
+        // TS1046: A top-level `function` in a `.d.ts` file without a
+        // leading `declare` / `export` modifier is invalid. Anchored
+        // at the `function` keyword to match upstream tsc's column on
+        // `parserFunctionDeclaration2.d.ts(1,1)`.
+        if (self.isAmbientContextAt(start.span.start) and
+            self.block_depth == 0 and
+            self.namespace_depth == 0 and
+            self.ambient_depth == 0 and
+            !self.in_export_declaration)
+        {
+            try self.reportCodeAt(start.span.start, start.line, 1046, "Top-level declarations in .d.ts files must start with either a 'declare' or 'export' modifier.");
+        }
         // Capture the asterisk position so TS1221/TS1222 can be reported
         // at the `*` token (mirrors upstream tsc spans for ambient and
         // overload-as-generator diagnostics on fixtures like
@@ -3868,6 +3880,18 @@ pub const Parser = struct {
 
     fn parseEnumDeclaration(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // enum
+        // TS1046: A top-level `enum` in a `.d.ts` file without a
+        // leading `declare` / `export` modifier is invalid. Anchored
+        // at the `enum` keyword to match upstream tsc's column on
+        // `parserEnumDeclaration3.d.ts(1,1)`.
+        if (self.isAmbientContextAt(start.span.start) and
+            self.block_depth == 0 and
+            self.namespace_depth == 0 and
+            self.ambient_depth == 0 and
+            !self.in_export_declaration)
+        {
+            try self.reportCodeAt(start.span.start, start.line, 1046, "Top-level declarations in .d.ts files must start with either a 'declare' or 'export' modifier.");
+        }
         const name_tok = if (self.peek().kind == .identifier or self.peek().kind.isContextualKeyword())
             self.advance()
         else if (isReservedBindingNameToken(self.peek().kind)) blk: {
@@ -3954,6 +3978,19 @@ pub const Parser = struct {
 
     fn parseNamespaceDeclaration(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // namespace / module
+        // TS1046: A top-level `namespace` / `module` in a `.d.ts` file
+        // without a leading `declare` / `export` modifier is invalid.
+        // Anchored at the `namespace` / `module` keyword to match
+        // upstream tsc's column on
+        // `parserModuleDeclaration{1,2,4}.d.ts(1,1)`.
+        if (self.isAmbientContextAt(start.span.start) and
+            self.block_depth == 0 and
+            self.namespace_depth == 0 and
+            self.ambient_depth == 0 and
+            !self.in_export_declaration)
+        {
+            try self.reportCodeAt(start.span.start, start.line, 1046, "Top-level declarations in .d.ts files must start with either a 'declare' or 'export' modifier.");
+        }
         const name_tok = if (self.peek().kind == .string_literal)
             self.advance()
         else

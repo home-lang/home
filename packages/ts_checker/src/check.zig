@@ -60169,3 +60169,4 @@ test "checker: constructor-type (new (x: U) => U) walks parameter annotations" {
 
 
 
+
