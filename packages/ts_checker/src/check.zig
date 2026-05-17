@@ -29643,7 +29643,14 @@ pub const Checker = struct {
         // Module-level fallback.
         if (self.module) |module| {
             if (!self.isDeclNameSlot(node) and self.moduleNameIsNamespaceOnlyValue(module, id.name)) {
-                self.reportNamespaceAsValue(node, id.name) catch {};
+                // `export = N;` where `N` is a namespace is the
+                // CommonJS namespace-export form; tsc does not
+                // flag it with TS2708 since the assignment targets
+                // the module shape, not a runtime value slot.
+                if (!self.identifierIsExportEqualsTarget(node)) {
+                    std.debug.print("TS2708-fire node={} parent={} parent_kind={any}\n", .{ node, self.hir.parentOf(node), if (self.hir.parentOf(node) != hir_mod.none_node_id) self.hir.kindOf(self.hir.parentOf(node)) else .none });
+                    self.reportNamespaceAsValue(node, id.name) catch {};
+                }
                 return types.Primitive.any;
             }
             if (module.root.lookup(id.name)) |sym| {
@@ -29993,6 +30000,25 @@ pub const Checker = struct {
             .code = TsCodes.namespace_as_value,
             .message = msg,
         });
+    }
+
+    /// True when `node` is the target identifier of an
+    /// `export = <ident>;` statement. The parser models export
+    /// assignment as an `export_decl` whose `decl` slot points
+    /// directly at the assigned expression (no `from` module,
+    /// no named specifiers). Used to suppress TS2708 — a CJS
+    /// namespace export is allowed even when the named binding
+    /// has no runtime value.
+    fn identifierIsExportEqualsTarget(self: *Checker, node: NodeId) bool {
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(parent) != .export_decl) return false;
+        const ex = hir_mod.exportOf(self.hir, parent);
+        if (ex.decl != node) return false;
+        if (ex.named_len != 0) return false;
+        if (ex.is_default) return false;
+        const module_str = self.string_interner.get(ex.module);
+        return module_str.len == 0;
     }
 
     /// Does this name refer to a class declaration with one or more
@@ -59270,17 +59296,23 @@ test "checker: class instance member access inherits Object prototype" {
     // from `Object.prototype` — tsc accepts these without TS2339.
     // Mirrors upstream `classAppearsToHaveMembersOfObject`.
     const s = try newSetup(
-        \\class C { foo: string = ""; }
-        \\var c: C = new C();
+        \\class C { foo: string; }
+        \\var c: C;
         \\var r = c.toString();
         \\var r2 = c.hasOwnProperty('');
+        \\var o: Object = c;
+        \\var o2: {} = c;
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
+    var saw_tostring_2339 = false;
+    var saw_hasown_2339 = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.property_does_not_exist) {
-            try T.expect(std.mem.indexOf(u8, d.message, "toString") == null);
-            try T.expect(std.mem.indexOf(u8, d.message, "hasOwnProperty") == null);
+            if (std.mem.indexOf(u8, d.message, "toString") != null) saw_tostring_2339 = true;
+            if (std.mem.indexOf(u8, d.message, "hasOwnProperty") != null) saw_hasown_2339 = true;
         }
     }
+    try T.expect(!saw_tostring_2339);
+    try T.expect(!saw_hasown_2339);
 }
