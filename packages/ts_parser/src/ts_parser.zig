@@ -6932,13 +6932,30 @@ pub const Parser = struct {
         // token when `import(<non-string>)` appears in type position.
         // Mirror that exact code+phrasing so baselines line up
         // (`importTypeNested`, `importTypeNonString`,
-        // `importTypeNestedNoRef`).
-        if (self.peek().kind != .string_literal) {
+        // `importTypeNestedNoRef`). When the specifier is anything
+        // other than a string literal, emit TS1141 at the offending
+        // token but continue parsing past the `(...)` so downstream
+        // type positions can still be checked. Mirrors tsc — which
+        // emits a TS1141 per offending `import(T)` rather than
+        // bailing the whole file (`importTypeGeneric.ts`).
+        const specifier_is_invalid = self.peek().kind != .string_literal;
+        if (specifier_is_invalid) {
             const tok = self.peek();
             try self.reportCodeAt(tok.span.start, tok.line, 1141, "String literal expected.");
-            return error.UnexpectedToken;
+            // Skip the specifier expression up to the matching `)` so
+            // the qualifier / type-argument tail of this `import(...)`
+            // is still parsed (the resulting type is morally `any`).
+            var depth: i32 = 0;
+            while (self.peek().kind != .eof) {
+                if (depth == 0 and self.peek().kind == .close_paren) break;
+                const k = self.peek().kind;
+                if (k == .open_paren or k == .open_brace or k == .open_bracket) depth += 1;
+                if ((k == .close_paren or k == .close_brace or k == .close_bracket) and depth > 0) depth -= 1;
+                _ = self.advance();
+            }
+        } else {
+            _ = self.advance();
         }
-        _ = self.advance();
         if (self.match(.comma)) {
             var depth: i32 = 0;
             while (self.peek().kind != .eof) {
@@ -6987,6 +7004,20 @@ pub const Parser = struct {
         }
 
         const end_pos = self.tokens[self.cursor - 1].span.end;
+        // When the module specifier was invalid (already reported as
+        // TS1141), discard the parsed qualifier/type-args and resolve
+        // the whole `import(<bad>).A.B<T>` to `any`. tsc treats the
+        // entire reference as opaque so trailing identifiers don't
+        // chain into TS2304 / TS2503 noise (`importTypeGeneric.ts`).
+        if (specifier_is_invalid) {
+            const any_id = self.interner.intern("any") catch return error.OutOfMemory;
+            return try self.builder.addTypeRef(
+                .{ .start = import_tok.span.start, .end = end_pos },
+                any_id,
+                &.{},
+                &.{},
+            );
+        }
         return try self.builder.addTypeRef(
             .{ .start = import_tok.span.start, .end = end_pos },
             name_id,
@@ -12040,6 +12071,26 @@ test "parser: import type non-string emits TS1141" {
         if (d.code == 1141 and std.mem.eql(u8, d.message, "String literal expected.")) saw_1141 = true;
     }
     try T.expect(saw_1141);
+}
+
+// When a source file contains multiple `import(<non-string>)` type
+// references, the parser must emit one TS1141 per offending site
+// rather than bailing out after the first. Mirrors tsc on
+// `importTypeGeneric.ts` which reports `usage.ts(1,67)` AND
+// `usage.ts(5,72)`.
+test "parser: import type non-string recovers and emits one TS1141 per site" {
+    var s = try newTestSetup(
+        \\export function f<T extends string>(): import(T).Foo { return null as any; }
+        \\export function g<T extends string>(): import(T).Foo["a"] { return null as any; }
+    );
+    defer destroyTestSetup(s);
+
+    _ = s.parser.parseSourceFile() catch {};
+    var ts1141_count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1141 and std.mem.eql(u8, d.message, "String literal expected.")) ts1141_count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), ts1141_count);
 }
 
 test "parser: import type alias reports diagnostic" {
