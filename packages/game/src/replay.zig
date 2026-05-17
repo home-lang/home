@@ -2,6 +2,7 @@
 // Record and playback game states and inputs
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 // ============================================================================
 // Zig 0.16 Compatibility - Time Helper
@@ -9,8 +10,15 @@ const std = @import("std");
 
 /// Get current time in milliseconds (Zig 0.16 compatible)
 fn getMilliTimestamp() i64 {
-    const instant = std.time.Instant.now() catch return 0;
-    return @intCast(@as(i128, instant.timestamp.sec) * 1000 + @divFloor(instant.timestamp.nsec, 1_000_000));
+    if (comptime builtin.os.tag == .linux) {
+        var ts: std.os.linux.timespec = .{ .sec = 0, .nsec = 0 };
+        _ = std.os.linux.clock_gettime(.MONOTONIC, &ts);
+        return @intCast(@as(i128, ts.sec) * 1000 + @divFloor(ts.nsec, 1_000_000));
+    }
+
+    var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+    return @intCast(@as(i128, ts.sec) * 1000 + @divFloor(ts.nsec, 1_000_000));
 }
 
 // ============================================================================
@@ -138,8 +146,8 @@ pub const ReplayRecording = struct {
         const self = try allocator.create(ReplayRecording);
         self.* = ReplayRecording{
             .header = ReplayHeader{},
-            .inputs = .{},
-            .snapshots = .{},
+            .inputs = .empty,
+            .snapshots = .empty,
             .metadata = std.StringHashMap([]const u8).init(allocator),
             .allocator = allocator,
             .current_frame = 0,

@@ -18,6 +18,7 @@ const std = @import("std");
 const assets = @import("game_assets");
 const replay = @import("game_replay");
 const mods = @import("game_mods");
+pub const deterministic = @import("game_deterministic");
 
 // Note: Additional submodules are available as separate packages:
 // - game_loop, game_pathfinding, game_ai, game_network, game_ecs
@@ -154,7 +155,7 @@ pub const InputState = struct {
     keys: std.AutoHashMap(u32, bool),
     mouse_x: i32 = 0,
     mouse_y: i32 = 0,
-    mouse_buttons: [5]bool = [_]bool{false} ** 5,
+    mouse_buttons: [5]bool = .{ false, false, false, false, false },
     mouse_wheel_x: f32 = 0,
     mouse_wheel_y: f32 = 0,
     allocator: std.mem.Allocator,

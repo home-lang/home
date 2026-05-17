@@ -440,6 +440,7 @@ pub fn build(b: *std.Build) void {
     const game_replay_pkg = createPackage(b, "packages/game/src/replay.zig", target, optimize, zig_test_framework);
     const game_mods_pkg = createPackage(b, "packages/game/src/mods.zig", target, optimize, zig_test_framework);
     const game_loop_pkg = createPackage(b, "packages/game/src/game_loop.zig", target, optimize, zig_test_framework);
+    const game_deterministic_pkg = createPackage(b, "packages/game/src/deterministic.zig", target, optimize, zig_test_framework);
     const game_ai_pkg = createPackage(b, "packages/game/src/ai.zig", target, optimize, zig_test_framework);
     const game_ecs_pkg = createPackage(b, "packages/game/src/ecs.zig", target, optimize, zig_test_framework);
     const game_network_pkg = createPackage(b, "packages/game/src/network.zig", target, optimize, zig_test_framework);
@@ -449,6 +450,7 @@ pub fn build(b: *std.Build) void {
     game_pkg.addImport("game_assets", game_assets_pkg);
     game_pkg.addImport("game_replay", game_replay_pkg);
     game_pkg.addImport("game_mods", game_mods_pkg);
+    game_pkg.addImport("game_deterministic", game_deterministic_pkg);
 
     // pathfinding depends on game (for Vec2)
     const game_pathfinding_pkg = createPackage(b, "packages/game/src/pathfinding.zig", target, optimize, zig_test_framework);
@@ -915,6 +917,23 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_cloud_tests.step, test_filter, "cloud");
     dependOnTest(test_step, &run_mac_tests.step, test_filter, "mac");
     dependOnTest(test_step, &run_tpm_tests.step, test_filter, "tpm");
+
+    // Game package tests
+    const game_loop_tests = b.addTest(.{ .root_module = game_loop_pkg });
+    const run_game_loop_tests = b.addRunArtifact(game_loop_tests);
+    dependOnTest(test_step, &run_game_loop_tests.step, test_filter, "game_loop");
+
+    const game_deterministic_tests = b.addTest(.{ .root_module = game_deterministic_pkg });
+    const run_game_deterministic_tests = b.addRunArtifact(game_deterministic_tests);
+    dependOnTest(test_step, &run_game_deterministic_tests.step, test_filter, "game_deterministic");
+
+    const game_ecs_tests = b.addTest(.{ .root_module = game_ecs_pkg });
+    const run_game_ecs_tests = b.addRunArtifact(game_ecs_tests);
+    dependOnTest(test_step, &run_game_ecs_tests.step, test_filter, "game_ecs");
+
+    const game_replay_tests = b.addTest(.{ .root_module = game_replay_pkg });
+    const run_game_replay_tests = b.addRunArtifact(game_replay_tests);
+    dependOnTest(test_step, &run_game_replay_tests.step, test_filter, "game_replay");
 
     // Modsign tests
     const modsign_tests = b.addTest(.{ .root_module = modsign_pkg });

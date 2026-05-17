@@ -37,9 +37,9 @@ pub fn ComponentStorage(comptime T: type) type {
 
         pub fn init(allocator: std.mem.Allocator) Self {
             return Self{
-                .data = .{},
+                .data = .empty,
                 .sparse = std.AutoHashMap(u32, usize).init(allocator),
-                .entities = .{},
+                .entities = .empty,
                 .allocator = allocator,
             };
         }
@@ -350,7 +350,7 @@ pub fn SystemScheduler(comptime Context: type) type {
 
         pub fn init(allocator: std.mem.Allocator) Self {
             return Self{
-                .systems = .{},
+                .systems = .empty,
                 .allocator = allocator,
             };
         }

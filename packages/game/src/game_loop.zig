@@ -3,7 +3,6 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const native_os = builtin.os.tag;
 
 // ============================================================================
 // Zig 0.16 Compatibility - Time Helper
@@ -11,16 +10,27 @@ const native_os = builtin.os.tag;
 
 /// Get current time in nanoseconds (Zig 0.16 compatible)
 pub fn getNanoTimestamp() i128 {
-    if (comptime native_os == .linux) {
-        const linux = std.os.linux;
-        var ts: linux.timespec = .{ .sec = 0, .nsec = 0 };
-        _ = linux.clock_gettime(.MONOTONIC, &ts);
-        return @as(i128, ts.sec) * 1_000_000_000 + @as(i128, ts.nsec);
-    } else {
-        var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
-        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+    if (comptime builtin.os.tag == .linux) {
+        var ts: std.os.linux.timespec = .{ .sec = 0, .nsec = 0 };
+        _ = std.os.linux.clock_gettime(.MONOTONIC, &ts);
         return @as(i128, ts.sec) * 1_000_000_000 + @as(i128, ts.nsec);
     }
+
+    var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+    return @as(i128, ts.sec) * 1_000_000_000 + @as(i128, ts.nsec);
+}
+
+fn sleepNanoseconds(ns: u64) void {
+    const sec: i64 = @intCast(ns / 1_000_000_000);
+    const nsec: i64 = @intCast(ns % 1_000_000_000);
+
+    if (comptime builtin.os.tag == .linux) {
+        _ = std.os.linux.nanosleep(&.{ .sec = sec, .nsec = nsec }, null);
+        return;
+    }
+
+    _ = std.c.nanosleep(&.{ .sec = sec, .nsec = nsec }, null);
 }
 
 // ============================================================================
@@ -198,7 +208,7 @@ pub fn FixedTimestepLoop(comptime GameState: type) type {
                 const actual_frame_time = @as(f64, @floatFromInt(getNanoTimestamp() - self.current_time)) / 1_000_000_000.0;
                 if (actual_frame_time < target_frame_time) {
                     const sleep_ns: u64 = @intFromFloat((target_frame_time - actual_frame_time) * 1_000_000_000.0);
-                    std.posix.nanosleep(0, sleep_ns);
+                    sleepNanoseconds(sleep_ns);
                 }
             }
         }
@@ -285,7 +295,7 @@ pub const FrameLimiter = struct {
 
         if (elapsed < self.frame_time_ns) {
             const sleep_ns: u64 = @intCast(self.frame_time_ns - elapsed);
-            std.posix.nanosleep(0, sleep_ns);
+            sleepNanoseconds(sleep_ns);
         }
 
         self.last_frame = getNanoTimestamp();
@@ -305,7 +315,7 @@ pub const FrameLimiter = struct {
 // ============================================================================
 
 pub const DeltaTimeSmoother = struct {
-    samples: [10]f64 = [_]f64{0} ** 10,
+    samples: [10]f64 = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
     index: usize = 0,
     count: usize = 0,
 
@@ -356,7 +366,7 @@ test "VariableTimestepLoop" {
 
 test "getNanoTimestamp" {
     const t1 = getNanoTimestamp();
-    std.posix.nanosleep(0, 1_000_000); // Sleep 1ms
+    sleepNanoseconds(1_000_000); // Sleep 1ms
     const t2 = getNanoTimestamp();
 
     try std.testing.expect(t2 > t1);
