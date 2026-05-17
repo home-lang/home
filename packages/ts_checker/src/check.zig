@@ -114,6 +114,12 @@ pub const TsCodes = struct {
     pub const cannot_find_name: u32 = 2304;
     pub const cannot_find_node_name: u32 = 2591;
     pub const cannot_find_jquery_name: u32 = 2592;
+    /// TS2583 — `Cannot find name '{0}'. Do you need to change your
+    /// target library? Try changing the 'lib' compiler option to
+    /// '{1}' or later.` Fires for built-in names declared in a lib
+    /// tier later than the active `@target` / `@lib` (e.g. using
+    /// `SharedArrayBuffer` under `--target ES5`).
+    pub const cannot_find_name_target_library: u32 = 2583;
     /// Emitted when the unresolved identifier closely resembles an
     /// in-scope name (Levenshtein distance ≤ threshold). Same as
     /// 2304 plus a `Did you mean 'X'?` suggestion.
@@ -30996,6 +31002,26 @@ pub const Checker = struct {
                 self.reportCannotFindBunName(node, id.name) catch {};
                 return types.Primitive.any;
             }
+            if (!self.isDeclNameSlot(node)) {
+                // TS2583 — lib-gated builtin (e.g. SharedArrayBuffer)
+                // is referenced under a target/lib that excludes the
+                // declaring tier. Fires *before* the isBuiltinName
+                // short-circuit so users get the actionable "change
+                // your lib to es2017 or later" guidance.
+                if (self.libGatedName(self.string_interner.get(id.name))) |required| {
+                    if (self.sourceTargetExcludesLib(required) or self.sourceLibDirectiveExcludes(required)) {
+                        if (!self.rootHasVarDeclarationNamed(node, id.name) and
+                            !self.sourceHasVarDeclarationText(id.name) and
+                            !self.moduleHasRuntimeNamespacePrefix(module, id.name) and
+                            !self.identifierNamesEnclosingClassExpression(node, id.name) and
+                            !self.virtualSectionIsJsLike(node))
+                        {
+                            self.reportCannotFindNameTargetLibrary(node, id.name, required) catch {};
+                            return types.Primitive.any;
+                        }
+                    }
+                }
+            }
             if (!self.isDeclNameSlot(node) and !self.isBuiltinName(id.name)) {
                 if (self.rootHasVarDeclarationNamed(node, id.name) or self.sourceHasVarDeclarationText(id.name)) return types.Primitive.any;
                 if (self.moduleHasRuntimeNamespacePrefix(module, id.name)) return types.Primitive.any;
@@ -31326,6 +31352,81 @@ pub const Checker = struct {
     /// trigger TS2304 even though we don't have a real lib.d.ts
     /// loaded yet. The list intentionally errs on the conservative
     /// side; expand as more globals are encountered.
+    /// True if `name_str` is a built-in global whose declaration
+    /// lives in a lib later than ES5 (e.g. `SharedArrayBuffer` ships
+    /// in `lib.es2017.sharedmemory.d.ts`). Returns the minimum lib
+    /// string the user needs to enable, or null when the name is not
+    /// lib-gated. Used to emit TS2583 ("Cannot find name 'X'. Do you
+    /// need to change your target library?") in fixtures that pin
+    /// `@lib: es5` explicitly. Conservative: only the names whose
+    /// upstream baselines we actually need are listed here.
+    fn libGatedName(self: *const Checker, name_str: []const u8) ?[]const u8 {
+        _ = self;
+        const Entry = struct { name: []const u8, required: []const u8 };
+        const gated = [_]Entry{
+            .{ .name = "SharedArrayBuffer", .required = "es2017" },
+            .{ .name = "Atomics", .required = "es2017" },
+        };
+        for (gated) |g| {
+            if (std.mem.eql(u8, name_str, g.name)) return g.required;
+        }
+        return null;
+    }
+
+    /// True when the source-file lib directive (e.g. `// @lib: es5`)
+    /// excludes the minimum-required lib tier reported by
+    /// `libGatedName`. Mirrors `sourceLibDirectiveNeedsIterableIterator`
+    /// in spirit; the comparison is intentionally name-prefix based
+    /// (any `es2017*` lib counts as covering es2017, etc.).
+    fn sourceLibDirectiveExcludes(self: *Checker, required: []const u8) bool {
+        const src = self.source orelse return false;
+        const lib_pos = std.mem.indexOf(u8, src, "@lib") orelse return false;
+        const line_end = std.mem.indexOfScalarPos(u8, src, lib_pos, '\n') orelse src.len;
+        var buf: [256]u8 = undefined;
+        const raw_line = std.mem.trim(u8, src[lib_pos..line_end], " \t\r");
+        const n = @min(raw_line.len, buf.len);
+        const line = std.ascii.lowerString(buf[0..n], raw_line[0..n]);
+        if (std.mem.eql(u8, required, "es2017")) {
+            if (std.mem.indexOf(u8, line, "es2017") != null) return false;
+            if (std.mem.indexOf(u8, line, "es2018") != null) return false;
+            if (std.mem.indexOf(u8, line, "es2019") != null) return false;
+            if (std.mem.indexOf(u8, line, "es202") != null) return false;
+            if (std.mem.indexOf(u8, line, "esnext") != null) return false;
+            return true;
+        }
+        return false;
+    }
+
+    /// True if a lib-gated builtin (e.g. `SharedArrayBuffer`) is
+    /// unavailable in the active emit target. Pinned to the small set
+    /// of `--target` strings tsc reports TS2583 against; defaults to
+    /// false when no `@target` directive is present (the harness
+    /// runs in target=esnext, which covers everything).
+    fn sourceTargetExcludesLib(self: *Checker, required: []const u8) bool {
+        const src = self.source orelse return false;
+        const target_pos = std.mem.indexOf(u8, src, "@target") orelse return false;
+        const line_end = std.mem.indexOfScalarPos(u8, src, target_pos, '\n') orelse src.len;
+        var buf: [256]u8 = undefined;
+        const raw_line = std.mem.trim(u8, src[target_pos..line_end], " \t\r");
+        const n = @min(raw_line.len, buf.len);
+        const line = std.ascii.lowerString(buf[0..n], raw_line[0..n]);
+        if (std.mem.eql(u8, required, "es2017")) {
+            // `@target: ES5` / `@target: ES2015` / `@target: ES2016` /
+            // `@target: es6` strand the user pre-es2017. Mixed lists
+            // like `// @target: ES5, ES2015` are still pre-es2017.
+            if (std.mem.indexOf(u8, line, "es2017") != null) return false;
+            if (std.mem.indexOf(u8, line, "es2018") != null) return false;
+            if (std.mem.indexOf(u8, line, "es2019") != null) return false;
+            if (std.mem.indexOf(u8, line, "es202") != null) return false;
+            if (std.mem.indexOf(u8, line, "esnext") != null) return false;
+            if (std.mem.indexOf(u8, line, "es5") != null) return true;
+            if (std.mem.indexOf(u8, line, "es6") != null) return true;
+            if (std.mem.indexOf(u8, line, "es2015") != null) return true;
+            if (std.mem.indexOf(u8, line, "es2016") != null) return true;
+        }
+        return false;
+    }
+
     fn isBuiltinName(self: *const Checker, name: hir_mod.StringId) bool {
         const s = self.string_interner.get(name);
         const builtins = [_][]const u8{
@@ -32220,6 +32321,24 @@ pub const Checker = struct {
         try self.diagnostics.append(self.gpa, .{
             .node = node,
             .code = TsCodes.cannot_find_node_name,
+            .message = msg,
+        });
+    }
+
+    fn reportCannotFindNameTargetLibrary(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+        required: []const u8,
+    ) !void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot find name '{s}'. Do you need to change your target library? Try changing the 'lib' compiler option to '{s}' or later.",
+            .{ self.string_interner.get(name), required },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.cannot_find_name_target_library,
             .message = msg,
         });
     }
@@ -42812,6 +42931,38 @@ test "checker: declare module with two asterisks emits TS5061" {
         }
     }
     try T.expect(found);
+}
+
+test "checker: SharedArrayBuffer under target=ES5 emits TS2583" {
+    const b = try newBoundSetup(
+        \\// @target: es5
+        \\// @lib: es5
+        \\var foge = new SharedArrayBuffer(1024);
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name_target_library and
+            std.mem.indexOf(u8, d.message, "SharedArrayBuffer") != null and
+            std.mem.indexOf(u8, d.message, "es2017") != null)
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
+}
+
+test "checker: SharedArrayBuffer under target=esnext does not emit TS2583" {
+    const b = try newBoundSetup(
+        \\// @target: esnext
+        \\var foge = new SharedArrayBuffer(1024);
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name_target_library);
+    }
 }
 
 test "checker: new on namespaced abstract class emits TS2511" {
