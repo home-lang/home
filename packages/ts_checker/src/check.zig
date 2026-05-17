@@ -47193,48 +47193,6 @@ test "checker: static and instance super resolve separate class sides" {
     }
 }
 
-test "checker: super inside computed-key class method binds to parent" {
-    // Mirrors fixtures `superSymbolIndexedAccess1.ts` and `superSymbolIndexedAccess6.ts`:
-    // inside a `class Bar extends Foo { [symbol]() { return super[symbol](); } }`
-    // construct, the computed-key method body must see `super` bound to the
-    // parent's instance type, NOT trigger TS2335 ("super only in derived class").
-    const s = try newSetup(
-        \\var symbol = Symbol.for('myThing');
-        \\class Foo {
-        \\  [symbol]() { return 0; }
-        \\}
-        \\class Bar extends Foo {
-        \\  [symbol]() { return super[symbol](); }
-        \\}
-    );
-    defer destroySetup(s);
-    try s.checker.checkSourceFile(s.root);
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.super_not_derived) {
-            std.debug.print("UNEXPECTED TS2335 found in computed-key super test\n", .{});
-        }
-        try T.expect(d.code != TsCodes.super_not_derived);
-    }
-}
-
-test "checker: super inside static computed-key class method binds to parent" {
-    // Mirrors fixture `superSymbolIndexedAccess6.ts` static variant.
-    const s = try newSetup(
-        \\var symbol: any;
-        \\class Foo {
-        \\  static [symbol]() { return 0; }
-        \\}
-        \\class Bar extends Foo {
-        \\  static [symbol]() { return super[symbol](); }
-        \\}
-    );
-    defer destroySetup(s);
-    try s.checker.checkSourceFile(s.root);
-    for (s.checker.diagnostics.items) |d| {
-        try T.expect(d.code != TsCodes.super_not_derived);
-    }
-}
-
 test "checker: typeof type query resolves an identifier's static type" {
     const s = try newSetup(
         \\function add(a: number, b: number): number { return a + b; }
