@@ -2279,7 +2279,7 @@ fn parseStrictDirectiveFlags(source: []const u8) ?ts_driver.StrictFlags {
     var seen = false;
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, " \t\r");
+        const line = std.mem.trim(u8, stripUtf8Bom(raw_line), " \t\r");
         if (!std.mem.startsWith(u8, line, "//")) continue;
         const comment = std.mem.trim(u8, line[2..], " \t");
         if (!std.mem.startsWith(u8, comment, "@")) continue;
@@ -2295,6 +2295,14 @@ fn parseStrictDirectiveFlags(source: []const u8) ?ts_driver.StrictFlags {
     return strictFlagsFromState(state, strict_on);
 }
 
+/// Strip a leading UTF-8 BOM (`\xEF\xBB\xBF`) so directive scanners
+/// that look for `//` at the start of the first source line don't
+/// silently skip the leading line of BOM-prefixed fixtures.
+fn stripUtf8Bom(s: []const u8) []const u8 {
+    if (s.len >= 3 and s[0] == 0xEF and s[1] == 0xBB and s[2] == 0xBF) return s[3..];
+    return s;
+}
+
 fn directiveBool(source: []const u8, directive_name: []const u8) ?bool {
     const value = directiveValue(source, directive_name) orelse return null;
     return parseDirectiveBool(value);
@@ -2303,7 +2311,7 @@ fn directiveBool(source: []const u8, directive_name: []const u8) ?bool {
 fn directiveValue(source: []const u8, directive_name: []const u8) ?[]const u8 {
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, " \t\r");
+        const line = std.mem.trim(u8, stripUtf8Bom(raw_line), " \t\r");
         if (!std.mem.startsWith(u8, line, "//")) continue;
         const comment = std.mem.trim(u8, line[2..], " \t");
         if (!std.mem.startsWith(u8, comment, "@")) continue;
@@ -2321,7 +2329,7 @@ fn directiveValue(source: []const u8, directive_name: []const u8) ?[]const u8 {
 fn directiveTargetEs2015OrLater(source: []const u8) bool {
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, " \t\r");
+        const line = std.mem.trim(u8, stripUtf8Bom(raw_line), " \t\r");
         if (!std.mem.startsWith(u8, line, "//")) continue;
         const comment = std.mem.trim(u8, line[2..], " \t");
         if (!std.mem.startsWith(u8, comment, "@")) continue;
@@ -2365,7 +2373,7 @@ fn directiveTargetEs2015OrLater(source: []const u8) bool {
 fn directiveTargetDeprecated(source: []const u8) bool {
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, " \t\r");
+        const line = std.mem.trim(u8, stripUtf8Bom(raw_line), " \t\r");
         if (!std.mem.startsWith(u8, line, "//")) continue;
         const comment = std.mem.trim(u8, line[2..], " \t");
         if (!std.mem.startsWith(u8, comment, "@")) continue;
@@ -3122,6 +3130,28 @@ test "conformance: inferFixtureStrictOn honours explicit @strict directive" {
         \\// @strict: false
         \\class C { x: number; }
         ,
+        .gpa = T.allocator,
+    }));
+}
+
+test "conformance: directive scanners skip a leading UTF-8 BOM" {
+    // Upstream fixtures occasionally ship with a leading UTF-8 BOM
+    // (`\xEF\xBB\xBF`). Before stripping, `parseStrictDirectiveFlags`
+    // missed the `// @strict: false` on line 1 because the line
+    // started with BOM bytes, not `//`. Mirrors
+    // `emitArrowFunctionWhenUsingArguments09.ts` (BOM + strict:false +
+    // baseline that omits TS7006).
+    const bom_src = "\xEF\xBB\xBF// @strict: false\nfunction f(_a) {}\n";
+    const flags = parseStrictDirectiveFlags(bom_src) orelse {
+        try T.expect(false);
+        return;
+    };
+    try T.expect(!flags.no_implicit_any);
+    // Mirror the inference path used by the corpus loader: with the
+    // BOM-skipping directive scan, `// @strict: false` flips
+    // inferFixtureStrictOn to false too.
+    try T.expect(!inferFixtureStrictOn(.{
+        .case_src = bom_src,
         .gpa = T.allocator,
     }));
 }
