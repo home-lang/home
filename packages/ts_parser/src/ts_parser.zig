@@ -2327,7 +2327,15 @@ pub const Parser = struct {
                         else => {},
                     }
                 }
-                if (flags.is_parameter_property and self.peek().kind == .at) {
+                // Decorators may not legally follow an accessibility
+                // modifier on a parameter property — `public @dec p`
+                // is a TS1005 parse error in tsc. We still need to
+                // consume the decorator tokens so the rest of the
+                // parameter parses, but suppress them from the
+                // attached decorator list so the checker doesn't then
+                // re-report the same locus as TS1239.
+                const suppress_post_modifier_decorators = flags.is_parameter_property and self.peek().kind == .at;
+                if (suppress_post_modifier_decorators) {
                     const at_tok = self.peek();
                     try self.reportCodeAt(at_tok.span.start, at_tok.line, 1005, "',' expected.");
                 }
@@ -2338,7 +2346,9 @@ pub const Parser = struct {
                         .start = at_tok.span.start,
                         .end = self.hir.spanOf(dec_expr).end,
                     }, dec_expr);
-                    try param_decorators.append(self.gpa, dec_node);
+                    if (!suppress_post_modifier_decorators) {
+                        try param_decorators.append(self.gpa, dec_node);
+                    }
                 }
                 if (self.match(.dot_dot_dot)) {
                     flags.is_rest = true;
@@ -11464,6 +11474,33 @@ test "parser: accessibility modifier after override on parameter property report
     try T.expect(saw_public);
     try T.expect(saw_protected);
     try T.expect(saw_private);
+}
+
+test "parser: decorator after accessibility modifier on parameter property is suppressed" {
+    // `public @dec p: number` is a TS1005 parse error: tsc treats the
+    // accessibility modifier as terminating the parameter prefix. The
+    // decorator should still be consumed (so the rest of the parameter
+    // parses) but must NOT be attached to the parameter — otherwise
+    // the checker re-reports the same locus as TS1239 / TS1240.
+    var s = try newTestSetup(
+        \\class C {
+        \\    constructor(public @dec p: number) {}
+        \\}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    var saw_1005 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1005) saw_1005 = true;
+    }
+    try T.expect(saw_1005);
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.classMembers(&s.hir, top);
+    try T.expect(members.len >= 1);
+    const ctor_params = hir_mod.fnParams(&s.hir, members[0]);
+    try T.expect(ctor_params.len >= 1);
+    const decorators = hir_mod.parameterDecorators(&s.hir, ctor_params[0]);
+    try T.expectEqual(@as(usize, 0), decorators.len);
 }
 
 test "parser: accessibility modifier after readonly on parameter property reports TS1029" {
