@@ -2218,6 +2218,37 @@ pub const Checker = struct {
         return false;
     }
 
+    /// True if `receiver` (an identifier or member_access) resolves to
+    /// a namespace declaration whose body exports a class declared
+    /// with `abstract` named `member_name`. Used by `new M.A` to
+    /// flag TS2511 when `M.A` is an exported abstract class. Only
+    /// matches *direct* identifier receivers — qualified chains
+    /// (`X.Y.Z`) fall back to the simple top-level scan.
+    fn namespaceExportsAbstractClass(self: *Checker, receiver: NodeId, member_name: hir_mod.StringId) bool {
+        if (receiver == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(receiver) != .identifier) return false;
+        const receiver_name = hir_mod.identifierOf(self.hir, receiver).name;
+        var i: hir_mod.NodeId = 1;
+        while (i < self.hir.nodeCount()) : (i += 1) {
+            if (self.hir.kindOf(i) != .namespace_decl) continue;
+            const ns = hir_mod.namespaceOf(self.hir, i);
+            if (ns.name == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(ns.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, ns.name).name != receiver_name) continue;
+            for (hir_mod.namespaceBody(self.hir, i)) |raw| {
+                const stmt = self.unwrapExportDecl(raw);
+                if (stmt == hir_mod.none_node_id) continue;
+                if (self.hir.kindOf(stmt) != .class_decl) continue;
+                const cls = hir_mod.classOf(self.hir, stmt);
+                if (!cls.is_abstract) continue;
+                if (cls.name == hir_mod.none_node_id) continue;
+                if (self.hir.kindOf(cls.name) != .identifier) continue;
+                if (hir_mod.identifierOf(self.hir, cls.name).name == member_name) return true;
+            }
+        }
+        return false;
+    }
+
     fn namespaceScopeHasErrantModifierAssignmentTarget(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
         var cur = self.hir.parentOf(node);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
@@ -25342,6 +25373,20 @@ pub const Checker = struct {
                         );
                     }
                 }
+                // `new M.A` where `M.A` is an exported abstract class.
+                // Resolve the receiver to a namespace declaration and
+                // look for an abstract class export named `<leaf>`
+                // inside it. Mirrors `classAbstractInAModule`.
+                if (self.hir.kindOf(c.callee) == .member_access) {
+                    const member = hir_mod.memberOf(self.hir, c.callee);
+                    if (self.namespaceExportsAbstractClass(member.object, member.name)) {
+                        try self.report(
+                            node,
+                            TsCodes.abstract_class_instantiation,
+                            "Cannot create an instance of an abstract class.",
+                        );
+                    }
+                }
                 if (try self.checkNewConstructSignatures(node, c.callee, callee_t, args, arg_types.items)) |ret| {
                     break :blk ret;
                 }
@@ -42752,6 +42797,38 @@ test "checker: declare module with two asterisks emits TS5061" {
         }
     }
     try T.expect(found);
+}
+
+test "checker: new on namespaced abstract class emits TS2511" {
+    const b = try newBoundSetup(
+        \\namespace M {
+        \\    export abstract class A {}
+        \\    export class B extends A {}
+        \\}
+        \\new M.A;
+        \\new M.B;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.abstract_class_instantiation) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: new on namespaced concrete class does not emit TS2511" {
+    const b = try newBoundSetup(
+        \\namespace M {
+        \\    export class A {}
+        \\}
+        \\new M.A;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.abstract_class_instantiation);
+    }
 }
 
 test "checker: static index signature value cannot reference class type parameter (TS2302)" {
