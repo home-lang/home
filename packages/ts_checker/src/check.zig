@@ -10144,9 +10144,13 @@ pub const Checker = struct {
                 "Unable to resolve signature of class decorator when called as an expression.",
                 .{},
             );
+            // tsc squiggle covers the decorator identifier (not the
+            // leading `@`) when the decorator is a bare class
+            // reference — see constructableDecoratorOnClass01 baseline
+            // which anchors at `CtorDtor` (col 2), not `@` (col 1).
             try self.diagnostics.append(self.gpa, .{
                 .node = decorator_node,
-                .pos = self.decoratorAtPos(decorator_node),
+                .pos = self.decoratorExpressionPos(decorator_node),
                 .code = TsCodes.class_decorator_signature_unresolved,
                 .message = msg,
             });
@@ -46187,20 +46191,31 @@ test "checker: constructor parameter decorator property key may be undefined" {
 test "checker: class identifier used directly as decorator is not callable (TS1238)" {
     // `class CtorDtor {}` has no call signature, so `@CtorDtor` is
     // unable to resolve a class decorator. Mirrors fixture
-    // `constructableDecoratorOnClass01.errors.txt`.
-    const s = try newSetup(
+    // `constructableDecoratorOnClass01.errors.txt`, including the
+    // squiggle anchor — tsc points at the identifier (col 2), not
+    // the leading `@`.
+    const src =
         \\// @experimentalDecorators: true
         \\class CtorDtor {}
         \\@CtorDtor
         \\class C {}
-    );
+    ;
+    const s = try newSetup(src);
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     var found = false;
+    var pos_ok = false;
+    const at_offset = std.mem.indexOf(u8, src, "@CtorDtor").?;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.class_decorator_signature_unresolved) found = true;
+        if (d.code != TsCodes.class_decorator_signature_unresolved) continue;
+        found = true;
+        if (d.pos) |p| {
+            // Should point at the identifier, NOT at the `@`.
+            if (p == at_offset + 1) pos_ok = true;
+        }
     }
     try T.expect(found);
+    try T.expect(pos_ok);
 }
 
 test "checker: await inside parameter decorator escapes async method scope (TS1308)" {
