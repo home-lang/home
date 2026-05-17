@@ -32618,6 +32618,26 @@ pub const Checker = struct {
             if (self.typeIsAnyLike(target_t) or self.typeIsAnyLike(value_t)) break :blk types.Primitive.any;
             if (self.typeMaybeStringLike(target_t) or self.typeMaybeStringLike(value_t)) break :blk types.Primitive.string_t;
             if (self.isArithmeticOperandAllowed(target_t) and self.isArithmeticOperandAllowed(value_t)) break :blk types.Primitive.number_t;
+            // Prefer tsc's type-rich form
+            // `Operator '+=' cannot be applied to types 'A' and 'B'.`
+            // when both endpoints have a simple display name; fall
+            // back to the generic `…to these operand types.` form.
+            // Mirrors `compoundAdditionAssignmentWithInvalidOperands.ts`.
+            if (try self.simpleDiagnosticTypeName(target_t)) |t_name| {
+                if (try self.simpleDiagnosticTypeName(value_t)) |v_name| {
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Operator '+=' cannot be applied to types '{s}' and '{s}'.",
+                        .{ t_name, v_name },
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = node,
+                        .code = TsCodes.operator_cannot_be_applied,
+                        .message = msg,
+                    });
+                    return;
+                }
+            }
             try self.report(node, TsCodes.operator_cannot_be_applied, "Operator '+=' cannot be applied to these operand types.");
             return;
         };
@@ -33403,7 +33423,31 @@ pub const Checker = struct {
                     break :blk types.Primitive.number_t;
                 }
                 if (!self.typeIsAnyLike(lhs_eff) and !self.typeIsAnyLike(rhs_eff)) {
-                    try self.report(node, TsCodes.operator_cannot_be_applied, "Operator '+' cannot be applied to these operand types.");
+                    // Prefer tsc's type-rich form
+                    // `Operator '+' cannot be applied to types 'A' and 'B'.`
+                    // when both endpoints have a simple display
+                    // name. Mirrors fixtures
+                    // `logicalNotOperatorInvalidOperations.ts`
+                    // and `additionOperatorWithInvalidOperands.ts`.
+                    var emitted = false;
+                    if (try self.simpleDiagnosticTypeName(lhs_eff)) |a_name| {
+                        if (try self.simpleDiagnosticTypeName(rhs_eff)) |b_name| {
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Operator '+' cannot be applied to types '{s}' and '{s}'.",
+                                .{ a_name, b_name },
+                            );
+                            try self.diagnostics.append(self.gpa, .{
+                                .node = node,
+                                .code = TsCodes.operator_cannot_be_applied,
+                                .message = msg,
+                            });
+                            emitted = true;
+                        }
+                    }
+                    if (!emitted) {
+                        try self.report(node, TsCodes.operator_cannot_be_applied, "Operator '+' cannot be applied to these operand types.");
+                    }
                 }
                 break :blk types.Primitive.number_t;
             },
@@ -58479,4 +58523,45 @@ test "checker: simpleDiagnosticTypeName renders undefined and null after non-nul
     const union_b = try s.checker.interner.internUnion(&.{ types.Primitive.null_t, types.Primitive.string_t });
     const name_b = (try s.checker.simpleDiagnosticTypeName(union_b)) orelse return error.TestUnexpectedResult;
     try T.expectEqualStrings("string | null", name_b);
+}
+
+test "checker: TS2365 renders type-rich form for boolean + number" {
+    // Mirrors `logicalNotOperatorInvalidOperations.ts(8,16)` and the
+    // `compoundAdditionAssignmentWithInvalidOperands.ts` cluster:
+    // when neither operand of `+` is string-like or any-like and
+    // both have a simple display name, the diagnostic includes the
+    // operand type labels instead of falling back to the generic
+    // `…to these operand types.` prose.
+    const s = try newSetup(
+        \\declare var b: number;
+        \\var r = !b + b;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_rich = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.operator_cannot_be_applied) continue;
+        if (std.mem.indexOf(u8, d.message, "Operator '+' cannot be applied to types 'boolean' and 'number'.") != null) {
+            saw_rich = true;
+        }
+    }
+    try T.expect(saw_rich);
+}
+
+test "checker: TS2365 renders type-rich form for boolean += number" {
+    const s = try newSetup(
+        \\var x: boolean = false;
+        \\declare var n: number;
+        \\x += n;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_rich = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.operator_cannot_be_applied) continue;
+        if (std.mem.indexOf(u8, d.message, "Operator '+=' cannot be applied to types 'boolean' and 'number'.") != null) {
+            saw_rich = true;
+        }
+    }
+    try T.expect(saw_rich);
 }
