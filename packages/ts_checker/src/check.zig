@@ -1049,6 +1049,7 @@ pub const Checker = struct {
     /// post-processing runs and the diagnostics list is left as-is.
     source: ?[]const u8 = null,
     source_has_virtual_sections: bool = false,
+    check_js_enabled: bool = false,
     /// True when the entire compilation unit is a `.d.ts` /
     /// `.d.mts` / `.d.cts` declaration file (set from outside via
     /// `setIsDeclarationFile`). Used by `virtualSectionIsDeclaration
@@ -1204,6 +1205,10 @@ pub const Checker = struct {
             std.mem.indexOf(u8, source, "@filename:") != null or
             std.mem.indexOf(u8, source, "@Filename:") != null;
         self.virtual_section_start_cache.clearRetainingCapacity();
+    }
+
+    pub fn setCheckJsEnabled(self: *Checker, enabled: bool) void {
+        self.check_js_enabled = enabled;
     }
 
     /// Mark the whole compilation unit as a declaration file
@@ -9670,6 +9675,7 @@ pub const Checker = struct {
                 if (r.qualifier_len != 0 or r.args_len != 0) return;
                 if (self.typeParamNameMatches(r.name, type_params)) return;
                 if (self.typeRefNameExists(r.name) or self.visibleTypeDeclarationExistsAt(type_node, r.name)) return;
+                if (try self.importedTypeRefForLocal(r.name, type_node)) |_| return;
                 const raw = self.string_interner.get(r.name);
                 if (self.lowerBuiltinObjectType(raw) != null) return;
                 if (std.mem.eql(u8, raw, "any") or
@@ -13453,6 +13459,7 @@ pub const Checker = struct {
     }
 
     fn sourceHasCheckJsDirective(self: *Checker) bool {
+        if (self.check_js_enabled) return true;
         const src = self.source orelse return false;
         if (std.mem.indexOf(u8, src, "@ts-check") != null) return true;
         var search_start: usize = 0;
@@ -15764,6 +15771,7 @@ pub const Checker = struct {
                 continue;
             }
             if (self.rootHasNonImportDeclarationNamed(sp.imported) or self.rootHasExportedName(sp.imported)) continue;
+            if (try self.importSpecifierResolvesViaExternal(node, spec)) continue;
             if (self.closestNonImportDeclarationName(sp.imported)) |suggestion| {
                 const requested = self.string_interner.get(sp.imported);
                 const suggested = self.string_interner.get(suggestion);
@@ -15804,6 +15812,18 @@ pub const Checker = struct {
             if (decl_name == name) return true;
         }
         return !found_module;
+    }
+
+    fn importSpecifierResolvesViaExternal(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
+        const resolver = self.external_resolver orelse return false;
+        const containing = if (self.importer_path.len > 0)
+            self.importer_path
+        else if (self.virtualSectionFilenameForNode(node)) |raw|
+            raw
+        else
+            "/__root__.ts";
+        const r = resolver.resolve(spec, containing) orelse return false;
+        return r.is_declaration or isResolverDeclarationExtension(r.path) or isResolverImplementationExtension(r.path);
     }
 
     fn virtualBareModuleHasNamedExport(self: *Checker, anchor: NodeId, spec: []const u8, name: hir_mod.StringId) CheckError!bool {
@@ -15885,6 +15905,36 @@ pub const Checker = struct {
                 const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
                 if (sp.local != local_name) continue;
                 return try self.virtualBareModuleExportType(stmt, spec_text, sp.imported);
+            }
+        }
+        return null;
+    }
+
+    fn importedTypeRefForLocal(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const has_sections = self.sourceHasVirtualFilenameSections();
+        const anchor_section = if (has_sections) self.virtualSectionStartForNode(anchor) else 0;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.kindOf(stmt) != .import_decl) continue;
+            if (has_sections and self.virtualSectionStartForNode(stmt) != anchor_section) continue;
+            const imp = hir_mod.importOf(self.hir, stmt);
+            const spec_text = self.string_interner.get(imp.module);
+            if (spec_text.len == 0) continue;
+            for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
+                if (self.hir.kindOf(spec_node) != .import_specifier) continue;
+                const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
+                if (sp.local != local_name) continue;
+                if (std.mem.startsWith(u8, spec_text, ".")) {
+                    if (has_sections) {
+                        if (try self.virtualRelativeModuleExportType(anchor, imp.module, &.{}, sp.imported)) |t| return t;
+                    }
+                    if (try self.importSpecifierResolvesViaExternal(anchor, spec_text)) return types.Primitive.any;
+                    return null;
+                }
+                if (try self.virtualBareModuleExportType(stmt, spec_text, sp.imported)) |t| return t;
+                if (try self.importSpecifierResolvesViaExternal(anchor, spec_text)) return types.Primitive.any;
+                return null;
             }
         }
         return null;
@@ -19059,6 +19109,7 @@ pub const Checker = struct {
                         }
                     }
                     if (try self.resolveUnqualifiedNamespaceTypeRef(type_node, r.name)) |t| return t;
+                    if (try self.importedTypeRefForLocal(r.name, type_node)) |t| return t;
                     if (try self.resolveForwardClassInstanceType(type_node, r.name)) |t| return t;
                     if (std.mem.eql(u8, name_str, "Object")) {
                         if (self.type_names.get(r.name)) |t| return t;
@@ -19364,6 +19415,7 @@ pub const Checker = struct {
                         return instantiated;
                     }
                     const name_str = self.string_interner.get(r.name);
+                    if (try self.importedTypeRefForLocal(r.name, type_node)) |t| return t;
                     if (self.typeRefNameExists(r.name) or self.visibleTypeDeclarationExistsAt(type_node, r.name)) {
                         return self.lowerer.lower(type_node);
                     }
@@ -23341,6 +23393,61 @@ pub const Checker = struct {
         return try self.jsDocTypeForLeadingNode(node);
     }
 
+    fn jsDocTypeForPreviousIdentifierDecl(self: *Checker, node: NodeId) CheckError!?TypeId {
+        if (!self.sourceHasCheckJsDirective()) return null;
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return null;
+        if (self.source_has_virtual_sections and
+            !self.virtualSectionIsJsLike(node))
+        {
+            return null;
+        }
+        const id = hir_mod.identifierOf(self.hir, node);
+        const use_start = self.hir.spanOf(node).start;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const stmts: ?[]const NodeId = switch (self.hir.kindOf(cur)) {
+                .block_stmt => hir_mod.blockStmts(self.hir, cur),
+                .namespace_decl => hir_mod.namespaceBody(self.hir, cur),
+                else => null,
+            };
+            if (stmts) |items| {
+                for (items) |stmt| {
+                    if (self.hir.spanOf(stmt).start >= use_start) break;
+                    const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
+                    if (decl == hir_mod.none_node_id) continue;
+                    const dk = self.hir.kindOf(decl);
+                    if (dk != .var_decl and dk != .let_decl and dk != .const_decl) continue;
+                    const v = hir_mod.varDeclOf(self.hir, decl);
+                    if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) continue;
+                    if (hir_mod.identifierOf(self.hir, v.name).name != id.name) continue;
+                    return try self.jsDocTypeForLeadingNode(decl);
+                }
+            }
+        }
+        return null;
+    }
+
+    fn jsDocArrayAssignmentDefinitelyMismatches(self: *Checker, target_node: NodeId, value_node: NodeId, source_t: TypeId, target_t: TypeId) CheckError!bool {
+        if (!self.sourceHasCheckJsDirective()) return false;
+        if (target_node == hir_mod.none_node_id or value_node == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(target_node) != .identifier or self.hir.kindOf(value_node) != .identifier) return false;
+        if (self.source_has_virtual_sections and
+            (!self.virtualSectionIsJsLike(target_node) or !self.virtualSectionIsJsLike(value_node)))
+        {
+            return false;
+        }
+        if ((try self.jsDocTypeForPreviousIdentifierDecl(target_node)) == null or
+            (try self.jsDocTypeForPreviousIdentifierDecl(value_node)) == null)
+        {
+            return false;
+        }
+        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
+        const source_idx = self.interner.objectNumberIndex(source_t);
+        const target_idx = self.interner.objectNumberIndex(target_t);
+        if (source_idx == types.Primitive.none or target_idx == types.Primitive.none) return false;
+        return !(self.engine.isAssignableTo(source_idx, target_idx) catch return error.OutOfMemory);
+    }
+
     fn dynamicImportDefinitelyMismatchesTypeofNamespace(self: *Checker, init_node: NodeId, type_annotation: NodeId) bool {
         if (init_node == hir_mod.none_node_id or type_annotation == hir_mod.none_node_id) return false;
         if (self.hir.kindOf(init_node) != .call_expr) return false;
@@ -24684,6 +24791,11 @@ pub const Checker = struct {
                         target_t = annotated_t;
                     }
                 }
+                if (a.op == null and target_kind == .identifier and self.sourceHasCheckJsDirective()) {
+                    if (try self.jsDocTypeForPreviousIdentifierDecl(a.target)) |declared_t| {
+                        target_t = declared_t;
+                    }
+                }
                 // `.js` files with `// @ts-check` may annotate
                 // `Ctor.prototype = expr` with a leading
                 // `/** @type {T} */`, in which case T becomes the
@@ -24782,6 +24894,7 @@ pub const Checker = struct {
                 }
                 const value_t = try self.checkExpression(a.value);
                 const assignment_check_value_t = if (self.hir.kindOf(a.value) == .identifier) blk_assign_value: {
+                    if (try self.jsDocTypeForPreviousIdentifierDecl(a.value)) |declared_t| break :blk_assign_value declared_t;
                     const value_id = hir_mod.identifierOf(self.hir, a.value);
                     if (self.lookupNarrow(value_id.name) != null) break :blk_assign_value value_t;
                     break :blk_assign_value self.typeOfIdentifierDeclared(a.value);
@@ -24909,7 +25022,9 @@ pub const Checker = struct {
                     if (self.unrelatedTypeParameterAssignment(assignment_check_value_t, target_t)) {
                         try self.reportTypeNotAssignable(node, assignment_check_value_t, target_t, "Type is not assignable to target type.");
                     } else {
-                        const ok = if (self.enumNameFromNominal(target_t) != null and self.expressionIsNumericLiteral(a.value))
+                        const ok = if (try self.jsDocArrayAssignmentDefinitelyMismatches(a.target, a.value, assignment_check_value_t, target_t))
+                            false
+                        else if (self.enumNameFromNominal(target_t) != null and self.expressionIsNumericLiteral(a.value))
                             false
                         else
                             (try self.literalExpressionAssignableToTarget(a.value, target_t)) or
@@ -57700,14 +57815,7 @@ test "checker: checkjs object property @type validates initializer" {
     try T.expect(found);
 }
 
-// JSDoc array @type tag → checker assignability validation is best-effort
-// in the current checker. The full TS2322 prose with `string[]` / `number[]`
-// is not always produced because the `var y; y = x;` flow path doesn't
-// pick up the JSDoc tag without additional binder wiring. Pinned tests
-// for this behavior are documented as a Phase 6 follow-up; for now we
-// just smoke-test that the checker accepts the JSDoc syntax without
-// crashing.
-test "checker: checkjs JSDoc array var assignment parses without crash" {
+test "checker: checkjs JSDoc array var assignment reports TS2322" {
     const s = try newSetup(
         \\// @checkJs: true
         \\/** @type {string[]} */
@@ -57718,6 +57826,16 @@ test "checker: checkjs JSDoc array var assignment parses without crash" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable and
+            std.mem.indexOf(u8, d.message, "string[]") != null and
+            std.mem.indexOf(u8, d.message, "number[]") != null)
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
 }
 
 test "checker: checkjs JSDoc array var assignment in method parses without crash" {

@@ -23,6 +23,7 @@ pub const NodeId = hir_mod.NodeId;
 pub const Hir = hir_mod.Hir;
 pub const Token = ts_lexer.Token;
 pub const StrictFlags = ts_checker.StrictFlags;
+pub const ExternalResolver = ts_checker.ExternalResolver;
 
 /// One unified diagnostic across all phases.
 pub const Diagnostic = struct {
@@ -738,6 +739,8 @@ pub fn compileSource(
     checker.setModule(c.module);
     checker.setSource(source);
     checker.setIsDeclarationFile(options.is_declaration_file);
+    checker.setCheckJsEnabled(!options.suppress_js_check_diagnostics and
+        (virtualFilenameIsJs(source) or pathIsJsLike(options.importer_path)));
     if (options.external_resolver) |er| checker.setExternalResolver(er);
     if (options.importer_path.len > 0) checker.setImporterPath(options.importer_path);
     if (options.module_resolution.len > 0) checker.setModuleResolution(options.module_resolution);
@@ -1074,12 +1077,21 @@ fn virtualFilenameIsJs(source: []const u8) bool {
             std.mem.endsWith(u8, value, ".ts") or
             std.mem.endsWith(u8, value, ".tsx") or
             std.mem.endsWith(u8, value, ".mts") or
-            std.mem.endsWith(u8, value, ".cts");
+            std.mem.endsWith(u8, value, ".cts") or
+            std.mem.endsWith(u8, value, ".hm") or
+            std.mem.endsWith(u8, value, ".home");
         if (!is_code) continue;
         if (!virtualPathIsNodeModules(value)) return is_js;
         fallback_is_js = is_js;
     }
     return fallback_is_js;
+}
+
+fn pathIsJsLike(path: []const u8) bool {
+    return std.mem.endsWith(u8, path, ".js") or
+        std.mem.endsWith(u8, path, ".jsx") or
+        std.mem.endsWith(u8, path, ".mjs") or
+        std.mem.endsWith(u8, path, ".cjs");
 }
 
 fn virtualPathIsNodeModules(path: []const u8) bool {
@@ -1268,10 +1280,7 @@ test "driver: checkJs virtual js surfaces checker diagnostics" {
     try T.expect(c.has_errors);
 }
 
-test "driver: checkJs virtual js JSDoc array assignment parses without crash" {
-    // Full TS2322-with-array-prose is a follow-up; this regression test
-    // just guards that the JSDoc array tag in a class method doesn't
-    // crash the binder or checker.
+test "driver: checkJs virtual js JSDoc array assignment in class method" {
     var c = try compileSource(T.allocator,
         \\// @allowJs: true
         \\// @checkJs: true
