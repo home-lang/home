@@ -4023,6 +4023,17 @@ pub const Parser = struct {
             self.advance()
         else
             try self.expectIdentifierLike();
+        // TS1035: A quoted-name namespace/module declaration is only
+        // legal in an ambient context (after `declare` or inside a
+        // `.d.ts` file). Bare `module "Foo" {}` in a `.ts` file is an
+        // augmentation form that requires the ambient marker. Mirrors
+        // upstream tsc on `parserModuleDeclaration1.ts(1,8)`.
+        if (name_tok.kind == .string_literal and
+            self.ambient_depth == 0 and
+            !self.isAmbientContextAt(start.span.start))
+        {
+            try self.reportCodeAt(name_tok.span.start, name_tok.line, 1035, "Only ambient modules can use quoted names.");
+        }
         var name_end = name_tok.span.end;
         while (self.peek().kind == .dot) {
             _ = self.advance();
@@ -15068,4 +15079,34 @@ test "parser: 'export function await' at module top-level reports TS1262 on awai
         if (d.code == 1262 and d.pos == expected_pos) saw_ts1262 = true;
     }
     try T.expect(saw_ts1262);
+}
+
+test "parser: bare 'module \"Foo\" {}' reports TS1035 on the quoted name" {
+    // Quoted-name namespace/module declarations are only legal in
+    // ambient contexts. In a regular `.ts` file (no `declare`, not a
+    // `.d.ts`), `module "Foo" {}` must report TS1035 anchored at the
+    // string literal name. Mirrors upstream tsc on
+    // `parserModuleDeclaration1.ts(1,8)`.
+    const src = "module \"Foo\" {\n}";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var saw_ts1035 = false;
+    const expected_pos: u32 = @intCast(std.mem.indexOf(u8, src, "\"Foo\"").?);
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1035 and d.pos == expected_pos) saw_ts1035 = true;
+    }
+    try T.expect(saw_ts1035);
+}
+
+test "parser: 'declare module \"Foo\" {}' does not report TS1035" {
+    // The same form is legal under a `declare` wrapper — TS1035 must
+    // only fire on non-ambient quoted modules.
+    const src = "declare module \"Foo\" {\n}";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1035);
+    }
 }
