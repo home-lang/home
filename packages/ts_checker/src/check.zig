@@ -2270,7 +2270,13 @@ pub const Checker = struct {
                         // in `foo3.ts` doesn't merge with a class of
                         // the same name in `foo4.ts`.
                         if (self.virtualSectionStartForNode(later) != node_section) continue;
-                        try self.report(node, TsCodes.namespace_before_merged_function, "A namespace declaration cannot be located prior to a class or function with which it is merged.");
+                        // Anchor TS2434 at the namespace *name* (e.g. `A`
+                        // in `namespace A {`) — that's where tsc draws
+                        // the diagnostic underline. The namespace node's
+                        // span starts at the `namespace`/`module`
+                        // keyword, which produces a column-1 mismatch.
+                        const name_pos = self.declarationNameSpanStart(node);
+                        try self.reportAt(node, name_pos, TsCodes.namespace_before_merged_function, "A namespace declaration cannot be located prior to a class or function with which it is merged.");
                         break;
                     }
                 }
@@ -3233,6 +3239,13 @@ pub const Checker = struct {
     fn checkSwitchStatement(self: *Checker, node: NodeId) CheckError!void {
         const sw = hir_mod.switchOf(self.hir, node);
         const discriminant_t = try self.checkExpression(sw.discriminant);
+        // For the per-case comparability check (TS2678) we narrow the
+        // discriminant to its literal form too — `switch (12)` is
+        // really "compare 12 against each case". Without this, `12`
+        // widens to `number` and `case 5:` compares as `5 vs number`,
+        // which overlaps and silences TS2678. Mirrors fixtures like
+        // `invalidSwitchBreakStatement` / `invalidSwitchContinueStatement`.
+        const discriminant_lit_t = self.expressionLiteralType(sw.discriminant, discriminant_t) catch discriminant_t;
         const cases = hir_mod.switchCases(self.hir, node);
 
         // Two narrowing shapes are supported here:
@@ -3269,8 +3282,8 @@ pub const Checker = struct {
                     try case_literal_types.append(self.gpa, lit_t);
                 }
                 if (!self.switchCaseStatementsDefinitelyExit(stmts)) all_value_cases_exit = false;
-                if (!try self.typesHaveComparableOverlap(discriminant_t, case_t)) {
-                    try self.reportSwitchCaseNotComparable(case_p.value, case_t, discriminant_t);
+                if (!try self.typesHaveComparableOverlap(discriminant_lit_t, case_t)) {
+                    try self.reportSwitchCaseNotComparable(case_p.value, case_t, discriminant_lit_t);
                 }
                 if (is_disc_narrowable) {
                     try self.applyDiscriminatedNarrow(sw.discriminant, case_p.value, true);
@@ -38877,15 +38890,28 @@ pub const Checker = struct {
 
     fn checkForInDestructuringTarget(self: *Checker, target: NodeId) CheckError!void {
         const pattern = self.forLoopTargetPattern(target) orelse return;
-        switch (self.hir.kindOf(pattern)) {
-            .array_pattern, .array_literal => {
+        const pk = self.hir.kindOf(pattern);
+        // When the for-in head is an assignment-pattern (`for ([a, b]
+        // in x)` / `for ({a, b} in x)`), the parser already reported
+        // TS2491 ("LHS of a for-in cannot be a destructuring
+        // pattern."). tsc stops at that diagnostic and does not
+        // additionally try to destructure the iteration element, so
+        // suppress the follow-up TS2322 / TS2339 chain we'd otherwise
+        // raise per pattern slot. Binding patterns
+        // (`for (let [a] in x)`) still receive the string-iteration
+        // / property checks because those forms are syntactically
+        // legal at parse time even though they fail TS2491 at the
+        // checker.
+        if (pk == .array_literal or pk == .object_literal) return;
+        switch (pk) {
+            .array_pattern => {
                 if (self.sourceDirectiveValueMentions("target", "es5")) {
                     try self.report(pattern, TsCodes.string_iteration_requires_downlevel, "Type 'string' can only be iterated through when using the '--downlevelIteration' flag or with a '--target' of 'es2015' or higher.");
                 } else {
                     try self.checkArrayDestructuringAssignment(pattern, types.Primitive.string_t, hir_mod.none_node_id, 0);
                 }
             },
-            .object_pattern, .object_literal => try self.reportForInStringObjectPatternProperties(pattern),
+            .object_pattern => try self.reportForInStringObjectPatternProperties(pattern),
             else => {},
         }
     }
@@ -58667,6 +58693,108 @@ test "checker: relational op skips TS18050 on equality operators" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.nullish_relational_operand);
     }
+}
+
+test "checker: TS2678 fires when switch discriminant literal does not overlap case literal" {
+    // Mirrors `invalidSwitchBreakStatement` / `invalidSwitchContinueStatement`
+    // upstream — `switch (12) { case 5: }` reports TS2678 ("Type
+    // '5' is not comparable to type '12'."). Without narrowing the
+    // discriminant to its literal type, `12` widens to `number`
+    // and the case compares as `5 vs number` (always overlaps),
+    // silencing the diagnostic.
+    const s = try newSetup(
+        \\switch (12) {
+        \\    case 5:
+        \\        break;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.switch_case_not_comparable) saw = true;
+    }
+    try T.expect(saw);
+}
+
+test "checker: TS2678 suppressed when switch discriminant widens via variable" {
+    // Companion to the literal-vs-literal case: `switch (x)` where
+    // `x: number` must NOT fire TS2678 against `case 5:` — that
+    // shape is valid and the discriminant-narrowing path keeps the
+    // widened type for comparability.
+    const s = try newSetup(
+        \\declare const x: number;
+        \\switch (x) {
+        \\    case 5:
+        \\        break;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.switch_case_not_comparable);
+    }
+}
+
+test "checker: for-in with destructuring-LITERAL head suppresses follow-up TS2322/TS2339" {
+    // Mirrors `for-inStatementsDestructuring3/4` upstream — the
+    // parser already reports TS2491 for `for ([a, b] in [])` /
+    // `for ({a, b} in [])`, so the checker must NOT additionally
+    // type-check the (illegal) destructure as if it were iterating
+    // a string. Binding patterns (`for (let [a] in x)`) are still
+    // checked the normal way.
+    const src1 =
+        "var a, b;\n" ++
+        "for ([a, b] in []) { }\n";
+    const s1 = try newSetup(src1);
+    defer destroySetup(s1);
+    try s1.checker.checkSourceFile(s1.root);
+    for (s1.checker.diagnostics.items) |d| {
+        // No TS2322 ("Type 'string' is not assignable...") and no
+        // TS2339 ("Property 'a' does not exist on type 'String'.")
+        // should fire — the parser's TS2491 is the only diagnostic
+        // tsc emits for this shape.
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+
+    const src2 =
+        "var a, b;\n" ++
+        "for ({a, b} in []) { }\n";
+    const s2 = try newSetup(src2);
+    defer destroySetup(s2);
+    try s2.checker.checkSourceFile(s2.root);
+    for (s2.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: TS2434 anchors at namespace name, not the namespace keyword" {
+    // Mirrors `ModuleAndClassWithSameNameAndCommonRoot` upstream
+    // baseline — `namespace A { ... } class A { ... }` reports
+    // TS2434 at the namespace *name* `A` (column 11), not at the
+    // `namespace` keyword (column 1). Without the explicit name
+    // anchor, the diagnostic underlines the keyword.
+    const src =
+        "namespace A {\n" ++
+        "    export var Instance = 0;\n" ++
+        "}\n" ++
+        "class A {}\n";
+    const s = try newSetup(src);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    // `A` in `namespace A {` sits at offset 10 (zero-based) =>
+    // column 11 (one-based).
+    const name_offset: u32 = @intCast(std.mem.indexOf(u8, src, "namespace A").? + "namespace ".len);
+    var saw_at_name = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.namespace_before_merged_function) continue;
+        const anchor_pos: u32 = if (d.pos) |p| p else s.hir.spanOf(d.node).start;
+        if (anchor_pos == name_offset) saw_at_name = true;
+    }
+    try T.expect(saw_at_name);
 }
 
 test "checker: simpleDiagnosticTypeName renders undefined and null after non-nullish in union" {
