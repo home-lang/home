@@ -715,6 +715,31 @@ pub const Parser = struct {
             // declared even when emitting TS1344, and downstream code
             // shouldn't emit a phantom TS1116 on top of TS1344.
             const label_name = try self.internToken(label_tok);
+            // TS1114 "Duplicate label" — fires when the same label name
+            // already appears in an enclosing labeled-statement chain
+            // within the same function. Mirrors tsc's
+            // `parser_duplicateLabel{1,2}` baselines.
+            var dup_i: usize = self.label_stack.items.len;
+            while (dup_i > 0) {
+                dup_i -= 1;
+                const entry = self.label_stack.items[dup_i];
+                if (entry.function_depth != self.function_depth) break;
+                if (entry.name == label_name) {
+                    const lab_name_str = self.interner.get(label_name);
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Duplicate label '{s}'.",
+                        .{lab_name_str},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .pos = label_tok.span.start,
+                        .line = label_tok.line,
+                        .code = 1114,
+                        .message = msg,
+                    });
+                    break;
+                }
+            }
             try self.label_stack.append(self.gpa, .{
                 .name = label_name,
                 .function_depth = self.function_depth,
@@ -10315,6 +10340,84 @@ test "parser: break across function boundary reports TS1107" {
         if (d.code == 1107) saw_1107 += 1;
     }
     try T.expectEqual(@as(u32, 1), saw_1107);
+}
+
+test "parser: unlabeled break inside nested function reports TS1107" {
+    // The inner `break;` sits inside a nested function whose ancestor
+    // is `while (true)`. tsc treats this as a cross-function jump
+    // (TS1107) rather than a missing-target error (TS1105). Mirrors
+    // upstream `parser_breakNotInIterationOrSwitchStatement2`.
+    var s = try newTestSetup("while (true) {\n  function f() {\n    break;\n  }\n}");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_1107: u32 = 0;
+    var saw_1105: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1107) saw_1107 += 1;
+        if (d.code == 1105) saw_1105 += 1;
+    }
+    try T.expectEqual(@as(u32, 1), saw_1107);
+    try T.expectEqual(@as(u32, 0), saw_1105);
+}
+
+test "parser: duplicate label in same scope reports TS1114" {
+    // Two `target:` labels stack the same name within the same
+    // function. tsc reports TS1114 on the second occurrence. Mirrors
+    // upstream `parser_duplicateLabel1`.
+    var s = try newTestSetup("target:\ntarget:\nwhile (true) {\n}");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_1114: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1114) saw_1114 += 1;
+    }
+    try T.expectEqual(@as(u32, 1), saw_1114);
+}
+
+test "parser: duplicate label nested in same function reports TS1114" {
+    // Inner `target:` shadows the outer one within the same function;
+    // upstream tsc still flags it as a duplicate. Mirrors
+    // `parser_duplicateLabel2`.
+    var s = try newTestSetup("target:\nwhile (true) {\n  target:\n  while (true) {\n  }\n}");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_1114: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1114) saw_1114 += 1;
+    }
+    try T.expectEqual(@as(u32, 1), saw_1114);
+}
+
+test "parser: break in ambient .d.ts suppresses TS1105" {
+    // The outer TS1036 "Statements are not allowed in ambient
+    // contexts" already covers the misuse — TS1105 would be
+    // redundant. Mirrors upstream `parserBreakStatement1.d`.
+    var s = try newTestSetup("break;");
+    defer destroyTestSetup(s);
+    s.parser.is_declaration_file = true;
+
+    _ = try s.parser.parseSourceFile();
+    var saw_1105: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1105) saw_1105 += 1;
+    }
+    try T.expectEqual(@as(u32, 0), saw_1105);
+}
+
+test "parser: continue in ambient .d.ts suppresses TS1104" {
+    var s = try newTestSetup("continue;");
+    defer destroyTestSetup(s);
+    s.parser.is_declaration_file = true;
+
+    _ = try s.parser.parseSourceFile();
+    var saw_1104: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1104) saw_1104 += 1;
+    }
+    try T.expectEqual(@as(u32, 0), saw_1104);
 }
 
 test "parser: label before declaration reports TS1344" {

@@ -58826,3 +58826,67 @@ test "checker: TS2365 renders type-rich form for boolean += number" {
     }
     try T.expect(saw_rich);
 }
+
+test "checker: TS2389 anchors on the implementation's name identifier" {
+    // Mirror upstream `parserFunctionDeclaration4` — the diagnostic
+    // underlines the function name, not the `function` keyword.
+    const src = "function foo();\nfunction bar() { }\n";
+    const s = try newSetup(src);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_pos: ?u32 = null;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.function_implementation_name_mismatch) {
+            found_pos = s.checker.hir.spanOf(d.node).start;
+            break;
+        }
+    }
+    try T.expect(found_pos != null);
+    // The `b` of `bar` sits at offset 25 within the source above
+    // (`function foo();\n` is 16 bytes, then `function ` adds 9).
+    try T.expectEqual(@as(u32, 25), found_pos.?);
+}
+
+test "checker: TS1108 is suppressed in ambient .d.ts files" {
+    // `return;` inside a virtual `.d.ts` section gets TS1036 from the
+    // parser for the ambient statement; emitting TS1108 on top of it
+    // would double-report. Mirrors upstream `parserReturnStatement1.d`.
+    // The `@filename: foo.d.ts` directive makes
+    // `virtualSectionIsDeclarationFile` return true for the return.
+    const src =
+        \\// @filename: foo.d.ts
+        \\return;
+    ;
+    const s = try newSetup(src);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_1108: u32 = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.return_outside_function) saw_1108 += 1;
+    }
+    try T.expectEqual(@as(u32, 0), saw_1108);
+}
+
+test "checker: TS2347 suppressed when callee has TS2339" {
+    // `this.super<T>(0)` — the `.super` access already gets TS2339
+    // ("Property 'super' does not exist…"). tsc skips the cascading
+    // TS2347 ("Untyped function calls may not accept type arguments.")
+    // in that case. Mirrors upstream `parserSuperExpression3`.
+    const s = try newSetup(
+        \\class C {
+        \\  M() {
+        \\    this.super<number>(0);
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_2339: u32 = 0;
+    var saw_2347: u32 = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_does_not_exist) saw_2339 += 1;
+        if (d.code == TsCodes.untyped_function_type_args) saw_2347 += 1;
+    }
+    try T.expect(saw_2339 >= 1);
+    try T.expectEqual(@as(u32, 0), saw_2347);
+}
