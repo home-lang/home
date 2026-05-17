@@ -323,15 +323,18 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         };
         const formatted = try ts_diagnostics.formatDefault(gpa, fdiag);
         defer gpa.free(formatted);
-        // In exact-baseline mode, mirror the baseline-side filter for
-        // option-validation diagnostics on the actual stream: TS5101 /
-        // TS5107 (module=AMD/System/UMD) are emitted by the driver but
-        // the baseline drops them via `isOptionValidationDiagnostic`,
-        // so comparing them in apples-to-apples mode requires the same
-        // drop here. Without it, exact-mode would diff against an
-        // empty header set and the rescue path (`hasHarnessModeled…`)
-        // would have to keep covering for them indefinitely.
-        if (exact_mode and isOptionValidationDiagnostic(formatted)) continue;
+        // Mirror the baseline-side filter for option-validation
+        // diagnostics on the actual stream: TS5101 / TS5107
+        // (module=AMD/System/UMD) are emitted by the driver but the
+        // baseline drops them via `isOptionValidationDiagnostic`, so
+        // comparing them in apples-to-apples mode requires the same
+        // drop here. Applied unconditionally — when the baseline
+        // contains ONLY option-validation diagnostics, the harness
+        // collapses it to an empty `expected_errors` (the
+        // `baselineHasOnlyOptionDeprecation` short-circuit) which
+        // forces `exact_mode` off; a mode-gated filter would then
+        // leak the driver's AMD/System/UMD lines into the diff.
+        if (isOptionValidationDiagnostic(formatted)) continue;
         if (exact_mode and exactDiagnosticShouldDedup(code)) {
             const gop = try seen_keys.getOrPut(gpa, formatted);
             if (gop.found_existing) continue;
@@ -766,9 +769,12 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
             // Mirror the baseline-side option-validation filter on the
             // program path too — the driver emits TS5101 / TS5107 per
             // file now, but the baseline drops them in
-            // `isOptionValidationDiagnostic`. See the matching guard
-            // in the legacy `compileSource` path.
-            if (exact_mode and isOptionValidationDiagnostic(formatted)) {
+            // `isOptionValidationDiagnostic`. Applied unconditionally
+            // so a baseline that collapses to empty (via
+            // `baselineHasOnlyOptionDeprecation`) doesn't leak the
+            // driver's AMD/System/UMD lines into the diff. See the
+            // matching guard in the legacy `compileSource` path.
+            if (isOptionValidationDiagnostic(formatted)) {
                 gpa.free(formatted);
                 continue;
             }
@@ -3498,6 +3504,30 @@ test "conformance: option-deprecation diagnostic alone passes coarse expected-er
     });
     defer {
         T.allocator.free(r.name);
+        if (r.detail.len > 0) T.allocator.free(r.detail);
+    }
+    try T.expectEqual(Outcome.passed, r.outcome);
+}
+
+test "conformance: option-validation filter drops driver AMD diag when baseline collapses to empty" {
+    // Regression: a fixture whose upstream `.errors.txt` baseline
+    // contains ONLY option-deprecation diagnostics (e.g. `// @module: amd`
+    // sources without any real type errors) collapses to an empty
+    // `expected_errors` via `baselineHasOnlyOptionDeprecation`. The
+    // driver still emits TS5107 `Option 'module=AMD'…` per source — the
+    // actual-side filter must drop it regardless of the now-false
+    // `exact_mode` flag, otherwise the diff leaks the AMD line and
+    // the case fails. Mirrors `importCallExpressionAsyncES5AMD`.
+    const r = try run(T.allocator, .{
+        .name = "amdEmptyExpectedFixture",
+        .source =
+        \\// @module: amd
+        \\export const x = 1;
+        ,
+        .path = "amdEmptyExpectedFixture.ts",
+        .expected_errors = "",
+    });
+    defer {
         if (r.detail.len > 0) T.allocator.free(r.detail);
     }
     try T.expectEqual(Outcome.passed, r.outcome);
