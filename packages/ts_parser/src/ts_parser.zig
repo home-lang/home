@@ -13003,6 +13003,40 @@ test "parser: es2015 static call reports reserved identifier diagnostic" {
     try T.expectEqual(@as(u32, 1212), s.parser.diagnostics.items[0].code);
 }
 
+test "parser: 'public' in object-literal computed key reports TS1212" {
+    // Mirrors `parserComputedPropertyName37.ts`: `var v = { [public]: 0 }`.
+    // The reserved word is a valid identifier expression in strict mode,
+    // so the parser must emit TS1212 (not TS1109) and synthesize an
+    // identifier so the checker reports TS2304.
+    var s = try newTestSetup("var v = { [public]: 0 };");
+    defer destroyTestSetup(s);
+
+    s.parser.setTargetEs2015OrLater(true);
+    _ = try s.parser.parseSourceFile();
+    var found_1212 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1212) found_1212 = true;
+    }
+    try T.expect(found_1212);
+}
+
+test "parser: 'public' in class-body computed method reports TS1213" {
+    // Mirrors `parserComputedPropertyName38.ts`: `class C { [public]() {} }`.
+    // Class bodies are auto-strict, so the diagnostic is TS1213 instead of
+    // TS1212. Recovery still produces an identifier so the checker emits
+    // TS2304 at the same position.
+    var s = try newTestSetup("class C { [public]() {} }");
+    defer destroyTestSetup(s);
+
+    s.parser.setTargetEs2015OrLater(true);
+    _ = try s.parser.parseSourceFile();
+    var found_1213 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1213) found_1213 = true;
+    }
+    try T.expect(found_1213);
+}
+
 test "parser: top-level protected class reports modifier diagnostic and recovers" {
     var s = try newTestSetup("protected class C {}");
     defer destroyTestSetup(s);

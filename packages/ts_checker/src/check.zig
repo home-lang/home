@@ -33546,8 +33546,7 @@ pub const Checker = struct {
                 if (operand_kind != .member_access and operand_kind != .element_access) {
                     try self.report(u.operand, TsCodes.delete_operand_property_reference, "The operand of a 'delete' operator must be a property reference.");
                 } else if (self.strict_flags.strict_null_checks and !self.deleteOperandAllowed(u.operand)) {
-                    const pos = self.symbolOperandAnchorPos(u.operand);
-                    try self.reportAt(u.operand, pos, TsCodes.delete_operand_must_be_optional, "The operand of a 'delete' operator must be optional.");
+                    try self.report(u.operand, TsCodes.delete_operand_must_be_optional, "The operand of a 'delete' operator must be optional.");
                 }
                 break :blk types.Primitive.boolean_t;
             },
@@ -35075,6 +35074,15 @@ pub const Checker = struct {
                     const arena_u = self.diag_arena.allocator();
                     var first = true;
                     var ok = true;
+                    // Mirrors tsc's display order: non-nullish members
+                    // first, then `null`, then `undefined`. Without
+                    // this, parameter targets like `number | undefined`
+                    // render as `undefined | number` because the
+                    // interner sorts members by ascending TypeId and
+                    // `undefined`'s primitive id is lower than
+                    // `number`'s. Fixture: `callWithSpread5.ts(6,4)`.
+                    var has_null = false;
+                    var has_undef = false;
                     // Textual dedup — distinct TypeIds can render to the
                     // same label (`string_t` vs a separately-interned
                     // string-flagged type); we should only mention each
@@ -35082,6 +35090,14 @@ pub const Checker = struct {
                     var seen_names: std.ArrayListUnmanaged([]const u8) = .empty;
                     defer seen_names.deinit(self.gpa);
                     for (self.interner.unionMembers(t)) |member| {
+                        if (member == types.Primitive.null_t) {
+                            has_null = true;
+                            continue;
+                        }
+                        if (member == types.Primitive.undefined_t) {
+                            has_undef = true;
+                            continue;
+                        }
                         const member_name = (try self.simpleDiagnosticTypeName(member)) orelse {
                             ok = false;
                             break;
@@ -35099,7 +35115,18 @@ pub const Checker = struct {
                         first = false;
                         try union_buf.appendSlice(arena_u, member_name);
                     }
-                    if (!ok or union_buf.items.len == 0) break :blk null;
+                    if (!ok) break :blk null;
+                    if (has_null) {
+                        if (!first) try union_buf.appendSlice(arena_u, " | ");
+                        first = false;
+                        try union_buf.appendSlice(arena_u, "null");
+                    }
+                    if (has_undef) {
+                        if (!first) try union_buf.appendSlice(arena_u, " | ");
+                        first = false;
+                        try union_buf.appendSlice(arena_u, "undefined");
+                    }
+                    if (union_buf.items.len == 0) break :blk null;
                     break :blk union_buf.items;
                 }
                 // Fixed-width tuples (`[any, any]`, `[number, string]`,
@@ -52768,17 +52795,55 @@ test "checker: computed auto-accessor class member skips TS1166" {
     }
 }
 
-test "checker: unresolved computed class property key suppresses follow-on TS1166 and TS2564" {
+test "checker: unresolved computed class property key still emits TS2564 when annotation is resolved" {
+    // `class C { [e]: number }` — `e` is unresolved (TS2304) but the
+    // field's annotation (`number`) is fully analyzable, so strict
+    // property initialization still fires TS2564 against the field.
+    // TS1166 ("must have a simple literal or 'unique symbol' type")
+    // stays suppressed because the key is unresolved. Mirrors
+    // `parserComputedPropertyName31.ts` baseline.
     const s = try newSetup("class C { [e]: number }");
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_property_initialization = true, .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     var saw_missing = false;
+    var saw_uninit = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.cannot_find_name) saw_missing = true;
+        if (d.code == TsCodes.property_not_initialized) saw_uninit = true;
         try T.expect(d.code != 1166);
-        try T.expect(d.code != TsCodes.property_not_initialized);
     }
     try T.expect(saw_missing);
+    try T.expect(saw_uninit);
+}
+
+test "checker: TS2564 suppressed when computed-field annotation is unresolved" {
+    // `class C { [e]: Type }` — both `e` and `Type` are unresolved.
+    // tsc skips TS2564 in this case since the field's type cannot be
+    // analyzed; we still report both TS2304 diagnostics. Mirrors
+    // `parserComputedPropertyName9.ts` baseline.
+    const s = try newSetup("class C { [e]: Type }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_not_initialized);
+    }
+}
+
+test "checker: TS2564 renders computed key text including trailing whitespace" {
+    // `class C { [public ]: string; }` — the rendered message uses the
+    // source text between `[` and `]`, preserving the trailing space.
+    // Mirrors `parserComputedPropertyName36.ts` baseline.
+    const s = try newSetup("class C { [public ]: string; }");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_property_initialization = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var saw = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.property_not_initialized) continue;
+        if (std.mem.indexOf(u8, d.message, "'[public ]'") != null) saw = true;
+    }
+    try T.expect(saw);
 }
 
 test "checker: dynamic computed class field still checks type annotation" {
@@ -56820,14 +56885,11 @@ test "checker: comma sequence propagates contextual type only to RHS arrow" {
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
     var saw_a = false;
-    var saw_b = false;
     for (s.checker.diagnostics.items) |diag| {
         if (diag.code != TsCodes.parameter_implicitly_any) continue;
         if (std.mem.indexOf(u8, diag.message, "'a'") != null) saw_a = true;
-        if (std.mem.indexOf(u8, diag.message, "'b'") != null) saw_b = true;
     }
     try T.expect(saw_a);
-    _ = saw_b;
 }
 
 test "checker: tuple out-of-bounds diagnostic renders tuple display" {
@@ -58275,4 +58337,22 @@ test "checker: relational op skips TS18050 on equality operators" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.nullish_relational_operand);
     }
+}
+
+test "checker: simpleDiagnosticTypeName renders undefined and null after non-nullish in union" {
+    // Direct unit test on the union-shape renderer used by TS2345 /
+    // TS2322 prose. Ensures `number | undefined` / `string | null`
+    // are rendered with the nullish member LAST regardless of
+    // interner-id ordering — `undefined`'s primitive TypeId (6) is
+    // numerically lower than `number`'s (8), so naive iteration
+    // order would produce `undefined | number`.
+    const s = try newSetup(";");
+    defer destroySetup(s);
+    const union_a = try s.checker.interner.internUnion(&.{ types.Primitive.undefined_t, types.Primitive.number_t });
+    const name_a = (try s.checker.simpleDiagnosticTypeName(union_a)) orelse return error.TestUnexpectedResult;
+    try T.expectEqualStrings("number | undefined", name_a);
+
+    const union_b = try s.checker.interner.internUnion(&.{ types.Primitive.null_t, types.Primitive.string_t });
+    const name_b = (try s.checker.simpleDiagnosticTypeName(union_b)) orelse return error.TestUnexpectedResult;
+    try T.expectEqualStrings("string | null", name_b);
 }

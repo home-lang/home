@@ -47,12 +47,18 @@ pub fn renderTypeInto(
         return;
     }
     const flags = ti.pool.flagsOf(id);
-    if (flags.is_any) return buf.appendSlice(gpa, "any");
-    if (flags.is_unknown) return buf.appendSlice(gpa, "unknown");
-    if (flags.is_never) return buf.appendSlice(gpa, "never");
-    if (flags.is_void) return buf.appendSlice(gpa, "void");
-    if (flags.is_null) return buf.appendSlice(gpa, "null");
-    if (flags.is_undefined) return buf.appendSlice(gpa, "undefined");
+    // Union flags OR-merge their constituents, so guard the
+    // primitive shortcuts against `is_union` — otherwise a union
+    // like `string | null` would render as `null` here. The union
+    // branch below handles each constituent recursively.
+    if (!flags.is_union and !flags.is_intersection) {
+        if (flags.is_any) return buf.appendSlice(gpa, "any");
+        if (flags.is_unknown) return buf.appendSlice(gpa, "unknown");
+        if (flags.is_never) return buf.appendSlice(gpa, "never");
+        if (flags.is_void) return buf.appendSlice(gpa, "void");
+        if (flags.is_null) return buf.appendSlice(gpa, "null");
+        if (flags.is_undefined) return buf.appendSlice(gpa, "undefined");
+    }
     if (flags.is_literal) {
         const lit = ti.literalOf(id);
         switch (lit) {
@@ -125,10 +131,37 @@ pub fn renderTypeInto(
         return;
     }
     if (flags.is_union) {
+        // Render order mirrors tsc: regular members in their
+        // interner order first, then `null`, then `undefined`.
+        // Without this, `T | undefined` parameter targets render as
+        // `undefined | T` because `undefined`'s primitive TypeId is
+        // numerically smaller. Fixture: `callWithSpread5.ts(6,4)`.
         const members = ti.unionMembers(id);
-        for (members, 0..) |m, i| {
-            if (i > 0) try buf.appendSlice(gpa, " | ");
+        var first = true;
+        var has_null = false;
+        var has_undefined = false;
+        for (members) |m| {
+            const mf = ti.pool.flagsOf(m);
+            if (mf.is_null) {
+                has_null = true;
+                continue;
+            }
+            if (mf.is_undefined) {
+                has_undefined = true;
+                continue;
+            }
+            if (!first) try buf.appendSlice(gpa, " | ");
             try renderTypeInto(buf, gpa, ti, sint, m, depth + 1);
+            first = false;
+        }
+        if (has_null) {
+            if (!first) try buf.appendSlice(gpa, " | ");
+            try buf.appendSlice(gpa, "null");
+            first = false;
+        }
+        if (has_undefined) {
+            if (!first) try buf.appendSlice(gpa, " | ");
+            try buf.appendSlice(gpa, "undefined");
         }
         return;
     }
@@ -182,6 +215,22 @@ test "renderType: union" {
     try T.expect(std.mem.indexOf(u8, out, "number") != null);
     try T.expect(std.mem.indexOf(u8, out, "string") != null);
     try T.expect(std.mem.indexOf(u8, out, " | ") != null);
+}
+
+test "renderType: union renders undefined and null after non-nullish members" {
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const u = try ti.internUnion(&.{ types.Primitive.undefined_t, types.Primitive.number_t });
+    const out = try renderType(T.allocator, &ti, &sint, u);
+    defer T.allocator.free(out);
+    try T.expectEqualStrings("number | undefined", out);
+
+    const u_nu = try ti.internUnion(&.{ types.Primitive.null_t, types.Primitive.undefined_t, types.Primitive.string_t });
+    const out2 = try renderType(T.allocator, &ti, &sint, u_nu);
+    defer T.allocator.free(out2);
+    try T.expectEqualStrings("string | null | undefined", out2);
 }
 
 test "renderType: object with method-shorthand member" {
