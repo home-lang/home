@@ -13485,9 +13485,21 @@ pub const Checker = struct {
         parent_class_name: ?hir_mod.StringId,
         member_name: hir_mod.StringId,
     ) CheckError!void {
-        const parent_name = parent_class_name orelse return;
-        const parent_accessors = self.class_accessor_members.getPtr(parent_name) orelse return;
-        if (!parent_accessors.contains(member_name)) return;
+        var parent_name = parent_class_name orelse return;
+        // Walk the `extends` chain so TS2610 fires for grandparent
+        // accessor declarations too (mirrors propertyOverridesAccessors6
+        // where `C extends B extends A` and only `A` declares the
+        // getter). Stop walking if a class declares `member_name` as a
+        // data property first — that path uses TS2611 instead.
+        while (true) {
+            if (self.class_property_members.getPtr(parent_name)) |props| {
+                if (props.contains(member_name)) return;
+            }
+            if (self.class_accessor_members.getPtr(parent_name)) |acc| {
+                if (acc.contains(member_name)) break;
+            }
+            parent_name = self.class_parent.get(parent_name) orelse return;
+        }
         // Match tsc's full TS2610 message:
         //   `'<member>' is defined as an accessor in class '<parent>',
         //    but is overridden here in '<derived>' as an instance property.`
@@ -13537,9 +13549,23 @@ pub const Checker = struct {
         parent_class_name: ?hir_mod.StringId,
         member_name: hir_mod.StringId,
     ) CheckError!void {
-        const parent_name = parent_class_name orelse return;
-        const parent_props = self.class_property_members.getPtr(parent_name) orelse return;
-        if (!parent_props.contains(member_name)) return;
+        var parent_name = parent_class_name orelse return;
+        // Walk the `extends` chain to find the nearest ancestor that
+        // declares `member_name` as a data property — TS2611 fires for
+        // grandparent declarations too (mirrors accessorsOverrideProperty10
+        // where `C extends B extends A` and only `A` declares `x`).
+        // Stop walking if any class on the chain declares `member_name`
+        // as an accessor (then the property-vs-accessor mismatch is a
+        // different diagnostic, TS2610) or as abstract (ambient).
+        while (true) {
+            if (self.class_accessor_members.getPtr(parent_name)) |acc| {
+                if (acc.contains(member_name)) return;
+            }
+            if (self.class_property_members.getPtr(parent_name)) |props| {
+                if (props.contains(member_name)) break;
+            }
+            parent_name = self.class_parent.get(parent_name) orelse return;
+        }
         if (self.class_abstract_members.getPtr(parent_name)) |parent_abs| {
             if (parent_abs.contains(member_name)) return;
         }
@@ -45451,6 +45477,42 @@ test "checker: class accessor overriding base property emits TS2611" {
     var found = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.accessor_overrides_property) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: TS2611 walks the extends chain for grandparent property declarations" {
+    // Mirrors accessorsOverrideProperty10.ts(6,7) — `C extends B extends A`
+    // and only `A` declares the data property `x`, but `C`'s accessor
+    // still triggers TS2611 against the inherited property.
+    const s = try newSetup(
+        \\class A { x = 1; }
+        \\class B extends A {}
+        \\class C extends B { get x() { return 2; } }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.accessor_overrides_property) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: TS2610 walks the extends chain for grandparent accessor declarations" {
+    // Mirrors propertyOverridesAccessors6.ts(8,3) — `C extends B extends A`
+    // and only `A` declares the getter; `C`'s data property still
+    // triggers TS2610 against the inherited accessor.
+    const s = try newSetup(
+        \\class A { get x() { return 2; } }
+        \\class B extends A {}
+        \\class C extends B { x = 1; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_overrides_accessor) found = true;
     }
     try T.expect(found);
 }
