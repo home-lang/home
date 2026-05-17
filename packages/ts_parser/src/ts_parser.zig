@@ -2297,6 +2297,13 @@ pub const Parser = struct {
                     self.param_initializer_depth += 1;
                     defer self.param_initializer_depth -= 1;
                     default_value = try self.parseAssignmentExpression();
+                    // TS1015: A parameter cannot have both a `?`
+                    // optional marker and an `= default` initializer.
+                    // tsc anchors at the parameter's start span.
+                    // Mirrors upstream `parserParameterList2`.
+                    if (flags.is_optional) {
+                        try self.reportCodeAt(param_start.span.start, param_start.line, 1015, "Parameter cannot have question mark and initializer.");
+                    }
                 }
                 const param = try self.builder.addParameterWithDecorators(
                     .{ .start = param_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
@@ -3027,11 +3034,20 @@ pub const Parser = struct {
                 if (is_generator or self.peek().kind == .open_paren or self.peek().kind == .less_than) {
                     var type_params: []NodeId = &.{};
                     var owns_tps = false;
+                    var type_params_open_tok: ?Token = null;
                     if (self.peek().kind == .less_than) {
+                        type_params_open_tok = self.peek();
                         type_params = try self.parseTypeParameterDeclaration();
                         owns_tps = true;
                     }
                     defer if (owns_tps) self.gpa.free(type_params);
+                    // TS1092: `constructor<T>()` is forbidden — tsc anchors
+                    // at the opening `<` of the type parameter list.
+                    // Mirrors `parserConstructorDeclaration9`.
+                    if (name_tok.kind == .kw_constructor and type_params_open_tok != null) {
+                        const at = type_params_open_tok.?;
+                        try self.reportCodeAt(at.span.start, at.line, 1092, "Type parameters cannot appear on a constructor declaration.");
+                    }
                     const params = try self.parseParameterList();
                     defer self.gpa.free(params);
                     var return_type: NodeId = hir_mod.none_node_id;
@@ -3078,6 +3094,14 @@ pub const Parser = struct {
                             try self.reportCodeAt(at.span.start, at.line, 1089, "'async' modifier cannot appear on a constructor declaration.");
                         }
                     }
+                    // TS1089: `static constructor` is forbidden — tsc anchors
+                    // at the `static` keyword. Mirrors
+                    // `parserConstructorDeclaration2`.
+                    if (name_tok.kind == .kw_constructor and mods.is_static) {
+                        if (mods.static_token) |at| {
+                            try self.reportCodeAt(at.span.start, at.line, 1089, "'static' modifier cannot appear on a constructor declaration.");
+                        }
+                    }
                     // TS1242: `abstract constructor` is forbidden even inside
                     // abstract classes — `abstract` may only appear on a
                     // class, method, or property declaration. tsc anchors at
@@ -3087,6 +3111,13 @@ pub const Parser = struct {
                             try self.reportCodeAt(at.span.start, at.line, 1242, "'abstract' modifier can only appear on a class, method, or property declaration.");
                         }
                     }
+                    // TS1031: `export` / `declare` (and other modifiers tsc
+                    // tags as invalid on class members of this kind) anchor
+                    // here for method/constructor parsing. Accessors call
+                    // the same helper above. Mirrors upstream
+                    // `parserConstructorDeclaration{3,4}` and
+                    // `parserMemberFunctionDeclaration4`.
+                    try self.reportInvalidClassElementModifier(mods);
                     const name_id = try self.internPropertyName(name_tok, name_span);
                     const name_node = try self.builder.addIdentifier(name_span, name_id);
                     const fn_node = try self.builder.addFnDeclGeneric(
@@ -3123,6 +3154,10 @@ pub const Parser = struct {
                 var default_value: NodeId = hir_mod.none_node_id;
                 if (self.match(.equal)) default_value = try self.parseAssignmentExpression();
                 try self.consumeStatementTerminator();
+                // TS1031: `export` / `declare` on a class member property
+                // (e.g. `export Foo;`). Mirrors upstream
+                // `parserMemberVariableDeclaration4`.
+                try self.reportInvalidClassElementModifier(mods);
                 const name_id = try self.internPropertyName(name_tok, name_span);
                 const name_node = try self.builder.addIdentifier(name_span, name_id);
                 const prop = try self.builder.addObjectPropertyFullEx(
@@ -3214,6 +3249,7 @@ pub const Parser = struct {
         invalid_class_element_modifier: ?Token = null,
         async_token: ?Token = null,
         abstract_token: ?Token = null,
+        static_token: ?Token = null,
         reported_duplicate_accessibility: bool = false,
     };
 
@@ -3272,6 +3308,7 @@ pub const Parser = struct {
                             try self.reportCodeAt(mod.span.start, mod.line, 1434, "Unexpected keyword or identifier.");
                         }
                         mods.is_static = true;
+                        if (mods.static_token == null) mods.static_token = mod;
                         continue;
                     },
                     .kw_async => {
