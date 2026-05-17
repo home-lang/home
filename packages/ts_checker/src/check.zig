@@ -62762,3 +62762,4 @@ test "checker: default export merging with mixed export status emits TS2395 too"
     try T.expectEqual(@as(usize, 2), count_2652);
     try T.expectEqual(@as(usize, 2), count_2395);
 }
+
