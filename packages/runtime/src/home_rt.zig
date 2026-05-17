@@ -64,6 +64,7 @@ pub const jsc = struct {
     pub const GetterSetter = @import("jsc/GetterSetter.zig").GetterSetter;
     pub const StaticExport = @import("jsc/static_export.zig");
     pub const ErrorCode = @import("jsc/ErrorCode.zig").ErrorCode;
+    pub const CommonAbortReason = @import("jsc/CommonAbortReason.zig").CommonAbortReason;
 };
 
 // ---- src/io/ -----------------------------------------------------------
@@ -136,6 +137,8 @@ pub const sql = struct {
         pub const SSLMode = @import("sql/postgres/SSLMode.zig").SSLMode;
         pub const Status = @import("sql/postgres/Status.zig").Status;
         pub const TLSStatus = @import("sql/postgres/TLSStatus.zig").TLSStatus;
+        pub const AnyPostgresError = @import("sql/postgres/AnyPostgresError.zig").AnyPostgresError;
+        pub const PostgresErrorOptions = @import("sql/postgres/AnyPostgresError.zig").PostgresErrorOptions;
         pub const types = struct {
             pub const int_types = @import("sql/postgres/types/int_types.zig");
         };
