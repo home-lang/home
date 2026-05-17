@@ -9519,7 +9519,8 @@ pub const Checker = struct {
                     std.mem.eql(u8, raw, "bigint") or
                     std.mem.eql(u8, raw, "symbol") or
                     std.mem.eql(u8, raw, "object") or
-                    self.isBuiltinName(r.name))
+                    self.isBuiltinName(r.name) or
+                    self.isLibEs5TypeName(raw))
                 {
                     return;
                 }
@@ -13393,7 +13394,22 @@ pub const Checker = struct {
         defer inherited.deinit(self.gpa);
         for (parent_members) |pm| {
             if (child_by_name.get(pm.name)) |cm| {
-                if (!(try self.heritageMemberAssignable(cm.type, pm.type))) {
+                // Methods declared with method shorthand (`foo()` rather
+                // than `foo: () => void`) compare bivariantly in tsc —
+                // an override is permitted if EITHER direction assigns,
+                // regardless of `strictFunctionTypes`. This pins
+                // `derivedClassOverridesPublicMembers` /
+                // `derivedClassOverridesProtectedMembers` where the
+                // child method widens a parameter type and TS does NOT
+                // emit TS2416. Properties (data fields, function-typed
+                // properties) keep the standard one-way check.
+                const both_methods = pm.is_method and cm.is_method;
+                const assignable = if (both_methods)
+                    (try self.heritageMemberAssignable(cm.type, pm.type)) or
+                        (try self.heritageMemberAssignable(pm.type, cm.type))
+                else
+                    try self.heritageMemberAssignable(cm.type, pm.type);
+                if (!assignable) {
                     const prop_str = self.string_interner.get(pm.name);
                     const msg = try self.allocPropertyNotAssignableToBaseMessage(child_node, prop_str, parent_t);
                     // Anchor at the *child's* property declaration so
@@ -13486,8 +13502,24 @@ pub const Checker = struct {
         member_name: hir_mod.StringId,
     ) CheckError!void {
         const parent_name = parent_class_name orelse return;
-        const parent_accessors = self.class_accessor_members.getPtr(parent_name) orelse return;
-        if (!parent_accessors.contains(member_name)) return;
+        // Walk the `extends` chain so TS2610 fires for grandparent
+        // accessor declarations too (mirrors propertyOverridesAccessors6
+        // where `C extends B extends A` and only `A` declares the
+        // getter). Stop walking if a class declares `member_name` as a
+        // data property first — that path uses TS2611 instead. The
+        // diagnostic prose names the direct parent — tsc reports against
+        // the declared base class regardless of which ancestor originally
+        // defined the accessor.
+        var ancestor = parent_name;
+        while (true) {
+            if (self.class_property_members.getPtr(ancestor)) |props| {
+                if (props.contains(member_name)) return;
+            }
+            if (self.class_accessor_members.getPtr(ancestor)) |acc| {
+                if (acc.contains(member_name)) break;
+            }
+            ancestor = self.class_parent.get(ancestor) orelse return;
+        }
         // Match tsc's full TS2610 message:
         //   `'<member>' is defined as an accessor in class '<parent>',
         //    but is overridden here in '<derived>' as an instance property.`
@@ -13538,9 +13570,27 @@ pub const Checker = struct {
         member_name: hir_mod.StringId,
     ) CheckError!void {
         const parent_name = parent_class_name orelse return;
-        const parent_props = self.class_property_members.getPtr(parent_name) orelse return;
-        if (!parent_props.contains(member_name)) return;
-        if (self.class_abstract_members.getPtr(parent_name)) |parent_abs| {
+        // Walk the `extends` chain to find the nearest ancestor that
+        // declares `member_name` as a data property — TS2611 fires for
+        // grandparent declarations too (mirrors accessorsOverrideProperty10
+        // where `C extends B extends A` and only `A` declares `x`).
+        // Stop walking if any class on the chain declares `member_name`
+        // as an accessor (then the property-vs-accessor mismatch is a
+        // different diagnostic, TS2610) or as abstract (ambient). The
+        // diagnostic prose names the direct parent — tsc reports against
+        // the declared base class regardless of which ancestor originally
+        // defined the property.
+        var ancestor = parent_name;
+        while (true) {
+            if (self.class_accessor_members.getPtr(ancestor)) |acc| {
+                if (acc.contains(member_name)) return;
+            }
+            if (self.class_property_members.getPtr(ancestor)) |props| {
+                if (props.contains(member_name)) break;
+            }
+            ancestor = self.class_parent.get(ancestor) orelse return;
+        }
+        if (self.class_abstract_members.getPtr(ancestor)) |parent_abs| {
             if (parent_abs.contains(member_name)) return;
         }
         // Match tsc's full TS2611 message:
@@ -30682,6 +30732,41 @@ pub const Checker = struct {
         return false;
     }
 
+    /// Common type-only names from `lib.es5.d.ts` (and friends) that
+    /// appear in v0 fixtures as bodyless-signature type annotations.
+    /// Without this whitelist, `reportUnresolvedBodylessSignatureTypeRefs`
+    /// emits a spurious TS2304 for e.g. `PropertyDescriptor`,
+    /// `DecoratorContext`, `ClassDecorator`, etc., which TS recognizes
+    /// from the default lib. Add new names here as fixtures surface
+    /// them; the list is intentionally narrow (no value-namespace
+    /// entries — those live in `isBuiltinName`).
+    fn isLibEs5TypeName(self: *const Checker, raw: []const u8) bool {
+        _ = self;
+        const names = [_][]const u8{
+            "PropertyDescriptor",
+            "PropertyDescriptorMap",
+            "DecoratorContext",
+            "ClassDecorator",
+            "ClassFieldDecoratorContext",
+            "ClassGetterDecoratorContext",
+            "ClassSetterDecoratorContext",
+            "ClassMethodDecoratorContext",
+            "ClassAccessorDecoratorContext",
+            "ClassAccessorDecoratorTarget",
+            "ClassAccessorDecoratorResult",
+            "ClassDecoratorContext",
+            "ClassMemberDecoratorContext",
+            "ThisType",
+            "FlatArray",
+            "Thenable",
+            "Lock",
+        };
+        for (names) |n| {
+            if (std.mem.eql(u8, raw, n)) return true;
+        }
+        return false;
+    }
+
     fn isNodeCommonJsGlobalName(self: *const Checker, name: hir_mod.StringId) bool {
         const s = self.string_interner.get(name);
         const names = [_][]const u8{
@@ -45451,6 +45536,78 @@ test "checker: class accessor overriding base property emits TS2611" {
     var found = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.accessor_overrides_property) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: TS2611 walks the extends chain for grandparent property declarations" {
+    // Mirrors accessorsOverrideProperty10.ts(6,7) — `C extends B extends A`
+    // and only `A` declares the data property `x`, but `C`'s accessor
+    // still triggers TS2611 against the inherited property.
+    const s = try newSetup(
+        \\class A { x = 1; }
+        \\class B extends A {}
+        \\class C extends B { get x() { return 2; } }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.accessor_overrides_property) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: bodyless signature with PropertyDescriptor annotation does not emit TS2304" {
+    // Mirrors decoratorOnClassProperty13: `declare function dec(...,
+    // desc: PropertyDescriptor)` references a lib.es5 global type;
+    // without the whitelist, the bodyless-signature scan would emit
+    // TS2304 for the unresolved name.
+    const s = try newSetup(
+        \\declare function dec(target: any, propertyKey: string, desc: PropertyDescriptor): void;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name) {
+            const msg = d.message;
+            try T.expect(std.mem.indexOf(u8, msg, "PropertyDescriptor") == null);
+        }
+    }
+}
+
+test "checker: TS2416 method override is bivariant (no diagnostic on widened parameter)" {
+    // Mirrors derivedClassOverridesPublicMembers: tsc uses bivariance
+    // for method-shorthand overrides — `Derived.b(a: typeof y)` overrides
+    // `Base.b(a: typeof x)` (y wider than x) without TS2416. Properties
+    // and function-typed fields still use strict assignability.
+    const s = try newSetup(
+        \\var x: { foo: string; };
+        \\var y: { foo: string; bar: string; };
+        \\class Base { b(a: typeof x) { } }
+        \\class Derived extends Base { b(a: typeof y) { } }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_not_assignable_to_base);
+    }
+}
+
+test "checker: TS2610 walks the extends chain for grandparent accessor declarations" {
+    // Mirrors propertyOverridesAccessors6.ts(8,3) — `C extends B extends A`
+    // and only `A` declares the getter; `C`'s data property still
+    // triggers TS2610 against the inherited accessor.
+    const s = try newSetup(
+        \\class A { get x() { return 2; } }
+        \\class B extends A {}
+        \\class C extends B { x = 1; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_overrides_accessor) found = true;
     }
     try T.expect(found);
 }
