@@ -3225,6 +3225,14 @@ pub const Parser = struct {
                             try self.reportCodeAt(at.span.start, at.line, 1242, "'abstract' modifier can only appear on a class, method, or property declaration.");
                         }
                     }
+                    // TS1368: `*constructor()` — the constructor cannot be
+                    // a generator. The leading `*` was consumed into
+                    // `is_generator` before the `constructor` name. tsc
+                    // anchors at the `constructor` keyword, NOT at the
+                    // `*`. Mirrors `constructorNameInGenerator.ts(2,6)`.
+                    if (name_tok.kind == .kw_constructor and is_generator) {
+                        try self.reportCodeAt(name_tok.span.start, name_tok.line, 1368, "Class constructor may not be a generator.");
+                    }
                     // TS1031: `export` / `declare` (and other modifiers tsc
                     // tags as invalid on class members of this kind) anchor
                     // here for method/constructor parsing. Accessors call
@@ -15157,6 +15165,23 @@ test "parser: 'declare module \"Foo\" {}' does not report TS1035" {
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1035);
     }
+}
+
+test "parser: '*constructor()' reports TS1368 anchored at the constructor name" {
+    // The `*` marker captured in `is_generator` is followed by the
+    // `constructor` name. Constructors cannot be generators; tsc
+    // anchors TS1368 at the `constructor` keyword (NOT at the `*`).
+    // Mirrors `constructorNameInGenerator.ts(2,6)`.
+    const src = "class C2 {\n    *constructor() {}\n}";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const expected_pos: u32 = @intCast(std.mem.indexOf(u8, src, "constructor").?);
+    var saw_ts1368 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1368 and d.pos == expected_pos) saw_ts1368 = true;
+    }
+    try T.expect(saw_ts1368);
 }
 
 test "parser: 'declare Foo() {}' inside a class body reports TS1183 at the body brace" {
