@@ -8882,6 +8882,50 @@ pub const Parser = struct {
                 }
             }
             const method_is_generator = self.match(.asterisk);
+            // Generator-method shorthand requires a property-name token
+            // (or `[` for a computed key) after `*`. When the next
+            // token cannot start a property name, tsc reports
+            // `TS1003 Identifier expected.` at that token and stops
+            // parsing this property. Matches FunctionPropertyAssignments
+            // {2,3,4,6}_es6 baselines (`var v = { * ... }` forms with
+            // `*(`, `*{`, `* }`, or `*<T>()`).
+            if (method_is_generator) {
+                const next_kind = self.peek().kind;
+                const can_start_method_name = switch (next_kind) {
+                    .identifier,
+                    .private_identifier,
+                    .string_literal,
+                    .number_literal,
+                    .open_bracket,
+                    => true,
+                    else => next_kind.isKeyword() or next_kind.isContextualKeyword(),
+                };
+                if (!can_start_method_name) {
+                    const bad = self.peek();
+                    try self.reportCodeAt(bad.span.start, bad.line, 1003, "Identifier expected.");
+                    // Skip ahead until the next `,` or the OUTER
+                    // closing `}` so the object-literal scan can
+                    // close cleanly. Tracks nested `{`/`(`/`[` depth
+                    // so a synthetic method body (`{}`), parameter
+                    // list (`()`), or type-arg list (`<>`) doesn't
+                    // confuse the scan into terminating early.
+                    // Mirrors tsc which silently consumes the broken
+                    // property and resumes at the next list item.
+                    var depth: u32 = 0;
+                    while (self.peek().kind != .eof) {
+                        const k = self.peek().kind;
+                        if (depth == 0 and (k == .close_brace or k == .comma)) break;
+                        if (k == .open_brace or k == .open_paren or k == .open_bracket) {
+                            depth += 1;
+                        } else if (k == .close_brace or k == .close_paren or k == .close_bracket) {
+                            if (depth > 0) depth -= 1;
+                        }
+                        _ = self.advance();
+                    }
+                    if (!self.match(.comma)) break;
+                    continue;
+                }
+            }
             // Spread element: `...expr`. Wrap in a `.spread` node so
             // diagnostics anchored at the prop point at the `...` token
             // (matching upstream tsc's TS2698 column position).
@@ -14117,4 +14161,38 @@ test "parser: TS1222 generator overload reports at asterisk column not function 
         }
     }
     try T.expect(saw_ts1222_at_asterisk);
+}
+
+test "parser: object-literal generator '*' without property name reports TS1003" {
+    // Mirrors FunctionPropertyAssignments{2,3,4,6}_es6 baselines:
+    // when an object literal contains `*` followed by something that
+    // cannot start a method name (`(`, `{`, `}`, `<`), tsc reports
+    // TS1003 'Identifier expected.' anchored at that next token.
+    const Case = struct {
+        source: []const u8,
+        expected_pos: u32,
+    };
+    const cases = [_]Case{
+        // `var v = { *() { } }` — `(` is byte 11.
+        .{ .source = "var v = { *() { } }", .expected_pos = 11 },
+        // `var v = { *{ } }` — `{` is byte 11.
+        .{ .source = "var v = { *{ } }", .expected_pos = 11 },
+        // `var v = { * }` — `}` is byte 12.
+        .{ .source = "var v = { * }", .expected_pos = 12 },
+        // `var v = { *<T>() { } }` — `<` is byte 11.
+        .{ .source = "var v = { *<T>() { } }", .expected_pos = 11 },
+    };
+    for (cases) |c| {
+        var s = try newTestSetup(c.source);
+        defer destroyTestSetup(s);
+        _ = s.parser.parseSourceFile() catch {};
+        var saw_ts1003_at_expected = false;
+        for (s.parser.diagnostics.items) |d| {
+            if (d.code == 1003 and d.pos == c.expected_pos) saw_ts1003_at_expected = true;
+            // The TS1109 'expected (' fallback must NOT fire — that
+            // was the pre-fix diagnostic shape upstream did not have.
+            try T.expect(d.code != 1109);
+        }
+        try T.expect(saw_ts1003_at_expected);
+    }
 }

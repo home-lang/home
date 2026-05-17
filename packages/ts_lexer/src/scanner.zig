@@ -99,6 +99,15 @@ pub const Scanner = struct {
     /// `.eof` so the first token in a file is treated as
     /// expression-allowed.
     last_significant_kind: TokenKind,
+    /// Set by `scanEscapedUnicodeCodePoint` when a malformed
+    /// `\u{…}` escape has already been reported AND the offending
+    /// character would otherwise tip the outer string/template scan
+    /// into an "unterminated literal" follow-on diagnostic. Mirrors
+    /// tsc: TS1199 / TS1125 on a malformed extended-unicode escape
+    /// suppresses TS1002 / TS1160 on the same literal so the user
+    /// sees one specific error instead of two stacked ones. Cleared
+    /// at the start of each `scanString` / `scanTemplate` call.
+    suppress_unterminated_literal: bool,
 
     pub fn init(gpa: std.mem.Allocator, source: []const u8) Scanner {
         return .{
@@ -112,6 +121,7 @@ pub const Scanner = struct {
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
             .template_brace_stack = .empty,
             .last_significant_kind = .eof,
+            .suppress_unterminated_literal = false,
         };
     }
 
@@ -212,6 +222,17 @@ pub const Scanner = struct {
                     self.reportAt(gpa, p, line, "Unterminated Unicode escape sequence.");
                 }
                 if (report_unexpected_brace) self.reportUnicodeEscapeUnexpectedBrace(gpa, p + 1, line);
+                // When the bad character is a literal terminator
+                // (string quote, template backtick, or line break),
+                // leave it in place so the outer string/template
+                // scanner closes the literal naturally instead of
+                // racing past it and emitting a redundant
+                // "unterminated literal" follow-on. Matches tsc on
+                // fixtures like `unicodeExtendedEscapesInStrings20/21/22`.
+                if (isLiteralTerminatorByte(ch)) {
+                    self.suppress_unterminated_literal = true;
+                    return p;
+                }
                 return p + 1;
             }
             digits += 1;
@@ -219,6 +240,11 @@ pub const Scanner = struct {
         }
         if (digits == 0 or p >= self.source.len or self.source[p] != '}') {
             self.reportAt(gpa, p, line, "Hexadecimal digit expected.");
+            if (p >= self.source.len) {
+                // EOF inside `\u{` — suppress the outer "unterminated"
+                // follow-on so the user sees only the specific cause.
+                self.suppress_unterminated_literal = true;
+            }
             return @min(p + 1, @as(u32, @intCast(self.source.len)));
         }
         return p + 1;
@@ -342,6 +368,14 @@ pub const Scanner = struct {
 
     fn isHexDigit(c: u8) bool {
         return (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F');
+    }
+
+    /// True when `c` would naturally terminate a string or template
+    /// literal scan (quote, backtick, or line break). Used by
+    /// `scanEscapedUnicodeCodePoint` to decide whether to return
+    /// without consuming the offending character.
+    fn isLiteralTerminatorByte(c: u8) bool {
+        return c == '"' or c == '\'' or c == '`' or c == '\n' or c == '\r';
     }
 
     fn isOctalDigit(c: u8) bool {
@@ -574,6 +608,9 @@ pub const Scanner = struct {
     }
 
     fn scanString(self: *Scanner, gpa: std.mem.Allocator, quote: u8, start: u32, line: u32, flags: TokenFlags) ScanError!Token {
+        // Fresh literal — clear any suppression flag left over from a
+        // prior scan so it only affects the literal that set it.
+        self.suppress_unterminated_literal = false;
         while (!self.isAtEnd()) {
             const c = self.source[self.pos];
             if (c == quote) {
@@ -586,7 +623,9 @@ pub const Scanner = struct {
                 };
             }
             if (c == '\n' or c == '\r') {
-                self.report(gpa, "unterminated string literal");
+                if (!self.suppress_unterminated_literal) {
+                    self.report(gpa, "unterminated string literal");
+                }
                 return error.UnterminatedString;
             }
             if (c == '\\') {
@@ -595,7 +634,9 @@ pub const Scanner = struct {
                 const slash_pos = self.pos;
                 self.pos += 1;
                 if (self.isAtEnd()) {
-                    self.report(gpa, "unterminated string literal at EOF");
+                    if (!self.suppress_unterminated_literal) {
+                        self.report(gpa, "unterminated string literal at EOF");
+                    }
                     return error.UnterminatedString;
                 }
                 const esc = self.source[self.pos];
@@ -622,7 +663,9 @@ pub const Scanner = struct {
             }
             self.pos += 1;
         }
-        self.report(gpa, "unterminated string literal at EOF");
+        if (!self.suppress_unterminated_literal) {
+            self.report(gpa, "unterminated string literal at EOF");
+        }
         return error.UnterminatedString;
     }
 
@@ -1407,6 +1450,70 @@ test "Scanner: braced unicode escapes in strings are accepted" {
     const tok = try s.next(t.allocator);
     try t.expectEqual(TokenKind.string_literal, tok.kind);
     try t.expectEqual(@as(usize, 0), s.diagnostics.items.len);
+}
+
+test "Scanner: malformed `\\u{...\"` does not also emit unterminated string literal" {
+    // `"\u{67";` — when the unicode escape hits the closing quote
+    // without a `}`, the scanner reports the escape error and lets
+    // the outer string scan close at the `"` naturally. Mirrors tsc
+    // on fixture `unicodeExtendedEscapesInStrings21`: exactly one
+    // diagnostic ("Unterminated Unicode escape sequence.") with no
+    // follow-on "unterminated string literal".
+    var s = Scanner.init(t.allocator, "\"\\u{67\";");
+    defer s.deinit(t.allocator);
+    const tok = try s.next(t.allocator);
+    try t.expectEqual(TokenKind.string_literal, tok.kind);
+    try t.expectEqual(@as(usize, 1), s.diagnostics.items.len);
+    try t.expectEqualStrings(
+        "Unterminated Unicode escape sequence.",
+        s.diagnostics.items[0].message,
+    );
+}
+
+test "Scanner: malformed `\\u{` newline emits exactly one unterminated escape" {
+    // `"\u{67\nfoo` — the literal hits EOL before its closing quote.
+    // The escape error suppresses the outer "unterminated string
+    // literal" follow-on. Mirrors tsc on fixture
+    // `unicodeExtendedEscapesInStrings24`.
+    var s = Scanner.init(t.allocator, "\"\\u{67\nfoo");
+    defer s.deinit(t.allocator);
+    try t.expectError(error.UnterminatedString, s.next(t.allocator));
+    try t.expectEqual(@as(usize, 1), s.diagnostics.items.len);
+    try t.expectEqualStrings(
+        "Unterminated Unicode escape sequence.",
+        s.diagnostics.items[0].message,
+    );
+}
+
+test "Scanner: empty `\\u{` followed by quote emits only Hexadecimal-digit-expected" {
+    // `"\u{";` — zero hex digits before the closing quote. The
+    // scanner reports "Hexadecimal digit expected." and lets the
+    // outer scan close at the `"`. Mirrors
+    // `unicodeExtendedEscapesInStrings20`.
+    var s = Scanner.init(t.allocator, "\"\\u{\";");
+    defer s.deinit(t.allocator);
+    const tok = try s.next(t.allocator);
+    try t.expectEqual(TokenKind.string_literal, tok.kind);
+    try t.expectEqual(@as(usize, 1), s.diagnostics.items.len);
+    try t.expectEqualStrings(
+        "Hexadecimal digit expected.",
+        s.diagnostics.items[0].message,
+    );
+}
+
+test "Scanner: well-formed `\\u{...}` followed by EOL still emits unterminated string literal" {
+    // `"\u{67}\nfoo` — the unicode escape is well-formed, so the
+    // suppression flag stays off and the outer scan reports
+    // "unterminated string literal" at the newline as usual.
+    // Mirrors `unicodeExtendedEscapesInStrings25`.
+    var s = Scanner.init(t.allocator, "\"\\u{67}\nfoo");
+    defer s.deinit(t.allocator);
+    try t.expectError(error.UnterminatedString, s.next(t.allocator));
+    var found_unterm = false;
+    for (s.diagnostics.items) |d| {
+        if (std.mem.eql(u8, d.message, "unterminated string literal")) found_unterm = true;
+    }
+    try t.expect(found_unterm);
 }
 
 test "Scanner: unterminated block comment reports diagnostic" {
