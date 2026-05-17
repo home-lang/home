@@ -108,6 +108,15 @@ pub const Scanner = struct {
     /// sees one specific error instead of two stacked ones. Cleared
     /// at the start of each `scanString` / `scanTemplate` call.
     suppress_unterminated_literal: bool,
+    /// Start offset / line of the most recent string literal that
+    /// `scanString` bailed on (returned `error.UnterminatedString`).
+    /// Consumed by `tokenize` to synthesize a recovery
+    /// `string_literal` token so the parser can continue past the
+    /// unterminated literal without emitting a follow-on TS1109.
+    /// `null` when no pending unterminated literal is queued.
+    pending_unterm_string_start: ?u32,
+    pending_unterm_string_line: u32,
+    pending_unterm_string_flags: TokenFlags,
 
     pub fn init(gpa: std.mem.Allocator, source: []const u8) Scanner {
         return .{
@@ -122,6 +131,9 @@ pub const Scanner = struct {
             .template_brace_stack = .empty,
             .last_significant_kind = .eof,
             .suppress_unterminated_literal = false,
+            .pending_unterm_string_start = null,
+            .pending_unterm_string_line = 1,
+            .pending_unterm_string_flags = .{},
         };
     }
 
@@ -638,6 +650,9 @@ pub const Scanner = struct {
                 if (!self.suppress_unterminated_literal) {
                     self.report(gpa, "unterminated string literal");
                 }
+                self.pending_unterm_string_start = start;
+                self.pending_unterm_string_line = line;
+                self.pending_unterm_string_flags = flags;
                 return error.UnterminatedString;
             }
             if (c == '\\') {
@@ -649,6 +664,9 @@ pub const Scanner = struct {
                     if (!self.suppress_unterminated_literal) {
                         self.report(gpa, "unterminated string literal at EOF");
                     }
+                    self.pending_unterm_string_start = start;
+                    self.pending_unterm_string_line = line;
+                    self.pending_unterm_string_flags = flags;
                     return error.UnterminatedString;
                 }
                 const esc = self.source[self.pos];
@@ -678,6 +696,9 @@ pub const Scanner = struct {
         if (!self.suppress_unterminated_literal) {
             self.report(gpa, "unterminated string literal at EOF");
         }
+        self.pending_unterm_string_start = start;
+        self.pending_unterm_string_line = line;
+        self.pending_unterm_string_flags = flags;
         return error.UnterminatedString;
     }
 
@@ -1284,9 +1305,30 @@ pub const Scanner = struct {
                 error.UnterminatedString => {
                     // Diagnostic already emitted by scanString; the
                     // scanner position now sits on the EOL or EOF that
-                    // broke the literal. Skip the failed token and let
-                    // the trivia path consume the newline so later
-                    // literals on subsequent lines are still scanned.
+                    // broke the literal. Synthesize a recovery
+                    // `string_literal` token that spans from the
+                    // opening quote to the bail-out position so the
+                    // parser can fold it into the surrounding
+                    // expression without emitting a follow-on TS1109
+                    // ("Expression expected.") at the EOF/EOL token.
+                    // Mirrors tsc on fixtures like
+                    // `unicodeExtendedEscapesInStrings24` / `…25` where
+                    // only the lexer-level TS1199 / TS1002 reaches the
+                    // user. The pending-token slot is cleared after
+                    // use so subsequent unterminated literals on later
+                    // lines (`scannerStringLiterals.ts`) still synthesize
+                    // their own recovery tokens.
+                    if (self.pending_unterm_string_start) |start| {
+                        const recovery: Token = .{
+                            .span = .{ .start = start, .end = self.pos },
+                            .kind = .string_literal,
+                            .flags = self.pending_unterm_string_flags,
+                            .line = self.pending_unterm_string_line,
+                        };
+                        self.pending_unterm_string_start = null;
+                        try tokens.append(gpa, recovery);
+                        self.last_significant_kind = .string_literal;
+                    }
                     continue;
                 },
                 else => return err,
@@ -1581,6 +1623,43 @@ test "Scanner: well-formed `\\u{...}` followed by EOL still emits unterminated s
         if (std.mem.eql(u8, d.message, "unterminated string literal")) found_unterm = true;
     }
     try t.expect(found_unterm);
+}
+
+test "Scanner: tokenize synthesizes recovery string token for unterminated literal" {
+    // `var x = "\u{67` (no closing quote, EOF inside `\u{`) — the
+    // scanner reports TS1199 ("Unterminated Unicode escape sequence.")
+    // and `tokenize` synthesizes a recovery `string_literal` token so
+    // the downstream parser folds the partial literal into the
+    // initializer instead of emitting a follow-on TS1109 at EOF.
+    // Mirrors tsc on `unicodeExtendedEscapesInStrings24`.
+    var s = Scanner.init(t.allocator, "var x = \"\\u{00000000000067");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+    var saw_string = false;
+    for (toks.items) |tok| {
+        if (tok.kind == .string_literal) saw_string = true;
+    }
+    try t.expect(saw_string);
+    try t.expectEqual(TokenKind.eof, toks.items[toks.items.len - 1].kind);
+}
+
+test "Scanner: tokenize recovery handles two unterminated literals on separate lines" {
+    // `scannerStringLiterals.ts` — first literal closes at EOL, second
+    // at EOF. Both emit diagnostics; both produce recovery tokens so
+    // the parser can synthesize two distinct expression statements.
+    var s = Scanner.init(
+        t.allocator,
+        "\"first error\n\"second error",
+    );
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+    var string_count: usize = 0;
+    for (toks.items) |tok| {
+        if (tok.kind == .string_literal) string_count += 1;
+    }
+    try t.expectEqual(@as(usize, 2), string_count);
 }
 
 test "Scanner: unterminated block comment reports diagnostic" {

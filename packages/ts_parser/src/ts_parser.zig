@@ -12770,6 +12770,26 @@ test "parser: `await using x = getR();` parses with is_await_using=true" {
     try T.expect(vd.init != hir_mod.none_node_id);
 }
 
+test "parser: empty const declaration list reports only TS1123" {
+    // `const` alone — TS1123 ("Variable declaration list cannot be empty.")
+    // is the only diagnostic; the TS1155 ("'const' declarations must
+    // be initialized.") follow-on is suppressed since it's a redundant
+    // restatement of the same condition. Mirrors tsc on
+    // `VariableDeclaration1_es6`.
+    var s = try newTestSetup("const");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_1123 = false;
+    var saw_1155 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1123) saw_1123 = true;
+        if (d.code == 1155) saw_1155 = true;
+    }
+    try T.expect(saw_1123);
+    try T.expect(!saw_1155);
+}
+
 test "parser: using declaration requires initializer" {
     // `await using` inside an async function avoids the TS2853
     // top-level-module-required diagnostic that would otherwise
