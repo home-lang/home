@@ -22,6 +22,16 @@ pub const Output = @import("output.zig");
 pub const Global = @import("global.zig");
 pub const Environment = @import("environment.zig");
 pub const fmt = @import("fmt.zig");
+pub const path = @import("path.zig");
+pub const env_var = @import("env_var.zig");
+
+// Re-exports so copied source can spell `home_rt.assert(...)` /
+// `home_rt.OOM` etc. directly (mirrors Bun's flat `bun.assert` /
+// `bun.OOM` namespace).
+pub const assert = Global.assert;
+pub const OOM = Global.OOM;
+pub const handleOom = Global.handleOom;
+pub const default_allocator: std.mem.Allocator = std.heap.smp_allocator;
 
 // Comptime string map (copied from Bun, JSC methods stripped — they'll
 // be re-added under src/jsc/ once Phase 12.2 lands).
@@ -29,6 +39,10 @@ const comptime_string_map = @import("collections/comptime_string_map.zig");
 pub const ComptimeStringMap = comptime_string_map.ComptimeStringMap;
 pub const ComptimeStringMap16 = comptime_string_map.ComptimeStringMap16;
 pub const ComptimeStringMapWithKeyType = comptime_string_map.ComptimeStringMapWithKeyType;
+
+const identity_context = @import("collections/identity_context.zig");
+pub const IdentityContext = identity_context.IdentityContext;
+pub const ArrayIdentityContext = identity_context.ArrayIdentityContext;
 
 // ---- src/cli/ ----------------------------------------------------------
 // Bun's CLI surface. Copy-in-progress; see src/cli/PORTING_STATUS.md.
@@ -75,7 +89,10 @@ test {
     _ = Global;
     _ = Environment;
     _ = fmt;
+    _ = path;
+    _ = env_var;
     _ = comptime_string_map;
+    _ = identity_context;
     _ = cli.which_npm_client;
     _ = cli.yarn_commands;
 }

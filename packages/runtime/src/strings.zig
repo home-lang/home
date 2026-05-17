@@ -32,6 +32,10 @@ pub fn eql(a: []const u8, b: []const u8) bool {
 /// to short-circuit per-length buckets without re-checking `len`
 /// at runtime. The `check_len` flag mirrors the upstream signature
 /// — when false the caller has already proven the lengths match.
+pub fn eqlComptime(self: []const u8, comptime alt: []const u8) bool {
+    return eqlComptimeCheckLenWithType(u8, self, alt, true);
+}
+
 pub fn eqlComptimeCheckLenWithType(
     comptime CodeUnit: type,
     a: []const CodeUnit,

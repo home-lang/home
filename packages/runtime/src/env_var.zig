@@ -1,0 +1,59 @@
+// Home Runtime — environment variable access.
+//
+// Bun source reaches the environment as `bun.env_var.CI.get()` etc.
+// This module exposes a small typed surface for the env vars copied
+// source actually reads. Coverage expands as each copy lands.
+
+const std = @import("std");
+const Environment = @import("environment.zig");
+
+/// Returns the raw env value if set, otherwise null. POSIX-only — the
+/// upstream Bun implementation uses native syscalls on Windows; until
+/// Phase 12 brings that across we use `std.process.getEnvVarOwned`
+/// with a process-arena.
+fn rawGet(name: []const u8) ?[]const u8 {
+    if (Environment.isWindows) return null; // TODO(phase-12-3): wide env on Windows
+    const c = std.c;
+    var buf: [256]u8 = undefined;
+    if (name.len + 1 > buf.len) return null;
+    @memcpy(buf[0..name.len], name);
+    buf[name.len] = 0;
+    const z: [*:0]const u8 = buf[0..name.len :0];
+    const result = c.getenv(z) orelse return null;
+    return std.mem.span(result);
+}
+
+pub const CI = struct {
+    pub fn get() ?bool {
+        const raw = rawGet("CI") orelse return null;
+        if (raw.len == 0) return null;
+        // Truthy values per Bun's upstream check: anything except 0 / false.
+        if (std.mem.eql(u8, raw, "0")) return false;
+        if (std.mem.eql(u8, raw, "false")) return false;
+        return true;
+    }
+};
+
+pub const SHELL = struct {
+    pub fn get() ?[]const u8 {
+        return rawGet("SHELL");
+    }
+};
+
+pub const HOME = struct {
+    pub fn get() ?[]const u8 {
+        return rawGet("HOME");
+    }
+};
+
+test "CI.get reads from the environment" {
+    // We can't assume any specific env value is set, so just check
+    // the call doesn't crash and the result is a valid optional bool.
+    const v = CI.get();
+    _ = v;
+}
+
+test "SHELL.get reads from the environment" {
+    const v = SHELL.get();
+    _ = v;
+}
