@@ -21148,6 +21148,36 @@ pub const Checker = struct {
             };
             return self.interner.internObjectType(&members) catch types.Primitive.unknown;
         }
+        if (std.mem.eql(u8, name, "Boolean")) {
+            // tsc declares `Boolean` (the boxed wrapper) with
+            // `valueOf(): boolean` and `toString(): string`. We model
+            // it as a distinct object shape so `Boolean` annotations
+            // render verbatim ("Type 'Boolean' is not assignable to
+            // type 'boolean'") instead of decaying to `unknown` and
+            // tripping unrelated diagnostic prose. Pins
+            // `assignFromBooleanInterface.ts(3,1)`.
+            const sig_void_bool = self.interner.internSignature(&[_]TypeId{}, types.Primitive.boolean_t, false) catch
+                return types.Primitive.unknown;
+            const sig_void_string = self.interner.internSignature(&[_]TypeId{}, types.Primitive.string_t, false) catch
+                return types.Primitive.unknown;
+            const members = [_]types.ObjectMember{
+                .{
+                    .name = self.string_interner.intern("valueOf") catch return types.Primitive.unknown,
+                    .type = sig_void_bool,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = true,
+                },
+                .{
+                    .name = self.string_interner.intern("toString") catch return types.Primitive.unknown,
+                    .type = sig_void_string,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = true,
+                },
+            };
+            return self.interner.internObjectType(&members) catch types.Primitive.unknown;
+        }
         if (std.mem.eql(u8, name, "Function")) {
             const any_array = self.interner.internArrayType(self.string_interner, types.Primitive.any) catch
                 return types.Primitive.unknown;
@@ -28976,7 +29006,18 @@ pub const Checker = struct {
                         // minus `string` → `number`). Falls through
                         // to `never` for the bare-equality case.
                         const current = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(u.operand);
-                        const subbed = self.subtractTypeByPredicate(current, target) catch current;
+                        var subbed = self.subtractTypeByPredicate(current, target) catch current;
+                        // `typeof null === 'object'` in JS, so the
+                        // negative `!== 'object'` branch must also
+                        // filter `null` out of the residue. Otherwise
+                        // `x: object | null` after `else { x }` reads
+                        // as `null`, tripping a spurious TS18047 on
+                        // any subsequent member access — tsc instead
+                        // collapses to `never` and only fires TS2339.
+                        // Pins `nonPrimitiveNarrow.ts(21,4)`.
+                        if (std.mem.eql(u8, lit_str, "object") and self.typeIncludesNull(subbed)) {
+                            subbed = self.subtractTypeByPredicate(subbed, types.Primitive.null_t) catch subbed;
+                        }
                         try self.recordNarrow(id.name, subbed);
                     }
                 }
@@ -38228,6 +38269,28 @@ pub const Checker = struct {
             }
             try buf.appendSlice(arena, name);
             if (m.is_optional) try buf.append(arena, '?');
+            // Method-shorthand members render as `name(params): ret`
+            // rather than the property-with-arrow form
+            // `name: (params) => ret`. Upstream tsc preserves the
+            // declaration syntax in TS2322 prose, so the shorthand
+            // must come back out the same shape it went in. Pins
+            // `validUndefinedAssignments.ts(19,5)` where the source
+            // `{ f(): void; }` would otherwise render as
+            // `{ f: () => void; }`.
+            if (m.is_method and self.interner.isSignature(m.type)) {
+                const sig_text = (try self.allocCallSignatureFnTypeName(m.type)) orelse return null;
+                const arrow = std.mem.indexOf(u8, sig_text, ") => ") orelse {
+                    try buf.appendSlice(arena, ": ");
+                    try buf.appendSlice(arena, sig_text);
+                    try buf.appendSlice(arena, "; ");
+                    continue;
+                };
+                try buf.appendSlice(arena, sig_text[0 .. arrow + 1]);
+                try buf.appendSlice(arena, ": ");
+                try buf.appendSlice(arena, sig_text[arrow + 5 ..]);
+                try buf.appendSlice(arena, "; ");
+                continue;
+            }
             try buf.appendSlice(arena, ": ");
             const type_name = (try self.allocSimpleTypeName(m.type)) orelse return null;
             try buf.appendSlice(arena, type_name);
@@ -60165,6 +60228,136 @@ test "checker: constructor-type (new (x: U) => U) walks parameter annotations" {
             std.mem.indexOf(u8, d.message, "'U'") != null) saw_U_2304 += 1;
     }
     try T.expect(saw_U_2304 >= 1);
+}
+
+test "checker: Boolean global renders as 'Boolean' in TS2322 prose" {
+    // Mirrors `assignFromBooleanInterface.ts`: an unannotated `var x`
+    // narrows to `boolean`, and assigning a `Boolean`-typed value to
+    // it must fire TS2322 — the prose must render the wrapper name
+    // `Boolean` (not decay to `unknown`) so the diagnostic matches
+    // tsc verbatim and the corpus baseline ratchet stays green.
+    const s = try newSetup(
+        \\var x = true;
+        \\declare var a: Boolean;
+        \\x = a;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_boolean_wrapper: u32 = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.type_not_assignable) continue;
+        if (std.mem.indexOf(u8, d.message, "Type 'Boolean'") != null and
+            std.mem.indexOf(u8, d.message, "type 'boolean'") != null)
+        {
+            saw_boolean_wrapper += 1;
+        }
+    }
+    try T.expect(saw_boolean_wrapper >= 1);
+}
+
+test "checker: object literal with named members is assignable to string-indexer target" {
+    // Pins `multipleStringIndexers.ts(18,5)`: `var b: { [x: string]: string } = { y: '' }`
+    // must NOT trip TS2322 even though the source literal carries no
+    // explicit string indexer. computeObjectAssignable falls back to
+    // checking every named member against the target index value type
+    // when the source has no matching indexer of its own.
+    const s = try newSetup(
+        \\var b: {
+        \\    [x: string]: string;
+        \\} = { y: '' };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: indexer-only source still rejected against unrelated indexer target" {
+    // Symmetric guard for the fallback above — assigning a pure
+    // `{ [i: number]: T }` source to a `{ [s: string]: T }` target
+    // must still trip TS2322. The fallback only fires when the
+    // source carries at least one named member. Pins
+    // `indexSignatureTypeInference.ts(19,...)`'s expectation that
+    // `stringMapToArray(numberMap)` fails inference. The check runs
+    // under strict null checks because that's when index-signature
+    // assignability is enforced in `computeObjectAssignable`.
+    const s = try newSetup(
+        \\declare var n: { [i: number]: number };
+        \\var s2: { [k: string]: number } = n;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var saw_ts2322: u32 = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) saw_ts2322 += 1;
+    }
+    try T.expect(saw_ts2322 >= 1);
+}
+
+test "checker: TS2322 prose preserves method-shorthand member syntax" {
+    // Pins `validUndefinedAssignments.ts(19,5)`: the source type
+    // `{ f(): void }` must render verbatim in TS2322 prose — not
+    // widened to the property-with-arrow form `{ f: () => void }`.
+    // `allocObjectTypeShape` consults `ObjectMember.is_method` to
+    // decide between the two surface syntaxes.
+    const s = try newSetup(
+        \\declare var x: { f(): void };
+        \\var u: undefined = x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_method_shape: u32 = 0;
+    var saw_property_shape: u32 = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.type_not_assignable) continue;
+        if (std.mem.indexOf(u8, d.message, "{ f(): void; }") != null) saw_method_shape += 1;
+        if (std.mem.indexOf(u8, d.message, "{ f: () => void; }") != null) saw_property_shape += 1;
+    }
+    try T.expect(saw_method_shape >= 1);
+    try T.expectEqual(@as(u32, 0), saw_property_shape);
+}
+
+test "checker: typeof !== 'object' else branch narrows null away (JS typeof null === 'object')" {
+    // Mirrors `nonPrimitiveNarrow.ts(21,4)`: with `b: object | null`,
+    // the `else` arm of `if (typeof b === 'object')` must narrow `b`
+    // to `never`, not `null` — JavaScript's `typeof null` evaluates
+    // to `'object'`, so the negative branch can't preserve `null`.
+    // A residual `null` here trips a spurious TS18047 alongside the
+    // TS2339 emitted for the member access on `never`.
+    const s = try newSetup(
+        \\declare var b: object | null;
+        \\if (typeof b === 'object') {
+        \\    b.toString();
+        \\} else {
+        \\    b.toString();
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.object_possibly_null);
+    }
+}
+
+test "checker: boolean primitive is assignable to Boolean wrapper" {
+    // Symmetric to the String/Number wrapper case: a plain `boolean`
+    // value flows into a `Boolean`-annotated variable without error
+    // because `Boolean`'s only members (`toString`/`valueOf`) live in
+    // the universal whitelist. Pins `validBooleanAssignments.ts(6,5)`
+    // — the moment we modeled `Boolean` as a non-empty object shape,
+    // the assignment broke until `primitiveApparentAssignableToObject`
+    // learned to accept `boolean` sources.
+    const s = try newSetup(
+        \\var x = true;
+        \\var c: Boolean = x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
 }
 
 

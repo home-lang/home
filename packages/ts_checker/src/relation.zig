@@ -717,7 +717,16 @@ pub const Engine = struct {
         const sf = self.pool().flagsOf(source);
         const is_string = source == Primitive.string_t or (sf.is_literal and sf.is_string);
         const is_number = source == Primitive.number_t or (sf.is_literal and sf.is_number);
-        if (!is_string and !is_number) return false;
+        // `boolean`, `true`, and `false` are all boxable into `Boolean`,
+        // so the apparent-type check must accept them too. The `Boolean`
+        // lib shape only exposes the universal `toString`/`valueOf`,
+        // both of which are whitelisted regardless of source — but the
+        // gate above rejects non-string/number sources outright, so add
+        // boolean to the accept list. Pins `validBooleanAssignments.ts(6,5)`.
+        const is_boolean = source == Primitive.boolean_t or
+            source == Primitive.true_lit or
+            source == Primitive.false_lit;
+        if (!is_string and !is_number and !is_boolean) return false;
         for (self.interner.objectMembers(target)) |member| {
             if (member.is_optional) continue;
             if (!self.primitiveApparentHasMember(member.name, is_string, is_number)) return false;
@@ -1057,14 +1066,50 @@ pub const Engine = struct {
             if (!target_has_required and source_has_named_member and !has_common_member) return false;
         }
         if (self.strict_null_checks) {
+            const source_members_for_index = self.interner.objectMembers(source);
             if (target_str_idx != Primitive.none) {
-                if (source_str_idx == Primitive.none) return false;
-                if (!try self.isAssignableTo(source_str_idx, target_str_idx)) return false;
+                // Prefer a structural indexer; otherwise — but only
+                // when the source actually has named members — every
+                // named property must be assignable to the target's
+                // index value type. Without this fallback, object
+                // literals like `{ y: '' }` were wrongly rejected
+                // against `{ [x: string]: string }` because the
+                // literal doesn't carry an explicit string indexer
+                // of its own. A source with NO members (eg another
+                // indexer-only type like `{ [i: number]: T }`) still
+                // can't satisfy a string indexer — keep the original
+                // rejection path so `indexSignatureTypeInference.ts`
+                // continues to flag `stringMapToArray(numberMap)`.
+                // Pins `multipleStringIndexers.ts(18,5)`.
+                if (source_str_idx != Primitive.none) {
+                    if (!try self.isAssignableTo(source_str_idx, target_str_idx)) return false;
+                } else if (source_members_for_index.len == 0) {
+                    return false;
+                } else {
+                    for (source_members_for_index) |sm| {
+                        if (!try self.isAssignableTo(sm.type, target_str_idx)) return false;
+                    }
+                }
             }
             if (target_num_idx != Primitive.none) {
-                const source_idx = if (source_num_idx != Primitive.none) source_num_idx else source_str_idx;
-                if (source_idx == Primitive.none) return false;
-                if (!try self.isAssignableTo(source_idx, target_num_idx)) return false;
+                // Number indexers accept either a matching source
+                // indexer, the source's string indexer (numeric keys
+                // collapse to strings at runtime), or every
+                // numeric-named source property when the source is
+                // a literal-shaped object with members.
+                // Pins `multipleNumericIndexers.ts(18,5)`.
+                const source_idx_alt = if (source_num_idx != Primitive.none) source_num_idx else source_str_idx;
+                if (source_idx_alt != Primitive.none) {
+                    if (!try self.isAssignableTo(source_idx_alt, target_num_idx)) return false;
+                } else if (source_members_for_index.len == 0) {
+                    return false;
+                } else if (self.string_interner) |sint| {
+                    for (source_members_for_index) |sm| {
+                        const name_bytes = sint.getOptional(sm.name) orelse continue;
+                        if (!isNumericName(name_bytes)) continue;
+                        if (!try self.isAssignableTo(sm.type, target_num_idx)) return false;
+                    }
+                }
             }
             if (target_sym_idx != Primitive.none) {
                 if (source_sym_idx == Primitive.none) return false;
