@@ -1268,11 +1268,29 @@ pub const Scanner = struct {
 
     /// Tokenize the entire source into a list. Convenience for tests
     /// and small one-off uses; production callers stream via `next`.
+    ///
+    /// Recoverable lex errors (unterminated string / template) are
+    /// absorbed so the tokenizer keeps walking the source. The
+    /// diagnostic has already been recorded on the scanner; bailing
+    /// would hide later errors like a second unterminated literal on
+    /// the next line — see `scannerStringLiterals` (TS1002 on both
+    /// the EOL-terminated AND the EOF-terminated string).
     pub fn tokenize(self: *Scanner, gpa: std.mem.Allocator) ScanError!std.ArrayList(Token) {
         var tokens: std.ArrayList(Token) = .empty;
         errdefer tokens.deinit(gpa);
         while (true) {
-            const tok_ = try self.next(gpa);
+            const tok_ = self.next(gpa) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.UnterminatedString => {
+                    // Diagnostic already emitted by scanString; the
+                    // scanner position now sits on the EOL or EOF that
+                    // broke the literal. Skip the failed token and let
+                    // the trivia path consume the newline so later
+                    // literals on subsequent lines are still scanned.
+                    continue;
+                },
+                else => return err,
+            };
             try tokens.append(gpa, tok_);
             if (tok_.kind == .eof) break;
         }
@@ -1422,6 +1440,26 @@ test "Scanner: unterminated string is an error" {
     var s = Scanner.init(t.allocator, "'oops");
     defer s.deinit(t.allocator);
     try t.expectError(error.UnterminatedString, s.next(t.allocator));
+}
+
+test "Scanner: tokenize continues past unterminated string and records both" {
+    // Two consecutive unterminated string literals (one EOL-terminated,
+    // one EOF-terminated). The `next` API still errors on the first
+    // failure, but `tokenize` absorbs the recoverable lex error so the
+    // second literal's diagnostic also reaches the scanner. Mirrors
+    // tsc on `scannerStringLiterals.ts` (TS1002 reported on BOTH lines).
+    var s = Scanner.init(
+        t.allocator,
+        "\"Should error because of newline.\n\"Should error because of end of file.",
+    );
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+    var count: usize = 0;
+    for (s.diagnostics.items) |d| {
+        if (std.mem.startsWith(u8, d.message, "unterminated string literal")) count += 1;
+    }
+    try t.expectEqual(@as(usize, 2), count);
 }
 
 test "Scanner: invalid unicode escape in string reports diagnostic" {

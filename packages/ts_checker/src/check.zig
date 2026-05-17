@@ -252,6 +252,13 @@ pub const TsCodes = struct {
     pub const export_non_local_declaration: u32 = 2661;
     pub const global_augmentation_not_external: u32 = 2669;
     pub const delete_operand_property_reference: u32 = 2703;
+    /// TS1102 — `'delete' cannot be called on an identifier in strict
+    /// mode.` Grammar check: upstream tsc emits this unconditionally
+    /// for `delete <identifier>` regardless of whether the surrounding
+    /// code carries an explicit `"use strict"` directive, because TS
+    /// always parses in strict mode. Pairs with TS2703 when the
+    /// operand isn't a property reference at all.
+    pub const delete_identifier_strict_mode: u32 = 1102;
     pub const private_name_not_declared: u32 = 1111;
     pub const spread_types_object_only: u32 = 2698;
     pub const optional_chain_assignment_target: u32 = 2779;
@@ -7348,9 +7355,21 @@ pub const Checker = struct {
                 .array_literal,
                 .as_expr,
                 .satisfies_expr,
-                .logical_op,
                 .conditional,
                 => continue,
+                .logical_op => {
+                    // tsc: when an `||` / `??` expression is itself not
+                    // contextually typed, the right operand is
+                    // contextually typed by the left operand's type
+                    // (spec §4.19.2). A parameterless arrow on the RHS
+                    // therefore gets a contextual parameter type from
+                    // the LHS — no TS7006. AND (`&&`) does NOT propagate
+                    // a contextual type (it narrows truthiness) so it
+                    // still walks up to look for an outer context.
+                    const lop = hir_mod.logicalOf(self.hir, cur);
+                    if (lop.rhs == prev and (lop.op == .@"or" or lop.op == .nullish)) return true;
+                    continue;
+                },
                 .binary_op => {
                     // Only the rightmost operand of a comma sequence
                     // receives the surrounding contextual type — left
@@ -25837,7 +25856,13 @@ pub const Checker = struct {
                         try self.report(child, TsCodes.jsx_text_child_not_accepted, "JSX text child is not assignable to the target children type.");
                     }
                 }
-            } else {
+            } else if (self.jsxPropsTargetHasNonChildrenMember(props_t.?)) {
+                // Empty object props (`{}`) opts out of excess-property
+                // checks just like a regular `{}` target in TS: with no
+                // named members at all, JSX children flow in without
+                // complaint. Only fire when the target genuinely
+                // declares OTHER properties (so the missing `children`
+                // signals a structural gap).
                 try self.report(node, TsCodes.object_literal_excess_property, "JSX element has children but the target props type has no 'children' property.");
             }
         }
@@ -26225,6 +26250,41 @@ pub const Checker = struct {
                 try self.report(attr, TsCodes.jsx_attribute_overwritten, "JSX attribute is specified more than once, so this usage will be overwritten.");
             }
         }
+    }
+
+    /// Returns true when the props target carries at least one named
+    /// member that ISN'T `children`. Empty `{}` and a props type that
+    /// only declares `children` both return false — the former opts
+    /// out of excess-property checks entirely, the latter is already
+    /// handled by the dedicated `children`-member lookup. Mirrors
+    /// `checkJsxChildrenProperty10` baseline where `props: {}` doesn't
+    /// trigger TS2353 on the JSX children block.
+    fn jsxPropsTargetHasNonChildrenMember(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return false;
+            if (constraint == t) return false;
+            return self.jsxPropsTargetHasNonChildrenMember(constraint);
+        }
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.jsxPropsTargetHasNonChildrenMember(member)) return true;
+            }
+            return false;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.jsxPropsTargetHasNonChildrenMember(member)) return true;
+            }
+            return false;
+        }
+        if (!flags.is_object_type) return false;
+        for (self.interner.objectMembers(t)) |m| {
+            const name = self.string_interner.get(m.name);
+            if (!std.mem.eql(u8, name, "children")) return true;
+        }
+        return false;
     }
 
     fn jsxPropsTargetHasNamedMembers(self: *Checker, t: TypeId) bool {
@@ -33802,6 +33862,13 @@ pub const Checker = struct {
             .void_ => types.Primitive.undefined_t,
             .delete => blk: {
                 const operand_kind = self.hir.kindOf(u.operand);
+                if (operand_kind == .identifier) {
+                    // TS always parses in strict mode, so this is a
+                    // grammar error regardless of an explicit "use
+                    // strict" directive. TS2703 still fires below
+                    // because an identifier is not a property reference.
+                    try self.report(u.operand, TsCodes.delete_identifier_strict_mode, "'delete' cannot be called on an identifier in strict mode.");
+                }
                 if (operand_kind != .member_access and operand_kind != .element_access) {
                     try self.report(u.operand, TsCodes.delete_operand_property_reference, "The operand of a 'delete' operator must be a property reference.");
                 } else if (self.strict_flags.strict_null_checks and !self.deleteOperandAllowed(u.operand)) {
@@ -40132,7 +40199,30 @@ pub const Checker = struct {
     /// is treated as a regular structural assignment by tsc.
     fn checkExcessProperties(self: *Checker, init_node: NodeId, declared_t: TypeId) CheckError!void {
         if (init_node == hir_mod.none_node_id) return;
-        if (self.hir.kindOf(init_node) != .object_literal) return;
+        // tsc propagates the declared contextual type into each
+        // operand of `||` / `??` and into ternary branches so a
+        // literal in any of those positions still gets the
+        // excess-property check. Upstream only re-runs the check on
+        // the LHS of `||` / `??` (the result of the binary is the
+        // LHS type when truthy; the RHS sits behind the short-circuit
+        // and is reported by other paths). Mirrors
+        // `logicalOrExpressionIsContextuallyTyped` baseline (TS2353
+        // on LHS only).
+        switch (self.hir.kindOf(init_node)) {
+            .logical_op => {
+                const lop = hir_mod.logicalOf(self.hir, init_node);
+                try self.checkExcessProperties(lop.lhs, declared_t);
+                return;
+            },
+            .conditional => {
+                const c = hir_mod.conditionalOf(self.hir, init_node);
+                try self.checkExcessProperties(c.then_branch, declared_t);
+                try self.checkExcessProperties(c.else_branch, declared_t);
+                return;
+            },
+            .object_literal => {},
+            else => return,
+        }
         if (!self.interner.pool.flagsOf(declared_t).is_object_type) return;
         if (try self.objectTargetHasStringIndex(declared_t)) return;
         const has_number_index = try self.objectTargetHasNumberIndex(declared_t);
@@ -42346,10 +42436,15 @@ test "checker: JSX intrinsic attribute callback receives contextual param type" 
     try T.expect(found);
 }
 
-test "checker: JSX function component rejects excess children" {
+test "checker: JSX function component rejects excess children when props has named members" {
+    // A props target with named members (other than `children`) DOES
+    // emit TS2353 when the JSX block carries a child. Empty `{}`
+    // props opts out — covered by the sibling test below. Mirrors
+    // `checkJsxChildrenProperty` baselines where typed props minus a
+    // `children` declaration flag the structural gap.
     const s = try newTsxSetup(
-        \\const Tag = (x: {}) => <div></div>;
-        \\const k = <Tag><div></div></Tag>;
+        \\const Tag = (x: { a: number }) => <div></div>;
+        \\const k = <Tag a={1}><div></div></Tag>;
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
@@ -46623,6 +46718,93 @@ test "checker: delete this reports property-reference error without implicit thi
         try T.expect(d.code != TsCodes.this_implicitly_any);
     }
     try T.expect(found_delete);
+}
+
+test "checker: delete on identifier emits TS1102 alongside TS2703" {
+    // TS always runs in strict mode, so `delete x` where `x` is a
+    // bare identifier should fire BOTH:
+    //   * TS1102 "delete cannot be called on an identifier in strict mode"
+    //   * TS2703 "operand of a delete operator must be a property reference"
+    // Mirrors `controlFlowDeleteOperator.ts(14,12)` and the same line
+    // across `deleteOperatorWith*.ts` fixtures.
+    const s = try newSetup("let x = 1; delete x;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_1102 = false;
+    var found_2703 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.delete_identifier_strict_mode) found_1102 = true;
+        if (d.code == TsCodes.delete_operand_property_reference) found_2703 = true;
+    }
+    try T.expect(found_1102);
+    try T.expect(found_2703);
+}
+
+test "checker: delete on property access does not emit TS1102" {
+    // `delete obj.prop` is the canonical valid form; TS1102 only
+    // applies to bare identifiers.
+    const s = try newSetup("const o: { a?: number } = {}; delete o.a;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.delete_identifier_strict_mode);
+    }
+}
+
+test "checker: TS2353 fires on `||` LHS object literal against contextual type" {
+    // `var r: T = { extra: ... } || { ... }` — the LHS literal flows
+    // into the declared type and the excess-property check must walk
+    // through the `||` to reach it. Upstream emits TS2353 only on the
+    // LHS (matches `logicalOrExpressionIsContextuallyTyped` baseline).
+    const s = try newSetup("var r: { a: string } = { a: '', b: 123 } || { a: 'x' };");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var ts2353 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.object_literal_excess_property) ts2353 = true;
+    }
+    try T.expect(ts2353);
+}
+
+test "checker: TS7006 not emitted on arrow RHS of `||` with typed LHS" {
+    // `var a: (x: string) => string; var r = a || ((x) => x.toLowerCase());`
+    // The RHS arrow gets a contextual parameter type from the LHS, so
+    // the parameter `x` is NOT implicit-any. Mirrors
+    // `logicalOrExpressionIsNotContextuallyTyped.ts` (TS2454 only).
+    const s = try newSetup(
+        \\var a: (x: string) => string;
+        \\var r = a || ((x) => x.toLowerCase());
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.parameter_implicitly_any);
+    }
+}
+
+test "checker: JSX child against empty `props: {}` target does not emit children TS2353" {
+    // `class Button { props: {} ... }` then `<Button>child</Button>` —
+    // the empty object props opts out of the JSX children
+    // excess-property check. Mirrors `checkJsxChildrenProperty10.tsx`
+    // baseline (no TS2353 for the missing `children` property).
+    const s = try newTsxSetup(
+        \\declare namespace JSX {
+        \\  interface Element { }
+        \\  interface ElementAttributesProperty { props: {} }
+        \\  interface IntrinsicElements { h2: any }
+        \\}
+        \\class Button { props!: {}; }
+        \\let k = <Button> <h2>hi</h2> </Button>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.object_literal_excess_property) continue;
+        // The empty-props guard should suppress the JSX "no 'children'
+        // property" excess-property emission entirely.
+        try T.expect(!std.mem.containsAtLeast(u8, d.message, 1, "JSX element has children"));
+    }
 }
 
 test "checker: classic for header assignments are checked" {
