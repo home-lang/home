@@ -10146,7 +10146,13 @@ pub const Checker = struct {
                                 try instance_member_names_local.put(self.gpa, pid.name, {});
                                 if (pp.flags.is_private) try private_names.put(self.gpa, pid.name, {});
                                 if (pp.flags.is_protected) try protected_names.put(self.gpa, pid.name, {});
-                                try self.checkPropertyOverridesAccessor(param_node, parent_class_name, pid.name);
+                                // Anchor TS2610 at the parameter-property
+                                // name (`p` in `constructor(public p:
+                                // string)`) rather than the leading
+                                // `public` modifier — tsc points at the
+                                // identifier the override applies to.
+                                // Mirrors `propertyOverridesAccessors5`.
+                                try self.checkPropertyOverridesAccessor(pp.name, parent_class_name, pid.name);
                             }
                             try self.checkOverrideModifier(param_node, parent_instance_t, pid.name, pp.flags.is_override, true);
                         }
@@ -24424,7 +24430,9 @@ pub const Checker = struct {
                 }
                 if (type_arg_nodes.len > 0 and !callee_had_generic_record) {
                     if (callee_t == types.Primitive.any or callee_t == types.Primitive.unknown) {
-                        if (!self.callCalleeAlreadyHasUnresolvedNameDiagnostic(c.callee)) {
+                        if (!self.callCalleeAlreadyHasUnresolvedNameDiagnostic(c.callee) and
+                            !self.callCalleeAlreadyHasMissingPropertyDiagnostic(c.callee))
+                        {
                             try self.report(node, TsCodes.untyped_function_type_args, "Untyped function calls may not accept type arguments.");
                         }
                     } else if (self.interner.isSignature(callee_t)) {
@@ -27500,6 +27508,20 @@ pub const Checker = struct {
                 => return true,
                 else => {},
             }
+        }
+        return false;
+    }
+
+    /// When the call's member-access callee already triggered a TS2339
+    /// ("Property 'x' does not exist on type 'Y'."), suppress the
+    /// follow-on TS2347 — tsc emits only the property-existence error
+    /// in that case. Matches `parserSuperExpression3`.
+    fn callCalleeAlreadyHasMissingPropertyDiagnostic(self: *Checker, callee: NodeId) bool {
+        if (self.hir.kindOf(callee) != .member_access and
+            self.hir.kindOf(callee) != .element_access) return false;
+        for (self.diagnostics.items) |d| {
+            if (d.node != callee) continue;
+            if (d.code == TsCodes.property_does_not_exist) return true;
         }
         return false;
     }
@@ -45675,6 +45697,35 @@ test "checker: noImplicitAny skips TS7008 on ambient `declare class` members" {
     }
     try T.expectEqual(@as(usize, 1), count);
     try T.expectEqual(@as(usize, 0), declare_count);
+}
+
+test "checker: TS2610 on parameter-property anchors at property name" {
+    // For `constructor(public p: string)`, tsc anchors TS2610 at the
+    // property name `p` (column 24 in the upstream fixture), not at
+    // the leading `public` modifier. Regression for
+    // `propertyOverridesAccessors5` conformance baseline.
+    const src =
+        \\class A {
+        \\    get p() { return 'oh no' }
+        \\}
+        \\class B extends A {
+        \\    constructor(public p: string) {
+        \\        super()
+        \\    }
+        \\}
+    ;
+    const s = try newSetup(src);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_pos: ?u32 = null;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.property_overrides_accessor) continue;
+        found_pos = d.pos orelse s.hir.spanOf(d.node).start;
+    }
+    const pos = found_pos orelse return error.TestExpectedEqual;
+    // The expected anchor is the `p` immediately after `public `.
+    const expected = std.mem.indexOf(u8, src, "public p:").? + "public ".len;
+    try T.expectEqual(@as(u32, @intCast(expected)), pos);
 }
 
 test "checker: TS7010 skips setter accessor (always returns void)" {
