@@ -405,6 +405,19 @@ pub const Binder = struct {
                     const init_kind = self.hir.kindOf(p.init);
                     if (init_kind == .var_decl or init_kind == .let_decl or init_kind == .const_decl) {
                         try self.bindStatement(p.init);
+                    } else if (init_kind == .block_stmt) {
+                        // Multi-binding for-init (`for (var i = 0, j = 10; ...)`)
+                        // is wrapped in a synthetic block_stmt by the
+                        // parser. Recurse so each per-binding var_decl
+                        // gets bound — without this, references to the
+                        // trailing bindings in the cond/update slots
+                        // surface as TS2304.
+                        for (hir_mod.blockStmts(self.hir, p.init)) |s| {
+                            const s_kind = self.hir.kindOf(s);
+                            if (s_kind == .var_decl or s_kind == .let_decl or s_kind == .const_decl) {
+                                try self.bindStatement(s);
+                            }
+                        }
                     }
                 }
                 try self.bindStatement(p.body);
@@ -1018,6 +1031,19 @@ test "binder: declaration merging — class + namespace" {
     try T.expect(value_sym.flags.is_merged);
     try T.expect(s.binder.module.root.namespaces.get(id) != null);
     try T.expect(s.binder.module.root.types.get(id) != null);
+}
+
+test "binder: for-init with multiple var decls binds every name" {
+    // `for (var i = 0, j = 10; ...)` should bind both `i` and `j`
+    // — without recursing into the parser's synthetic block_stmt
+    // wrapping the secondary decls the trailing bindings surface
+    // as TS2304 in the cond/update slots.
+    var s = try newTestSetup("for (var i = 0, j = 10; i < j; i++, j--) {}");
+    defer destroyTestSetup(s);
+    const i_id = try s.interner.intern("i");
+    const j_id = try s.interner.intern("j");
+    try T.expect(s.binder.module.root.values.get(i_id) != null);
+    try T.expect(s.binder.module.root.values.get(j_id) != null);
 }
 
 test "binder: Module.augment merges symbols across modules" {

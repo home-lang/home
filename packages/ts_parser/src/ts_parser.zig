@@ -1731,16 +1731,57 @@ pub const Parser = struct {
                 self.ambient_depth > 0,
             );
             var multiple_decl_token: ?Token = null;
+            var extra_decls: std.ArrayListUnmanaged(NodeId) = .empty;
+            defer extra_decls.deinit(self.gpa);
             while (self.match(.comma)) {
                 const item_start = self.peek();
                 if (multiple_decl_token == null) multiple_decl_token = item_start;
-                if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) {
-                    _ = try self.parseBindingPattern();
-                } else {
-                    _ = try self.expectIdentifierLike();
-                }
-                if (self.match(.colon)) _ = try self.parseTypeAnnotation();
-                if (self.match(.equal)) _ = try self.parseAssignmentExpressionWithIn(false);
+                const extra_binding: NodeId = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
+                    break :blk try self.parseBindingPattern();
+                } else blk: {
+                    const name_tok = try self.expectIdentifierLike();
+                    const name_id = try self.internToken(name_tok);
+                    break :blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+                };
+                var extra_type_ann: NodeId = hir_mod.none_node_id;
+                if (self.match(.colon)) extra_type_ann = try self.parseTypeAnnotation();
+                var extra_init_expr: NodeId = hir_mod.none_node_id;
+                if (self.match(.equal)) extra_init_expr = try self.parseAssignmentExpressionWithIn(false);
+                const extra_start = self.hir.spanOf(extra_binding).start;
+                const extra_end = if (extra_init_expr != hir_mod.none_node_id)
+                    self.hir.spanOf(extra_init_expr).end
+                else if (extra_type_ann != hir_mod.none_node_id)
+                    self.hir.spanOf(extra_type_ann).end
+                else
+                    self.hir.spanOf(extra_binding).end;
+                const extra_decl = try self.builder.addVarDeclEx(
+                    decl_kind,
+                    .{ .start = extra_start, .end = extra_end },
+                    extra_binding,
+                    extra_type_ann,
+                    extra_init_expr,
+                    is_using_decl,
+                    is_await_using_decl,
+                    self.ambient_depth > 0,
+                );
+                try extra_decls.append(self.gpa, extra_decl);
+            }
+            // When the for-init declares multiple bindings (e.g.
+            // `for (var i = 0, j = 10; ...)`), wrap them with the
+            // primary decl in a synthetic block so downstream binder
+            // and checker visit every binding. Without this the trailing
+            // `j` was parsed and discarded, surfacing spurious TS2304
+            // ("Cannot find name 'j'") in the condition/update slots.
+            if (extra_decls.items.len > 0) {
+                var all_decls: std.ArrayListUnmanaged(NodeId) = .empty;
+                defer all_decls.deinit(self.gpa);
+                try all_decls.append(self.gpa, init_node);
+                for (extra_decls.items) |d| try all_decls.append(self.gpa, d);
+                const block_end = self.hir.spanOf(extra_decls.items[extra_decls.items.len - 1]).end;
+                init_node = try self.builder.addBlock(
+                    .{ .start = self.hir.spanOf(init_node).start, .end = block_end },
+                    all_decls.items,
+                );
             }
             if (self.peek().kind == .kw_in or self.peek().kind == .kw_of) {
                 const kind_tok = self.advance();

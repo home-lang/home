@@ -1788,6 +1788,19 @@ pub const Checker = struct {
                 if (fr.init != hir_mod.none_node_id) {
                     switch (self.hir.kindOf(fr.init)) {
                         .var_decl, .let_decl, .const_decl => try self.checkVarDecl(fr.init),
+                        .block_stmt => {
+                            // Multi-binding for-init (`for (var i = 0, j = 10; ...)`)
+                            // is wrapped in a synthetic block_stmt by the
+                            // parser. Walk each binding so types/flow are
+                            // computed; without this trailing bindings
+                            // (`j`) would look undefined to cond/update.
+                            for (hir_mod.blockStmts(self.hir, fr.init)) |s| {
+                                const sk = self.hir.kindOf(s);
+                                if (sk == .var_decl or sk == .let_decl or sk == .const_decl) {
+                                    try self.checkVarDecl(s);
+                                }
+                            }
+                        },
                         else => _ = try self.checkExpression(fr.init),
                     }
                 }
