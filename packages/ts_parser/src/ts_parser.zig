@@ -2020,6 +2020,12 @@ pub const Parser = struct {
             // the name then binds inside the async body. Gate on
             // `!require_name` (expression context).
             if (!require_name) try self.reportAwaitReservedInAsyncContext(name_tok);
+            // A top-level `function await()` (or exported variant) in
+            // an ES-module source is TS1262 — `await` is reserved at
+            // the top level of a module. `reportAwaitBindingIfReserved`
+            // is a no-op when the parser is nested in a block/namespace,
+            // so calling it unconditionally is safe.
+            try self.reportAwaitBindingIfReserved(name_tok);
             const name_id = try self.internToken(name_tok);
             name = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
         } else if (require_name) {
