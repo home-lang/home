@@ -7952,8 +7952,13 @@ pub const Parser = struct {
                     self.peek().kind == .eof)
                 {
                     if (is_delegated) {
-                        const err_pos = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else t.span.end;
-                        try self.reportCodeAt(err_pos, t.line, 1109, "Expression expected.");
+                        // tsc anchors TS1109 at the next token (the
+                        // token after `yield*` when the operand is
+                        // missing) — e.g. for `yield*\n}` the `}`
+                        // line/col is reported, not the end of the
+                        // `*`. Mirrors YieldExpression5_es6.
+                        const next_tok = self.peek();
+                        try self.reportCodeAt(next_tok.span.start, next_tok.line, 1109, "Expression expected.");
                     }
                     return try self.builder.addYieldExpr(tokenSpan(t), hir_mod.none_node_id, is_delegated);
                 }
