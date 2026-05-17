@@ -25699,6 +25699,18 @@ pub const Checker = struct {
                         const v = self.interner.objectNumberIndex(obj_t);
                         if (v != types.Primitive.none) break :blk try self.optionalChainResult(self.maybeWidenWithUndefined(v), element_is_optional_chain);
                     }
+                    // String-literal key that parses as a non-negative
+                    // integer (`"3"`, `"42"`) routes through the
+                    // numeric index signature when one exists. tsc
+                    // applies `ToNumber` on the literal at typecheck
+                    // time and resolves `c["3"]` the same as `c[3]`.
+                    // See `numericIndexingResults.ts`.
+                    if (literal_string_key) |key_id| {
+                        if (self.isNumericStringId(key_id)) {
+                            const v = self.interner.objectNumberIndex(obj_t);
+                            if (v != types.Primitive.none) break :blk try self.optionalChainResult(self.maybeWidenWithUndefined(v), element_is_optional_chain);
+                        }
+                    }
                     if (idx_flags.is_symbol) {
                         const v = self.interner.objectSymbolIndex(obj_t);
                         if (v != types.Primitive.none) break :blk try self.optionalChainResult(self.maybeWidenWithUndefined(v), element_is_optional_chain);
@@ -25706,7 +25718,17 @@ pub const Checker = struct {
                     if (literal_string_key) |key_id| {
                         if (self.strict_flags.no_implicit_any and
                             self.interner.objectMembers(obj_t).len != 0 and
-                            self.interner.objectStringIndex(obj_t) == types.Primitive.none)
+                            self.interner.objectStringIndex(obj_t) == types.Primitive.none and
+                            // When the receiver has a numeric index
+                            // signature and the literal-string key is
+                            // a valid numeric string (`'3'`, `'1'`,
+                            // `'42'`), the numeric indexer applies —
+                            // suppress TS7053. tsc treats
+                            // `c['3']` on `class C { [x: number]: T }`
+                            // the same as `c[3]`. See
+                            // `numericIndexingResults.ts`.
+                            !(self.interner.objectNumberIndex(obj_t) != types.Primitive.none and
+                                self.isNumericStringId(key_id)))
                         {
                             const key = self.string_interner.get(key_id);
                             const msg = try std.fmt.allocPrint(
@@ -48876,6 +48898,26 @@ test "checker: missing string literal element access reports TS7053 under noImpl
         if (d.code == TsCodes.element_implicitly_any) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: numeric-string element access routes through number indexer (no TS7053)" {
+    // Regression: numericIndexingResults.ts expects `c['3']` on a
+    // class with `[x: number]: string` to silently resolve via the
+    // numeric indexer — `'3'` is a valid numeric string and tsc
+    // applies `ToNumber` at typecheck time. We previously surfaced
+    // a spurious TS7053 because the literal key was tested only
+    // against string-keyed members.
+    const s = try newSetup(
+        \\class C { [x: number]: string; 1 = ""; "2" = "" }
+        \\var c: C;
+        \\var r = c["3"];
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.element_implicitly_any);
+    }
 }
 
 test "checker: noPropertyAccessFromIndexSignature emits TS4111" {
