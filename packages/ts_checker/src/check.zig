@@ -25476,8 +25476,13 @@ pub const Checker = struct {
                                 "Property '{s}' comes from an index signature, so it must be accessed with ['{s}'].",
                                 .{ name_str, name_str },
                             );
+                            // Anchor TS4111 at the property-name token,
+                            // not the start of the member-access node,
+                            // so the column matches tsc's `b.foo` →
+                            // `(col_of_foo)` rendering exactly.
                             try self.diagnostics.append(self.gpa, .{
                                 .node = node,
+                                .pos = self.memberAccessNamePos(node),
                                 .code = TsCodes.index_signature_property_access,
                                 .message = msg,
                             });
@@ -48887,6 +48892,34 @@ test "checker: noPropertyAccessFromIndexSignature emits TS4111" {
         if (d.code == TsCodes.index_signature_property_access) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: TS4111 anchors at property-name column, not the receiver" {
+    // Regression: noPropertyAccessFromIndexSignature1.ts expects `b.foo`
+    // to report at the column of `foo` (3), not the start of `b` (1).
+    // We must surface the position of the dot-prop so tsc's column
+    // rendering matches exactly.
+    const s = try newSetup(
+        \\interface B { [k: string]: string }
+        \\declare const b: B;
+        \\b.foo;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_property_access_from_index_signature = true });
+    try s.checker.checkSourceFile(s.root);
+    var ts4111_pos: ?u32 = null;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.index_signature_property_access) {
+            ts4111_pos = d.pos;
+            break;
+        }
+    }
+    try T.expect(ts4111_pos != null);
+    const src = s.checker.source.?;
+    const dot_idx = std.mem.indexOfScalar(u8, src, '.').?;
+    // The diagnostic position must point at the token immediately
+    // after the dot (`foo`), not the receiver `b`.
+    try T.expectEqual(@as(u32, @intCast(dot_idx + 1)), ts4111_pos.?);
 }
 
 test "checker: dot access via index signature is silent without flag" {
