@@ -3656,7 +3656,8 @@ pub const Checker = struct {
         // Syntactic arity check: if the impl requires more parameters
         // than the overload's maximum, the overload is unreachable
         // through the impl. Mirrors `parserParameterList15.ts(1,10)`.
-        // We anchor at the impl decl (matching tsc's TS2394 placement).
+        // tsc anchors TS2394 at the overload's function-NAME identifier
+        // (not the `function` keyword), so render at that span.
         const impl_required = self.syntacticRequiredParamCount(node);
         const overload_nodes = self.overload_decls.get(name);
         if (overload_nodes) |list| {
@@ -3665,7 +3666,12 @@ pub const Checker = struct {
                 const ovl_max_opt = self.syntacticMaxParamCount(ovl_node);
                 if (ovl_max_opt) |ovl_max| {
                     if (impl_required > ovl_max) {
-                        try self.report(ovl_node, TsCodes.overload_signature_not_compatible, "This overload signature is not compatible with its implementation signature.");
+                        const anchor = blk: {
+                            const ovl_decl = hir_mod.fnDeclOf(self.hir, ovl_node);
+                            if (ovl_decl.name != hir_mod.none_node_id) break :blk ovl_decl.name;
+                            break :blk ovl_node;
+                        };
+                        try self.report(anchor, TsCodes.overload_signature_not_compatible, "This overload signature is not compatible with its implementation signature.");
                         return;
                     }
                 }
@@ -9859,6 +9865,24 @@ pub const Checker = struct {
                 !self.restParamTypeIsValidArrayLike(declared_param_t))
             {
                 try self.report(p, TsCodes.rest_parameter_must_be_array_type, "A rest parameter must be of an array type.");
+            }
+            // Without an annotation, tsc still emits TS2370 when the
+            // inferred symbol type isn't assignable to a readonly any[]:
+            //   * `function f(...bar = 0)` → inferred from initializer
+            //      (here `0` → `number`), which fails the array check.
+            //   * `(...arg?) => …`         → arrow-function rest with
+            //      `?` widens to `any | undefined`, not an array
+            //      (class methods don't trip this — they resolve to
+            //      plain `any` which IS assignable to `any[]`).
+            // Mirrors `parserParameterList10.ts` and `parserParameterList11.ts`.
+            if (pp.flags.is_rest and !is_this_param and !has_anno) {
+                const malformed_initializer = inferred_from_default and
+                    !self.restParamTypeIsValidArrayLike(declared_param_t);
+                const optional_in_arrow = pp.flags.is_optional and
+                    self.hir.kindOf(self.hir.parentOf(p)) == .arrow_fn;
+                if (malformed_initializer or optional_in_arrow) {
+                    try self.report(p, TsCodes.rest_parameter_must_be_array_type, "A rest parameter must be of an array type.");
+                }
             }
             // `f(x?: T)` and `f(x: T = default)` both widen the
             // signature parameter type to include `undefined` so
@@ -42025,6 +42049,12 @@ pub const Checker = struct {
                     try self.report(target, TsCodes.optional_chain_for_of_target, "The left-hand side of a 'for...of' statement may not be an optional property access.");
                 }
             },
+            // The parser synthesizes a block when the for-init declares
+            // multiple bindings (e.g. `for (var a, b of X)`). The parser
+            // already reported TS1188 at the second declarator — tsc
+            // does NOT additionally emit TS2487 for this shape, so we
+            // suppress it here. Mirrors `parserForOfStatement{3,6,7}`.
+            .block_stmt => {},
             .array_literal => {
                 if (self.expressionIsOptionalChain(target)) {
                     try self.report(target, TsCodes.optional_chain_for_of_target, "The left-hand side of a 'for...of' statement may not be an optional property access.");

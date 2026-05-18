@@ -2711,7 +2711,15 @@ pub const Parser = struct {
         params: []const NodeId,
         return_type: NodeId,
     ) ParseError!void {
-        const name_span = self.hir.spanOf(name_node);
+        const raw_span = self.hir.spanOf(name_node);
+        // tsc anchors grammar diagnostics for computed accessor names
+        // (TS1049, TS1054, TS1094, TS1095) at the surrounding `[` token.
+        // Our `name_node` for computed keys is just the inner expression,
+        // so when the previous source byte is `[` step one column left.
+        const name_span: hir_mod.Span = if (raw_span.start > 0 and raw_span.start <= self.source.len and self.source[raw_span.start - 1] == '[')
+            .{ .start = raw_span.start - 1, .end = raw_span.end }
+        else
+            raw_span;
         const name_line = self.lineAt(name_span.start);
         // Per TS, a leading `this:` parameter is a type-only annotation
         // and should not count toward the accessor parameter limit.
@@ -5988,6 +5996,27 @@ pub const Parser = struct {
             while (true) {
                 const ps = self.peek();
                 var flags: hir_mod.ParamFlags = .{};
+                // tsc tolerates `public`/`private`/`protected`/`readonly`/`override`
+                // modifiers on parameters in function-type position so the
+                // checker can report TS2369 ("A parameter property is only
+                // allowed in a constructor implementation"). Without
+                // consuming them here we'd bail into `parseTypeAnnotation`
+                // and emit a spurious TS1213. Mirrors `parserParameterList5`
+                // and `parserParameterList13`.
+                while (isParameterPropertyModifier(self.peek().kind) and
+                    (self.peekAt(1).kind == .identifier or
+                        self.peekAt(1).kind == .kw_this or
+                        isParameterPropertyModifier(self.peekAt(1).kind) or
+                        self.peekAt(1).kind == .dot_dot_dot))
+                {
+                    const mod = self.advance();
+                    switch (mod.kind) {
+                        .kw_readonly => flags.is_readonly = true,
+                        .kw_override => flags.is_override = true,
+                        else => {},
+                    }
+                    flags.is_parameter_property = true;
+                }
                 if (self.match(.dot_dot_dot)) flags.is_rest = true;
                 var name_span = tokenSpan(ps);
                 var name_id: hir_mod.StringId = undefined;
@@ -9843,6 +9872,24 @@ pub const Parser = struct {
             var can_be_shorthand_property = false;
             if (self.match(.open_bracket)) {
                 key = try self.parseAssignmentExpression();
+                // tsc parses the full Expression inside the brackets so it
+                // can emit TS1171 on a comma expression rather than the
+                // bare TS1005 we'd otherwise produce at `,`. Mirrors
+                // `parserComputedPropertyName35.ts(2,6)`.
+                if (self.peek().kind == .comma) {
+                    const comma_start = self.hir.spanOf(key).start;
+                    const comma_line = self.lineAt(comma_start);
+                    while (self.match(.comma)) {
+                        const right = try self.parseAssignmentExpression();
+                        key = try self.builder.addBinaryOp(
+                            .{ .start = self.hir.spanOf(key).start, .end = self.hir.spanOf(right).end },
+                            .comma,
+                            key,
+                            right,
+                        );
+                    }
+                    try self.reportCodeAt(comma_start, comma_line, 1171, "A comma expression is not allowed in a computed property name.");
+                }
                 if (self.peek().kind == .close_bracket) {
                     _ = self.advance();
                 } else {
