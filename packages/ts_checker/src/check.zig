@@ -4897,8 +4897,14 @@ pub const Checker = struct {
                 // `subtypingWithObjectMembersOptionality3` and
                 // `bestCommonTypeOfConditionalExpressions2` rely on
                 // this to suppress TS2454 on the false-branch var.
-                const cond_true = self.hir.kindOf(c.cond) == .literal_bool and hir_mod.literalBoolOf(self.hir, c.cond);
-                const cond_false = self.hir.kindOf(c.cond) == .literal_bool and !hir_mod.literalBoolOf(self.hir, c.cond);
+                // The same treatment extends to compile-time-constant
+                // short-circuit expressions (`true || x`, `false && x`)
+                // which always evaluate to `true`/`false` regardless of
+                // RHS — mirrors `conditionalOperatorConditionIsBooleanType`
+                // where `true || false ? ...` only flags the true arm.
+                const static_cond = self.staticBoolCondition(c.cond);
+                const cond_true = static_cond == .true;
+                const cond_false = static_cond == .false;
                 if (!cond_false) try self.scanExprForUsedBeforeAssign(c.then_branch, pending);
                 if (!cond_true) try self.scanExprForUsedBeforeAssign(c.else_branch, pending);
             },
@@ -5192,6 +5198,39 @@ pub const Checker = struct {
                 }
             },
             else => {},
+        }
+    }
+
+    const StaticBool = enum { true, false, unknown };
+
+    /// Compile-time-fold an expression to `true`/`false` for the
+    /// purposes of dead-branch elimination in TS2454 scanning. Recognizes
+    /// `true`/`false` literals plus their propagation through `||`/`&&`
+    /// short-circuits — covers patterns like `true || rhs` that tsc
+    /// treats as constant-true when picking which arm of `c ? a : b`
+    /// reaches the use-site.
+    fn staticBoolCondition(self: *Checker, node: NodeId) StaticBool {
+        if (node == hir_mod.none_node_id) return .unknown;
+        switch (self.hir.kindOf(node)) {
+            .literal_bool => return if (hir_mod.literalBoolOf(self.hir, node)) .true else .false,
+            .logical_op => {
+                const l = hir_mod.logicalOf(self.hir, node);
+                const lhs = self.staticBoolCondition(l.lhs);
+                switch (l.op) {
+                    .@"or" => {
+                        if (lhs == .true) return .true;
+                        if (lhs == .false) return self.staticBoolCondition(l.rhs);
+                        return .unknown;
+                    },
+                    .@"and" => {
+                        if (lhs == .false) return .false;
+                        if (lhs == .true) return self.staticBoolCondition(l.rhs);
+                        return .unknown;
+                    },
+                    .nullish => return .unknown,
+                }
+            },
+            else => return .unknown,
         }
     }
 
@@ -44463,6 +44502,29 @@ test "checker: TS2454 fires for every use of unassigned typed var" {
         if (d.code == TsCodes.used_before_assignment) count += 1;
     }
     try T.expect(count >= 3);
+}
+
+test "checker: TS2454 prunes dead branches for short-circuit constant conditions" {
+    // `true || rhs` is a compile-time-constant `true`, so a TS2454
+    // scan should suppress the else-arm read of `y`. Mirrors
+    // `conditionalOperatorConditionIsBooleanType` (line 37: only the
+    // then-arm fires for `true || false ? x : y`).
+    const s = try newSetup(
+        \\var x: Object;
+        \\var y: Object;
+        \\true || false ? x : y;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var x_count: usize = 0;
+    var y_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.used_before_assignment) continue;
+        if (std.mem.indexOf(u8, d.message, "'x'") != null) x_count += 1;
+        if (std.mem.indexOf(u8, d.message, "'y'") != null) y_count += 1;
+    }
+    try T.expect(x_count >= 1);
+    try T.expectEqual(@as(usize, 0), y_count);
 }
 
 test "checker: TS2454 fires for both target receiver and rhs of assignment" {
