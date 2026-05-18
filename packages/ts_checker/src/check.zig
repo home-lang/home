@@ -283,6 +283,14 @@ pub const TsCodes = struct {
     pub const decorator_or_modifier_on_this_parameter: u32 = 1433;
     pub const this_parameter_must_be_first: u32 = 2680;
     pub const no_exported_member_suggestion: u32 = 2724;
+    /// TS2694 — `Namespace '<ns>' has no exported member '<leaf>'.`
+    /// Emitted when a qualified type-ref `<ns>.<leaf>` resolves its
+    /// root to a known (non-ambient) value namespace but no type
+    /// declaration named `<leaf>` is exported from it. Mirrors the
+    /// upstream cascade seen across the `parserRealSource*` fixtures
+    /// where `namespace TypeScript { ... }` is opened across many
+    /// files and a member like `AST` is referenced but never declared.
+    pub const namespace_no_exported_member: u32 = 2694;
     pub const class_name_object_es5_module: u32 = 2725;
     pub const ts_only_decl_in_js: u32 = 8006;
     /// TS8009 — "The '?' modifier can only be used in TypeScript
@@ -3116,6 +3124,29 @@ pub const Checker = struct {
         const ak = self.indexSignatureKindOf(a_key);
         const bk = self.indexSignatureKindOf(b_key);
         return std.mem.eql(u8, ak, bk);
+    }
+
+    /// True when the byte immediately before `expr.span.start` (ignoring
+    /// whitespace) is `(`. Used to decide whether a comma expression in
+    /// a computed property name came from the parser's bracket loop
+    /// (unparenthesized — TS1171) or from `parsePrimaryExpression`'s
+    /// open_paren arm (parenthesized — silent). The HIR doesn't carry a
+    /// paren-expression node, so we recover the distinction from the
+    /// source text. Mirrors `computedPropertyNames28_ES{5,6}` and
+    /// `computedPropertyNames30_ES{5,6}` (zero TS1171 because each key
+    /// is `[(super(), "prop")]`).
+    fn computedKeyExprIsParenthesized(self: *Checker, expr: NodeId) bool {
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(expr);
+        if (span.start == 0 or span.start > src.len) return false;
+        var i: usize = span.start;
+        while (i > 0) {
+            i -= 1;
+            const c = src[i];
+            if (c == ' ' or c == '\t' or c == '\n' or c == '\r') continue;
+            return c == '(';
+        }
+        return false;
     }
 
     fn nodeSourceTextEqual(self: *Checker, a: NodeId, b: NodeId) bool {
@@ -18445,6 +18476,15 @@ pub const Checker = struct {
         for (member_ids) |mid| {
             if (self.hir.kindOf(mid) != .index_signature) continue;
             const isig = hir_mod.indexSignatureOf(self.hir, mid);
+            // `typeOf` may be `none` if the key type hasn't been
+            // lowered yet; fall back to the parser's structural
+            // type-ref name so the lookup still hits for
+            // `[s: symbol]` in fixtures like `symbolProperty32`.
+            if (self.hir.kindOf(isig.key_type) == .type_ref) {
+                const tr = hir_mod.typeRefOf(self.hir, isig.key_type);
+                const txt = self.string_interner.get(tr.name);
+                if (std.mem.eql(u8, txt, key_kind)) return mid;
+            }
             const key_t = self.hir.typeOf(isig.key_type);
             const matches = if (std.mem.eql(u8, key_kind, "string"))
                 key_t == types.Primitive.string_t
@@ -18453,11 +18493,6 @@ pub const Checker = struct {
             else
                 key_t == types.Primitive.symbol_t;
             if (matches) return mid;
-            if (self.hir.kindOf(isig.key_type) == .type_ref) {
-                const tr = hir_mod.typeRefOf(self.hir, isig.key_type);
-                const txt = self.string_interner.get(tr.name);
-                if (std.mem.eql(u8, txt, key_kind)) return mid;
-            }
         }
         return hir_mod.none_node_id;
     }
@@ -18539,8 +18574,23 @@ pub const Checker = struct {
                 const inner = if (self.computedMemberNameInner(raw)) |c| c else raw;
                 const prop_str = try std.fmt.allocPrint(self.diag_arena.allocator(), "[{s}]", .{inner});
                 const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, symbol_idx, "symbol");
+                const anchor = self.classOrInterfaceMemberNode(node, m.name);
+                const inherited = anchor == node;
+                // Inherited symbol-named member: anchor TS2411 at the
+                // new symbol-index signature in this container so the
+                // diagnostic surfaces on the indexer line (mirrors the
+                // string/number branches above). When no symbol index
+                // sig is declared at this layer, drop the emit so we
+                // don't double-count the parent's own diagnostic.
+                // Matches `symbolProperty32` baseline `(7,5)`.
+                const final_anchor = if (inherited)
+                    self.classContainerIndexSignatureNode(node, "symbol")
+                else
+                    anchor;
+                if (final_anchor == hir_mod.none_node_id) continue;
                 try self.diagnostics.append(self.gpa, .{
-                    .node = self.classOrInterfaceMemberNode(node, m.name),
+                    .node = final_anchor,
+                    .pos = if (inherited) null else self.computedKeyBracketPos(final_anchor),
                     .code = TsCodes.property_not_assignable_to_index_type,
                     .message = msg,
                 });
@@ -21023,7 +21073,20 @@ pub const Checker = struct {
                         // depend on the un-renamed body.
                         var alias_arg_list: std.ArrayListUnmanaged(TypeId) = .empty;
                         defer alias_arg_list.deinit(self.gpa);
-                        const allow_alias_display = info.body_node != hir_mod.none_node_id;
+                        // Permit alias display for type aliases (body_node
+                        // present) AND for generic interface
+                        // instantiations (body_node == none but the
+                        // body type isn't a registered class instance).
+                        // `registerAliasDisplayName` guards against
+                        // shadowing the bare interface name via
+                        // `namedTypeForId` — the instantiated TypeId
+                        // differs from the body TypeId whenever a
+                        // substitution occurred, so the bare interface
+                        // body keeps `'I'` and the instantiation gets
+                        // `'I<boolean, string>'`. Mirrors `symbolProperty21`
+                        // baseline TS2353 prose.
+                        const is_class_instance = self.class_name_by_instance.contains(info.body);
+                        const allow_alias_display = info.body_node != hir_mod.none_node_id or !is_class_instance;
                         if (allow_alias_display) {
                             for (info.params) |param_t| {
                                 const at = subs.get(param_t) orelse param_t;
@@ -21768,23 +21831,44 @@ pub const Checker = struct {
         const ns_node = self.findNamespaceByPath(root_stmts, &path) orelse return;
         if (self.findNamedTypeDeclInNamespace(ns_node, r.name) != null) return;
         if (self.findNamedValueDeclInNamespace(ns_node, r.name) != null) return;
-        if (!self.namespaceDeclIsAmbient(ns_node)) return;
         const root_text = self.string_interner.get(root_name);
         const leaf_text = self.string_interner.get(r.name);
-        const msg = try std.fmt.allocPrint(
-            self.diag_arena.allocator(),
-            "Property '{s}' does not exist on type 'typeof {s}'.",
-            .{ leaf_text, root_text },
-        );
         // Anchor the diagnostic on the trailing leaf identifier (the
         // byte after the final `.`). Upstream tsc points at `C` in
         // `M.C` rather than at the start of the whole type-ref, so
         // the column matches the `(31,24)` baseline shape.
         const leaf_pos = self.qualifiedTypeRefLeafNamePos(type_node);
+        if (self.namespaceDeclIsAmbient(ns_node)) {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Property '{s}' does not exist on type 'typeof {s}'.",
+                .{ leaf_text, root_text },
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = type_node,
+                .pos = leaf_pos,
+                .code = TsCodes.property_does_not_exist,
+                .message = msg,
+            });
+            return;
+        }
+        // Non-ambient (value) namespace: upstream emits TS2694
+        // `Namespace '<ns>' has no exported member '<leaf>'.` when a
+        // qualified type-ref names a member that doesn't exist as a
+        // type declaration in the namespace. Mirrors the
+        // `parserRealSource*` cluster where `namespace TypeScript`
+        // is opened repeatedly and members like `AST`, `NodeType`,
+        // `ModuleDeclaration` are referenced but never declared as
+        // types in any of the (truncated) fixture files.
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Namespace '{s}' has no exported member '{s}'.",
+            .{ root_text, leaf_text },
+        );
         try self.diagnostics.append(self.gpa, .{
             .node = type_node,
             .pos = leaf_pos,
-            .code = TsCodes.property_does_not_exist,
+            .code = TsCodes.namespace_no_exported_member,
             .message = msg,
         });
     }
@@ -28597,9 +28681,15 @@ pub const Checker = struct {
                         // and TS1171 from the post-bind syntactic-shape
                         // sweep — at identical `(line,col)` the binder
                         // wins. Mirrors `parserComputedPropertyName35.ts(2,6)`.
+                        // The comma must be at the syntactic top of the
+                        // computed key — `[(a, b)]` is fine because the
+                        // parens demote the comma to a sub-expression.
+                        // Mirrors `computedPropertyNames28_ES{5,6}` and
+                        // `computedPropertyNames30_ES{5,6}` where the
+                        // `[(super(), "prop")]` keys produce zero TS1171.
                         if (self.hir.kindOf(op.key) == .binary_op) {
                             const b = hir_mod.binopOf(self.hir, op.key);
-                            if (b.op == .comma) {
+                            if (b.op == .comma and !self.computedKeyExprIsParenthesized(op.key)) {
                                 try self.report(op.key, 1171, "A comma expression is not allowed in a computed property name.");
                             }
                         }
@@ -37899,10 +37989,15 @@ pub const Checker = struct {
         if (self.typeIsAnyLike(t)) return true;
         const f = self.interner.pool.flagsOf(t);
         if (f.is_union) {
+            // tsc requires EVERY union constituent to be a valid
+            // instanceof LHS (non-primitive). A `symbol | {}` union
+            // still fails because `symbol` is primitive.
+            // Mirrors `symbolType1.ts(3,1)` where the LHS is
+            // `Symbol() || {}`.
             for (self.interner.unionMembers(t)) |member| {
-                if (self.isInstanceofLeftAllowed(member)) return true;
+                if (!self.isInstanceofLeftAllowed(member)) return false;
             }
-            return false;
+            return true;
         }
         return f.is_object or f.is_object_type or f.is_signature or f.is_tuple or f.is_type_parameter;
     }
