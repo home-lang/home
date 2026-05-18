@@ -3031,7 +3031,12 @@ pub const Parser = struct {
                     };
                     try self.reportAwaitBindingIfReserved(key_tok);
                     if (self.match(.colon)) {
-                        break :blk try self.parseBindingTarget();
+                        const target_tok = self.peek();
+                        const target = try self.parseBindingTarget();
+                        if (isReservedBindingNameToken(target_tok.kind)) {
+                            try self.reportCodeAt(self.peek().span.start, self.peek().line, 1005, "':' expected.");
+                        }
+                        break :blk target;
                     }
                     if (key_tok.kind == .string_literal or key_tok.kind == .number_literal) {
                         // tsc reports TS1005 `':' expected.` at the position of

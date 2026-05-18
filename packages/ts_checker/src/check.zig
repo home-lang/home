@@ -12049,9 +12049,37 @@ pub const Checker = struct {
                         }
                         continue;
                     }
+                    var method_t = sig;
+                    if (fn_p.return_type == hir_mod.none_node_id and
+                        fn_p.body != hir_mod.none_node_id and
+                        (self.interner.signatureReturn(sig) orelse types.Primitive.any) == types.Primitive.any)
+                    {
+                        if (try self.firstReturnExpressionTypeWithClassMemberThis(
+                            fn_p.body,
+                            fn_p.flags.is_static,
+                            instance_members.items,
+                            static_members.items,
+                            string_idx,
+                            number_idx,
+                            symbol_idx,
+                            static_string_idx,
+                            static_number_idx,
+                            static_symbol_idx,
+                            parent_instance_t,
+                            parent_static_t,
+                        )) |ret_t| {
+                            const params = self.interner.signatureParams(sig);
+                            method_t = self.interner.internSignature(params, ret_t, false) catch return error.OutOfMemory;
+                            if (self.rest_signatures.contains(sig)) try self.rest_signatures.put(self.gpa, method_t, {});
+                            if (self.signature_min_args.get(sig)) |min_required| {
+                                try self.signature_min_args.put(self.gpa, method_t, min_required);
+                            }
+                            try self.copySignatureParamNames(method_t, sig);
+                        }
+                    }
                     const method_member: types.ObjectMember = .{
                         .name = member_name,
-                        .type = sig,
+                        .type = method_t,
                         .is_optional = false,
                         .is_readonly = false,
                         .is_method = true,
@@ -12889,6 +12917,7 @@ pub const Checker = struct {
                 errdefer self.popNarrowScope();
                 try self.recordNarrow(this_id, static_t);
                 if (static_super_t) |st| try self.recordNarrow(super_id, st);
+                try self.checkStaticBlockTopLevelTDZ(m);
                 try self.checkStatement(m);
                 self.popNarrowScope();
                 self.narrow_lookup_floor = old_floor;
@@ -15433,6 +15462,7 @@ pub const Checker = struct {
         switch (self.hir.kindOf(node)) {
             .member_access => {
                 const m = hir_mod.memberOf(self.hir, node);
+                try self.reportStaticFutureFieldReadAt(node, class_name, declared_static_fields, initialized_static_fields);
                 try self.reportStaticFutureFieldReads(m.object, class_name, declared_static_fields, initialized_static_fields);
             },
             .element_access => {
@@ -15453,6 +15483,60 @@ pub const Checker = struct {
                 }
             },
             else => try self.reportStaticFutureFieldReads(node, class_name, declared_static_fields, initialized_static_fields),
+        }
+    }
+
+    fn reportStaticFutureFieldReadAt(
+        self: *Checker,
+        node: NodeId,
+        class_name: ?hir_mod.StringId,
+        declared_static_fields: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+        initialized_static_fields: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) CheckError!void {
+        if (self.hir.kindOf(node) != .member_access) return;
+        const m = hir_mod.memberOf(self.hir, node);
+        if (!declared_static_fields.contains(m.name) or initialized_static_fields.contains(m.name)) return;
+        if (!self.staticMemberAccessUsesCurrentClass(m.object, class_name)) return;
+        const name_text = self.string_interner.get(m.name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Property '{s}' is used before its initialization.",
+            .{name_text},
+        );
+        const name_pos = self.memberAccessPropertyNamePos(node);
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = name_pos,
+            .code = TsCodes.property_used_before_initialization,
+            .message = msg,
+        });
+    }
+
+    fn checkStaticBlockTopLevelTDZ(self: *Checker, block_node: NodeId) CheckError!void {
+        var refs: std.ArrayListUnmanaged(NameRef) = .empty;
+        defer refs.deinit(self.gpa);
+        try self.collectIdentifierRefsWithNodes(block_node, &refs);
+
+        var reported: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer reported.deinit(self.gpa);
+        for (refs.items) |ref| {
+            if (reported.contains(ref.name)) continue;
+            const later = self.findLaterTopLevelVarLikeDeclInSameSection(ref.node, ref.name) orelse continue;
+            const later_kind = self.hir.kindOf(later);
+            if (later_kind != .let_decl and later_kind != .const_decl) continue;
+            const name_str = self.string_interner.get(ref.name);
+            const decl_msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Block-scoped variable '{s}' used before its declaration.",
+                .{name_str},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = ref.node,
+                .code = TsCodes.block_scoped_used_before_decl,
+                .message = decl_msg,
+            });
+            try self.reportUsedBeforeAssignmentSimple(ref.node, ref.name);
+            try reported.put(self.gpa, ref.name, {});
         }
     }
 
@@ -24313,7 +24397,7 @@ pub const Checker = struct {
                 }
             }
             if (!target_has_spread) {
-                const expected_t = try self.objectBindingPatternExpectedType(target_node, true);
+                const expected_t = try self.objectBindingPatternExpectedType(target_node, true, false);
                 try self.checkExcessProperties(source_node, expected_t);
             }
         }
@@ -24493,7 +24577,12 @@ pub const Checker = struct {
         try self.checkDestructuringAssignmentTarget(target_node, effective_t);
     }
 
-    fn objectBindingPatternExpectedType(self: *Checker, pattern_node: NodeId, include_empty: bool) CheckError!TypeId {
+    fn objectBindingPatternExpectedType(
+        self: *Checker,
+        pattern_node: NodeId,
+        include_empty: bool,
+        untyped_binding_identifiers_as_any: bool,
+    ) CheckError!TypeId {
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
         const elems: []const NodeId = switch (self.hir.kindOf(pattern_node)) {
@@ -24510,7 +24599,7 @@ pub const Checker = struct {
                     hir_mod.assignmentOf(self.hir, p.default_value).target
                 else
                     p.name;
-                const member_t = try self.destructuringTargetExpectedType(target_node);
+                const member_t = try self.destructuringTargetExpectedType(target_node, untyped_binding_identifiers_as_any);
                 try members.append(self.gpa, .{ .name = key_name, .type = member_t, .is_optional = false, .is_readonly = false, .is_method = false });
             } else if (self.hir.kindOf(elem) == .object_property) {
                 const op = hir_mod.objectPropertyOf(self.hir, elem);
@@ -24524,7 +24613,7 @@ pub const Checker = struct {
                     hir_mod.assignmentOf(self.hir, op.value).target
                 else
                     op.value;
-                const member_t = try self.destructuringTargetExpectedType(target_node);
+                const member_t = try self.destructuringTargetExpectedType(target_node, untyped_binding_identifiers_as_any);
                 try members.append(self.gpa, .{ .name = name, .type = member_t, .is_optional = false, .is_readonly = false, .is_method = false });
             }
         }
@@ -24532,17 +24621,24 @@ pub const Checker = struct {
         return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
     }
 
-    fn destructuringTargetExpectedType(self: *Checker, target_node: NodeId) CheckError!TypeId {
+    fn destructuringTargetExpectedType(
+        self: *Checker,
+        target_node: NodeId,
+        untyped_binding_identifiers_as_any: bool,
+    ) CheckError!TypeId {
         if (target_node == hir_mod.none_node_id) return types.Primitive.any;
         return switch (self.hir.kindOf(target_node)) {
             .identifier, .member_access, .element_access => blk: {
+                if (untyped_binding_identifiers_as_any and self.hir.kindOf(target_node) == .identifier) {
+                    break :blk types.Primitive.any;
+                }
                 const t = if (self.hir.kindOf(target_node) == .identifier)
                     self.typeOfIdentifierDeclared(target_node)
                 else
                     try self.checkExpression(target_node);
                 break :blk if (t == types.Primitive.none or t == types.Primitive.undefined_t) types.Primitive.any else t;
             },
-            .object_literal, .object_pattern => try self.objectBindingPatternExpectedType(target_node, true),
+            .object_literal, .object_pattern => try self.objectBindingPatternExpectedType(target_node, true, untyped_binding_identifiers_as_any),
             .array_pattern => try self.arrayBindingPatternParameterType(target_node),
             .array_literal => self.interner.internArrayType(self.string_interner, types.Primitive.any) catch return error.OutOfMemory,
             else => types.Primitive.any,
@@ -25374,7 +25470,7 @@ pub const Checker = struct {
             if (nk == .object_pattern and v.init != hir_mod.none_node_id) {
                 try self.checkObjectBindingPatternAgainstType(v.name, final_type);
                 if (self.hir.kindOf(v.init) == .object_literal) {
-                    const expected_t = try self.objectBindingPatternExpectedType(v.name, false);
+                    const expected_t = try self.objectBindingPatternExpectedType(v.name, false, true);
                     if (expected_t != types.Primitive.none) try self.checkExcessProperties(v.init, expected_t);
                 }
             } else if (nk == .array_pattern and v.init != hir_mod.none_node_id) {
@@ -36761,6 +36857,69 @@ pub const Checker = struct {
     fn expressionContainsSuperCall(self: *Checker, node: NodeId) bool {
         if (node == hir_mod.none_node_id) return false;
         switch (self.hir.kindOf(node)) {
+            .block_stmt => {
+                for (hir_mod.blockStmts(self.hir, node)) |stmt| {
+                    if (self.expressionContainsSuperCall(stmt)) return true;
+                }
+                return false;
+            },
+            .var_decl, .let_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, node);
+                return self.expressionContainsSuperCall(v.init);
+            },
+            .return_stmt => return self.expressionContainsSuperCall(hir_mod.returnOf(self.hir, node).value),
+            .throw_stmt => return self.expressionContainsSuperCall(hir_mod.throwOf(self.hir, node).value),
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                return self.expressionContainsSuperCall(i.cond) or
+                    self.expressionContainsSuperCall(i.then_branch) or
+                    self.expressionContainsSuperCall(i.else_branch);
+            },
+            .while_stmt => {
+                const w = hir_mod.whileOf(self.hir, node);
+                return self.expressionContainsSuperCall(w.cond) or
+                    self.expressionContainsSuperCall(w.body);
+            },
+            .do_while_stmt => {
+                const d = hir_mod.doWhileOf(self.hir, node);
+                return self.expressionContainsSuperCall(d.body) or
+                    self.expressionContainsSuperCall(d.cond);
+            },
+            .for_stmt => {
+                const f = hir_mod.forStmtOf(self.hir, node);
+                return self.expressionContainsSuperCall(f.init) or
+                    self.expressionContainsSuperCall(f.cond) or
+                    self.expressionContainsSuperCall(f.update) or
+                    self.expressionContainsSuperCall(f.body);
+            },
+            .for_in_stmt, .for_of_stmt => {
+                const f = hir_mod.forInOf(self.hir, node);
+                return self.expressionContainsSuperCall(f.target) or
+                    self.expressionContainsSuperCall(f.source) or
+                    self.expressionContainsSuperCall(f.body);
+            },
+            .try_stmt => {
+                const t = hir_mod.tryOf(self.hir, node);
+                return self.expressionContainsSuperCall(t.block) or
+                    self.expressionContainsSuperCall(t.catch_block) or
+                    self.expressionContainsSuperCall(t.finally_block);
+            },
+            .switch_stmt => {
+                const s = hir_mod.switchOf(self.hir, node);
+                if (self.expressionContainsSuperCall(s.discriminant)) return true;
+                for (hir_mod.switchCases(self.hir, node)) |case| {
+                    if (self.expressionContainsSuperCall(case)) return true;
+                }
+                return false;
+            },
+            .switch_case => {
+                const sc = hir_mod.switchCaseOf(self.hir, node);
+                if (self.expressionContainsSuperCall(sc.value)) return true;
+                for (hir_mod.switchCaseStmts(self.hir, node)) |stmt| {
+                    if (self.expressionContainsSuperCall(stmt)) return true;
+                }
+                return false;
+            },
             .call_expr => {
                 const c = hir_mod.callOf(self.hir, node);
                 if (self.callExprIsTaggedTemplate(node)) return false;
@@ -37650,6 +37809,7 @@ pub const Checker = struct {
     ) CheckError!void {
         try self.diagnostics.append(self.gpa, .{
             .node = node,
+            .pos = self.symbolOperandAnchorPos(node),
             .code = code,
             .message = msg,
         });
@@ -42719,12 +42879,14 @@ pub const Checker = struct {
             // TS2322 per offending member, so we no longer `break`
             // after the first mismatch.
             const anchor = if (op.key != hir_mod.none_node_id) op.key else op.value;
-            try self.reportTypeNotAssignable(
-                anchor,
-                value_t,
-                tm.type,
-                "Type is not assignable to property type.",
-            );
+            if (!try self.tryReportSinglePropertyMissing(anchor, op.value, value_t, tm.type)) {
+                try self.reportTypeNotAssignable(
+                    anchor,
+                    value_t,
+                    tm.type,
+                    "Type is not assignable to property type.",
+                );
+            }
             emitted = true;
         }
         return emitted;
@@ -43341,6 +43503,7 @@ pub const Checker = struct {
                 break :blk true;
             }
             if (source == types.Primitive.object_t) break :blk true;
+            if (self.class_name_by_instance.contains(source)) break :blk true;
             if (source < self.interner.pool.typeCount() and
                 self.interner.pool.flagsOf(source).is_object_type)
             {
@@ -52800,6 +52963,20 @@ test "checker: super call in non-derived class emits TS2335" {
         if (d.code == TsCodes.super_not_derived) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: derived constructor super call inside statement suppresses TS2377" {
+    const s = try newSetup(
+        \\class Base {}
+        \\class Child extends Base {
+        \\  constructor() { if (true) { super(); } }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.derived_constructor_missing_super);
+    }
 }
 
 test "checker: super property access in non-derived class emits TS2335" {
@@ -64976,7 +65153,7 @@ test "checker: class static block reports static field read before initializatio
     try T.expectEqual(@as(usize, 2), count);
 }
 
-test "checker: class static block assignment target is not future-field read" {
+test "checker: class static block assignment target reports future-field read" {
     const s = try newSetup(
         \\class C {
         \\  static { this.f2 = 1; C.f2 = 2; }
@@ -64985,9 +65162,30 @@ test "checker: class static block assignment target is not future-field read" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
     for (s.checker.diagnostics.items) |d| {
-        try T.expect(d.code != TsCodes.property_used_before_initialization);
+        if (d.code == TsCodes.property_used_before_initialization) count += 1;
     }
+    try T.expectEqual(@as(usize, 2), count);
+}
+
+test "checker: class static block reports top-level let/const TDZ" {
+    const s = try newSetup(
+        \\class C {
+        \\  static { FOO; }
+        \\}
+        \\const FOO = "FOO";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_decl = false;
+    var saw_assign = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.block_scoped_used_before_decl) saw_decl = true;
+        if (d.code == TsCodes.used_before_assignment) saw_assign = true;
+    }
+    try T.expect(saw_decl);
+    try T.expect(saw_assign);
 }
 
 test "checker: class static block can assign an untyped outer variable" {
