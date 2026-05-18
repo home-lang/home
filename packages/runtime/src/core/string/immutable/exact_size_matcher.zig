@@ -1,4 +1,4 @@
-// Copied verbatim from bun/src/bun_core/string/immutable/exact_size_matcher.zig at
+// Copied verbatim from bun/src/core/string/immutable/exact_size_matcher.zig at
 // upstream SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../../cli/LICENSE.bun.md.
 //
 // No rewrites: file is pure stdlib (only depends on @import("std")).

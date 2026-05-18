@@ -1,4 +1,4 @@
-// Copied verbatim from bun/src/bun_core/tty.zig at upstream
+// Copied verbatim from bun/src/core/tty.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 
 pub const Mode = enum(c_int) {

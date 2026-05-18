@@ -11,7 +11,7 @@
 //     when it lands the special-case can be restored verbatim.
 //   * The Environment-gated assert in `push` is rewritten to read
 //     `home_rt.Environment.allow_assert` directly so we don't have to
-//     reach into Bun's bun_core/env.zig path.
+//     reach into Bun's core/env.zig path.
 
 fn SinglyLinkedList(comptime T: type, comptime Parent: type) type {
     return struct {

@@ -1,10 +1,10 @@
-// Copied verbatim from bun/src/bun_alloc/fallback/z.zig at upstream
+// Copied verbatim from bun/src/alloc/fallback/z.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
 //
 // Zero-initializing allocator that wraps `std.heap.c_allocator`. This is
 // the fallback implementation used when mimalloc isn't linked; the
 // real mimalloc-backed `z_allocator` re-lands when Phase 12.2 wires
-// the bun_alloc subsystem.
+// the alloc subsystem.
 
 /// A fallback zero-initializing allocator.
 pub const allocator = Allocator{

@@ -120,14 +120,14 @@ pub fn DifferWithEql(comptime Line: type, comptime opts: Options, comptime areLi
         /// ## References
         /// - [Node- `myers_diff.js`](https://github.com/nodejs/node/blob/main/lib/internal/assert/myers_diff.js)
         /// - [An O(ND) Difference Algorithm and Its Variations](http://www.xmailserver.org/diff2.pdf)
-        pub fn diff(bun_allocator: Allocator, actual: []const Line, expected: []const Line) Error!DiffList(Line) {
+        pub fn diff(home_allocator: Allocator, actual: []const Line, expected: []const Line) Error!DiffList(Line) {
 
             // Edit graph's allocator
-            var graph_stack_alloc = stackFallback(graph_initial_size, bun_allocator);
+            var graph_stack_alloc = stackFallback(graph_initial_size, home_allocator);
             const graph_alloc = graph_stack_alloc.get();
 
             // Match point trace's allocator
-            var trace_stack_alloc = stackFallback(opts.initial_trace_capacity, bun_allocator);
+            var trace_stack_alloc = stackFallback(opts.initial_trace_capacity, home_allocator);
             const trace_alloc = trace_stack_alloc.get();
 
             // const MAX \in [0, M+N]
@@ -208,7 +208,7 @@ pub fn DifferWithEql(comptime Line: type, comptime opts: Options, comptime areLi
                     graph[k] = @intCast(x);
                     if (x >= actual.len and y >= expected.len) {
                         // todo: arena
-                        return backtrack(bun_allocator, &trace, actual, expected);
+                        return backtrack(home_allocator, &trace, actual, expected);
                     }
                 }
             }

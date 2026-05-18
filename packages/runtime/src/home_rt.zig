@@ -147,12 +147,12 @@ pub const crash_handler = struct {
     pub const handle_oom = @import("crash_handler/handle_oom.zig");
 };
 
-// ---- src/bun_core/ -----------------------------------------------------
+// ---- src/core/ -----------------------------------------------------
 // Additional Tier-0 helpers — pure-Zig utilities the rest of the runtime
 // leans on. (result.zig + tty.zig already wired below.)
-pub const ExactSizeMatcher = @import("bun_core/string/immutable/exact_size_matcher.zig").ExactSizeMatcher;
-pub const BoundedArray = @import("bun_core/bounded_array.zig").BoundedArray;
-pub const BoundedArrayAligned = @import("bun_core/bounded_array.zig").BoundedArrayAligned;
+pub const ExactSizeMatcher = @import("core/string/immutable/exact_size_matcher.zig").ExactSizeMatcher;
+pub const BoundedArray = @import("core/bounded_array.zig").BoundedArray;
+pub const BoundedArrayAligned = @import("core/bounded_array.zig").BoundedArrayAligned;
 
 // ---- src/install_types/ ------------------------------------------------
 // Package manager type vocabulary. The full `install/PackageManager.zig`
@@ -264,20 +264,20 @@ pub const node = struct {
     // both of which moved in 0.17. Re-attach once an adapter lands.
 };
 
-// ---- src/bun_core/ + src/bun_alloc/ + src/safety/ ----------------------
+// ---- src/core/ + src/alloc/ + src/safety/ ----------------------
 // Result type, tty mode, c_allocator, thread-id sentinel. Pure-Zig
 // utilities the rest of the runtime leans on.
-pub const Result = @import("bun_core/result.zig").Result;
-pub const tty = @import("bun_core/tty.zig");
-pub const c_allocator = @import("bun_alloc/fallback.zig").c_allocator;
-pub const z_allocator = @import("bun_alloc/fallback.zig").z_allocator;
-pub const freeWithoutSize = @import("bun_alloc/fallback.zig").freeWithoutSize;
+pub const Result = @import("core/result.zig").Result;
+pub const tty = @import("core/tty.zig");
+pub const c_allocator = @import("alloc/fallback.zig").c_allocator;
+pub const z_allocator = @import("alloc/fallback.zig").z_allocator;
+pub const freeWithoutSize = @import("alloc/fallback.zig").freeWithoutSize;
 // Sub-namespace for the zero-init allocator. Re-exports the canonical
 // `z_allocator` above plus the internal helpers needed by callers that
-// want to spell `home_rt.bun_alloc.fallback.z.alloc(...)` like upstream.
-pub const bun_alloc = struct {
+// want to spell `home_rt.alloc.fallback.z.alloc(...)`.
+pub const alloc = struct {
     pub const fallback = struct {
-        pub const z = @import("bun_alloc/fallback/z.zig");
+        pub const z = @import("alloc/fallback/z.zig");
     };
 };
 pub const io_heap = @import("io/heap.zig");
@@ -417,7 +417,7 @@ test {
     _ = @import("uws_sys/quic/Header.zig");
     _ = @import("sql/mysql/protocol/PacketHeader.zig");
     // Second-wave port batch (2026-05-17, agent A–H follow-up):
-    _ = @import("bun_alloc/fallback/z.zig");
+    _ = @import("alloc/fallback/z.zig");
     _ = @import("http/H2FrameParser.zig");
     _ = @import("http/Signals.zig");
     _ = @import("http_types/mime_type_list_enum.zig");
@@ -425,8 +425,8 @@ test {
     _ = @import("perf/generated_perf_trace_events.zig");
     _ = @import("sql/mysql/MySQLTypes.zig");
     // Third-wave port batch (2026-05-17, parallel-agent integration):
-    _ = @import("bun_core/string/immutable/exact_size_matcher.zig");
-    _ = @import("bun_core/bounded_array.zig");
+    _ = @import("core/string/immutable/exact_size_matcher.zig");
+    _ = @import("core/bounded_array.zig");
     _ = @import("meta/bits.zig");
     _ = @import("meta/traits.zig");
     _ = @import("crash_handler/handle_oom.zig");

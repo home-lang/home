@@ -1,7 +1,7 @@
 // Copied verbatim from bun/src/perf/system_timer.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 //
-// Upstream pulls `Environment` from a relative `../bun_core/env.zig`
+// Upstream pulls `Environment` from a relative `../core/env.zig`
 // import; the home_rt aggregator exposes `home_rt.Environment` with
 // the same compile-time `isWasm` field, so the rewrite collapses to
 // a single import.
