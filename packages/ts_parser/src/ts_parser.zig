@@ -10450,6 +10450,25 @@ pub const Parser = struct {
 
     fn parseObjectLiteral(self: *Parser) ParseError!NodeId {
         const start = try self.expect(.open_brace, "'{' to start object literal");
+        // Template literal as the first property-name token is a hard
+        // syntactic error — `{ \`a\`: 321 }` cannot be expressed in TS.
+        // tsc handles this by closing the object as empty, emitting
+        // TS1136 at the template token, and re-routing the template
+        // to the outer call-expression continuation so the empty `{}`
+        // becomes the tag of a tagged-template call (which in turn
+        // surfaces TS2349 `{} is not callable`). Mirrors
+        // templateStringInPropertyName{1,2}, templateStringIn
+        // PropertyNameES6_{1,2}, templateStringInObjectLiteral{,ES6}.
+        if (self.peek().kind == .no_substitution_template or
+            self.peek().kind == .template_head)
+        {
+            const tmpl = self.peek();
+            try self.reportCodeAt(tmpl.span.start, tmpl.line, 1136, "Property assignment expected.");
+            return try self.builder.addObjectLiteral(
+                .{ .start = start.span.start, .end = start.span.end },
+                &.{},
+            );
+        }
         // Reset `disallow_arrow_return_type` for property values (a
         // fresh assignment-expression context). Prevents false rewinds
         // in `cond ? { k: (x): T => x } : y`. See
