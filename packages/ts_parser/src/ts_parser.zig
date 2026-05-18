@@ -176,6 +176,12 @@ pub const Parser = struct {
     top_level_export_indicator: bool,
     in_top_level_module_binding_decl: bool,
     in_export_declaration: bool,
+    /// True while parsing the body of an `interface { ... }` or
+    /// `interface X { ... }` so type-member diagnostics distinguish
+    /// interface from anonymous type-literal context. Used to pick
+    /// TS1169 vs. TS1170 when a computed key isn't a literal-resolved
+    /// name. Mirrors `computedPropertyNamesDeclarationEmit3/4_ES{5,6}`.
+    parsing_interface_body: bool = false,
     /// True for `.tsx` files. Enables JSX parsing in expression
     /// position; the parser disambiguates `<T>x` (generic type
     /// assertion) vs. `<T>x</T>` (JSX) via the `<T,>` and
@@ -4427,6 +4433,9 @@ pub const Parser = struct {
         _ = try self.expect(.open_brace, "'{' to open interface body");
         var members: std.ArrayListUnmanaged(NodeId) = .empty;
         defer members.deinit(self.gpa);
+        const saved_in_iface = self.parsing_interface_body;
+        self.parsing_interface_body = true;
+        defer self.parsing_interface_body = saved_in_iface;
         try self.parseTypeMemberList(&members);
         const close = if (self.peek().kind == .close_brace)
             self.advance()
@@ -7066,8 +7075,21 @@ pub const Parser = struct {
         const close_tok = self.advance();
         const name_id = (try self.computedTypeMemberNameFromKey(key_expr)) orelse blk: {
             if (self.hir.kindOf(key_expr) != .identifier) {
-                self.cursor = checkpoint;
-                return false;
+                // A computed type-member key whose expression isn't a
+                // literal-resolvable name (binary_op, call_expr, etc.)
+                // still needs to be reported as a computed-property-
+                // name violation, not a malformed index signature.
+                // tsc emits TS1169 for interfaces and TS1170 for type
+                // literals. Mirrors
+                // `computedPropertyNamesDeclarationEmit3_ES{5,6}` for
+                // `["" + ""](): void` inside `interface I` and DE4 for
+                // the same shape inside `var v: { ... }`.
+                if (self.parsing_interface_body) {
+                    try self.reportCodeAt(start_tok.span.start, start_tok.line, 1169, "A computed property name in an interface must refer to an expression whose type is a literal type or a 'unique symbol' type.");
+                } else {
+                    try self.reportCodeAt(start_tok.span.start, start_tok.line, 1170, "A computed property name in a type literal must refer to an expression whose type is a literal type or a 'unique symbol' type.");
+                }
+                break :blk @as(hir_mod.StringId, 0);
             }
             try self.reportCannotFindNameNode(key_expr, start_tok.line);
             break :blk @as(hir_mod.StringId, 0);
