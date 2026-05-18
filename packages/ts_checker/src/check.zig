@@ -28731,7 +28731,13 @@ pub const Checker = struct {
             if (try self.jsxHasIntrinsicElementsDecl(el.tag)) {
                 try self.report(el.tag, TsCodes.property_does_not_exist, "Property does not exist on type 'JSX.IntrinsicElements'.");
             } else if (self.strict_flags.no_implicit_any and !self.sourceHasReactJsxReference()) {
-                try self.report(el.tag, TsCodes.jsx_element_implicit_any_no_intrinsic, "JSX element implicitly has type 'any' because no interface 'JSX.IntrinsicElements' exists.");
+                // tsc anchors TS7026 at the opening `<` (not the tag
+                // identifier) AND emits a second diagnostic at the
+                // closing tag's `<` for paired elements. Mirror that
+                // shape so `tsxNamespacedAttributeName1/2` and
+                // `tsxTypeErrors` line up with the upstream baseline.
+                try self.report(node, TsCodes.jsx_element_implicit_any_no_intrinsic, "JSX element implicitly has type 'any' because no interface 'JSX.IntrinsicElements' exists.");
+                try self.reportJsxClosingTagImplicitAny(node, el);
             }
         }
         if (props_t == null and !self.jsxTagIsIntrinsic(el.tag)) {
@@ -28740,7 +28746,8 @@ pub const Checker = struct {
                 if (try self.jsxHasIntrinsicElementsDecl(el.tag)) {
                     try self.report(el.tag, TsCodes.property_does_not_exist, "Property does not exist on type 'JSX.IntrinsicElements'.");
                 } else if (self.strict_flags.no_implicit_any and !self.sourceHasReactJsxReference()) {
-                    try self.report(el.tag, TsCodes.jsx_element_implicit_any_no_intrinsic, "JSX element implicitly has type 'any' because no interface 'JSX.IntrinsicElements' exists.");
+                    try self.report(node, TsCodes.jsx_element_implicit_any_no_intrinsic, "JSX element implicitly has type 'any' because no interface 'JSX.IntrinsicElements' exists.");
+                    try self.reportJsxClosingTagImplicitAny(node, el);
                 }
             }
         }
@@ -43069,6 +43076,31 @@ pub const Checker = struct {
 
     fn report(self: *Checker, node: NodeId, code: u32, message: []const u8) !void {
         try self.reportAt(node, null, code, message);
+    }
+
+    /// Second TS7026 emission for the closing-tag `<` of a paired JSX
+    /// element (`<svg:path>...</svg:path>`). Upstream tsc reports
+    /// TS7026 at BOTH the opening and closing `<` positions; we mirror
+    /// that by scanning the element source for the last `</` and
+    /// anchoring the duplicate diagnostic there. Self-closing elements
+    /// skip the second emission. Mirrors the
+    /// `tsxNamespacedAttributeName1/2` baseline.
+    fn reportJsxClosingTagImplicitAny(
+        self: *Checker,
+        node: NodeId,
+        el: hir_mod.JsxElementPayload,
+    ) CheckError!void {
+        if (el.self_closing) return;
+        const src = self.source orelse return;
+        const span = self.hir.spanOf(node);
+        if (span.end > src.len or span.start >= span.end) return;
+        const slice = src[span.start..span.end];
+        // Find the LAST `</` in the element span — that's the closing
+        // tag's `<` position. Bounded by the element span so we never
+        // walk past the source slice.
+        const idx_in_slice = std.mem.lastIndexOf(u8, slice, "</") orelse return;
+        const abs_pos: u32 = @intCast(span.start + idx_in_slice);
+        try self.reportAt(node, abs_pos, TsCodes.jsx_element_implicit_any_no_intrinsic, "JSX element implicitly has type 'any' because no interface 'JSX.IntrinsicElements' exists.");
     }
 
     /// Report TS2838 (`infer X` constraint mismatch) anchored at the

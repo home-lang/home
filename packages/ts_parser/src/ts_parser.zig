@@ -10175,10 +10175,28 @@ pub const Parser = struct {
         }
         const first = self.advance();
         var parsed_span = tokenSpan(first);
-        while (self.peek().kind == .minus and isJsxNamePart(self.peekAt(1).kind)) {
-            _ = self.advance();
-            const part = self.advance();
-            parsed_span.end = part.span.end;
+        // Hyphenated parts (`data-foo`) AND single-colon namespaced
+        // parts (`svg:path`, `xlink:href`). The namespaced form is
+        // never a valid lowercase intrinsic in the React JSX rules —
+        // upstream tsc parses it without TS1109 and lets the checker
+        // emit TS7026 (no `JSX.IntrinsicElements`) at the JSX element
+        // anchor. Capturing the whole `svg:path` as one identifier
+        // here gives the checker exactly that handle.
+        while (true) {
+            const k = self.peek().kind;
+            if (k == .minus and isJsxNamePart(self.peekAt(1).kind)) {
+                _ = self.advance();
+                const part = self.advance();
+                parsed_span.end = part.span.end;
+                continue;
+            }
+            if (k == .colon and isJsxNamePart(self.peekAt(1).kind)) {
+                _ = self.advance();
+                const part = self.advance();
+                parsed_span.end = part.span.end;
+                continue;
+            }
+            break;
         }
         const text = self.source[parsed_span.start..parsed_span.end];
         const id = self.interner.intern(text) catch return error.OutOfMemory;
