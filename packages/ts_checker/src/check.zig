@@ -11262,8 +11262,12 @@ pub const Checker = struct {
                     const fn_name_is_computed = self.nodeIsBracketedComputedName(fn_p.name) or self.nodeIsBracketedComputedName(m) or self.memberSourceLooksComputed(m);
                     var computed_fn_key_t: TypeId = types.Primitive.none;
                     if (fn_name_is_computed and fn_p.name != hir_mod.none_node_id) {
-                        if (self.computedNameReferencesTypeParams(fn_p.name, type_params)) {
-                            try self.report(fn_p.name, 2467, "A computed property name cannot reference a type parameter from its containing type.");
+                        const tp_ref_node = self.computedNameTypeParamReferenceNode(fn_p.name, type_params);
+                        if (tp_ref_node != hir_mod.none_node_id) {
+                            // Anchor TS2467 at the offending type-param
+                            // identifier (e.g. `T`), not the enclosing
+                            // call/member — matches `computedPropertyNames32_ES6`.
+                            try self.report(tp_ref_node, 2467, "A computed property name cannot reference a type parameter from its containing type.");
                         }
                         if (self.expressionContainsSuper(fn_p.name)) {
                             try self.report(fn_p.name, TsCodes.super_in_computed_property_name, "'super' cannot be referenced in a computed property name.");
@@ -11543,8 +11547,9 @@ pub const Checker = struct {
                             (self.hir.kindOf(op.value) == .fn_decl or self.hir.kindOf(op.value) == .fn_expr or self.hir.kindOf(op.value) == .arrow_fn) and
                             self.memberSourceLooksMethod(m));
                     if (op_is_computed) {
-                        if (self.computedNameReferencesTypeParams(op.key, type_params)) {
-                            try self.report(op.key, 2467, "A computed property name cannot reference a type parameter from its containing type.");
+                        const tp_ref_node = self.computedNameTypeParamReferenceNode(op.key, type_params);
+                        if (tp_ref_node != hir_mod.none_node_id) {
+                            try self.report(tp_ref_node, 2467, "A computed property name cannot reference a type parameter from its containing type.");
                         }
                         if (self.expressionContainsSuper(op.key)) {
                             try self.report(op.key, TsCodes.super_in_computed_property_name, "'super' cannot be referenced in a computed property name.");
@@ -34515,49 +34520,70 @@ pub const Checker = struct {
     }
 
     fn computedNameReferencesTypeParams(self: *Checker, node: NodeId, type_params: []const NodeId) bool {
-        if (node == hir_mod.none_node_id or type_params.len == 0) return false;
+        return self.computedNameTypeParamReferenceNode(node, type_params) != hir_mod.none_node_id;
+    }
+
+    /// Returns the type-ref node (typically the `T` identifier) that
+    /// references one of `type_params`, or `none_node_id` if none. tsc
+    /// anchors TS2467 at the specific `T` identifier inside the computed
+    /// key, not at the enclosing call/member expression — matches
+    /// `computedPropertyNames32_ES6.ts(6,10)` baseline.
+    fn computedNameTypeParamReferenceNode(self: *Checker, node: NodeId, type_params: []const NodeId) NodeId {
+        if (node == hir_mod.none_node_id or type_params.len == 0) return hir_mod.none_node_id;
         switch (self.hir.kindOf(node)) {
-            .type_ref => return self.typeParamNameMatches(hir_mod.typeRefOf(self.hir, node).name, type_params),
+            .type_ref => {
+                if (self.typeParamNameMatches(hir_mod.typeRefOf(self.hir, node).name, type_params)) return node;
+                return hir_mod.none_node_id;
+            },
             .call_expr, .new_expr => {
                 for (hir_mod.callTypeArgs(self.hir, node)) |ta| {
-                    if (self.computedNameReferencesTypeParams(ta, type_params)) return true;
+                    const inner = self.computedNameTypeParamReferenceNode(ta, type_params);
+                    if (inner != hir_mod.none_node_id) return inner;
                 }
                 const c = hir_mod.callOf(self.hir, node);
-                if (self.computedNameReferencesTypeParams(c.callee, type_params)) return true;
+                const inner = self.computedNameTypeParamReferenceNode(c.callee, type_params);
+                if (inner != hir_mod.none_node_id) return inner;
                 for (hir_mod.callArgs(self.hir, node)) |arg| {
-                    if (self.computedNameReferencesTypeParams(arg, type_params)) return true;
+                    const arg_inner = self.computedNameTypeParamReferenceNode(arg, type_params);
+                    if (arg_inner != hir_mod.none_node_id) return arg_inner;
                 }
-                return false;
+                return hir_mod.none_node_id;
             },
-            .member_access => return self.computedNameReferencesTypeParams(hir_mod.memberOf(self.hir, node).object, type_params),
+            .member_access => return self.computedNameTypeParamReferenceNode(hir_mod.memberOf(self.hir, node).object, type_params),
             .element_access => {
                 const e = hir_mod.elementOf(self.hir, node);
-                return self.computedNameReferencesTypeParams(e.object, type_params) or
-                    self.computedNameReferencesTypeParams(e.index, type_params);
+                const inner = self.computedNameTypeParamReferenceNode(e.object, type_params);
+                if (inner != hir_mod.none_node_id) return inner;
+                return self.computedNameTypeParamReferenceNode(e.index, type_params);
             },
             .binary_op => {
                 const b = hir_mod.binopOf(self.hir, node);
-                return self.computedNameReferencesTypeParams(b.lhs, type_params) or
-                    self.computedNameReferencesTypeParams(b.rhs, type_params);
+                const inner = self.computedNameTypeParamReferenceNode(b.lhs, type_params);
+                if (inner != hir_mod.none_node_id) return inner;
+                return self.computedNameTypeParamReferenceNode(b.rhs, type_params);
             },
             .logical_op => {
                 const l = hir_mod.logicalOf(self.hir, node);
-                return self.computedNameReferencesTypeParams(l.lhs, type_params) or
-                    self.computedNameReferencesTypeParams(l.rhs, type_params);
+                const inner = self.computedNameTypeParamReferenceNode(l.lhs, type_params);
+                if (inner != hir_mod.none_node_id) return inner;
+                return self.computedNameTypeParamReferenceNode(l.rhs, type_params);
             },
             .conditional => {
                 const c = hir_mod.conditionalOf(self.hir, node);
-                return self.computedNameReferencesTypeParams(c.cond, type_params) or
-                    self.computedNameReferencesTypeParams(c.then_branch, type_params) or
-                    self.computedNameReferencesTypeParams(c.else_branch, type_params);
+                const inner = self.computedNameTypeParamReferenceNode(c.cond, type_params);
+                if (inner != hir_mod.none_node_id) return inner;
+                const then_inner = self.computedNameTypeParamReferenceNode(c.then_branch, type_params);
+                if (then_inner != hir_mod.none_node_id) return then_inner;
+                return self.computedNameTypeParamReferenceNode(c.else_branch, type_params);
             },
-            .unary_op => return self.computedNameReferencesTypeParams(hir_mod.unaryOf(self.hir, node).operand, type_params),
+            .unary_op => return self.computedNameTypeParamReferenceNode(hir_mod.unaryOf(self.hir, node).operand, type_params),
             .assignment => {
                 const a = hir_mod.assignmentOf(self.hir, node);
-                return self.computedNameReferencesTypeParams(a.target, type_params) or
-                    self.computedNameReferencesTypeParams(a.value, type_params);
+                const inner = self.computedNameTypeParamReferenceNode(a.target, type_params);
+                if (inner != hir_mod.none_node_id) return inner;
+                return self.computedNameTypeParamReferenceNode(a.value, type_params);
             },
-            else => return false,
+            else => return hir_mod.none_node_id,
         }
     }
 
