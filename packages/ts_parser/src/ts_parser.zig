@@ -148,6 +148,15 @@ pub const Parser = struct {
     parameter_list_arrow_is_comma: bool,
     parameter_list_recovered_body_as_missing_close: bool,
     parameter_list_recovered_arrow_missing_close: bool,
+    /// When true, `(params): ReturnType => body` is NOT accepted as a
+    /// parenthesized arrow with return type unless the next token
+    /// after the body is `:` (terminator of an enclosing ternary).
+    /// Mirrors TS's `allowReturnTypeInArrowFunction=false` and is set
+    /// while parsing the "true" branch of a conditional expression so
+    /// `x ? (y): T => y : z` parses as a ternary instead of greedily
+    /// consuming the second `:` as a return-type colon. See
+    /// parserArrowFunctionExpression8/9/10/11/12.
+    disallow_arrow_return_type: bool,
     enum_recovered_missing_close_at_eof: bool,
     top_level_external_module_indicator: bool,
     top_level_export_indicator: bool,
@@ -214,6 +223,7 @@ pub const Parser = struct {
             .parameter_list_arrow_is_comma = false,
             .parameter_list_recovered_body_as_missing_close = false,
             .parameter_list_recovered_arrow_missing_close = false,
+            .disallow_arrow_return_type = false,
             .enum_recovered_missing_close_at_eof = false,
             .top_level_external_module_indicator = false,
             .top_level_export_indicator = false,
@@ -7484,6 +7494,7 @@ pub const Parser = struct {
         type_params: []const NodeId,
     ) ParseError!?NodeId {
         const before_paren = self.cursor;
+        const diag_checkpoint_at_paren = self.diagnostics.items.len;
         // Find the matching `)`.
         const after_paren_idx = self.findMatchingParenEnd(self.cursor) orelse return null;
         // After `)`, we expect either `=>` (untyped return) or `:` then `=>`.
@@ -7520,6 +7531,7 @@ pub const Parser = struct {
         // Optional return-type annotation. Use the predicate-aware
         // parser so `(x): x is T => ...` works.
         var return_type: NodeId = hir_mod.none_node_id;
+        const has_return_colon = self.peek().kind == .colon;
         if (self.match(.colon)) {
             return_type = try self.parseReturnTypeAnnotation(params);
         }
@@ -7543,12 +7555,23 @@ pub const Parser = struct {
             if (is_async) self.async_function_depth -= 1;
         }
         const body = try self.parseArrowBody();
+        // TS parity (parserArrowFunctionExpression8/9/10/11/12): when
+        // we're inside the `true` branch of a conditional expression
+        // and the speculative arrow has a `:` return-type colon, the
+        // arrow only "wins" if the next token is `:` (the outer
+        // ternary's terminator). Otherwise rewind and let the
+        // surrounding parse treat `(...)` as a parenthesized
+        // expression so the ternary's own `:` is matched.
+        if (self.disallow_arrow_return_type and has_return_colon and self.peek().kind != .colon) {
+            self.cursor = before_paren;
+            self.diagnostics.items.len = diag_checkpoint_at_paren;
+            return null;
+        }
         const sp: Span = .{ .start = start_tok.span.start, .end = self.hir.spanOf(body).end };
         const flags: hir_mod.FnFlags = .{
             .is_arrow = true,
             .is_async = is_async,
         };
-        _ = before_paren;
         return try self.builder.addFnDeclGeneric(sp, hir_mod.none_node_id, type_params, params, return_type, body, flags);
     }
 
@@ -8075,7 +8098,19 @@ pub const Parser = struct {
         const cond = try self.parseBinaryExpressionWithIn(.nullish, allow_in);
         if (self.peek().kind == .question) {
             _ = self.advance();
-            const then_branch = try self.parseAssignmentExpressionWithIn(allow_in);
+            // TS parity: the `true` branch is parsed with
+            // `allowReturnTypeInArrowFunction=false` so that
+            // `x ? (y): T => y : z` doesn't greedily consume the
+            // outer ternary `:` as a typed-arrow return-type colon.
+            // The `false` branch inherits the surrounding flag.
+            // See parserArrowFunctionExpression8/9/10/11/12.
+            const saved_disallow_arrow_rt = self.disallow_arrow_return_type;
+            self.disallow_arrow_return_type = true;
+            const then_branch = self.parseAssignmentExpressionWithIn(allow_in) catch |err| {
+                self.disallow_arrow_return_type = saved_disallow_arrow_rt;
+                return err;
+            };
+            self.disallow_arrow_return_type = saved_disallow_arrow_rt;
             _ = try self.expect(.colon, "':' in ternary");
             const else_branch = try self.parseAssignmentExpressionWithIn(allow_in);
             const sp: Span = .{ .start = self.hir.spanOf(cond).start, .end = self.hir.spanOf(else_branch).end };
@@ -8842,6 +8877,15 @@ pub const Parser = struct {
     /// Allocates the args slice; caller must `gpa.free` it.
     fn parseArgumentList(self: *Parser) ParseError![]NodeId {
         _ = try self.expect(.open_paren, "'(' for argument list");
+        // Reset `disallow_arrow_return_type` for argument expressions
+        // (a fresh assignment-expression context). Mirrors TS's
+        // `parseArgumentExpression` calling
+        // `parseAssignmentExpressionOrHigher()` with the default
+        // `allowReturnTypeInArrowFunction=true`. See
+        // parserArrowFunctionExpression8/9/10/11/12.
+        const saved_disallow_arrow_rt = self.disallow_arrow_return_type;
+        self.disallow_arrow_return_type = false;
+        defer self.disallow_arrow_return_type = saved_disallow_arrow_rt;
         var args: std.ArrayListUnmanaged(NodeId) = .empty;
         errdefer args.deinit(self.gpa);
         var missing_arg_before_statement = false;
@@ -8992,7 +9036,18 @@ pub const Parser = struct {
             },
             .open_paren => {
                 _ = self.advance();
-                const e = try self.parseExpression();
+                // Reset `disallow_arrow_return_type` inside a
+                // parenthesized expression — the inner expression is a
+                // fresh assignment-expression context. Mirrors TS
+                // arg-expression handling. See
+                // parserArrowFunctionExpression8/9/10/11/12.
+                const saved_disallow_arrow_rt = self.disallow_arrow_return_type;
+                self.disallow_arrow_return_type = false;
+                const e = self.parseExpression() catch |err| {
+                    self.disallow_arrow_return_type = saved_disallow_arrow_rt;
+                    return err;
+                };
+                self.disallow_arrow_return_type = saved_disallow_arrow_rt;
                 _ = try self.expect(.close_paren, "')' to close parenthesized expression");
                 return e;
             },
@@ -9641,6 +9696,12 @@ pub const Parser = struct {
 
     fn parseArrayLiteral(self: *Parser) ParseError!NodeId {
         const start = try self.expect(.open_bracket, "'[' to start array literal");
+        // Reset `disallow_arrow_return_type` for element expressions
+        // (a fresh assignment-expression context). Mirrors TS handling.
+        // See parserArrowFunctionExpression8/9/10/11/12.
+        const saved_disallow_arrow_rt = self.disallow_arrow_return_type;
+        self.disallow_arrow_return_type = false;
+        defer self.disallow_arrow_return_type = saved_disallow_arrow_rt;
         var elements: std.ArrayListUnmanaged(NodeId) = .empty;
         defer elements.deinit(self.gpa);
         while (self.peek().kind != .close_bracket and self.peek().kind != .eof) {
@@ -9691,6 +9752,13 @@ pub const Parser = struct {
 
     fn parseObjectLiteral(self: *Parser) ParseError!NodeId {
         const start = try self.expect(.open_brace, "'{' to start object literal");
+        // Reset `disallow_arrow_return_type` for property values (a
+        // fresh assignment-expression context). Prevents false rewinds
+        // in `cond ? { k: (x): T => x } : y`. See
+        // parserArrowFunctionExpression8/9/10/11/12.
+        const saved_disallow_arrow_rt = self.disallow_arrow_return_type;
+        self.disallow_arrow_return_type = false;
+        defer self.disallow_arrow_return_type = saved_disallow_arrow_rt;
         var props: std.ArrayListUnmanaged(NodeId) = .empty;
         defer props.deinit(self.gpa);
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
@@ -10728,6 +10796,23 @@ test "parser: ternary conditional" {
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     try T.expectEqual(hir_mod.NodeKind.conditional, s.hir.kindOf(top));
+}
+
+// Regression for parserArrowFunctionExpression8/9/10/11/12: the `:` in
+// `x ? (y) : z => w` belongs to the outer ternary, not a typed-arrow
+// return-type annotation. We must rewind a speculative parenthesized
+// arrow with `: T => body` when we're inside the `true` branch of a
+// conditional and the next token after the body isn't `:`.
+test "parser: ternary then-branch doesn't gobble outer ':' into typed arrow" {
+    var s = try newTestSetup("x ? y => ({ y }) : z => ({ z });");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expect(stmts.len > 0);
+    try T.expectEqual(hir_mod.NodeKind.conditional, s.hir.kindOf(stmts[0]));
+    // No parser diagnostics should be emitted: TS only flags the
+    // unresolved `x` at the checker layer.
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: logical operators" {
