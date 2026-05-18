@@ -42149,8 +42149,21 @@ pub const Checker = struct {
             "'{s}' implicitly has return type 'any' because it does not have a return type annotation and is referenced directly or indirectly in one of its return expressions.",
             .{display},
         );
+        // For computed class members (`[Symbol.iterator]() { ... }`) tsc
+        // anchors TS7023 at the `[` bracket, not at the inner expression.
+        // `classMemberDiagnosticNode` returns the key node (the inner
+        // member-access), whose span starts AFTER the bracket. Override
+        // `pos` with the member node's own span start (which begins at
+        // the `[`) when this is a computed object-property style member.
+        // Matches the `for-of33.ts` baseline: col 5 (the `[`) not col 6.
+        var pos_override: ?u32 = null;
+        if (self.hir.kindOf(method_node) == .object_property) {
+            const op = hir_mod.objectPropertyOf(self.hir, method_node);
+            if (op.is_computed) pos_override = self.hir.spanOf(method_node).start;
+        }
         try self.diagnostics.append(self.gpa, .{
             .node = self.classMemberDiagnosticNode(method_node),
+            .pos = pos_override,
             .code = TsCodes.function_return_self_reference_implicitly_any,
             .message = msg,
         });
