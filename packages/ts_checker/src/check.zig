@@ -40652,7 +40652,13 @@ pub const Checker = struct {
     /// dotted like `1.0`, or otherwise non-identifier), additionally
     /// wraps the name itself in single quotes, producing `''1''` /
     /// `''1.0''` in the rendered message.
+    /// Well-known-symbol member names (`Symbol.X`) render with
+    /// bracket wrappers instead — `[Symbol.toPrimitive]`, mirroring
+    /// upstream tsc.
     fn formatPropertyNameForDiagnostic(self: *Checker, name: []const u8) []const u8 {
+        if (std.mem.startsWith(u8, name, "Symbol.")) {
+            return std.fmt.allocPrint(self.diag_arena.allocator(), "[{s}]", .{name}) catch name;
+        }
         if (isJsIdentifier(name)) return name;
         return std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}'", .{name}) catch name;
     }
