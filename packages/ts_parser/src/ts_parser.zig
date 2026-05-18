@@ -6125,6 +6125,8 @@ pub const Parser = struct {
                 // consuming them here we'd bail into `parseTypeAnnotation`
                 // and emit a spurious TS1213. Mirrors `parserParameterList5`
                 // and `parserParameterList13`.
+                var saw_param_property_mod = false;
+                var param_property_anchor: Token = ps;
                 while (isParameterPropertyModifier(self.peek().kind) and
                     (self.peekAt(1).kind == .identifier or
                         self.peekAt(1).kind == .kw_this or
@@ -6132,6 +6134,10 @@ pub const Parser = struct {
                         self.peekAt(1).kind == .dot_dot_dot))
                 {
                     const mod = self.advance();
+                    if (!saw_param_property_mod) {
+                        saw_param_property_mod = true;
+                        param_property_anchor = mod;
+                    }
                     switch (mod.kind) {
                         .kw_readonly => flags.is_readonly = true,
                         .kw_override => flags.is_override = true,
