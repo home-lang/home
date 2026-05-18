@@ -4441,7 +4441,15 @@ pub const Checker = struct {
                 }
             }
         }
-        if (f.flags.is_getter and !self.fnBodyHasReturn(f.body)) {
+        if (f.flags.is_getter and !self.fnBodyHasReturn(f.body) and !self.statementDefinitelyExits(f.body)) {
+            // Per tsc: TS2378 fires only when the body has an implicit
+            // (fall-through) return path AND no explicit `return <value>`.
+            // A getter whose every code path exits (via `throw` or a
+            // `return` covering all branches) never implicitly returns,
+            // so the diagnostic is suppressed. Mirrors checker.go:2881
+            // (`NodeFlagsHasImplicitReturn` is unset for definitely-
+            // exiting bodies). Closes the TS2378 over-emit for
+            // `get [k]() { throw e; }` in computedPropertyNames49/50.
             const pos = if (f.name != hir_mod.none_node_id) self.accessorDiagnosticPos(f.name) else self.hir.spanOf(node).start;
             try self.reportAt(node, pos, TsCodes.getter_must_return_value, "A 'get' accessor must return a value.");
         }
