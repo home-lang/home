@@ -1350,12 +1350,29 @@ pub const Parser = struct {
     }
 
     fn isYieldReservedName(self: *const Parser, tok: Token) bool {
-        return (self.strict_mode or self.target_es2015_or_later) and self.tokenTextEquals(tok, "yield");
+        if (!self.tokenTextEquals(tok, "yield")) return false;
+        // Inside a generator body `yield` is reserved by the grammar
+        // regardless of strict mode / target. Outside that, fall back
+        // to the strict-mode / ES2015+-future-reserved rule.
+        return self.strict_mode or self.target_es2015_or_later or self.generator_depth > 0;
     }
 
     fn reportInvalidYieldName(self: *Parser, tok: Token) ParseError!void {
-        if (!self.isYieldReservedName(tok)) return;
-        try self.reportCodeAt(tok.span.start, tok.line, 1212, "Identifier expected. 'yield' is a reserved word in strict mode.");
+        if (!self.tokenTextEquals(tok, "yield")) return;
+        // Inside a generator body the diagnostic is "reserved word that
+        // cannot be used here" (TS1359) — the grammar itself reserves
+        // `yield` for any binding/parameter name. Outside a generator,
+        // `yield` is only a reserved BINDING name in strict mode (which
+        // tsc's binder reports as TS1212). In non-strict scripts a
+        // top-level `function yield() {}` or `function * yield() {}`
+        // declaration name is legal (mirrors fixture `yieldNameIsOk`).
+        if (self.generator_depth > 0) {
+            try self.reportCodeAt(tok.span.start, tok.line, 1359, "Identifier expected. 'yield' is a reserved word that cannot be used here.");
+            return;
+        }
+        if (self.strict_mode) {
+            try self.reportCodeAt(tok.span.start, tok.line, 1212, "Identifier expected. 'yield' is a reserved word in strict mode.");
+        }
     }
 
     fn reportInvalidFutureReservedName(self: *Parser, tok: Token) ParseError!void {
@@ -2236,6 +2253,25 @@ pub const Parser = struct {
         // `generatorInAmbientContext2`, `generatorOverloads1`).
         const asterisk_tok: ?Token = if (self.peek().kind == .asterisk) self.peek() else null;
         const is_generator = self.match(.asterisk);
+        // Whether the function name itself binds inside the generator's
+        // [Yield] scope. tsc's parser enters [Yield] context for the
+        // name of a generator EXPRESSION (binds in the function), but
+        // not for the name of a top-level generator DECLARATION (binds
+        // in the outer scope). A nested declaration binds in the
+        // enclosing function body — if that body is itself a generator,
+        // the binder is in [Yield] (handled by the already-propagated
+        // outer `generator_depth`); if not, the name binds in a regular
+        // scope. We add a generator bump for the param list once the
+        // name is parsed.
+        const name_in_yield = is_generator and (!require_name or self.function_depth > 0);
+        var generator_bumped = false;
+        if (name_in_yield) {
+            self.generator_depth += 1;
+            generator_bumped = true;
+        }
+        defer if (generator_bumped) {
+            self.generator_depth -= 1;
+        };
         // Function name (optional in expression context, required in
         // declaration). Phase 1.D treats `function` as a declaration only
         // when at statement position; named-fn-expression handling lives
@@ -2253,7 +2289,17 @@ pub const Parser = struct {
             // (`var v = async function await(){}`) is TS1359, because
             // the name then binds inside the async body. Gate on
             // `!require_name` (expression context).
-            if (!require_name) try self.reportAwaitReservedInAsyncContext(name_tok);
+            //
+            // However, a NESTED declaration `function await() {}` inside
+            // an async (or async-generator) function body DOES bind into
+            // that surrounding async scope where `await` is reserved —
+            // tsc emits TS1359 at the `await` token. The differentiator
+            // is `function_depth > 0` (we're inside another function's
+            // body, so the binding's parent scope has [Await]).
+            // Mirrors `nestedFunctionDeclarationNamedAwaitIsError`.
+            if (!require_name or self.function_depth > 0) {
+                try self.reportAwaitReservedInAsyncContext(name_tok);
+            }
             // `function await() {}` at the top level of a MODULE binds
             // the name into module scope where `await` is reserved. tsc
             // emits TS1262 at the `await` token. `reportAwaitBindingIfReserved`
@@ -2279,6 +2325,13 @@ pub const Parser = struct {
             owns_tps = true;
         }
         defer if (owns_tps) self.gpa.free(type_params);
+        // Now enter [Yield] for the formal parameter list (per tsc:
+        // generator parameters always parse with [Yield], even for a
+        // top-level declaration whose NAME binds in the outer scope).
+        if (is_generator and !generator_bumped) {
+            self.generator_depth += 1;
+            generator_bumped = true;
+        }
         self.parameter_list_recovered_body_as_missing_close = false;
         const saved_arrow_is_comma = self.parameter_list_arrow_is_comma;
         self.parameter_list_arrow_is_comma = true;
@@ -2320,8 +2373,13 @@ pub const Parser = struct {
             self.new_target_depth += 1;
             defer self.function_depth -= 1;
             defer self.new_target_depth -= 1;
+            // generator_depth was already bumped above (for [Yield] in
+            // the param list). Keep that depth for the body when this
+            // function is itself a generator; reset to 0 otherwise so
+            // a nested non-generator inside a generator does not
+            // inherit yield-as-reserved.
             const prev_generator_depth = self.generator_depth;
-            self.generator_depth = if (is_generator) prev_generator_depth + 1 else 0;
+            self.generator_depth = if (is_generator) prev_generator_depth else 0;
             defer self.generator_depth = prev_generator_depth;
             // Iteration/switch nesting is reset across function
             // boundaries — an unlabeled `break`/`continue` inside the
@@ -5878,8 +5936,11 @@ pub const Parser = struct {
                 break :blk try self.builder.addTypeRef(tokenSpan(t), id, &.{}, &.{});
             },
             .kw_yield => blk: {
+                // `yield` in type position is just an identifier-named
+                // type ref — `interface yield {}` and `let x: yield;`
+                // are legal in tsc even inside a generator body.
+                // Mirrors `yieldAsTypeIsOk` (zero errors).
                 const yield_tok = self.advance();
-                try self.reportInvalidYieldName(yield_tok);
                 const id = try self.internToken(yield_tok);
                 break :blk try self.builder.addTypeRef(tokenSpan(yield_tok), id, &.{}, &.{});
             },
@@ -8521,10 +8582,19 @@ pub const Parser = struct {
                         const next_tok = self.peek();
                         try self.reportCodeAt(next_tok.span.start, next_tok.line, 1109, "Expression expected.");
                     }
+                    // TS2523: `yield` expression inside a parameter
+                    // initializer (`function * f(a = yield) {}`) is
+                    // illegal — mirrors `yieldInParameterInitializerIsError`.
+                    if (self.param_initializer_depth > 0) {
+                        try self.reportCodeAt(t.span.start, t.line, 2523, "'yield' expressions cannot be used in a parameter initializer.");
+                    }
                     return try self.builder.addYieldExpr(tokenSpan(t), hir_mod.none_node_id, is_delegated);
                 }
                 const operand = try self.parseAssignmentExpression();
                 const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(operand).end };
+                if (self.param_initializer_depth > 0) {
+                    try self.reportCodeAt(t.span.start, t.line, 2523, "'yield' expressions cannot be used in a parameter initializer.");
+                }
                 return try self.builder.addYieldExpr(sp, operand, is_delegated);
             },
             .plus_plus, .minus_minus => {
@@ -14515,29 +14585,110 @@ test "parser: computed enum member reports TS1164" {
     try T.expectEqualStrings("Computed property names are not allowed in enums.", s.parser.diagnostics.items[0].message);
 }
 
-test "parser: yield can be a generator function expression name" {
+test "parser: yield in async-generator function-expression name reports TS1359" {
+    // `const f = async function * yield() {}` — the function name
+    // binds inside the generator's [Yield] context, so `yield` is
+    // reserved by the grammar (TS1359), not by strict mode (TS1212).
+    // Mirrors upstream `parser.asyncGenerators.functionExpressions.es2018`
+    // baseline for nested/anonymous-bound generator expressions.
     var s = try newTestSetup("const f = async function * yield() {};");
     defer destroyTestSetup(s);
 
     _ = try s.parser.parseSourceFile();
-    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    var saw_1359 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1359) saw_1359 = true;
+    }
+    try T.expect(saw_1359);
 }
 
-test "parser: ES2015 target reserves yield in function names, params, and types" {
+test "parser: strict-mode top-level reserves yield in function names and params" {
+    // `var v: yield` inside a generator is a type-position reference and
+    // tsc reports no error there (`yieldAsTypeIsOk` baseline). Only the
+    // value-position binders of `yield` are reserved as strict-mode
+    // binding names: the function name and the parameter binder. tsc's
+    // binder emits TS1212 only when the file is in strict mode (modules,
+    // classes, or an explicit `"use strict"`).
     var s = try newTestSetup(
         \\function yield() {}
         \\function f(yield) {}
-        \\function * g() { var v: yield; }
     );
     defer destroyTestSetup(s);
 
     s.parser.setTargetEs2015OrLater(true);
+    s.parser.setStrictMode(true);
     _ = try s.parser.parseSourceFile();
     var count_1212: usize = 0;
     for (s.parser.diagnostics.items) |d| {
         if (d.code == 1212) count_1212 += 1;
     }
-    try T.expect(count_1212 >= 3);
+    try T.expect(count_1212 >= 2);
+}
+
+test "parser: nested function declaration named yield inside async generator reports TS1359" {
+    // Mirrors `parser.asyncGenerators.functionDeclarations.es2018`
+    // (`nestedFunctionDeclarationNamedYieldIsError`). Inside an async
+    // generator body, declaring `function yield()` (or `function await()`)
+    // binds the name into the surrounding generator/async scope, which
+    // is reserved by the grammar (TS1359), not strict mode (TS1212).
+    var s = try newTestSetup(
+        \\async function * f9() {
+        \\    function yield() {
+        \\    }
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_1359 = false;
+    var saw_1212 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1359) saw_1359 = true;
+        if (d.code == 1212) saw_1212 = true;
+    }
+    try T.expect(saw_1359);
+    try T.expect(!saw_1212);
+}
+
+test "parser: yield parameter inside async generator reports TS1359" {
+    // Mirrors `yieldParameterIsError` (`parser.asyncGenerators.*`).
+    // `async function * f5(yield)` puts `yield` in the [Yield]
+    // parameter list → TS1359 at the `yield` token.
+    var s = try newTestSetup(
+        \\async function * f5(yield) {
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_1359 = false;
+    var saw_1212 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1359) saw_1359 = true;
+        if (d.code == 1212) saw_1212 = true;
+    }
+    try T.expect(saw_1359);
+    try T.expect(!saw_1212);
+}
+
+test "parser: yield as type-position reference is allowed (yieldAsTypeIsOk)" {
+    // `interface yield {}` followed by `let x: yield;` inside an async
+    // generator yields zero diagnostics in tsc — `yield` is only
+    // reserved in value position, not type position.
+    var s = try newTestSetup(
+        \\interface yield {}
+        \\async function * f20() {
+        \\    let x: yield;
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_1212_or_1359 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1212 or d.code == 1359) saw_1212_or_1359 = true;
+    }
+    try T.expect(!saw_1212_or_1359);
 }
 
 test "parser: yield operand can be an arrow expression" {
