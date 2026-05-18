@@ -30730,10 +30730,17 @@ pub const Checker = struct {
             // illegal — mirrors upstream tsc for `thisTypeErrors.ts(36)`
             // (`namespace N1 { export var y = this; }`). Pairs with
             // the implicit-any TS2683 below.
-            if (self.thisDirectlyInsideNamespaceBody(node)) {
+            const directly_in_namespace = self.thisDirectlyInsideNamespaceBody(node);
+            if (directly_in_namespace) {
                 self.report(node, TsCodes.this_in_namespace_body, "'this' cannot be referenced in a module or namespace body.") catch {};
             }
-            if (self.thisIsGlobalScriptThis(node)) return self.bareGlobalThisType() catch types.Primitive.any;
+            // `this` inside a namespace body must still surface the
+            // implicit-any TS2683 — tsc reports both TS2331 + TS2683
+            // (`thisTypeErrors.ts(36,20)`). Skip the global-script
+            // early-return in that case so the TS2683 emit below runs.
+            if (!directly_in_namespace and self.thisIsGlobalScriptThis(node)) {
+                return self.bareGlobalThisType() catch types.Primitive.any;
+            }
             if (!self.sourceHasStrictFalseDirective() and
                 !self.identifierThisIsArrowCaptured(node) and
                 !self.thisInsideObjectLiteralMethod(node) and
@@ -57066,6 +57073,27 @@ test "checker: class computed method key rejects non-property-key union" {
         if (d.code == TsCodes.computed_property_name_type) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: this in namespace body emits both TS2331 and TS2683" {
+    // `namespace N { export var y = this; }` triggers both the
+    // namespace-body TS2331 AND the implicit-any TS2683 in tsc.
+    // Mirrors `thisTypeErrors.ts(36,20)`.
+    const s = try newSetup(
+        \\namespace N1 {
+        \\    export var y = this;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_2331 = false;
+    var saw_2683 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.this_in_namespace_body) saw_2331 = true;
+        if (d.code == TsCodes.this_implicitly_any) saw_2683 = true;
+    }
+    try T.expect(saw_2331);
+    try T.expect(saw_2683);
 }
 
 test "checker: namespace computed object key rejects this" {
