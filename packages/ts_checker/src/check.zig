@@ -43666,6 +43666,39 @@ pub const Checker = struct {
         return buf.items;
     }
 
+    /// Render `<alias_name>` with its formal type-parameter names
+    /// appended (`C1<T, U, V>`) when `alias_name` resolves to a
+    /// `generic_aliases` entry whose `body == t`. Returns null when
+    /// the alias has no params, when the body doesn't match, or when
+    /// any formal param fails to render — callers fall back to the
+    /// bare name in those cases. Used so the unsubstituted body type
+    /// (the "self-instance" view inside a generic class) renders with
+    /// its formal type-parameters in TS2339/TS2322 prose.
+    fn genericAliasFormalDisplayName(self: *Checker, alias_name: hir_mod.StringId, t: TypeId) !?[]const u8 {
+        const info = self.generic_aliases.get(alias_name) orelse return null;
+        if (info.params.len == 0) return null;
+        if (info.body != t) return null;
+        const arena = self.diag_arena.allocator();
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        try buf.appendSlice(arena, self.string_interner.get(alias_name));
+        try buf.append(arena, '<');
+        for (info.params, 0..) |p, i| {
+            if (i > 0) try buf.appendSlice(arena, ", ");
+            // Only honor true `is_type_parameter` slots — defensive
+            // against recycled interner slots that briefly leak the
+            // flag bit (same guard as `allocSimpleTypeName` below).
+            if (p >= self.interner.pool.typeCount()) return null;
+            const tp_flags = self.interner.pool.flagsOf(p);
+            if (!tp_flags.is_type_parameter) return null;
+            const tp_payload_idx = self.interner.pool.payloadOf(p);
+            if (tp_payload_idx >= self.interner.pool.type_parameter_payloads.items.len) return null;
+            const tp_name = self.interner.typeParameterName(p) orelse return null;
+            try buf.appendSlice(arena, self.string_interner.get(tp_name));
+        }
+        try buf.append(arena, '>');
+        return buf.items;
+    }
+
     fn allocSimpleTypeName(self: *Checker, t: TypeId) !?[]const u8 {
         return switch (t) {
             types.Primitive.any => "any",
@@ -43687,6 +43720,21 @@ pub const Checker = struct {
                     break :blk self.string_interner.get(enum_name);
                 }
                 if (self.namedTypeForId(t)) |type_name| {
+                    // Generic class self-instance (`this: C1<T, U, V>`):
+                    // when the named type is the body of a generic alias
+                    // AND the alias's formal type-parameter ids are all
+                    // valid `is_type_parameter` slots, render the name
+                    // with the formal params appended (`C1<T, U, V>`).
+                    // Mirrors tsc's TS2339/TS2322 prose for fixtures like
+                    // `destructuringParameterProperties3/4` where
+                    // `this.b` inside a `C1<T, U, V>` method renders
+                    // `Property 'b' does not exist on type 'C1<T, U, V>'.`
+                    // rather than collapsing to `'C1'`.
+                    if (self.alias_display_names.get(t) == null) {
+                        if (self.genericAliasFormalDisplayName(type_name, t) catch null) |display| {
+                            break :blk display;
+                        }
+                    }
                     break :blk self.string_interner.get(type_name);
                 }
                 // Built-in object names (`Date`, `Function`, `Number`,
