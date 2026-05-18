@@ -28728,7 +28728,7 @@ pub const Checker = struct {
                         try self.report(child, TsCodes.jsx_text_child_not_accepted, "JSX text child is not assignable to the target children type.");
                     }
                 }
-            } else if (self.jsxPropsTargetHasNonChildrenMember(props_t.?)) {
+            } else if (!self.jsxTagIsIntrinsic(el.tag) and self.jsxPropsTargetHasNonChildrenMember(props_t.?)) {
                 // Empty object props (`{}`) opts out of excess-property
                 // checks just like a regular `{}` target in TS: with no
                 // named members at all, JSX children flow in without
@@ -28738,7 +28738,17 @@ pub const Checker = struct {
                 try self.report(node, TsCodes.object_literal_excess_property, "JSX element has children but the target props type has no 'children' property.");
             }
         }
-        if (children.len > 0 and !saw_children_attr) {
+        if (children.len > 0 and !saw_children_attr and !self.jsxTagIsIntrinsic(el.tag)) {
+            // Intrinsic JSX elements (`<div>...</div>`) are NOT
+            // structurally compared against their target's `children`
+            // member — tsc treats children of intrinsics as
+            // unconditionally accepted by the JSX runtime. Synthesising
+            // a `children: any` member here was leaking into the
+            // attribute-assignability check below and producing a
+            // spurious TS2322 on every intrinsic element with children
+            // whose target props lacked an explicit `children` field
+            // (e.g. `div: { text?: string }` from a minimal
+            // `IntrinsicElements`).
             const children_name = self.string_interner.intern("children") catch return error.OutOfMemory;
             try self.appendOrReplaceObjectMember(&attr_members, .{
                 .name = children_name,
@@ -47045,6 +47055,34 @@ test "checker: JSX reports multiple children for single child prop" {
         if (d.code == TsCodes.jsx_single_child_prop_multiple_children) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: intrinsic JSX element with children whose target lacks children prop does not emit TS2322/TS2353" {
+    // Mirrors `tsxInArrowFunction` baseline: a minimal
+    // `IntrinsicElements.div: { text?: string }` declares no
+    // `children` member, but tsc treats children of intrinsic
+    // elements as unconditionally accepted by the JSX runtime — so
+    // neither the synthesised `children: any` attribute nor the
+    // "target props has no 'children'" excess-property message
+    // should fire here.
+    const s = try newTsxSetup(
+        \\declare namespace JSX {
+        \\    interface Element { }
+        \\    interface IntrinsicElements {
+        \\        div: { text?: string }
+        \\    }
+        \\}
+        \\const x = <div><div text="wat" /></div>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) {
+            try T.expect(std.mem.indexOf(u8, d.message, "JSX attributes are not assignable") == null);
+        }
+        try T.expect(d.code != TsCodes.object_literal_excess_property);
+    }
 }
 
 test "checker: JSX text child is rejected by element-only children prop" {
