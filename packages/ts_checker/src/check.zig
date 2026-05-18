@@ -39900,12 +39900,14 @@ pub const Checker = struct {
             };
             try buf.appendSlice(arena, name_text);
             try buf.appendSlice(arena, ": ");
-            const pn = (try self.allocSimpleTypeName(p)) orelse return null;
+            const pn = (try self.allocSimpleTypeName(p)) orelse
+                (try self.allocObjectTypeShape(p)) orelse return null;
             try buf.appendSlice(arena, pn);
         }
         try buf.appendSlice(arena, ") => ");
         const ret = self.interner.signatureReturn(t) orelse types.Primitive.any;
-        const rn = (try self.allocSimpleTypeName(ret)) orelse return null;
+        const rn = (try self.allocSimpleTypeName(ret)) orelse
+            (try self.allocObjectTypeShape(ret)) orelse return null;
         try buf.appendSlice(arena, rn);
         return buf.items;
     }
