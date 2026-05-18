@@ -13045,6 +13045,57 @@ pub const Checker = struct {
         return self.hir.spanOf(name_node).start;
     }
 
+    /// Emit TS2451 (`Cannot redeclare block-scoped variable '{name}'.`)
+    /// anchored at the declaration's *name* identifier. Used by the
+    /// cross-declaration var/let/const collision detector to mirror
+    /// tsc's behavior of reporting at every same-name binding when one
+    /// of the colliding decls is block-scoped. Suppresses any prior
+    /// TS2300 already emitted at the same position so we don't double
+    /// report — tsc collapses to a single TS2451 in that case.
+    fn reportBlockScopedRedeclare(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!void {
+        const name_str = self.string_interner.get(name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot redeclare block-scoped variable '{s}'.",
+            .{name_str},
+        );
+        const anchor_pos = self.declarationNameSpanStart(node) orelse self.hir.spanOf(node).start;
+        // Replace any existing TS2300 (duplicate identifier) we
+        // already queued at the same anchor — tsc emits ONLY TS2451
+        // for block-scoped collisions and the duplicate-identifier
+        // entry would render as a spurious extra diagnostic.
+        for (self.diagnostics.items) |*d| {
+            if (d.code != TsCodes.duplicate_identifier) continue;
+            const d_pos = d.pos orelse self.hir.spanOf(d.node).start;
+            if (d_pos != anchor_pos) continue;
+            d.* = .{
+                .node = node,
+                .pos = anchor_pos,
+                .code = TsCodes.cannot_redeclare_block_scoped,
+                .message = msg,
+            };
+            return;
+        }
+        // Skip if an identical TS2451 already exists at this anchor
+        // (the loop runs once per `(prior, current)` pair, but the
+        // entry would be added again on a third+ collision).
+        for (self.diagnostics.items) |d| {
+            if (d.code != TsCodes.cannot_redeclare_block_scoped) continue;
+            const d_pos = d.pos orelse self.hir.spanOf(d.node).start;
+            if (d_pos == anchor_pos) return;
+        }
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = anchor_pos,
+            .code = TsCodes.cannot_redeclare_block_scoped,
+            .message = msg,
+        });
+    }
+
     fn reportDuplicateIdentifier(
         self: *Checker,
         node: NodeId,
@@ -34688,16 +34739,28 @@ pub const Checker = struct {
     /// Returns null when the key is not a bare identifier.
     fn computedKeyIdentifierText(self: *Checker, key: NodeId) ?[]const u8 {
         if (key == hir_mod.none_node_id) return null;
-        if (self.hir.kindOf(key) != .identifier) return null;
+        const kind = self.hir.kindOf(key);
         const src = self.source orelse {
-            const id = hir_mod.identifierOf(self.hir, key);
-            return self.string_interner.get(id.name);
+            if (kind == .identifier) {
+                const id = hir_mod.identifierOf(self.hir, key);
+                return self.string_interner.get(id.name);
+            }
+            return null;
         };
         const span = self.hir.spanOf(key);
         if (span.start >= src.len) return null;
-        var end: usize = @min(@as(usize, span.end), src.len);
-        while (end < src.len and src[end] != ']' and src[end] != '\n') : (end += 1) {}
-        return src[@intCast(span.start)..end];
+        if (kind == .identifier) {
+            var end: usize = @min(@as(usize, span.end), src.len);
+            while (end < src.len and src[end] != ']' and src[end] != '\n') : (end += 1) {}
+            return src[@intCast(span.start)..end];
+        }
+        // For non-identifier keys (e.g. `Symbol()`, member exprs), use
+        // the span as-is so the rendered text matches the source.
+        // Mirrors `symbolProperty7` TS2564 baseline: `Property '[Symbol()]'`.
+        const start: usize = @intCast(span.start);
+        const end: usize = @min(@as(usize, span.end), src.len);
+        if (end <= start) return null;
+        return src[start..end];
     }
 
     /// Returns true when a type annotation contains any bare type-ref
