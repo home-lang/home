@@ -1098,7 +1098,11 @@ fn sourceIsUncheckedJs(source: []const u8) bool {
 
 fn checkerDiagnosticSurfacesInUncheckedJs(code: u32) bool {
     return code == ts_checker.check.TsCodes.private_name_not_declared or
-        code == ts_checker.check.TsCodes.await_only_in_async;
+        code == ts_checker.check.TsCodes.await_only_in_async or
+        // TS2451 — cross-declaration block-scoped duplicates fire as
+        // binder/grammar errors in tsc even under `--allowJs` without
+        // `--checkJs`. Mirrors fixture `plainJSRedeclare`.
+        code == ts_checker.check.TsCodes.cannot_redeclare_block_scoped;
 }
 
 fn diagnosticLineHasTsIgnore(source: []const u8, pos: usize) bool {

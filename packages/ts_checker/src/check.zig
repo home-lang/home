@@ -2646,9 +2646,9 @@ pub const Checker = struct {
             }
             const is_fn = kind == .fn_decl or kind == .fn_expr;
             const is_type_alias = kind == .type_alias_decl;
+            const is_var_kind = kind == .var_decl or kind == .let_decl or kind == .const_decl;
             const is_var = kind == .var_decl;
             const is_block_scoped = kind == .let_decl or kind == .const_decl;
-            const is_var_kind = is_var or is_block_scoped;
             if (!is_fn and !is_var_kind and !is_type_alias) {
                 previous_overload_name = null;
                 previous_overload_section = 0;
@@ -2658,7 +2658,7 @@ pub const Checker = struct {
             const has_body = if (is_fn) hir_mod.fnDeclOf(self.hir, node).body != hir_mod.none_node_id else false;
             const is_ambient = if (is_fn)
                 !has_body and (parent_is_ambient or self.declarationSourceHasLeadingDeclare(node) or self.virtualSectionIsDeclarationFile(node))
-            else if (is_var)
+            else if (is_var_kind)
                 hir_mod.varDeclOf(self.hir, node).is_ambient
             else
                 false;
@@ -2701,6 +2701,7 @@ pub const Checker = struct {
                     .is_function = is_fn,
                     .is_type_alias = is_type_alias,
                     .is_var = is_var,
+                    .is_block_scoped = is_block_scoped,
                     .has_body = has_body,
                     .is_exported = exported,
                     .is_ambient = is_ambient,
@@ -36416,7 +36417,31 @@ pub const Checker = struct {
         value_t: TypeId,
     ) CheckError!void {
         if (self.typeContainsSymbol(target_t) or self.typeContainsSymbol(value_t)) {
-            try self.reportSymbolOperator(node, "+");
+            // tsc prefers the type-rich
+            // `Operator '+=' cannot be applied to types 'A' and 'B'.`
+            // (TS2365) when both operand types render as simple names —
+            // even when one of them is `symbol`. Only fall back to
+            // TS2469 ("'+=' cannot be applied to type 'symbol'.") when
+            // the target side is non-simple (the rich form would mis-
+            // render). Mirrors `symbolType12.ts(9,1)` / `(10,1)` for
+            // the `s += s` / `s += 0` rows, and `(11,1)` / `(12,8)`
+            // where TS2469 with the `+=` lexeme still fires.
+            if (try self.simpleDiagnosticTypeName(target_t)) |t_name| {
+                if (try self.simpleDiagnosticTypeName(value_t)) |v_name| {
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Operator '+=' cannot be applied to types '{s}' and '{s}'.",
+                        .{ t_name, v_name },
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = node,
+                        .code = TsCodes.operator_cannot_be_applied,
+                        .message = msg,
+                    });
+                    return;
+                }
+            }
+            try self.reportSymbolOperator(node, "+=");
             return;
         }
         if (self.typeIsExactNullish(value_t) and !self.compoundAdditionAllowsNullish(target_t)) {
@@ -36910,6 +36935,9 @@ pub const Checker = struct {
         if ((self.relationalTypeHasObjectLike(lhs) and self.relationalTypeHasNumberLike(rhs)) or
             (self.relationalTypeHasObjectLike(rhs) and self.relationalTypeHasNumberLike(lhs)))
         {
+            return true;
+        }
+        if (self.objectTypeIsCallOrConstructOnly(lhs) or self.objectTypeIsCallOrConstructOnly(rhs)) {
             return true;
         }
         // TS2365 also fires for `boolean > number` / `string > number`
