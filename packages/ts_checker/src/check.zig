@@ -35841,6 +35841,7 @@ pub const Checker = struct {
     }
 
     fn relationalComparisonInvalid(self: *Checker, lhs: TypeId, rhs: TypeId) bool {
+        if (self.typeIsAnyLike(lhs) or self.typeIsAnyLike(rhs)) return false;
         const lhs_tp = self.isUnconstrainedTypeParameter(lhs);
         const rhs_tp = self.isUnconstrainedTypeParameter(rhs);
         if (lhs_tp and rhs_tp and lhs != rhs) return true;
@@ -35854,7 +35855,39 @@ pub const Checker = struct {
         {
             return true;
         }
+        // TS2365 also fires for `boolean > number` / `string > number`
+        // (one side numeric, other side string/boolean primitive).
+        // Restricted to pure primitives — unions like
+        // `("ABC" | "XYZ" | number) >= ("ABC" | "XYZ")` must stay clean.
+        // Reference: checker.go:12178 (`leftAssignableToNumber`).
+        const lhs_kind = self.relationalPrimitiveKind(lhs);
+        const rhs_kind = self.relationalPrimitiveKind(rhs);
+        const lhs_numeric = lhs_kind == .number_only or lhs_kind == .bigint_only;
+        const rhs_numeric = rhs_kind == .number_only or rhs_kind == .bigint_only;
+        if (lhs_numeric != rhs_numeric) {
+            const non_numeric = if (lhs_numeric) rhs_kind else lhs_kind;
+            if (non_numeric == .string_only or non_numeric == .boolean_only) return true;
+        }
         return false;
+    }
+
+    const RelPrim = enum { number_only, bigint_only, string_only, boolean_only, other };
+
+    fn relationalPrimitiveKind(self: *Checker, t: TypeId) RelPrim {
+        if (t >= self.interner.pool.typeCount()) return .other;
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_union or f.is_template_literal or f.is_string_mapping) return .other;
+        if (f.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |m| {
+                if (m == types.Primitive.number_t or m == types.Primitive.bigint_t) return .number_only;
+            }
+            return .other;
+        }
+        if (f.is_number) return .number_only;
+        if (f.is_bigint) return .bigint_only;
+        if (f.is_string) return .string_only;
+        if (f.is_boolean) return .boolean_only;
+        return .other;
     }
 
     fn reportRelationalOperatorCannotBeApplied(self: *Checker, node: NodeId, op: []const u8) CheckError!void {
