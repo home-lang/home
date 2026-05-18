@@ -1261,10 +1261,6 @@ pub fn loadDirectoryWithOptions(
         const expects_error = std.mem.indexOf(u8, entry.basename, ".errors.") != null or
             (baseline_path != null and !baseline_only_option_deprecation);
         const directive_state = parseStrictDirectiveState(case_src);
-        const directive_flags = if (directive_state) |ds| blk: {
-            const strict_on = ds.state.strict orelse false;
-            break :blk strictFlagsFromState(ds.state, strict_on);
-        } else null;
         // Per-fixture strict-state inference. We previously
         // unconditionally flipped strict-on for every expected-error
         // fixture without an explicit directive, which over-fires
@@ -1285,7 +1281,11 @@ pub fn loadDirectoryWithOptions(
         // this branch, fixtures like `typeofOperatorWithBooleanType`
         // (which only sets `// @noImplicitAny: false`) silently lose
         // `strictPropertyInitialization` and miss TS2564.
-        const directive_strict_explicit = if (directive_state) |ds| ds.state.strict != null else false;
+        const directive_strict_explicit = if (directive_state) |ds| ds.strict_explicit else false;
+        const has_only_non_strict_family = if (directive_state) |ds|
+            ds.has_strict_family and !ds.strict_explicit
+        else
+            false;
         const should_infer_strict = options.strict_default_for_expected_errors and
             expects_error and
             !directive_strict_explicit;
@@ -1305,8 +1305,8 @@ pub fn loadDirectoryWithOptions(
         // (where the family flags should collapse to strict-off per
         // upstream semantics).
         const family_strict_on = if (has_only_non_strict_family) inferred_strict_on else false;
-        const directive_flags: ?ts_driver.StrictFlags = if (directive_parsed) |p|
-            strictFlagsFromState(p.state, p.state.strict orelse family_strict_on)
+        const directive_flags: ?ts_driver.StrictFlags = if (directive_state) |ds|
+            strictFlagsFromState(ds.state, ds.state.strict orelse family_strict_on)
         else
             null;
         var strict_flags =
@@ -2341,11 +2341,15 @@ fn parseStrictDirectiveFlags(source: []const u8) ?ts_driver.StrictFlags {
 
 const ParsedStrictDirectives = struct {
     state: StrictDirectiveState,
+    strict_explicit: bool = false,
+    has_strict_family: bool = false,
 };
 
 fn parseStrictDirectiveState(source: []const u8) ?ParsedStrictDirectives {
     var state: StrictDirectiveState = .{};
     var seen = false;
+    var strict_explicit = false;
+    var has_strict_family = false;
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |raw_line| {
         const line = std.mem.trim(u8, stripUtf8Bom(raw_line), " \t\r");
@@ -2356,10 +2360,29 @@ fn parseStrictDirectiveState(source: []const u8) ?ParsedStrictDirectives {
         const colon = std.mem.indexOfScalar(u8, body, ':') orelse continue;
         const name = std.mem.trim(u8, body[0..colon], " \t");
         const value = parseDirectiveBool(body[colon + 1 ..]) orelse continue;
-        if (setStrictDirective(&state, name, value)) seen = true;
+        if (setStrictDirective(&state, name, value)) {
+            seen = true;
+            if (std.mem.eql(u8, name, "strict")) {
+                strict_explicit = true;
+            } else if (isStrictFamilyDirective(name)) {
+                has_strict_family = true;
+            }
+        }
     }
     if (!seen) return null;
-    return ParsedStrictDirectives{ .state = state };
+    return ParsedStrictDirectives{
+        .state = state,
+        .strict_explicit = strict_explicit,
+        .has_strict_family = has_strict_family,
+    };
+}
+
+fn isStrictFamilyDirective(name: []const u8) bool {
+    return std.mem.eql(u8, name, "noImplicitAny") or
+        std.mem.eql(u8, name, "strictFunctionTypes") or
+        std.mem.eql(u8, name, "strictNullChecks") or
+        std.mem.eql(u8, name, "strictPropertyInitialization") or
+        std.mem.eql(u8, name, "useUnknownInCatchVariables");
 }
 
 /// Strip a leading UTF-8 BOM (`\xEF\xBB\xBF`) so directive scanners
@@ -3100,7 +3123,7 @@ test "conformance: parses strict directives into checker flags" {
     try T.expect(flags.use_unknown_in_catch_variables);
 }
 
-test "conformance: parseStrictDirectiveState exposes whether @strict was explicit" {
+test "conformance: parseStrictDirectiveState distinguishes sub-strict overrides" {
     // Critical for the loadDirectory caller: when a fixture sets only
     // a single strict-family flag (e.g. `// @noImplicitAny: false`)
     // without `// @strict: ...`, the harness must keep the corpus's
