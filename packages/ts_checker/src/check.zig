@@ -18253,6 +18253,25 @@ pub const Checker = struct {
                     if (im.name == name) return mid;
                     if (std.mem.eql(u8, self.string_interner.get(im.name), lookup_raw)) return mid;
                 },
+                .fn_decl, .fn_expr => {
+                    // Class methods + accessors with computed keys are
+                    // stored as fn_decl/fn_expr nodes whose `.name`
+                    // field points at the key expression. Match by
+                    // resolving the key the same way we resolve the
+                    // computed property key, so TS2411 anchors at the
+                    // `["get1"]` source range rather than at the
+                    // enclosing class. Mirrors
+                    // `computedPropertyNames36/43/44/45_ES{5,6}`.
+                    const fnp = hir_mod.fnDeclOf(self.hir, mid);
+                    if (fnp.name == hir_mod.none_node_id) continue;
+                    if (self.classMemberNameFromPropertyKey(fnp.name, true) catch null) |key_name| {
+                        if (key_name == name) return fnp.name;
+                        if (std.mem.eql(u8, self.string_interner.get(key_name), lookup_raw)) return fnp.name;
+                    }
+                    if (self.hir.kindOf(fnp.name) == .identifier) {
+                        if (hir_mod.identifierOf(self.hir, fnp.name).name == name) return fnp.name;
+                    }
+                },
                 else => {},
             }
         }
@@ -18293,8 +18312,42 @@ pub const Checker = struct {
                 const wrapped = std.fmt.allocPrint(arena, "[{s}]", .{key_text}) catch return key_text;
                 return wrapped;
             },
+            // Class methods / accessors with computed keys: the lookup
+            // returned the key expression node itself, so wrap its
+            // source text in `[…]` to match upstream's TS2411 prose
+            // (`Property '["get1"]'`). See
+            // `computedPropertyNames36/43/44/45_ES{5,6}`.
+            .identifier, .literal_string, .literal_number, .binary_op, .call_expr, .member_access, .element_access => {
+                const span = self.hir.spanOf(member_node);
+                if (span.start >= span.end or span.end > src.len) return canonical;
+                const key_text = src[span.start..span.end];
+                const arena = self.diag_arena.allocator();
+                const wrapped = std.fmt.allocPrint(arena, "[{s}]", .{key_text}) catch return key_text;
+                return wrapped;
+            },
             else => return canonical,
         }
+    }
+
+    /// When the lookup returned the inner key-expression of a class
+    /// method/accessor with a computed key (`get ["get1"]() {…}`),
+    /// back-scan from the key span's start to the enclosing `[` so
+    /// TS2411 anchors at the bracket like tsc does. Returns `null`
+    /// when no `[` is found (so the caller falls back to the node span).
+    fn computedKeyBracketPos(self: *Checker, node: NodeId) ?u32 {
+        const src = self.source orelse return null;
+        const span = self.hir.spanOf(node);
+        if (span.start == 0 or span.start > src.len) return null;
+        var i: usize = span.start;
+        while (i > 0) {
+            i -= 1;
+            switch (src[i]) {
+                ' ', '\t', '\r', '\n' => continue,
+                '[' => return @intCast(i),
+                else => return null,
+            }
+        }
+        return null;
     }
 
     fn checkIndexSignatureMemberCompatibility(
@@ -18311,10 +18364,16 @@ pub const Checker = struct {
                 if (self.isSymbolNamedMember(m.name)) continue;
                 if (m.type == types.Primitive.any or string_idx == types.Primitive.any) continue;
                 if (try self.heritageAssignableDeep(m.type, string_idx)) continue;
+                const anchor = self.classOrInterfaceMemberNode(node, m.name);
+                // Skip when the member isn't defined in this container
+                // — the parent's own check already reported it. Mirrors
+                // tsc's behaviour in `computedPropertyNames44_ES{5,6}`.
+                if (anchor == node) continue;
                 const prop_str = self.classOrInterfaceMemberDisplayName(node, m.name);
                 const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, string_idx, "string");
                 try self.diagnostics.append(self.gpa, .{
-                    .node = self.classOrInterfaceMemberNode(node, m.name),
+                    .node = anchor,
+                    .pos = self.computedKeyBracketPos(anchor),
                     .code = TsCodes.property_not_assignable_to_index_type,
                     .message = msg,
                 });
@@ -18325,10 +18384,13 @@ pub const Checker = struct {
                 if (!self.memberNameIsNumeric(m.name)) continue;
                 if (m.type == types.Primitive.any or number_idx == types.Primitive.any) continue;
                 if (try self.heritageAssignableDeep(m.type, number_idx)) continue;
+                const anchor = self.classOrInterfaceMemberNode(node, m.name);
+                if (anchor == node) continue;
                 const prop_str = self.classOrInterfaceMemberDisplayName(node, m.name);
                 const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, number_idx, "number");
                 try self.diagnostics.append(self.gpa, .{
-                    .node = self.classOrInterfaceMemberNode(node, m.name),
+                    .node = anchor,
+                    .pos = self.computedKeyBracketPos(anchor),
                     .code = TsCodes.property_not_assignable_to_index_type,
                     .message = msg,
                 });
