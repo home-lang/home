@@ -28936,7 +28936,12 @@ pub const Checker = struct {
                         !try self.jsxAttributesMatchOverload(el.tag, attrs_t, attrs.len) and
                         !(self.containsFreeTypeParameter(target) and try self.jsxRequiredPropsCovered(target, attrs_t)))
                     {
-                        try self.report(node, TsCodes.type_not_assignable, "JSX attributes are not assignable to the target props type.");
+                        // tsc anchors the JSX-attrs-not-assignable
+                        // diagnostic at the tag identifier (`test1` /
+                        // `MyComponent`) — not the JSX element's `<`.
+                        // Mirrors the column expected by upstream
+                        // baselines (`tsxAttributeResolution3` etc.).
+                        try self.report(el.tag, TsCodes.type_not_assignable, "JSX attributes are not assignable to the target props type.");
                     }
                 }
             }
@@ -36990,6 +36995,15 @@ pub const Checker = struct {
     }
 
     fn typeIsExactNullish(self: *Checker, t: TypeId) bool {
+        // `any`/`unknown` operands flow through `checkNonNullType`
+        // without producing TS18050 in tsc — only operands whose
+        // *static* type is exactly `null` or `undefined` trigger the
+        // relational-nullish diagnostic. Without this guard, an
+        // identifier whose inferred type happened to widen to
+        // `undefined` (e.g. `var p;` in a strict context) was tripping
+        // TS18050 instead of the upstream TS18048
+        // (`'p' is possibly 'undefined'.`) — visible on `tsxReactEmit1`.
+        if (self.typeIsAnyLike(t)) return false;
         const f = self.interner.pool.flagsOf(t);
         return f.is_null or f.is_undefined;
     }
