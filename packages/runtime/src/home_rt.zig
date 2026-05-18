@@ -98,6 +98,88 @@ pub const options_types = struct {
     pub const OfflineModePrefer = @import("options_types/OfflineMode.zig").Prefer;
 };
 
+// ---- src/install_types/ ------------------------------------------------
+// Package manager type vocabulary. The full `install/PackageManager.zig`
+// runtime is the Phase 12.9 destination; these split-out types are pure
+// data and land first so other subsystems can name them.
+pub const install_types = struct {
+    pub const NodeLinker = @import("install_types/NodeLinker.zig").NodeLinker;
+};
+
+// ---- src/uws_sys/ ------------------------------------------------------
+// Opaque bindings to the `us_*` C ABI in `packages/bun-usockets`.
+// Currently only the QUIC opaques; the TCP/UDP/HTTP/3 + WebSocket
+// surface lands as the broader uws subtree is ported.
+pub const uws_sys = struct {
+    pub const quic = struct {
+        pub const Socket = @import("uws_sys/quic/Socket.zig").Socket;
+        pub const PendingConnect = @import("uws_sys/quic/PendingConnect.zig").PendingConnect;
+    };
+};
+
+// ---- src/event_loop/ ---------------------------------------------------
+// Bun's event-loop substrate. Most files in this directory pull in
+// `bun.jsc.*` / `bun.JSError` / `bun.Async` (not yet exported), so only
+// the leaves that depend exclusively on `default_allocator` + `handleOom`
+// can be copied today.
+pub const event_loop = struct {
+    pub const DeferredTaskQueue = @import("event_loop/DeferredTaskQueue.zig");
+};
+
+// ---- src/unicode/ ------------------------------------------------------
+// Unicode property tables + a pure-std 3-level LUT generator. Mirrors
+// Bun's `src/unicode/uucode/` (application-facing wrapper) and
+// `src/unicode/uucode_lib/` (vendored zigster/uucode library). Only
+// Tier-0 leaves are present today — the full grapheme-break + width
+// tables land alongside Phase 12.5.
+pub const unicode = struct {
+    pub const uucode = struct {
+        pub const lut = @import("unicode/uucode/lut.zig");
+    };
+    pub const uucode_lib = struct {
+        pub const ascii = @import("unicode/uucode_lib/src/ascii.zig");
+        pub const utf8 = @import("unicode/uucode_lib/src/utf8.zig");
+        pub const x = struct {
+            pub const types = @import("unicode/uucode_lib/src/x/types.x.zig");
+            pub const types_x = struct {
+                pub const grapheme = @import("unicode/uucode_lib/src/x/types_x/grapheme.zig");
+            };
+        };
+    };
+};
+
+// ---- src/runtime/ ------------------------------------------------------
+// Bun's `src/runtime/` subtree. Directory shape mirrors upstream;
+// individual files are flat copies as their bun.X deps allow.
+pub const runtime = struct {
+    pub const image = struct {
+        pub const exif = @import("runtime/image/exif.zig");
+    };
+    pub const server = struct {
+        pub const HTTPStatusText = @import("runtime/server/HTTPStatusText.zig");
+    };
+    pub const webcore = struct {
+        pub const s3 = struct {
+            pub const multipart_options = @import("runtime/webcore/s3/multipart_options.zig");
+        };
+    };
+    pub const valkey = struct {
+        // Per-VM Valkey state. JSC-bridge dispatch omitted — re-lands in Phase 12.2.
+        pub const Context = @import("runtime/valkey_jsc/ValkeyContext.zig");
+    };
+};
+
+// ---- src/node/ ---------------------------------------------------------
+// Node.js compatibility shims. Sourced from bun/src/runtime/node/ — bun
+// never grew a top-level src/node/, so this Home subtree is the namespace
+// home for everything in the upstream node/ directory.
+pub const node = struct {
+    pub const error_code = @import("node/nodejs_error_code.zig");
+    // node.assert.myers_diff is parked: upstream uses Zig-0.17+
+    // `std.array_list.Managed(...)` and `std.heap.stackFallback`,
+    // both of which moved in 0.17. Re-attach once an adapter lands.
+};
+
 // ---- src/bun_core/ + src/bun_alloc/ + src/safety/ ----------------------
 // Result type, tty mode, c_allocator, thread-id sentinel. Pure-Zig
 // utilities the rest of the runtime leans on.
@@ -203,6 +285,37 @@ test {
     _ = jsc_stub;
     _ = sql;
     _ = options_types;
+    _ = install_types;
+    _ = uws_sys;
+    _ = event_loop;
+    _ = unicode;
+    _ = runtime;
+    _ = node;
+    // Pull nested module tests through their actual file imports so
+    // the home_rt test runner exercises every copied leaf.
+    _ = @import("event_loop/DeferredTaskQueue.zig");
+    _ = @import("unicode/uucode/lut.zig");
+    _ = @import("unicode/uucode_lib/src/ascii.zig");
+    _ = @import("unicode/uucode_lib/src/utf8.zig");
+    _ = @import("unicode/uucode_lib/src/x/types.x.zig");
+    _ = @import("unicode/uucode_lib/src/x/types_x/grapheme.zig");
+    _ = @import("runtime/image/exif.zig");
+    _ = @import("runtime/server/HTTPStatusText.zig");
+    _ = @import("runtime/webcore/s3/multipart_options.zig");
+    _ = @import("runtime/valkey_jsc/ValkeyContext.zig");
+    _ = @import("node/nodejs_error_code.zig");
+    // myers_diff parked on Zig 0.17 compat.
+}
+
+test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {
+    try std.testing.expectEqual(install_types.NodeLinker.hoisted, install_types.NodeLinker.fromStr("hoisted").?);
+    try std.testing.expectEqual(install_types.NodeLinker.isolated, install_types.NodeLinker.fromStr("isolated").?);
+    try std.testing.expect(install_types.NodeLinker.fromStr("nope") == null);
+}
+
+test "home_rt.uws_sys.quic exposes the QUIC opaques" {
+    _ = uws_sys.quic.Socket;
+    _ = uws_sys.quic.PendingConnect;
 }
 
 test "home_rt.http_types.Method.find round-trips canonical verbs" {

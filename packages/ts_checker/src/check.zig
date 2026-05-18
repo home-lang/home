@@ -25583,6 +25583,10 @@ pub const Checker = struct {
                             var source_for_report = try self.expressionLiteralType(a.value, assignment_check_value_t);
                             if (target_t == types.Primitive.object_t) {
                                 source_for_report = self.widenLiteralType(source_for_report);
+                            } else if (target_t == types.Primitive.number_t and
+                                (source_for_report == types.Primitive.true_lit or source_for_report == types.Primitive.false_lit))
+                            {
+                                source_for_report = types.Primitive.boolean_t;
                             }
                             try self.reportAssignmentTypeNotAssignable(node, a.value, source_for_report, target_t, "Type is not assignable to target type.");
                         }
@@ -59222,6 +59226,26 @@ test "checker: checkjs JSDoc array var assignment in method parses without crash
     try s.checker.checkSourceFile(s.root);
 }
 
+test "checker: assignment diagnostic widens boolean literal source for number target" {
+    const s = try newSetup(
+        \\function ExpandoMerge(n: number) { return n; }
+        \\namespace ExpandoMerge { export var p8 = 6; }
+        \\ExpandoMerge.p8 = false;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable and
+            std.mem.indexOf(u8, d.message, "Type 'boolean' is not assignable to type 'number'.") != null)
+        {
+            found = true;
+        }
+        try T.expect(std.mem.indexOf(u8, d.message, "Type 'false' is not assignable to type 'number'.") == null);
+    }
+    try T.expect(found);
+}
+
 test "checker: checkjs computed binary property type does not constrain dot assignment" {
     const s = try newSetup(
         \\// @ts-check
@@ -63418,4 +63442,3 @@ test "checker: TS1093 fires on constructor return-type annotation and TS2355 sta
     try T.expectEqual(@as(usize, 1), count_1093);
     try T.expectEqual(@as(usize, 0), count_2355);
 }
-
