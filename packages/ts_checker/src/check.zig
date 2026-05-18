@@ -29317,7 +29317,17 @@ pub const Checker = struct {
                             if (a.value != hir_mod.none_node_id) {
                                 const ok = try self.jsxAttributeLiteralAssignable(a.value, prop_t) or
                                     try self.jsxAttributeAssignable(value_t, prop_t);
-                                if (!ok) {
+                                // tsc swallows the explicit-attribute
+                                // value mismatch when a LATER spread
+                                // provides a compatible value for the
+                                // same prop name. The spread's value
+                                // overrides the explicit attribute at
+                                // runtime, so tsc trusts that final
+                                // type. Mirrors `tsxAttributeResolution3`
+                                // line 39 (`<test1 x={32} {...obj7}/>`
+                                // where obj7.x is a compatible string).
+                                const overridden = !ok and try self.jsxLaterSpreadProvidesCompatibleProp(attrs, attr, a.name, prop_t);
+                                if (!ok and !overridden) {
                                     per_attr_assignability_fired = true;
                                     // Prefer tsc's value-level
                                     // structural wording — `Type '<src>'
@@ -43680,6 +43690,34 @@ pub const Checker = struct {
         }
         try buf.append(arena, '"');
         return buf.items;
+    }
+
+    /// True when a JSX `{...spread}` attribute strictly AFTER `attr`
+    /// in the attribute list contains a property `name` whose type
+    /// is assignable to `prop_t`. tsc's spread-override semantics —
+    /// the spread's value wins at runtime, so the explicit attribute's
+    /// type mismatch is suppressed.
+    fn jsxLaterSpreadProvidesCompatibleProp(
+        self: *Checker,
+        attrs: []const NodeId,
+        attr: NodeId,
+        name: hir_mod.StringId,
+        prop_t: TypeId,
+    ) CheckError!bool {
+        var seen_self = false;
+        for (attrs) |later| {
+            if (!seen_self) {
+                if (later == attr) seen_self = true;
+                continue;
+            }
+            if (self.hir.kindOf(later) != .jsx_spread_attribute) continue;
+            const sp = hir_mod.jsxSpreadAttributeOf(self.hir, later);
+            const spread_t = try self.checkedExpressionType(sp.expression);
+            if (try self.lookupObjectMember(spread_t, name)) |provided_t| {
+                if (self.engine.isAssignableTo(provided_t, prop_t) catch false) return true;
+            }
+        }
+        return false;
     }
 
     /// Renders a JSX attrs target with tsc's `IntrinsicAttributes &`
