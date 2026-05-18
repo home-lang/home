@@ -8310,6 +8310,55 @@ pub const Parser = struct {
             c == '$';
     }
 
+    /// After resolving the regex literal end, walk the trailing flag
+    /// characters and emit TS1499 ("Unknown regular expression flag.")
+    /// at each character that is not one of the ES2024 set
+    /// (g/i/m/s/u/y/d/v). Mirrors tsc's `scanRegExpLiteral` post-flag
+    /// validation; fixtures: `parserRegularExpressionDivideAmbiguity3`.
+    fn reportInvalidRegexFlags(self: *Parser, start: u32, line: u32, end: u32) ParseError!void {
+        const start_i: usize = @intCast(start);
+        const end_i: usize = @intCast(end);
+        if (start_i >= self.source.len) return;
+        // Locate the closing `/` so we know where the flag run begins.
+        var i: usize = start_i + 1;
+        var escaped = false;
+        var in_class = false;
+        var close_at: ?usize = null;
+        while (i < end_i and i < self.source.len) : (i += 1) {
+            const c = self.source[i];
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (c == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (c == '[') {
+                in_class = true;
+                continue;
+            }
+            if (c == ']' and in_class) {
+                in_class = false;
+                continue;
+            }
+            if (c == '/' and !in_class) {
+                close_at = i;
+                break;
+            }
+        }
+        const flag_start = (close_at orelse return) + 1;
+        var fi: usize = flag_start;
+        while (fi < end_i and fi < self.source.len) : (fi += 1) {
+            const fc = self.source[fi];
+            const is_valid = fc == 'g' or fc == 'i' or fc == 'm' or
+                fc == 's' or fc == 'u' or fc == 'y' or fc == 'd' or fc == 'v';
+            if (!is_valid) {
+                try self.reportCodeAt(@intCast(fi), line, 1499, "Unknown regular expression flag.");
+            }
+        }
+    }
+
     fn findRegexLiteralEnd(self: *Parser, start: u32) ?u32 {
         const start_i: usize = @intCast(start);
         if (start_i >= self.source.len or self.source[start_i] != '/') return null;
@@ -8373,6 +8422,7 @@ pub const Parser = struct {
             return try self.builder.addLiteralRegex(.{ .start = start_tok.span.start, .end = recovery_end });
         };
         try self.reportUnbalancedRegexGroup(start_tok, end);
+        try self.reportInvalidRegexFlags(start_tok.span.start, start_tok.line, end);
         // The scanner committed to `.slash` (vs. `regex_literal`) based
         // on the preceding token, but the parser now knows this span is
         // a regex body. Record the span so the driver can drop any

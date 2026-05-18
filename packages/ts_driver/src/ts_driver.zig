@@ -1044,6 +1044,12 @@ fn normalizeScannerDiagnostic(message: []const u8) NormalizedScannerDiagnostic {
     if (std.mem.eql(u8, message, "Unexpected '}'. Did you mean to escape it with backslash?")) {
         return .{ .code = 1508, .message = message };
     }
+    // TS1499 — invalid regex flag character (anything outside the
+    // ES2024 set g/i/m/s/u/y/d/v). Scanner emits at the offending
+    // flag column so the (line, col) anchor matches tsc.
+    if (std.mem.eql(u8, message, "Unknown regular expression flag.")) {
+        return .{ .code = 1499, .message = message };
+    }
     return .{ .message = message };
 }
 
