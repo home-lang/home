@@ -200,6 +200,13 @@ pub fn build(b: *std.Build) void {
     const tsconfig_pkg = createPackage(b, "packages/tsconfig/src/tsconfig.zig", target, optimize, zig_test_framework);
     tsconfig_pkg.addImport("jsonc", tsconfig_jsonc_pkg);
 
+    // Tier 0 `bun` compat shim — top-level peer of `ts_bundler` so
+    // any package that needs to compile against vendored Bun source
+    // can `@import("bun_compat")` (or wire it in under the
+    // `bun` import name). Restored as a top-level package after the
+    // initial vendored-bundler cleanup mistakenly removed it.
+    const bun_compat_pkg = createPackage(b, "packages/bun_compat/src/bun_compat.zig", target, optimize, zig_test_framework);
+
     // TS-parity Phase 2 — binder + symbol table.
     const binder_pkg = createPackage(b, "packages/binder/src/binder.zig", target, optimize, zig_test_framework);
     binder_pkg.addImport("hir", hir_pkg);
@@ -330,6 +337,16 @@ pub fn build(b: *std.Build) void {
     ts_bundler_pkg.addImport("ts_program", ts_program_pkg);
     ts_bundler_pkg.addImport("ts_resolver", ts_resolver_pkg);
     ts_bundler_pkg.addImport("ts_driver", ts_driver_pkg);
+
+    // Vendored Bun bundler sources under `ts_bundler/src/bun/` import
+    // `@import("bun")` — wire that to the top-level `bun_compat` shim
+    // so the Tier 0 files (IndexStringMap.zig, PathToSourceIndexMap.zig)
+    // compile. The `bun_compat_tests.zig` test root sits at
+    // `ts_bundler/src/` so its relative `@import("bun/X.zig")` calls
+    // pull in the vendored files; both the root and the recursed files
+    // share the same import map, so `bun` resolves uniformly.
+    const ts_bundler_bun_compat_pkg = createPackage(b, "packages/ts_bundler/src/bun_compat_tests.zig", target, optimize, zig_test_framework);
+    ts_bundler_bun_compat_pkg.addImport("bun", bun_compat_pkg);
 
     // TS-parity Phase 4.5+ — `home_test` (Bun's `bun:test` Zig source).
     // Vendored copy of upstream `bun/src/runtime/test_runner/*.zig`
@@ -1042,6 +1059,10 @@ pub fn build(b: *std.Build) void {
     const run_binder_tests = b.addRunArtifact(binder_tests);
     dependOnTest(test_step, &run_binder_tests.step, test_filter, "binder");
 
+    const bun_compat_tests = b.addTest(.{ .root_module = bun_compat_pkg });
+    const run_bun_compat_tests = b.addRunArtifact(bun_compat_tests);
+    dependOnTest(test_step, &run_bun_compat_tests.step, test_filter, "bun_compat");
+
     const ts_checker_tests = b.addTest(.{ .root_module = ts_checker_pkg });
     const run_ts_checker_tests = b.addRunArtifact(ts_checker_tests);
     dependOnTest(test_step, &run_ts_checker_tests.step, test_filter, "ts_checker");
@@ -1101,6 +1122,10 @@ pub fn build(b: *std.Build) void {
     const ts_bundler_tests = b.addTest(.{ .root_module = ts_bundler_pkg });
     const run_ts_bundler_tests = b.addRunArtifact(ts_bundler_tests);
     dependOnTest(test_step, &run_ts_bundler_tests.step, test_filter, "ts_bundler");
+
+    const ts_bundler_bun_compat_tests = b.addTest(.{ .root_module = ts_bundler_bun_compat_pkg });
+    const run_ts_bundler_bun_compat_tests = b.addRunArtifact(ts_bundler_bun_compat_tests);
+    dependOnTest(test_step, &run_ts_bundler_bun_compat_tests.step, test_filter, "ts_bundler_bun_compat");
 
     // home_test: only the public facade is wired in.
     const home_test_tests = b.addTest(.{ .root_module = home_test_pkg });
