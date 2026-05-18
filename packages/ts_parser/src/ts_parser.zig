@@ -785,6 +785,12 @@ pub const Parser = struct {
         }
         return switch (t.kind) {
             .kw_let, .kw_const, .kw_var => blk: {
+                if (t.kind == .kw_let and
+                    self.namespace_depth > 0 and
+                    self.peekAt(1).kind == .semicolon)
+                {
+                    break :blk try self.parseExpressionStatement();
+                }
                 // `const enum E { ... }` — TS const-enum declaration.
                 // The `const` keyword here is part of the enum form,
                 // not a variable declaration. Lower it to an
@@ -1341,6 +1347,7 @@ pub const Parser = struct {
                 .kw_private,
                 .kw_protected,
                 .kw_static,
+                .kw_let,
                 => {
                     const raw = self.source[tok.span.start..tok.span.end];
                     const msg = try std.fmt.allocPrint(
@@ -4931,6 +4938,14 @@ pub const Parser = struct {
             init_node = try self.parseAssignmentExpression();
         }
         try self.recoverRegexVariableDeclarationTail(init_node);
+        if (self.peek().kind == .number_literal and
+            self.cursor > 0 and
+            self.tokens[self.cursor - 1].kind == .number_literal and
+            !self.peek().flags.preceded_by_newline)
+        {
+            const bad = self.advance();
+            try self.reportCodeAt(bad.span.start, bad.line, 1005, "',' expected.");
+        }
         const is_ambient_decl = self.isAmbientContextAt(start.span.start);
         if (decl_kind == .const_decl and init_node == hir_mod.none_node_id and !is_ambient_decl and !name_list_was_empty) {
             // `const {}` and `const []` already raise TS1182
@@ -8847,7 +8862,7 @@ pub const Parser = struct {
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
             },
-            .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set, .kw_global, .kw_from, .kw_require, .kw_module, .kw_namespace, .kw_interface, .kw_declare, .kw_of, .kw_type, .kw_using, .kw_await, .kw_static => {
+            .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set, .kw_global, .kw_from, .kw_require, .kw_module, .kw_namespace, .kw_interface, .kw_declare, .kw_of, .kw_type, .kw_using, .kw_await, .kw_static, .kw_let => {
                 _ = self.advance();
                 try self.reportInvalidFutureReservedName(t);
                 const id = try self.internToken(t);
@@ -14103,6 +14118,18 @@ test "parser: legacy octal literal with stray fraction reports TS1121 + TS1005" 
     try T.expectEqualStrings("Octal literals are not allowed. Use the syntax '0o1'.", s.parser.diagnostics.items[0].message);
     try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
     try T.expectEqualStrings("';' expected.", s.parser.diagnostics.items[1].message);
+}
+
+test "parser: invalid later binary and octal digits in var initializers report comma expected" {
+    var s = try newTestSetup("var bin = 0b1102110;\nvar oct = 0o34318592;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("',' expected.", s.parser.diagnostics.items[0].message);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
+    try T.expectEqualStrings("',' expected.", s.parser.diagnostics.items[1].message);
 }
 
 test "parser: with statement reports strict and unsupported diagnostics" {

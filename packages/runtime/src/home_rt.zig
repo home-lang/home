@@ -114,6 +114,9 @@ pub const uws_sys = struct {
     pub const quic = struct {
         pub const Socket = @import("uws_sys/quic/Socket.zig").Socket;
         pub const PendingConnect = @import("uws_sys/quic/PendingConnect.zig").PendingConnect;
+        pub const Stream = @import("uws_sys/quic/Stream.zig").Stream;
+        pub const Header = @import("uws_sys/quic/Header.zig").Header;
+        pub const Qpack = @import("uws_sys/quic/Header.zig").Qpack;
     };
 };
 
@@ -213,6 +216,7 @@ pub const sql = struct {
         pub const MySQLQueryResult = @import("sql/mysql/MySQLQueryResult.zig");
         pub const protocol = struct {
             pub const PacketType = @import("sql/mysql/protocol/PacketType.zig").PacketType;
+            pub const PacketHeader = @import("sql/mysql/protocol/PacketHeader.zig");
         };
     };
     pub const postgres = struct {
@@ -305,6 +309,8 @@ test {
     _ = @import("runtime/valkey_jsc/ValkeyContext.zig");
     _ = @import("node/nodejs_error_code.zig");
     // myers_diff parked on Zig 0.17 compat.
+    _ = @import("uws_sys/quic/Header.zig");
+    _ = @import("sql/mysql/protocol/PacketHeader.zig");
 }
 
 test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {

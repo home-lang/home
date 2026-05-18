@@ -941,6 +941,12 @@ fn normalizeScannerDiagnostic(message: []const u8) NormalizedScannerDiagnostic {
     if (std.mem.eql(u8, message, "Hexadecimal digit expected.")) {
         return .{ .code = 1125, .message = message };
     }
+    if (std.mem.eql(u8, message, "Binary digit expected.")) {
+        return .{ .code = 1177, .message = message };
+    }
+    if (std.mem.eql(u8, message, "Octal digit expected.")) {
+        return .{ .code = 1178, .message = message };
+    }
     if (std.mem.eql(u8, message, "Unterminated Unicode escape sequence.")) {
         return .{ .code = 1199, .message = message };
     }

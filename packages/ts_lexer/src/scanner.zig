@@ -497,16 +497,20 @@ pub const Scanner = struct {
             }
             if (c == 'o' or c == 'O') {
                 self.pos += 1;
+                const digit_start = self.pos;
                 if (!self.scanNumberFragment(gpa, isOctalDigit, false, &saw_separator)) {
                     self.report(gpa, "Octal digit expected.");
+                    if (self.pos == digit_start) self.consumeDecimalDigits();
                 }
                 try self.checkIdentifierAfterNumericLiteral(gpa);
                 return self.numberFinish(start, line, f, saw_separator);
             }
             if (c == 'b' or c == 'B') {
                 self.pos += 1;
+                const digit_start = self.pos;
                 if (!self.scanNumberFragment(gpa, isBinaryDigit, false, &saw_separator)) {
                     self.report(gpa, "Binary digit expected.");
+                    if (self.pos == digit_start) self.consumeDecimalDigits();
                 }
                 try self.checkIdentifierAfterNumericLiteral(gpa);
                 return self.numberFinish(start, line, f, saw_separator);
@@ -600,6 +604,12 @@ pub const Scanner = struct {
             self.reportAt(gpa, self.pos - 1, self.line, "Numeric separators are not allowed here.");
         }
         return saw_digit;
+    }
+
+    fn consumeDecimalDigits(self: *Scanner) void {
+        while (!self.isAtEnd() and isDecimalDigit(self.source[self.pos])) {
+            self.pos += 1;
+        }
     }
 
     fn checkIdentifierAfterNumericLiteral(self: *Scanner, gpa: std.mem.Allocator) ScanError!void {
@@ -1450,6 +1460,21 @@ test "Scanner: numeric literals" {
     try t.expectEqual(TokenKind.bigint_literal, toks.items[10].kind);
     try t.expectEqualStrings("1n", toks.items[10].bytes(s.source));
     try t.expectEqual(TokenKind.bigint_literal, toks.items[11].kind);
+}
+
+test "Scanner: invalid first binary and octal digits stay one literal" {
+    var s = Scanner.init(t.allocator, "0b21010 0O91010");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+
+    try t.expectEqual(TokenKind.number_literal, toks.items[0].kind);
+    try t.expectEqualStrings("0b21010", toks.items[0].bytes(s.source));
+    try t.expectEqual(TokenKind.number_literal, toks.items[1].kind);
+    try t.expectEqualStrings("0O91010", toks.items[1].bytes(s.source));
+    try t.expectEqual(@as(usize, 2), s.diagnostics.items.len);
+    try t.expectEqualStrings("Binary digit expected.", s.diagnostics.items[0].message);
+    try t.expectEqualStrings("Octal digit expected.", s.diagnostics.items[1].message);
 }
 
 test "Scanner: numeric separator — `const x = 1_000_000;`" {
