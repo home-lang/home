@@ -328,6 +328,11 @@ pub const TsCodes = struct {
     pub const jsx_element_implicit_any_no_intrinsic: u32 = 7026;
     pub const jsx_component_not_valid: u32 = 2786;
     pub const jsx_attribute_overwritten: u32 = 2783;
+    /// TS2710 — JSX-specific "'{children}' are specified twice. The
+    /// attribute named 'children' will be overwritten." Fires when a
+    /// JSX element has BOTH a `children=` attribute AND element /
+    /// text children, e.g. `<Tag children="hi">other</Tag>`.
+    pub const jsx_children_attribute_overwritten: u32 = 2710;
     pub const jsx_text_child_not_accepted: u32 = 2747;
     pub const delete_operand_must_be_optional: u32 = 2790;
     pub const no_overload_matches: u32 = 2769;
@@ -28594,6 +28599,13 @@ pub const Checker = struct {
         }
 
         var saw_children_attr = false;
+        // Anchor for the TS2710 "children specified twice" diagnostic.
+        // tsc points at the *spread* attribute whose children value
+        // will be overwritten by the explicit `children=` attribute
+        // (preferring spread anchor; falls back to the children attr
+        // when no spread is present in the open tag).
+        var children_attr_node: NodeId = node;
+        var children_spread_anchor: ?NodeId = null;
         var attr_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer attr_members.deinit(self.gpa);
         var explicit_attrs: std.ArrayListUnmanaged(NodeId) = .empty;
@@ -28605,7 +28617,10 @@ pub const Checker = struct {
                 .jsx_attribute => {
                     const a = hir_mod.jsxAttributeOf(self.hir, attr);
                     const attr_name = self.string_interner.get(a.name);
-                    if (std.mem.eql(u8, attr_name, "children")) saw_children_attr = true;
+                    if (std.mem.eql(u8, attr_name, "children")) {
+                        saw_children_attr = true;
+                        children_attr_node = attr;
+                    }
                     const value_t = try self.checkJsxAttributeValue(a.value);
                     const attr_bag_t = try self.jsxAttributeBagValueType(a.value, value_t);
                     if (!std.mem.eql(u8, attr_name, "key") and !std.mem.startsWith(u8, attr_name, "data-")) {
@@ -28640,6 +28655,11 @@ pub const Checker = struct {
                     try explicit_attrs.append(self.gpa, attr);
                 },
                 .jsx_spread_attribute => {
+                    // Record the first spread we see as the TS2710
+                    // anchor candidate — tsc's "children specified
+                    // twice" diagnostic points at the spread whose
+                    // implicit children get overwritten.
+                    if (children_spread_anchor == null) children_spread_anchor = attr;
                     const sp = hir_mod.jsxSpreadAttributeOf(self.hir, attr);
                     const spread_t = try self.checkedExpressionType(sp.expression);
                     if (!try self.jsxSpreadTypeIsValid(spread_t)) {
@@ -28663,7 +28683,18 @@ pub const Checker = struct {
 
         for (children) |child| _ = try self.checkExpression(child);
         if (children.len > 0 and saw_children_attr) {
-            try self.report(node, TsCodes.jsx_attribute_overwritten, "'children' is specified more than once.");
+            // §6.A — tsc emits the JSX-specific TS2710 (not the generic
+            // TS2783) when a `<Tag children=...>` JSX element also has
+            // text/element children. Anchor preference matches upstream:
+            // first spread attribute when present (its `children` value
+            // is the one being overwritten); otherwise the explicit
+            // `children=` attribute itself.
+            const anchor = children_spread_anchor orelse children_attr_node;
+            try self.report(
+                anchor,
+                TsCodes.jsx_children_attribute_overwritten,
+                "'children' are specified twice. The attribute named 'children' will be overwritten.",
+            );
         }
         if (children.len > 0 and props_t != null and !self.typeIsAnyLike(props_t.?) and !saw_children_attr) {
             const children_name = self.string_interner.intern("children") catch return error.OutOfMemory;
@@ -46969,7 +47000,11 @@ test "checker: JSX reports duplicate children from attr and body" {
 
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.jsx_attribute_overwritten) found = true;
+        // §6.A — switched to TS2710 (`jsx_children_attribute_overwritten`)
+        // to match upstream tsc for the `children`-attribute-vs-body
+        // collision specifically. The generic TS2783 still applies for
+        // other duplicate-attribute cases.
+        if (d.code == TsCodes.jsx_children_attribute_overwritten) found = true;
     }
     try T.expect(found);
 }
