@@ -637,6 +637,14 @@ const DeclarationEntry = struct {
     is_function: bool = false,
     is_type_alias: bool = false,
     is_var: bool = false,
+    /// True when the entry was created from a `let`/`const` declaration
+    /// (or when a same-name block-scoped decl was later observed). Used
+    /// to emit TS2451 ("Cannot redeclare block-scoped variable") on
+    /// follow-on duplicates that introduce — or collide with — a
+    /// `let`/`const` binding. Mirrors fixture `plainJSRedeclare` /
+    /// `plainJSRedeclare2`, where `const x = 1; var x = 2;` fires
+    /// TS2451 at BOTH name positions.
+    is_block_scoped: bool = false,
     has_body: bool = false,
     is_exported: bool = false,
     is_ambient: bool = false,
@@ -2732,6 +2740,22 @@ pub const Checker = struct {
             if ((gop.value_ptr.is_function and is_var) or (gop.value_ptr.is_var and is_fn)) {
                 try self.reportDuplicateIdentifier(gop.value_ptr.node, name);
                 try self.reportDuplicateIdentifier(node, name);
+            }
+            // TS2451 — `Cannot redeclare block-scoped variable '{name}'.`
+            // Fires when ANY same-name `let`/`const` collides with a
+            // prior or following `var`/`let`/`const` in the same scope.
+            // tsc anchors at the binding *name* of each declaration and
+            // emits the diagnostic on BOTH the original and the
+            // re-declarator. Mirrors fixtures `plainJSRedeclare` and
+            // `plainJSRedeclare2`: `const orbitol = 1; var orbitol = …;`
+            // emits TS2451 at both name positions.
+            if ((gop.value_ptr.is_var or gop.value_ptr.is_block_scoped) and
+                is_var_kind and
+                (gop.value_ptr.is_block_scoped or is_block_scoped))
+            {
+                try self.reportBlockScopedRedeclare(gop.value_ptr.node, name);
+                try self.reportBlockScopedRedeclare(node, name);
+                if (is_block_scoped) gop.value_ptr.is_block_scoped = true;
             }
             if (gop.value_ptr.is_function and is_fn) {
                 if (gop.value_ptr.has_body and has_body and !gop.value_ptr.is_ambient and !is_ambient) {
@@ -26603,7 +26627,19 @@ pub const Checker = struct {
                 if (a.op) |op| {
                     switch (op) {
                         .add => {
-                            try self.checkCompoundAdditionAssignment(node, a.target, a.value, target_t, value_t);
+                            // tsc reports `s++` / `s--` (parser-desugared
+                            // to `s += 1` / `s -= 1`) as TS2356 on the
+                            // target operand when it's symbol-typed,
+                            // NOT as the generic TS2469 from
+                            // `checkCompoundAdditionAssignment`. Mirrors
+                            // `symbolType4.ts(2,1)` / `(3,1)`.
+                            if (self.assignmentIsSynthesizedUpdate(node, a) and
+                                !self.isArithmeticOperandAllowed(target_t))
+                            {
+                                try self.reportArithmeticOperand(a.target, TsCodes.arithmetic_operand_type, "An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.");
+                            } else {
+                                try self.checkCompoundAdditionAssignment(node, a.target, a.value, target_t, value_t);
+                            }
                         },
                         .sub, .mul, .div, .mod, .pow, .bit_and, .bit_or, .bit_xor, .shl, .shr, .shr_unsigned => {
                             // tsc reports `++x` / `x--` operand-type
