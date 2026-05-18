@@ -281,6 +281,19 @@ pub const TsCodes = struct {
     pub const no_exported_member_suggestion: u32 = 2724;
     pub const class_name_object_es5_module: u32 = 2725;
     pub const ts_only_decl_in_js: u32 = 8006;
+    /// TS8009 — "The '?' modifier can only be used in TypeScript
+    /// files." Emitted when a parameter is declared with a `?`
+    /// optional marker inside a `.js`/`.jsx`/`.mjs`/`.cjs` virtual
+    /// section that opts into checking (`// @allowjs: true` and
+    /// `// @checkjs: true`). Mirrors
+    /// `parserArrowFunctionExpression14` (fileJs.js).
+    pub const ts_only_optional_modifier_in_js: u32 = 8009;
+    /// TS8010 — "Type annotations can only be used in TypeScript
+    /// files." Emitted for parameter type annotations, return-type
+    /// annotations, and variable type annotations inside a JS-like
+    /// virtual section. Mirrors fixtures
+    /// `parserArrowFunctionExpression10/13/14/15/16/17`.
+    pub const ts_only_type_annotation_in_js: u32 = 8010;
     pub const fn_must_return_value: u32 = 2355;
     /// TS1064 — "The return type of an async function or method must
     /// be the global Promise<T> type." Emitted when an async function
@@ -9939,6 +9952,10 @@ pub const Checker = struct {
     /// walk so type-param references inside the body still resolve.
     fn checkFnSignatureOnly(self: *Checker, node: NodeId) CheckError!TypeId {
         const f = hir_mod.fnDeclOf(self.hir, node);
+        // parserArrowFunctionExpression10/13/14/15/16/17: surface
+        // TS8010 / TS8009 for any TS-only annotation in a `.js`
+        // virtual section opted into `@allowjs`/`@checkjs`.
+        try self.checkJsOnlySignatureAnnotations(node);
         const type_params = hir_mod.fnTypeParams(self.hir, node);
         try self.checkTypeParameterDeclList(type_params);
         try self.checkFunctionSignatureLocalTypeVisibility(node, type_params);
@@ -24543,6 +24560,60 @@ pub const Checker = struct {
             .code = TsCodes.ts_only_decl_in_js,
             .message = msg,
         });
+    }
+
+    /// parserArrowFunctionExpression10/13/14/15/16/17: emit TS8010 for
+    /// every parameter type annotation, every return-type annotation,
+    /// and TS8009 for every `?` optional marker that appears on a
+    /// function/arrow declared inside a `.js`/`.jsx`/`.mjs`/`.cjs`
+    /// virtual section opted into checking via `// @allowjs: true` +
+    /// `// @checkjs: true`. The TS8010 anchor lands on the type
+    /// annotation's source-start (e.g. the `n` of `number`), the
+    /// TS8009 anchor lands on the `?` token between the parameter
+    /// name and its `:` annotation (or trailing `,`/`)`).
+    fn checkJsOnlySignatureAnnotations(self: *Checker, node: NodeId) CheckError!void {
+        if (!self.virtualSectionIsJsLike(node)) return;
+        if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return;
+        const src = self.source orelse return;
+        const f = hir_mod.fnDeclOf(self.hir, node);
+        const params = hir_mod.fnParams(self.hir, node);
+        for (params) |p| {
+            if (self.hir.kindOf(p) != .parameter) continue;
+            const pp = hir_mod.parameterOf(self.hir, p);
+            if (pp.flags.is_optional and !pp.flags.is_rest) {
+                if (pp.name != hir_mod.none_node_id) {
+                    const name_span = self.hir.spanOf(pp.name);
+                    var i: usize = name_span.end;
+                    while (i < src.len and (src[i] == ' ' or src[i] == '\t')) : (i += 1) {}
+                    if (i < src.len and src[i] == '?') {
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = p,
+                            .pos = @intCast(i),
+                            .code = TsCodes.ts_only_optional_modifier_in_js,
+                            .message = try self.diag_arena.allocator().dupe(u8, "The '?' modifier can only be used in TypeScript files."),
+                        });
+                    }
+                }
+            }
+            if (pp.type_annotation != hir_mod.none_node_id) {
+                const t_span = self.hir.spanOf(pp.type_annotation);
+                try self.diagnostics.append(self.gpa, .{
+                    .node = pp.type_annotation,
+                    .pos = t_span.start,
+                    .code = TsCodes.ts_only_type_annotation_in_js,
+                    .message = try self.diag_arena.allocator().dupe(u8, "Type annotations can only be used in TypeScript files."),
+                });
+            }
+        }
+        if (f.return_type != hir_mod.none_node_id) {
+            const r_span = self.hir.spanOf(f.return_type);
+            try self.diagnostics.append(self.gpa, .{
+                .node = f.return_type,
+                .pos = r_span.start,
+                .code = TsCodes.ts_only_type_annotation_in_js,
+                .message = try self.diag_arena.allocator().dupe(u8, "Type annotations can only be used in TypeScript files."),
+            });
+        }
     }
 
     /// True when the function declaration/expression at `fn_node` has
