@@ -11471,7 +11471,9 @@ pub const Checker = struct {
                             try self.report(tp_ref_node, 2467, "A computed property name cannot reference a type parameter from its containing type.");
                         }
                         if (self.expressionContainsSuper(fn_p.name)) {
-                            try self.report(fn_p.name, TsCodes.super_in_computed_property_name, "'super' cannot be referenced in a computed property name.");
+                            const sn = self.findSuperNode(fn_p.name);
+                            const anchor = if (sn != hir_mod.none_node_id) sn else fn_p.name;
+                            try self.report(anchor, TsCodes.super_in_computed_property_name, "'super' cannot be referenced in a computed property name.");
                         }
                         const prev_in_computed_name = self.in_computed_property_name;
                         self.in_computed_property_name = true;
@@ -11771,7 +11773,9 @@ pub const Checker = struct {
                             try self.report(tp_ref_node, 2467, "A computed property name cannot reference a type parameter from its containing type.");
                         }
                         if (self.expressionContainsSuper(op.key)) {
-                            try self.report(op.key, TsCodes.super_in_computed_property_name, "'super' cannot be referenced in a computed property name.");
+                            const sn = self.findSuperNode(op.key);
+                            const anchor = if (sn != hir_mod.none_node_id) sn else op.key;
+                            try self.report(anchor, TsCodes.super_in_computed_property_name, "'super' cannot be referenced in a computed property name.");
                         }
                         // Note: do NOT pre-emit TS2683 for `this` inside the
                         // key here — the `in_computed_property_name` flag
@@ -27862,6 +27866,8 @@ pub const Checker = struct {
                 defer computed_string_value_types.deinit(self.gpa);
                 var computed_symbol_value_types: std.ArrayListUnmanaged(TypeId) = .empty;
                 defer computed_symbol_value_types.deinit(self.gpa);
+                var computed_number_value_types: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer computed_number_value_types.deinit(self.gpa);
                 var generic_spread_parts: std.ArrayListUnmanaged(TypeId) = .empty;
                 defer generic_spread_parts.deinit(self.gpa);
                 const upsert = struct {
@@ -27985,12 +27991,18 @@ pub const Checker = struct {
                     const op = hir_mod.objectPropertyOf(self.hir, p);
                     if (op.is_computed) {
                         if (self.enclosingStaticClassTypeParams(op.key)) |static_class_tps| {
-                            if (self.computedNameReferencesTypeParams(op.key, static_class_tps)) {
-                                try self.report(op.key, TsCodes.static_member_type_parameter, "Static members cannot reference class type parameters.");
+                            const tp_ref = self.computedNameTypeParamReferenceNode(op.key, static_class_tps);
+                            if (tp_ref != hir_mod.none_node_id) {
+                                // Anchor TS2302 at the offending type-param
+                                // identifier (e.g. `T`), not the enclosing
+                                // `[` — matches `computedPropertyNames34_ES{5,6}`.
+                                try self.report(tp_ref, TsCodes.static_member_type_parameter, "Static members cannot reference class type parameters.");
                             }
                         }
                         if (self.expressionContainsSuperCall(op.key) and self.superCallIsInNestedFunctionInsideConstructor(op.key)) {
-                            try self.report(op.key, TsCodes.super_in_computed_property_name, "'super' cannot be referenced in a computed property name.");
+                            const sn = self.findSuperNode(op.key);
+                            const anchor = if (sn != hir_mod.none_node_id) sn else op.key;
+                            try self.report(anchor, TsCodes.super_in_computed_property_name, "'super' cannot be referenced in a computed property name.");
                         }
                         if (self.expressionContainsThis(op.key) and self.currentThisType() == null) {
                             if (self.nodeHasAncestorKind(op.key, .namespace_decl)) {
@@ -28044,6 +28056,12 @@ pub const Checker = struct {
                             });
                         } else if (try self.computedPropertyKeyTypeIsSymbolLike(key_t)) {
                             try computed_symbol_value_types.append(self.gpa, vt);
+                        } else if (self.computedPropertyKeyTypeIsNumberLike(key_t)) {
+                            // Numeric computed keys (`{ [+"foo"]: ... }`)
+                            // contribute to a `[x: number]: V` signature
+                            // on the inferred object — matches tsc's
+                            // `computedPropertyNamesContextualType9/10`.
+                            try computed_number_value_types.append(self.gpa, vt);
                         } else if (self.sourceHasCheckJsDirective() and self.hir.kindOf(op.key) == .binary_op) {
                             // tsc does not use non-literal JS computed
                             // property expressions like `['b' + 'ar1']`
@@ -28118,7 +28136,13 @@ pub const Checker = struct {
                 } else if (computed_symbol_value_types.items.len > 1) {
                     symbol_index = self.interner.internUnion(computed_symbol_value_types.items) catch return error.OutOfMemory;
                 }
-                const obj_t = self.interner.internObjectTypeWithIndexAndSymbol(members.items, string_index, types.Primitive.none, symbol_index) catch return error.OutOfMemory;
+                var number_index: TypeId = types.Primitive.none;
+                if (computed_number_value_types.items.len == 1) {
+                    number_index = computed_number_value_types.items[0];
+                } else if (computed_number_value_types.items.len > 1) {
+                    number_index = self.interner.internUnion(computed_number_value_types.items) catch return error.OutOfMemory;
+                }
+                const obj_t = self.interner.internObjectTypeWithIndexAndSymbol(members.items, string_index, number_index, symbol_index) catch return error.OutOfMemory;
                 if (!self.objectLiteralLikelyHasContextualTarget(node)) {
                     // §4.A.X Phase 4 #11 — when the literal is a return
                     // value, prefer the enclosing function's declared
@@ -34868,6 +34892,90 @@ pub const Checker = struct {
                 return false;
             },
             else => return false,
+        }
+    }
+
+    /// Locate the inner `super` token within an expression so callers
+    /// can anchor diagnostics on the keyword itself (not the enclosing
+    /// computed-name brackets). Returns `hir_mod.none_node_id` when no
+    /// transitive super reference is present. Mirrors tsc's anchor for
+    /// TS2466 in `computedPropertyNames26_ES{5,6}`.
+    fn findSuperNode(self: *Checker, node: NodeId) NodeId {
+        if (node == hir_mod.none_node_id) return hir_mod.none_node_id;
+        switch (self.hir.kindOf(node)) {
+            .super_expr => return node,
+            .identifier => {
+                const id = hir_mod.identifierOf(self.hir, node);
+                if (std.mem.eql(u8, self.string_interner.get(id.name), "super")) return node;
+                return hir_mod.none_node_id;
+            },
+            .member_access => return self.findSuperNode(hir_mod.memberOf(self.hir, node).object),
+            .element_access => {
+                const e = hir_mod.elementOf(self.hir, node);
+                const o = self.findSuperNode(e.object);
+                if (o != hir_mod.none_node_id) return o;
+                return self.findSuperNode(e.index);
+            },
+            .call_expr, .new_expr => {
+                const c = hir_mod.callOf(self.hir, node);
+                const cs = self.findSuperNode(c.callee);
+                if (cs != hir_mod.none_node_id) return cs;
+                for (hir_mod.callArgs(self.hir, node)) |arg| {
+                    const ars = self.findSuperNode(arg);
+                    if (ars != hir_mod.none_node_id) return ars;
+                }
+                return hir_mod.none_node_id;
+            },
+            .binary_op => {
+                const b = hir_mod.binopOf(self.hir, node);
+                const l = self.findSuperNode(b.lhs);
+                if (l != hir_mod.none_node_id) return l;
+                return self.findSuperNode(b.rhs);
+            },
+            .logical_op => {
+                const l = hir_mod.logicalOf(self.hir, node);
+                const lhs = self.findSuperNode(l.lhs);
+                if (lhs != hir_mod.none_node_id) return lhs;
+                return self.findSuperNode(l.rhs);
+            },
+            .conditional => {
+                const c = hir_mod.conditionalOf(self.hir, node);
+                const cs = self.findSuperNode(c.cond);
+                if (cs != hir_mod.none_node_id) return cs;
+                const tb = self.findSuperNode(c.then_branch);
+                if (tb != hir_mod.none_node_id) return tb;
+                return self.findSuperNode(c.else_branch);
+            },
+            .unary_op => return self.findSuperNode(hir_mod.unaryOf(self.hir, node).operand),
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                const ts = self.findSuperNode(a.target);
+                if (ts != hir_mod.none_node_id) return ts;
+                return self.findSuperNode(a.value);
+            },
+            .array_literal => {
+                for (hir_mod.arrayLiteralElements(self.hir, node)) |el| {
+                    const s = self.findSuperNode(el);
+                    if (s != hir_mod.none_node_id) return s;
+                }
+                return hir_mod.none_node_id;
+            },
+            .object_literal => {
+                for (hir_mod.objectLiteralProps(self.hir, node)) |p| {
+                    if (self.hir.kindOf(p) == .object_property) {
+                        const op = hir_mod.objectPropertyOf(self.hir, p);
+                        const ks = self.findSuperNode(op.key);
+                        if (ks != hir_mod.none_node_id) return ks;
+                        const vs = self.findSuperNode(op.value);
+                        if (vs != hir_mod.none_node_id) return vs;
+                    } else {
+                        const s = self.findSuperNode(p);
+                        if (s != hir_mod.none_node_id) return s;
+                    }
+                }
+                return hir_mod.none_node_id;
+            },
+            else => return hir_mod.none_node_id,
         }
     }
 
