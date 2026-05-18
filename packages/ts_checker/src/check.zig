@@ -3142,14 +3142,9 @@ pub const Checker = struct {
     }
 
     /// True when the byte immediately before `expr.span.start` (ignoring
-    /// whitespace) is `(`. Used to decide whether a comma expression in
-    /// a computed property name came from the parser's bracket loop
-    /// (unparenthesized — TS1171) or from `parsePrimaryExpression`'s
-    /// open_paren arm (parenthesized — silent). The HIR doesn't carry a
-    /// paren-expression node, so we recover the distinction from the
-    /// source text. Mirrors `computedPropertyNames28_ES{5,6}` and
-    /// `computedPropertyNames30_ES{5,6}` (zero TS1171 because each key
-    /// is `[(super(), "prop")]`).
+    /// whitespace) is `(`. Used to distinguish parenthesized computed
+    /// comma keys such as `[(super(), "prop")]` from unparenthesized
+    /// comma expressions that should report TS1171.
     fn computedKeyExprIsParenthesized(self: *Checker, expr: NodeId) bool {
         const src = self.source orelse return false;
         const span = self.hir.spanOf(expr);
@@ -3174,29 +3169,6 @@ pub const Checker = struct {
             return self.hir.kindOf(a) == self.hir.kindOf(b);
         }
         return std.mem.eql(u8, src[a_span.start..a_span.end], src[b_span.start..b_span.end]);
-    }
-
-    /// True when the byte immediately before `expr.span.start` (ignoring
-    /// whitespace) is `(`. Used to decide whether a comma expression in
-    /// a computed property name came from the parser's bracket loop
-    /// (unparenthesized — TS1171) or from `parsePrimaryExpression`'s
-    /// open_paren arm (parenthesized — silent). The HIR doesn't carry a
-    /// paren-expression node, so we recover the distinction from the
-    /// source text. Mirrors `computedPropertyNames28_ES{5,6}` and
-    /// `computedPropertyNames30_ES{5,6}` (zero TS1171 because each key
-    /// is `[(super(), "prop")]`).
-    fn computedKeyExprIsParenthesized(self: *Checker, expr: NodeId) bool {
-        const src = self.source orelse return false;
-        const span = self.hir.spanOf(expr);
-        if (span.start == 0 or span.start > src.len) return false;
-        var i: usize = span.start;
-        while (i > 0) {
-            i -= 1;
-            const c = src[i];
-            if (c == ' ' or c == '\t' or c == '\n' or c == '\r') continue;
-            return c == '(';
-        }
-        return false;
     }
 
     fn virtualSectionStartForNode(self: *Checker, node: NodeId) usize {
