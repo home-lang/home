@@ -25089,6 +25089,32 @@ pub const Checker = struct {
             if (declared_type == types.Primitive.none and !v.is_ambient and self.hir.kindOf(node) == .const_decl) {
                 init_type = try self.constInitializerType(v.init, init_type);
             }
+            // Anonymous class-expression assigned to a `var X = class {…}`
+            // (or `let`/`const`) binding: register the static-side type
+            // under the binding name so TS2339 prose renders as
+            // `typeof X` instead of falling back to "Property 'p' does
+            // not exist on type." truncation. Mirrors upstream tsc which
+            // synthesizes the class name from the variable binding when
+            // the class expression itself is anonymous. The parser emits
+            // class expressions as `.class_decl` nodes with no `c.name`,
+            // so we accept both kinds and gate on the missing class
+            // name. Fixture: `typeFromPropertyAssignment29.ts(80,14)`.
+            if (v.init != hir_mod.none_node_id and
+                (self.hir.kindOf(v.init) == .class_expr or self.hir.kindOf(v.init) == .class_decl) and
+                v.name != hir_mod.none_node_id and
+                self.hir.kindOf(v.name) == .identifier)
+            {
+                const ce = hir_mod.classOf(self.hir, v.init);
+                if (ce.name == hir_mod.none_node_id) {
+                    const id = hir_mod.identifierOf(self.hir, v.name);
+                    if (!self.class_static_types.contains(id.name)) {
+                        try self.class_static_types.put(self.gpa, id.name, init_type);
+                    }
+                    if (!self.class_name_by_static.contains(init_type)) {
+                        try self.class_name_by_static.put(self.gpa, init_type, id.name);
+                    }
+                }
+            }
             if (declared_type == types.Primitive.none and
                 self.sourceHasCheckJsDirective() and
                 self.virtualSectionIsJsLike(node) and
