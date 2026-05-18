@@ -2,8 +2,8 @@
 //!
 //! Re-exports the minimal surface that vendored Bun source needs to
 //! compile against Home's stdlib. Originally landed as
-//! `ts_bundler/src/bun_compat/bun.zig` during the Phase 4.5 §4.5.A.2
-//! work; promoted to a top-level package because `ts_bundler` IS the
+//! `bundler/src/compat/bun.zig` during the Phase 4.5 §4.5.A.2
+//! work; promoted to a top-level package because `bundler` IS the
 //! Bun-flavoured TS/JS bundler and the bun-runtime surface lives next
 //! to it as a peer rather than as an inner shim.
 //!
@@ -27,7 +27,7 @@
 //!                            by Tier 0 callers.
 //!
 //! Each subsequent tier adds more surface as additional Bun source
-//! files come online in `ts_bundler` / `runtime`.
+//! files come online in `bundler` / `runtime`.
 
 const std = @import("std");
 const T = std.testing;
@@ -36,7 +36,7 @@ pub const OOM = error{OutOfMemory};
 
 pub fn handleOom(err: anyerror) noreturn {
     _ = err;
-    @panic("bun_compat: out of memory");
+    @panic("compat: out of memory");
 }
 
 pub const default_allocator: std.mem.Allocator = std.heap.smp_allocator;
@@ -69,7 +69,7 @@ pub const fs = struct {
     };
 };
 
-test "bun_compat: Tier 0 surface is well-shaped" {
+test "compat: Tier 0 surface is well-shaped" {
     try T.expectEqual(@as(type, error{OutOfMemory}), OOM);
     assert(true);
     try T.expectEqual(@as(type, u32), ast.Index.Int);
@@ -80,12 +80,12 @@ test "bun_compat: Tier 0 surface is well-shaped" {
     try T.expectEqual(@as(usize, 4), slice.len);
 }
 
-test "bun_compat: ast.Index.init wraps + reads u32" {
+test "compat: ast.Index.init wraps + reads u32" {
     const idx = ast.Index.init(7);
     try T.expectEqual(@as(u32, 7), idx.value);
 }
 
-test "bun_compat: StringHashMapUnmanaged alias works" {
+test "compat: StringHashMapUnmanaged alias works" {
     var map: StringHashMapUnmanaged(u32) = .{};
     defer map.deinit(T.allocator);
     try map.put(T.allocator, "a", 1);

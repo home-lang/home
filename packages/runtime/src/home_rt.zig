@@ -1015,9 +1015,8 @@ test {
     _ = @import("install/Origin.zig");
     _ = @import("install/PreinstallState.zig");
     _ = @import("install/Aligner.zig");
-    _ = @import("bundler/IndexStringMap.zig");
-    _ = @import("bundler/PathToSourceIndexMap.zig");
-    _ = @import("bundler/DeferredBatchTask.zig");
+    // Bundler-tree leaves now live in `packages/bundler/` (formerly
+    // `packages/ts_bundler/`) — runtime no longer mirrors them.
     _ = @import("ast/op.zig");
     _ = @import("js_parser/lexer_tables.zig");
     _ = @import("uws_sys/SocketKind.zig");

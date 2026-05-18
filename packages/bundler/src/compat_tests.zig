@@ -1,8 +1,8 @@
-//! Tier 0 `bun_compat` shim tests — Phase 4.5 §4.5.A.2.
+//! Tier 0 `compat` shim tests — Phase 4.5 §4.5.A.2.
 //!
 //! Exercises `IndexStringMap.zig` and `PathToSourceIndexMap.zig`
 //! (verbatim copies of upstream Bun bundler files) against the
-//! Tier 0 shim defined at `bun_compat/bun.zig`. The build wires
+//! Tier 0 shim defined at `compat/bun.zig`. The build wires
 //! `@import("bun")` to the shim so the two vendored files compile
 //! without modification.
 //!
@@ -13,10 +13,10 @@ const std = @import("std");
 const T = std.testing;
 
 const bun = @import("bun");
-const IndexStringMap = @import("bun/IndexStringMap.zig");
-const PathToSourceIndexMap = @import("bun/PathToSourceIndexMap.zig");
+const IndexStringMap = @import("IndexStringMap.zig");
+const PathToSourceIndexMap = @import("PathToSourceIndexMap.zig");
 
-test "bun_compat: shim exposes Tier 0 surface" {
+test "compat: shim exposes Tier 0 surface" {
     // Type-level checks: each Tier 0 symbol must exist with the right
     // shape so future bundler files compile.
     try T.expectEqual(@as(type, error{OutOfMemory}), bun.OOM);
@@ -31,12 +31,12 @@ test "bun_compat: shim exposes Tier 0 surface" {
     try T.expectEqual(@as(usize, 4), slice.len);
 }
 
-test "bun_compat: ast.Index.init wraps + reads u32" {
+test "compat: ast.Index.init wraps + reads u32" {
     const idx = bun.ast.Index.init(7);
     try T.expectEqual(@as(u32, 7), idx.value);
 }
 
-test "bun_compat: StringHashMapUnmanaged alias works" {
+test "compat: StringHashMapUnmanaged alias works" {
     var map: bun.StringHashMapUnmanaged(u32) = .{};
     defer map.deinit(T.allocator);
     try map.put(T.allocator, "a", 1);
@@ -46,7 +46,7 @@ test "bun_compat: StringHashMapUnmanaged alias works" {
     try T.expectEqual(@as(?u32, null), map.get("c"));
 }
 
-test "bun_compat: IndexStringMap put + get round-trips through shim" {
+test "compat: IndexStringMap put + get round-trips through shim" {
     var m: IndexStringMap = .{};
     defer m.deinit(T.allocator);
     try m.put(T.allocator, 0, "alpha");
@@ -56,7 +56,7 @@ test "bun_compat: IndexStringMap put + get round-trips through shim" {
     try T.expectEqual(@as(?[]const u8, null), m.get(99));
 }
 
-test "bun_compat: IndexStringMap dupes the value (caller string can be freed)" {
+test "compat: IndexStringMap dupes the value (caller string can be freed)" {
     var m: IndexStringMap = .{};
     defer m.deinit(T.allocator);
     // Heap-allocate a string, put it, then free it. The map must
@@ -67,7 +67,7 @@ test "bun_compat: IndexStringMap dupes the value (caller string can be freed)" {
     try T.expectEqualStrings("transient", m.get(5).?);
 }
 
-test "bun_compat: PathToSourceIndexMap put + get by raw text" {
+test "compat: PathToSourceIndexMap put + get by raw text" {
     var m: PathToSourceIndexMap = .{};
     defer m.map.deinit(T.allocator);
     try m.put(T.allocator, "/foo.ts", 42);
@@ -77,7 +77,7 @@ test "bun_compat: PathToSourceIndexMap put + get by raw text" {
     try T.expectEqual(@as(?u32, null), m.get("/missing.ts"));
 }
 
-test "bun_compat: PathToSourceIndexMap getPath / putPath through fs.Path" {
+test "compat: PathToSourceIndexMap getPath / putPath through fs.Path" {
     var m: PathToSourceIndexMap = .{};
     defer m.map.deinit(T.allocator);
     const a = bun.fs.Path{ .text = "/a.ts" };
@@ -88,7 +88,7 @@ test "bun_compat: PathToSourceIndexMap getPath / putPath through fs.Path" {
     try T.expectEqual(@as(?u32, 200), m.getPath(&b));
 }
 
-test "bun_compat: PathToSourceIndexMap removePath returns true on hit" {
+test "compat: PathToSourceIndexMap removePath returns true on hit" {
     var m: PathToSourceIndexMap = .{};
     defer m.map.deinit(T.allocator);
     const p = bun.fs.Path{ .text = "/c.ts" };
@@ -99,7 +99,7 @@ test "bun_compat: PathToSourceIndexMap removePath returns true on hit" {
     try T.expect(!m.removePath(&p));
 }
 
-test "bun_compat: PathToSourceIndexMap getOrPut populates first call, retrieves second" {
+test "compat: PathToSourceIndexMap getOrPut populates first call, retrieves second" {
     var m: PathToSourceIndexMap = .{};
     defer m.map.deinit(T.allocator);
     const r1 = try m.getOrPut(T.allocator, "/d.ts");

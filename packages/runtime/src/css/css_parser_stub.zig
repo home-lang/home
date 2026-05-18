@@ -557,6 +557,207 @@ pub const css_values = struct {
                 @compileError("css_parser not yet ported — NumberOrPercentage.parse");
             }
         };
+
+        /// Wave-9 (2026-05-18) extension. Real upstream is a `{ v: CSSNumber }`
+        /// struct with parse/toCss/arithmetic. Pure-data leaves (e.g. `effects`,
+        /// `position`) reference the type at a field declaration site only —
+        /// methods trip `@compileError` if reached at runtime.
+        pub const Percentage = struct {
+            v: f32,
+
+            pub fn parse(_: *Parser) Result(Percentage) {
+                @compileError("css_parser not yet ported — Percentage.parse");
+            }
+            pub fn toCss(_: *const Percentage, _: *Printer) PrintErr!void {
+                @compileError("css_parser not yet ported — Percentage.toCss");
+            }
+            pub fn isZero(this: *const Percentage) bool {
+                return this.v == 0.0;
+            }
+            pub fn eql(lhs: *const Percentage, rhs: *const Percentage) bool {
+                return lhs.v == rhs.v;
+            }
+            pub fn deepClone(this: *const Percentage, _: std.mem.Allocator) Percentage {
+                return this.*;
+            }
+        };
+
+        /// Generic placeholder for `percentage.DimensionPercentage(T)`. Real
+        /// upstream is a tagged union `{ dimension: T, percentage: Percentage,
+        /// calc: *Calc(...) }`; the stub keeps the surface minimal so leaves
+        /// that spell `DimensionPercentage(LengthValue)` at a field
+        /// declaration site type-check. Methods trip `@compileError`.
+        pub fn DimensionPercentage(comptime T: type) type {
+            return union(enum) {
+                dimension: T,
+                percentage: Percentage,
+
+                pub fn parse(_: *Parser) Result(@This()) {
+                    @compileError("css_parser not yet ported — DimensionPercentage.parse");
+                }
+                pub fn toCss(_: *const @This(), _: *Printer) PrintErr!void {
+                    @compileError("css_parser not yet ported — DimensionPercentage.toCss");
+                }
+                pub fn deepClone(this: *const @This(), _: std.mem.Allocator) @This() {
+                    return this.*;
+                }
+            };
+        }
+    };
+
+    /// Wave-9 (2026-05-18) extension. Stand-in for `css_values.color.CssColor`.
+    /// Real upstream is a large tagged union covering every CSS color form
+    /// (RGB/HSL/HWB/Lab/LCH/Oklab/Oklch/system/currentcolor/etc.). For
+    /// pure-data leaves (`effects.zig`, `rect.zig`, `font_face.zig`) only the
+    /// type name + a `current_color` tag are reached at field-declaration
+    /// time; method bodies trip `@compileError`.
+    pub const color = struct {
+        pub const CssColor = union(enum) {
+            current_color,
+            /// Placeholder payload for non-keyword colors. Real upstream
+            /// carries a `RGBA`/`LAB`/`SRGB` etc. tag; the stub keeps it
+            /// opaque so the type resolves at field-decl sites.
+            _opaque: struct { _unused: u8 = 0 },
+
+            pub fn parse(_: *Parser) Result(CssColor) {
+                @compileError("css_parser not yet ported — CssColor.parse");
+            }
+            pub fn toCss(_: *const CssColor, _: *Printer) PrintErr!void {
+                @compileError("css_parser not yet ported — CssColor.toCss");
+            }
+            pub fn eql(_: *const CssColor, _: *const CssColor) bool {
+                return false;
+            }
+            pub fn deepClone(this: *const CssColor, _: std.mem.Allocator) CssColor {
+                return this.*;
+            }
+        };
+    };
+
+    /// Wave-9 (2026-05-18) extension. Stand-in for `css_values.length.*`.
+    /// Real upstream defines `LengthValue` (the `<length>` token-typed
+    /// dimension with `cm/px/em/rem/…` variants), plus the composite
+    /// `Length`, `LengthPercentage`, `LengthPercentageOrAuto`, `LengthOrNumber`
+    /// types. Leaves reach for the type names at field-declaration sites
+    /// only — methods all trip `@compileError`.
+    pub const length = struct {
+        /// Opaque placeholder for `<length>`. Real upstream is a big enum-
+        /// tagged union over CSS length units. Stub keeps the type name and
+        /// a `zero()` constructor (used by `position.toCss`).
+        pub const LengthValue = struct {
+            _unused: u8 = 0,
+
+            pub fn parse(_: *Parser) Result(LengthValue) {
+                @compileError("css_parser not yet ported — LengthValue.parse");
+            }
+            pub fn toCss(_: *const LengthValue, _: *Printer) PrintErr!void {
+                @compileError("css_parser not yet ported — LengthValue.toCss");
+            }
+            pub fn zero() LengthValue {
+                return .{};
+            }
+            pub fn eql(_: *const LengthValue, _: *const LengthValue) bool {
+                return false;
+            }
+            pub fn isZero(_: *const LengthValue) bool {
+                return false;
+            }
+            pub fn deepClone(this: *const LengthValue, _: std.mem.Allocator) LengthValue {
+                return this.*;
+            }
+        };
+
+        pub const Length = LengthValue;
+
+        /// Mirror of `LengthPercentage` (= `DimensionPercentage(LengthValue)`).
+        /// Same tag set + a `zero()` constant so `position.zig` resolves the
+        /// `.zero()` and `.percentage` references at type-check time.
+        pub const LengthPercentage = union(enum) {
+            dimension: LengthValue,
+            percentage: @import("./css_parser_stub.zig").css_values.percentage.Percentage,
+
+            pub fn parse(_: *Parser) Result(LengthPercentage) {
+                @compileError("css_parser not yet ported — LengthPercentage.parse");
+            }
+            pub fn toCss(_: *const LengthPercentage, _: *Printer) PrintErr!void {
+                @compileError("css_parser not yet ported — LengthPercentage.toCss");
+            }
+            pub fn zero() LengthPercentage {
+                return .{ .dimension = LengthValue.zero() };
+            }
+            pub fn isZero(this: *const LengthPercentage) bool {
+                return switch (this.*) {
+                    .dimension => |d| d.isZero(),
+                    .percentage => |p| p.isZero(),
+                };
+            }
+            pub fn eql(_: *const LengthPercentage, _: *const LengthPercentage) bool {
+                return false;
+            }
+            pub fn deepClone(this: *const LengthPercentage, _: std.mem.Allocator) LengthPercentage {
+                return this.*;
+            }
+        };
+
+        pub const LengthPercentageOrAuto = union(enum) {
+            auto,
+            length_percentage: LengthPercentage,
+        };
+
+        pub const LengthOrNumber = union(enum) {
+            length: LengthValue,
+            number: f32,
+        };
+    };
+
+    /// Wave-9 (2026-05-18) extension. Stand-in for `css_values.angle.Angle`.
+    /// Real upstream is a tagged union over `deg/rad/grad/turn` plus arithmetic.
+    /// Stub retains the tags so `effects.hue_rotate: Angle` field-decl
+    /// resolves; methods trip `@compileError`.
+    pub const angle = struct {
+        pub const Angle = union(enum) {
+            deg: f32,
+            rad: f32,
+            grad: f32,
+            turn: f32,
+
+            pub fn parse(_: *Parser) Result(Angle) {
+                @compileError("css_parser not yet ported — Angle.parse");
+            }
+            pub fn toCss(_: *const Angle, _: *Printer) PrintErr!void {
+                @compileError("css_parser not yet ported — Angle.toCss");
+            }
+            pub fn eql(_: *const Angle, _: *const Angle) bool {
+                return false;
+            }
+            pub fn deepClone(this: *const Angle, _: std.mem.Allocator) Angle {
+                return this.*;
+            }
+        };
+    };
+
+    /// Wave-9 (2026-05-18) extension. Stand-in for `css_values.url.Url`.
+    /// Real upstream carries `(import_record_idx: u32, loc: dependencies.Location)`.
+    /// Stub mirrors the field layout so leaves resolve the type name; methods
+    /// (parse / toCss / isAbsolute) trip `@compileError`.
+    pub const url = struct {
+        pub const Url = struct {
+            import_record_idx: u32 = 0,
+            loc: Location = Location.dummy(),
+
+            pub fn parse(_: *Parser) Result(Url) {
+                @compileError("css_parser not yet ported — Url.parse");
+            }
+            pub fn toCss(_: *const Url, _: *Printer) PrintErr!void {
+                @compileError("css_parser not yet ported — Url.toCss");
+            }
+            pub fn eql(_: *const Url, _: *const Url) bool {
+                return false;
+            }
+            pub fn deepClone(this: *const Url, _: std.mem.Allocator) Url {
+                return this.*;
+            }
+        };
     };
 };
 
@@ -598,4 +799,27 @@ test "TokenList default has zero items" {
 test "PrintErr error set contains CSSPrintError" {
     const e: PrintErr = error.CSSPrintError;
     try std.testing.expectEqual(@as(PrintErr, error.CSSPrintError), e);
+}
+
+test "wave-9: Percentage.isZero/eql work on pure data" {
+    const Percentage = css_values.percentage.Percentage;
+    const a = Percentage{ .v = 0.0 };
+    const b = Percentage{ .v = 0.5 };
+    try std.testing.expect(a.isZero());
+    try std.testing.expect(!b.isZero());
+    try std.testing.expect(Percentage.eql(&a, &b) == false);
+}
+
+test "wave-9: LengthPercentage.zero is a dimension variant" {
+    const lp = css_values.length.LengthPercentage.zero();
+    try std.testing.expect(lp == .dimension);
+}
+
+test "wave-9: Angle, CssColor, Url types resolve" {
+    const a: css_values.angle.Angle = .{ .deg = 45.0 };
+    const c: css_values.color.CssColor = .current_color;
+    const u: css_values.url.Url = .{ .import_record_idx = 0, .loc = Location.dummy() };
+    try std.testing.expect(a == .deg);
+    try std.testing.expect(c == .current_color);
+    try std.testing.expectEqual(@as(u32, 0), u.import_record_idx);
 }

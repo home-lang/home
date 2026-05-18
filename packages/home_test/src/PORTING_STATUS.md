@@ -108,7 +108,7 @@ Snapshots: `toMatchSnapshot`, `toMatchInlineSnapshot`,
 ## External `bun.X` surface (top 30, by occurrence)
 
 These are the symbols we need to either stub, adapt, or formally
-re-export from a Home-side `bun_compat.zig` shim (the same shim the
+re-export from a Home-side `compat.zig` shim (the same shim the
 bundler port also needs). The full list is 70 unique identifiers —
 these are the highest-leverage 30.
 
@@ -118,9 +118,9 @@ these are the highest-leverage 30.
 | 225 | `bun.JSError` | Map onto Home's `Result(T, JsError)` from `ts_diagnostics`. Initially type-alias to `error{JsException, OutOfMemory}`. |
 | 129 | `bun.default_allocator` | Re-export `std.heap.smp_allocator` (or `c_allocator`). |
 | 93 | `bun.md` | Self-import marker (Bun's `bun.md` returns the current `@This()` module). Replace with `@This()` per-call-site. |
-| 57 | `bun.handleOom` | Wrap `error.OutOfMemory` → panic helper in `bun_compat.zig`. |
+| 57 | `bun.handleOom` | Wrap `error.OutOfMemory` → panic helper in `compat.zig`. |
 | 57 | `bun.String` | Bun's tagged-pointer JSC-aware string. Use `[]const u8` + `string_interner` initially; the JSC-aware variant only matters once `jsc` is in play. |
-| 29 | `bun.timespec` | Wraps `std.posix.timespec`; port verbatim into `bun_compat`. |
+| 29 | `bun.timespec` | Wraps `std.posix.timespec`; port verbatim into `compat`. |
 | 29 | `bun.assert` | Alias for `std.debug.assert`. |
 | 18 | `bun.Output` | **Adapt** to `ts_diagnostics.Output` (scoped logger). |
 | 18 | `bun.strings` | **Adapt** — most call-sites want `std.mem.eql`/`indexOf`; add a thin shim for the specialised SIMD scanners. |
@@ -155,7 +155,7 @@ like `bun.allocators`, `bun.bit_set`, `bun.collections`,
 ## Build order (lowest dep depth first)
 
 ### Tier 0 — pure helpers that need only stdlib + a tiny shim
-These need only `bun_compat` for `OOM`/`handleOom`/`assert`/`md`:
+These need only `compat` for `OOM`/`handleOom`/`assert`/`md`:
 
 1. `harness/recover.zig` (132 LOC) — single `bun.md` reference
 2. `harness/fixtures.zig` (575 LOC) — single `bun.md` reference
@@ -192,7 +192,7 @@ they are the entire `expect`/`describe` surface.
 
 ### Out-of-scope (do not port, replace with Home's own equivalents)
 - Anything under `bun.bake` / `bun.bundle_v2` references in
-  `cli/test_command.zig` — Home's bundler lives in `ts_bundler`.
+  `cli/test_command.zig` — Home's bundler lives in `bundler`.
 - The `mod.rs` / `*.rs` files in upstream — Bun's Rust port is
   explicitly out of scope per direction 2026-05-14.
 
@@ -238,8 +238,8 @@ throughput. Any port must keep them.
 
 1. **Land this copy** with build wiring that does **not** add
    `src/bun/` to any test step (so `zig build test` stays green).
-2. Share the `bun_compat/` shim with the bundler port
-   (`packages/ts_bundler/src/bun/PORTING_STATUS.md` Tier 0). The
+2. Share the `compat/` shim with the bundler port
+   (`packages/bundler/src/bun/PORTING_STATUS.md` Tier 0). The
    minimal surface needed for Tier 0/1 here:
    - `OOM`, `handleOom`, `default_allocator`, `assert`, `debugAssert`,
      `md` (self-import marker), `Environment.{isDebug,isWindows,isMac}`,

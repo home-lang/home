@@ -45,8 +45,8 @@ against Home's stdlib today. The file-by-file porting plan, top
 external dependency list, and tier-ordered build plan live in
 [`src/PORTING_STATUS.md`](./src/PORTING_STATUS.md).
 
-The same `bun_compat/` shim work the bundler port also needs
-(see `packages/ts_bundler/src/bun/PORTING_STATUS.md`) will unblock
+The same `compat/` shim work the bundler port also needs
+(see `packages/bundler/src/bun/PORTING_STATUS.md`) will unblock
 Tier 0/1 of this package — at that point we can wire `src/bun/` into
 the package's test step incrementally.
 

@@ -68,12 +68,12 @@ Legend:
 ## External `bun.X` surface (top 30, by occurrence)
 
 These are the symbols we need to either stub, adapt, or formally
-re-export from a Home-side `bun_compat.zig` shim. The full list is
+re-export from a Home-side `compat.zig` shim. The full list is
 103 unique identifiers — these are the highest-leverage 30.
 
 | Count | Symbol | Suggested mapping |
 |---:|---|---|
-| 124 | `bun.handleOom` | Wrap `error.OutOfMemory` → panic helper in `bun_compat.zig` |
+| 124 | `bun.handleOom` | Wrap `error.OutOfMemory` → panic helper in `compat.zig` |
 | 84 | `bun.default_allocator` | Re-export `std.heap.smp_allocator` (or `c_allocator`) |
 | 50 | `bun.assert` | Alias for `std.debug.assert` |
 | 44 | `bun.bundle_v2` | Self-reference; resolve via `@import("./bundle_v2.zig")` |
@@ -100,7 +100,7 @@ re-export from a Home-side `bun_compat.zig` shim. The full list is
 | 11 | `bun.copy` | Likely `std.mem.copyForwards` or similar — confirm per-callsite |
 | 11 | `bun.ComptimeStringMap` | **Reuse** — port verbatim; std has `std.StaticStringMap` which is close |
 | 10 | `bun.http` | **Defer** — only used by HTML scanner for embedded server-side rendering |
-| 9 | `bun.collections` | **Reuse** — port `BabyList`, `OrderedSet`, etc. into a small Home-side `bun_compat/collections.zig` |
+| 9 | `bun.collections` | **Reuse** — port `BabyList`, `OrderedSet`, etc. into a small Home-side `compat/collections.zig` |
 | 9 | `bun.allocators` | **Reuse** — port `MimallocArena` (perf-critical) verbatim |
 | 8 | `bun.PathString` | Stub — short-string interner for paths; replace with `[]const u8` initially |
 
@@ -109,14 +109,14 @@ re-export from a Home-side `bun_compat.zig` shim. The full list is
 ## Build order (lowest dep depth first)
 
 ### Tier 0 — pure data structures (port now)
-These need only Zig stdlib + a tiny `bun_compat` shim for
+These need only Zig stdlib + a tiny `compat` shim for
 `OOM`/`handleOom`/`default_allocator`/`StringHashMapUnmanaged`/`ast.Index`:
 
 1. `IndexStringMap.zig` (25 LOC) — `bun.ast.Index` only
 2. `PathToSourceIndexMap.zig` (46 LOC) — `bun.fs.Path`, `bun.ast.Index`
 3. `DeferredBatchTask.zig` (52 LOC) — needs `bun.BundleV2` forward decl + jsc shim
 
-### Tier 1 — bundler primitives (port after `bun_compat` exists)
+### Tier 1 — bundler primitives (port after `compat` exists)
 4. `Graph.zig` (140 LOC) — multi-array, server components, `Logger.Source`
 5. `bundled_ast.zig` (235 LOC) — wraps `bun.ast.BundledAst` for the cache
 6. `BundleThread.zig` (195 LOC) — gate jsc behind `enable_runtime_plugins`
@@ -196,15 +196,15 @@ throughput. Any port must keep them.
 
 1. ~~**Land this copy** with build wiring that does **not** add the new
    files to any test step (so `zig build test` stays green).~~ ✅
-2. ~~Create `packages/bundler/src/bun_compat/` with a single
+2. ~~Create `packages/bundler/src/compat/` with a single
    `bun.zig` aggregator that re-exports the Tier 0 surface
    (`OOM`, `handleOom`, `default_allocator`, `assert`, `ast.Index`,
    `StringHashMapUnmanaged`, `fs.Path`).~~ ✅ 2026-05-15
-   (`packages/bundler/src/bun_compat/bun.zig`).
+   (`packages/bundler/src/compat/bun.zig`).
 3. ~~Make `IndexStringMap.zig` + `PathToSourceIndexMap.zig` compile
    against the shim. Add a tiny test artifact.~~ ✅ 2026-05-15
-   (`packages/bundler/src/bun_compat_tests.zig`, 9 tests, wired
-   into `zig build test` under filter `ts_bundler_bun_compat`).
+   (`packages/bundler/src/compat_tests.zig`, 9 tests, wired
+   into `zig build test` under filter `bundler_compat`).
 4. Iterate Tier 1 → Tier 5, expanding the shim as needed.
 5. Once `bundle_v2.zig` compiles, swap the existing
-   `ts_bundler.zig` v0 scaffold to delegate to it.
+   `bundler.zig` v0 scaffold to delegate to it.

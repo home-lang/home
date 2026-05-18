@@ -15,8 +15,8 @@
 //! `@import("bun")` (Bun's stdlib aggregator), which doesn't exist
 //! here. The adaptation plan lives in `src/PORTING_STATUS.md`.
 //!
-//! Once the `bun_compat` shim work that the bundler also needs lands
-//! (see `packages/ts_bundler/src/bun/PORTING_STATUS.md`), individual
+//! Once the `compat` shim work that the bundler also needs lands
+//! (see `packages/bundler/src/bun/PORTING_STATUS.md`), individual
 //! files in `src/bun/` will be re-exported from this facade and wired
 //! into Home's runtime module loader.
 //!
@@ -65,11 +65,11 @@
 //!   `[]const u8` + `string_interner` initially; the JSC-aware variant
 //!   only matters once `jsc` is in play.
 //! - `bun.handleOom` / `bun.OOM` — wrap `error.OutOfMemory` in a
-//!   panic helper inside `bun_compat.zig`.
+//!   panic helper inside `compat.zig`.
 //! - `bun.default_allocator` — re-export `std.heap.smp_allocator`.
 //! - `bun.assert` / `bun.debugAssert` — `std.debug.assert` aliases.
 //! - `bun.timespec` — wraps `std.posix.timespec`; port verbatim into
-//!   `bun_compat`.
+//!   `compat`.
 //! - `bun.strings` — most call-sites want `std.mem.eql`/`indexOf`.
 //! - `bun.fs` / `bun.sys` — file IO. Adapt to Home's stdlib + fs layer.
 //! - `bun.SourceMap` — Home has its own emitter in
@@ -126,7 +126,7 @@
 
 const std = @import("std");
 
-/// Stub. Once the `bun_compat` shim is in place, this module will
+/// Stub. Once the `compat` shim is in place, this module will
 /// re-export `bun_test`, `jest`, `expect`, and the rest of the surface
 /// listed above. For now it's intentionally empty so the build-system
 /// wiring can compile this package without dragging in the
