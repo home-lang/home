@@ -46,6 +46,30 @@ pub const HOME = struct {
     }
 };
 
+/// `DO_NOT_TRACK=1` (per https://consoledonottrack.com/) opts callers out
+/// of any telemetry / crash-reporter wakeups. Bun reads this through
+/// `bun.env_var.DO_NOT_TRACK.get()` which returns a bool — the only call
+/// site (`analytics.isEnabled()`) treats *any* non-empty value as truthy,
+/// matching the upstream `parseBool` behavior in `bun_core/env_var.rs`.
+pub const DO_NOT_TRACK = struct {
+    pub fn get() bool {
+        const raw = rawGet("DO_NOT_TRACK") orelse return false;
+        if (raw.len == 0) return false;
+        if (std.mem.eql(u8, raw, "0")) return false;
+        if (std.mem.eql(u8, raw, "false")) return false;
+        return true;
+    }
+};
+
+/// Hyperfine's per-iteration env-randomization offset. Bun's analytics
+/// gate disables telemetry when a benchmark harness is in the loop so
+/// the benchmark doesn't get a tail-latency spike from a network call.
+pub const HYPERFINE_RANDOMIZED_ENVIRONMENT_OFFSET = struct {
+    pub fn get() ?[]const u8 {
+        return rawGet("HYPERFINE_RANDOMIZED_ENVIRONMENT_OFFSET");
+    }
+};
+
 test "CI.get reads from the environment" {
     // We can't assume any specific env value is set, so just check
     // the call doesn't crash and the result is a valid optional bool.
@@ -55,5 +79,15 @@ test "CI.get reads from the environment" {
 
 test "SHELL.get reads from the environment" {
     const v = SHELL.get();
+    _ = v;
+}
+
+test "DO_NOT_TRACK.get returns a bool" {
+    const v = DO_NOT_TRACK.get();
+    _ = v;
+}
+
+test "HYPERFINE_RANDOMIZED_ENVIRONMENT_OFFSET.get returns optional slice" {
+    const v = HYPERFINE_RANDOMIZED_ENVIRONMENT_OFFSET.get();
     _ = v;
 }

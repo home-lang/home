@@ -294,6 +294,7 @@ pub fn build(b: *std.Build) void {
 
     // TS-parity Phase 6 — conformance harness.
     const ts_conformance_pkg = createPackage(b, "packages/ts_conformance/src/ts_conformance.zig", target, optimize, zig_test_framework);
+    ts_conformance_pkg.addImport("hir", hir_pkg);
     ts_conformance_pkg.addImport("ts_driver", ts_driver_pkg);
     ts_conformance_pkg.addImport("ts_diagnostics", ts_diagnostics_pkg);
     // Multi-file fixtures route through the program graph + resolver
