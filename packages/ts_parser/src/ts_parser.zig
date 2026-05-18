@@ -563,6 +563,17 @@ pub const Parser = struct {
         return line;
     }
 
+    fn utf8ColumnAdjustedPosOnLine(self: *const Parser, pos: u32) u32 {
+        const end = @min(@as(usize, @intCast(pos)), self.source.len);
+        var line_start = end;
+        while (line_start > 0 and self.source[line_start - 1] != '\n') : (line_start -= 1) {}
+        var extra_bytes: u32 = 0;
+        for (self.source[line_start..end]) |ch| {
+            if ((ch & 0xC0) == 0x80) extra_bytes += 1;
+        }
+        return pos - @min(pos, extra_bytes);
+    }
+
     fn reportAwaitBindingIfReserved(self: *Parser, tok: Token) ParseError!void {
         if (tok.kind != .kw_await) return;
         const is_top_level_module_binding = self.top_level_external_module_indicator and
@@ -3409,7 +3420,48 @@ pub const Parser = struct {
                 try members.append(self.gpa, dec_node);
                 member_start = self.peek();
             }
+            const generator_token: ?Token = if (self.peek().kind == .asterisk) self.peek() else null;
             const is_generator = self.match(.asterisk);
+            if (is_generator and !isClassMemberNameStart(self.peek().kind)) {
+                const bad = self.peek();
+                try self.reportCodeAt(bad.span.start, bad.line, 1003, "Identifier expected.");
+                if (bad.kind == .close_brace or bad.kind == .eof) {
+                    const name_pos = if (generator_token) |gt| gt.span.end else bad.span.start;
+                    const name_node = try self.missingIdentifierAt(name_pos);
+                    const fn_node = try self.builder.addFnDeclGeneric(
+                        .{ .start = member_start.span.start, .end = if (generator_token) |gt| gt.span.end else member_start.span.end },
+                        name_node,
+                        &.{},
+                        &.{},
+                        hir_mod.none_node_id,
+                        hir_mod.none_node_id,
+                        .{
+                            .is_method = true,
+                            .is_generator = true,
+                            .is_private = mods.visibility == .private,
+                            .is_protected = mods.visibility == .protected,
+                            .is_static = mods.is_static,
+                            .is_async = mods.is_async,
+                            .is_override = mods.is_override,
+                            .is_abstract = mods.is_abstract,
+                        },
+                    );
+                    try members.append(self.gpa, fn_node);
+                    continue;
+                }
+                var depth: u32 = 0;
+                while (self.peek().kind != .eof) {
+                    const k = self.peek().kind;
+                    if (depth == 0 and k == .close_brace) break;
+                    if (k == .open_brace or k == .open_paren or k == .open_bracket) {
+                        depth += 1;
+                    } else if (k == .close_brace or k == .close_paren or k == .close_bracket) {
+                        if (depth > 0) depth -= 1;
+                    }
+                    _ = self.advance();
+                }
+                continue;
+            }
             if (self.peek().kind == .kw_var and self.peekAt(1).kind != .open_paren and self.peekAt(1).kind != .less_than and self.peekAt(1).kind != .colon and self.peekAt(1).kind != .semicolon and self.peekAt(1).kind != .open_brace) {
                 const bad = self.advance();
                 try self.reportCodeAt(bad.span.start, bad.line, 1068, "Unexpected token. A constructor, method, accessor, or property was expected.");
@@ -3621,6 +3673,33 @@ pub const Parser = struct {
                             .is_protected = mods.visibility == .protected,
                             .is_static = mods.is_static,
                             .is_abstract = mods.is_abstract,
+                        },
+                    );
+                    try members.append(self.gpa, fn_node);
+                    continue;
+                }
+                if (is_generator and self.peek().kind != .open_paren and self.peek().kind != .less_than) {
+                    const missing_paren = self.peek();
+                    try self.reportCodeAt(missing_paren.span.start, missing_paren.line, 1005, "'(' expected.");
+                    const name_id = try self.internPropertyName(name_tok, name_span);
+                    const name_node = try self.builder.addIdentifier(name_span, name_id);
+                    const fn_node = try self.builder.addFnDeclGeneric(
+                        .{ .start = name_span.start, .end = name_span.end },
+                        name_node,
+                        &.{},
+                        &.{},
+                        hir_mod.none_node_id,
+                        hir_mod.none_node_id,
+                        .{
+                            .is_method = true,
+                            .is_generator = true,
+                            .is_private = mods.visibility == .private,
+                            .is_protected = mods.visibility == .protected,
+                            .is_static = mods.is_static,
+                            .is_async = mods.is_async,
+                            .is_override = mods.is_override,
+                            .is_abstract = mods.is_abstract,
+                            .is_optional = is_optional_member,
                         },
                     );
                     try members.append(self.gpa, fn_node);
@@ -5759,6 +5838,28 @@ pub const Parser = struct {
     }
 
     fn parseExpressionStatement(self: *Parser) ParseError!NodeId {
+        if (self.peek().kind == .asterisk) {
+            const star = self.advance();
+            try self.reportCodeAt(self.utf8ColumnAdjustedPosOnLine(star.span.start), star.line, 1109, "Expression expected.");
+            if (!self.peek().flags.preceded_by_newline and arrayLiteralElementCanStart(self.peek().kind)) {
+                const expr = try self.parseExpression();
+                if (self.hir.kindOf(expr) == .identifier) {
+                    const expr_span = self.hir.spanOf(expr);
+                    const adjusted_start = self.utf8ColumnAdjustedPosOnLine(expr_span.start);
+                    if (adjusted_start != expr_span.start) {
+                        self.hir.spans.items[expr] = .{
+                            .start = adjusted_start,
+                            .end = adjusted_start + (expr_span.end - expr_span.start),
+                        };
+                    }
+                }
+                try self.consumeStatementTerminator();
+                return expr;
+            }
+            const recovered = try self.builder.addLiteralNumber(.{ .start = star.span.start, .end = star.span.start }, 0);
+            try self.consumeStatementTerminator();
+            return recovered;
+        }
         const expr = try self.parseExpression();
         try self.consumeStatementTerminator();
         return expr;
@@ -10102,6 +10203,14 @@ pub const Parser = struct {
             .invalid => {
                 const bad = self.advance();
                 try self.reportCodeAt(bad.span.start, bad.line, 1127, "Invalid character.");
+                if (!self.peek().flags.preceded_by_newline and self.peek().kind == .asterisk) {
+                    const star = self.advance();
+                    try self.reportCodeAt(star.span.start, star.line, 1109, "Expression expected.");
+                    if (!self.peek().flags.preceded_by_newline and arrayLiteralElementCanStart(self.peek().kind)) {
+                        return try self.parseUnaryExpression();
+                    }
+                    return try self.builder.addLiteralNumber(.{ .start = star.span.start, .end = star.span.start }, 0);
+                }
                 if (!self.peek().flags.preceded_by_newline and arrayLiteralElementCanStart(self.peek().kind)) {
                     return try self.parseUnaryExpression();
                 }
@@ -17127,6 +17236,40 @@ test "parser: 'declare Foo() {}' inside a class body reports TS1183 at the body 
         if (d.code == 1183 and d.pos == expected_pos) saw_ts1183 = true;
     }
     try T.expect(saw_ts1183);
+}
+
+test "parser: class generator method missing name reports TS1003 without escaping class body" {
+    const src = "class C {\n   *() { }\n}";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const expected_pos: u32 = @intCast(std.mem.indexOf(u8, src, "(").?);
+    var saw_ts1003 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1003 and d.pos == expected_pos) saw_ts1003 = true;
+        try T.expect(d.code != 1128);
+    }
+    try T.expect(saw_ts1003);
+}
+
+test "parser: class generator method missing parens preserves bodyless method name" {
+    const src = "class C {\n   *foo\n}";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const expected_pos: u32 = @intCast(std.mem.indexOf(u8, src, "}").?);
+    var saw_ts1005 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1005 and d.pos == expected_pos) saw_ts1005 = true;
+    }
+    try T.expect(saw_ts1005);
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    const cls = hir_mod.classOf(&s.hir, stmts[0]);
+    const members = s.hir.childSlice(cls.members_start, cls.members_len);
+    try T.expectEqual(@as(usize, 1), members.len);
+    const f = hir_mod.fnDeclOf(&s.hir, members[0]);
+    const name_span = s.hir.spanOf(f.name);
+    try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, src, "foo").?)), name_span.start);
 }
 
 test "parser: 'LBL: continue LBL;' where LBL wraps a non-iteration reports TS1115" {

@@ -198,6 +198,7 @@ pub const TsCodes = struct {
     pub const instanceof_left_type: u32 = 2358;
     pub const instanceof_right_type: u32 = 2359;
     pub const arithmetic_operand_type: u32 = 2356;
+    pub const update_operand_not_variable: u32 = 2357;
     pub const arithmetic_left_operand_type: u32 = 2362;
     pub const arithmetic_right_operand_type: u32 = 2363;
     pub const rest_parameter_must_be_array_type: u32 = 2370;
@@ -830,6 +831,7 @@ pub const Checker = struct {
     /// report while this flag is on. Affects baselines
     /// `computedPropertyNames{24,27}_ES{5,6}`.
     in_computed_property_name: bool,
+    checking_update_assignment_target: bool,
     /// Parallel stack of member-access narrows keyed by
     /// `(obj_name, prop_name)`. Populated by `applyTypeGuard` when
     /// a guard's LHS is a member-access on an identifier root (e.g.
@@ -1267,6 +1269,7 @@ pub const Checker = struct {
             .declared_identifier_lookup = false,
             .report_unresolved_in_namespace_scope = false,
             .in_computed_property_name = false,
+            .checking_update_assignment_target = false,
             .member_narrow_scopes = .empty,
             .commonjs_export_narrows = .empty,
             .class_instance_types = .empty,
@@ -11640,6 +11643,8 @@ pub const Checker = struct {
         // detection).
         var ctor_assigned_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
         defer ctor_assigned_names.deinit(self.gpa);
+        var static_block_this_assigned_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer static_block_this_assigned_names.deinit(self.gpa);
 
         // Pre-scan for accessor pairs: a member name with both a
         // `get` and a `set` accessor is a regular read+write property.
@@ -11673,6 +11678,23 @@ pub const Checker = struct {
             const fp = hir_mod.fnDeclOf(self.hir, m);
             if (!fp.flags.is_constructor) continue;
             try self.collectConstructorThisAssignedNames(m, &ctor_assigned_names);
+        }
+
+        var has_binding_pattern_parameter_property = false;
+        for (members) |m| {
+            const k = self.hir.kindOf(m);
+            if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
+            const fp = hir_mod.fnDeclOf(self.hir, m);
+            if (!fp.flags.is_constructor) continue;
+            if (self.constructorHasBindingPatternParameterProperty(m)) {
+                has_binding_pattern_parameter_property = true;
+                break;
+            }
+        }
+
+        for (members) |m| {
+            if (self.hir.kindOf(m) != .block_stmt) continue;
+            try self.collectStaticBlockThisAssignedNames(m, &static_block_this_assigned_names);
         }
 
         for (members) |m| {
@@ -11709,7 +11731,12 @@ pub const Checker = struct {
                     if (hir_mod.fnTypeParams(self.hir, m).len > 0) self.popNarrowScope();
                     const fn_p = hir_mod.fnDeclOf(self.hir, m);
                     if (fn_p.flags.is_constructor) {
-                        ctor_sig = sig;
+                        const ctor_has_binding_pattern_parameter_property = self.constructorHasBindingPatternParameterProperty(m);
+                        const effective_ctor_sig = if (ctor_has_binding_pattern_parameter_property)
+                            try self.signatureWithAnyParams(sig, true)
+                        else
+                            sig;
+                        ctor_sig = effective_ctor_sig;
                         has_explicit_ctor = true;
                         if (fn_p.body == hir_mod.none_node_id) {
                             if (ctor_first_bodyless == hir_mod.none_node_id) ctor_first_bodyless = m;
@@ -11718,7 +11745,7 @@ pub const Checker = struct {
                             // new-expression arity check can accept
                             // any matching overload (see
                             // `constructSignaturesWithOverloads.ts(10,1)`).
-                            try ctor_overload_sigs.append(self.gpa, sig);
+                            try ctor_overload_sigs.append(self.gpa, effective_ctor_sig);
                             try ctor_overload_nodes.append(self.gpa, m);
                         } else {
                             ctor_impl_count += 1;
@@ -11761,7 +11788,9 @@ pub const Checker = struct {
                             }
                             try self.checkOverrideModifier(param_node, parent_instance_t, pid.name, pp.flags.is_override, true);
                         }
-                        try self.collectConstructorThisAssignments(m, parent_instance_t, &instance_members);
+                        if (!self.constructorHasBindingPatternParameterProperty(m)) {
+                            try self.collectConstructorThisAssignments(m, parent_instance_t, &instance_members);
+                        }
                         continue;
                     }
                     const fn_name_is_computed = self.nodeIsBracketedComputedName(fn_p.name) or self.nodeIsBracketedComputedName(m) or self.memberSourceLooksComputed(m);
@@ -11816,7 +11845,10 @@ pub const Checker = struct {
                         if (fn_name_is_computed and (fn_p.flags.is_getter or fn_p.flags.is_setter)) {
                             const accessor_t: TypeId = if (fn_p.flags.is_getter) blk: {
                                 var getter_t = self.interner.signatureReturn(sig) orelse types.Primitive.any;
-                                if (getter_t == types.Primitive.any and fn_p.return_type == hir_mod.none_node_id) {
+                                if (getter_t == types.Primitive.any and
+                                    fn_p.return_type == hir_mod.none_node_id and
+                                    !has_binding_pattern_parameter_property)
+                                {
                                     getter_t = (try self.firstReturnExpressionTypeWithClassMemberThis(
                                         fn_p.body,
                                         fn_p.flags.is_static,
@@ -11916,7 +11948,10 @@ pub const Checker = struct {
                         const accessor_t: TypeId = blk: {
                             if (fn_p.flags.is_getter) {
                                 var getter_t = self.interner.signatureReturn(sig) orelse types.Primitive.any;
-                                if (getter_t == types.Primitive.any and fn_p.return_type == hir_mod.none_node_id) {
+                                if (getter_t == types.Primitive.any and
+                                    fn_p.return_type == hir_mod.none_node_id and
+                                    !has_binding_pattern_parameter_property)
+                                {
                                     getter_t = (try self.firstReturnExpressionTypeWithClassMemberThis(
                                         fn_p.body,
                                         fn_p.flags.is_static,
@@ -12052,6 +12087,7 @@ pub const Checker = struct {
                     var method_t = sig;
                     if (fn_p.return_type == hir_mod.none_node_id and
                         fn_p.body != hir_mod.none_node_id and
+                        !has_binding_pattern_parameter_property and
                         (self.interner.signatureReturn(sig) orelse types.Primitive.any) == types.Primitive.any)
                     {
                         if (try self.firstReturnExpressionTypeWithClassMemberThis(
@@ -12409,6 +12445,7 @@ pub const Checker = struct {
                     if (self.strict_flags.no_implicit_any and
                         op.type_annotation == hir_mod.none_node_id and
                         op.value == hir_mod.none_node_id and
+                        !(op.is_static and static_block_this_assigned_names.contains(member_name)) and
                         !self.classHasLeadingDeclare(node) and
                         !self.classNodeIsInsideAmbientDeclaredModule(node) and
                         !self.virtualSectionIsDeclarationFile(node))
@@ -13080,6 +13117,63 @@ pub const Checker = struct {
         const f = hir_mod.fnDeclOf(self.hir, ctor_node);
         if (f.body == hir_mod.none_node_id) return;
         try self.collectThisAssignmentsFromNode(f.body, parent_instance_t, members);
+    }
+
+    fn constructorHasBindingPatternParameterProperty(self: *Checker, ctor_node: NodeId) bool {
+        if (self.hir.kindOf(ctor_node) != .fn_decl and self.hir.kindOf(ctor_node) != .fn_expr and self.hir.kindOf(ctor_node) != .arrow_fn) return false;
+        if (self.source) |src| {
+            const span = self.hir.spanOf(ctor_node);
+            const end: usize = @min(src.len, span.end);
+            if (span.start < end) {
+                const text = src[span.start..end];
+                const malformed_markers = [_][]const u8{
+                    "private [",   "private {",
+                    "public [",    "public {",
+                    "protected [", "protected {",
+                    "readonly [",  "readonly {",
+                };
+                for (malformed_markers) |marker| {
+                    if (std.mem.indexOf(u8, text, marker) != null) return true;
+                }
+            }
+        }
+        for (hir_mod.fnParams(self.hir, ctor_node)) |param_node| {
+            const pp = hir_mod.parameterOf(self.hir, param_node);
+            if (!pp.flags.is_parameter_property) continue;
+            if (self.source) |src| {
+                const span = self.hir.spanOf(param_node);
+                const end: usize = @min(src.len, span.end);
+                if (span.start < end) {
+                    const text = src[span.start..end];
+                    if (std.mem.indexOfScalar(u8, text, '[') != null or
+                        std.mem.indexOfScalar(u8, text, '{') != null)
+                    {
+                        return true;
+                    }
+                }
+            }
+            if (pp.name == hir_mod.none_node_id) continue;
+            return switch (self.hir.kindOf(pp.name)) {
+                .identifier => false,
+                else => true,
+            };
+        }
+        return false;
+    }
+
+    fn signatureWithAnyParams(self: *Checker, sig: TypeId, is_construct: bool) CheckError!TypeId {
+        const params = self.interner.signatureParams(sig);
+        var any_params: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer any_params.deinit(self.gpa);
+        try any_params.ensureTotalCapacity(self.gpa, params.len);
+        for (params) |_| any_params.appendAssumeCapacity(types.Primitive.any);
+        const ret_t = self.interner.signatureReturn(sig) orelse types.Primitive.any;
+        const erased = self.interner.internSignature(any_params.items, ret_t, is_construct) catch return error.OutOfMemory;
+        if (self.signature_min_args.get(sig)) |min_required| {
+            try self.signature_min_args.put(self.gpa, erased, min_required);
+        }
+        try self.copySignatureParamNames(erased, sig);
+        return erased;
     }
 
     /// Walk the constructor body collecting every `this.X = …`
@@ -14365,7 +14459,9 @@ pub const Checker = struct {
     fn classMemberNameFromFunctionName(self: *Checker, name_node: NodeId) CheckError!?hir_mod.StringId {
         if (name_node == hir_mod.none_node_id) return null;
         if (self.hir.kindOf(name_node) == .identifier) {
-            return hir_mod.identifierOf(self.hir, name_node).name;
+            const name = hir_mod.identifierOf(self.hir, name_node).name;
+            if (self.string_interner.get(name).len == 0) return null;
+            return name;
         }
         return try self.classMemberNameFromPropertyKey(name_node, true);
     }
@@ -15510,6 +15606,99 @@ pub const Checker = struct {
             .code = TsCodes.property_used_before_initialization,
             .message = msg,
         });
+    }
+
+    fn collectStaticBlockThisAssignedNames(
+        self: *Checker,
+        node: NodeId,
+        names: *std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .block_stmt => {
+                for (hir_mod.blockStmts(self.hir, node)) |stmt| {
+                    try self.collectStaticBlockThisAssignedNames(stmt, names);
+                }
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                if (a.op == null and a.target != hir_mod.none_node_id and self.hir.kindOf(a.target) == .member_access) {
+                    const ma = hir_mod.memberOf(self.hir, a.target);
+                    if (self.nodeIsThisReference(ma.object)) {
+                        try names.put(self.gpa, ma.name, {});
+                    }
+                }
+                try self.collectStaticBlockThisAssignedNames(a.value, names);
+            },
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                try self.collectStaticBlockThisAssignedNames(i.cond, names);
+                try self.collectStaticBlockThisAssignedNames(i.then_branch, names);
+                try self.collectStaticBlockThisAssignedNames(i.else_branch, names);
+            },
+            .var_decl, .let_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, node);
+                try self.collectStaticBlockThisAssignedNames(v.init, names);
+            },
+            .return_stmt => {
+                const r = hir_mod.returnOf(self.hir, node);
+                try self.collectStaticBlockThisAssignedNames(r.value, names);
+            },
+            .binary_op => {
+                const b = hir_mod.binopOf(self.hir, node);
+                try self.collectStaticBlockThisAssignedNames(b.lhs, names);
+                try self.collectStaticBlockThisAssignedNames(b.rhs, names);
+            },
+            .logical_op => {
+                const l = hir_mod.logicalOf(self.hir, node);
+                try self.collectStaticBlockThisAssignedNames(l.lhs, names);
+                try self.collectStaticBlockThisAssignedNames(l.rhs, names);
+            },
+            .conditional => {
+                const c = hir_mod.conditionalOf(self.hir, node);
+                try self.collectStaticBlockThisAssignedNames(c.cond, names);
+                try self.collectStaticBlockThisAssignedNames(c.then_branch, names);
+                try self.collectStaticBlockThisAssignedNames(c.else_branch, names);
+            },
+            .call_expr, .new_expr => {
+                const c = hir_mod.callOf(self.hir, node);
+                try self.collectStaticBlockThisAssignedNames(c.callee, names);
+                for (hir_mod.callArgs(self.hir, node)) |arg| {
+                    try self.collectStaticBlockThisAssignedNames(arg, names);
+                }
+            },
+            .array_literal => for (hir_mod.arrayLiteralElements(self.hir, node)) |elem| {
+                try self.collectStaticBlockThisAssignedNames(elem, names);
+            },
+            .object_literal => for (hir_mod.objectLiteralProps(self.hir, node)) |prop| {
+                if (self.hir.kindOf(prop) == .object_property) {
+                    const op = hir_mod.objectPropertyOf(self.hir, prop);
+                    if (op.is_computed) try self.collectStaticBlockThisAssignedNames(op.key, names);
+                    try self.collectStaticBlockThisAssignedNames(op.value, names);
+                } else {
+                    try self.collectStaticBlockThisAssignedNames(prop, names);
+                }
+            },
+            .element_access => {
+                const e = hir_mod.elementOf(self.hir, node);
+                try self.collectStaticBlockThisAssignedNames(e.object, names);
+                try self.collectStaticBlockThisAssignedNames(e.index, names);
+            },
+            .member_access => {
+                const m = hir_mod.memberOf(self.hir, node);
+                try self.collectStaticBlockThisAssignedNames(m.object, names);
+            },
+            .as_expr, .satisfies_expr, .type_assertion, .non_null_expr => {
+                const a = hir_mod.asExpressionOf(self.hir, node);
+                try self.collectStaticBlockThisAssignedNames(a.expr, names);
+            },
+            .await_expr => {
+                const a = hir_mod.awaitExprOf(self.hir, node);
+                try self.collectStaticBlockThisAssignedNames(a.expr, names);
+            },
+            .fn_decl, .fn_expr, .arrow_fn, .class_decl, .class_expr => return,
+            else => {},
+        }
     }
 
     fn checkStaticBlockTopLevelTDZ(self: *Checker, block_node: NodeId) CheckError!void {
@@ -19539,6 +19728,10 @@ pub const Checker = struct {
         );
         const prop_pos: ?u32 = switch (self.hir.kindOf(target)) {
             .member_access => self.memberAccessNamePos(target),
+            .element_access => blk: {
+                const e = hir_mod.elementOf(self.hir, target);
+                break :blk self.hir.spanOf(e.index).start;
+            },
             else => null,
         };
         try self.diagnostics.append(self.gpa, .{
@@ -27336,6 +27529,7 @@ pub const Checker = struct {
             .assignment => blk: {
                 const a = hir_mod.assignmentOf(self.hir, node);
                 const target_kind = self.hir.kindOf(a.target);
+                const is_synth_update = self.assignmentIsSynthesizedUpdate(node, a);
                 const target_is_eval = target_kind == .identifier and
                     std.mem.eql(u8, self.string_interner.get(hir_mod.identifierOf(self.hir, a.target).name), "eval");
                 var target_t = if (target_is_eval)
@@ -27344,8 +27538,12 @@ pub const Checker = struct {
                     self.typeOfIdentifierDeclared(a.target)
                 else if (target_kind == .array_literal or target_kind == .object_literal)
                     types.Primitive.none
-                else
-                    try self.checkExpression(a.target);
+                else blk_target: {
+                    const prev_update_target = self.checking_update_assignment_target;
+                    self.checking_update_assignment_target = is_synth_update;
+                    defer self.checking_update_assignment_target = prev_update_target;
+                    break :blk_target try self.checkExpression(a.target);
+                };
                 if (target_kind == .identifier and self.nodeIsInsideLoop(node)) {
                     if (self.visibleAnnotatedIdentifierType(a.target)) |annotated_t| {
                         target_t = annotated_t;
@@ -27377,6 +27575,7 @@ pub const Checker = struct {
                 // if (cond) ...` — the second branch shouldn't
                 // narrow `x` because `cond` is no longer the original
                 // guard expression.
+                var assignment_target_diag_fired = false;
                 if (self.hir.kindOf(a.target) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, a.target);
                     _ = self.cond_aliases.remove(id.name);
@@ -27402,24 +27601,23 @@ pub const Checker = struct {
                             .message = msg,
                         });
                     }
-                    // TS2631: `namespace M { ... }; M = x;` —
-                    // assigning to a namespace identifier is illegal.
-                    if (a.op == null and self.identifierResolvesToNamespaceOnly(a.target)) {
-                        const name_str = self.string_interner.get(id.name);
-                        const msg = try std.fmt.allocPrint(
-                            self.diag_arena.allocator(),
-                            "Cannot assign to '{s}' because it is a namespace.",
-                            .{name_str},
-                        );
-                        try self.diagnostics.append(self.gpa, .{
-                            .node = a.target,
-                            .code = TsCodes.cannot_assign_to_namespace,
-                            .message = msg,
-                        });
+                    // TS2628/TS2629/TS2631: enum/class/namespace names
+                    // are value declarations but cannot be assignment
+                    // targets. For `++E` / `C++`, tsc reports this
+                    // target diagnostic instead of the arithmetic
+                    // operand diagnostic.
+                    if (a.op == null or is_synth_update) {
+                        assignment_target_diag_fired = try self.reportIdentifierAssignmentTargetKind(a.target);
                     }
                 }
-                if (target_kind == .literal_undefined) {
+                if (target_kind == .literal_undefined or self.nodeSourceTextIs(a.target, "undefined") or
+                    (is_synth_update and self.typeIsExactUndefined(target_t)))
+                {
                     try self.report(a.target, TsCodes.cannot_assign_undefined, "Cannot assign to 'undefined' because it is not a variable.");
+                    assignment_target_diag_fired = true;
+                }
+                if (is_synth_update and self.updateOperandRequiresVariableDiagnostic(a.target, target_t)) {
+                    try self.reportUpdateOperandRequiresVariable(a.target);
                 }
                 if (self.expressionIsOptionalChain(a.target)) {
                     // Distinguish synthetic update expressions
@@ -27517,7 +27715,15 @@ pub const Checker = struct {
                             // NOT as the generic TS2469 from
                             // `checkCompoundAdditionAssignment`. Mirrors
                             // `symbolType4.ts(2,1)` / `(3,1)`.
-                            if (self.assignmentIsSynthesizedUpdate(node, a) and
+                            if (assignment_target_diag_fired) {
+                                // Target-kind errors (class/enum/namespace
+                                // names and `undefined`) win over the
+                                // synthetic `+= 1` operand diagnostics.
+                            } else if (is_synth_update and self.updateOperandIsEnumBinaryExpression(a.target)) {
+                                try self.reportArithmeticOperand(a.target, TsCodes.arithmetic_operand_type, "An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.");
+                            } else if (is_synth_update and (self.hir.kindOf(a.target) == .literal_null or self.nodeSourceTextIs(a.target, "null"))) {
+                                try self.reportNullishRelationalOperand(a.target, target_t);
+                            } else if (is_synth_update and
                                 !self.isArithmeticOperandAllowed(target_t))
                             {
                                 try self.reportArithmeticOperand(a.target, TsCodes.arithmetic_operand_type, "An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.");
@@ -27534,7 +27740,6 @@ pub const Checker = struct {
                             // `target -= 1` / `target += 1`; detect
                             // that synthetic shape here so the
                             // diagnostic shape matches.
-                            const is_synth_update = self.assignmentIsSynthesizedUpdate(node, a);
                             const arith_code = if (is_synth_update)
                                 TsCodes.arithmetic_operand_type
                             else
@@ -27552,9 +27757,13 @@ pub const Checker = struct {
                             // those as `any` and emits nothing.
                             const value_is_untyped_uninit = self.hir.kindOf(a.value) == .identifier and
                                 self.identifierIsUntypedUninitializedVar(a.value);
-                            if (!is_synth_update and self.typeIsExactNullish(target_t)) {
+                            if (is_synth_update and self.updateOperandIsEnumBinaryExpression(a.target)) {
+                                try self.reportArithmeticOperand(a.target, TsCodes.arithmetic_operand_type, "An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.");
+                            } else if (is_synth_update and (self.hir.kindOf(a.target) == .literal_null or self.nodeSourceTextIs(a.target, "null"))) {
                                 try self.reportNullishRelationalOperand(a.target, target_t);
-                            } else if (!self.isArithmeticOperandAllowed(target_t)) {
+                            } else if (!is_synth_update and self.typeIsExactNullish(target_t)) {
+                                try self.reportNullishRelationalOperand(a.target, target_t);
+                            } else if (!assignment_target_diag_fired and !self.isArithmeticOperandAllowed(target_t)) {
                                 try self.reportArithmeticOperand(a.target, arith_code, arith_msg);
                             }
                             // Skip the right-hand-side check for
@@ -38362,6 +38571,18 @@ pub const Checker = struct {
         return f.is_null or f.is_undefined;
     }
 
+    fn typeIsExactUndefined(self: *Checker, t: TypeId) bool {
+        if (self.typeIsAnyLike(t)) return false;
+        const f = self.interner.pool.flagsOf(t);
+        return f.is_undefined;
+    }
+
+    fn typeIsExactNull(self: *Checker, t: TypeId) bool {
+        if (self.typeIsAnyLike(t)) return false;
+        const f = self.interner.pool.flagsOf(t);
+        return f.is_null;
+    }
+
     fn relationalNullishName(self: *Checker, t: TypeId) []const u8 {
         const f = self.interner.pool.flagsOf(t);
         return if (f.is_null) "null" else "undefined";
@@ -38515,6 +38736,85 @@ pub const Checker = struct {
         const is_postfix_shape = value_span.end == node_span.end and
             value_span.start >= target_span.end;
         return is_prefix_shape or is_postfix_shape;
+    }
+
+    fn updateOperandRequiresVariableDiagnostic(self: *Checker, target: NodeId, target_t: TypeId) bool {
+        if (self.updateOperandIsEnumBinaryExpression(target)) return false;
+        if (self.typeIsExactUndefined(target_t)) return false;
+        if (self.nodeSourceTextIs(target, "undefined")) return false;
+        return switch (self.hir.kindOf(target)) {
+            .identifier, .member_access, .element_access, .literal_undefined => false,
+            .object_literal, .array_literal => false,
+            else => self.typeIsAnyLike(target_t) or self.isArithmeticOperandAllowed(target_t) or self.hir.kindOf(target) == .literal_null,
+        };
+    }
+
+    fn reportUpdateOperandRequiresVariable(self: *Checker, target: NodeId) CheckError!void {
+        try self.diagnostics.append(self.gpa, .{
+            .node = target,
+            .pos = self.symbolOperandAnchorPos(target),
+            .code = TsCodes.update_operand_not_variable,
+            .message = "The operand of an increment or decrement operator must be a variable or a property access.",
+        });
+    }
+
+    fn updateOperandIsEnumBinaryExpression(self: *Checker, target: NodeId) bool {
+        if (self.hir.kindOf(target) != .binary_op) return false;
+        const b = hir_mod.binopOf(self.hir, target);
+        return self.updateOperandExprReferencesEnumIndexedAccess(b.lhs) or
+            self.updateOperandExprReferencesEnumIndexedAccess(b.rhs);
+    }
+
+    fn updateOperandExprReferencesEnumIndexedAccess(self: *Checker, node: NodeId) bool {
+        if (self.hir.kindOf(node) != .element_access) return false;
+        const e = hir_mod.elementOf(self.hir, node);
+        if (self.hir.kindOf(e.object) != .identifier) return false;
+        const enum_name = hir_mod.identifierOf(self.hir, e.object).name;
+        return self.enumDeclForName(enum_name) != null;
+    }
+
+    fn nodeSourceTextIs(self: *Checker, node: NodeId, expected: []const u8) bool {
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(node);
+        if (span.end > src.len or span.start > span.end) return false;
+        return std.mem.eql(u8, std.mem.trim(u8, src[span.start..span.end], " \t\r\n"), expected);
+    }
+
+    fn reportIdentifierAssignmentTargetKind(self: *Checker, target: NodeId) CheckError!bool {
+        if (self.hir.kindOf(target) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, target);
+        const name_str = self.string_interner.get(id.name);
+        const Kind = enum { enum_t, class, namespace };
+        const kind: Kind = if (self.identifierResolvesToValueDeclKind(target, .enum_t))
+            .enum_t
+        else if (self.identifierResolvesToValueDeclKind(target, .class))
+            .class
+        else if (self.identifierResolvesToNamespaceOnly(target))
+            .namespace
+        else
+            return false;
+        const code: u32 = switch (kind) {
+            .enum_t => TsCodes.cannot_assign_to_enum,
+            .class => TsCodes.cannot_assign_to_class,
+            .namespace => TsCodes.cannot_assign_to_namespace,
+        };
+        const noun: []const u8 = switch (kind) {
+            .enum_t => "enum",
+            .class => "class",
+            .namespace => "namespace",
+        };
+        const article: []const u8 = if (kind == .enum_t) "an" else "a";
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot assign to '{s}' because it is {s} {s}.",
+            .{ name_str, article, noun },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = target,
+            .code = code,
+            .message = msg,
+        });
+        return true;
     }
 
     fn loweredLogicalAssignmentAssignableToTarget(self: *Checker, target: NodeId, value: NodeId, target_t: TypeId) CheckError!bool {
@@ -38903,7 +39203,7 @@ pub const Checker = struct {
                 const add_any_like = self.typeIsAnyLike(lhs) or self.typeIsAnyLike(rhs);
                 var lhs_eff = lhs;
                 var rhs_eff = rhs;
-                if (!add_string_like and !add_any_like) {
+                if (!add_string_like and !add_any_like and !self.checking_update_assignment_target) {
                     // After checkNonNullType, a literal null/undefined
                     // operand contributes the non-nullable variant of
                     // its type — and because tsc emits TS18050 and
@@ -53346,6 +53646,21 @@ test "checker: noImplicitAny reports bodyless signature return and unresolved pa
     try T.expect(saw_type);
 }
 
+test "checker: missing class generator method name does not require implementation" {
+    const s = try newSetup("class C {\n   *\n}");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var saw_return = false;
+    var saw_missing_impl = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.function_return_implicitly_any) saw_return = true;
+        if (d.code == TsCodes.implementation_missing) saw_missing_impl = true;
+    }
+    try T.expect(saw_return);
+    try T.expect(!saw_missing_impl);
+}
+
 test "checker: noImplicitAny silent when parameter has annotation" {
     const s = try newSetup(
         \\function id(x: number): number { return x; }
@@ -65167,6 +65482,31 @@ test "checker: class static block assignment target reports future-field read" {
         if (d.code == TsCodes.property_used_before_initialization) count += 1;
     }
     try T.expectEqual(@as(usize, 2), count);
+}
+
+test "checker: static block this-assignment suppresses TS7008 for untyped static members" {
+    const s = try newSetup(
+        \\// @target: esnext
+        \\class C {
+        \\  static { this.x = 1; this.y = 2; let nested = this.n = 5; C.z = 3; this.w += 4; }
+        \\  static x;
+        \\  static accessor y;
+        \\  static n;
+        \\  static z;
+        \\  static w;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var implicit_any_count: usize = 0;
+    var used_before_init_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.member_implicitly_any) implicit_any_count += 1;
+        if (d.code == TsCodes.property_used_before_initialization) used_before_init_count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), implicit_any_count);
+    try T.expectEqual(@as(usize, 5), used_before_init_count);
 }
 
 test "checker: class static block reports top-level let/const TDZ" {
