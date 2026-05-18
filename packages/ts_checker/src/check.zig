@@ -391,6 +391,13 @@ pub const TsCodes = struct {
     pub const this_implicitly_any: u32 = 2683;
     pub const parameter_implicitly_any: u32 = 7006;
     pub const variable_implicitly_any: u32 = 7005;
+    /// TS7034 — `Variable 'X' implicitly has type 'any' in some
+    /// locations where its type cannot be determined.` Fires at the
+    /// DECLARATION of a `var x;` (no annotation, no initializer) when
+    /// the variable's type evolves indeterminately across the file.
+    /// Distinct from TS7005 which fires per USE. Mirrors upstream's
+    /// `noImplicitAnyDeclarationsInEvolveType` flow.
+    pub const variable_implicitly_any_declaration: u32 = 7034;
     pub const member_implicitly_any: u32 = 7008;
     pub const object_literal_property_implicitly_any: u32 = 7018;
     pub const function_return_implicitly_any: u32 = 7010;
@@ -25181,8 +25188,13 @@ pub const Checker = struct {
             try self.cond_aliases.put(self.gpa, id.name, v.init);
         }
 
-        // TS7005: variable declared without an annotation and
-        // without an initializer falls through to `any`.
+        // TS7034 vs TS7005: tsc emits the more-specific TS7034 at the
+        // DECLARATION of a `var p;` with no annotation and no
+        // initializer when the variable's type can't be determined
+        // (the "evolving any" flow). For `declare var X;` (ambient
+        // declarations) tsc emits TS7005 instead because evolving-any
+        // doesn't apply to ambient names — they're externally
+        // declared and unchangeable. We mirror that split here.
         if (self.strict_flags.no_implicit_any and
             v.type_annotation == hir_mod.none_node_id and
             v.init == hir_mod.none_node_id and
@@ -25193,14 +25205,22 @@ pub const Checker = struct {
                 self.string_interner.get(hir_mod.identifierOf(self.hir, v.name).name)
             else
                 "<anonymous>";
-            const msg = try std.fmt.allocPrint(
-                self.diag_arena.allocator(),
-                "Variable '{s}' implicitly has an 'any' type.",
-                .{var_name},
-            );
+            const is_ambient = v.is_ambient;
+            const msg = if (is_ambient)
+                try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Variable '{s}' implicitly has an 'any' type.",
+                    .{var_name},
+                )
+            else
+                try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Variable '{s}' implicitly has type 'any' in some locations where its type cannot be determined.",
+                    .{var_name},
+                );
             try self.diagnostics.append(self.gpa, .{
                 .node = if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) v.name else node,
-                .code = TsCodes.variable_implicitly_any,
+                .code = if (is_ambient) TsCodes.variable_implicitly_any else TsCodes.variable_implicitly_any_declaration,
                 .message = msg,
             });
         }
@@ -52473,14 +52493,18 @@ test "checker: noImplicitAny silent when parameter has annotation" {
     try T.expect(s.checker.diagnostics.items.len == 0);
 }
 
-test "checker: noImplicitAny emits TS7005 for bare `let x` declaration" {
+test "checker: noImplicitAny emits TS7034 for bare `let x` declaration" {
+    // tsc uses TS7034 (`Variable 'X' implicitly has type 'any' in some
+    // locations where its type cannot be determined.`) for bare
+    // `var x;` / `let x;` declarations rather than the per-USE TS7005.
+    // Mirrors `tsxReactEmit1`'s (9,5) baseline.
     const s = try newSetup("let x;");
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.variable_implicitly_any) {
+        if (d.code == TsCodes.variable_implicitly_any_declaration) {
             found = true;
             try T.expectEqual(@as(u32, 4), s.hir.spanOf(d.node).start);
         }
