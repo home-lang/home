@@ -10230,8 +10230,20 @@ pub const Checker = struct {
             const default_is_await_error_placeholder = pp.default_value != hir_mod.none_node_id and
                 self.hir.kindOf(pp.default_value) == .await_expr and
                 hir_mod.awaitExprOf(self.hir, pp.default_value).expr == hir_mod.none_node_id;
+            // `function * foo(a = yield)` — tsc emits TS2523 ("yield
+            // expressions cannot be used in a parameter initializer.")
+            // and SKIPS the outer TS7006 for the parameter itself.
+            // The companion TS7057 on the yield expression is emitted
+            // by the parser at the same TS2523 site (so the relative
+            // ordering matches tsc, and parse-recovery shapes that
+            // tsc treats as already-broken — e.g. `a = yield => …`
+            // in `FunctionDeclaration10_es6` — can skip the TS7057
+            // without re-deriving the recovery from the HIR).
+            const default_is_yield_in_param_initializer = pp.default_value != hir_mod.none_node_id and
+                self.hir.kindOf(pp.default_value) == .yield_expr;
             if (!has_anno and !inferred_from_default and self.strict_flags.no_implicit_any and
                 !default_is_await_error_placeholder and
+                !default_is_yield_in_param_initializer and
                 !accessor_has_invalid_this and
                 !self.parameterHasContextualType(node, p))
             {
@@ -10287,14 +10299,50 @@ pub const Checker = struct {
                             .message = msg,
                         });
                     } else {
-                        const msg = try std.fmt.allocPrint(
-                            self.diag_arena.allocator(),
-                            "Parameter '{s}' implicitly has an 'any' type.",
-                            .{param_name},
-                        );
+                        // `function f(x = x)` — when the default value
+                        // references the parameter name itself, tsc
+                        // upgrades the diagnostic to TS7022 ("'X'
+                        // implicitly has type 'any' because it does
+                        // not have a type annotation and is referenced
+                        // directly or indirectly in its own initializer.")
+                        // anchored on the parameter binding. The
+                        // companion TS2372 ("Parameter 'X' cannot
+                        // reference itself.") still fires at the
+                        // reference site. Mirrors
+                        // `FunctionDeclaration3_es6`.
+                        const is_self_ref_default = blk_self: {
+                            if (pp.default_value == hir_mod.none_node_id) break :blk_self false;
+                            if (pp.name == hir_mod.none_node_id) break :blk_self false;
+                            if (self.hir.kindOf(pp.name) != .identifier) break :blk_self false;
+                            const pn = hir_mod.identifierOf(self.hir, pp.name).name;
+                            var refs: std.ArrayListUnmanaged(NameRef) = .empty;
+                            defer refs.deinit(self.gpa);
+                            self.collectIdentifierRefsWithNodes(pp.default_value, &refs) catch break :blk_self false;
+                            for (refs.items) |ref| {
+                                if (ref.name == pn) break :blk_self true;
+                            }
+                            break :blk_self false;
+                        };
+                        const code: u32 = if (is_self_ref_default)
+                            TsCodes.variable_self_reference_implicitly_any
+                        else
+                            TsCodes.parameter_implicitly_any;
+                        const msg = if (is_self_ref_default)
+                            try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "'{s}' implicitly has type 'any' because it does not have a type annotation and is referenced directly or indirectly in its own initializer.",
+                                .{param_name},
+                            )
+                        else
+                            try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Parameter '{s}' implicitly has an 'any' type.",
+                                .{param_name},
+                            );
+                        const anchor: NodeId = if (is_self_ref_default and pp.name != hir_mod.none_node_id) pp.name else p;
                         try self.diagnostics.append(self.gpa, .{
-                            .node = p,
-                            .code = TsCodes.parameter_implicitly_any,
+                            .node = anchor,
+                            .code = code,
                             .message = msg,
                         });
                     }
@@ -33757,8 +33805,28 @@ pub const Checker = struct {
         // upstream downgrades to TS2304 after the 10th attempt.
         const maximum_suggestion_count: u32 = 10;
         const suggestion_budget_exhausted = self.suggestion_count >= maximum_suggestion_count;
+        // Reserved / strict-future-reserved keywords used as
+        // identifier references (`let`, `const`, `interface`, …) are
+        // already flagged by TS1212 / TS1213 from the parser. tsc's
+        // spelling-suggestion pass does not offer "Did you mean 'Set'?"
+        // for these — the bare TS2304 ("Cannot find name 'let'") is
+        // emitted instead. Mirrors `VariableDeclaration6_es6` /
+        // `VariableDeclaration11_es6`.
+        const is_reserved_keyword_identifier = std.mem.eql(u8, name_str, "let") or
+            std.mem.eql(u8, name_str, "const") or
+            std.mem.eql(u8, name_str, "var") or
+            std.mem.eql(u8, name_str, "yield") or
+            std.mem.eql(u8, name_str, "await") or
+            std.mem.eql(u8, name_str, "interface") or
+            std.mem.eql(u8, name_str, "package") or
+            std.mem.eql(u8, name_str, "implements") or
+            std.mem.eql(u8, name_str, "public") or
+            std.mem.eql(u8, name_str, "private") or
+            std.mem.eql(u8, name_str, "protected") or
+            std.mem.eql(u8, name_str, "static");
         const skip_suggestions = std.mem.indexOfScalar(u8, name_str, '.') != null or
-            suggestion_budget_exhausted;
+            suggestion_budget_exhausted or
+            is_reserved_keyword_identifier;
 
         const considerCandidate = struct {
             fn call(typo: []const u8, cand_str: []const u8, value_only: bool, b: *Best) void {

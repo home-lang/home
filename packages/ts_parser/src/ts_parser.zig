@@ -819,6 +819,23 @@ pub const Parser = struct {
                 {
                     break :blk try self.parseExpressionStatement();
                 }
+                // `let` followed by something that cannot begin a
+                // LexicalBinding parses as an ExpressionStatement
+                // (a bare identifier reference to `let`). Mirrors tsc's
+                // `nextTokenIsIdentifierOrStartOfDestructuringOnSameLine`
+                // gate, where an EOF / `;` / line-terminator-only file
+                // (`VariableDeclaration6_es6` = bare `let`,
+                // `VariableDeclaration11_es6` = `"use strict"; let`)
+                // surfaces the TS1212 strict-reserved + TS2304 pair
+                // through the expression path. We restrict the rerouting
+                // to the trailing-EOF/semicolon case so well-formed
+                // `let x = 1;` continues to parse as a declaration.
+                if (t.kind == .kw_let) {
+                    const next = self.peekAt(1);
+                    if (next.kind == .eof or next.kind == .semicolon) {
+                        break :blk try self.parseExpressionStatement();
+                    }
+                }
                 // `const enum E { ... }` — TS const-enum declaration.
                 // The `const` keyword here is part of the enum form,
                 // not a variable declaration. Lower it to an
@@ -1378,13 +1395,27 @@ pub const Parser = struct {
             return;
         }
         // Inside a generator body (outside a class), the grammar itself
-        // reserves `yield` for any binding — TS1359.
+        // reserves `yield` for any binding — TS1359. When the source is
+        // ES2015+ (target-driven) and the enclosing function is a plain
+        // generator (not `async *`), tsc prefers the strict-mode TS1212
+        // variant for binding names. Async generators keep TS1359 because
+        // the [Yield] context is grammar-imposed by `async *`. Mirrors
+        // `FunctionDeclaration{3,5,11,12}_es6` (TS1212) vs
+        // `yieldParameterIsError` / `nestedFunctionDeclarationNamedYieldIsError`
+        // (TS1359, async generators).
         if (self.generator_depth > 0) {
+            if (self.target_es2015_or_later and self.async_function_depth == 0) {
+                try self.reportCodeAt(tok.span.start, tok.line, 1212, "Identifier expected. 'yield' is a reserved word in strict mode.");
+                return;
+            }
             try self.reportCodeAt(tok.span.start, tok.line, 1359, "Identifier expected. 'yield' is a reserved word that cannot be used here.");
             return;
         }
-        // Otherwise only strict-mode source flags the binder use.
-        if (self.strict_mode) {
+        // Outside any [Yield] grammar context, the binder is reserved
+        // when the source is strict mode OR ES2015+ (where `yield` is
+        // a future-reserved word). Mirrors `FunctionDeclaration4_es6`
+        // (`function yield() {}` at top level, es6 target).
+        if (self.strict_mode or self.target_es2015_or_later) {
             try self.reportCodeAt(tok.span.start, tok.line, 1212, "Identifier expected. 'yield' is a reserved word in strict mode.");
         }
     }
@@ -6080,11 +6111,23 @@ pub const Parser = struct {
                 break :blk try self.builder.addTypeRef(tokenSpan(t), id, &.{}, &.{});
             },
             .kw_yield => blk: {
-                // `yield` in type position is just an identifier-named
-                // type ref — `interface yield {}` and `let x: yield;`
-                // are legal in tsc even inside a generator body.
-                // Mirrors `yieldAsTypeIsOk` (zero errors).
+                // `yield` in type position parses as an identifier-named
+                // type ref so the type-resolution pass can emit
+                // TS2304 ("Cannot find name 'yield'"). In an async
+                // generator (`yieldAsTypeIsOk`) tsc keeps the type
+                // position silent — no TS1212 + no TS2304. In a plain
+                // generator at ES2015+ (`FunctionDeclaration13_es6`)
+                // tsc additionally reports TS1212 ("'yield' is a
+                // reserved word in strict mode.") because the binder
+                // walks types through the strict-mode reservation
+                // check.
                 const yield_tok = self.advance();
+                if (self.generator_depth > 0 and
+                    self.target_es2015_or_later and
+                    self.async_function_depth == 0)
+                {
+                    try self.reportCodeAt(yield_tok.span.start, yield_tok.line, 1212, "Identifier expected. 'yield' is a reserved word in strict mode.");
+                }
                 const id = try self.internToken(yield_tok);
                 break :blk try self.builder.addTypeRef(tokenSpan(yield_tok), id, &.{}, &.{});
             },
@@ -8856,6 +8899,7 @@ pub const Parser = struct {
                     self.peek().kind == .close_bracket or
                     self.peek().kind == .close_brace or
                     self.peek().kind == .comma or
+                    self.peek().kind == .arrow or
                     self.peek().kind == .eof)
                 {
                     if (is_delegated) {
@@ -8872,6 +8916,56 @@ pub const Parser = struct {
                     // illegal — mirrors `yieldInParameterInitializerIsError`.
                     if (self.param_initializer_depth > 0) {
                         try self.reportCodeAt(t.span.start, t.line, 2523, "'yield' expressions cannot be used in a parameter initializer.");
+                        // tsc additionally emits TS7057 ("'yield'
+                        // expression implicitly results in an 'any'
+                        // type because its containing generator lacks
+                        // a return-type annotation.") at the same
+                        // yield position when the bare yield cleanly
+                        // terminates the param init (next token is
+                        // `)` or `,`). In the recovery case where
+                        // `=>` follows (`FunctionDeclaration10_es6`),
+                        // tsc skips TS7057 — the recovery TS1005 is
+                        // enough. Gate accordingly so #6/#7 match
+                        // (`)` / `}` termination) but #10 does not.
+                        if (self.peek().kind == .close_paren or
+                            self.peek().kind == .comma)
+                        {
+                            try self.reportCodeAt(t.span.start, t.line, 7057, "'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation.");
+                        }
+                        // `function * f(a = yield => …)` — when the
+                        // bare yield in param init is followed by `=>`,
+                        // tsc emits TS1005 (',' expected) at the arrow
+                        // and skips the rest of the param's recovery
+                        // tokens silently. Mirrors
+                        // `FunctionDeclaration10_es6`. We consume the
+                        // arrow and following tokens up to the next
+                        // param-list boundary so the outer param-list
+                        // arrow recovery doesn't double-emit TS1005 and
+                        // doesn't re-parse the trailing `yield)` as a
+                        // second parameter (which would surface a
+                        // spurious TS1212 on the second `yield`).
+                        if (self.peek().kind == .arrow) {
+                            const arrow_tok = self.advance();
+                            try self.reportCodeAt(arrow_tok.span.start, arrow_tok.line, 1005, "',' expected.");
+                            var paren_depth: u32 = 0;
+                            while (true) {
+                                const nk = self.peek().kind;
+                                if (nk == .eof) break;
+                                if (nk == .open_paren or nk == .open_bracket or nk == .open_brace) {
+                                    paren_depth += 1;
+                                    _ = self.advance();
+                                    continue;
+                                }
+                                if (nk == .close_paren or nk == .close_bracket or nk == .close_brace) {
+                                    if (paren_depth == 0) break;
+                                    paren_depth -= 1;
+                                    _ = self.advance();
+                                    continue;
+                                }
+                                if (paren_depth == 0 and nk == .comma) break;
+                                _ = self.advance();
+                            }
+                        }
                     }
                     return try self.builder.addYieldExpr(tokenSpan(t), hir_mod.none_node_id, is_delegated);
                 }
