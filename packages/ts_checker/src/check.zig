@@ -29269,7 +29269,13 @@ pub const Checker = struct {
             }
             return false;
         }
-        return self.interner.objectMember(t, name) != null;
+        if (self.interner.objectMember(t, name) != null) return true;
+        // String index signature (`{ [k: string]: V }`) accepts ANY
+        // string-keyed attribute — without this fallback the upstream
+        // TS2353 "JSX attribute does not exist on target props." was
+        // misfiring on indexer-typed component props
+        // (`tsxAttributeResolution10` baseline).
+        return flags.is_object_type and self.interner.objectStringIndex(t) != types.Primitive.none;
     }
 
     fn jsxChildrenTypeAllowsCount(self: *Checker, t: TypeId, count: usize) bool {
