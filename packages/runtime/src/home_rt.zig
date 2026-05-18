@@ -99,7 +99,34 @@ pub const http_types = struct {
 pub const options_types = struct {
     pub const OfflineMode = @import("options_types/OfflineMode.zig").OfflineMode;
     pub const OfflineModePrefer = @import("options_types/OfflineMode.zig").Prefer;
+    // Third-wave port batch (2026-05-17):
+    pub const CodeCoverageOptions = @import("options_types/CodeCoverageOptions.zig").CodeCoverageOptions;
+    pub const CodeCoverageReporter = @import("options_types/CodeCoverageOptions.zig").Reporter;
+    pub const CodeCoverageReporters = @import("options_types/CodeCoverageOptions.zig").Reporters;
+    pub const CodeCoverageFraction = @import("options_types/CodeCoverageOptions.zig").Fraction;
 };
+
+// ---- src/meta/ ---------------------------------------------------------
+// Type-classifier + bitfield helpers. Pure leaves (no `home_rt` deps).
+pub const meta = struct {
+    pub const bits = @import("meta/bits.zig");
+    pub const traits = @import("meta/traits.zig");
+};
+
+// ---- src/crash_handler/ ------------------------------------------------
+// Out-of-memory + crash reporting. Only the OOM wrapper is ported today;
+// the full crash handler (stack walking, JSC stop-the-world, native
+// signal handlers) re-lands in a later sub-phase.
+pub const crash_handler = struct {
+    pub const handle_oom = @import("crash_handler/handle_oom.zig");
+};
+
+// ---- src/bun_core/ -----------------------------------------------------
+// Additional Tier-0 helpers — pure-Zig utilities the rest of the runtime
+// leans on. (result.zig + tty.zig already wired below.)
+pub const ExactSizeMatcher = @import("bun_core/string/immutable/exact_size_matcher.zig").ExactSizeMatcher;
+pub const BoundedArray = @import("bun_core/bounded_array.zig").BoundedArray;
+pub const BoundedArrayAligned = @import("bun_core/bounded_array.zig").BoundedArrayAligned;
 
 // ---- src/install_types/ ------------------------------------------------
 // Package manager type vocabulary. The full `install/PackageManager.zig`
@@ -314,6 +341,8 @@ test {
     _ = unicode;
     _ = runtime;
     _ = node;
+    _ = meta;
+    _ = crash_handler;
     // Pull nested module tests through their actual file imports so
     // the home_rt test runner exercises every copied leaf.
     _ = @import("event_loop/DeferredTaskQueue.zig");
@@ -338,6 +367,13 @@ test {
     _ = @import("io/heap.zig");
     _ = @import("perf/generated_perf_trace_events.zig");
     _ = @import("sql/mysql/MySQLTypes.zig");
+    // Third-wave port batch (2026-05-17, parallel-agent integration):
+    _ = @import("bun_core/string/immutable/exact_size_matcher.zig");
+    _ = @import("bun_core/bounded_array.zig");
+    _ = @import("meta/bits.zig");
+    _ = @import("meta/traits.zig");
+    _ = @import("crash_handler/handle_oom.zig");
+    _ = @import("options_types/CodeCoverageOptions.zig");
 }
 
 test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {
