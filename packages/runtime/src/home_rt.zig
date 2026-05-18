@@ -114,6 +114,17 @@ pub const jsc = struct {
     pub const javascript_core_c_api = @import("jsc/javascript_core_c_api.zig");
     pub const DOMURL = @import("jsc/DOMURL.zig").DOMURL;
     pub const JSArrayIterator = @import("jsc/JSArrayIterator.zig").JSArrayIterator;
+    // Eighth-wave port batch (2026-05-18):
+    pub const JSUint8Array = @import("jsc/JSUint8Array.zig").JSUint8Array;
+    pub const VM = @import("jsc/VM.zig").VM;
+    pub const URL = @import("jsc/URL.zig").URL;
+    pub const DOMFormData = @import("jsc/DOMFormData.zig").DOMFormData;
+    pub const TopExceptionScope = @import("jsc/TopExceptionScope.zig").TopExceptionScope;
+    pub const ExceptionValidationScope = @import("jsc/TopExceptionScope.zig").ExceptionValidationScope;
+    pub const JSPropertyIterator = @import("jsc/JSPropertyIterator.zig").JSPropertyIterator;
+    pub const JSPropertyIteratorOptions = @import("jsc/JSPropertyIterator.zig").JSPropertyIteratorOptions;
+    pub const ProcessAutoKiller = @import("jsc/ProcessAutoKiller.zig");
+    pub const JSONLineBuffer = @import("jsc/JSONLineBuffer.zig").JSONLineBuffer;
 };
 
 // ---- src/io/ -----------------------------------------------------------
@@ -145,12 +156,31 @@ pub const http = struct {
     // Fourth-wave port batch (2026-05-17):
     pub const HTTPRequestBody = @import("http/HTTPRequestBody.zig").HTTPRequestBody;
     pub const SendFile = @import("http/HTTPRequestBody.zig").SendFile;
-    pub const ThreadSafeStreamBuffer = @import("http/HTTPRequestBody.zig").ThreadSafeStreamBuffer;
+    // Eighth-wave port (2026-05-18). Real `ThreadSafeStreamBuffer` landed —
+    // wraps `home_rt.threading.Mutex` + a local 2-thread refcount + a
+    // minimal `StreamBuffer` subset. Supersedes the in-file stub
+    // `HTTPRequestBody.ThreadSafeStreamBuffer`, which now stays only as
+    // backward-compat shim for the field type in `HTTPRequestBody.stream`.
+    pub const ThreadSafeStreamBuffer = @import("http/ThreadSafeStreamBuffer.zig");
     pub const websocket = @import("http/websocket.zig");
     pub const lshpack = @import("http/lshpack.zig");
     // Sixth-wave port batch (2026-05-18):
     pub const h3_client = struct {
         pub const AltSvc = @import("http/h3_client/AltSvc.zig");
+        // Eighth-wave port batch (2026-05-18). Leaf data + lifecycle for
+        // an in-flight HTTP/3 request and a DNS-pending QUIC connect.
+        // ClientSession / ClientContext / callbacks / encode are parked
+        // (full lsquic state machine + bun.http back-edges).
+        pub const Stream = @import("http/h3_client/Stream.zig");
+        pub const PendingConnect = @import("http/h3_client/PendingConnect.zig");
+    };
+    // Eighth-wave port batch (2026-05-18). HTTP/2 client leaves — Stream
+    // (per-request) + PendingConnect (TLS-connect coalescer). Sibling
+    // ClientSession / dispatch / encode are parked alongside the full
+    // fetch() state machine.
+    pub const h2_client = struct {
+        pub const Stream = @import("http/h2_client/Stream.zig");
+        pub const PendingConnect = @import("http/h2_client/PendingConnect.zig");
     };
 };
 pub const http_types = struct {
@@ -320,6 +350,15 @@ pub const runtime = struct {
             };
         };
     };
+    // Eighth-wave port batch (2026-05-18). First runtime/api/ leaves —
+    // pure-Zig helpers and small JSC bridges with stubbed JSC surfaces.
+    pub const api = struct {
+        pub const lolhtml_jsc = @import("runtime/api/lolhtml_jsc.zig");
+        pub const cron_parser = @import("runtime/api/cron_parser.zig");
+        pub const bun = struct {
+            pub const x509 = @import("runtime/api/bun/x509.zig");
+        };
+    };
 };
 
 // ---- src/node/ ---------------------------------------------------------
@@ -328,14 +367,18 @@ pub const runtime = struct {
 // home for everything in the upstream node/ directory.
 pub const node = struct {
     pub const error_code = @import("node/nodejs_error_code.zig");
-    // node.assert.myers_diff is parked: upstream uses Zig-0.17+
-    // `std.array_list.Managed(...)` and `std.heap.stackFallback`,
-    // both of which moved in 0.17. Re-attach once an adapter lands.
     // Seventh-wave port batch (2026-05-18):
     pub const time_like = @import("node/time_like.zig");
     pub const os_constants = @import("node/os_constants.zig");
     pub const util = struct {
         pub const parse_args_utils = @import("node/util/parse_args_utils.zig");
+    };
+    // Eighth-wave port batch (2026-05-18). myers_diff unparked (Zig 0.17
+    // compat fixes applied); node_fs_constant adds the POSIX file-flag
+    // surface used by `node:fs.constants`.
+    pub const node_fs_constant = @import("node/node_fs_constant.zig");
+    pub const assert = struct {
+        pub const myers_diff = @import("node/assert/myers_diff.zig");
     };
 };
 
@@ -396,6 +439,16 @@ pub const sys = struct {
     pub const SignalCode = @import("sys/SignalCode.zig").SignalCode;
     // Seventh-wave port (2026-05-18):
     pub const Tag = @import("sys/tag.zig").Tag;
+    // Eighth-wave port (2026-05-18). Generic `Maybe(T, E)` extracted from
+    // upstream `src/sys/sys.zig` line 337 + `src/runtime/node.zig` line 64
+    // (the underlying factory). Carves out the part of the 4703-line
+    // sys.zig substrate that downstream files want without dragging in
+    // every syscall wrapper. `kindFromMode` and a Zig-0.17-compat
+    // `FileKind` enum tag along for the ride.
+    pub const maybe = @import("sys/maybe.zig");
+    pub const Maybe = maybe.Maybe;
+    pub const FileKind = maybe.FileKind;
+    pub const kindFromMode = maybe.kindFromMode;
 };
 
 // ---- src/paths/ --------------------------------------------------------
@@ -485,9 +538,17 @@ pub const css = struct {
         pub const css_string = @import("css/values/css_string.zig");
         pub const ratio = @import("css/values/ratio.zig");
         pub const alpha = @import("css/values/alpha.zig");
+        // Eighth-wave port batch (2026-05-18):
+        pub const number = @import("css/values/number.zig");
+        pub const resolution = @import("css/values/resolution.zig");
+        pub const size = @import("css/values/size.zig");
     };
     pub const properties = struct {
         pub const outline = @import("css/properties/outline.zig");
+        // Eighth-wave port batch (2026-05-18):
+        pub const display = @import("css/properties/display.zig");
+        pub const overflow = @import("css/properties/overflow.zig");
+        pub const position = @import("css/properties/position.zig");
     };
     pub const PropertyCategory = logical.PropertyCategory;
     pub const LogicalGroup = logical.LogicalGroup;
@@ -500,6 +561,11 @@ pub const css = struct {
         pub const viewport = @import("css/rules/viewport.zig");
         pub const unknown = @import("css/rules/unknown.zig");
         pub const document = @import("css/rules/document.zig");
+        // Eighth-wave port batch (2026-05-18):
+        pub const custom_media = @import("css/rules/custom_media.zig");
+        pub const media = @import("css/rules/media.zig");
+        pub const tailwind = @import("css/rules/tailwind.zig");
+        pub const scope = @import("css/rules/scope.zig");
     };
 };
 
@@ -530,6 +596,32 @@ pub const libdeflate_sys = struct {
 };
 pub const simdutf_sys = struct {
     pub const simdutf = @import("simdutf_sys/simdutf.zig");
+};
+
+// ---- src/cares_sys/ ----------------------------------------------------
+// Eighth-wave port batch (2026-05-18). Vendored c-ares DNS FFI (1644 lines).
+// The 22 `*ToJSResponse` JSC-bridge sentinels are local opaques; Windows
+// EAI branch falls back to ENOTFOUND until libuv_sys lands.
+pub const cares_sys = struct {
+    pub const c_ares = @import("cares_sys/c_ares.zig");
+};
+
+// ---- src/libarchive_sys/ -----------------------------------------------
+// Eighth-wave port batch (2026-05-18). Vendored libarchive FFI (1497 lines).
+// `writeZerosToFile` + `readDataIntoFd` armed with `@compileError` until
+// `home_rt.sys.File.{pwriteAll, writeAll, setFileOffset, ftruncate}` ports.
+pub const libarchive_sys = struct {
+    pub const bindings = @import("libarchive_sys/bindings.zig");
+};
+
+// ---- src/s3_signing/ ---------------------------------------------------
+// Eighth-wave port batch (2026-05-18). Pure-Zig S3 helpers: canned-ACL
+// + storage-class enums + error code/message lookup. Credentials +
+// signer parked on JSC + webcore surface.
+pub const s3_signing = struct {
+    pub const ACL = @import("s3_signing/acl.zig").ACL;
+    pub const StorageClass = @import("s3_signing/storage_class.zig").StorageClass;
+    pub const sign_error = @import("s3_signing/error.zig");
 };
 
 // ---- src/errno/ --------------------------------------------------------
@@ -707,6 +799,9 @@ test {
     _ = lolhtml_sys;
     _ = errno;
     _ = exe_format;
+    _ = s3_signing;
+    _ = cares_sys;
+    _ = libarchive_sys;
     // Pull nested module tests through their actual file imports so
     // the home_rt test runner exercises every copied leaf.
     _ = @import("event_loop/DeferredTaskQueue.zig");
@@ -866,6 +961,41 @@ test {
     _ = @import("css/properties/outline.zig");
     _ = @import("jsc/DOMURL.zig");
     _ = @import("jsc/JSArrayIterator.zig");
+    // Eighth-wave port batch (2026-05-18):
+    _ = @import("sys/maybe.zig");
+    _ = @import("http/ThreadSafeStreamBuffer.zig");
+    _ = @import("jsc/JSUint8Array.zig");
+    _ = @import("jsc/VM.zig");
+    _ = @import("jsc/URL.zig");
+    _ = @import("jsc/DOMFormData.zig");
+    _ = @import("jsc/TopExceptionScope.zig");
+    _ = @import("jsc/JSPropertyIterator.zig");
+    _ = @import("jsc/ProcessAutoKiller.zig");
+    _ = @import("jsc/JSONLineBuffer.zig");
+    _ = @import("http/h2_client/Stream.zig");
+    _ = @import("http/h2_client/PendingConnect.zig");
+    _ = @import("http/h3_client/Stream.zig");
+    _ = @import("http/h3_client/PendingConnect.zig");
+    _ = @import("runtime/api/lolhtml_jsc.zig");
+    _ = @import("runtime/api/cron_parser.zig");
+    _ = @import("runtime/api/bun/x509.zig");
+    _ = @import("node/node_fs_constant.zig");
+    _ = @import("node/assert/myers_diff.zig");
+    _ = @import("s3_signing/acl.zig");
+    _ = @import("s3_signing/storage_class.zig");
+    _ = @import("s3_signing/error.zig");
+    _ = @import("css/values/number.zig");
+    _ = @import("css/values/resolution.zig");
+    _ = @import("css/values/size.zig");
+    _ = @import("css/properties/display.zig");
+    _ = @import("css/properties/overflow.zig");
+    _ = @import("css/properties/position.zig");
+    _ = @import("css/rules/custom_media.zig");
+    _ = @import("css/rules/media.zig");
+    _ = @import("css/rules/tailwind.zig");
+    _ = @import("css/rules/scope.zig");
+    _ = @import("cares_sys/c_ares.zig");
+    _ = @import("libarchive_sys/bindings.zig");
 }
 
 test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {
