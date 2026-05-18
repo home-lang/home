@@ -4,15 +4,18 @@
 
 This package is Home's JavaScript / TypeScript runtime, equivalent to Bun in surface area. Once complete, `home run app.ts`, `home test`, `home x <pkg>`, `home build src/index.ts --target=native`, `home add <pkg>`, etc. all work natively, with package management deferring to Pantry (`~/Code/Tools/pantry`).
 
+## Hard rules for every copy
+
+1. **Zig 0.17 dev compatibility is non-negotiable.** Every copied file must compile under Pantry-managed `0.17.0-dev.263+0add2dfc4`. Bun upstream targets a more recent Zig; some files use APIs that moved between 0.16 → 0.17 (e.g. `std.array_list.Managed(T)` is 0.17+, `std.heap.stackFallback` was relocated, `std.io.fixedBufferStream` was removed in favor of `std.Io.Writer.fixed`, `Child.init` was replaced by `process.spawn`). Files that don't compile under 0.17 stay parked with a `// Zig 0.17 compat: ...` note in `home_rt.zig` until an adapter lands.
+2. Verify `git -C ~/Code/bun rev-parse HEAD` matches `UPSTREAM_SHA.txt` before copying. If they diverge, rewind Bun or update the SHA in a **separate** commit.
+3. Rewrite `@import("bun")` → `@import("home_rt")` and every `bun.X` → `home_rt.X` at copy time. **No semantic edits in the same commit.**
+4. Drop JSC-bridge re-exports (`.toJS`, `.fromJS`, `Bun__X` externs) with a `// JSC-bridge X omitted — re-lands in Phase 12.2` note.
+5. Every copied file must add **at least one** inline `test "..."` that exercises a method or invariant.
+6. After integrating: run `zig build test --summary all` AND `home test` in `~/Code/Apps/settlers-iii`. Both must stay green; commit only if so.
+
 ## Upstream pin
 
 `UPSTREAM_SHA.txt` holds the exact Bun commit our copy is anchored against. Today: `fd0b6f1a271fca0b8124b69f230b100f4d636af6` (`http: port fetch TCP keepalive to on_open in lib.rs`).
-
-Every PR that copies new source from `~/Code/bun` MUST:
-
-1. Verify `git -C ~/Code/bun rev-parse HEAD` matches `UPSTREAM_SHA.txt`. If not, either rewind Bun or update the SHA in a separate commit.
-2. Rewrite `@import("bun")` → `@import("home_rt")` at copy time. The aggregator lives at `src/home_rt.zig`.
-3. Record what was copied (paths + commit message body) so a future rebase can be reproduced.
 
 ## Why local copy and not vendoring
 
