@@ -2248,6 +2248,12 @@ pub const Checker = struct {
                     }
                 },
                 else => switch (self.hir.kindOf(s)) {
+                    .identifier => {
+                        const id = hir_mod.identifierOf(self.hir, s);
+                        if (std.mem.eql(u8, self.string_interner.get(id.name), "let")) {
+                            _ = try self.checkExpression(s);
+                        }
+                    },
                     .call_expr, .new_expr => _ = try self.checkExpression(s),
                     .assignment => _ = try self.checkExpression(s),
                     .binary_op => {
@@ -12736,7 +12742,16 @@ pub const Checker = struct {
         node: NodeId,
         name: hir_mod.StringId,
     ) CheckError!void {
-        const name_str = self.string_interner.get(name);
+        const raw_name = self.string_interner.get(name);
+        // tsc renders well-known-symbol member names with bracket
+        // wrappers in TS2300 prose — `[Symbol.hasInstance]`, not the
+        // internal `Symbol.hasInstance` storage form. Mirrors fixture
+        // `symbolProperty44` baseline.
+        const wrap_symbol = std.mem.startsWith(u8, raw_name, "Symbol.");
+        const name_str = if (wrap_symbol)
+            try std.fmt.allocPrint(self.diag_arena.allocator(), "[{s}]", .{raw_name})
+        else
+            raw_name;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Duplicate identifier '{s}'.",
@@ -25270,6 +25285,33 @@ pub const Checker = struct {
     /// signatures. Mirrors upstream TS so TS2348 (with the
     /// "Did you mean to include 'new'?" hint) fires in place of the
     /// generic TS2349.
+    /// True when the call expression `node` was parsed from a
+    /// tagged-template literal (`tag\`...\``). The parser desugars
+    /// these into `call(tag, [stringsArr, ...values])`, losing the
+    /// distinction at HIR level — but the source span still contains
+    /// the backtick. We detect that by scanning the bytes between the
+    /// callee's end and the call's end for a leading backtick after
+    /// whitespace. Used to suppress the "Did you mean 'new'?" hint
+    /// (TS2348) — tagged-template calls cannot be expressed with `new`
+    /// and tsc emits the bare TS2349 "not callable" instead.
+    fn callExprIsTaggedTemplate(self: *Checker, node: NodeId) bool {
+        const src = self.source orelse return false;
+        const k = self.hir.kindOf(node);
+        if (k != .call_expr) return false;
+        const c = hir_mod.callOf(self.hir, node);
+        if (c.callee == hir_mod.none_node_id) return false;
+        const callee_end = self.hir.spanOf(c.callee).end;
+        const call_end = self.hir.spanOf(node).end;
+        if (callee_end >= call_end or call_end > src.len) return false;
+        var i: usize = callee_end;
+        while (i < call_end) : (i += 1) {
+            const ch = src[i];
+            if (ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r') continue;
+            return ch == '`';
+        }
+        return false;
+    }
+
     fn callableObjectHasOnlyConstructSignatures(self: *Checker, obj_t: TypeId) bool {
         if (obj_t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(obj_t);
@@ -26614,6 +26656,17 @@ pub const Checker = struct {
                         break :blk try self.optionalChainResult(types.Primitive.any, call_is_optional_chain);
                     }
                     if (self.callableObjectHasOnlyConstructSignatures(callee_t)) {
+                        // Tagged-template calls (`tag\`...\``) get no
+                        // `Did you mean 'new'?` hint — `new tag\`...\``
+                        // isn't grammatical. tsc emits the generic
+                        // TS2349 "This expression is not callable." with
+                        // a subsidiary "Type 'X' has no call signatures."
+                        // line. Mirrors fixture
+                        // `taggedTemplateWithConstructableTag02`.
+                        if (self.callExprIsTaggedTemplate(node)) {
+                            try self.report(c.callee, TsCodes.not_callable, "This expression is not callable.");
+                            break :blk try self.optionalChainResult(types.Primitive.any, call_is_optional_chain);
+                        }
                         // Class static-side types aren't in
                         // `type_names`; walk `class_static_types`
                         // to render the constructor as
@@ -31852,6 +31905,9 @@ pub const Checker = struct {
         }
 
         if (saw_namespace_scope and !self.report_unresolved_in_namespace_scope) {
+            if (!self.isDeclNameSlot(node) and std.mem.eql(u8, self.string_interner.get(id.name), "let")) {
+                self.reportCannotFindNamePlainOnce(node, id.name) catch {};
+            }
             if (!self.isDeclNameSlot(node) and self.namespaceScopeHasErrantModifierAssignmentTarget(node, id.name)) {
                 self.reportCannotFindNamePlainOnce(node, id.name) catch {};
             }
@@ -43445,7 +43501,16 @@ pub const Checker = struct {
             }
             const declared_member_t = try self.excessPropertyTargetMemberType(declared_t, prop_name);
             if (declared_member_t == null) {
-                const name_str = self.string_interner.get(prop_name);
+                const raw_name = self.string_interner.get(prop_name);
+                // tsc renders Symbol-keyed member names with bracket
+                // wrappers in diagnostic prose — `[Symbol.toPrimitive]`,
+                // not the internal `Symbol.toPrimitive` storage form.
+                // Mirrors fixtures `symbolProperty21/44` baselines.
+                const wrap_symbol = std.mem.startsWith(u8, raw_name, "Symbol.");
+                const name_str = if (wrap_symbol)
+                    try std.fmt.allocPrint(self.diag_arena.allocator(), "[{s}]", .{raw_name})
+                else
+                    raw_name;
                 // Prefer tsc's render shape:
                 // `... and 'foo' does not exist in type 'X'.` when the
                 // target has a printable name; fall back to the bare
