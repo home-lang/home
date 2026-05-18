@@ -34041,6 +34041,15 @@ pub const Checker = struct {
         const key_for_id = self.string_interner.intern("keyFor") catch return error.OutOfMemory;
         try members.append(self.gpa, .{ .name = key_for_id, .type = symbol_key_for, .is_optional = false, .is_readonly = true, .is_method = true });
 
+        // `Symbol.prototype: Symbol`. We don't model the `Symbol`
+        // instance interface explicitly; an opaque empty-object type
+        // is enough for `[Symbol.prototype]` to trigger TS2464 (the
+        // type isn't string/number/symbol/any). Mirrors upstream tsc
+        // on `symbolProperty54.ts(2,5)`.
+        const prototype_id = self.string_interner.intern("prototype") catch return error.OutOfMemory;
+        const empty_obj = self.interner.internObjectType(&[_]types.ObjectMember{}) catch return error.OutOfMemory;
+        try members.append(self.gpa, .{ .name = prototype_id, .type = empty_obj, .is_optional = false, .is_readonly = true, .is_method = false });
+
         const well_known = [_][]const u8{
             "asyncIterator",
             "hasInstance",
@@ -40863,12 +40872,25 @@ pub const Checker = struct {
         while (i < self.diagnostics.items.len) : (i += 1) {
             const current = self.diagnostics.items[i];
             const current_pos = self.diagnosticStart(current);
+            const current_rank = diagnosticTieRank(current);
             var j = i;
-            while (j > 0 and self.diagnosticStart(self.diagnostics.items[j - 1]) > current_pos) : (j -= 1) {
+            while (j > 0 and blk: {
+                const prev = self.diagnostics.items[j - 1];
+                const prev_pos = self.diagnosticStart(prev);
+                break :blk prev_pos > current_pos or
+                    (prev_pos == current_pos and diagnosticTieRank(prev) > current_rank);
+            }) : (j -= 1) {
                 self.diagnostics.items[j] = self.diagnostics.items[j - 1];
             }
             self.diagnostics.items[j] = current;
         }
+    }
+
+    fn diagnosticTieRank(d: Diagnostic) u8 {
+        return switch (d.code) {
+            TsCodes.used_before_assignment => 0,
+            else => 1,
+        };
     }
 
     /// Drop TS2304 / TS2552 ("cannot find name [did you mean]") at
@@ -43318,6 +43340,21 @@ pub const Checker = struct {
             if (m.is_readonly) try buf.appendSlice(arena, "readonly ");
             try buf.appendSlice(arena, self.string_interner.get(m.name));
             if (m.is_optional) try buf.append(arena, '?');
+            if (m.is_method and self.interner.isSignature(m.type)) {
+                const sig_payload_idx = self.interner.pool.payloadOf(m.type);
+                if (sig_payload_idx < self.interner.pool.signature_payloads.items.len) {
+                    const sig = self.interner.pool.signature_payloads.items[sig_payload_idx];
+                    if (!sig.is_construct) {
+                        const sig_name = (try self.allocCallableSignatureName(m.type)) orelse return null;
+                        const arrow = std.mem.indexOf(u8, sig_name, ") => ") orelse return null;
+                        try buf.appendSlice(arena, sig_name[0 .. arrow + 1]);
+                        try buf.appendSlice(arena, ": ");
+                        try buf.appendSlice(arena, sig_name[arrow + 5 ..]);
+                        try buf.append(arena, ';');
+                        continue;
+                    }
+                }
+            }
             try buf.appendSlice(arena, ": ");
             const tn = (try self.allocSimpleTypeName(m.type)) orelse return null;
             try buf.appendSlice(arena, tn);
@@ -43576,6 +43613,14 @@ pub const Checker = struct {
                                 break :blk out_text;
                             }
                         }
+                    }
+                    if (members.len > 0 and
+                        self.namedTypeForId(t) == null and
+                        self.interner.objectStringIndex(t) == types.Primitive.none and
+                        self.interner.objectNumberIndex(t) == types.Primitive.none and
+                        self.interner.objectSymbolIndex(t) == types.Primitive.none)
+                    {
+                        if (try self.allocAnonymousObjectName(t)) |obj_name| break :blk obj_name;
                     }
                 }
                 // Render unions (`object | null | undefined`) so the
