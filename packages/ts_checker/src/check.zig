@@ -24052,18 +24052,41 @@ pub const Checker = struct {
                 }
             }
             if (!dup) continue;
+            // Replace any parser-side TS2300 ("Duplicate identifier") at
+            // the same position with TS2451. tsc emits ONLY TS2451 for
+            // `let`/`const` destructuring duplicates; the parser
+            // conservatively emits TS2300 because it doesn't know the
+            // enclosing decl kind. Mirrors `destructuringSameNames`.
+            var existing_idx: ?usize = null;
+            for (self.diagnostics.items, 0..) |d, di| {
+                if (d.code != TsCodes.duplicate_identifier) continue;
+                const d_pos = d.pos orelse self.hir.spanOf(d.node).start;
+                if (d_pos == occ.pos) {
+                    existing_idx = di;
+                    break;
+                }
+            }
             const name_str = self.string_interner.get(occ.name);
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "Cannot redeclare block-scoped variable '{s}'.",
                 .{name_str},
             );
-            try self.diagnostics.append(self.gpa, .{
-                .node = occ.node,
-                .pos = occ.pos,
-                .code = TsCodes.cannot_redeclare_block_scoped,
-                .message = msg,
-            });
+            if (existing_idx) |di| {
+                self.diagnostics.items[di] = .{
+                    .node = occ.node,
+                    .pos = occ.pos,
+                    .code = TsCodes.cannot_redeclare_block_scoped,
+                    .message = msg,
+                };
+            } else {
+                try self.diagnostics.append(self.gpa, .{
+                    .node = occ.node,
+                    .pos = occ.pos,
+                    .code = TsCodes.cannot_redeclare_block_scoped,
+                    .message = msg,
+                });
+            }
         }
     }
 
