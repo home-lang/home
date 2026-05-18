@@ -620,6 +620,12 @@ const DeclarationEntry = struct {
     is_exported: bool = false,
     is_ambient: bool = false,
     duplicate_function_body_reported: bool = false,
+    /// Most recent bodyless `function f()` decl seen for this name —
+    /// used to anchor TS2391 ("Function implementation is missing or
+    /// not immediately following the declaration.") at the trailing
+    /// overload signature, matching tsc. `hir_mod.none_node_id` means
+    /// every decl so far had a body or was ambient.
+    last_bodyless_fn: NodeId = hir_mod.none_node_id,
 };
 
 const DeclarationKey = struct {
@@ -2174,7 +2180,20 @@ pub const Checker = struct {
         if (!self.namespaceIsAmbient(node) and !self.namespaceNameIsStringLiteral(ns.name)) {
             try self.checkTsOnlyDeclInJs(node, "namespace", ns.name);
         }
-        try self.checkDeclarationSpaceDiagnostics(hir_mod.namespaceBody(self.hir, node));
+        // `declare namespace M { function foo(); }` puts every inner
+        // function in an ambient context, so the TS2391 scan inside
+        // checkDeclarationSpaceDiagnostics must treat bodyless decls
+        // as ambient. `namespace M { function foo(); }` (no declare)
+        // is NOT ambient — TS2391 should still fire there. Mirrors
+        // parserFunctionDeclaration7 (fires) vs. parserFunctionDeclaration8
+        // (suppressed by the parent `declare`).
+        const ns_declare = self.declarationSourceHasLeadingDeclare(node) or
+            self.virtualSectionIsDeclarationFile(node);
+        if (ns_declare) {
+            try self.checkDeclarationSpaceDiagnosticsInAmbient(hir_mod.namespaceBody(self.hir, node));
+        } else {
+            try self.checkDeclarationSpaceDiagnostics(hir_mod.namespaceBody(self.hir, node));
+        }
         try self.checkTopLevelDecoratorDiagnostics(hir_mod.namespaceBody(self.hir, node));
         for (hir_mod.namespaceBody(self.hir, node)) |s| {
             switch (self.hir.kindOf(s)) {
@@ -2526,6 +2545,18 @@ pub const Checker = struct {
     }
 
     fn checkDeclarationSpaceDiagnostics(self: *Checker, stmts: []const NodeId) CheckError!void {
+        return self.checkDeclarationSpaceDiagnosticsImpl(stmts, false);
+    }
+
+    fn checkDeclarationSpaceDiagnosticsInAmbient(self: *Checker, stmts: []const NodeId) CheckError!void {
+        return self.checkDeclarationSpaceDiagnosticsImpl(stmts, true);
+    }
+
+    fn checkDeclarationSpaceDiagnosticsImpl(
+        self: *Checker,
+        stmts: []const NodeId,
+        parent_is_ambient: bool,
+    ) CheckError!void {
         var seen: std.AutoHashMapUnmanaged(DeclarationKey, DeclarationEntry) = .empty;
         defer seen.deinit(self.gpa);
         // Each interface group tracks the first-seen declaration plus a
@@ -2581,7 +2612,7 @@ pub const Checker = struct {
 
             const has_body = if (is_fn) hir_mod.fnDeclOf(self.hir, node).body != hir_mod.none_node_id else false;
             const is_ambient = if (is_fn)
-                !has_body and (self.declarationSourceHasLeadingDeclare(node) or self.virtualSectionIsDeclarationFile(node))
+                !has_body and (parent_is_ambient or self.declarationSourceHasLeadingDeclare(node) or self.virtualSectionIsDeclarationFile(node))
             else if (is_var)
                 hir_mod.varDeclOf(self.hir, node).is_ambient
             else
@@ -2628,8 +2659,19 @@ pub const Checker = struct {
                     .has_body = has_body,
                     .is_exported = exported,
                     .is_ambient = is_ambient,
+                    .last_bodyless_fn = if (is_fn and !has_body and !is_ambient) node else hir_mod.none_node_id,
                 };
                 continue;
+            }
+            // Snapshot the bodyless-anchor update before the
+            // duplicate-implementation check so post-loop TS2391 sees
+            // the trailing bodyless decl, but defer the `has_body`
+            // promotion so the duplicate check still sees the
+            // pre-update value (otherwise `function foo(); function
+            // foo() { }` would self-trigger TS2393).
+            if (is_fn) {
+                if (!has_body and !is_ambient) gop.value_ptr.last_bodyless_fn = node;
+                if (is_ambient) gop.value_ptr.is_ambient = true;
             }
 
             if (gop.value_ptr.is_type_alias or is_type_alias) {
@@ -2681,7 +2723,64 @@ pub const Checker = struct {
                 if (gop.value_ptr.is_ambient != is_ambient) {
                     try self.report(node, TsCodes.overloads_must_all_be_ambient_or_not, "Overload signatures must all be ambient or non-ambient.");
                 }
+                // Promote `has_body` only AFTER the duplicate-impl
+                // check so a normal overload-implementation pair
+                // (`function foo(); function foo() { }`) doesn't
+                // self-trigger TS2393. Needed so the post-loop TS2391
+                // scan correctly skips groups whose implementation
+                // eventually arrives.
+                if (has_body) gop.value_ptr.has_body = true;
             }
+        }
+        // TS2391: every function overload group that consists solely
+        // of bodyless, non-ambient signatures must surface "Function
+        // implementation is missing or not immediately following the
+        // declaration." at the trailing overload — UNLESS the next
+        // sibling is a function with a body (even of a different
+        // name), in which case TS2389 ("Function implementation name
+        // must be …") covers the issue and TS2391 is suppressed.
+        // Mirrors tsc's `reportImplementationExpectedError` and
+        // fixtures parserFunctionDeclaration3/7, parserModuleDeclaration10,
+        // and (for the suppression case) parserFunctionDeclaration4/5/6/8.
+        var seen_it = seen.iterator();
+        while (seen_it.next()) |entry| {
+            const info = entry.value_ptr.*;
+            if (!info.is_function) continue;
+            if (info.has_body) continue;
+            if (info.is_ambient) continue;
+            if (info.last_bodyless_fn == hir_mod.none_node_id) continue;
+            // Suppression: if the next stmt after the trailing
+            // bodyless decl is a function decl with a body, tsc
+            // surfaces TS2389 on that fn and elides TS2391.
+            var suppressed = false;
+            for (stmts, 0..) |s_raw, i| {
+                const s_node = self.unwrapExportDecl(s_raw);
+                if (s_node != info.last_bodyless_fn) continue;
+                if (i + 1 >= stmts.len) break;
+                const next_node = self.unwrapExportDecl(stmts[i + 1]);
+                if (next_node == hir_mod.none_node_id) break;
+                const nk = self.hir.kindOf(next_node);
+                if (nk != .fn_decl and nk != .fn_expr) break;
+                const next_fn = hir_mod.fnDeclOf(self.hir, next_node);
+                if (next_fn.body == hir_mod.none_node_id) break;
+                suppressed = true;
+                break;
+            }
+            if (suppressed) continue;
+            const anchor_node = blk: {
+                if (self.hir.kindOf(info.last_bodyless_fn) == .fn_decl or
+                    self.hir.kindOf(info.last_bodyless_fn) == .fn_expr)
+                {
+                    const f = hir_mod.fnDeclOf(self.hir, info.last_bodyless_fn);
+                    if (f.name != hir_mod.none_node_id) break :blk f.name;
+                }
+                break :blk info.last_bodyless_fn;
+            };
+            try self.report(
+                anchor_node,
+                TsCodes.implementation_missing,
+                "Function implementation is missing or not immediately following the declaration.",
+            );
         }
     }
 
