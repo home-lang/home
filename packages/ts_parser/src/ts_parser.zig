@@ -1359,17 +1359,21 @@ pub const Parser = struct {
 
     fn reportInvalidYieldName(self: *Parser, tok: Token) ParseError!void {
         if (!self.tokenTextEquals(tok, "yield")) return;
-        // Inside a generator body the diagnostic is "reserved word that
-        // cannot be used here" (TS1359) — the grammar itself reserves
-        // `yield` for any binding/parameter name. Outside a generator,
-        // `yield` is only a reserved BINDING name in strict mode (which
-        // tsc's binder reports as TS1212). In non-strict scripts a
-        // top-level `function yield() {}` or `function * yield() {}`
-        // declaration name is legal (mirrors fixture `yieldNameIsOk`).
+        // Inside a class body, strict mode is implicit and tsc emits
+        // the class-strict TS1213 variant ("…Class definitions are
+        // automatically in strict mode."). Mirrors fixtures like
+        // `nestedFunctionDeclarationNamedYieldIsError` (classMethods).
+        if (self.class_body_depth > 0) {
+            try self.reportCodeAt(tok.span.start, tok.line, 1213, "Identifier expected. 'yield' is a reserved word in strict mode. Class definitions are automatically in strict mode.");
+            return;
+        }
+        // Inside a generator body (outside a class), the grammar itself
+        // reserves `yield` for any binding — TS1359.
         if (self.generator_depth > 0) {
             try self.reportCodeAt(tok.span.start, tok.line, 1359, "Identifier expected. 'yield' is a reserved word that cannot be used here.");
             return;
         }
+        // Otherwise only strict-mode source flags the binder use.
         if (self.strict_mode) {
             try self.reportCodeAt(tok.span.start, tok.line, 1212, "Identifier expected. 'yield' is a reserved word in strict mode.");
         }
@@ -3445,7 +3449,19 @@ pub const Parser = struct {
                             try self.reportCodeAt(anchor, name_tok.line, 1092, "Type parameters cannot appear on a constructor declaration.");
                         }
                     }
+                    // Enter [Yield]/[Await] context for the parameter
+                    // list (mirrors tsc — generator/async methods parse
+                    // their parameters in the corresponding ParseFlags
+                    // even before the body). Without this, `await` /
+                    // `yield` as a parameter name silently passes the
+                    // parser-level binder-name checks. We unbump right
+                    // after parsing the parameter list — the body bump
+                    // below re-enters the same context for the body.
+                    if (is_generator) self.generator_depth += 1;
+                    if (mods.is_async) self.async_function_depth += 1;
                     const params = try self.parseParameterList();
+                    if (is_generator) self.generator_depth -= 1;
+                    if (mods.is_async) self.async_function_depth -= 1;
                     defer self.gpa.free(params);
                     var return_type: NodeId = hir_mod.none_node_id;
                     if (self.match(.colon)) {
@@ -8618,7 +8634,11 @@ pub const Parser = struct {
                             after_star_kind == .comma;
                     }
                     if (!star_operand_missing and self.isYieldReservedName(t)) {
-                        try self.reportCodeAt(t.span.start, t.line, 1212, "Identifier expected. 'yield' is a reserved word in strict mode.");
+                        if (self.class_body_depth > 0) {
+                            try self.reportCodeAt(t.span.start, t.line, 1213, "Identifier expected. 'yield' is a reserved word in strict mode. Class definitions are automatically in strict mode.");
+                        } else {
+                            try self.reportCodeAt(t.span.start, t.line, 1212, "Identifier expected. 'yield' is a reserved word in strict mode.");
+                        }
                     }
                     const id = try self.internToken(t);
                     var ident = try self.builder.addIdentifier(tokenSpan(t), id);
