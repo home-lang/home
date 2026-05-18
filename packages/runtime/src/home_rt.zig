@@ -996,6 +996,36 @@ test {
     _ = @import("css/rules/scope.zig");
     _ = @import("cares_sys/c_ares.zig");
     _ = @import("libarchive_sys/bindings.zig");
+    // Ninth-wave port batch (2026-05-18):
+    _ = @import("jsc/AnyPromise.zig");
+    _ = @import("jsc/JSRef.zig");
+    _ = @import("jsc/ResolvedSource.zig");
+    _ = @import("jsc/bindgen_test.zig");
+    _ = @import("jsc/Strong.zig");
+    _ = @import("runtime/api/UnsafeObject.zig");
+    _ = @import("runtime/api/JSONCObject.zig");
+    _ = @import("runtime/api/TOMLObject.zig");
+    _ = @import("runtime/api/HashObject.zig");
+    _ = @import("runtime/api/standalone_graph_jsc.zig");
+    _ = @import("runtime/api/crash_handler_jsc.zig");
+    _ = @import("runtime/webcore/CookieMap.zig");
+    _ = @import("runtime/webcore/ScriptExecutionContext.zig");
+    _ = @import("node/fs_events.zig");
+    _ = @import("node/node_error_binding.zig");
+    _ = @import("install/Origin.zig");
+    _ = @import("install/PreinstallState.zig");
+    _ = @import("install/Aligner.zig");
+    _ = @import("bundler/IndexStringMap.zig");
+    _ = @import("bundler/PathToSourceIndexMap.zig");
+    _ = @import("bundler/DeferredBatchTask.zig");
+    _ = @import("ast/op.zig");
+    _ = @import("js_parser/lexer_tables.zig");
+    _ = @import("uws_sys/SocketKind.zig");
+    _ = @import("uws_sys/ConnectingSocket.zig");
+    _ = @import("uws_sys/udp.zig");
+    _ = @import("collections/bit_set.zig");
+    _ = @import("collections/multi_array_list.zig");
+    _ = @import("safety/alloc.zig");
 }
 
 test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {
