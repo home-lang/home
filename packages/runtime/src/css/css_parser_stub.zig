@@ -413,6 +413,27 @@ pub const Ident = []const u8;
 pub const CustomIdent = []const u8;
 pub const CSSString = []const u8;
 
+/// Wave-10 (2026-05-18) extension. Stand-in for the top-level
+/// `css.PropertyId` (which upstream is a giant enum over every CSS property
+/// name). Pure-data leaves (`supports.zig`, `font_face.zig`, …) reference the
+/// type at a field-declaration site only; methods trip `@compileError`.
+pub const PropertyId = struct {
+    _unused: u8 = 0,
+
+    pub fn parse(_: *Parser) Result(PropertyId) {
+        @compileError("css_parser not yet ported — PropertyId.parse");
+    }
+    pub fn toCss(_: *const PropertyId, _: *Printer) PrintErr!void {
+        @compileError("css_parser not yet ported — PropertyId.toCss");
+    }
+    pub fn eql(_: *const PropertyId, _: *const PropertyId) bool {
+        return false;
+    }
+    pub fn deepClone(this: *const PropertyId, _: std.mem.Allocator) PropertyId {
+        return this.*;
+    }
+};
+
 /// Generic `CssRuleList(R)` placeholder. Real upstream owns an
 /// `ArrayList(CssRule(R))` and has methods `toCss` / `minify` / `deepClone`.
 /// For wave-7's `MozDocumentRule(R)`, `NestingRule(R)`, `StartingStyleRule(R)`
@@ -822,4 +843,10 @@ test "wave-9: Angle, CssColor, Url types resolve" {
     try std.testing.expect(a == .deg);
     try std.testing.expect(c == .current_color);
     try std.testing.expectEqual(@as(u32, 0), u.import_record_idx);
+}
+
+test "wave-10: PropertyId opaque resolves + eql returns false" {
+    const a = PropertyId{};
+    const b = PropertyId{};
+    try std.testing.expect(!PropertyId.eql(&a, &b));
 }

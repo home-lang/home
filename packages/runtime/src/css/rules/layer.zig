@@ -1,0 +1,123 @@
+// Copied from bun/src/css/rules/layer.zig at upstream
+// SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
+// Imports rewritten: @import("../css_parser.zig") → @import("../css_parser_stub.zig").
+//
+// Strategy-B port over the stub. `LayerName` carries a
+// `SmallList([]const u8, 1)` (resolved via the stub); body methods (`parse`,
+// `toCss`, `hash`, `format`, `HashMap`, `cloneWithImportRecords`) reach for
+// `bun.strings.eql` / `bun.BabyList(bun.ImportRecord)` / `css.SmallList.append`
+// / `css.serializer.serializeIdentifier` — all gone behind the stub or the
+// upstream `bun` namespace, so they are stripped here. Pure-data shape
+// (`v: SmallList(...)`) + `eql` over slices + `deepClone` are kept; `eql`
+// uses raw `std.mem.eql` on each part instead of `bun.strings.eql`.
+//
+// `LayerBlockRule(R)` keeps `name: ?LayerName`, `rules: CssRuleList(R)`, `loc`;
+// `toCss` strips (Printer methods trip `@compileError`). `LayerStatementRule`
+// keeps `names: SmallList(LayerName, 1)` + `loc`; `toCss` stripped as well.
+
+pub const css = @import("../css_parser_stub.zig");
+const Printer = css.Printer;
+const PrintErr = css.PrintErr;
+const Location = css.css_rules.Location;
+const CssRuleList = css.CssRuleList;
+
+/// Stored as a list of strings as dot notation can be used
+/// to create sublayers.
+pub const LayerName = struct {
+    v: css.SmallList([]const u8, 1) = .{},
+
+    pub fn deepClone(this: *const LayerName, allocator: std.mem.Allocator) LayerName {
+        return LayerName{
+            .v = this.v.clone(allocator),
+        };
+    }
+
+    pub fn eql(lhs: *const LayerName, rhs: *const LayerName) bool {
+        if (lhs.v.len() != rhs.v.len()) return false;
+        for (lhs.v.slice(), rhs.v.slice()) |l, r| {
+            if (!std.mem.eql(u8, l, r)) return false;
+        }
+        return true;
+    }
+};
+
+/// A [@layer block](https://drafts.csswg.org/css-cascade-5/#layer-block) rule.
+pub fn LayerBlockRule(comptime R: type) type {
+    return struct {
+        /// The name of the layer to declare, or null to declare an anonymous layer.
+        name: ?LayerName,
+        /// The rules within the `@layer` rule.
+        rules: css.CssRuleList(R),
+        /// The location of the rule in the source file.
+        loc: Location,
+
+        pub fn deepClone(this: *const @This(), allocator: std.mem.Allocator) @This() {
+            return css.implementDeepClone(@This(), this, allocator);
+        }
+    };
+}
+
+/// A [@layer statement](https://drafts.csswg.org/css-cascade-5/#layer-empty) rule.
+///
+/// See also [LayerBlockRule](LayerBlockRule).
+pub const LayerStatementRule = struct {
+    /// The layer names to declare.
+    names: css.SmallList(LayerName, 1),
+    /// The location of the rule in the source file.
+    loc: Location,
+
+    pub fn deepClone(this: *const @This(), allocator: std.mem.Allocator) @This() {
+        return css.implementDeepClone(@This(), this, allocator);
+    }
+};
+
+test "LayerName default has zero parts" {
+    const n = LayerName{};
+    try std.testing.expectEqual(@as(usize, 0), n.v.len());
+}
+
+test "LayerName.eql compares part by part" {
+    const a = LayerName{ .v = .{ .items = &[_][]const u8{ "foo", "bar" } } };
+    const b = LayerName{ .v = .{ .items = &[_][]const u8{ "foo", "bar" } } };
+    const c = LayerName{ .v = .{ .items = &[_][]const u8{ "foo", "baz" } } };
+    try std.testing.expect(LayerName.eql(&a, &b));
+    try std.testing.expect(!LayerName.eql(&a, &c));
+}
+
+test "LayerName.eql returns false for different lengths" {
+    const a = LayerName{ .v = .{ .items = &[_][]const u8{"x"} } };
+    const b = LayerName{ .v = .{ .items = &[_][]const u8{ "x", "y" } } };
+    try std.testing.expect(!LayerName.eql(&a, &b));
+}
+
+test "LayerBlockRule(void) has expected shape" {
+    const T = LayerBlockRule(void);
+    const r = T{
+        .name = LayerName{},
+        .rules = .{},
+        .loc = css.Location.dummy(),
+    };
+    try std.testing.expect(r.name != null);
+    try std.testing.expectEqual(std.math.maxInt(u32), r.loc.source_index);
+}
+
+test "LayerBlockRule(u8) accepts null name (anonymous layer)" {
+    const T = LayerBlockRule(u8);
+    const r = T{
+        .name = null,
+        .rules = .{},
+        .loc = .{ .source_index = 1, .line = 2, .column = 3 },
+    };
+    try std.testing.expect(r.name == null);
+}
+
+test "LayerStatementRule has names + loc" {
+    const r = LayerStatementRule{
+        .names = .{},
+        .loc = .{ .source_index = 7, .line = 8, .column = 9 },
+    };
+    try std.testing.expectEqual(@as(usize, 0), r.names.len());
+    try std.testing.expectEqual(@as(u32, 8), r.loc.line);
+}
+
+const std = @import("std");
