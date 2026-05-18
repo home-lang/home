@@ -832,7 +832,7 @@ pub fn compileSource(
     }
     const suppress_js_check_diagnostics = options.suppress_js_check_diagnostics or sourceIsUncheckedJs(source);
     for (checker.diagnostics.items) |d| {
-        if (suppress_js_check_diagnostics and !checkerDiagnosticSurfacesInUncheckedJs(d.code)) continue;
+        if (suppress_js_check_diagnostics and !checkerDiagnosticSurfacesInUncheckedJs(d.code, source)) continue;
         const diag_pos = d.pos orelse c.hir.spanOf(d.node).start;
 
         // TS2300 (parser) vs TS2451 (checker) coalesce: tsc emits ONLY
@@ -1096,13 +1096,29 @@ fn sourceIsUncheckedJs(source: []const u8) bool {
     return virtualFilenameIsJs(source);
 }
 
-fn checkerDiagnosticSurfacesInUncheckedJs(code: u32) bool {
-    return code == ts_checker.check.TsCodes.private_name_not_declared or
-        code == ts_checker.check.TsCodes.await_only_in_async or
-        // TS2451 — cross-declaration block-scoped duplicates fire as
-        // binder/grammar errors in tsc even under `--allowJs` without
-        // `--checkJs`. Mirrors fixture `plainJSRedeclare`.
-        code == ts_checker.check.TsCodes.cannot_redeclare_block_scoped;
+/// True when the fixture sets `// @checkJS: false` (or `@checkJs: false`)
+/// explicitly — tsc treats this as a stronger opt-out that ALSO
+/// suppresses binder/grammar-shape diagnostics (like TS2451) that would
+/// otherwise surface under bare `// @allowJS: true`. Mirrors the
+/// upstream baseline split between `plainJSRedeclare` (no `@checkJS`,
+/// emits TS2451) and `plainJSRedeclare3` (`@checkJS: false`, clean).
+fn sourceExplicitlyDisablesCheckJs(source: []const u8) bool {
+    const v = directiveBool(source, "checkJs") orelse return false;
+    return !v;
+}
+
+fn checkerDiagnosticSurfacesInUncheckedJs(code: u32, source: []const u8) bool {
+    if (code == ts_checker.check.TsCodes.private_name_not_declared) return true;
+    if (code == ts_checker.check.TsCodes.await_only_in_async) return true;
+    // TS2451 — cross-declaration block-scoped duplicates fire as
+    // binder/grammar errors in tsc even under `--allowJs` without
+    // `--checkJs`. Suppressed only when the fixture explicitly opts
+    // out with `// @checkJS: false`. Mirrors fixtures
+    // `plainJSRedeclare` (emits) vs `plainJSRedeclare3` (clean).
+    if (code == ts_checker.check.TsCodes.cannot_redeclare_block_scoped) {
+        return !sourceExplicitlyDisablesCheckJs(source);
+    }
+    return false;
 }
 
 fn diagnosticLineHasTsIgnore(source: []const u8, pos: usize) bool {
