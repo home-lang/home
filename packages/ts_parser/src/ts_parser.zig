@@ -8519,8 +8519,18 @@ pub const Parser = struct {
     /// diagnostic on the floor.
     fn peekIsUnaryOperandStopToken(self: *Parser) bool {
         const k = self.peek().kind;
+        // Inside a switch-case body, `case` / `default` start the next
+        // case clause, so they STOP the current expression rather than
+        // becoming a candidate primary. Mirrors
+        // `parserErrorRecovery_SwitchStatement1`: `1 + case` should
+        // anchor TS1109 at the `case` token and let the outer switch
+        // loop pick up the next case rather than bubbling
+        // `error.UnexpectedToken` and dropping the rest of the body.
+        const is_switch_clause_keyword = self.in_switch_case_clause and
+            (k == .kw_case or k == .kw_default);
         return k == .semicolon or k == .close_paren or k == .close_brace or
-            k == .close_bracket or k == .comma or k == .colon or k == .eof;
+            k == .close_bracket or k == .comma or k == .colon or k == .eof or
+            is_switch_clause_keyword;
     }
 
     /// Recovery for `<op>;` / `<op>,` / `<op>)` etc. — the unary
