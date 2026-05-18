@@ -28,6 +28,7 @@ const ts_diagnostics = @import("ts_diagnostics");
 const ts_program = @import("ts_program");
 const ts_resolver = @import("ts_resolver");
 const ts_checker = @import("ts_checker");
+const hir_mod = @import("hir");
 
 /// Adapter that exposes a `ts_resolver.Resolver` through the
 /// `ts_checker.ExternalResolver` opaque vtable. Lives on the
@@ -444,6 +445,44 @@ const ActualDiagnosticLine = struct {
     }
 };
 
+const ScriptGlobalSpaces = struct {
+    types: std.StringHashMapUnmanaged(void) = .empty,
+    values: std.StringHashMapUnmanaged(void) = .empty,
+
+    fn deinit(self: *ScriptGlobalSpaces, gpa: std.mem.Allocator) void {
+        freeStringSet(gpa, &self.types);
+        freeStringSet(gpa, &self.values);
+    }
+
+    fn addType(self: *ScriptGlobalSpaces, gpa: std.mem.Allocator, name: []const u8) !void {
+        try putStringSet(gpa, &self.types, name);
+    }
+
+    fn addValue(self: *ScriptGlobalSpaces, gpa: std.mem.Allocator, name: []const u8) !void {
+        try putStringSet(gpa, &self.values, name);
+    }
+
+    fn isTypeOnly(self: *const ScriptGlobalSpaces, name: []const u8) bool {
+        return self.types.get(name) != null and self.values.get(name) == null;
+    }
+};
+
+fn putStringSet(
+    gpa: std.mem.Allocator,
+    set: *std.StringHashMapUnmanaged(void),
+    name: []const u8,
+) !void {
+    const gop = try set.getOrPut(gpa, name);
+    if (gop.found_existing) return;
+    gop.key_ptr.* = try gpa.dupe(u8, name);
+}
+
+fn freeStringSet(gpa: std.mem.Allocator, set: *std.StringHashMapUnmanaged(void)) void {
+    var it = set.iterator();
+    while (it.next()) |entry| gpa.free(entry.key_ptr.*);
+    set.deinit(gpa);
+}
+
 /// Predicate: does this case benefit from routing through `ts_program`?
 ///
 /// Expected-error virtual fixtures need TypeScript's per-file parse
@@ -554,6 +593,65 @@ fn canonicalVfsPath(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
         return gpa.dupe(u8, p);
     }
     return std.fmt.allocPrint(gpa, "/{s}", .{p});
+}
+
+fn collectScriptGlobalSpaces(
+    gpa: std.mem.Allocator,
+    program: *const ts_program.Program,
+    out: *ScriptGlobalSpaces,
+) !void {
+    for (program.files.items) |file| {
+        const compilation = file.compilation orelse continue;
+        if (compilationIsExternalModule(compilation)) continue;
+
+        var type_it = compilation.module.root.types.iterator();
+        while (type_it.next()) |entry| {
+            try out.addType(gpa, compilation.interner.get(entry.key_ptr.*));
+        }
+
+        var value_it = compilation.module.root.values.iterator();
+        while (value_it.next()) |entry| {
+            try out.addValue(gpa, compilation.interner.get(entry.key_ptr.*));
+        }
+
+        var namespace_it = compilation.module.root.namespaces.iterator();
+        while (namespace_it.next()) |entry| {
+            try out.addValue(gpa, compilation.interner.get(entry.key_ptr.*));
+        }
+
+        // Upstream still creates a type-space declaration for parser-error
+        // script declarations such as `interface yield {}`. Home reports the
+        // reserved-word diagnostic but the binder may skip the name, so mirror
+        // the script-global type-space effect from the token stream.
+        for (compilation.tokens.items, 0..) |tok, i| {
+            if (tok.kind != .kw_interface or i + 1 >= compilation.tokens.items.len) continue;
+            const name_tok = compilation.tokens.items[i + 1];
+            if (name_tok.kind == .identifier or name_tok.kind.isKeyword()) {
+                try out.addType(gpa, name_tok.bytes(compilation.source));
+            }
+        }
+    }
+}
+
+fn compilationIsExternalModule(compilation: *const ts_driver.Compilation) bool {
+    const root = compilation.root;
+    if (root == hir_mod.none_node_id or compilation.hir.kindOf(root) != .block_stmt) return false;
+    for (hir_mod.blockStmts(&compilation.hir, root)) |stmt| {
+        switch (compilation.hir.kindOf(stmt)) {
+            .import_decl, .export_decl => return true,
+            else => {},
+        }
+    }
+    return false;
+}
+
+fn cannotFindNameDiagnosticName(message: []const u8) ?[]const u8 {
+    const prefix = "Cannot find name '";
+    if (!std.mem.startsWith(u8, message, prefix)) return null;
+    const rest = message[prefix.len..];
+    const end = std.mem.indexOfScalar(u8, rest, '\'') orelse return null;
+    if (end == 0) return null;
+    return rest[0..end];
 }
 
 /// Pick a resolver `Strategy` from the fixture's `// @moduleResolution:`
@@ -716,6 +814,10 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         else => return null,
     };
 
+    var script_globals: ScriptGlobalSpaces = .{};
+    defer script_globals.deinit(gpa);
+    try collectScriptGlobalSpaces(gpa, &program, &script_globals);
+
     // Format diagnostics in tsc's default `(file, line, col): code: msg`
     // shape — same renderer as the legacy path so EXACT-mode baseline
     // comparison stays apples-to-apples.
@@ -749,7 +851,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
                 pos.line - pf.extra_strip
             else
                 1;
-            const code = if (d.code != 0) d.code else mapPhaseToCode(d.phase);
+            var code = if (d.code != 0) d.code else mapPhaseToCode(d.phase);
             const prefix: ts_diagnostics.Diagnostic.CodePrefix = switch (d.code_prefix) {
                 .TS => .TS,
                 .HM => .HM,
@@ -816,7 +918,22 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
                     stripped_message = s;
                 }
             }
-            const message: []const u8 = if (stripped_message) |s| s else base_message;
+            var rewritten_message: ?[]u8 = null;
+            defer if (rewritten_message) |m| gpa.free(m);
+            var message: []const u8 = if (stripped_message) |s| s else base_message;
+            if (code == 2304 and prefix == .TS) {
+                if (cannotFindNameDiagnosticName(message)) |missing_name| {
+                    if (script_globals.isTypeOnly(missing_name)) {
+                        code = 2693;
+                        rewritten_message = try std.fmt.allocPrint(
+                            gpa,
+                            "'{s}' only refers to a type, but is being used as a value here.",
+                            .{missing_name},
+                        );
+                        message = rewritten_message.?;
+                    }
+                }
+            }
             const fdiag: ts_diagnostics.Diagnostic = .{
                 .file = if (d.is_global) "" else pf.diag_path,
                 .line = diag_line,
@@ -1362,29 +1479,26 @@ pub fn loadDirectoryWithOptions(
         var strict_flags =
             if (options.honor_directives)
                 directive_flags
-            else if (options.strict_default_for_expected_errors and expects_error)
-                blk_flags: {
-                    if (directive_state) |ds| {
-                        // Merge explicit per-flag directives with the
-                        // effective `--strict` base for any unset
-                        // sub-flag. Mirrors tsc's compilerOptions
-                        // layering: `--strict` provides the base, then
-                        // explicit per-flag overrides apply on top.
-                        // When `// @strict: <bool>` is explicit it
-                        // wins outright; otherwise we fall back to the
-                        // inferred strict default so a fixture whose
-                        // only directive is e.g. `// @noImplicitAny:
-                        // false` still keeps the other strict-family
-                        // flags on (it's that scenario which silently
-                        // dropped TS2564 on
-                        // `typeofOperatorWithBooleanType.ts`).
-                        const base_strict_on = ds.state.strict orelse inferred_strict_on;
-                        break :blk_flags strictFlagsFromState(ds.state, base_strict_on);
-                    }
-                    break :blk_flags strictFlagsFromStrict(inferred_strict_on);
+            else if (options.strict_default_for_expected_errors and expects_error) blk_flags: {
+                if (directive_state) |ds| {
+                    // Merge explicit per-flag directives with the
+                    // effective `--strict` base for any unset
+                    // sub-flag. Mirrors tsc's compilerOptions
+                    // layering: `--strict` provides the base, then
+                    // explicit per-flag overrides apply on top.
+                    // When `// @strict: <bool>` is explicit it
+                    // wins outright; otherwise we fall back to the
+                    // inferred strict default so a fixture whose
+                    // only directive is e.g. `// @noImplicitAny:
+                    // false` still keeps the other strict-family
+                    // flags on (it's that scenario which silently
+                    // dropped TS2564 on
+                    // `typeofOperatorWithBooleanType.ts`).
+                    const base_strict_on = ds.state.strict orelse inferred_strict_on;
+                    break :blk_flags strictFlagsFromState(ds.state, base_strict_on);
                 }
-            else
-                null;
+                break :blk_flags strictFlagsFromStrict(inferred_strict_on);
+            } else null;
         if (!options.honor_directives and
             options.strict_default_for_expected_errors and
             expects_error and
@@ -4061,6 +4175,29 @@ test "conformance: virtual tsconfig sections are preserved as comments" {
     try T.expect(std.mem.indexOf(u8, stripped.?, "export {};") != null);
 }
 
+test "conformance: program path sees script-global type-only virtual declarations" {
+    const source =
+        \\// @filename: yieldAsTypeIsStrictError.ts
+        \\interface yield {}
+        \\// @filename: yieldInClassComputedPropertyIsError.ts
+        \\class C21 {
+        \\    async * [yield]() {
+        \\    }
+        \\}
+    ;
+    const r = try run(T.allocator, .{
+        .name = "virtual-script-global-type-only",
+        .path = "yieldAsTypeIsStrictError.ts",
+        .source = source,
+        .raw_source = source,
+        .expected_errors = "yieldInClassComputedPropertyIsError.ts(2,14): error TS1213: Identifier expected. 'yield' is a reserved word in strict mode. Class definitions are automatically in strict mode.\n" ++
+            "yieldInClassComputedPropertyIsError.ts(2,14): error TS2693: 'yield' only refers to a type, but is being used as a value here.",
+        .syntax_target_es2015 = true,
+    });
+    defer if (r.detail.len > 0) T.allocator.free(r.detail);
+    try T.expectEqual(Outcome.passed, r.outcome);
+}
+
 test "conformance: option compatibility diagnostics count as expected errors" {
     const r = try runOneEntry(T.allocator, .{
         .name = "bundlerOptionsCompat",
@@ -4108,18 +4245,12 @@ test "conformance: decorator fixtures emit at least one diagnostic naturally" {
     // fallback). If a refactor regresses any of these, this test
     // fails before the shim list silently grows back.
     const cases = [_]struct { label: []const u8, src: []const u8 }{
-        .{ .label = "decoratorOnFunctionParameter",
-           .src = "declare const dec: any;\nclass C { n = true; }\nfunction direct(@dec this: C) { return this.n; }\nfunction called(@dec() this: C) { return this.n; }" },
-        .{ .label = "constructableDecoratorOnClass01",
-           .src = "// @experimentalDecorators: true\nclass CtorDtor {}\n@CtorDtor\nclass C {}" },
-        .{ .label = "decoratorOnClassMethod6",
-           .src = "// @experimentalDecorators: true\ndeclare function dec(): <T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>) => TypedPropertyDescriptor<T>;\nclass C { @dec [\"method\"]() {} }" },
-        .{ .label = "decoratorOnClassMethodParameter3",
-           .src = "// @experimentalDecorators: true\ndeclare function dec(a: any): any;\nfunction fn(value: Promise<number>): any {\n  class Class { async method(@dec(await value) arg: number) {} }\n  return Class\n}" },
-        .{ .label = "esDecorators-arguments",
-           .src = "@(() => {})\n@((a: any) => {})\n@((a: any, b: any) => {})\n@((a: any, b: any, c: any) => {})\n@((a: any, b: any, c: any, ...d: any[]) => {})\nclass C1 {}" },
-        .{ .label = "decoratedClassFromExternalModule",
-           .src = "// @experimentalDecorators: true\nfunction decorate(target: any) { }\n@decorate\nexport default class Decorated { }\nimport Decorated from 'decorated';" },
+        .{ .label = "decoratorOnFunctionParameter", .src = "declare const dec: any;\nclass C { n = true; }\nfunction direct(@dec this: C) { return this.n; }\nfunction called(@dec() this: C) { return this.n; }" },
+        .{ .label = "constructableDecoratorOnClass01", .src = "// @experimentalDecorators: true\nclass CtorDtor {}\n@CtorDtor\nclass C {}" },
+        .{ .label = "decoratorOnClassMethod6", .src = "// @experimentalDecorators: true\ndeclare function dec(): <T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>) => TypedPropertyDescriptor<T>;\nclass C { @dec [\"method\"]() {} }" },
+        .{ .label = "decoratorOnClassMethodParameter3", .src = "// @experimentalDecorators: true\ndeclare function dec(a: any): any;\nfunction fn(value: Promise<number>): any {\n  class Class { async method(@dec(await value) arg: number) {} }\n  return Class\n}" },
+        .{ .label = "esDecorators-arguments", .src = "@(() => {})\n@((a: any) => {})\n@((a: any, b: any) => {})\n@((a: any, b: any, c: any) => {})\n@((a: any, b: any, c: any, ...d: any[]) => {})\nclass C1 {}" },
+        .{ .label = "decoratedClassFromExternalModule", .src = "// @experimentalDecorators: true\nfunction decorate(target: any) { }\n@decorate\nexport default class Decorated { }\nimport Decorated from 'decorated';" },
     };
     for (cases) |c| {
         var compilation = try ts_driver.compileSource(T.allocator, c.src, .{
@@ -4136,7 +4267,6 @@ test "conformance: decorator fixtures emit at least one diagnostic naturally" {
         try T.expect(compilation.has_errors);
     }
 }
-
 
 // BISECTION HARNESS — re-added by the §3.A heap-leak investigation
 // (see `docs/TS_PARITY_PLAN_HEAP_LEAK.md`). Placed BEFORE the adjacent

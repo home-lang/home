@@ -6411,9 +6411,15 @@ pub const Parser = struct {
                 }
                 if (self.match(.dot_dot_dot)) flags.is_rest = true;
                 var name_span = tokenSpan(ps);
-                var name_id: hir_mod.StringId = undefined;
+                var name_node: NodeId = hir_mod.none_node_id;
+                var seen_name: ?hir_mod.StringId = null;
                 var type_ann: NodeId = hir_mod.none_node_id;
-                if (self.peek().kind == .identifier or
+                if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) {
+                    name_node = try self.parseBindingPattern();
+                    name_span = self.hir.spanOf(name_node);
+                    if (self.match(.question)) flags.is_optional = true;
+                    if (self.match(.colon)) type_ann = try self.parseTypeAnnotation();
+                } else if (self.peek().kind == .identifier or
                     self.peek().kind == .kw_this or
                     (self.peek().kind.isKeyword() and (self.peekAt(1).kind == .colon or self.peekAt(1).kind == .question)))
                 {
@@ -6421,19 +6427,22 @@ pub const Parser = struct {
                     name_span = tokenSpan(name_tok);
                     if (self.match(.question)) flags.is_optional = true;
                     if (self.match(.colon)) type_ann = try self.parseTypeAnnotation();
-                    name_id = try self.internToken(name_tok);
+                    const name_id = try self.internToken(name_tok);
+                    name_node = try self.builder.addIdentifier(name_span, name_id);
+                    seen_name = name_id;
                 } else {
                     type_ann = try self.parseTypeAnnotation();
                     try self.reportUnusedRenamesInFnTypeParam(type_ann);
                     var buf: [32]u8 = undefined;
                     const synthetic = std.fmt.bufPrint(&buf, "__arg{d}", .{params.items.len}) catch
                         return error.OutOfMemory;
-                    name_id = self.interner.intern(synthetic) catch return error.OutOfMemory;
+                    const name_id = self.interner.intern(synthetic) catch return error.OutOfMemory;
+                    name_node = try self.builder.addIdentifier(name_span, name_id);
+                    seen_name = name_id;
                 }
-                const ident = try self.builder.addIdentifier(name_span, name_id);
                 const param = try self.builder.addParameter(
                     .{ .start = ps.span.start, .end = self.tokens[self.cursor - 1].span.end },
-                    ident,
+                    name_node,
                     type_ann,
                     hir_mod.none_node_id,
                     flags,
@@ -6444,11 +6453,13 @@ pub const Parser = struct {
                     // which underlines `public A` starting at `public`.
                     try self.reportCodeAt(param_property_anchor.span.start, param_property_anchor.line, 2369, "A parameter property is only allowed in a constructor implementation.");
                 }
-                if (seen_names.get(name_id)) |prev| {
-                    try self.reportDuplicateIdentifierNamed(prev.start, self.lineAt(prev.start), name_id);
-                    try self.reportDuplicateIdentifierNamed(name_span.start, self.lineAt(name_span.start), name_id);
-                } else {
-                    try seen_names.put(self.gpa, name_id, name_span);
+                if (seen_name) |name_id| {
+                    if (seen_names.get(name_id)) |prev| {
+                        try self.reportDuplicateIdentifierNamed(prev.start, self.lineAt(prev.start), name_id);
+                        try self.reportDuplicateIdentifierNamed(name_span.start, self.lineAt(name_span.start), name_id);
+                    } else {
+                        try seen_names.put(self.gpa, name_id, name_span);
+                    }
                 }
                 try params.append(self.gpa, param);
                 if (!self.match(.comma)) break;

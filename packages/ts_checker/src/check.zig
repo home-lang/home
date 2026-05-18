@@ -28369,8 +28369,21 @@ pub const Checker = struct {
                     // Prefer tsc's render shape with the inferred type
                     // name when available — `Type 'typeof Foo' cannot
                     // be used as an index type.` — falling back to the
-                    // bare form for unnamed types.
-                    if (try self.allocSimpleTypeName(idx_t)) |idx_name| {
+                    // bare form for unnamed types. Signature-typed
+                    // indices (`Symbol.for` is `(key: string) => symbol`)
+                    // render via `allocCallSignatureFnTypeName` so
+                    // TS2538 reads `Type '(key: string) => symbol'
+                    // cannot be used as an index type.` Mirrors
+                    // upstream tsc for `symbolProperty53.ts(5,5)`.
+                    const idx_name_opt: ?[]const u8 = ix_name_blk: {
+                        if (try self.allocSimpleTypeName(idx_t)) |n| break :ix_name_blk n;
+                        if (try self.allocObjectTypeShape(idx_t)) |s| break :ix_name_blk s;
+                        if (self.interner.isSignature(idx_t)) {
+                            if (try self.allocCallSignatureFnTypeName(idx_t)) |s| break :ix_name_blk s;
+                        }
+                        break :ix_name_blk null;
+                    };
+                    if (idx_name_opt) |idx_name| {
                         const msg = try std.fmt.allocPrint(
                             self.diag_arena.allocator(),
                             "Type '{s}' cannot be used as an index type.",
@@ -38026,15 +38039,15 @@ pub const Checker = struct {
         if (self.typeIsAnyLike(t)) return true;
         const f = self.interner.pool.flagsOf(t);
         if (f.is_union) {
-            // tsc requires EVERY union constituent to be a valid
-            // instanceof LHS (non-primitive). A `symbol | {}` union
-            // still fails because `symbol` is primitive.
-            // Mirrors `symbolType1.ts(3,1)` where the LHS is
-            // `Symbol() || {}`.
+            // Upstream accepts unions when any constituent can
+            // participate in `instanceof`; the false branch narrows the
+            // object/type-parameter constituents away. This covers
+            // `string | number | Box` and constrained `T | string`
+            // without rejecting the test expression up front.
             for (self.interner.unionMembers(t)) |member| {
-                if (!self.isInstanceofLeftAllowed(member)) return false;
+                if (self.isInstanceofLeftAllowed(member)) return true;
             }
-            return true;
+            return false;
         }
         return f.is_object or f.is_object_type or f.is_signature or f.is_tuple or f.is_type_parameter;
     }
@@ -47167,6 +47180,7 @@ test "checker: logical-or preserves string literal operands" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.instanceof_left_type);
     }
 }
 
