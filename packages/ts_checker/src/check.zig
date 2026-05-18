@@ -9509,9 +9509,33 @@ pub const Checker = struct {
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
         const length_id = self.string_interner.intern("length") catch return error.OutOfMemory;
+        // Walk the binding pattern first so we know whether a rest element
+        // is present. When there's NO rest, the synthesized tuple type is
+        // fixed-arity; render its `length` as a numeric literal so
+        // `fixedTupleLength` resolves correctly. Without this, downstream
+        // display code (e.g. `simpleDiagnosticTypeName`) would mistake the
+        // tuple for a variadic `[any, any, ...any[]]` and TS2345 prose for
+        // fixtures like `iterableArrayPattern10` would read with a
+        // bogus rest tail. Mirrors upstream tsc which preserves the
+        // fixed-length form when the binding has no rest.
+        var has_rest = false;
+        var fixed_idx: usize = 0;
+        for (hir_mod.patternElements(self.hir, pattern_node)) |e| {
+            if (self.hir.kindOf(e) != .parameter) continue;
+            const ep = hir_mod.parameterOf(self.hir, e);
+            if (ep.flags.is_rest) {
+                has_rest = true;
+                break;
+            }
+            fixed_idx += 1;
+        }
+        const length_t: TypeId = if (has_rest)
+            types.Primitive.number_t
+        else
+            (self.interner.internNumberLiteral(@floatFromInt(fixed_idx)) catch types.Primitive.number_t);
         try members.append(self.gpa, .{
             .name = length_id,
-            .type = types.Primitive.number_t,
+            .type = length_t,
             .is_optional = false,
             .is_readonly = false,
             .is_method = false,
@@ -38243,6 +38267,96 @@ pub const Checker = struct {
                         try tuple_buf.append(arena_t, ']');
                         break :blk tuple_buf.items;
                     }
+                    // Variadic tuple `[E0, ..., ...Rest[]]` — a parameter
+                    // type derived from a destructured rest pattern (`fun
+                    // ([a, ...b])`) lowers to an object type with a
+                    // numeric `length: number` (not a literal) plus a
+                    // number index that supplies the rest element type.
+                    // Distinguished from a plain `T[]` by the presence of
+                    // explicit numeric members (the fixed prefix) AND a
+                    // length-not-literal. Mirrors upstream prose for
+                    // fixtures like `iterableArrayPattern10/13/18/19`
+                    // where TS2345 reads e.g. `parameter of type '[any,
+                    // ...any[]]'.` instead of the positional placeholder.
+                    {
+                        const num_idx2 = self.interner.objectNumberIndex(t);
+                        const str_idx2 = self.interner.objectStringIndex(t);
+                        const sym_idx2 = self.interner.objectSymbolIndex(t);
+                        if (num_idx2 != types.Primitive.none and
+                            str_idx2 == types.Primitive.none and
+                            sym_idx2 == types.Primitive.none)
+                        {
+                            const length_id_sdt = self.string_interner.intern("length") catch 0;
+                            const members_sdt = self.interner.objectMembers(t);
+                            var has_length_sdt = false;
+                            var has_only_numeric_sdt = true;
+                            for (members_sdt) |m| {
+                                if (m.name == length_id_sdt) {
+                                    has_length_sdt = true;
+                                    continue;
+                                }
+                                const nm = self.string_interner.get(m.name);
+                                if (nm.len > 0 and isAllDigits(nm)) continue;
+                                has_only_numeric_sdt = false;
+                                break;
+                            }
+                            if (has_length_sdt and has_only_numeric_sdt) {
+                                const prefix_count_sdt = self.tupleFixedPrefixCount(t);
+                                if (prefix_count_sdt > 0) {
+                                    var vbuf_sdt: std.ArrayListUnmanaged(u8) = .empty;
+                                    const arena_vsdt = self.diag_arena.allocator();
+                                    try vbuf_sdt.append(arena_vsdt, '[');
+                                    var vi_sdt: usize = 0;
+                                    var ok_sdt = true;
+                                    while (vi_sdt < prefix_count_sdt) : (vi_sdt += 1) {
+                                        if (vi_sdt > 0) try vbuf_sdt.appendSlice(arena_vsdt, ", ");
+                                        const elem_t_sdt = self.tupleElementType(t, vi_sdt);
+                                        const elem_name_sdt = (try self.simpleDiagnosticTypeName(elem_t_sdt)) orelse {
+                                            ok_sdt = false;
+                                            break;
+                                        };
+                                        try vbuf_sdt.appendSlice(arena_vsdt, elem_name_sdt);
+                                    }
+                                    if (ok_sdt) {
+                                        try vbuf_sdt.appendSlice(arena_vsdt, ", ...");
+                                        if (try self.simpleDiagnosticTypeName(num_idx2)) |rest_name_sdt| {
+                                            const wrap_r = std.mem.indexOfScalar(u8, rest_name_sdt, '|') != null or
+                                                std.mem.indexOf(u8, rest_name_sdt, "=>") != null;
+                                            if (wrap_r) {
+                                                try vbuf_sdt.append(arena_vsdt, '(');
+                                                try vbuf_sdt.appendSlice(arena_vsdt, rest_name_sdt);
+                                                try vbuf_sdt.appendSlice(arena_vsdt, ")[]");
+                                            } else {
+                                                try vbuf_sdt.appendSlice(arena_vsdt, rest_name_sdt);
+                                                try vbuf_sdt.appendSlice(arena_vsdt, "[]");
+                                            }
+                                            try vbuf_sdt.append(arena_vsdt, ']');
+                                            break :blk vbuf_sdt.items;
+                                        }
+                                    }
+                                } else {
+                                    // Plain array type (`T[]`) — no fixed
+                                    // prefix members, just `length: number`
+                                    // plus a number index supplying the
+                                    // element type. Render as `T[]` so
+                                    // TS2345 prose for fixtures like
+                                    // `iterableArrayPattern18` reads
+                                    // `parameter of type 'Bar[]'.`
+                                    // instead of the positional placeholder.
+                                    if (try self.simpleDiagnosticTypeName(num_idx2)) |rest_name_arr| {
+                                        const wrap_arr = std.mem.indexOfScalar(u8, rest_name_arr, '|') != null or
+                                            std.mem.indexOf(u8, rest_name_arr, "=>") != null;
+                                        const arena_arr_s = self.diag_arena.allocator();
+                                        const out_arr = if (wrap_arr)
+                                            try std.fmt.allocPrint(arena_arr_s, "({s})[]", .{rest_name_arr})
+                                        else
+                                            try std.fmt.allocPrint(arena_arr_s, "{s}[]", .{rest_name_arr});
+                                        break :blk out_arr;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 // Empty object types — anonymous, no declared members,
                 // no index signatures — render as `{}` so TS2322 prose
@@ -41271,6 +41385,50 @@ pub const Checker = struct {
                         self.interner.objectStringIndex(t) == types.Primitive.none and
                         self.interner.objectSymbolIndex(t) == types.Primitive.none)
                     {
+                        // Variadic tuple `[E0, E1, ..., ...Rest[]]` —
+                        // distinguished from a plain `T[]` by the presence
+                        // of explicit numeric members (the fixed prefix).
+                        // tsc prose for fixtures like
+                        // `iterableArrayPattern10/13/18/19` renders the
+                        // destructured rest parameter type as
+                        // `[any, ...any[]]` / `Bar[]` (no fixed prefix
+                        // when length=0). Mirrors upstream prose so TS2345
+                        // reads `Argument of type 'X' is not assignable to
+                        // parameter of type '[any, ...any[]]'.` instead of
+                        // the positional placeholder.
+                        const prefix_count = self.tupleFixedPrefixCount(t);
+                        if (prefix_count > 0) {
+                            var vbuf: std.ArrayListUnmanaged(u8) = .empty;
+                            const arena_v = self.diag_arena.allocator();
+                            try vbuf.append(arena_v, '[');
+                            var vi: usize = 0;
+                            while (vi < prefix_count) : (vi += 1) {
+                                if (vi > 0) try vbuf.appendSlice(arena_v, ", ");
+                                const elem_t = self.tupleElementType(t, vi);
+                                if (try self.allocSimpleTypeName(elem_t)) |nm| {
+                                    try vbuf.appendSlice(arena_v, nm);
+                                } else {
+                                    try vbuf.appendSlice(arena_v, "any");
+                                }
+                            }
+                            try vbuf.appendSlice(arena_v, ", ...");
+                            if (try self.allocSimpleTypeName(num_idx)) |rest_name| {
+                                const wrap_r = std.mem.indexOfScalar(u8, rest_name, '|') != null or
+                                    std.mem.indexOf(u8, rest_name, "=>") != null;
+                                if (wrap_r) {
+                                    try vbuf.append(arena_v, '(');
+                                    try vbuf.appendSlice(arena_v, rest_name);
+                                    try vbuf.appendSlice(arena_v, ")[]");
+                                } else {
+                                    try vbuf.appendSlice(arena_v, rest_name);
+                                    try vbuf.appendSlice(arena_v, "[]");
+                                }
+                            } else {
+                                try vbuf.appendSlice(arena_v, "any[]");
+                            }
+                            try vbuf.append(arena_v, ']');
+                            break :blk vbuf.items;
+                        }
                         if (try self.allocSimpleTypeName(num_idx)) |elem_name| {
                             // Wrap union element type in parens so
                             // `T[]` doesn't become ambiguous in prose.
