@@ -39503,14 +39503,7 @@ pub const Checker = struct {
             if (!ok and !contextual_ok and !emitted_2556) {
                 var emitted = false;
                 if (self.hir.kindOf(args[i]) == .array_literal and self.isTupleShapedTarget(param_t)) {
-                    if (try self.formatArrayLiteralTupleArgumentNotAssignable(args[i], param_t)) |msg| {
-                        try self.diagnostics.append(self.gpa, .{
-                            .node = args[i],
-                            .code = TsCodes.argument_type_mismatch,
-                            .message = msg,
-                        });
-                        emitted = true;
-                    } else if (self.isContextualCallShapeDiagnosticAlreadyEmitted(call_node, args, args[i])) {
+                    if (self.isContextualCallShapeDiagnosticAlreadyEmitted(call_node, args, args[i])) {
                         emitted = true;
                     }
                 }
@@ -39698,6 +39691,72 @@ pub const Checker = struct {
             "Argument is not assignable to parameter at position {d}.",
             .{position},
         );
+    }
+
+    fn formatArrayLiteralTupleArgumentNotAssignable(
+        self: *Checker,
+        arg_node: NodeId,
+        param_t: TypeId,
+    ) !?[]const u8 {
+        if (self.hir.kindOf(arg_node) != .array_literal) return null;
+        if (!self.isTupleShapedTarget(param_t)) return null;
+        const source_count = hir_mod.arrayLiteralElements(self.hir, arg_node).len;
+        const fixed_prefix = self.tupleFixedPrefixCount(param_t);
+        const fixed_len = self.fixedTupleLength(param_t);
+        const too_few = source_count < fixed_prefix;
+        const too_many = if (fixed_len) |len| source_count > len else false;
+        if (!too_few and !too_many) return null;
+        const source_name = try self.arrayLiteralTupleDisplayName(arg_node);
+        const target_name = (try self.tupleDiagnosticDisplayName(param_t)) orelse return null;
+        return try std.fmt.allocPrint(self.diag_arena.allocator(), "Argument of type '{s}' is not assignable to parameter of type '{s}'.", .{ source_name, target_name });
+    }
+
+    fn arrayLiteralTupleDisplayName(self: *Checker, array_node: NodeId) CheckError![]const u8 {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        try buf.append(arena, '[');
+        for (hir_mod.arrayLiteralElements(self.hir, array_node), 0..) |el, i| {
+            if (i > 0) try buf.appendSlice(arena, ", ");
+            if (self.hir.kindOf(el) == .array_literal) {
+                try buf.appendSlice(arena, try self.arrayLiteralTupleDisplayName(el));
+                continue;
+            }
+            var t = self.hir.typeOf(el);
+            if (t == types.Primitive.none) t = try self.checkExpression(el);
+            try buf.appendSlice(arena, (try self.allocSimpleTypeName(self.widenLiteralType(t))) orelse "any");
+        }
+        try buf.append(arena, ']');
+        return buf.items;
+    }
+
+    fn tupleDiagnosticDisplayName(self: *Checker, tuple_t: TypeId) CheckError!?[]const u8 {
+        if (tuple_t >= self.interner.pool.typeCount()) return null;
+        if (!self.interner.pool.flagsOf(tuple_t).is_object_type) return null;
+        const fixed_prefix = self.tupleFixedPrefixCount(tuple_t);
+        const fixed_len = self.fixedTupleLength(tuple_t);
+        const number_index = self.interner.objectNumberIndex(tuple_t);
+        if (fixed_prefix == 0 and fixed_len == null and number_index == types.Primitive.none) return null;
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        try buf.append(arena, '[');
+        var i: usize = 0;
+        while (i < fixed_prefix) : (i += 1) {
+            if (i > 0) try buf.appendSlice(arena, ", ");
+            const elem_t = self.tupleElementType(tuple_t, i);
+            if (try self.tupleDiagnosticDisplayName(elem_t)) |nested| {
+                try buf.appendSlice(arena, nested);
+            } else {
+                try buf.appendSlice(arena, (try self.allocSimpleTypeName(elem_t)) orelse "any");
+            }
+        }
+        if (fixed_len == null and number_index != types.Primitive.none) {
+            if (i > 0) try buf.appendSlice(arena, ", ");
+            try buf.appendSlice(arena, "...");
+            try buf.appendSlice(arena, (try self.allocSimpleTypeName(number_index)) orelse "any");
+            try buf.appendSlice(arena, "[]");
+        }
+        try buf.append(arena, ']');
+        return buf.items;
     }
 
     /// Render both signature TypeIds as `(p: T) => U` strings, when
