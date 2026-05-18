@@ -7795,6 +7795,13 @@ pub const Checker = struct {
             if (vk != .literal_null and vk != .literal_undefined) continue;
             const ep = hir_mod.parameterOf(self.hir, e);
             if (ep.name == hir_mod.none_node_id or self.hir.kindOf(ep.name) != .identifier) continue;
+            // A per-element default (`b5 = 3`) supplies a concrete type
+            // for this slot, so tsc suppresses TS7031 even when the
+            // source initializer position is `undefined`/`null`. Mirrors
+            // upstream baselines for `destructuringVariableDeclaration1ES{5,6}`
+            // line 12 — `var [b5 = 3, b6 = true, b7 = temp] = [undefined, undefined, undefined];`
+            // emits no implicit-any since each binding has a default.
+            if (ep.default_value != hir_mod.none_node_id) continue;
             const id = hir_mod.identifierOf(self.hir, ep.name);
             const raw = self.string_interner.get(id.name);
             const msg = try std.fmt.allocPrint(
