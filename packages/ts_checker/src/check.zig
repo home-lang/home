@@ -23864,6 +23864,27 @@ pub const Checker = struct {
     /// `iterableArrayPattern22/23`, `YieldExpression6_es6`, and
     /// the `generatorTypeCheck21` baseline.
     fn reportIteratorRequired(self: *Checker, target_node: NodeId, source_t: TypeId) CheckError!void {
+        return self.reportIteratorRequiredWithSource(target_node, source_t, hir_mod.none_node_id);
+    }
+
+    /// Variant of `reportIteratorRequired` that also takes the source
+    /// expression HIR node. When the source is an `object_literal`,
+    /// the helper renders the shape from the HIR directly so primitive
+    /// literal values (`true`, `42`, `"foo"`) keep their literal form
+    /// in the diagnostic prose, matching tsc's TS2488 baselines for
+    /// `iterableArrayPattern23.ts(2,1)` (`{ 0: string; 1: true; }`) and
+    /// `iterableArrayPattern24.ts(2,1)` (same RHS via a rest pattern).
+    fn reportIteratorRequiredWithSource(self: *Checker, target_node: NodeId, source_t: TypeId, source_node: NodeId) CheckError!void {
+        if (source_node != hir_mod.none_node_id) {
+            if (self.allocObjectLiteralExpressionShape(source_node) catch null) |source_name| {
+                const arena = self.diag_arena.allocator();
+                const msg = std.fmt.allocPrint(arena, "Type '{s}' must have a '[Symbol.iterator]()' method that returns an iterator.", .{source_name}) catch null;
+                if (msg) |m| {
+                    try self.report(target_node, TsCodes.yield_star_not_iterable, m);
+                    return;
+                }
+            }
+        }
         if (source_t != types.Primitive.none) {
             // Prefer the literal object/tuple shape (`{ 0: string; 1: true; }`)
             // when `allocSimpleTypeName` can't summarize the type — the
@@ -23905,13 +23926,13 @@ pub const Checker = struct {
             self.hir.kindOf(source_node) == .object_literal and
             !self.objectLiteralHasSymbolIteratorMethod(source_node))
         {
-            try self.reportIteratorRequired(target_node, source_t);
+            try self.reportIteratorRequiredWithSource(target_node, source_t, source_node);
             return;
         }
         if (source_t != types.Primitive.any and source_t != types.Primitive.unknown and
             !self.isIterableLikeType(source_t) and !self.objectLiteralHasSymbolIteratorMethod(source_node))
         {
-            try self.reportIteratorRequired(target_node, source_t);
+            try self.reportIteratorRequiredWithSource(target_node, source_t, source_node);
             return;
         }
         const fallback_elem_t = try self.iterableElementType(source_t);
@@ -42842,6 +42863,56 @@ pub const Checker = struct {
             return;
         }
         try buf.appendSlice(arena, name);
+    }
+
+    /// Render an object literal **expression** as its TS-baseline shape
+    /// (`{ 0: string; 1: true; }`), preserving literal types for
+    /// primitive value expressions instead of widening to the inferred
+    /// `boolean_t` / `number_t` / `string_t`. Mirrors upstream tsc which
+    /// keeps the fresh literal form in TS2488 prose for fixtures like
+    /// `iterableArrayPattern23.ts(2,1)` and `iterableArrayPattern24.ts(2,1)`
+    /// where the source `{ 0: "", 1: true }` renders with `1: true`
+    /// (not `1: boolean`). Returns null when the node is not a plain
+    /// `object_literal` (e.g. has spreads, computed/method keys,
+    /// or non-literal-named keys) so callers can fall back to the
+    /// type-driven `allocObjectTypeShape` path.
+    fn allocObjectLiteralExpressionShape(self: *Checker, node: NodeId) !?[]const u8 {
+        if (node == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(node) != .object_literal) return null;
+        const props = hir_mod.objectLiteralProps(self.hir, node);
+        if (props.len == 0) return "{}";
+        // Cap render at a small member count to avoid runaway allocation
+        // on large object literals — mirrors `allocObjectTypeShapeOpts`.
+        if (props.len > 8) return null;
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        try buf.appendSlice(arena, "{ ");
+        for (props) |p| {
+            if (self.hir.kindOf(p) != .object_property) return null;
+            const op = hir_mod.objectPropertyOf(self.hir, p);
+            if (op.is_computed or op.is_method) return null;
+            if (op.value == hir_mod.none_node_id) return null;
+            const key_name = self.propertyNameFromKeyNode(op.key) orelse return null;
+            const name_str = self.string_interner.get(key_name);
+            try appendObjectShapeMemberName(&buf, arena, name_str);
+            try buf.appendSlice(arena, ": ");
+            // Match tsc's TS2488 prose for fresh object literal sources:
+            // boolean literals (`true`/`false`) keep their literal form,
+            // but string and number literals widen to `string`/`number`
+            // (the boolean-literal type is `false | true`, never `boolean`,
+            // so tsc's widening rule for fresh `true` is a no-op).
+            const raw_t = try self.checkExpression(op.value);
+            const value_kind = self.hir.kindOf(op.value);
+            const display_t: TypeId = if (value_kind == .literal_bool)
+                (try self.expressionLiteralType(op.value, raw_t))
+            else
+                self.widenLiteralType(raw_t);
+            const type_name = (try self.allocSimpleTypeName(display_t)) orelse return null;
+            try buf.appendSlice(arena, type_name);
+            try buf.appendSlice(arena, "; ");
+        }
+        try buf.append(arena, '}');
+        return buf.items;
     }
 
     fn allocObjectTypeShapeOpts(self: *Checker, t: TypeId, optional_undefined_suffix: bool) !?[]const u8 {
