@@ -6152,6 +6152,12 @@ pub const Parser = struct {
                     hir_mod.none_node_id,
                     flags,
                 );
+                if (saw_param_property_mod) {
+                    // TS2369 anchored at the first parameter-property
+                    // modifier token. Matches `parserParameterList6.ts(2,19)`
+                    // which underlines `public A` starting at `public`.
+                    try self.reportCodeAt(param_property_anchor.span.start, param_property_anchor.line, 2369, "A parameter property is only allowed in a constructor implementation.");
+                }
                 if (seen_names.get(name_id)) |prev| {
                     try self.reportDuplicateIdentifierNamed(prev.start, self.lineAt(prev.start), name_id);
                     try self.reportDuplicateIdentifierNamed(name_span.start, self.lineAt(name_span.start), name_id);
