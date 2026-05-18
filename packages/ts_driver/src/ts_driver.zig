@@ -808,6 +808,26 @@ pub fn compileSource(
     for (checker.diagnostics.items) |d| {
         if (suppress_js_check_diagnostics and !checkerDiagnosticSurfacesInUncheckedJs(d.code)) continue;
         const diag_pos = d.pos orelse c.hir.spanOf(d.node).start;
+
+        // TS2300 (parser) vs TS2451 (checker) coalesce: tsc emits ONLY
+        // TS2451 for `let`/`const` destructuring duplicate-binding
+        // diagnostics. The parser conservatively emits TS2300 because
+        // it doesn't know the enclosing decl-kind; when the checker
+        // promotes a position to TS2451, remove the matching TS2300.
+        // Mirrors `destructuringSameNames` baseline.
+        if (d.code == 2451) {
+            var pi: usize = 0;
+            while (pi < c.diagnostics.items.len) {
+                const existing = c.diagnostics.items[pi];
+                if (existing.code == 2300 and existing.pos == diag_pos) {
+                    gpa.free(existing.message);
+                    _ = c.diagnostics.orderedRemove(pi);
+                    continue;
+                }
+                pi += 1;
+            }
+        }
+
         try c.diagnostics.append(gpa, .{
             .phase = .bind,
             .pos = diag_pos,
