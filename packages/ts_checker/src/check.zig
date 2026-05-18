@@ -23619,9 +23619,43 @@ pub const Checker = struct {
         }
     }
 
-    fn checkDestructuringAssignmentTargetWithDefault(self: *Checker, target_node: NodeId, effective_t: TypeId, prop_t: TypeId, default_t: TypeId) CheckError!void {
-        _ = prop_t;
-        _ = default_t;
+    /// Destructuring-assignment-target check that knows the effective
+    /// source was synthesized from `(source | widened-default)`. When
+    /// the union fails to assign but ONE constituent alone succeeds,
+    /// tsc renders only the failing constituent. For
+    /// `for ([k = false] of map)` where source elem is `string` and
+    /// `k: string`, the default's widened type `boolean` is the
+    /// failing side — that's what the diagnostic mentions.
+    fn checkDestructuringAssignmentTargetWithDefault(self: *Checker, target_node: NodeId, effective_t: TypeId, source_only_t: TypeId, default_t: TypeId) CheckError!void {
+        const tk = self.hir.kindOf(target_node);
+        if (tk != .identifier and tk != .member_access and tk != .element_access) {
+            try self.checkDestructuringAssignmentTarget(target_node, effective_t);
+            return;
+        }
+        const target_t = if (tk == .identifier)
+            self.typeOfIdentifierDeclared(target_node)
+        else
+            try self.checkExpression(target_node);
+        if (target_t == types.Primitive.none or target_t == types.Primitive.any or target_t == types.Primitive.unknown) {
+            try self.checkDestructuringAssignmentTarget(target_node, effective_t);
+            return;
+        }
+        if (self.engine.isAssignableTo(effective_t, target_t) catch true) {
+            try self.checkDestructuringAssignmentTarget(target_node, effective_t);
+            return;
+        }
+        const source_no_undef = self.subtractType(source_only_t, types.Primitive.undefined_t) catch source_only_t;
+        const widened_default = self.widenLiteralType(default_t);
+        const source_ok = if (source_no_undef == types.Primitive.never or source_no_undef == types.Primitive.none) true else (self.engine.isAssignableTo(source_no_undef, target_t) catch true);
+        const default_ok = if (widened_default == types.Primitive.never or widened_default == types.Primitive.none) true else (self.engine.isAssignableTo(widened_default, target_t) catch true);
+        if (source_ok and !default_ok) {
+            try self.reportTypeNotAssignable(target_node, widened_default, target_t, "Type is not assignable to target type.");
+            return;
+        }
+        if (default_ok and !source_ok) {
+            try self.reportTypeNotAssignable(target_node, source_no_undef, target_t, "Type is not assignable to target type.");
+            return;
+        }
         try self.checkDestructuringAssignmentTarget(target_node, effective_t);
     }
 
