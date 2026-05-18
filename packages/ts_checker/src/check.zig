@@ -28936,12 +28936,36 @@ pub const Checker = struct {
                         !try self.jsxAttributesMatchOverload(el.tag, attrs_t, attrs.len) and
                         !(self.containsFreeTypeParameter(target) and try self.jsxRequiredPropsCovered(target, attrs_t)))
                     {
-                        // tsc anchors the JSX-attrs-not-assignable
-                        // diagnostic at the tag identifier (`test1` /
-                        // `MyComponent`) — not the JSX element's `<`.
-                        // Mirrors the column expected by upstream
-                        // baselines (`tsxAttributeResolution3` etc.).
-                        try self.report(el.tag, TsCodes.type_not_assignable, "JSX attributes are not assignable to the target props type.");
+                        // Prefer tsc's structural-shape wording
+                        // (`Type 'X' is not assignable to type 'Y'.`)
+                        // when both attrs_t and the (substituted)
+                        // target render cleanly via the existing
+                        // type-name helpers. Falls back to the
+                        // simplified JSX-specific message when either
+                        // side fails to render — better than emitting
+                        // a misshapen structural message. The
+                        // upstream-shape branch lines up
+                        // `tsxAttributeResolution3` and the
+                        // structural-message cluster with tsc; the
+                        // fallback keeps existing tests pinned.
+                        const src_text = (try self.allocAnonymousObjectName(attrs_t)) orelse
+                            (try self.allocSimpleTypeName(attrs_t));
+                        const tgt_text = (try self.allocSimpleTypeName(effective_target)) orelse
+                            (try self.allocAnonymousObjectName(effective_target));
+                        if (src_text != null and tgt_text != null) {
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Type '{s}' is not assignable to type '{s}'.",
+                                .{ src_text.?, tgt_text.? },
+                            );
+                            try self.diagnostics.append(self.gpa, .{
+                                .node = el.tag,
+                                .code = TsCodes.type_not_assignable,
+                                .message = msg,
+                            });
+                        } else {
+                            try self.report(el.tag, TsCodes.type_not_assignable, "JSX attributes are not assignable to the target props type.");
+                        }
                     }
                 }
             }
@@ -42594,6 +42618,34 @@ pub const Checker = struct {
             }
         }
         try buf.append(arena, '"');
+        return buf.items;
+    }
+
+    /// Best-effort anonymous object-type rendering for diagnostics.
+    /// Produces `{ a: T; b: U; }` for object types with named members,
+    /// with `?` for optionals and `readonly` for readonly slots.
+    /// Returns null when any member type fails to render, so callers
+    /// can fall back to a simpler shape.
+    fn allocAnonymousObjectName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
+        if (t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_object_type) return null;
+        const members = self.interner.objectMembers(t);
+        if (members.len == 0) return "{}";
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        try buf.appendSlice(arena, "{ ");
+        for (members, 0..) |m, i| {
+            if (i > 0) try buf.append(arena, ' ');
+            if (m.is_readonly) try buf.appendSlice(arena, "readonly ");
+            try buf.appendSlice(arena, self.string_interner.get(m.name));
+            if (m.is_optional) try buf.append(arena, '?');
+            try buf.appendSlice(arena, ": ");
+            const tn = (try self.allocSimpleTypeName(m.type)) orelse return null;
+            try buf.appendSlice(arena, tn);
+            try buf.append(arena, ';');
+        }
+        try buf.appendSlice(arena, " }");
         return buf.items;
     }
 
