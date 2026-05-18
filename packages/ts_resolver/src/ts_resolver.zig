@@ -177,7 +177,19 @@ pub const Resolver = struct {
         // Relative or absolute path.
         if (isRelative(specifier)) {
             const dir = dirname(containing_file);
-            const joined = try self.joinPath(dir, specifier);
+            // tsc accepts a bare `.` (and `..`) as a relative
+            // directory specifier — `import x from "."` resolves to
+            // `./index.{ts,…}` in the containing file's directory.
+            // Normalize to `./` / `../` so `joinPath` produces a
+            // clean directory path that `tryDirectoryIndex` can stat
+            // (mirrors `importFromDot.ts`).
+            const normalized: []const u8 = if (std.mem.eql(u8, specifier, "."))
+                "./"
+            else if (std.mem.eql(u8, specifier, ".."))
+                "../"
+            else
+                specifier;
+            const joined = try self.joinPath(dir, normalized);
             if (try self.tryFileWithExtensions(joined)) |r| return r;
             if (try self.tryDirectoryIndex(joined)) |r| return r;
             return error.NotFound;
@@ -283,14 +295,19 @@ pub const Resolver = struct {
     }
 
     fn tryDirectoryIndex(self: *Resolver, dir: []const u8) ResolveError!?Resolution {
-        if (!self.fs.directoryExists(dir)) return null;
+        // Trim a trailing `/` so `a/` matches the `a` directory entry
+        // recorded in the VFS (mirrors tsc which treats the
+        // directory-only specifier `"."` as `<dir>/` and resolves it
+        // through `<dir>/index.{ts,…}`).
+        const trimmed = if (dir.len > 1 and dir[dir.len - 1] == '/') dir[0 .. dir.len - 1] else dir;
+        if (!self.fs.directoryExists(trimmed)) return null;
         // Try package.json first.
-        const pkg_path = try self.joinPath(dir, "package.json");
+        const pkg_path = try self.joinPath(trimmed, "package.json");
         if (self.fs.fileExists(pkg_path)) {
-            if (try self.resolvePackageMain(dir, pkg_path)) |r| return r;
+            if (try self.resolvePackageMain(trimmed, pkg_path)) |r| return r;
         }
         // Fall back to index.X.
-        return self.tryDirectoryIndexNoPkg(dir);
+        return self.tryDirectoryIndexNoPkg(trimmed);
     }
 
     /// Like `tryDirectoryIndex` but without consulting a nested
@@ -1082,6 +1099,21 @@ test "Resolver: relative directory falls through to index.ts" {
     defer r.deinit();
     const res = try r.resolve("./utils", "/proj/src/main.ts");
     try T.expectEqualStrings("/proj/src/utils/index.ts", res.path);
+    try T.expectEqual(Resolution.Source.index_file, res.source);
+}
+
+test "Resolver: bare dot specifier resolves to sibling index" {
+    // `import x from "."` from `/proj/a/b.ts` must resolve to
+    // `/proj/a/index.ts`. Mirrors tsc on `importFromDot.ts`.
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/a/index.ts", "export const indexInA = 0;");
+    try vfs.addFile("/proj/a/b.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const res = try r.resolve(".", "/proj/a/b.ts");
+    try T.expectEqualStrings("/proj/a/index.ts", res.path);
     try T.expectEqual(Resolution.Source.index_file, res.source);
 }
 
