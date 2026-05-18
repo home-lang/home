@@ -10352,24 +10352,29 @@ test "parser: variable declaration list tolerates additional declarators" {
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
-test "parser: for-init multi-declarator hoists each binding to enclosing block" {
+test "parser: for-init multi-declarator wraps every binding into the init block" {
     // `for (var i = 0, j = 10; i < j; i++, j--)` — the second
     // declarator `j` previously parsed-and-discarded, so any
     // reference to `j` inside the for header raised TS2304. Mirrors
     // `commaOperatorOtherValidOperation.ts` baseline (clean run).
+    //
+    // The current parser wraps multi-declarator inits in a synthetic
+    // block as the for-stmt's `init` slot (rather than draining them
+    // out to the enclosing block via `for_init_extras`). Validate that
+    // shape so the binder + checker visit both `i` and `j`.
     var s = try newTestSetup("for (var i = 0, j = 10; i < j; i++, j--) {}");
     defer destroyTestSetup(s);
     const root = try s.parser.parseSourceFile();
     const stmts = hir_mod.blockStmts(&s.hir, root);
-    // The for-stmt plus the hoisted `j` var-decl should both sit
-    // at the enclosing block. (Statement order is `for_stmt` first,
-    // then the extra `j` var-decl drained from pending.)
-    try T.expect(stmts.len >= 2);
-    var saw_for = false;
+    try T.expectEqual(@as(usize, 1), stmts.len);
+    try T.expectEqual(hir_mod.NodeKind.for_stmt, s.hir.kindOf(stmts[0]));
+    const init = hir_mod.forStmtOf(&s.hir, stmts[0]).init;
+    try T.expectEqual(hir_mod.NodeKind.block_stmt, s.hir.kindOf(init));
+    const decls = hir_mod.blockStmts(&s.hir, init);
+    try T.expectEqual(@as(usize, 2), decls.len);
     var saw_extra_var = false;
-    for (stmts) |stmt| {
+    for (decls) |stmt| {
         switch (s.hir.kindOf(stmt)) {
-            .for_stmt => saw_for = true,
             .var_decl => {
                 const v = hir_mod.varDeclOf(&s.hir, stmt);
                 if (v.name != hir_mod.none_node_id and s.hir.kindOf(v.name) == .identifier) {
@@ -10380,7 +10385,6 @@ test "parser: for-init multi-declarator hoists each binding to enclosing block" 
             else => {},
         }
     }
-    try T.expect(saw_for);
     try T.expect(saw_extra_var);
 }
 
