@@ -6065,12 +6065,33 @@ pub const Parser = struct {
                 break :blk try self.builder.addTypeRef(.{ .start = start_tok.span.start, .end = end_pos }, id, &.{}, &.{});
             },
             else => {
-                // Unknown — emit a synthetic `unknown` type ref so the
-                // upstream HIR shape stays valid; downstream binder /
-                // checker will flag the diagnostic.
-                _ = self.advance();
-                const id = self.interner.intern("unknown") catch return error.OutOfMemory;
-                return try self.builder.addTypeRef(tokenSpan(t), id, &.{}, &.{});
+                // Unknown — emit a synthetic type ref so the upstream
+                // HIR shape stays valid; downstream binder / checker
+                // will flag the diagnostic.
+                //
+                // §6.A parserErrorRecovery_ParameterList6: when the
+                // bad token is a reserved word (`break`, `continue`,
+                // `case`, etc.), tsc treats the token as an identifier
+                // for type-resolution purposes so the checker fires
+                // TS2304 ("Cannot find name '<word>'") against it.
+                // Carry the actual lexeme into the synthetic type ref
+                // so the unresolved-type path can surface that name.
+                const bad = self.advance();
+                const carries_lexeme = switch (bad.kind) {
+                    .kw_break, .kw_continue, .kw_case, .kw_class, .kw_const,
+                    .kw_debugger, .kw_default, .kw_delete, .kw_do, .kw_else,
+                    .kw_enum, .kw_export, .kw_extends, .kw_finally, .kw_for,
+                    .kw_function, .kw_if, .kw_import, .kw_in, .kw_instanceof,
+                    .kw_let, .kw_return, .kw_super, .kw_switch, .kw_throw,
+                    .kw_try, .kw_typeof, .kw_var, .kw_while, .kw_with,
+                    .kw_yield => true,
+                    else => false,
+                };
+                const id = if (carries_lexeme)
+                    self.interner.intern(self.source[bad.span.start..bad.span.end]) catch return error.OutOfMemory
+                else
+                    self.interner.intern("unknown") catch return error.OutOfMemory;
+                return try self.builder.addTypeRef(tokenSpan(bad), id, &.{}, &.{});
             },
         };
     }
