@@ -32501,7 +32501,12 @@ pub const Checker = struct {
                 if (self.rootHasVarDeclarationNamed(node, id.name) or self.sourceHasVarDeclarationText(id.name)) return types.Primitive.any;
                 if (self.moduleHasRuntimeNamespacePrefix(module, id.name)) return types.Primitive.any;
                 if (self.identifierNamesEnclosingClassExpression(node, id.name)) return types.Primitive.any;
-                self.reportCannotFindName(node, id.name) catch {};
+                // Dedupe by node — `typeOfIdentifier` is reachable from
+                // both `checkExpression` and the narrowing helpers
+                // (`applyTypeGuard`, `applyIdentifierLiteralNarrow`),
+                // and re-running the same unresolved-name lookup on the
+                // identical node would otherwise double-emit TS2304.
+                self.reportCannotFindNameOnce(node, id.name) catch {};
             }
         }
         // Lib globals — `Object` carries the keys/values/entries/
@@ -32658,7 +32663,7 @@ pub const Checker = struct {
         }
         if (self.module == null and !self.isDeclNameSlot(node) and !self.isBuiltinName(id.name)) {
             if (!self.identifierNamesEnclosingClassExpression(node, id.name)) {
-                self.reportCannotFindName(node, id.name) catch {};
+                self.reportCannotFindNameOnce(node, id.name) catch {};
             }
         }
         return types.Primitive.any;
@@ -39650,8 +39655,16 @@ pub const Checker = struct {
         if (try self.restAnySignatureAssignableToCallback(arg_t, param_t)) return true;
         if (try self.symbolNamedObjectArgumentAssignable(arg_t, param_t)) return true;
         if (self.strict_flags.strict_null_checks) {
-            if (self.typeIncludesNull(arg_t) and !self.typeIncludesNull(param_t)) return false;
-            if (self.typeIncludesUndefined(arg_t) and !self.typeIncludesUndefined(param_t)) return false;
+            // `any` and `unknown` are not treated as nullable for the
+            // strict-null gate — tsc lets them through and lets the
+            // joker semantics of `any` carry the call site to success.
+            // Without this exemption, an unresolved identifier (which
+            // types as `any`) cascades into a spurious TS2345 right
+            // after its TS2304.
+            if (arg_t != types.Primitive.any and arg_t != types.Primitive.unknown) {
+                if (self.typeIncludesNull(arg_t) and !self.typeIncludesNull(param_t)) return false;
+                if (self.typeIncludesUndefined(arg_t) and !self.typeIncludesUndefined(param_t)) return false;
+            }
         }
         return self.engine.isAssignableTo(arg_t, param_t);
     }

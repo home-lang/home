@@ -95,6 +95,14 @@ pub const Parser = struct {
     /// directly) prevents the body's `parseStatement` from
     /// re-consuming them as the for's body.
     for_init_extras: std.ArrayListUnmanaged(NodeId),
+    /// Spans of regex literals the parser recovered from a scanner
+    /// `.slash` token (the scanner committed to division). The driver
+    /// consults this list to drop any scanner-emitted TS1127
+    /// ("Invalid character.") diagnostics that landed inside one of
+    /// these spans — the scanner walked the bytes linearly and didn't
+    /// know `\` (and other stray glyphs) actually belonged to a regex
+    /// body. Mirrors tsc's `reScanSlashToken` flow.
+    regex_rescan_spans: std.ArrayListUnmanaged(Span),
     /// Active label scope stack. Each entry records the labeled
     /// statement's name plus the `function_depth` at the labeled
     /// declaration site, so `break LBL` / `continue LBL` can detect
@@ -197,6 +205,7 @@ pub const Parser = struct {
             .diagnostics = .empty,
             .pending_statements = .empty,
             .for_init_extras = .empty,
+            .regex_rescan_spans = .empty,
             .label_stack = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
             .ambient_depth = 0,
@@ -257,6 +266,7 @@ pub const Parser = struct {
         self.diagnostics.deinit(self.gpa);
         self.pending_statements.deinit(self.gpa);
         self.for_init_extras.deinit(self.gpa);
+        self.regex_rescan_spans.deinit(self.gpa);
         self.label_stack.deinit(self.gpa);
         self.diag_arena.deinit();
     }
@@ -8114,6 +8124,18 @@ pub const Parser = struct {
             return try self.builder.addLiteralRegex(.{ .start = start_tok.span.start, .end = recovery_end });
         };
         try self.reportUnbalancedRegexGroup(start_tok, end);
+        // The scanner committed to `.slash` (vs. `regex_literal`) based
+        // on the preceding token, but the parser now knows this span is
+        // a regex body. Record the span so the driver can drop any
+        // scanner-emitted TS1127 ("Invalid character.") diagnostics
+        // that landed on `\` or other stray bytes inside the regex.
+        // Mirrors tsc's `reScanSlashToken` flow.
+        if (start_tok.kind == .slash) {
+            try self.regex_rescan_spans.append(self.gpa, .{
+                .start = start_tok.span.start,
+                .end = end,
+            });
+        }
         var next = self.cursor;
         while (next < self.tokens.len and
             self.tokens[next].kind != .eof and

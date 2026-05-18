@@ -719,6 +719,32 @@ pub fn compileSource(
         });
         c.has_errors = true;
     }
+    // Drop any scanner-emitted TS1127 ("Invalid character.") diagnostics
+    // that fall inside a regex span the parser later claimed via
+    // `parseRegexLiteralExpression`. The scanner walks linearly and
+    // didn't know `\` (and other stray bytes) actually belonged to a
+    // regex body. Mirrors tsc's `reScanSlashToken` flow.
+    if (parser.regex_rescan_spans.items.len > 0) {
+        var idx: usize = 0;
+        while (idx < c.diagnostics.items.len) {
+            const d = c.diagnostics.items[idx];
+            if (d.phase == .lex and d.code == 1127) {
+                var drop = false;
+                for (parser.regex_rescan_spans.items) |sp| {
+                    if (d.pos >= sp.start and d.pos < sp.end) {
+                        drop = true;
+                        break;
+                    }
+                }
+                if (drop) {
+                    gpa.free(d.message);
+                    _ = c.diagnostics.orderedRemove(idx);
+                    continue;
+                }
+            }
+            idx += 1;
+        }
+    }
     try appendJsxDirectiveDiagnostics(gpa, c, source, options);
 
     // ------ Bind ------
