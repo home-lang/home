@@ -65,7 +65,12 @@ pub fn binaryPrec(tok: TokenKind) ?Prec {
     return switch (tok) {
         .pipe_pipe => .logical_or,
         .ampersand_ampersand => .logical_and,
-        .question_question => .nullish,
+        // ES grammar puts CoalesceExpression at the same level as
+        // LogicalORExpression so `a ?? b || c` parses left-to-right;
+        // the mixed-operator syntax check then fires in
+        // `reportMixedNullishLogical`. The `Prec.nullish = 4` slot is
+        // preserved as a no-op for any historical callers.
+        .question_question => .logical_or,
         .pipe => .bit_or,
         .caret => .bit_xor,
         .ampersand => .bit_and,

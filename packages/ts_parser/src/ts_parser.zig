@@ -8737,33 +8737,65 @@ pub const Parser = struct {
     ) ParseError!void {
         const left_mixed = self.unparenthesizedLogicalOp(left);
         const right_mixed = self.unparenthesizedLogicalOp(right);
+        // tsc renders the specific operator pair in source order
+        // (e.g. `'??' and '||'`, `'||' and '??'`) rather than the
+        // generic `'??' and '&&' or '||'`. Mirrors baseline
+        // `nullishCoalescingOperator5`.
         if (op == .nullish) {
             if (left_mixed) |lop| {
                 if (lop != .nullish) {
-                    try self.reportCodeAt(self.hir.spanOf(left).start, op_tok.line, 5076, "'??' and '&&' or '||' operations cannot be mixed without parentheses.");
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "'{s}' and '??' operations cannot be mixed without parentheses.",
+                        .{logicalOpTextForMixError(lop)},
+                    );
+                    try self.reportCodeAt(self.hir.spanOf(left).start, op_tok.line, 5076, msg);
                     return;
                 }
             }
             if (right_mixed) |rop| {
                 if (rop != .nullish) {
-                    try self.reportCodeAt(self.hir.spanOf(right).start, op_tok.line, 5076, "'??' and '&&' or '||' operations cannot be mixed without parentheses.");
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "'??' and '{s}' operations cannot be mixed without parentheses.",
+                        .{logicalOpTextForMixError(rop)},
+                    );
+                    try self.reportCodeAt(self.hir.spanOf(right).start, op_tok.line, 5076, msg);
                     return;
                 }
             }
         } else {
             if (left_mixed) |lop| {
                 if (lop == .nullish) {
-                    try self.reportCodeAt(self.hir.spanOf(left).start, op_tok.line, 5076, "'&&' or '||' and '??' operations cannot be mixed without parentheses.");
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "'??' and '{s}' operations cannot be mixed without parentheses.",
+                        .{logicalOpTextForMixError(op)},
+                    );
+                    try self.reportCodeAt(self.hir.spanOf(left).start, op_tok.line, 5076, msg);
                     return;
                 }
             }
             if (right_mixed) |rop| {
                 if (rop == .nullish) {
-                    try self.reportCodeAt(self.hir.spanOf(right).start, op_tok.line, 5076, "'&&' or '||' and '??' operations cannot be mixed without parentheses.");
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "'{s}' and '??' operations cannot be mixed without parentheses.",
+                        .{logicalOpTextForMixError(op)},
+                    );
+                    try self.reportCodeAt(self.hir.spanOf(right).start, op_tok.line, 5076, msg);
                     return;
                 }
             }
         }
+    }
+
+    fn logicalOpTextForMixError(op: hir_mod.LogicalOp) []const u8 {
+        return switch (op) {
+            .@"and" => "&&",
+            .@"or" => "||",
+            .nullish => "??",
+        };
     }
 
     fn unparenthesizedLogicalOp(self: *Parser, node: NodeId) ?hir_mod.LogicalOp {

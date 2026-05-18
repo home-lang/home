@@ -411,6 +411,8 @@ pub const TsCodes = struct {
     pub const cannot_redeclare_block_scoped: u32 = 2451;
     pub const property_not_initialized: u32 = 2564;
     pub const cannot_assign_const: u32 = 2588;
+    pub const cannot_assign_to_enum: u32 = 2628;
+    pub const cannot_assign_to_class: u32 = 2629;
     pub const cannot_assign_to_function: u32 = 2630;
     pub const cannot_assign_to_namespace: u32 = 2631;
     pub const property_used_before_initialization: u32 = 2729;
@@ -9884,6 +9886,16 @@ pub const Checker = struct {
         return self.interner.objectMember(ret_t, value_id) orelse types.Primitive.none;
     }
 
+    fn bindingPatternParameterElementType(self: *Checker, pattern_element: NodeId) CheckError!TypeId {
+        if (self.hir.kindOf(pattern_element) != .parameter) return types.Primitive.any;
+        const p = hir_mod.parameterOf(self.hir, pattern_element);
+        if (p.name == hir_mod.none_node_id) return types.Primitive.any;
+        return switch (self.hir.kindOf(p.name)) {
+            .array_pattern => try self.arrayBindingPatternParameterType(p.name),
+            else => types.Primitive.any,
+        };
+    }
+
     fn arrayBindingPatternParameterType(self: *Checker, pattern_node: NodeId) CheckError!TypeId {
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
@@ -9929,14 +9941,15 @@ pub const Checker = struct {
             const name = self.string_interner.intern(name_str) catch return error.OutOfMemory;
             try members.append(self.gpa, .{
                 .name = name,
-                .type = types.Primitive.any,
+                .type = try self.bindingPatternParameterElementType(e),
                 .is_optional = false,
                 .is_readonly = false,
                 .is_method = false,
             });
             idx += 1;
         }
-        return self.interner.internObjectTypeWithIndex(members.items, types.Primitive.none, types.Primitive.any) catch return error.OutOfMemory;
+        const number_index = if (has_rest) types.Primitive.any else types.Primitive.none;
+        return self.interner.internObjectTypeWithIndex(members.items, types.Primitive.none, number_index) catch return error.OutOfMemory;
     }
 
     fn arrayBindingPatternHasRest(self: *Checker, pattern_node: NodeId) bool {
@@ -23600,27 +23613,38 @@ pub const Checker = struct {
     /// the target's number-key indexer (rest slot). Returns true
     /// when every element assigns.
     fn checkArrayLiteralAgainstTuple(self: *Checker, init_node: NodeId, target: TypeId) !bool {
+        return try self.arrayLiteralAssignableToTupleTarget(init_node, target, false);
+    }
+
+    fn arrayLiteralAssignableToTupleTarget(
+        self: *Checker,
+        init_node: NodeId,
+        target: TypeId,
+        emit_element_diagnostic: bool,
+    ) !bool {
         const elements = hir_mod.arrayLiteralElements(self.hir, init_node);
+        const fixed_prefix = self.tupleFixedPrefixCount(target);
+        if (elements.len < fixed_prefix) return false;
         if (self.fixedTupleLength(target)) |len| {
             if (elements.len > len) return false;
         }
-        const num_idx = self.interner.objectNumberIndex(target);
         for (elements, 0..) |el, i| {
             if (el == hir_mod.none_node_id) continue;
-            const el_t = try self.checkExpression(el);
-            // Look up the matching positional member.
-            var nbuf: [12]u8 = undefined;
-            const name_str = std.fmt.bufPrint(&nbuf, "{d}", .{i}) catch return false;
-            const name = self.string_interner.intern(name_str) catch return error.OutOfMemory;
-            const tgt_t: TypeId = if (self.interner.objectMember(target, name)) |t|
-                t
-            else if (num_idx != types.Primitive.none)
-                num_idx
-            else
+            const tgt_t = self.tupleElementType(target, i);
+            if (tgt_t == types.Primitive.none) return false;
+            if (self.hir.kindOf(el) == .array_literal and self.isTupleShapedTarget(tgt_t)) {
+                if (try self.arrayLiteralAssignableToTupleTarget(el, tgt_t, emit_element_diagnostic)) continue;
                 return false;
+            }
             if (try self.literalExpressionAssignableToTarget(el, tgt_t)) continue;
+            const el_t = try self.checkExpression(el);
             const ok = self.engine.isAssignableTo(el_t, tgt_t) catch return error.OutOfMemory;
-            if (!ok) return false;
+            if (!ok) {
+                if (emit_element_diagnostic) {
+                    try self.reportTypeNotAssignable(el, el_t, tgt_t, "Type is not assignable to tuple element type.");
+                }
+                return false;
+            }
         }
         return true;
     }
@@ -32941,7 +32965,17 @@ pub const Checker = struct {
             if (k == .namespace_decl) {
                 saw_namespace_scope = true;
                 const stmts = hir_mod.namespaceBody(self.hir, cur);
-                for (stmts) |s| {
+                for (stmts) |raw_s| {
+                    // Unwrap `export <decl>`. Exported namespace
+                    // members are visible inside the body the same
+                    // as non-exported ones, but they're wrapped in
+                    // an `export_decl` node so the raw kind checks
+                    // below would miss them. Without this, the
+                    // post-walk fallback chain emits spurious
+                    // TS2304 for every `export class` /
+                    // `export function` body reference (cf.
+                    // parserRealSource4 cascade).
+                    const s = self.unwrapExportDecl(raw_s);
                     const sk = self.hir.kindOf(s);
                     if (sk == .var_decl or sk == .let_decl or sk == .const_decl) {
                         const v = hir_mod.varDeclOf(self.hir, s);
@@ -32962,6 +32996,11 @@ pub const Checker = struct {
                                     self.hir.setType(v.name, declared_t);
                                     return declared_t;
                                 }
+                                // Name IS declared in the namespace
+                                // but no type info — fall back to
+                                // `any` rather than letting the
+                                // post-walk TS2304 chain fire.
+                                return types.Primitive.any;
                             }
                         }
                     } else if (sk == .fn_decl or sk == .fn_expr) {
@@ -32972,6 +33011,7 @@ pub const Checker = struct {
                                 if (self.overloadedFunctionValueType(id.name) catch null) |overload_t| return overload_t;
                                 const t = self.hir.typeOf(s);
                                 if (t != types.Primitive.none) return t;
+                                return types.Primitive.any;
                             }
                         }
                     } else if (sk == .class_decl or sk == .class_expr) {
@@ -32982,6 +33022,34 @@ pub const Checker = struct {
                                 if (self.class_static_types.get(id.name)) |static_t| return static_t;
                                 const t = self.hir.typeOf(s);
                                 if (t != types.Primitive.none) return t;
+                                return types.Primitive.any;
+                            }
+                        }
+                    } else if (sk == .enum_decl) {
+                        // `enum X` / `export enum X` inside a
+                        // namespace binds a runtime value. The
+                        // checker stores the enum's *member-value*
+                        // type (`number_t` for numeric enums) on
+                        // the decl node — but a bare reference to
+                        // the enum NAME refers to the runtime enum
+                        // OBJECT (which carries the members). We
+                        // don't synthesize that object shape yet,
+                        // so fall back to `any` so `X.MEMBER`
+                        // accesses don't spuriously trigger TS2339
+                        // "Property doesn't exist on type 'number'".
+                        if (self.declarationName(s)) |dname| {
+                            if (dname == id.name) {
+                                return types.Primitive.any;
+                            }
+                        }
+                    } else if (sk == .namespace_decl or sk == .module_decl) {
+                        // Nested namespaces / modules bind a value
+                        // name in the enclosing namespace.
+                        if (self.declarationName(s)) |dname| {
+                            if (dname == id.name) {
+                                const t = self.hir.typeOf(s);
+                                if (t != types.Primitive.none) return t;
+                                return types.Primitive.any;
                             }
                         }
                     } else if (sk == .import_decl) {
@@ -33052,13 +33120,32 @@ pub const Checker = struct {
         }
 
         if (saw_namespace_scope and !self.report_unresolved_in_namespace_scope) {
+            // tsc resolves namespace-body value identifiers against
+            // the same fallback chain non-namespace identifiers use:
+            // module root scope, built-in globals, lib types. When
+            // the name is still unresolved after that chain,
+            // upstream baselines emit TS2304. The historical
+            // behavior here was a hard early-return to `any` which
+            // suppressed every TS2304 inside a namespace body —
+            // parserRealSource5-14 had huge diffs dominated by
+            // these missing reports.
+            //
+            // Preserve the two pre-existing special-case reports
+            // (the bare `let` keyword and an errant assignment-
+            // modifier target). Otherwise fall through to the
+            // shared chain below so TS2304 fires when appropriate.
+            // The namespace-body walk above already handled valid
+            // local references (including `export <decl>` via the
+            // `unwrapExportDecl` call), so reaching this point
+            // means the name truly is unresolved.
             if (!self.isDeclNameSlot(node) and std.mem.eql(u8, self.string_interner.get(id.name), "let")) {
                 self.reportCannotFindNamePlainOnce(node, id.name) catch {};
+                return types.Primitive.any;
             }
             if (!self.isDeclNameSlot(node) and self.namespaceScopeHasErrantModifierAssignmentTarget(node, id.name)) {
                 self.reportCannotFindNamePlainOnce(node, id.name) catch {};
+                return types.Primitive.any;
             }
-            return types.Primitive.any;
         }
 
         if (self.moduleNamespaceTypeForLocalImport(id.name, node) catch null) |ns_t| return ns_t;
@@ -34801,6 +34888,81 @@ pub const Checker = struct {
             }
         }
         return true;
+    }
+
+    /// True when `node` is an identifier whose name resolves at module
+    /// scope to a particular value-side declaration kind (class, enum,
+    /// or function), or — for `interface_t` — to a type-only binding,
+    /// and isn't shadowed by an inner parameter or `var`/`let`/`const`.
+    /// Used by the assignment-statement classifier to emit TS2628
+    /// (`enum E { … }; E = 1`), TS2629 (`class C { }; C = 1`), TS2630
+    /// (`function fn() { }; fn = 1`), and TS2693 (`interface I { };
+    /// I = 1`). Mirrors `assignments.ts` baselines.
+    ///
+    /// Unlike `identifierResolvesToNamespaceOnly`, this helper does NOT
+    /// treat sibling `class`/`fn` decls in the top-level block as
+    /// shadows — that "shadow" IS the very declaration whose name
+    /// we're trying to detect. Only inner-block `var`/`let`/`const`
+    /// (which can legally shadow a class/function name) actually
+    /// rebind the slot.
+    fn identifierResolvesToValueDeclKind(
+        self: *Checker,
+        node: NodeId,
+        comptime DeclKind: enum { class, function_t, enum_t, interface_t },
+    ) bool {
+        if (self.hir.kindOf(node) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, node);
+        var cur: hir_mod.NodeId = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) {
+            const k = self.hir.kindOf(cur);
+            if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
+                const params = hir_mod.fnParams(self.hir, cur);
+                for (params) |p| {
+                    if (self.hir.kindOf(p) != .parameter) continue;
+                    const pp = hir_mod.parameterOf(self.hir, p);
+                    if (pp.name == hir_mod.none_node_id) continue;
+                    if (self.hir.kindOf(pp.name) != .identifier) continue;
+                    const pid = hir_mod.identifierOf(self.hir, pp.name);
+                    if (pid.name == id.name) return false;
+                }
+            }
+            if (k == .block_stmt) {
+                for (hir_mod.blockStmts(self.hir, cur)) |s| {
+                    const sk = self.hir.kindOf(s);
+                    if (sk == .var_decl or sk == .let_decl or sk == .const_decl) {
+                        const v = hir_mod.varDeclOf(self.hir, s);
+                        if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
+                            const vid = hir_mod.identifierOf(self.hir, v.name);
+                            if (vid.name == id.name) return false;
+                        }
+                    }
+                }
+            }
+            cur = self.hir.parentOf(cur);
+        }
+        const module = self.module orelse return false;
+        switch (DeclKind) {
+            .interface_t => {
+                // Interfaces / type-aliases only live in the type
+                // table. TS2693 fires when the identifier resolves to
+                // *only* a type (no value-side binding, no namespace
+                // alias).
+                if (module.root.types.get(id.name) == null) return false;
+                if (module.root.values.get(id.name) != null) return false;
+                if (module.root.namespaces.get(id.name) != null) return false;
+                return true;
+            },
+            else => {
+                const sym = module.root.values.get(id.name) orelse return false;
+                if (sym.decls.items.len == 0) return false;
+                return switch (DeclKind) {
+                    .class => sym.flags.is_class,
+                    .function_t => sym.flags.is_function and !sym.flags.is_class,
+                    .enum_t => sym.flags.is_enum,
+                    .interface_t => unreachable,
+                };
+            },
+        }
     }
 
     /// Conservative gate for TS2367: return true only when both
@@ -39339,12 +39501,27 @@ pub const Checker = struct {
             else
                 false;
             if (!ok and !contextual_ok and !emitted_2556) {
-                const msg = try self.formatArgumentNotAssignable(arg_t, param_t, i);
-                try self.diagnostics.append(self.gpa, .{
-                    .node = args[i],
-                    .code = TsCodes.argument_type_mismatch,
-                    .message = msg,
-                });
+                var emitted = false;
+                if (self.hir.kindOf(args[i]) == .array_literal and self.isTupleShapedTarget(param_t)) {
+                    if (try self.formatArrayLiteralTupleArgumentNotAssignable(args[i], param_t)) |msg| {
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = args[i],
+                            .code = TsCodes.argument_type_mismatch,
+                            .message = msg,
+                        });
+                        emitted = true;
+                    } else if (self.isContextualCallShapeDiagnosticAlreadyEmitted(call_node, args, args[i])) {
+                        emitted = true;
+                    }
+                }
+                if (!emitted) {
+                    const msg = try self.formatArgumentNotAssignable(arg_t, param_t, i);
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = args[i],
+                        .code = TsCodes.argument_type_mismatch,
+                        .message = msg,
+                    });
+                }
             }
             try self.checkExcessProperties(args[i], param_t);
         }
@@ -41275,6 +41452,23 @@ pub const Checker = struct {
         return false;
     }
 
+    fn isContextualCallShapeDiagnosticAlreadyEmitted(
+        self: *Checker,
+        call_node: NodeId,
+        args: []const NodeId,
+        arg_node: NodeId,
+    ) bool {
+        const arg_span = self.hir.spanOf(arg_node);
+        for (self.diagnostics.items) |d| {
+            if (self.isContextualCallShapeDiagnostic(d, call_node, args)) return true;
+            if (d.code == TsCodes.type_not_assignable) {
+                const start = self.diagnosticStart(d);
+                if (start >= arg_span.start and start < arg_span.end) return true;
+            }
+        }
+        return false;
+    }
+
     fn callHasFreeGenericArrayArgument(self: *Checker, call_node: NodeId, sig: TypeId) bool {
         const args = hir_mod.callArgs(self.hir, call_node);
         const params = self.interner.signatureParams(sig);
@@ -41290,6 +41484,9 @@ pub const Checker = struct {
     fn arrayLiteralAssignableToTarget(self: *Checker, arg_node: NodeId, target_t: TypeId) !bool {
         if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return false;
         if (!self.interner.pool.flagsOf(target_t).is_object_type) return false;
+        if (self.isTupleShapedTarget(target_t)) {
+            return try self.arrayLiteralAssignableToTupleTarget(arg_node, target_t, true);
+        }
         const elem_target = self.interner.objectNumberIndex(target_t);
         if (elem_target == types.Primitive.none) return false;
         for (hir_mod.arrayLiteralElements(self.hir, arg_node)) |el| {
