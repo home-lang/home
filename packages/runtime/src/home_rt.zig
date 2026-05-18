@@ -103,6 +103,17 @@ pub const jsc = struct {
     pub const TextCodec = @import("jsc/TextCodec.zig").TextCodec;
     pub const MarkedArgumentBuffer = @import("jsc/MarkedArgumentBuffer.zig").MarkedArgumentBuffer;
     pub const ConcurrentPromiseTask = @import("jsc/ConcurrentPromiseTask.zig").ConcurrentPromiseTask;
+    // Seventh-wave port batch (2026-05-18):
+    pub const AbortSignal = @import("jsc/AbortSignal.zig").AbortSignal;
+    pub const JSString = @import("jsc/JSString.zig");
+    pub const RefString = @import("jsc/RefString.zig").RefString;
+    pub const StringBuilder = @import("jsc/StringBuilder.zig").StringBuilder;
+    pub const SystemError = @import("jsc/SystemError.zig").SystemError;
+    pub const WTF = @import("jsc/WTF.zig");
+    pub const Weak = @import("jsc/Weak.zig");
+    pub const javascript_core_c_api = @import("jsc/javascript_core_c_api.zig");
+    pub const DOMURL = @import("jsc/DOMURL.zig").DOMURL;
+    pub const JSArrayIterator = @import("jsc/JSArrayIterator.zig").JSArrayIterator;
 };
 
 // ---- src/io/ -----------------------------------------------------------
@@ -243,6 +254,8 @@ pub const event_loop = struct {
     pub const AnyTaskWithExtraContext = @import("event_loop/AnyTaskWithExtraContext.zig");
     pub const AutoFlusher = @import("event_loop/AutoFlusher.zig");
     pub const ManagedTask = @import("event_loop/ManagedTask.zig");
+    // Seventh-wave port (2026-05-18). Unblocked by home_rt.threading.UnboundedQueue.
+    pub const ConcurrentTask = @import("event_loop/ConcurrentTask.zig");
 };
 
 // ---- src/unicode/ ------------------------------------------------------
@@ -318,6 +331,12 @@ pub const node = struct {
     // node.assert.myers_diff is parked: upstream uses Zig-0.17+
     // `std.array_list.Managed(...)` and `std.heap.stackFallback`,
     // both of which moved in 0.17. Re-attach once an adapter lands.
+    // Seventh-wave port batch (2026-05-18):
+    pub const time_like = @import("node/time_like.zig");
+    pub const os_constants = @import("node/os_constants.zig");
+    pub const util = struct {
+        pub const parse_args_utils = @import("node/util/parse_args_utils.zig");
+    };
 };
 
 // ---- src/core/ + src/alloc/ + src/safety/ ----------------------
@@ -375,6 +394,8 @@ pub const threading = struct {
 pub const sys = struct {
     pub const Dir = @import("sys/dir.zig").Dir;
     pub const SignalCode = @import("sys/SignalCode.zig").SignalCode;
+    // Seventh-wave port (2026-05-18):
+    pub const Tag = @import("sys/tag.zig").Tag;
 };
 
 // ---- src/paths/ --------------------------------------------------------
@@ -427,6 +448,12 @@ pub const highway = @import("highway/highway.zig");
 // Mapping / LineOffsetTable / InternalSourceMap re-attach later.
 pub const sourcemap = struct {
     pub const VLQ = @import("sourcemap/VLQ.zig");
+    // Seventh-wave port batch (2026-05-18):
+    pub const SourceMapState = @import("sourcemap/SourceMapState.zig").SourceMapState;
+    pub const DebugIDFormatter = @import("sourcemap/DebugIDFormatter.zig").DebugIDFormatter;
+    pub const SourceContentHandling = @import("sourcemap/types.zig").SourceContentHandling;
+    pub const SourceMapLoadHint = @import("sourcemap/types.zig").SourceMapLoadHint;
+    pub const SourceContent = @import("sourcemap/types.zig").SourceContent;
 };
 
 // ---- src/ast/ ----------------------------------------------------------
@@ -451,11 +478,29 @@ pub const ast = struct {
 pub const css = struct {
     pub const logical = @import("css/logical.zig");
     pub const sourcemap = @import("css/sourcemap.zig");
+    pub const css_parser_stub = @import("css/css_parser_stub.zig");
     pub const values = struct {
         pub const values = @import("css/values/values.zig");
+        // Seventh-wave port batch (2026-05-18, css Strategy B over stub):
+        pub const css_string = @import("css/values/css_string.zig");
+        pub const ratio = @import("css/values/ratio.zig");
+        pub const alpha = @import("css/values/alpha.zig");
+    };
+    pub const properties = struct {
+        pub const outline = @import("css/properties/outline.zig");
     };
     pub const PropertyCategory = logical.PropertyCategory;
     pub const LogicalGroup = logical.LogicalGroup;
+    // Seventh-wave port (2026-05-18) — stub-based CSS rule leaves.
+    pub const rules = struct {
+        pub const counter_style = @import("css/rules/counter_style.zig");
+        pub const namespace = @import("css/rules/namespace.zig");
+        pub const nesting = @import("css/rules/nesting.zig");
+        pub const starting_style = @import("css/rules/starting_style.zig");
+        pub const viewport = @import("css/rules/viewport.zig");
+        pub const unknown = @import("css/rules/unknown.zig");
+        pub const document = @import("css/rules/document.zig");
+    };
 };
 
 // ---- src/analytics/ ----------------------------------------------------
@@ -485,6 +530,55 @@ pub const libdeflate_sys = struct {
 };
 pub const simdutf_sys = struct {
     pub const simdutf = @import("simdutf_sys/simdutf.zig");
+};
+
+// ---- src/errno/ --------------------------------------------------------
+// Seventh-wave port batch (2026-05-18). POSIX errno tables per platform.
+// Each file inlines a small `uv_constants` block for the few UV_E* codes
+// that have no native POSIX counterpart; those are replaced by
+// `home_rt.libuv_sys.libuv.UV_E*` once libuv_sys lands. Windows skipped
+// (needs windows.Win32Error + libuv_sys).
+pub const errno = struct {
+    pub const darwin = @import("errno/darwin_errno.zig");
+    pub const linux = @import("errno/linux_errno.zig");
+    pub const freebsd = @import("errno/freebsd_errno.zig");
+};
+
+// ---- src/exe_format/ ---------------------------------------------------
+// Seventh-wave port batch (2026-05-18). Standalone-executable section
+// writers used by `home build --compile`. Only PE is self-contained;
+// ELF/Mach-O parked on bun.sys (ELF) and bun.sha.SHA256 (Mach-O codesign).
+pub const exe_format = struct {
+    pub const pe = @import("exe_format/pe.zig");
+};
+
+// ---- src/zstd/ ---------------------------------------------------------
+// Seventh-wave port batch (2026-05-18). Vendored facebook/zstd FFI surface
+// + the streaming-decompress reader. Upstream pulled the `ZSTD_*` extern
+// symbols from `bun.c` (translate-c over `<zstd.h>`); we inline them as
+// `extern fn` decls in `zstd.c` since translate-c isn't wired up yet.
+pub const zstd = struct {
+    pub const zstd = @import("zstd/zstd.zig");
+};
+
+// ---- src/boringssl_sys/ ------------------------------------------------
+// Seventh-wave port batch (2026-05-18). Vendored google/boringssl C ABI
+// surface — SSL_*, BIO_*, X509_*, EVP_*, RSA_*, EC_*, ERR_*, and the rest
+// of libcrypto/libssl. 19 306 lines, near-verbatim copy. The only deviation
+// from upstream is that `bun.uws.us_bun_verify_error_t` is inlined as
+// `SSL.us_bun_verify_error_t` (`uws.zig` carries a JSC-tied helper that
+// hasn't been ported yet).
+pub const boringssl_sys = struct {
+    pub const boringssl = @import("boringssl_sys/boringssl.zig");
+};
+
+// ---- src/lolhtml_sys/ --------------------------------------------------
+// Seventh-wave port batch (2026-05-18). Vendored cloudflare/lol-html C ABI
+// surface (`lol_html_*`). `HTMLString.toString` + `HTMLString.toJS` are
+// stubbed because they reach into `bun.String` and the JSC-tied
+// `runtime/api/lolhtml_jsc.zig`; everything else is verbatim.
+pub const lolhtml_sys = struct {
+    pub const lol_html = @import("lolhtml_sys/lol_html.zig");
 };
 
 // ---- src/jsc_stub.zig --------------------------------------------------
@@ -608,6 +702,11 @@ test {
     _ = brotli_sys;
     _ = libdeflate_sys;
     _ = simdutf_sys;
+    _ = zstd;
+    _ = boringssl_sys;
+    _ = lolhtml_sys;
+    _ = errno;
+    _ = exe_format;
     // Pull nested module tests through their actual file imports so
     // the home_rt test runner exercises every copied leaf.
     _ = @import("event_loop/DeferredTaskQueue.zig");
@@ -729,6 +828,44 @@ test {
     _ = @import("brotli_sys/brotli_c.zig");
     _ = @import("libdeflate_sys/libdeflate.zig");
     _ = @import("simdutf_sys/simdutf.zig");
+    _ = @import("zstd/zstd.zig");
+    _ = @import("boringssl_sys/boringssl.zig");
+    _ = @import("lolhtml_sys/lol_html.zig");
+    // Seventh-wave port batch (2026-05-18):
+    _ = @import("jsc/AbortSignal.zig");
+    _ = @import("jsc/JSString.zig");
+    _ = @import("jsc/RefString.zig");
+    _ = @import("jsc/StringBuilder.zig");
+    _ = @import("jsc/SystemError.zig");
+    _ = @import("jsc/WTF.zig");
+    _ = @import("jsc/Weak.zig");
+    _ = @import("jsc/javascript_core_c_api.zig");
+    _ = @import("event_loop/ConcurrentTask.zig");
+    _ = @import("node/time_like.zig");
+    _ = @import("node/os_constants.zig");
+    _ = @import("node/util/parse_args_utils.zig");
+    _ = @import("sys/tag.zig");
+    _ = @import("errno/darwin_errno.zig");
+    _ = @import("errno/linux_errno.zig");
+    _ = @import("errno/freebsd_errno.zig");
+    _ = @import("exe_format/pe.zig");
+    _ = @import("sourcemap/SourceMapState.zig");
+    _ = @import("sourcemap/DebugIDFormatter.zig");
+    _ = @import("sourcemap/types.zig");
+    _ = @import("css/rules/counter_style.zig");
+    _ = @import("css/rules/namespace.zig");
+    _ = @import("css/rules/nesting.zig");
+    _ = @import("css/rules/starting_style.zig");
+    _ = @import("css/rules/viewport.zig");
+    _ = @import("css/rules/unknown.zig");
+    _ = @import("css/rules/document.zig");
+    _ = @import("css/css_parser_stub.zig");
+    _ = @import("css/values/css_string.zig");
+    _ = @import("css/values/ratio.zig");
+    _ = @import("css/values/alpha.zig");
+    _ = @import("css/properties/outline.zig");
+    _ = @import("jsc/DOMURL.zig");
+    _ = @import("jsc/JSArrayIterator.zig");
 }
 
 test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {
