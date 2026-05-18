@@ -34651,7 +34651,7 @@ pub const Checker = struct {
         if (ap.len != 1 or bp.len != 1) return false;
         const af = self.interner.pool.flagsOf(ap[0]);
         const bf = self.interner.pool.flagsOf(bp[0]);
-        if (af.is_array or bf.is_array or af.is_tuple or bf.is_tuple) return false;
+        if (af.is_tuple or bf.is_tuple) return false;
         return self.typeIncludesUndefined(ap[0]) and self.typeIncludesUndefined(bp[0]);
     }
 
