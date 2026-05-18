@@ -3377,6 +3377,18 @@ pub const Parser = struct {
                 break;
             }
             const mods = try self.skipClassModifiers();
+            if (self.peek().kind == .kw_static and self.peekAt(1).kind == .open_brace) {
+                if (mods.first_modifier_token) |bad| {
+                    try self.reportCodeAt(bad.span.start, bad.line, 1184, "Modifiers cannot appear here.");
+                }
+                _ = self.advance();
+                self.static_block_depth += 1;
+                errdefer self.static_block_depth -= 1;
+                const block = try self.parseBlockStatement();
+                self.static_block_depth -= 1;
+                try members.append(self.gpa, block);
+                continue;
+            }
             // TS1244: `abstract` modifier on a member can only appear
             // inside an abstract class. Emit at the `abstract` token.
             if (mods.is_abstract and !self.class_is_abstract) {
@@ -4015,6 +4027,7 @@ pub const Parser = struct {
         async_token: ?Token = null,
         abstract_token: ?Token = null,
         static_token: ?Token = null,
+        first_modifier_token: ?Token = null,
         reported_duplicate_accessibility: bool = false,
     };
 
@@ -4035,6 +4048,7 @@ pub const Parser = struct {
                     return mods;
                 }
                 const mod = self.advance();
+                if (mods.first_modifier_token == null) mods.first_modifier_token = mod;
                 if (mods.invalid_class_element_modifier == null) mods.invalid_class_element_modifier = mod;
                 continue;
             }
@@ -4051,6 +4065,7 @@ pub const Parser = struct {
                 }
                 if (mods.is_static and isAccessibilityModifier(k) and next_can_start_member) {
                     const mod = self.advance();
+                    if (mods.first_modifier_token == null) mods.first_modifier_token = mod;
                     const mod_name = self.source[mod.span.start..mod.span.end];
                     const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier must precede 'static' modifier.", .{mod_name});
                     try self.reportCodeAt(mod.span.start, mod.line, 1029, msg);
@@ -4064,6 +4079,8 @@ pub const Parser = struct {
                     continue;
                 }
                 if (mods.is_static and isAccessibilityModifier(k)) return mods;
+                const modifier_token = self.peek();
+                if (mods.first_modifier_token == null) mods.first_modifier_token = modifier_token;
                 switch (k) {
                     .kw_private, .kw_protected, .kw_public => {
                         const mod = self.advance();
@@ -9445,6 +9462,15 @@ pub const Parser = struct {
                     return try self.parseUnaryExpression();
                 }
                 const operand = try self.parseUnaryExpression();
+                if (self.nodeIsSynthesizedUpdateAssignment(operand)) {
+                    const update = hir_mod.assignmentOf(self.hir, operand);
+                    const update_op_span = self.hir.spanOf(update.value);
+                    try self.reportCodeAt(update_op_span.start, t.line, 1005, "';' expected.");
+                    const next = self.peek();
+                    const expr_pos = if (next.kind == .semicolon or next.kind == .eof) next.span.start else update_op_span.end;
+                    try self.reportCodeAt(expr_pos, t.line, 1109, "Expression expected.");
+                    return operand;
+                }
                 if (!self.isValidUpdateOperand(operand)) {
                     const operand_span = self.hir.spanOf(operand);
                     if (self.prefixUpdateUsesArithmeticOperandDiagnostic(operand)) {
@@ -9461,6 +9487,9 @@ pub const Parser = struct {
                         // the operand's type isn't numeric. Build the
                         // assignment so the synthesised-update path
                         // in `checkBinop` runs.
+                        return try self.buildUpdateAssignment(t, operand, t.kind == .plus_plus, true);
+                    }
+                    if (self.hir.kindOf(operand) == .literal_null or self.hir.kindOf(operand) == .literal_undefined) {
                         return try self.buildUpdateAssignment(t, operand, t.kind == .plus_plus, true);
                     }
                     try self.reportCodeAt(operand_span.start, t.line, 2357, "The operand of an increment or decrement operator must be a variable or a property access.");
@@ -10276,6 +10305,17 @@ pub const Parser = struct {
         };
     }
 
+    fn nodeIsSynthesizedUpdateAssignment(self: *const Parser, node: NodeId) bool {
+        if (self.hir.kindOf(node) != .assignment) return false;
+        const a = hir_mod.assignmentOf(self.hir, node);
+        if (a.op == null) return false;
+        if (a.op.? != .add and a.op.? != .sub) return false;
+        if (self.hir.kindOf(a.value) != .literal_number) return false;
+        if (hir_mod.literalNumberOf(self.hir, a.value) != 1.0) return false;
+        const value_span = self.hir.spanOf(a.value);
+        return value_span.end - value_span.start == 2;
+    }
+
     fn prefixUpdateUsesArithmeticOperandDiagnostic(self: *const Parser, operand: NodeId) bool {
         return switch (self.hir.kindOf(operand)) {
             // Operands whose type cannot be coerced to a numeric for
@@ -10367,7 +10407,7 @@ pub const Parser = struct {
                     try self.reportCodeAt(diag_pos, diag_line, 2357, "The operand of an increment or decrement operator must be a variable or a property access.");
                 }
             },
-            .member_access, .element_access => {},
+            .member_access, .element_access, .literal_undefined => {},
             // Concrete non-numeric operands (`"x"--`, `{}--`, `[]--`)
             // render as TS2356 ("An arithmetic operand must be …")
             // to match tsc, which prefers the operand-type error
@@ -14873,6 +14913,33 @@ test "parser: await using context diagnostics" {
     try T.expectEqual(@as(u32, 2853), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 2852), s.parser.diagnostics.items[1].code);
     try T.expectEqual(@as(u32, 18054), s.parser.diagnostics.items[2].code);
+}
+
+test "parser: modified class static blocks recover as static blocks" {
+    var s = try newTestSetup(
+        \\class C {
+        \\    async static {
+        \\    }
+        \\    public static {
+        \\    }
+        \\    readonly private static {
+        \\    }
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 3), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1184), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1184), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 1184), s.parser.diagnostics.items[2].code);
+
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.classMembers(&s.hir, top);
+    try T.expectEqual(@as(usize, 3), members.len);
+    try T.expectEqual(hir_mod.NodeKind.block_stmt, s.hir.kindOf(members[0]));
+    try T.expectEqual(hir_mod.NodeKind.block_stmt, s.hir.kindOf(members[1]));
+    try T.expectEqual(hir_mod.NodeKind.block_stmt, s.hir.kindOf(members[2]));
 }
 
 test "parser: arrow — async" {

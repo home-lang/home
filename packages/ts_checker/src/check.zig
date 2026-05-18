@@ -7741,6 +7741,49 @@ pub const Checker = struct {
         }
     }
 
+    fn checkArrayBindingPatternAgainstArrayLiteral(self: *Checker, pattern_node: NodeId, source_node: NodeId) CheckError!void {
+        if (source_node == hir_mod.none_node_id or self.hir.kindOf(source_node) != .array_literal) return;
+        const values = hir_mod.arrayLiteralElements(self.hir, source_node);
+        for (values) |value| {
+            if (value != hir_mod.none_node_id and self.hir.kindOf(value) == .spread) return;
+        }
+
+        var elem_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer elem_types.deinit(self.gpa);
+        for (values) |value| {
+            if (value == hir_mod.none_node_id) {
+                try elem_types.append(self.gpa, types.Primitive.undefined_t);
+            } else {
+                try elem_types.append(self.gpa, try self.checkExpression(value));
+            }
+        }
+        const source_tuple_t = try self.internTupleFromTypes(elem_types.items, false);
+
+        for (hir_mod.patternElements(self.hir, pattern_node), 0..) |elem, i| {
+            if (self.hir.kindOf(elem) != .parameter) continue;
+            const ep = hir_mod.parameterOf(self.hir, elem);
+            if (ep.flags.is_rest) continue;
+            const anchor = if (ep.name != hir_mod.none_node_id) ep.name else elem;
+            if (i >= values.len) {
+                if (values.len != 0) continue;
+                if (ep.name != hir_mod.none_node_id and self.hir.kindOf(ep.name) == .array_pattern) {
+                    try self.reportIteratorRequired(ep.name, types.Primitive.undefined_t);
+                }
+                try self.reportTupleIndexOutOfBounds(anchor, source_tuple_t, @intCast(i), @intCast(values.len));
+                continue;
+            }
+            const value = values[i];
+            if (value == hir_mod.none_node_id or ep.name == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(ep.name) == .array_pattern) {
+                const value_t = try self.checkExpression(value);
+                if (!self.isDestructuringIterableSourceType(value_t) and !self.objectLiteralHasSymbolIteratorMethod(value)) {
+                    try self.reportIteratorRequiredWithSource(ep.name, value_t, value);
+                }
+                try self.checkArrayBindingPatternAgainstArrayLiteral(ep.name, value);
+            }
+        }
+    }
+
     fn recordBindingPatternFlowFromSource(self: *Checker, pattern_node: NodeId, source_node: NodeId, source_t: TypeId) CheckError!void {
         if (pattern_node == hir_mod.none_node_id) return;
         switch (self.hir.kindOf(pattern_node)) {
@@ -9810,6 +9853,43 @@ pub const Checker = struct {
             const iterator_t = self.iteratorMethodReturnType(member.type) orelse return true;
             if (iterator_t == types.Primitive.any or iterator_t == types.Primitive.unknown) return true;
             return self.typeHasNextMethod(iterator_t);
+        }
+        return false;
+    }
+
+    fn isDestructuringIterableSourceType(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.any or t == types.Primitive.unknown) return true;
+        if (t == types.Primitive.string_t) return true;
+        if (t < self.interner.pool.typeCount()) {
+            const primitive_flags = self.interner.pool.flagsOf(t);
+            if (primitive_flags.is_string and !primitive_flags.is_object_type) return true;
+        }
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (!self.isDestructuringIterableSourceType(member)) return false;
+            }
+            return true;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.isDestructuringIterableSourceType(member)) return true;
+            }
+            return false;
+        }
+        if (!flags.is_object_type) return false;
+        const symbol_iterator = self.string_interner.intern("Symbol.iterator") catch return false;
+        if (self.interner.objectMemberInfo(t, symbol_iterator)) |member| {
+            if (member.is_optional) return false;
+            if (self.typeHasNextMethod(t)) return true;
+            const iterator_t = self.iteratorMethodReturnType(member.type) orelse return true;
+            if (iterator_t == types.Primitive.any or iterator_t == types.Primitive.unknown) return true;
+            return self.typeHasNextMethod(iterator_t);
+        }
+        if (self.interner.objectNumberIndex(t) != types.Primitive.none) {
+            const length_id = self.string_interner.intern("length") catch return false;
+            return self.interner.objectMember(t, length_id) != null;
         }
         return false;
     }
@@ -24444,7 +24524,7 @@ pub const Checker = struct {
             return;
         }
         if (source_t != types.Primitive.any and source_t != types.Primitive.unknown and
-            !self.isIterableLikeType(source_t) and !self.objectLiteralHasSymbolIteratorMethod(source_node))
+            !self.isDestructuringIterableSourceType(source_t) and !self.objectLiteralHasSymbolIteratorMethod(source_node))
         {
             try self.reportIteratorRequiredWithSource(target_node, source_t, source_node);
             return;
@@ -25514,22 +25594,25 @@ pub const Checker = struct {
                 try self.report(v.name, TsCodes.destructuring_decl_must_have_initializer, "A destructuring declaration must have an initializer.");
             }
         }
+        var array_binding_iter_diag_fired = false;
         if (v.name != hir_mod.none_node_id and
             self.hir.kindOf(v.name) == .array_pattern and
             v.init != hir_mod.none_node_id and
             ((self.hir.kindOf(v.init) == .object_literal and !self.objectLiteralHasSymbolIteratorMethod(v.init)) or
-                !self.isIterableLikeType(init_type)) and
-            !self.objectLiteralHasSymbolIteratorMethod(v.init))
+                !self.isDestructuringIterableSourceType(init_type)) and
+            !self.objectLiteralHasSymbolIteratorMethod(v.init) and
+            declared_type != types.Primitive.any)
         {
             // Anchor at the array binding pattern (`[...a]`, `[a, b]`)
             // rather than the initializer expression — upstream tsc
             // underlines the pattern in TS2488 prose for var-decl
             // forms. Mirrors fixture `iterableArrayPattern22.ts(1,5)`.
             try self.reportIteratorRequired(v.name, init_type);
+            array_binding_iter_diag_fired = true;
         }
         if (self.strict_flags.strict_null_checks and v.name != hir_mod.none_node_id and v.init != hir_mod.none_node_id) {
             const nk = self.hir.kindOf(v.name);
-            if (nk == .array_pattern and (self.typeIncludesNull(init_type) or self.typeIncludesUndefined(init_type)) and !self.typeIsAnyLike(init_type)) {
+            if (nk == .array_pattern and declared_type != types.Primitive.any and !array_binding_iter_diag_fired and (self.typeIncludesNull(init_type) or self.typeIncludesUndefined(init_type)) and !self.typeIsAnyLike(init_type)) {
                 try self.reportIteratorRequired(v.init, init_type);
             } else if (nk == .object_pattern and (init_type == types.Primitive.void_t or self.typeIncludesUndefined(init_type)) and !self.typeIsAnyLike(init_type)) {
                 // `any` (and `<any>` cast targets) intentionally
@@ -25547,6 +25630,7 @@ pub const Checker = struct {
         // If both are present, check assignability.
         const final_type: TypeId = if (declared_type != types.Primitive.none) declared_type else init_type;
         if (declared_type != types.Primitive.none and v.init != hir_mod.none_node_id) {
+            const assignability_diag_count = self.diagnostics.items.len;
             // Special-case array-literal → tuple positional check.
             // The init's structural Array<T>-shape loses positional
             // info, so plain assignability would reject `[1, "a"]`
@@ -25564,7 +25648,7 @@ pub const Checker = struct {
                         }
                     }
                     if (self.isTupleShapedTarget(declared_type)) {
-                        break :blk try self.checkArrayLiteralAgainstTuple(v.init, declared_type);
+                        break :blk try self.arrayLiteralAssignableToTupleTarget(v.init, declared_type, true);
                     }
                 }
                 if (self.hir.kindOf(v.init) == .object_literal and
@@ -25596,7 +25680,9 @@ pub const Checker = struct {
                 break :blk self.engine.isAssignableTo(init_type, declared_type) catch return error.OutOfMemory;
             };
             if (!ok) {
-                if (!self.callExpressionHasAnyArgument(v.init)) {
+                if (self.diagnostics.items.len > assignability_diag_count) {
+                    // A more precise element-level tuple diagnostic was emitted.
+                } else if (!self.callExpressionHasAnyArgument(v.init)) {
                     const diag_node = if (v.name != hir_mod.none_node_id) v.name else node;
                     // Prefer the more-specific TS2741 wording when an
                     // empty `{}` is being assigned to a target with
@@ -25668,6 +25754,7 @@ pub const Checker = struct {
                 }
             } else if (nk == .array_pattern and v.init != hir_mod.none_node_id) {
                 try self.checkArrayBindingPatternAgainstType(v.name, final_type);
+                try self.checkArrayBindingPatternAgainstArrayLiteral(v.name, v.init);
                 try self.reportImplicitAnyNullishArrayBinding(v.name, v.init);
             }
             if ((nk == .object_pattern or nk == .array_pattern) and v.init != hir_mod.none_node_id) {
@@ -27967,7 +28054,7 @@ pub const Checker = struct {
                             var any_overload_fits = false;
                             if (overload_list_opt) |overload_list| {
                                 for (overload_list.items) |ovl_sig| {
-                                    if (self.callArityFitsSignature(ovl_sig, args)) {
+                                    if (self.callArityFitsSignature(node, ovl_sig, args)) {
                                         any_overload_fits = true;
                                         break;
                                     }
@@ -28001,6 +28088,11 @@ pub const Checker = struct {
                             }
                         }
                         break :blk inst;
+                    }
+                    const forward_class_decl = self.findClassDeclByName(node, id.name);
+                    if (forward_class_decl != hir_mod.none_node_id and !self.nodeHasAncestor(node, forward_class_decl)) {
+                        try self.checkClassDecl(forward_class_decl);
+                        if (self.class_instance_types.get(id.name)) |inst| break :blk inst;
                     }
                     if (std.mem.eql(u8, self.string_interner.get(id.name), "Array")) {
                         const elem_t = if (type_arg_nodes.len > 0)
@@ -28224,7 +28316,7 @@ pub const Checker = struct {
                             const has_impl = self.overload_has_implementation.contains(callee_name);
                             const visible_len = if (has_impl) overload_list.items.len - 1 else overload_list.items.len;
                             const overloads = overload_list.items[0..visible_len];
-                            if (visible_len == 1 and self.callArityFitsSignature(overloads[0], args)) {
+                            if (visible_len == 1 and self.callArityFitsSignature(node, overloads[0], args)) {
                                 try self.checkArgsAgainstSignature(node, args, arg_types.items, overloads[0]);
                                 if (self.interner.signatureReturn(overloads[0])) |ret| break :blk try self.optionalChainResult(ret, call_is_optional_chain);
                                 break :blk try self.optionalChainResult(types.Primitive.any, call_is_optional_chain);
@@ -40633,12 +40725,12 @@ pub const Checker = struct {
     /// arity. Spread args bump the min count by their tuple-prefix
     /// length so `[a, ...rest]` matches the overload that requires
     /// the prefix arity.
-    fn callArityFitsSignature(self: *Checker, sig: TypeId, args: []const NodeId) bool {
+    fn callArityFitsSignature(self: *Checker, call_node: NodeId, sig: TypeId, args: []const NodeId) bool {
         const param_ts = self.interner.signatureParams(sig);
         const is_variadic = self.rest_signatures.contains(sig) and param_ts.len > 0;
         const fixed_count: usize = if (is_variadic) param_ts.len - 1 else param_ts.len;
         const rest_min_required: usize = if (is_variadic) self.tupleFixedPrefixCount(param_ts[param_ts.len - 1]) else 0;
-        const fixed_min_required = @min(self.signatureMinRequiredArgs(sig, param_ts), fixed_count);
+        const fixed_min_required = @min(self.signatureMinRequiredArgsForCall(sig, param_ts, call_node), fixed_count);
         const min_required: usize = fixed_min_required + rest_min_required;
         var effective_min_count: usize = 0;
         for (args) |arg| {
@@ -40683,7 +40775,7 @@ pub const Checker = struct {
         // by the signature pass, matching tsc's call-site behavior).
         const fixed_count: usize = if (is_variadic) param_ts.len - 1 else param_ts.len;
         const rest_min_required: usize = if (is_variadic) self.tupleFixedPrefixCount(param_ts[param_ts.len - 1]) else 0;
-        const fixed_min_required = @min(self.signatureMinRequiredArgs(sig, param_ts), fixed_count);
+        const fixed_min_required = @min(self.signatureMinRequiredArgsForCall(sig, param_ts, call_node), fixed_count);
         const min_required: usize = fixed_min_required + rest_min_required;
         var effective_min_count: usize = 0;
         for (args, 0..) |arg, arg_i| {
@@ -40737,7 +40829,9 @@ pub const Checker = struct {
             // tsc anchors a too-many TS2554 on the first excess
             // argument when one exists (matches `genericRestArity`,
             // `genericRestArityStrict` and similar). Too-few is
-            // anchored on the call expression itself.
+            // usually anchored on the call expression itself, except
+            // method calls (`obj.m()`) where upstream points at the
+            // member name.
             var anchor_pos: ?u32 = null;
             if (too_many) {
                 const first_excess_idx: usize = if (fixed_variadic_count)
@@ -40749,6 +40843,8 @@ pub const Checker = struct {
                 if (first_excess_idx < args.len) {
                     anchor_pos = self.hir.spanOf(args[first_excess_idx]).start;
                 }
+            } else if (too_few) {
+                anchor_pos = self.tooFewArgsAnchorPos(call_node);
             }
             try self.diagnostics.append(self.gpa, .{
                 .node = call_node,
@@ -46733,6 +46829,39 @@ pub const Checker = struct {
             min_required -= 1;
         }
         return min_required;
+    }
+
+    fn signatureMinRequiredArgsForCall(self: *Checker, sig: TypeId, params: []const TypeId, call_node: NodeId) usize {
+        var min_required = self.signatureMinRequiredArgs(sig, params);
+        if (!self.nonStrictJsCallAllowsTrailingNullishOmissions(call_node)) return min_required;
+        while (min_required > 0 and self.parameterTypeCanBeOmitted(params[min_required - 1])) {
+            min_required -= 1;
+        }
+        return min_required;
+    }
+
+    fn nonStrictJsCallAllowsTrailingNullishOmissions(self: *Checker, call_node: NodeId) bool {
+        return self.virtualSectionIsJsLike(call_node);
+    }
+
+    fn tooFewArgsAnchorPos(self: *Checker, call_node: NodeId) ?u32 {
+        if (self.hir.kindOf(call_node) != .call_expr) return null;
+        const call = hir_mod.callOf(self.hir, call_node);
+        if (self.hir.kindOf(call.callee) != .member_access) return null;
+        return self.memberAccessNameStartPos(call.callee);
+    }
+
+    fn memberAccessNameStartPos(self: *Checker, member_node: NodeId) ?u32 {
+        const src = self.source orelse return null;
+        const span = self.hir.spanOf(member_node);
+        if (span.start >= span.end or span.end > src.len) return null;
+        const text = src[span.start..span.end];
+        var i = text.len;
+        while (i > 0) {
+            i -= 1;
+            if (text[i] == '.') return @as(u32, @intCast(span.start + i + 1));
+        }
+        return null;
     }
 
     fn parameterTypeCanBeOmitted(self: *Checker, t: TypeId) bool {
