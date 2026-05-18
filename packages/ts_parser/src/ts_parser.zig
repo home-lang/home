@@ -9768,6 +9768,13 @@ pub const Parser = struct {
                 if (key_tok.kind == .no_substitution_template or key_tok.kind == .template_head) {
                     try self.reportCodeAt(key_tok.span.start, key_tok.line, 1136, "Property assignment expected.");
                 }
+                // TS18016: private identifiers are not allowed outside
+                // class bodies. tsc fires this at the `#foo` key of
+                // an object literal. Mirrors fixture
+                // `privateNameInObjectLiteral-1`.
+                if (key_tok.kind == .private_identifier) {
+                    try self.reportCodeAt(key_tok.span.start, key_tok.line, 18016, "Private identifiers are not allowed outside class bodies.");
+                }
                 if (key_tok.kind == .number_literal and self.peek().kind == .dot and self.peekAt(1).kind == .colon) {
                     const dot_tok = self.advance();
                     key_span.end = dot_tok.span.end;
@@ -15736,6 +15743,21 @@ test "parser: single computed-name class field with chained assignment value" {
     try T.expect(m0.value != hir_mod.none_node_id);
     // The value must be a chained `0[e2] = 1`, i.e. an assignment.
     try T.expectEqual(hir_mod.NodeKind.assignment, s.hir.kindOf(m0.value));
+}
+
+test "parser: '#foo: 1' inside an object literal reports TS18016" {
+    // Private identifiers are restricted to class bodies. tsc emits
+    // TS18016 at the `#foo` token. Mirrors fixture
+    // `privateNameInObjectLiteral-1`.
+    const src = "const obj = { #foo: 1 };";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var saw_ts18016 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 18016) saw_ts18016 = true;
+    }
+    try T.expect(saw_ts18016);
 }
 
 test "parser: 'export [x: string]: string' in a class body reports TS1071 on export" {
