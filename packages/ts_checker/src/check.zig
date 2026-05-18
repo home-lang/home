@@ -25968,6 +25968,22 @@ pub const Checker = struct {
                                 (source_for_report == types.Primitive.true_lit or source_for_report == types.Primitive.false_lit))
                             {
                                 source_for_report = types.Primitive.boolean_t;
+                            } else if (self.shouldWidenForArgDiagnostic(source_for_report, target_t) and
+                                self.enumNameFromNominal(target_t) == null and
+                                !self.typeIsEnumNominal(target_t))
+                            {
+                                // Cross-primitive literal-to-non-literal
+                                // assignment mismatch — render the
+                                // widened source (e.g. `string` not
+                                // `"bad"`) when the target is a
+                                // different primitive base. Mirrors
+                                // upstream tsc's TS2322 rendering for
+                                // `templateStringsWithTypeErrorInFunctionExpressionsInSubstitutionExpression`
+                                // where `x: number; x = "bad"` reads as
+                                // `Type 'string' is not assignable...`.
+                                // Skip enums: `e = 1` keeps `'1'`, not
+                                // `'number'`, in the diagnostic.
+                                source_for_report = self.widenLiteralType(source_for_report);
                             }
                             try self.reportAssignmentTypeNotAssignable(node, a.value, source_for_report, target_t, "Type is not assignable to target type.");
                         }
@@ -59982,6 +59998,30 @@ test "checker: assignment diagnostic widens boolean literal source for number ta
             found = true;
         }
         try T.expect(std.mem.indexOf(u8, d.message, "Type 'false' is not assignable to type 'number'.") == null);
+    }
+    try T.expect(found);
+}
+
+test "checker: assignment diagnostic widens string literal source for number target" {
+    // Regression for fixture
+    // `templateStringsWithTypeErrorInFunctionExpressionsInSubstitutionExpression`
+    // — `function (x: number) { x = "bad"; }` should render
+    // `Type 'string' is not assignable to type 'number'.`, not
+    // the literal `Type '"bad"' …` form, because the target is a
+    // non-literal primitive of a different base.
+    const s = try newSetup(
+        \\function f(x: number) { x = "bad"; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable and
+            std.mem.indexOf(u8, d.message, "Type 'string' is not assignable to type 'number'.") != null)
+        {
+            found = true;
+        }
+        try T.expect(std.mem.indexOf(u8, d.message, "Type '\"bad\"' is not assignable to type 'number'.") == null);
     }
     try T.expect(found);
 }
