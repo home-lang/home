@@ -261,6 +261,11 @@ pub const TsCodes = struct {
     pub const for_await_non_module: u32 = 1431;
     pub const top_level_await_using_target_module: u32 = 2854;
     pub const multiple_default_exports: u32 = 2528;
+    /// TS2323 — "Cannot redeclare exported variable 'X'." Emitted on
+    /// each `export default function` (with body) when a module has
+    /// more than one such declaration. Mirrors `multipleDefaultExports02`
+    /// / `multipleDefaultExports04` baselines.
+    pub const export_default_redeclared: u32 = 2323;
     pub const default_export_merge: u32 = 2652;
     pub const infer_constraints_not_identical: u32 = 2838;
     pub const decorator_too_few_arguments: u32 = 1329;
@@ -3008,16 +3013,28 @@ pub const Checker = struct {
                 continue;
             }
             if (self.defaultExportFunctionInfo(stmt)) |info| {
+                // Two `export default function` declarations (with bodies)
+                // collapse into TS2323 + TS2393 on BOTH — tsc never emits
+                // TS2528 in this case, even when the function names differ
+                // (`multipleDefaultExports02` / `multipleDefaultExports04`
+                // baselines). For same-name pairs the legacy duplicate-
+                // function checker already emits the TS2393 pair, so this
+                // branch only adds TS2393 when names differ.
+                if (info.has_body and default_fn_impl != hir_mod.none_node_id) {
+                    const same_name = if (default_fn_name) |n| (info.name == n) else false;
+                    try self.reportAt(default_fn_impl, self.defaultExportNamePos(default_fn_impl), TsCodes.export_default_redeclared, "Cannot redeclare exported variable 'default'.");
+                    if (!same_name) {
+                        try self.reportAt(default_fn_impl, self.defaultExportNamePos(default_fn_impl), TsCodes.duplicate_function_implementation, "Duplicate function implementation.");
+                    }
+                    try self.reportAt(stmt, self.defaultExportNamePos(stmt), TsCodes.export_default_redeclared, "Cannot redeclare exported variable 'default'.");
+                    if (!same_name) {
+                        try self.reportAt(stmt, self.defaultExportNamePos(stmt), TsCodes.duplicate_function_implementation, "Duplicate function implementation.");
+                    }
+                    return;
+                }
                 if (default_fn_name) |name| {
                     if (info.name == name) {
-                        if (info.has_body) {
-                            if (default_fn_impl != hir_mod.none_node_id) {
-                                try self.reportAt(default_fn_impl, self.defaultExportNamePos(default_fn_impl), TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
-                                try self.reportAt(stmt, self.defaultExportNamePos(stmt), TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
-                                return;
-                            }
-                            default_fn_impl = stmt;
-                        }
+                        if (info.has_body) default_fn_impl = stmt;
                         continue;
                     }
                 }
@@ -3064,17 +3081,30 @@ pub const Checker = struct {
                 continue;
             }
             if (self.defaultExportFunctionInfo(stmt)) |info| {
+                // Mirror the non-virtual path: two `export default function`
+                // declarations (both with bodies, names need not match)
+                // collapse to TS2323 + TS2393 on BOTH defaults. No TS2528
+                // in this pure function-impl-duplicate case — see
+                // `multipleDefaultExports02` baseline. For same-name pairs
+                // the legacy duplicate-function checker already emits the
+                // TS2393 pair, so this branch only adds it for the
+                // different-name case.
+                if (info.has_body and state.default_fn_impl != hir_mod.none_node_id) {
+                    const same_name = if (state.default_fn_name) |n| (info.name == n) else false;
+                    try self.reportAt(state.default_fn_impl, self.defaultExportNamePos(state.default_fn_impl), TsCodes.export_default_redeclared, "Cannot redeclare exported variable 'default'.");
+                    if (!same_name) {
+                        try self.reportAt(state.default_fn_impl, self.defaultExportNamePos(state.default_fn_impl), TsCodes.duplicate_function_implementation, "Duplicate function implementation.");
+                    }
+                    try self.reportAt(stmt, self.defaultExportNamePos(stmt), TsCodes.export_default_redeclared, "Cannot redeclare exported variable 'default'.");
+                    if (!same_name) {
+                        try self.reportAt(stmt, self.defaultExportNamePos(stmt), TsCodes.duplicate_function_implementation, "Duplicate function implementation.");
+                    }
+                    state.first_reported = true;
+                    continue;
+                }
                 if (state.default_fn_name) |name| {
                     if (info.name == name) {
-                        if (info.has_body) {
-                            if (state.default_fn_impl != hir_mod.none_node_id) {
-                                try self.reportAt(state.default_fn_impl, self.defaultExportNamePos(state.default_fn_impl), TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
-                                try self.reportAt(stmt, self.defaultExportNamePos(stmt), TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
-                                state.first_reported = true;
-                                continue;
-                            }
-                            state.default_fn_impl = stmt;
-                        }
+                        if (info.has_body) state.default_fn_impl = stmt;
                         continue;
                     }
                 }
