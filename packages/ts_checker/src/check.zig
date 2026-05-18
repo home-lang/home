@@ -29311,8 +29311,7 @@ pub const Checker = struct {
                                 (try self.allocAnonymousObjectName(synthetic_attrs_t))
                             else
                                 null;
-                            const tgt_text = (try self.allocSimpleTypeName(target)) orelse
-                                (try self.allocAnonymousObjectName(target));
+                            const tgt_text = try self.allocJsxAttrsTargetName(el.tag, target);
                             if (src_text != null and tgt_text != null) {
                                 const msg = try std.fmt.allocPrint(
                                     self.diag_arena.allocator(),
@@ -29485,8 +29484,7 @@ pub const Checker = struct {
                             // emitting a misshapen structural message.
                             const src_text = (try self.allocAnonymousObjectName(attrs_t)) orelse
                                 (try self.allocSimpleTypeName(attrs_t));
-                            const tgt_text = (try self.allocSimpleTypeName(effective_target)) orelse
-                                (try self.allocAnonymousObjectName(effective_target));
+                            const tgt_text = try self.allocJsxAttrsTargetName(el.tag, effective_target);
                             if (src_text != null and tgt_text != null) {
                                 const msg = try std.fmt.allocPrint(
                                     self.diag_arena.allocator(),
@@ -43613,6 +43611,35 @@ pub const Checker = struct {
         }
         try buf.append(arena, '"');
         return buf.items;
+    }
+
+    /// Renders a JSX attrs target with tsc's `IntrinsicAttributes &`
+    /// prefix when the source declares `JSX.IntrinsicAttributes`.
+    /// Mirrors upstream's `getJsxAttributesType` composition where the
+    /// effective attrs-check target is `IntrinsicAttributes & T`. We
+    /// don't actually compose the intersection in the type system, so
+    /// this is rendering-only: when the prefix applies, prepend it
+    /// before the regular structural render of the underlying target.
+    fn allocJsxAttrsTargetName(self: *Checker, anchor: NodeId, target: TypeId) CheckError!?[]const u8 {
+        const tgt_text = (try self.allocSimpleTypeName(target)) orelse
+            (try self.allocAnonymousObjectName(target)) orelse return null;
+        // Only prepend when JSX.IntrinsicAttributes is in scope —
+        // intrinsic-tag and untyped paths don't carry the prefix.
+        if (!self.jsxHasIntrinsicAttributesDecl(anchor)) return tgt_text;
+        return try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "IntrinsicAttributes & {s}",
+            .{tgt_text},
+        );
+    }
+
+    fn jsxHasIntrinsicAttributesDecl(self: *Checker, anchor: NodeId) bool {
+        const jsx_name = self.string_interner.intern("JSX") catch return false;
+        const ia_name = self.string_interner.intern("IntrinsicAttributes") catch return false;
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const ns_node = self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), &[_]hir_mod.StringId{jsx_name}) orelse return false;
+        return self.findNamedTypeDeclInNamespace(ns_node, ia_name) != null;
     }
 
     /// Best-effort anonymous object-type rendering for diagnostics.
