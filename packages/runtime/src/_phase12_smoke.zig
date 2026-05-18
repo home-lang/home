@@ -9,4 +9,7 @@ test {
     _ = @import("options_types/CommandTag.zig");
     _ = @import("install/ExternalSlice.zig");
     _ = @import("install/padding_checker.zig");
+    // Ninth-wave port batch (2026-05-18):
+    _ = @import("core/string/StringBuilder.zig");
+    _ = @import("http/HeaderBuilder.zig");
 }

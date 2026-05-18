@@ -81,3 +81,8 @@ pantry
 /test-count.txt
 /.claude/worktrees
 .claude/scheduled_tasks.lock
+
+# Stray zig build artifacts (escape from -emit-bin without -ofmt=…)
+/root.o
+/packages/runtime/root.o
+/packages/runtime/src/root.o

@@ -20,7 +20,23 @@ source. The plan below tracks adaptation status file-by-file.
 
 ---
 
-## Inventory (26 files, ~20 365 LOC)
+## Inventory (30 files, ~20 746 LOC)
+
+### linker_context/ subdir leaves (flattened into `bundler/src/`)
+
+Vendored verbatim from `bundler/linker_context/`; flattened into the
+same directory as the rest of the bundler source so `@import("X.zig")`
+sibling references resolve directly (no nested directory). All four
+are `blocked` (need full `bun.bundle_v2.*` surface):
+
+| File | LOC | bun | Notes |
+|---|---:|---:|---|
+| postProcessHTMLChunk.zig | 35 | 7 | needs `bun.StringJoiner`, `bun.bundle_v2.{Chunk,ThreadPool,LinkerContext}` |
+| StaticRouteVisitor.zig | 93 | 9 | needs `bun.bit_set.AutoBitSet`, `bun.env_var`, server component boundaries |
+| findImportedCSSFilesInJSOrder.zig | 103 | 9 | needs `bun.BabyList`, `bun.ImportRecord`, `bun.Loader`, `bun.bit_set.DynamicBitSetUnmanaged` |
+| OutputFileListBuilder.zig | 150 | 11 | needs `bun.options.OutputFile`, `bun.copy`, `bun.assertf` |
+
+### Top-level bundler files
 
 LOC sorted ascending. `bun=N` is the count of `bun.X` references in
 the file (a rough proxy for porting effort). `rel=N` and `ext=N` count

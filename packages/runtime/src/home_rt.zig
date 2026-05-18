@@ -125,6 +125,14 @@ pub const jsc = struct {
     pub const JSPropertyIteratorOptions = @import("jsc/JSPropertyIterator.zig").JSPropertyIteratorOptions;
     pub const ProcessAutoKiller = @import("jsc/ProcessAutoKiller.zig");
     pub const JSONLineBuffer = @import("jsc/JSONLineBuffer.zig").JSONLineBuffer;
+    // Twelfth-wave port batch (2026-05-18). uuid.zig is the pure-Zig UUID
+    // v4/v5/v7 impl (csprng parked on DefaultCsprng). resolve_path_jsc
+    // and resolver_jsc carry C++-visible extern symbol declarations for
+    // the node:module / require.main paths host fns; bodies park behind
+    // Phase 12.2 JSC bridge.
+    pub const uuid = @import("jsc/uuid.zig");
+    pub const resolve_path_jsc = @import("jsc/resolve_path_jsc.zig");
+    pub const resolver_jsc = @import("jsc/resolver_jsc.zig");
 };
 
 // ---- src/io/ -----------------------------------------------------------
@@ -236,6 +244,14 @@ pub const BoundedArrayAligned = @import("core/bounded_array.zig").BoundedArrayAl
 // data and land first so other subsystems can name them.
 pub const install_types = struct {
     pub const NodeLinker = @import("install_types/NodeLinker.zig").NodeLinker;
+    // Twelfth-wave port batch (2026-05-18). Pure-data leaves of the semver
+    // vocabulary. SemverString is a tagged-union { inline | external }
+    // with Wyhash11 stringHash; ExternalString = SemverString + cached
+    // u64 hash; SlicedString = { buf, slice } pair tracking a sub-slice
+    // of an owned buffer.
+    pub const SemverString = @import("install_types/SemverString.zig").String;
+    pub const ExternalString = @import("install_types/ExternalString.zig").ExternalString;
+    pub const SlicedString = @import("install_types/SlicedString.zig").SlicedString;
 };
 
 // ---- src/install/ ------------------------------------------------------
@@ -268,6 +284,14 @@ pub const uws_sys = struct {
         pub const Header = @import("uws_sys/quic/Header.zig").Header;
         pub const Qpack = @import("uws_sys/quic/Header.zig").Qpack;
     };
+    // Twelfth-wave port batch (2026-05-18). Tier-0 uws_sys leaves whose
+    // upstream deps collapse to opaques: Timer (Loop forward-decl),
+    // the comptime VTable generator (ConnectingSocket sibling-import,
+    // us_socket_t/us_bun_verify_error_t local opaques), and the
+    // embedded-by-value SocketGroup (Loop/ListenSocket/SslCtx forward-decls).
+    pub const Timer = @import("uws_sys/Timer.zig").Timer;
+    pub const vtable = @import("uws_sys/vtable.zig");
+    pub const SocketGroup = @import("uws_sys/SocketGroup.zig").SocketGroup;
 };
 
 // ---- src/event_loop/ ---------------------------------------------------
@@ -1022,6 +1046,9 @@ test {
     _ = @import("uws_sys/SocketKind.zig");
     _ = @import("uws_sys/ConnectingSocket.zig");
     _ = @import("uws_sys/udp.zig");
+    _ = @import("uws_sys/Timer.zig");
+    _ = @import("uws_sys/vtable.zig");
+    _ = @import("uws_sys/SocketGroup.zig");
     _ = @import("collections/bit_set.zig");
     _ = @import("collections/multi_array_list.zig");
     _ = @import("safety/alloc.zig");
