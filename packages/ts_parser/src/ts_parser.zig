@@ -156,6 +156,12 @@ pub const Parser = struct {
     parameter_list_arrow_is_comma: bool,
     parameter_list_recovered_body_as_missing_close: bool,
     parameter_list_recovered_arrow_missing_close: bool,
+    /// Indices into `diagnostics` of TS2463 ("A binding pattern parameter
+    /// cannot be optional in an implementation signature.") diagnostics
+    /// emitted while parsing parameter lists. Body-less overload
+    /// signatures suppress TS2463 (mirrors tsc's
+    /// `checkParameterDeclaration` `IsImplementationSignature` gate).
+    pending_ts2463_indices: std.ArrayListUnmanaged(u32),
     /// When true, `(params): ReturnType => body` is NOT accepted as a
     /// parenthesized arrow with return type unless the next token
     /// after the body is `:` (terminator of an enclosing ternary).
@@ -232,6 +238,7 @@ pub const Parser = struct {
             .parameter_list_arrow_is_comma = false,
             .parameter_list_recovered_body_as_missing_close = false,
             .parameter_list_recovered_arrow_missing_close = false,
+            .pending_ts2463_indices = .empty,
             .disallow_arrow_return_type = false,
             .enum_recovered_missing_close_at_eof = false,
             .top_level_external_module_indicator = false,
@@ -268,6 +275,7 @@ pub const Parser = struct {
         self.for_init_extras.deinit(self.gpa);
         self.regex_rescan_spans.deinit(self.gpa);
         self.label_stack.deinit(self.gpa);
+        self.pending_ts2463_indices.deinit(self.gpa);
         self.diag_arena.deinit();
     }
 
@@ -2385,6 +2393,7 @@ pub const Parser = struct {
         const saved_arrow_is_comma = self.parameter_list_arrow_is_comma;
         self.parameter_list_arrow_is_comma = true;
         defer self.parameter_list_arrow_is_comma = saved_arrow_is_comma;
+        const fn_ts2463_base: usize = self.pending_ts2463_indices.items.len;
         var owns_params = false;
         const params: []NodeId = if (recovered_missing_name_arrow) blk: {
             if (self.peek().kind == .arrow) _ = self.advance();
@@ -2468,6 +2477,12 @@ pub const Parser = struct {
             self.tokens[self.cursor - 1].span.end
         else
             start.span.end;
+        // Per `checkParameterDeclaration` in tsc, TS2463 only fires on
+        // *implementation* signatures. An overload declaration carries
+        // no body, so any TS2463 emitted while parsing this parameter
+        // list must be retracted. Mirrors
+        // `optionalBindingParametersInOverloads{1,2}`.
+        try self.commitOrDropPendingTs2463(fn_ts2463_base, body != hir_mod.none_node_id);
         return try self.builder.addFnDeclGeneric(
             .{ .start = start.span.start, .end = end_pos },
             name,
@@ -2477,6 +2492,32 @@ pub const Parser = struct {
             body,
             .{ .is_generator = is_generator },
         );
+    }
+
+    /// Commit or drop the TS2463 diagnostics recorded while parsing the
+    /// current parameter list. `base` is the prefix length of
+    /// `pending_ts2463_indices` captured before parsing began. When
+    /// `has_body` is true the diagnostics remain (this was an
+    /// implementation signature); when false they are removed from
+    /// `self.diagnostics` (overload signature without body).
+    fn commitOrDropPendingTs2463(self: *Parser, base: usize, has_body: bool) ParseError!void {
+        if (self.pending_ts2463_indices.items.len <= base) return;
+        if (has_body) {
+            self.pending_ts2463_indices.items.len = base;
+            return;
+        }
+        const indices = self.pending_ts2463_indices.items[base..];
+        // Iterate from highest index to lowest so the removals don't
+        // perturb earlier indices in `self.diagnostics`.
+        var i: usize = indices.len;
+        while (i > 0) {
+            i -= 1;
+            const idx = indices[i];
+            if (idx < self.diagnostics.items.len and self.diagnostics.items[idx].code == 2463) {
+                _ = self.diagnostics.orderedRemove(idx);
+            }
+        }
+        self.pending_ts2463_indices.items.len = base;
     }
 
     /// Parse a parenthesized parameter list. Allocates the result slice;
@@ -2651,7 +2692,18 @@ pub const Parser = struct {
                 // the pattern to declare each binding, and the checker
                 // resolves identifier types through the pattern.
                 const name_node: NodeId = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
-                    break :blk try self.parseBindingPattern();
+                    const pat = try self.parseBindingPattern();
+                    // TS1187 — a parameter property (carrying `public`,
+                    // `private`, `protected`, or `readonly`) cannot be
+                    // declared via a binding pattern. tsc anchors at the
+                    // parameter property's first modifier token (the
+                    // `public` / etc keyword), NOT at the binding
+                    // pattern's `[` / `{`. Mirrors
+                    // `destructuringParameterProperties{1,2,4,5}`.
+                    if (flags.is_parameter_property) {
+                        try self.reportCodeAt(param_start.span.start, param_start.line, 1187, "A parameter property may not be declared using a binding pattern.");
+                    }
+                    break :blk pat;
                 } else id_blk: {
                     const name_tok = try self.expectIdentifierLike();
                     if (!self.suppress_strict_param_names) try self.reportInvalidStrictName(name_tok);
@@ -2670,8 +2722,16 @@ pub const Parser = struct {
                         // tsc anchors TS2463 at the start of the binding
                         // pattern (the `[` / `{` token), not the `?`
                         // suffix. Mirrors `optionalBindingParameters1.ts(1,14)`.
+                        // Record the diagnostic's index so the function
+                        // declaration caller can drop it if this is an
+                        // overload signature (no body); tsc gates TS2463
+                        // on `IsImplementationSignature` in
+                        // `checkParameterDeclaration`. See
+                        // `optionalBindingParametersInOverloads{1,2}`.
                         const pat_span = self.hir.spanOf(name_node);
+                        const ts2463_idx: u32 = @intCast(self.diagnostics.items.len);
                         try self.reportCodeAt(pat_span.start, self.lineAt(pat_span.start), 2463, "A binding pattern parameter cannot be optional in an implementation signature.");
+                        try self.pending_ts2463_indices.append(self.gpa, ts2463_idx);
                     }
                     // TS1047: `...rest?` — rest parameters cannot also be
                     // marked optional. Anchored at the `?` token, matching
@@ -2958,6 +3018,16 @@ pub const Parser = struct {
                     const name_id = try self.internToken(key_tok);
                     break :blk try self.builder.addIdentifier(tokenSpan(key_tok), name_id);
                 } else try self.parseBindingTarget();
+                // `{ h? }` — TS doesn't accept `?` on object-binding
+                // shorthand elements (the binding-element grammar
+                // disallows the `?` optional marker). tsc emits
+                // TS1005 `',' expected.` at the `?` token and recovers
+                // by skipping it. Mirrors
+                // `destructuringObjectBindingPatternAndAssignment3.ts(2,7)`.
+                if (is_object and self.peek().kind == .question) {
+                    const q_tok = self.advance();
+                    try self.reportCodeAt(q_tok.span.start, q_tok.line, 1005, "',' expected.");
+                }
                 var default_value: NodeId = hir_mod.none_node_id;
                 if (self.match(.equal)) {
                     const eq_tok = self.tokens[self.cursor - 1];
@@ -3552,6 +3622,7 @@ pub const Parser = struct {
                     // below re-enters the same context for the body.
                     if (is_generator) self.generator_depth += 1;
                     if (mods.is_async) self.async_function_depth += 1;
+                    const method_ts2463_base: usize = self.pending_ts2463_indices.items.len;
                     const params = try self.parseParameterList();
                     if (is_generator) self.generator_depth -= 1;
                     if (mods.is_async) self.async_function_depth -= 1;
@@ -3661,6 +3732,11 @@ pub const Parser = struct {
                     // `parserConstructorDeclaration{3,4}` and
                     // `parserMemberFunctionDeclaration4`.
                     try self.reportInvalidClassElementModifier(mods);
+                    // Drop any TS2463 emitted on a body-less method
+                    // overload — TS only fires it on implementation
+                    // signatures. Mirrors tsc's
+                    // `checkParameterDeclaration` body-presence gate.
+                    try self.commitOrDropPendingTs2463(method_ts2463_base, body != hir_mod.none_node_id);
                     const name_id = try self.internPropertyName(name_tok, name_span);
                     const name_node = try self.builder.addIdentifier(name_span, name_id);
                     const fn_node = try self.builder.addFnDeclGeneric(

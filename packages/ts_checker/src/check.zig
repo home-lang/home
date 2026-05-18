@@ -7400,6 +7400,17 @@ pub const Checker = struct {
                 }
             }
             for (self.interner.unionMembers(container_t)) |member| {
+                // Skip `null` / `undefined` members of the union — those
+                // represent optionality on the outer site (a `?:`
+                // parameter, a `T | undefined` annotation), not an
+                // object the destructure could land on. tsc reports
+                // TS2533 / TS18048 (possibly-undefined) at the
+                // destructure target or TS2463 on the parameter itself
+                // but does NOT emit TS2339 "Property 'X' does not exist
+                // on type 'undefined'" per element. Mirrors
+                // `optionalBindingParameters2` and
+                // `optionalBindingParametersInOverloads2`.
+                if (member == types.Primitive.undefined_t or member == types.Primitive.null_t) continue;
                 try self.checkObjectBindingPatternAgainstType(pattern_node, member);
             }
             return;
