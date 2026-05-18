@@ -1025,6 +1025,30 @@ test {
     _ = @import("collections/bit_set.zig");
     _ = @import("collections/multi_array_list.zig");
     _ = @import("safety/alloc.zig");
+    // Tenth-wave port batch (2026-05-18):
+    _ = @import("jsc/CallFrame.zig");
+    _ = @import("jsc/ZigStackFrame.zig");
+    _ = @import("jsc/ZigStackTrace.zig");
+    _ = @import("jsc/ZigException.zig");
+    _ = @import("runtime/api/bun/SSLContextCache.zig");
+    _ = @import("runtime/api/bun/SecureContext.zig");
+    _ = @import("runtime/api/NativePromiseContext.zig");
+    _ = @import("runtime/api/csrf_jsc.zig");
+    _ = @import("runtime/server/InspectorBunFrontendDevServerAgent.zig");
+    _ = @import("install/PackageID.zig");
+    _ = @import("install/Features.zig");
+    _ = @import("install/Behavior.zig");
+    _ = @import("node/Stat.zig");
+    _ = @import("node/StatFS.zig");
+    _ = @import("node/node_net_binding.zig");
+    _ = @import("http/H2Client.zig");
+    _ = @import("http/H3Client.zig");
+    _ = @import("http/websocket_http_client.zig");
+    _ = @import("css/properties/effects.zig");
+    _ = @import("css/values/position.zig");
+    _ = @import("css/values/rect.zig");
+    _ = @import("sourcemap/LineOffsetTable.zig");
+    _ = @import("sourcemap/LineColumnOffset.zig");
 }
 
 test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {
