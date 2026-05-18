@@ -78,6 +78,23 @@ pub const jsc = struct {
     pub const config = @import("jsc/config.zig");
     pub const codegen = @import("jsc/codegen.zig");
     pub const comptime_string_map_jsc = @import("jsc/comptime_string_map_jsc.zig");
+    // Fifth-wave port batch (2026-05-18):
+    pub const CachedBytecode = @import("jsc/CachedBytecode.zig").CachedBytecode;
+    pub const JSMap = @import("jsc/JSMap.zig").JSMap;
+    pub const JSBigInt = @import("jsc/JSBigInt.zig").JSBigInt;
+    pub const JSArray = @import("jsc/JSArray.zig").JSArray;
+    pub const JSFunction = @import("jsc/JSFunction.zig").JSFunction;
+    pub const JSModuleLoader = @import("jsc/JSModuleLoader.zig").JSModuleLoader;
+    pub const Errorable = @import("jsc/Errorable.zig").Errorable;
+    pub const DeferredError = @import("jsc/DeferredError.zig").DeferredError;
+    pub const DecodedJSValue = @import("jsc/DecodedJSValue.zig").DecodedJSValue;
+    pub const Strong = struct {
+        pub const Deprecated = @import("jsc/DeprecatedStrong.zig");
+    };
+    pub const CPUProfiler = @import("jsc/BunCPUProfiler.zig").CPUProfiler;
+    pub const CPUProfilerConfig = @import("jsc/BunCPUProfiler.zig").CPUProfilerConfig;
+    pub const HeapProfiler = @import("jsc/BunHeapProfiler.zig").HeapProfiler;
+    pub const HeapProfilerConfig = @import("jsc/BunHeapProfiler.zig").HeapProfilerConfig;
 };
 
 // ---- src/io/ -----------------------------------------------------------
@@ -92,6 +109,8 @@ pub const io = struct {
     // the PollOrFd union re-attaches with the full Async substrate.
     pub const FileType = @import("io/pipes.zig").FileType;
     pub const ReadState = @import("io/pipes.zig").ReadState;
+    // Fifth-wave port batch (2026-05-18):
+    pub const MaxBuf = @import("io/MaxBuf.zig");
 };
 
 // ---- src/http/ + src/http_types/ ---------------------------------------
@@ -251,6 +270,20 @@ pub const runtime = struct {
         // Per-VM Valkey state. JSC-bridge dispatch omitted — re-lands in Phase 12.2.
         pub const Context = @import("runtime/valkey_jsc/ValkeyContext.zig");
     };
+    // Fifth-wave port batch (2026-05-18). Full CLI surface (commands,
+    // opener, bunfig, args) lands when spawn + bunfig substrates re-attach.
+    pub const cli = struct {
+        pub const ci_info = @import("runtime/cli/ci_info.zig");
+        pub const discord_command = @import("runtime/cli/discord_command.zig");
+        // `test_` rather than `test` because `test` is a Zig keyword.
+        pub const test_ = struct {
+            pub const ParallelRunner = @import("runtime/cli/test/ParallelRunner.zig");
+            pub const parallel = struct {
+                pub const FileRange = @import("runtime/cli/test/parallel/FileRange.zig").FileRange;
+                pub const Frame = @import("runtime/cli/test/parallel/Frame.zig");
+            };
+        };
+    };
 };
 
 // ---- src/node/ ---------------------------------------------------------
@@ -293,6 +326,84 @@ pub const safety = struct {
     pub const asan = @import("safety/asan.zig");
     pub const CriticalSection = @import("safety/CriticalSection.zig");
     pub const ThreadLock = @import("safety/ThreadLock.zig");
+};
+
+// ---- src/threading/ ----------------------------------------------------
+// Fifth-wave port batch (2026-05-18). Mutex/Condition/Futex + WaitGroup
+// + an unbounded mpsc queue + Guarded smart pointers. Channel /
+// ThreadPool / WorkPool are parked (Channel pulls in LinearFifo;
+// ThreadPool depends on mimalloc + jsc.wtf).
+pub const threading = struct {
+    pub const Mutex = @import("threading/Mutex.zig");
+    pub const Futex = @import("threading/Futex.zig");
+    pub const Condition = @import("threading/Condition.zig");
+    pub const WaitGroup = @import("threading/WaitGroup.zig");
+    pub const guarded = @import("threading/guarded.zig");
+    pub const Guarded = guarded.Guarded;
+    pub const GuardedBy = guarded.GuardedBy;
+    pub const DebugGuarded = guarded.Debug;
+    pub const UnboundedQueue = @import("threading/unbounded_queue.zig").UnboundedQueue;
+};
+
+// ---- src/sys/ ----------------------------------------------------------
+// Fifth-wave port batch (2026-05-18). Pure-data sys leaves; the
+// big sys.zig substrate (4703 lines) is a future port. Lots of files
+// blocked on `bun.sys.SystemErrno` + `bun.sys.Maybe` until that lands.
+pub const sys = struct {
+    pub const Dir = @import("sys/dir.zig").Dir;
+    pub const SignalCode = @import("sys/SignalCode.zig").SignalCode;
+};
+
+// ---- src/paths/ --------------------------------------------------------
+// Fifth-wave port batch (2026-05-18). `home_rt.path` (singular) is
+// the existing std-wrapper namespace; the copied Bun surface lands as
+// `home_rt.paths` (plural) to mirror upstream `src/paths/`.
+pub const paths = struct {
+    pub const EnvPath = @import("paths/EnvPath.zig").EnvPath;
+    pub const MAX_PATH_BYTES = @import("paths/paths.zig").MAX_PATH_BYTES;
+    pub const PathBuffer = @import("paths/paths.zig").PathBuffer;
+    pub const WPathBuffer = @import("paths/paths.zig").WPathBuffer;
+    pub const OSPathChar = @import("paths/paths.zig").OSPathChar;
+    pub const OSPathSlice = @import("paths/paths.zig").OSPathSlice;
+    pub const OSPathSliceZ = @import("paths/paths.zig").OSPathSliceZ;
+    pub const OSPathBuffer = @import("paths/paths.zig").OSPathBuffer;
+    pub const path_buffer_pool = @import("paths/path_buffer_pool.zig").path_buffer_pool;
+    pub const w_path_buffer_pool = @import("paths/path_buffer_pool.zig").w_path_buffer_pool;
+    pub const os_path_buffer_pool = @import("paths/path_buffer_pool.zig").os_path_buffer_pool;
+};
+
+// ---- src/picohttp_sys/ -------------------------------------------------
+// Fifth-wave port batch (2026-05-18). Vendored picohttpparser FFI
+// surface. Pure extern decls.
+pub const picohttp_sys = struct {
+    pub const picohttpparser = @import("picohttp_sys/picohttpparser.zig");
+};
+
+// ---- src/wyhash/ -------------------------------------------------------
+// Fifth-wave port batch (2026-05-18). Fast non-cryptographic 64-bit
+// hash (Zig stdlib v0.11 vintage forked here so it doesn't move
+// underneath the resolver lockfile hash).
+pub const wyhash = struct {
+    pub const Wyhash11 = @import("wyhash/wyhash.zig").Wyhash11;
+};
+
+// ---- src/glob/ ---------------------------------------------------------
+// Fifth-wave port batch (2026-05-18). Glob syntax detection only;
+// matcher + walker re-attach with bun.sys + bun.path normalizer.
+pub const glob = struct {
+    pub const detectGlobSyntax = @import("glob/glob.zig").detectGlobSyntax;
+};
+
+// ---- src/highway/ ------------------------------------------------------
+// Fifth-wave port batch (2026-05-18). Google Highway SIMD string ops
+// (C ABI surface). Links against the matching Highway library.
+pub const highway = @import("highway/highway.zig");
+
+// ---- src/sourcemap/ ----------------------------------------------------
+// Fifth-wave port batch (2026-05-18). VLQ codec only; Chunk /
+// Mapping / LineOffsetTable / InternalSourceMap re-attach later.
+pub const sourcemap = struct {
+    pub const VLQ = @import("sourcemap/VLQ.zig");
 };
 
 // ---- src/jsc_stub.zig --------------------------------------------------
@@ -400,6 +511,14 @@ test {
     _ = crash_handler;
     _ = install;
     _ = ptr;
+    _ = threading;
+    _ = sys;
+    _ = paths;
+    _ = picohttp_sys;
+    _ = wyhash;
+    _ = glob;
+    _ = highway;
+    _ = sourcemap;
     // Pull nested module tests through their actual file imports so
     // the home_rt test runner exercises every copied leaf.
     _ = @import("event_loop/DeferredTaskQueue.zig");
@@ -455,6 +574,42 @@ test {
     _ = @import("io/pipes.zig");
     _ = @import("collections/hive_array.zig");
     _ = @import("collections/pool.zig");
+    // Fifth-wave port batch (2026-05-18, 6-agent parallel dispatch):
+    _ = @import("jsc/CachedBytecode.zig");
+    _ = @import("jsc/JSMap.zig");
+    _ = @import("jsc/JSBigInt.zig");
+    _ = @import("jsc/JSArray.zig");
+    _ = @import("jsc/JSFunction.zig");
+    _ = @import("jsc/JSModuleLoader.zig");
+    _ = @import("jsc/Errorable.zig");
+    _ = @import("jsc/DeferredError.zig");
+    _ = @import("jsc/DecodedJSValue.zig");
+    _ = @import("jsc/DeprecatedStrong.zig");
+    _ = @import("jsc/BunCPUProfiler.zig");
+    _ = @import("jsc/BunHeapProfiler.zig");
+    _ = @import("io/MaxBuf.zig");
+    _ = @import("sys/dir.zig");
+    _ = @import("sys/SignalCode.zig");
+    _ = @import("paths/EnvPath.zig");
+    _ = @import("paths/paths.zig");
+    _ = @import("paths/path_buffer_pool.zig");
+    _ = @import("threading/Mutex.zig");
+    _ = @import("threading/Futex.zig");
+    _ = @import("threading/Condition.zig");
+    _ = @import("threading/WaitGroup.zig");
+    _ = @import("threading/guarded.zig");
+    _ = @import("threading/unbounded_queue.zig");
+    _ = @import("threading/threading.zig");
+    _ = @import("runtime/cli/ci_info.zig");
+    _ = @import("runtime/cli/discord_command.zig");
+    _ = @import("runtime/cli/test/ParallelRunner.zig");
+    _ = @import("runtime/cli/test/parallel/FileRange.zig");
+    _ = @import("runtime/cli/test/parallel/Frame.zig");
+    _ = @import("picohttp_sys/picohttpparser.zig");
+    _ = @import("wyhash/wyhash.zig");
+    _ = @import("glob/glob.zig");
+    _ = @import("highway/highway.zig");
+    _ = @import("sourcemap/VLQ.zig");
 }
 
 test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {
