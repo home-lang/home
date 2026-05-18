@@ -1056,17 +1056,26 @@ pub const ColdData = struct {
     /// Maps NodeId → debug name (used by `--explainFiles` and source-map
     /// `names` field).
     debug_names: std.AutoHashMapUnmanaged(NodeId, StringId),
+    /// Maps `interface_member` NodeId → its computed key-expression
+    /// node (when the member declared a `[expr]:` computed name). Used
+    /// by the checker to emit per-key diagnostics (TS2467 type-param
+    /// references inside a computed interface-member name) without
+    /// adding the field to the hot `InterfaceMemberPayload`. Mirrors
+    /// `computedPropertyNames35_ES{5,6}`.
+    interface_member_key_expr: std.AutoHashMapUnmanaged(NodeId, NodeId),
 
     pub fn empty() ColdData {
         return .{
             .jsdoc = .empty,
             .debug_names = .empty,
+            .interface_member_key_expr = .empty,
         };
     }
 
     pub fn deinit(self: *ColdData, gpa: std.mem.Allocator) void {
         self.jsdoc.deinit(gpa);
         self.debug_names.deinit(gpa);
+        self.interface_member_key_expr.deinit(gpa);
     }
 };
 
@@ -2778,6 +2787,17 @@ pub const Builder = struct {
         return id;
     }
 
+    /// Record the computed key-expression for an `interface_member`
+    /// (declared with `[expr]:` form). Stored in `ColdData` rather
+    /// than the hot payload because only a handful of interface
+    /// members are computed in real codebases.
+    pub fn setInterfaceMemberKeyExpr(self: *Builder, member: NodeId, key_expr: NodeId) !void {
+        std.debug.assert(self.hir.kindOf(member) == .interface_member);
+        if (key_expr == none_node_id) return;
+        try self.hir.cold.interface_member_key_expr.put(self.hir.gpa, member, key_expr);
+        self.hir.setParent(key_expr, member);
+    }
+
     pub fn addObjectType(self: *Builder, span: Span, members: []const NodeId) !NodeId {
         const start: u32 = @intCast(self.hir.child_pool.items.len);
         try self.hir.child_pool.appendSlice(self.hir.gpa, members);
@@ -3355,6 +3375,15 @@ pub fn decoratorOf(hir: *const Hir, id: NodeId) DecoratorPayload {
 pub fn interfaceMemberOf(hir: *const Hir, id: NodeId) InterfaceMemberPayload {
     std.debug.assert(hir.kindOf(id) == .interface_member);
     return hir.interface_member_payloads.items[hir.payloads.items[id]];
+}
+
+/// Returns the recorded computed key-expression for an interface
+/// member declared with `[expr]:` form, or `none_node_id` otherwise.
+/// The mapping lives in `ColdData.interface_member_key_expr` (set by
+/// the parser via `setInterfaceMemberKeyExpr`).
+pub fn interfaceMemberKeyExpr(hir: *const Hir, id: NodeId) NodeId {
+    if (hir.kindOf(id) != .interface_member) return none_node_id;
+    return hir.cold.interface_member_key_expr.get(id) orelse none_node_id;
 }
 
 pub fn objectTypeOf(hir: *const Hir, id: NodeId) ObjectTypePayload {

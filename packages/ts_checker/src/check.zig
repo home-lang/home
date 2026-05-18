@@ -3176,6 +3176,29 @@ pub const Checker = struct {
         return std.mem.eql(u8, src[a_span.start..a_span.end], src[b_span.start..b_span.end]);
     }
 
+    /// True when the byte immediately before `expr.span.start` (ignoring
+    /// whitespace) is `(`. Used to decide whether a comma expression in
+    /// a computed property name came from the parser's bracket loop
+    /// (unparenthesized — TS1171) or from `parsePrimaryExpression`'s
+    /// open_paren arm (parenthesized — silent). The HIR doesn't carry a
+    /// paren-expression node, so we recover the distinction from the
+    /// source text. Mirrors `computedPropertyNames28_ES{5,6}` and
+    /// `computedPropertyNames30_ES{5,6}` (zero TS1171 because each key
+    /// is `[(super(), "prop")]`).
+    fn computedKeyExprIsParenthesized(self: *Checker, expr: NodeId) bool {
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(expr);
+        if (span.start == 0 or span.start > src.len) return false;
+        var i: usize = span.start;
+        while (i > 0) {
+            i -= 1;
+            const c = src[i];
+            if (c == ' ' or c == '\t' or c == '\n' or c == '\r') continue;
+            return c == '(';
+        }
+        return false;
+    }
+
     fn virtualSectionStartForNode(self: *Checker, node: NodeId) usize {
         const src = self.source orelse return 0;
         if (!self.sourceHasVirtualFilenameSections()) return 0;
@@ -17908,6 +17931,23 @@ pub const Checker = struct {
             }
             if (self.hir.kindOf(m) != .interface_member) continue;
             const im = hir_mod.interfaceMemberOf(self.hir, m);
+            // Computed key — even if the parser couldn't pin a name to
+            // it, the cold side-table preserves the original key
+            // expression so we can scan for type-parameter references
+            // (TS2467) before falling through. Mirrors
+            // `computedPropertyNames35_ES{5,6}` where the `[foo<T>()]`
+            // key on an interface method must report TS2467 at the
+            // inner `T` identifier even though the method itself has
+            // no resolvable name.
+            if (type_params.len > 0) {
+                const key_expr = hir_mod.interfaceMemberKeyExpr(self.hir, m);
+                if (key_expr != hir_mod.none_node_id) {
+                    const tp_ref_node = self.computedNameTypeParamReferenceNode(key_expr, type_params);
+                    if (tp_ref_node != hir_mod.none_node_id) {
+                        try self.report(tp_ref_node, 2467, "A computed property name cannot reference a type parameter from its containing type.");
+                    }
+                }
+            }
             // name == 0 means a computed key — skip until we have
             // late-bound key support.
             if (im.name == 0) continue;
@@ -18507,8 +18547,33 @@ pub const Checker = struct {
     ) []const u8 {
         const canonical = self.string_interner.get(name);
         const src = self.source orelse return canonical;
-        const member_node = self.classOrInterfaceMemberNode(container, name);
-        if (member_node == container) return canonical;
+        var member_node = self.classOrInterfaceMemberNode(container, name);
+        // Member is inherited — walk the `extends` chain so the
+        // display preserves the parent's computed-key bracket form
+        // (`'["get1"]'` rather than the canonical `'get1'`). Mirrors
+        // `computedPropertyNames45_ES{5,6}.ts(10,5)`.
+        if (member_node == container) {
+            const ckind = self.hir.kindOf(container);
+            if (ckind == .class_decl or ckind == .class_expr) {
+                var ancestor_name: ?hir_mod.StringId = blk: {
+                    const cc = hir_mod.classOf(self.hir, container);
+                    if (cc.extends == hir_mod.none_node_id) break :blk null;
+                    break :blk self.classExtendsName(cc.extends);
+                };
+                while (ancestor_name) |an| {
+                    const ancestor_decl = self.findClassDeclByName(container, an);
+                    if (ancestor_decl != hir_mod.none_node_id) {
+                        const cand = self.classOrInterfaceMemberNode(ancestor_decl, name);
+                        if (cand != ancestor_decl) {
+                            member_node = cand;
+                            break;
+                        }
+                    }
+                    ancestor_name = self.class_parent.get(an);
+                }
+            }
+            if (member_node == container) return canonical;
+        }
         // The key span (for `object_property`) reads the source-written
         // form; `interface_member` has no separate key node, so fall
         // back to the canonical interned name there. Computed keys
@@ -36167,10 +36232,15 @@ pub const Checker = struct {
                 return self.computedClassPropertyKeyIsSimpleLiteral(t);
             },
             .identifier => {
-                const raw = self.string_interner.get(hir_mod.identifierOf(self.hir, key).name);
-                if (self.sourceHasUniqueSymbolDeclaration(raw) or self.sourceHasDirectConstSymbolInit(raw)) return true;
-                if ((self.sourceConstSymbolMemberName(raw) catch null) != null) return true;
-                return self.computedClassPropertyKeyIsSimpleLiteral(t);
+                // Bare identifier references are syntactically simple
+                // — TS1166 fires only on complex expressions (binary
+                // ops, unary ops, calls, etc.). The DIAGNOSTIC for
+                // non-literal-typed identifiers is TS2411 (index-
+                // signature compatibility), not TS1166. Mirrors
+                // `computedPropertyNames12_ES{5,6}` where `[s]`, `[n]`,
+                // `[a]` on a class property emit no TS1166 even though
+                // their types are `string`, `number`, `any`.
+                return true;
             },
             else => return self.computedClassPropertyKeyIsSimpleLiteral(t),
         }
@@ -45905,6 +45975,14 @@ pub const Checker = struct {
         if (self.typeIsAnyLike(source_t) or self.typeIsAnyLike(target_t)) return;
         if (self.assertionTargetIsFunctionObject(target_t)) return;
         if (self.nullAssertionTargetIsPermissive(target_t)) return;
+        // Casting a primitive to its wrapper object type (e.g.
+        // `"" as String`, `<String>""`, `<Number>0`, `0 as Number`) is
+        // structurally fine in TS — the wrapper is a supertype of the
+        // primitive. Mirrors `computedPropertyNames3_ES{5,6}.ts(9,16)`
+        // which casts `""` (a string literal) to `String` inside a
+        // computed key without emitting TS2352.
+        if (self.primitiveAssertionMatchesWrapper(source_t, target_t) or
+            self.primitiveAssertionMatchesWrapper(target_t, source_t)) return;
         if (source_t == types.Primitive.null_t and self.strict_flags.strict_null_checks and !self.typeIncludesNull(target_t)) {
             try self.emitConversionMayBeMistake(node, source_t, target_t);
             return;
@@ -45997,6 +46075,34 @@ pub const Checker = struct {
     fn assertionTargetIsFunctionObject(self: *Checker, target_t: TypeId) bool {
         const function_t = self.lowerBuiltinObjectType("Function") orelse return false;
         return target_t == function_t or (self.engine.isAssignableTo(target_t, function_t) catch false);
+    }
+
+    /// True when `prim` is a JS primitive (or a literal of one) and
+    /// `wrapper` is the corresponding boxed-object type (`String`,
+    /// `Number`). The primitive is a subtype of its wrapper, so the
+    /// cast in either direction must not raise TS2352. Mirrors
+    /// `computedPropertyNames3_ES{5,6}` (`<String>""`).
+    fn primitiveAssertionMatchesWrapper(self: *Checker, prim: TypeId, wrapper: TypeId) bool {
+        if (wrapper == types.Primitive.none) return false;
+        const is_string_like = prim == types.Primitive.string_t or blk: {
+            if (prim >= self.interner.pool.typeCount()) break :blk false;
+            const pf = self.interner.pool.flagsOf(prim);
+            break :blk pf.is_string;
+        };
+        if (is_string_like) {
+            const wrap_t = lib.stringProto(&self.lib_cache, self.interner, self.string_interner) catch types.Primitive.unknown;
+            if (wrap_t != types.Primitive.unknown and wrap_t == wrapper) return true;
+        }
+        const is_number_like = prim == types.Primitive.number_t or blk: {
+            if (prim >= self.interner.pool.typeCount()) break :blk false;
+            const pf = self.interner.pool.flagsOf(prim);
+            break :blk pf.is_number;
+        };
+        if (is_number_like) {
+            const wrap_t = lib.numberProto(&self.lib_cache, self.interner, self.string_interner) catch types.Primitive.unknown;
+            if (wrap_t != types.Primitive.unknown and wrap_t == wrapper) return true;
+        }
+        return false;
     }
 
     fn nullAssertionTargetIsPermissive(self: *Checker, target_t: TypeId) bool {

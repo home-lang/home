@@ -7206,6 +7206,11 @@ pub const Parser = struct {
             _ = self.match(.semicolon);
             _ = self.match(.comma);
             const member = try self.builder.addInterfaceMember(member_span, name_id, fn_t, is_optional, is_readonly, true, false);
+            // Preserve the computed key expression on the cold
+            // side-table so the checker can scan it for type-parameter
+            // references (TS2467) without a full HIR-payload rewrite.
+            // Mirrors `computedPropertyNames35_ES{5,6}`.
+            try self.builder.setInterfaceMemberKeyExpr(member, key_expr);
             try out.append(self.gpa, member);
             return true;
         }
@@ -7214,6 +7219,7 @@ pub const Parser = struct {
         _ = self.match(.semicolon);
         _ = self.match(.comma);
         const member = try self.builder.addInterfaceMember(member_span, name_id, type_node, is_optional, is_readonly, false, false);
+        try self.builder.setInterfaceMemberKeyExpr(member, key_expr);
         try out.append(self.gpa, member);
         return true;
     }
