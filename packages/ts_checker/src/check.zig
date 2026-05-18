@@ -18424,6 +18424,41 @@ pub const Checker = struct {
         return null;
     }
 
+    /// Locate the first index-signature member in `container` whose
+    /// key type matches `key_kind`. Used to anchor TS2411 at the
+    /// indexer line when the offending property is inherited.
+    /// Mirrors `computedPropertyNames45_ES{5,6}`.
+    fn classContainerIndexSignatureNode(
+        self: *Checker,
+        container: NodeId,
+        key_kind: []const u8,
+    ) NodeId {
+        const ckind = self.hir.kindOf(container);
+        const member_ids: []const NodeId = switch (ckind) {
+            .class_decl, .class_expr => hir_mod.classMembers(self.hir, container),
+            .interface_decl => hir_mod.interfaceMembers(self.hir, container),
+            else => return hir_mod.none_node_id,
+        };
+        for (member_ids) |mid| {
+            if (self.hir.kindOf(mid) != .index_signature) continue;
+            const isig = hir_mod.indexSignatureOf(self.hir, mid);
+            const key_t = self.hir.typeOf(isig.key_type);
+            const matches = if (std.mem.eql(u8, key_kind, "string"))
+                key_t == types.Primitive.string_t
+            else if (std.mem.eql(u8, key_kind, "number"))
+                key_t == types.Primitive.number_t
+            else
+                key_t == types.Primitive.symbol_t;
+            if (matches) return mid;
+            if (self.hir.kindOf(isig.key_type) == .type_ref) {
+                const tr = hir_mod.typeRefOf(self.hir, isig.key_type);
+                const txt = self.string_interner.get(tr.name);
+                if (std.mem.eql(u8, txt, key_kind)) return mid;
+            }
+        }
+        return hir_mod.none_node_id;
+    }
+
     fn checkIndexSignatureMemberCompatibility(
         self: *Checker,
         node: NodeId,
@@ -18439,15 +18474,23 @@ pub const Checker = struct {
                 if (m.type == types.Primitive.any or string_idx == types.Primitive.any) continue;
                 if (try self.heritageAssignableDeep(m.type, string_idx)) continue;
                 const anchor = self.classOrInterfaceMemberNode(node, m.name);
-                // Skip when the member isn't defined in this container
-                // — the parent's own check already reported it. Mirrors
-                // tsc's behaviour in `computedPropertyNames44_ES{5,6}`.
-                if (anchor == node) continue;
+                const inherited = anchor == node;
+                // Inherited member: anchor TS2411 at the new
+                // index-signature in this container so the diagnostic
+                // surfaces on the indexer line. When no index sig is
+                // declared at this layer (i.e. it too is inherited),
+                // drop the emit so we don't double-count the parent's
+                // own diagnostic. Mirrors `computedPropertyNames45/44`.
+                const final_anchor = if (inherited)
+                    self.classContainerIndexSignatureNode(node, "string")
+                else
+                    anchor;
+                if (final_anchor == hir_mod.none_node_id) continue;
                 const prop_str = self.classOrInterfaceMemberDisplayName(node, m.name);
                 const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, string_idx, "string");
                 try self.diagnostics.append(self.gpa, .{
-                    .node = anchor,
-                    .pos = self.computedKeyBracketPos(anchor),
+                    .node = final_anchor,
+                    .pos = if (inherited) null else self.computedKeyBracketPos(final_anchor),
                     .code = TsCodes.property_not_assignable_to_index_type,
                     .message = msg,
                 });
@@ -18459,12 +18502,17 @@ pub const Checker = struct {
                 if (m.type == types.Primitive.any or number_idx == types.Primitive.any) continue;
                 if (try self.heritageAssignableDeep(m.type, number_idx)) continue;
                 const anchor = self.classOrInterfaceMemberNode(node, m.name);
-                if (anchor == node) continue;
+                const inherited = anchor == node;
+                const final_anchor = if (inherited)
+                    self.classContainerIndexSignatureNode(node, "number")
+                else
+                    anchor;
+                if (final_anchor == hir_mod.none_node_id) continue;
                 const prop_str = self.classOrInterfaceMemberDisplayName(node, m.name);
                 const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, number_idx, "number");
                 try self.diagnostics.append(self.gpa, .{
-                    .node = anchor,
-                    .pos = self.computedKeyBracketPos(anchor),
+                    .node = final_anchor,
+                    .pos = if (inherited) null else self.computedKeyBracketPos(final_anchor),
                     .code = TsCodes.property_not_assignable_to_index_type,
                     .message = msg,
                 });
@@ -28377,6 +28425,18 @@ pub const Checker = struct {
                 defer computed_number_value_types.deinit(self.gpa);
                 var generic_spread_parts: std.ArrayListUnmanaged(TypeId) = .empty;
                 defer generic_spread_parts.deinit(self.gpa);
+                // Track per-name (get/set) accessor occurrences in
+                // the literal so two `get foo` (or two `set foo`)
+                // triggers TS1118 + TS2300 at the duplicate. Computed
+                // accessor keys are excluded — tsc only emits these on
+                // identifier names. Mirrors
+                // `computedPropertyNames49/50_ES{5,6}`.
+                const AccessorKindBits = packed struct {
+                    has_getter: bool = false,
+                    has_setter: bool = false,
+                };
+                var accessor_seen: std.AutoHashMapUnmanaged(hir_mod.StringId, AccessorKindBits) = .empty;
+                defer accessor_seen.deinit(self.gpa);
                 const upsert = struct {
                     fn run(
                         gpa: std.mem.Allocator,
@@ -28632,6 +28692,45 @@ pub const Checker = struct {
                     const vt = self.objectAccessorPropertyType(op.value, jsdoc_t orelse raw_vt);
                     if (op_is_method and self.objectLiteralHasDuplicateMethodWithLiteralParam(members.items, k.name, op.value)) {
                         try self.reportDuplicateIdentifier(p, k.name);
+                    }
+                    // Accessor-pair duplication: two `get foo` or two
+                    // `set foo` accessors on the same identifier name
+                    // emit TS2300 ("Duplicate identifier 'foo'") on
+                    // each occurrence, plus TS1118 on the duplicate.
+                    // Mirrors `computedPropertyNames49/50_ES{5,6}`. A
+                    // get/set pair for the same name is *not* an error.
+                    if (value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn) {
+                        const acc_f = hir_mod.fnDeclOf(self.hir, op.value);
+                        if (acc_f.flags.is_getter or acc_f.flags.is_setter) {
+                            const gop = try accessor_seen.getOrPut(self.gpa, k.name);
+                            if (!gop.found_existing) gop.value_ptr.* = .{};
+                            const conflict = if (acc_f.flags.is_getter) gop.value_ptr.has_getter else gop.value_ptr.has_setter;
+                            if (conflict) {
+                                try self.reportAt(p, self.hir.spanOf(op.key).start, TsCodes.object_literal_multiple_accessors, "An object literal cannot have multiple get/set accessors with the same name.");
+                                try self.reportDuplicateIdentifier(op.key, k.name);
+                                // Emit TS2300 on the earlier same-kind
+                                // accessor too — tsc anchors on both.
+                                for (props) |earlier| {
+                                    if (earlier == p) break;
+                                    if (self.hir.kindOf(earlier) != .object_property) continue;
+                                    const eop = hir_mod.objectPropertyOf(self.hir, earlier);
+                                    if (eop.is_computed) continue;
+                                    if (self.hir.kindOf(eop.key) != .identifier) continue;
+                                    const ek = hir_mod.identifierOf(self.hir, eop.key);
+                                    if (ek.name != k.name) continue;
+                                    if (eop.value == hir_mod.none_node_id) continue;
+                                    const ev_kind = self.hir.kindOf(eop.value);
+                                    if (ev_kind != .fn_decl and ev_kind != .fn_expr and ev_kind != .arrow_fn) continue;
+                                    const ef = hir_mod.fnDeclOf(self.hir, eop.value);
+                                    const same_kind = (acc_f.flags.is_getter and ef.flags.is_getter) or
+                                        (acc_f.flags.is_setter and ef.flags.is_setter);
+                                    if (!same_kind) continue;
+                                    try self.reportDuplicateIdentifier(eop.key, k.name);
+                                }
+                            }
+                            if (acc_f.flags.is_getter) gop.value_ptr.has_getter = true;
+                            if (acc_f.flags.is_setter) gop.value_ptr.has_setter = true;
+                        }
                     }
                     try explicit_props.put(self.gpa, k.name, p);
                     try upsert(self.gpa, &members, .{
