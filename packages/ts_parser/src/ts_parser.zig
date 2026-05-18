@@ -2415,6 +2415,7 @@ pub const Parser = struct {
         if (self.match(.colon)) return_type = try self.parseReturnTypeAnnotation(params);
 
         var body: NodeId = hir_mod.none_node_id;
+        var had_errant_arrow_recovery = false;
         if (recovered_body_as_missing_close) {
             const report_pos = if (name != hir_mod.none_node_id) self.hir.spanOf(name).start else start.span.start;
             try self.reportCodeAt(
@@ -2464,6 +2465,7 @@ pub const Parser = struct {
         } else if (self.peek().kind == .arrow and !recovered_missing_name) {
             const arrow_tok = self.advance();
             try self.reportCodeAt(arrow_tok.span.start, arrow_tok.line, 1144, "'{' or ';' expected.");
+            had_errant_arrow_recovery = true;
         } else {
             // Ambient declaration `function foo(...);`.
             try self.consumeStatementTerminator();
@@ -2496,7 +2498,7 @@ pub const Parser = struct {
             params,
             return_type,
             body,
-            .{ .is_generator = is_generator },
+            .{ .is_generator = is_generator, .has_errant_arrow = had_errant_arrow_recovery },
         );
     }
 
@@ -10607,12 +10609,11 @@ pub const Parser = struct {
             if (self.match(.open_bracket)) {
                 key = try self.parseAssignmentExpression();
                 // tsc parses the full Expression inside the brackets so it
-                // can emit TS1171 on a comma expression rather than the
-                // bare TS1005 we'd otherwise produce at `,`. Mirrors
-                // `parserComputedPropertyName35.ts(2,6)`.
+                // can recognize a comma expression as a key. TS1171 is
+                // emitted by the checker (after TS2695 from
+                // `comma_left_unused`) so the ordering at identical
+                // `(line,col)` matches tsc's `35.ts(2,6)` baseline.
                 if (self.peek().kind == .comma) {
-                    const comma_start = self.hir.spanOf(key).start;
-                    const comma_line = self.lineAt(comma_start);
                     while (self.match(.comma)) {
                         const right = try self.parseAssignmentExpression();
                         key = try self.builder.addBinaryOp(
@@ -10622,7 +10623,6 @@ pub const Parser = struct {
                             right,
                         );
                     }
-                    try self.reportCodeAt(comma_start, comma_line, 1171, "A comma expression is not allowed in a computed property name.");
                 }
                 if (self.peek().kind == .close_bracket) {
                     _ = self.advance();

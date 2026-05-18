@@ -345,6 +345,11 @@ pub const TsCodes = struct {
     pub const jsx_single_child_prop_multiple_children: u32 = 2746;
     pub const jsx_text_child_not_accepted: u32 = 2747;
     pub const delete_operand_must_be_optional: u32 = 2790;
+    /// TS2704 — "The operand of a 'delete' operator cannot be a
+    /// read-only property." Fires when `delete a.b` targets a
+    /// property whose declaration is read-only (e.g. `Symbol.iterator`,
+    /// `String.prototype.length`). Mirrors `symbolType3.ts(2,8)`.
+    pub const delete_operand_read_only: u32 = 2704;
     pub const no_overload_matches: u32 = 2769;
     pub const duplicate_identifier: u32 = 2300;
     /// TS2397 — `Declaration name conflicts with built-in global
@@ -2850,6 +2855,12 @@ pub const Checker = struct {
                     const name_span = self.hir.spanOf(f_check.name);
                     if (name_span.start == name_span.end) continue;
                 }
+                // Also suppress when the parser recovered an errant
+                // `=>` immediately after the signature (the TS1144
+                // already covers the syntactic broken-shape; TS2391
+                // would double-stack on the same decl). Mirrors
+                // `parserErrantEqualsGreaterThanAfterFunction{1,2}`.
+                if (f_check.flags.has_errant_arrow) continue;
             }
             const anchor_node = blk: {
                 if (self.hir.kindOf(info.last_bodyless_fn) == .fn_decl or
@@ -20664,6 +20675,17 @@ pub const Checker = struct {
                     if (try self.resolveQualifiedTypeRef(type_node)) |t| return t;
                     if (try self.reactComponentClassType(type_node)) |t| return t;
                     try self.reportCannotFindNamespaceForQualifiedTypeRef(type_node);
+                    // Even when the qualified type can't be resolved
+                    // (`E.F<T>` / `G.H.I<T>` where E/G are missing), tsc
+                    // still walks each type argument and fires TS2304
+                    // for bare-identifier args that don't resolve.
+                    // Mirrors `parserGenericsInTypeContexts1.ts(6,13)`
+                    // / `(7,15)`.
+                    if (r.args_len > 0) {
+                        const args_extra = hir_mod.typeRefArgs(self.hir, type_node);
+                        try self.reportUnresolvedCallTypeArgumentNodes(args_extra);
+                        for (args_extra) |a_node| _ = try self.lowererLowerWithTypeParams(a_node);
+                    }
                 }
                 if (r.qualifier_len == 0 and r.args_len == 0) {
                     const name_str = self.string_interner.get(r.name);
@@ -20736,6 +20758,14 @@ pub const Checker = struct {
                         const name_str = self.string_interner.get(r.name);
                         if (!self.typeRefNameAcceptsTypeArgsAt(type_node, r.name, name_str) and self.typeRefNameExists(r.name)) {
                             try self.reportTypeNotGeneric(type_node, r.name);
+                            // Even when the outer type can't accept args
+                            // (`C<T>` where C is non-generic), tsc still
+                            // walks each type argument and fires TS2304
+                            // for bare-identifier args that don't resolve.
+                            // Mirrors `parserGenericsInTypeContexts1.ts(4,11)`.
+                            const args_extra = hir_mod.typeRefArgs(self.hir, type_node);
+                            try self.reportUnresolvedCallTypeArgumentNodes(args_extra);
+                            for (args_extra) |a_node| _ = try self.lowererLowerWithTypeParams(a_node);
                         }
                         if (std.mem.eql(u8, name_str, "Generator") or std.mem.eql(u8, name_str, "AsyncGenerator")) {
                             const args = hir_mod.typeRefArgs(self.hir, type_node);
@@ -26531,6 +26561,46 @@ pub const Checker = struct {
         };
     }
 
+    /// True when the property `name` on `obj_t` is declared read-only
+    /// (e.g. `Symbol.iterator`, `String.prototype.length`). Used to
+    /// pick TS2704 over TS2790 in the `delete` operand check. Mirrors
+    /// `symbolType3.ts(2,8)`. Returns false for any-like types and
+    /// for union members where any branch is non-readonly.
+    fn propertyIsReadOnly(self: *Checker, obj_t: TypeId, name: hir_mod.StringId) bool {
+        if (self.typeIsAnyLike(obj_t)) return false;
+        const non_null_obj = self.subtractNullUndefined(obj_t) catch obj_t;
+        const flags = self.interner.pool.flagsOf(non_null_obj);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(non_null_obj)) |member_t| {
+                if (!self.propertyIsReadOnly(member_t, name)) return false;
+            }
+            return true;
+        }
+        if (!flags.is_object_type) return false;
+        const info = self.interner.objectMemberInfo(non_null_obj, name) orelse return false;
+        return info.is_readonly;
+    }
+
+    fn deleteOperandIsReadOnly(self: *Checker, operand: NodeId) bool {
+        return switch (self.hir.kindOf(operand)) {
+            .member_access => blk: {
+                const m = hir_mod.memberOf(self.hir, operand);
+                const obj_t = self.hir.typeOf(m.object);
+                if (obj_t == types.Primitive.none) break :blk false;
+                break :blk self.propertyIsReadOnly(obj_t, m.name);
+            },
+            .element_access => blk: {
+                const e = hir_mod.elementOf(self.hir, operand);
+                if (self.hir.kindOf(e.index) != .literal_string) break :blk false;
+                const obj_t = self.hir.typeOf(e.object);
+                if (obj_t == types.Primitive.none) break :blk false;
+                const key = hir_mod.literalStringOf(self.hir, e.index).value;
+                break :blk self.propertyIsReadOnly(obj_t, key);
+            },
+            else => false,
+        };
+    }
+
     /// True when `t` looks array-like enough to destructure with an
     /// array binding pattern: an array/tuple object type whose number
     /// index resolves, or `any`/`unknown` (treated as opaque). Falls
@@ -28435,6 +28505,17 @@ pub const Checker = struct {
                             }
                         }
                         const key_t = try self.checkExpression(op.key);
+                        // TS1171 fires AFTER TS2695 (`comma_left_unused`)
+                        // because tsc emits TS2695 from the binder pass
+                        // and TS1171 from the post-bind syntactic-shape
+                        // sweep — at identical `(line,col)` the binder
+                        // wins. Mirrors `parserComputedPropertyName35.ts(2,6)`.
+                        if (self.hir.kindOf(op.key) == .binary_op) {
+                            const b = hir_mod.binopOf(self.hir, op.key);
+                            if (b.op == .comma) {
+                                try self.report(op.key, 1171, "A comma expression is not allowed in a computed property name.");
+                            }
+                        }
                         if (self.hir.kindOf(op.key) != .yield_expr and !try self.computedPropertyKeyTypeIsValid(key_t)) {
                             try self.report(p, TsCodes.computed_property_name_type, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
                         }
@@ -37931,6 +38012,12 @@ pub const Checker = struct {
                 }
                 if (operand_kind != .member_access and operand_kind != .element_access) {
                     try self.report(u.operand, TsCodes.delete_operand_property_reference, "The operand of a 'delete' operator must be a property reference.");
+                } else if (self.deleteOperandIsReadOnly(u.operand)) {
+                    // TS2704 wins over TS2790: read-only beats
+                    // optionality. Independent of strict_null_checks,
+                    // since tsc emits TS2704 even without `strict`.
+                    // Mirrors `symbolType3.ts(2,8)` `delete Symbol.iterator`.
+                    try self.report(u.operand, TsCodes.delete_operand_read_only, "The operand of a 'delete' operator cannot be a read-only property.");
                 } else if (self.strict_flags.strict_null_checks and !self.deleteOperandAllowed(u.operand)) {
                     try self.report(u.operand, TsCodes.delete_operand_must_be_optional, "The operand of a 'delete' operator must be optional.");
                 }
