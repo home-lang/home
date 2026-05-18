@@ -1965,6 +1965,9 @@ pub const Checker = struct {
                 switch (self.hir.kindOf(fr.target)) {
                     .var_decl, .let_decl, .const_decl => {
                         const v = hir_mod.varDeclOf(self.hir, fr.target);
+                        if (self.hir.kindOf(fr.target) == .let_decl or self.hir.kindOf(fr.target) == .const_decl) {
+                            try self.checkLetConstDestructuringDuplicates(v.name);
+                        }
                         if (v.type_annotation != hir_mod.none_node_id) {
                             const declared_t = if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier)
                                 self.lowerValueTypeAnnotation(hir_mod.identifierOf(self.hir, v.name).name, v.type_annotation) catch types.Primitive.any
@@ -13022,9 +13025,23 @@ pub const Checker = struct {
             "Duplicate identifier '{s}'.",
             .{name_str},
         );
+        var pos = self.declarationNameSpanStart(node);
+        // tsc anchors TS2300 for `[Symbol.X]` computed keys at the `[`
+        // bracket rather than the inner `Symbol` identifier. Walk back
+        // one byte when the recorded name position lands on `S` while
+        // the previous source byte is `[`. Mirrors `symbolProperty44`.
+        if (wrap_symbol) {
+            if (pos) |p| {
+                if (self.source) |src| {
+                    if (p > 0 and p < src.len and src[p - 1] == '[') {
+                        pos = p - 1;
+                    }
+                }
+            }
+        }
         try self.diagnostics.append(self.gpa, .{
             .node = node,
-            .pos = self.declarationNameSpanStart(node),
+            .pos = pos,
             .code = TsCodes.duplicate_identifier,
             .message = msg,
         });
@@ -36100,7 +36117,17 @@ pub const Checker = struct {
                         renderable = false;
                         break;
                     };
-                    try obj_buf.appendSlice(arena_o, member_name_str);
+                    // Wrap Symbol-keyed member names (`Symbol.iterator`)
+                    // in brackets so they render as `[Symbol.iterator]`
+                    // matching tsc baselines for the `symbolProperty*`
+                    // family.
+                    if (std.mem.startsWith(u8, member_name_str, "Symbol.")) {
+                        try obj_buf.append(arena_o, '[');
+                        try obj_buf.appendSlice(arena_o, member_name_str);
+                        try obj_buf.append(arena_o, ']');
+                    } else {
+                        try obj_buf.appendSlice(arena_o, member_name_str);
+                    }
                     try obj_buf.appendSlice(arena_o, ": ");
                     try obj_buf.appendSlice(arena_o, value_text);
                     try obj_buf.appendSlice(arena_o, "; ");
