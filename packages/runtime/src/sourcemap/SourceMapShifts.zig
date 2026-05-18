@@ -39,8 +39,8 @@ test "SourceMapShifts default is zero-initialized via LineColumnOffset.start" {
 }
 
 test "SourceMapShifts records a before→after column delta" {
-    const before: LineColumnOffset = .{ .lines = .{ .value = 1 }, .columns = .{ .value = 4 } };
-    const after: LineColumnOffset = .{ .lines = .{ .value = 1 }, .columns = .{ .value = 10 } };
+    const before: LineColumnOffset = .{ .lines = @enumFromInt(1), .columns = @enumFromInt(4) };
+    const after: LineColumnOffset = .{ .lines = @enumFromInt(1), .columns = @enumFromInt(10) };
     const s = SourceMapShifts{ .before = before, .after = after };
     try std.testing.expectEqual(@as(i32, 1), s.before.lines.zeroBased());
     try std.testing.expectEqual(@as(i32, 4), s.before.columns.zeroBased());

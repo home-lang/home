@@ -1049,6 +1049,36 @@ test {
     _ = @import("css/values/rect.zig");
     _ = @import("sourcemap/LineOffsetTable.zig");
     _ = @import("sourcemap/LineColumnOffset.zig");
+    // Eleventh-wave port batch (2026-05-18):
+    _ = @import("jsc/JSObject.zig");
+    _ = @import("jsc/JSGlobalObject.zig");
+    _ = @import("jsc/PosixSignalHandle.zig");
+    _ = @import("jsc/EventLoopHandle.zig");
+    _ = @import("jsc/fmt_jsc.zig");
+    _ = @import("jsc/ZigString.zig");
+    _ = @import("css/rules/layer.zig");
+    _ = @import("css/rules/supports.zig");
+    _ = @import("css/rules/style.zig");
+    _ = @import("css/properties/box_shadow.zig");
+    _ = @import("css/properties/border_radius.zig");
+    _ = @import("css/properties/flex.zig");
+    _ = @import("css/values/easing.zig");
+    _ = @import("css/values/time.zig");
+    _ = @import("runtime/api/JSON5Object.zig");
+    _ = @import("runtime/api/YAMLObject.zig");
+    _ = @import("runtime/api/MarkdownObject.zig");
+    _ = @import("node/types.zig");
+    _ = @import("node/dir_iterator.zig");
+    _ = @import("node/uv_signal_handle_windows.zig");
+    _ = @import("runtime/server/ServerConfig.zig");
+    _ = @import("standalone_graph/StandaloneModuleGraph.zig");
+    _ = @import("install_types/SemverString.zig");
+    _ = @import("sourcemap/SourceMapShifts.zig");
+    _ = @import("sourcemap/ParseUrlResultHint.zig");
+    _ = @import("brotli/brotli.zig");
+    _ = @import("zlib/zlib.zig");
+    _ = @import("http/Decompressor.zig");
+    _ = @import("http/zlib.zig");
 }
 
 test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {

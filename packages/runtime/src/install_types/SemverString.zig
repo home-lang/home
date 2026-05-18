@@ -503,7 +503,7 @@ test "String.HashContext + ArrayHashContext hash + eql" {
 }
 
 test "String.initAppend + initAppendIfNeeded encode large strings via allocator" {
-    var buf = std.ArrayListUnmanaged(u8){};
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
     const long = "this is a long string that does not fit inline";
     const s = try String.initAppend(std.testing.allocator, &buf, long);
