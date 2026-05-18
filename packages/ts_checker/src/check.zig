@@ -43574,6 +43574,14 @@ pub const Checker = struct {
             try buf.appendSlice(arena, ": ");
             const tn = (try self.allocSimpleTypeName(m.type)) orelse return null;
             try buf.appendSlice(arena, tn);
+            // Optional members render with `| undefined` per upstream
+            // tsc — `interface I { x?: string }` displays as
+            // `{ x?: string | undefined; }` in TS2322 prose. Skip the
+            // union suffix if the type is already nullable to avoid
+            // a degenerate `T | undefined | undefined`.
+            if (m.is_optional and !self.typeIncludesUndefined(m.type)) {
+                try buf.appendSlice(arena, " | undefined");
+            }
             try buf.append(arena, ';');
         }
         try buf.appendSlice(arena, " }");
