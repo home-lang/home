@@ -3981,8 +3981,12 @@ pub const Checker = struct {
             return;
         }
         const r = hir_mod.typeRefOf(self.hir, rt);
-        // Qualified names like `X.MyPromise<T>` always trip TS1064.
+        // Qualified names like `X.MyPromise<T>` resolve through the
+        // namespace lookup; tsc accepts them when the named class
+        // transitively extends `Promise`. Mirrors fixture
+        // `asyncQualifiedReturnType_es5`.
         if (r.qualifier_len != 0) {
+            if (self.qualifiedTypeRefExtendsPromise(node, rt)) return;
             try self.reportAsyncReturnNotPromise(rt);
             return;
         }
@@ -3995,6 +3999,53 @@ pub const Checker = struct {
         if (std.mem.eql(u8, name_str, "Promise")) return;
         if (self.typeRefNameResolvesToPromiseAlias(node, r.name)) return;
         try self.reportAsyncReturnNotPromise(rt);
+    }
+
+    /// Returns true if a qualified type-ref like `X.MyPromise<T>`
+    /// resolves to a class that extends (directly or via single-hop
+    /// inheritance) a bare `Promise<…>` type. Used by the TS1064
+    /// gate so async functions returning a namespace-scoped Promise
+    /// subclass don't fire the diagnostic. Mirrors fixture
+    /// `asyncQualifiedReturnType_es5`.
+    fn qualifiedTypeRefExtendsPromise(self: *Checker, anchor: NodeId, type_ref_node: NodeId) bool {
+        const r = hir_mod.typeRefOf(self.hir, type_ref_node);
+        const qualifiers = hir_mod.typeRefQualifier(self.hir, type_ref_node);
+        if (qualifiers.len == 0) return false;
+        var path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer path.deinit(self.gpa);
+        for (qualifiers) |q| {
+            if (self.hir.kindOf(q) != .identifier) return false;
+            path.append(self.gpa, hir_mod.identifierOf(self.hir, q).name) catch return false;
+        }
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const root_stmts = hir_mod.blockStmts(self.hir, root);
+        const ns_node = self.findNamespaceByPath(root_stmts, path.items) orelse return false;
+        const decl = self.findNamedTypeDeclInNamespace(ns_node, r.name) orelse return false;
+        return self.classDeclExtendsPromise(decl);
+    }
+
+    /// True when `decl` is a class declaration whose `extends`
+    /// heritage resolves (directly) to a bare `Promise` type-ref.
+    /// One-hop only — sufficient for the canonical
+    /// `class MyPromise<T> extends Promise<T> {}` pattern.
+    fn classDeclExtendsPromise(self: *Checker, decl: NodeId) bool {
+        const k = self.hir.kindOf(decl);
+        if (k != .class_decl and k != .class_expr) return false;
+        const c = hir_mod.classOf(self.hir, decl);
+        if (c.extends == hir_mod.none_node_id) return false;
+        const ext = c.extends;
+        const ext_kind = self.hir.kindOf(ext);
+        if (ext_kind == .identifier) {
+            const id = hir_mod.identifierOf(self.hir, ext);
+            return std.mem.eql(u8, self.string_interner.get(id.name), "Promise");
+        }
+        if (ext_kind == .type_ref) {
+            const tr = hir_mod.typeRefOf(self.hir, ext);
+            if (tr.qualifier_len != 0) return false;
+            return std.mem.eql(u8, self.string_interner.get(tr.name), "Promise");
+        }
+        return false;
     }
 
     /// Returns true if `name` refers to a type alias whose target
@@ -58448,12 +58499,13 @@ test "checker: TS2372 wording matches upstream tsc (no 'in its initializer' tail
 
 test "checker: async function with non-Promise return type emits TS1064" {
     // Mirrors `asyncFunctionDeclaration15_es6` (`async function fn4(): number`)
-    // and `asyncQualifiedReturnType_es6` (`async function f(): X.MyPromise<void>`).
+    // and the non-Promise qualified path (`async function f(): X.Bag<void>`
+    // where `Bag` doesn't extend `Promise`).
     const s = try newSetup(
         \\async function fn4(): number { }
         \\async function fn6(): Thenable { }
-        \\namespace X { export class MyPromise<T> extends Promise<T> {} }
-        \\async function fq(): X.MyPromise<void> { }
+        \\namespace X { export class Bag<T> {} }
+        \\async function fq(): X.Bag<void> { }
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
@@ -58461,8 +58513,23 @@ test "checker: async function with non-Promise return type emits TS1064" {
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.async_return_must_be_promise) count += 1;
     }
-    // At least the `number`, `Thenable` and `X.MyPromise` cases trip TS1064.
+    // `number`, `Thenable` and `X.Bag` cases each trip TS1064.
     try T.expect(count >= 3);
+}
+
+test "checker: async function with qualified Promise subclass return is accepted (no TS1064)" {
+    // Mirrors fixture `asyncQualifiedReturnType_es5`. tsc accepts
+    // `X.MyPromise<void>` when `MyPromise` extends `Promise` even
+    // though the type-ref is qualified.
+    const s = try newSetup(
+        \\namespace X { export class MyPromise<T> extends Promise<T> {} }
+        \\async function f(): X.MyPromise<void> { }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.async_return_must_be_promise);
+    }
 }
 
 test "checker: async function with bare Promise<T> return is accepted (no TS1064)" {
