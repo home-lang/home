@@ -37948,8 +37948,15 @@ pub const Checker = struct {
             const elem_t = self.interner.objectNumberIndex(rest_arr_t);
             const target_t = if (elem_t == types.Primitive.none) rest_arr_t else elem_t;
             if (target_t >= self.interner.pool.typeCount()) return;
+            // tsc emits at most one TS2345 against a tagged-template
+            // call's rest substitutions — once the first `${expr}`
+            // mismatches the rest element type, subsequent mismatches
+            // on the same call are suppressed. Mirrors fixture
+            // `taggedTemplateStringsWithIncompatibleTypedTags`.
+            const is_tagged_template_call = self.callExprIsTaggedTemplate(call_node);
             if (!self.interner.pool.flagsOf(target_t).is_type_parameter) {
                 var j: usize = fixed_count;
+                var emitted_rest_mismatch = false;
                 while (j < args.len) : (j += 1) {
                     var arg_t = arg_types[j];
                     if (self.hir.kindOf(args[j]) == .spread) {
@@ -37962,6 +37969,7 @@ pub const Checker = struct {
                     }
                     const ok = self.restArgumentAssignable(arg_t, target_t) catch true;
                     if (!ok) {
+                        if (is_tagged_template_call and emitted_rest_mismatch) continue;
                         // Use the shared formatter so rest-arg TS2345
                         // sites also get the richer `Argument of type 'A'
                         // is not assignable to parameter of type 'P'.`
@@ -37974,6 +37982,7 @@ pub const Checker = struct {
                             .code = TsCodes.argument_type_mismatch,
                             .message = msg,
                         });
+                        emitted_rest_mismatch = true;
                     }
                 }
             }
