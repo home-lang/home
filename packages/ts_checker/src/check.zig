@@ -29066,6 +29066,7 @@ pub const Checker = struct {
         defer explicit_attrs.deinit(self.gpa);
         var spread_satisfies_target = false;
         var explicit_value_attr_count: usize = 0;
+        var per_attr_assignability_fired = false;
         for (attrs) |attr| {
             switch (self.hir.kindOf(attr)) {
                 .jsx_attribute => {
@@ -29095,7 +29096,38 @@ pub const Checker = struct {
                             if (a.value != hir_mod.none_node_id) {
                                 const ok = try self.jsxAttributeLiteralAssignable(a.value, prop_t) or
                                     try self.jsxAttributeAssignable(value_t, prop_t);
-                                if (!ok) try self.report(attr, TsCodes.type_not_assignable, "JSX attribute value is not assignable to the target property.");
+                                if (!ok) {
+                                    per_attr_assignability_fired = true;
+                                    // Prefer tsc's value-level
+                                    // structural wording — `Type '<src>'
+                                    // is not assignable to type '<dst>'.`
+                                    // — anchored at the attribute, with
+                                    // the widened value type vs the
+                                    // prop's declared type. The
+                                    // simplified `JSX attribute value
+                                    // is not assignable to the target
+                                    // property.` is the fallback when
+                                    // either side fails to render.
+                                    const widened_value = self.widenForInference(value_t);
+                                    const src_text = (try self.allocSimpleTypeName(widened_value)) orelse
+                                        (try self.allocAnonymousObjectName(widened_value));
+                                    const tgt_text = (try self.allocSimpleTypeName(prop_t)) orelse
+                                        (try self.allocAnonymousObjectName(prop_t));
+                                    if (src_text != null and tgt_text != null) {
+                                        const msg = try std.fmt.allocPrint(
+                                            self.diag_arena.allocator(),
+                                            "Type '{s}' is not assignable to type '{s}'.",
+                                            .{ src_text.?, tgt_text.? },
+                                        );
+                                        try self.diagnostics.append(self.gpa, .{
+                                            .node = attr,
+                                            .code = TsCodes.type_not_assignable,
+                                            .message = msg,
+                                        });
+                                    } else {
+                                        try self.report(attr, TsCodes.type_not_assignable, "JSX attribute value is not assignable to the target property.");
+                                    }
+                                }
                             }
                         } else if (std.mem.startsWith(u8, attr_name, "data-")) {
                             continue;
@@ -29103,7 +29135,46 @@ pub const Checker = struct {
                             self.jsxPropsTargetHasNamedMembers(target) and
                             !try self.jsxPropsHasNamedMember(target, a.name))
                         {
-                            try self.report(attr, TsCodes.object_literal_excess_property, "JSX attribute does not exist on target props.");
+                            per_attr_assignability_fired = true;
+                            // tsc emits the structural attrs-vs-target
+                            // TS2322 (`Type '{name: T}' is not
+                            // assignable to type '<target>'.`) at the
+                            // unknown attribute's anchor position,
+                            // synthesising a single-property attrs
+                            // type around the offending attribute.
+                            // Mirrors `tsxAttributeResolution1` lines
+                            // 24/25/27. Falls back to the simplified
+                            // TS2353 when rendering fails.
+                            const synthetic_attrs_t = blk: {
+                                const sm: [1]types.ObjectMember = .{.{
+                                    .name = a.name,
+                                    .type = self.widenForInference(value_t),
+                                    .is_optional = false,
+                                    .is_readonly = false,
+                                    .is_method = false,
+                                }};
+                                break :blk self.interner.internObjectType(&sm) catch break :blk types.Primitive.none;
+                            };
+                            const src_text = if (synthetic_attrs_t != types.Primitive.none)
+                                (try self.allocAnonymousObjectName(synthetic_attrs_t))
+                            else
+                                null;
+                            const tgt_text = (try self.allocSimpleTypeName(target)) orelse
+                                (try self.allocAnonymousObjectName(target));
+                            if (src_text != null and tgt_text != null) {
+                                const msg = try std.fmt.allocPrint(
+                                    self.diag_arena.allocator(),
+                                    "Type '{s}' is not assignable to type '{s}'.",
+                                    .{ src_text.?, tgt_text.? },
+                                );
+                                try self.diagnostics.append(self.gpa, .{
+                                    .node = attr,
+                                    .code = TsCodes.type_not_assignable,
+                                    .message = msg,
+                                });
+                            } else {
+                                try self.report(attr, TsCodes.object_literal_excess_property, "JSX attribute does not exist on target props.");
+                            }
                         }
                     }
                     try explicit_attrs.append(self.gpa, attr);
@@ -29207,7 +29278,7 @@ pub const Checker = struct {
             });
         }
         if (props_t) |target| {
-            if (!has_any_spread and !self.typeIsAnyLike(target)) {
+            if (!has_any_spread and !self.typeIsAnyLike(target) and !per_attr_assignability_fired) {
                 if (!(spread_satisfies_target and explicit_value_attr_count == 0)) {
                     const attrs_t = self.interner.internObjectType(attr_members.items) catch return error.OutOfMemory;
                     var effective_target = target;
@@ -48541,8 +48612,12 @@ test "checker: JSX class props validate required spread members" {
         if (d.code == TsCodes.type_not_assignable) assign_errors += 1;
         if (d.code == TsCodes.object_literal_excess_property) excess_errors += 1;
     }
+    // tsc emits the unknown-attribute case as TS2322 with a structural
+    // attrs-vs-target message (mirrored in `tsxAttributeResolution1`
+    // lines 24/25/27); accept either TS2322 or TS2353 since both
+    // signal the same upstream-reported gap.
     try T.expect(assign_errors >= 2);
-    try T.expect(excess_errors >= 1);
+    try T.expect(excess_errors + assign_errors >= 3);
 }
 
 test "checker: JSX generic default props do not excess-check free target" {
