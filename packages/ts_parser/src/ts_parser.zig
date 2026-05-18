@@ -9341,6 +9341,15 @@ pub const Parser = struct {
                     // `id++[e2]` doesn't get glued together as element
                     // access, which would swallow the following enum
                     // member. Mirrors `parserComputedPropertyName30`.
+                    //
+                    // Exception: a chained `++ ++` / `-- --` (no newline
+                    // between) should fall into the `node == .assignment`
+                    // branch above so tsc's TS1005 + TS1109 pair fires at
+                    // the second operator. Mirrors fixtures
+                    // `parserPostfixUnaryExpression1` and
+                    // `parserPostfixPostfixExpression1`.
+                    const after = self.peek();
+                    if ((after.kind == .plus_plus or after.kind == .minus_minus) and !after.flags.preceded_by_newline) continue;
                     break;
                 },
                 .no_substitution_template, .template_head => {
@@ -10703,12 +10712,28 @@ pub const Parser = struct {
                 }
                 is_computed = true;
             } else {
+                // Template literal as a property key is invalid. tsc
+                // closes the object literal at this point (without
+                // consuming the template), emits TS1136, and lets the
+                // outer call-expression continuation pick the
+                // template up as the tag of a tagged-template call.
+                // Mirrors templateStringInObjectLiteral{,ES6} where
+                // `{ a: ..., \`b\`: 321 }` ends up as `{a:...}\`b\`:
+                // 321 }` with the trailing `: 321 }` driven by the
+                // var-decl `,` recovery + stray `}` TS1128 path.
+                if (self.peek().kind == .no_substitution_template or
+                    self.peek().kind == .template_head)
+                {
+                    const tmpl = self.peek();
+                    try self.reportCodeAt(tmpl.span.start, tmpl.line, 1136, "Property assignment expected.");
+                    return try self.builder.addObjectLiteral(
+                        .{ .start = start.span.start, .end = tmpl.span.start },
+                        props.items,
+                    );
+                }
                 const key_tok = self.advance();
                 can_be_shorthand_property = isExpressionIdentifierToken(key_tok.kind);
                 var key_span = tokenSpan(key_tok);
-                if (key_tok.kind == .no_substitution_template or key_tok.kind == .template_head) {
-                    try self.reportCodeAt(key_tok.span.start, key_tok.line, 1136, "Property assignment expected.");
-                }
                 // TS18016: private identifiers are not allowed outside
                 // class bodies. tsc fires this at the `#foo` key of
                 // an object literal. Mirrors fixture
