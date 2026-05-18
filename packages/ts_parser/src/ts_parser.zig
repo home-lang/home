@@ -9561,6 +9561,15 @@ pub const Parser = struct {
 
         const head = self.advance();
         const tag_span = self.hir.spanOf(tag);
+        if (self.hir.kindOf(tag) == .identifier) {
+            const tag_id = hir_mod.identifierOf(self.hir, tag);
+            if (std.mem.eql(u8, self.interner.get(tag_id.name), "super")) {
+                if (type_args.len > 0) {
+                    try self.reportCodeAt(tag_span.end, self.lineAt(tag_span.end), 2754, "'super' may not use type arguments.");
+                }
+                try self.reportCodeAt(head.span.start, head.line, 1034, "'super' must be followed by an argument list or member access.");
+            }
+        }
 
         if (head.kind == .no_substitution_template) {
             // `` `…` `` — single string segment, no values.
@@ -9898,10 +9907,25 @@ pub const Parser = struct {
                 _ = self.advance();
                 // Lowered as a dedicated `new_expr` so the checker can
                 // produce the class instance type rather than the
-                // constructor's call return type. The callee uses a
-                // member-only parser so `new Foo(args)` doesn't get
-                // pre-consumed as a call.
-                const callee = try self.parseMemberExpressionOnly();
+                // constructor's call return type. The callee starts as a
+                // member-only parse so `new Foo(args)` doesn't get
+                // pre-consumed as a call, then admits the one call-like
+                // form that can be the constructed expression:
+                // `new tag<T> `...` <U>(...)`.
+                var callee = try self.parseMemberExpressionOnly();
+                if (self.peek().kind == .less_than) {
+                    if (self.findCallTypeArgsEnd(self.cursor)) |after_gt| {
+                        const after_kind = self.tokens[after_gt].kind;
+                        if (after_kind == .no_substitution_template or after_kind == .template_head) {
+                            const callee_type_args = try self.parseExplicitCallTypeArgs(after_gt);
+                            defer self.gpa.free(callee_type_args);
+                            callee = try self.parseTaggedTemplateWithTypeArgs(callee, callee_type_args);
+                        }
+                    }
+                }
+                if (self.peek().kind == .no_substitution_template or self.peek().kind == .template_head) {
+                    callee = try self.parseTaggedTemplateWithTypeArgs(callee, &.{});
+                }
                 var type_args: []NodeId = &.{};
                 if (self.peek().kind == .less_than) {
                     const saved_cursor = self.cursor;

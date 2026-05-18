@@ -182,6 +182,8 @@ pub const TsCodes = struct {
     /// its members (e.g. in a method decorator expression, which
     /// runs at class-definition time).
     pub const super_not_in_derived_member: u32 = 2660;
+    pub const derived_constructor_missing_super: u32 = 2377;
+    pub const super_before_super_call: u32 = 17011;
     /// TS2340 — `Only public and protected methods of the base class
     /// are accessible via the 'super' keyword.` Fires for `super.X`
     /// where X is a data property (not a method) on the base class,
@@ -374,6 +376,13 @@ pub const TsCodes = struct {
     pub const namespace_as_value: u32 = 2708;
     pub const self_referenced_type_annotation: u32 = 2502;
     pub const namespace_before_merged_function: u32 = 2434;
+    /// TS2433 — `A namespace declaration cannot be in a different file
+    /// from a class or function with which it is merged.` Fires on the
+    /// namespace's *name* identifier (mirroring tsc) when a non-ambient
+    /// `namespace M { ... }` block lives in a different virtual section
+    /// from a function/class also named `M`. Both partial namespace
+    /// blocks fire individually if multiple sibling blocks exist.
+    pub const namespace_in_different_file: u32 = 2433;
     pub const import_conflicts_with_local: u32 = 2440;
     pub const generic_type_requires_args: u32 = 2314;
     pub const type_does_not_satisfy_constraint: u32 = 2344;
@@ -431,6 +440,7 @@ pub const TsCodes = struct {
     pub const cannot_assign_to_class: u32 = 2629;
     pub const cannot_assign_to_function: u32 = 2630;
     pub const cannot_assign_to_namespace: u32 = 2631;
+    pub const cannot_invoke_possibly_undefined: u32 = 2722;
     pub const property_used_before_initialization: u32 = 2729;
     pub const await_only_in_async: u32 = 1308;
     pub const return_outside_function: u32 = 1108;
@@ -827,6 +837,10 @@ pub const Checker = struct {
     /// the then-branch sees the narrowed property type.
     /// Pushed/popped in lockstep with `narrow_scopes`.
     member_narrow_scopes: std.ArrayListUnmanaged(std.AutoHashMapUnmanaged(MemberKey, TypeId)),
+    /// Source-order CheckJS CommonJS export assignment flow for
+    /// `exports.x` and `module.exports.x`. Unlike branch narrows, these
+    /// must also work at file scope where `narrow_scopes` is empty.
+    commonjs_export_narrows: std.AutoHashMapUnmanaged(MemberKey, TypeId),
     /// Class-name → instance type. Populated by `checkClassDecl`
     /// when a class is declared; consulted by `instanceof` narrowing
     /// and `new` expression typing — both of which require the name
@@ -1254,6 +1268,7 @@ pub const Checker = struct {
             .report_unresolved_in_namespace_scope = false,
             .in_computed_property_name = false,
             .member_narrow_scopes = .empty,
+            .commonjs_export_narrows = .empty,
             .class_instance_types = .empty,
             .checked_class_decls = .empty,
             .class_constructor_sigs = .empty,
@@ -1397,6 +1412,7 @@ pub const Checker = struct {
             s.deinit(self.gpa);
         }
         self.member_narrow_scopes.deinit(self.gpa);
+        self.commonjs_export_narrows.deinit(self.gpa);
         self.class_instance_types.deinit(self.gpa);
         self.checked_class_decls.deinit(self.gpa);
         self.class_constructor_sigs.deinit(self.gpa);
@@ -12861,6 +12877,12 @@ pub const Checker = struct {
                 const method_super_t = if (fn_p.flags.is_static) static_super_t else super_t;
                 if (method_super_t) |st| try self.recordNarrow(super_id, st);
                 try self.checkFnDecl(m);
+                if (c.extends != hir_mod.none_node_id and fn_p.flags.is_constructor and
+                    fn_p.body != hir_mod.none_node_id and
+                    !self.expressionContainsSuperCall(fn_p.body))
+                {
+                    try self.report(m, TsCodes.derived_constructor_missing_super, "Constructors for derived classes must contain a 'super' call.");
+                }
                 self.popNarrowScope();
                 self.narrow_lookup_floor = old_floor;
             },
@@ -27271,9 +27293,23 @@ pub const Checker = struct {
                     self.hir.kindOf(a.target) == .identifier and
                     target_t == types.Primitive.undefined_t and
                     self.identifierIsUntypedUninitializedVar(a.target);
+                const commonjs_export_key = if (a.op == null and target_kind == .member_access)
+                    try self.commonJsExportMemberKey(a.target)
+                else
+                    null;
+                const target_is_commonjs_export_assignment = commonjs_export_key != null;
                 var assignment_result_t = value_t;
                 if (a.op == null) {
                     assignment_result_t = try self.flowTypeForAssignmentValue(a.value, value_t);
+                    if (target_kind == .member_access and
+                        assignment_result_t != types.Primitive.none and
+                        assignment_result_t != types.Primitive.any and
+                        assignment_result_t != types.Primitive.unknown)
+                    {
+                        if (commonjs_export_key) |key| {
+                            try self.recordCommonJsExportNarrow(key, assignment_result_t);
+                        }
+                    }
                     const has_active_target_narrow = if (self.hir.kindOf(a.target) == .identifier)
                         self.lookupNarrow(hir_mod.identifierOf(self.hir, a.target).name) != null
                     else
@@ -27376,7 +27412,7 @@ pub const Checker = struct {
                 // duplicate TS2322 reports at the same position. The
                 // generic emit is therefore suppressed; see
                 // `wideningTuples4.ts(3,9)` for the motivating case.
-                if (!target_is_destructuring and !target_is_untyped_uninitialized_var and a.op == null and self.classPrivateStructuralMismatch(target_t, value_t)) {
+                if (!target_is_destructuring and !target_is_untyped_uninitialized_var and !target_is_commonjs_export_assignment and a.op == null and self.classPrivateStructuralMismatch(target_t, value_t)) {
                     // Render `Type 'X' is not assignable to type 'Y'.`
                     // when both type names resolve; otherwise fall
                     // back to the terse form. Mirrors
@@ -27384,7 +27420,7 @@ pub const Checker = struct {
                     // baseline prose for class-private overlap mismatches.
                     try self.reportTypeNotAssignable(node, value_t, target_t, "Type is not assignable to declared type.");
                 }
-                if (!target_is_destructuring and !target_is_untyped_uninitialized_var and a.op == null and
+                if (!target_is_destructuring and !target_is_untyped_uninitialized_var and !target_is_commonjs_export_assignment and a.op == null and
                     !readonly_target_fired and
                     target_t != types.Primitive.none and
                     target_t != types.Primitive.any and
@@ -27690,10 +27726,22 @@ pub const Checker = struct {
                 const c = hir_mod.callOf(self.hir, node);
                 const raw_callee_t = try self.checkExpression(c.callee);
                 const call_is_optional_chain = c.optional or self.expressionIsOptionalChain(c.callee);
-                const callee_t = if (call_is_optional_chain)
+                const callee_t = if (call_is_optional_chain or
+                    (self.strict_flags.strict_null_checks and
+                        !self.typeIsAnyLike(raw_callee_t) and
+                        self.typeIncludesUndefined(raw_callee_t)))
                     self.subtractNullUndefined(raw_callee_t) catch raw_callee_t
                 else
                     raw_callee_t;
+                var reported_possibly_undefined_call = false;
+                if (!call_is_optional_chain and
+                    self.strict_flags.strict_null_checks and
+                    !self.typeIsAnyLike(raw_callee_t) and
+                    self.typeIncludesUndefined(raw_callee_t))
+                {
+                    try self.report(c.callee, TsCodes.cannot_invoke_possibly_undefined, "Cannot invoke an object which is possibly 'undefined'.");
+                    reported_possibly_undefined_call = true;
+                }
                 if (self.hir.kindOf(c.callee) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, c.callee);
                     if (std.mem.eql(u8, self.string_interner.get(id.name), "super")) {
@@ -27777,6 +27825,9 @@ pub const Checker = struct {
                         break :blk_import (try self.moduleNamespaceTypeForSpecifier(lit.value, node)) orelse types.Primitive.any;
                     } else types.Primitive.any;
                     break :blk try self.buildStructuralPromise(import_t);
+                }
+                if (reported_possibly_undefined_call and callee_t == types.Primitive.never) {
+                    break :blk types.Primitive.any;
                 }
                 // Overload resolution: when the callee is a known
                 // overloaded fn, pick the first applicable signature.
@@ -28168,6 +28219,11 @@ pub const Checker = struct {
                 const access_obj_t = self.typeParameterConstraint(obj_t) orelse obj_t;
                 try self.checkPrivateMemberAccess(node, access_obj_t, m.name);
                 try self.checkProtectedMemberAccess(node, access_obj_t, m.name);
+                if (try self.commonJsExportMemberKey(node)) |key| {
+                    if (self.lookupCommonJsExportNarrow(key)) |nt| {
+                        break :blk try self.optionalChainResult(nt, member_is_optional_chain);
+                    }
+                }
                 // Member-access narrowing: `if (obj.x !== null) { …
                 // obj.x … }` — when the object is a bare identifier
                 // and a guard recorded a narrow for `(obj, x)`, the
@@ -28307,7 +28363,9 @@ pub const Checker = struct {
                     }
                     // No matching member and no indexer → TS2339.
                     if (self.sourceHasCheckJsDirective() and self.isInAssignmentTargetChain(node)) {
-                        break :blk types.Primitive.any;
+                        if (!self.checkJsImportedCallableExpandoTarget(m.object, access_obj_t)) {
+                            break :blk types.Primitive.any;
+                        }
                     }
                     if ((self.sourceHasCheckJsDirective() or self.currentThisType() == null) and
                         self.memberAccessIsContextualObjectLiteralThis(m.object))
@@ -30911,6 +30969,46 @@ pub const Checker = struct {
         if (self.member_narrow_scopes.items.len == 0) return;
         var top = &self.member_narrow_scopes.items[self.member_narrow_scopes.items.len - 1];
         try top.put(self.gpa, key, t);
+    }
+
+    fn lookupCommonJsExportNarrow(self: *Checker, key: MemberKey) ?TypeId {
+        if (self.lookupMemberNarrow(key)) |t| return t;
+        return self.commonjs_export_narrows.get(key);
+    }
+
+    fn recordCommonJsExportNarrow(self: *Checker, key: MemberKey, t: TypeId) !void {
+        if (self.member_narrow_scopes.items.len > 0) {
+            try self.recordMemberNarrow(key, t);
+        }
+        try self.commonjs_export_narrows.put(self.gpa, key, t);
+    }
+
+    fn commonJsExportMemberKey(self: *Checker, node: NodeId) CheckError!?MemberKey {
+        if (!self.sourceHasCheckJsDirective()) return null;
+        if (self.hir.kindOf(node) != .member_access) return null;
+        const m = hir_mod.memberOf(self.hir, node);
+        if (m.object == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(m.object) == .identifier) {
+            const obj_id = hir_mod.identifierOf(self.hir, m.object);
+            if (std.mem.eql(u8, self.string_interner.get(obj_id.name), "exports")) {
+                return .{ .obj_name = obj_id.name, .prop_name = m.name };
+            }
+            return null;
+        }
+        if (self.hir.kindOf(m.object) == .member_access and self.memberAccessIsModuleExports(m.object)) {
+            const module_exports = self.string_interner.intern("module.exports") catch return error.OutOfMemory;
+            return .{ .obj_name = module_exports, .prop_name = m.name };
+        }
+        return null;
+    }
+
+    fn memberAccessIsModuleExports(self: *Checker, node: NodeId) bool {
+        if (self.hir.kindOf(node) != .member_access) return false;
+        const m = hir_mod.memberOf(self.hir, node);
+        if (m.object == hir_mod.none_node_id or self.hir.kindOf(m.object) != .identifier) return false;
+        const obj_id = hir_mod.identifierOf(self.hir, m.object);
+        return std.mem.eql(u8, self.string_interner.get(obj_id.name), "module") and
+            std.mem.eql(u8, self.string_interner.get(m.name), "exports");
     }
 
     fn recordMemberPredicatesForReceiver(
@@ -44705,6 +44803,73 @@ pub const Checker = struct {
                 else => return false,
             }
         }
+    }
+
+    fn checkJsImportedCallableExpandoTarget(self: *Checker, object_node: NodeId, object_t: TypeId) bool {
+        if (self.hir.kindOf(object_node) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, object_node);
+        if (!self.localNameIsImportBinding(id.name, object_node)) return false;
+        return self.objectHasCallOrConstructSignature(object_t) or
+            self.localNameIsRelativeImportOfClassOrFunction(id.name, object_node);
+    }
+
+    fn localNameIsImportBinding(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) bool {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const has_sections = self.sourceHasVirtualFilenameSections();
+        const anchor_section = if (has_sections) self.virtualSectionStartForNode(anchor) else 0;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.kindOf(stmt) != .import_decl) continue;
+            if (has_sections and self.virtualSectionStartForNode(stmt) != anchor_section) continue;
+            const imp = hir_mod.importOf(self.hir, stmt);
+            if (imp.default_binding != hir_mod.none_node_id and self.hir.kindOf(imp.default_binding) == .identifier) {
+                if (hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name) return true;
+            }
+            if (imp.namespace_binding != hir_mod.none_node_id and self.hir.kindOf(imp.namespace_binding) == .identifier) {
+                if (hir_mod.identifierOf(self.hir, imp.namespace_binding).name == local_name) return true;
+            }
+            for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
+                if (self.hir.kindOf(spec_node) != .import_specifier) continue;
+                const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
+                if (sp.local == local_name) return true;
+            }
+        }
+        return false;
+    }
+
+    fn localNameIsRelativeImportOfClassOrFunction(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) bool {
+        const src = self.source orelse return false;
+        if (!self.sourceHasVirtualFilenameSections()) return false;
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const anchor_section = self.virtualSectionStartForNode(anchor);
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.kindOf(stmt) != .import_decl) continue;
+            if (self.virtualSectionStartForNode(stmt) != anchor_section) continue;
+            const imp = hir_mod.importOf(self.hir, stmt);
+            const spec = self.string_interner.get(imp.module);
+            if (!std.mem.startsWith(u8, spec, ".")) continue;
+            var imported_name: ?hir_mod.StringId = null;
+            for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
+                if (self.hir.kindOf(spec_node) != .import_specifier) continue;
+                const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
+                if (sp.local == local_name) {
+                    imported_name = sp.imported;
+                    break;
+                }
+            }
+            const wanted = imported_name orelse continue;
+            for (hir_mod.blockStmts(self.hir, root)) |raw| {
+                if (!self.virtualSectionMatchesSpecifier(src, raw, spec)) continue;
+                if (self.hir.kindOf(raw) != .export_decl) continue;
+                const decl = self.unwrapExportDecl(raw);
+                const decl_name = self.declarationName(decl) orelse continue;
+                if (decl_name != wanted) continue;
+                const dk = self.hir.kindOf(decl);
+                return dk == .class_decl or dk == .class_expr or dk == .fn_decl or dk == .fn_expr;
+            }
+        }
+        return false;
     }
 
     /// True when `type_node` is the synthetic `type_ref` to `const`
@@ -63346,6 +63511,47 @@ test "checker: checkjs expando property assignment target does not report TS2339
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: checkjs CommonJS export property assignment flow reports possibly undefined call once" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @filename: index.js
+        \\exports.apply = undefined;
+        \\function a() {}
+        \\exports.apply();
+        \\exports.apply = a;
+        \\exports.apply();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_invoke_possibly_undefined) count += 1;
+        try T.expect(d.code != TsCodes.not_callable);
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+    try T.expectEqual(@as(usize, 1), count);
+}
+
+test "checker: checkjs module exports property assignment flow narrows after reassignment" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @filename: index.js
+        \\module.exports.apply = undefined;
+        \\function a() {}
+        \\module.exports.apply = a;
+        \\module.exports.apply();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_invoke_possibly_undefined);
+        try T.expect(d.code != TsCodes.not_callable);
+        try T.expect(d.code != TsCodes.type_not_assignable);
     }
 }
 
