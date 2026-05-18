@@ -43626,6 +43626,11 @@ pub const Checker = struct {
         // Only prepend when JSX.IntrinsicAttributes is in scope —
         // intrinsic-tag and untyped paths don't carry the prefix.
         if (!self.jsxHasIntrinsicAttributesDecl(anchor)) return tgt_text;
+        // tsc collapses `IntrinsicAttributes & {}` to just
+        // `IntrinsicAttributes` when the JSX target has no own
+        // members (e.g. `function Tag(x: {}) { … }`). Mirrors
+        // `checkJsxChildrenProperty15` line 12.
+        if (std.mem.eql(u8, tgt_text, "{}")) return "IntrinsicAttributes";
         return try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "IntrinsicAttributes & {s}",
