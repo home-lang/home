@@ -8418,6 +8418,31 @@ pub const Parser = struct {
                 try self.reportCodeAt(at.span.start, at.line, 1109, "Expression expected.");
                 continue;
             }
+            // `1 > > 2`, `1 < < 2`, etc. — the binary RHS is missing
+            // and the next token is itself another binary/comparison
+            // operator. tsc anchors TS1109 at the second operator and
+            // SYNTHESIZES a literal `0` RHS for the first so the
+            // outer comparison still typechecks (yielding
+            // `boolean > 2` → TS2365). Mirrors
+            // `parserGreaterThanTokenAmbiguity2/3/4` baselines. Limited
+            // to the comparison family to avoid the false-positive
+            // TS2365 / TS2304 that motivated the `left`-only recovery
+            // above for `+`/`-` chains
+            // (`plusOperatorInvalidOperations`).
+            const peek_is_chained_comparison = (t.kind == .greater_than or t.kind == .less_than or
+                t.kind == .greater_than_equal or t.kind == .less_than_equal) and
+                (self.peek().kind == .greater_than or self.peek().kind == .less_than or
+                    self.peek().kind == .greater_than_equal or self.peek().kind == .less_than_equal);
+            if (peek_is_chained_comparison) {
+                const at = self.peek();
+                try self.reportCodeAt(at.span.start, at.line, 1109, "Expression expected.");
+                const right_synth = try self.builder.addLiteralNumber(.{ .start = at.span.start, .end = at.span.start }, 0);
+                const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = at.span.start };
+                if (prec_mod.binOpOf(t.kind)) |bop| {
+                    left = try self.builder.addBinaryOp(sp, bop, left, right_synth);
+                }
+                continue;
+            }
             const right = try self.parseBinaryExpressionWithIn(next_min, allow_in);
             const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(right).end };
             if (prec_mod.binOpOf(t.kind)) |bop| {
