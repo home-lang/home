@@ -27130,13 +27130,31 @@ pub const Checker = struct {
                 }
                 var suppressed_ts2350_via_ts7009 = false;
                 if (self.strict_flags.no_implicit_any and self.interner.isSignature(callee_t)) {
-                    try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
-                    // When TS7009 fires we've already told the user the
-                    // construct signature is missing entirely — TS2350
-                    // ("Only a void function can be called with the 'new'
-                    // keyword.") is redundant on the same node and tsc
-                    // suppresses it. Mirrors `newOperatorErrorCases_noImplicitAny`.
-                    suppressed_ts2350_via_ts7009 = true;
+                    // In `.js` / `.jsx` / `.mjs` / `.cjs` (with `@allowJs` /
+                    // `@checkJs`) tsc treats a plain `function F() { ... }`
+                    // as a constructable JS class when its body assigns to
+                    // `this.X` (or `this[...]`) or when sibling
+                    // `F.prototype.X = ...` assignments exist — i.e. the
+                    // upstream `getJSDocClassTag` / `getDeclaredJavascript
+                    // Class` path. We don't model JS expando classes, but
+                    // we do recognize the syntactic shape and suppress the
+                    // spurious TS7009 emit. Mirrors fixtures
+                    // `thisPropertyAssignment`, `typeFromPropertyAssignment22`,
+                    // `lateBoundAssignmentDeclarationSupport6`.
+                    const looks_like_js_ctor = self.calleeLooksLikeJsConstructor(c.callee);
+                    if (!looks_like_js_ctor) {
+                        try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
+                        // When TS7009 fires we've already told the user the
+                        // construct signature is missing entirely — TS2350
+                        // ("Only a void function can be called with the 'new'
+                        // keyword.") is redundant on the same node and tsc
+                        // suppresses it. Mirrors `newOperatorErrorCases_noImplicitAny`.
+                        suppressed_ts2350_via_ts7009 = true;
+                    } else {
+                        // Also suppress TS2350 in the JS-constructor path
+                        // — tsc treats the call as void-returning.
+                        suppressed_ts2350_via_ts7009 = true;
+                    }
                 }
                 if (self.hir.kindOf(c.callee) == .template_literal and
                     callee_t != types.Primitive.any and callee_t != types.Primitive.unknown)
@@ -40805,6 +40823,140 @@ pub const Checker = struct {
             const sig = self.hir.typeOf(fn_node);
             if (sig < self.interner.pool.typeCount() and self.interner.pool.flagsOf(sig).is_signature) {
                 try out.append(self.gpa, sig);
+            }
+        }
+    }
+
+    /// True when `callee_node` is an identifier that resolves to a
+    /// function declaration which looks like a JavaScript constructor
+    /// — i.e. the function body contains at least one assignment whose
+    /// target is `this.X` / `this[expr]`, or there are sibling
+    /// assignments of the form `<callee>.prototype.X = ...` in the
+    /// same scope. Only consulted in JS-like virtual sections; this
+    /// mirrors tsc's `getDeclaredJavascriptClass` / `isJSConstructor`
+    /// fast path used to silence TS7009 on `new Foo()` for plain JS
+    /// constructor functions.
+    fn calleeLooksLikeJsConstructor(self: *Checker, callee_node: NodeId) bool {
+        if (self.hir.kindOf(callee_node) != .identifier) return false;
+        if (!self.virtualSectionIsJsLike(callee_node)) return false;
+        const id = hir_mod.identifierOf(self.hir, callee_node);
+
+        // Resolve `id` to a function declaration via the module's
+        // top-level symbol table (handles top-level decls) and via the
+        // sibling-block walker (handles nested decls).
+        var fn_node: NodeId = hir_mod.none_node_id;
+        if (self.module) |module| {
+            if (module.root.lookup(id.name)) |sym| {
+                if (sym.flags.is_function) {
+                    for (sym.decls.items) |d| {
+                        if (self.hir.kindOf(d) == .fn_decl) {
+                            fn_node = d;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if (fn_node == hir_mod.none_node_id) {
+            fn_node = self.findSiblingFunctionDecl(callee_node) orelse hir_mod.none_node_id;
+        }
+        if (fn_node == hir_mod.none_node_id) return false;
+
+        // 1) Body contains `this.X = ...` / `this[...] = ...`.
+        const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (f.body != hir_mod.none_node_id and self.hir.kindOf(f.body) == .block_stmt) {
+            for (hir_mod.blockStmts(self.hir, f.body)) |stmt| {
+                if (self.hir.kindOf(stmt) != .assignment) continue;
+                const a = hir_mod.assignmentOf(self.hir, stmt);
+                if (self.assignmentTargetRootedAtThis(a.target)) return true;
+            }
+        }
+
+        // 2) Sibling `<id>.prototype.X = ...` assignments in the same
+        //    block / module.
+        if (self.findPrototypeAssignSiblingForName(callee_node, id.name)) return true;
+
+        return false;
+    }
+
+    /// True when the assignment target's leftmost root expression is
+    /// the `this` keyword. Handles `this.x = ...`, `this["x"] = ...`,
+    /// `this.x.y = ...`, `this["x"].y = ...` etc. The HIR represents
+    /// `this` as an identifier whose name interns to "this" (see
+    /// `parseUnaryExpression` for `kw_this`).
+    fn assignmentTargetRootedAtThis(self: *Checker, target: NodeId) bool {
+        var cur = target;
+        while (true) {
+            const k = self.hir.kindOf(cur);
+            if (k == .member_access) {
+                cur = hir_mod.memberOf(self.hir, cur).object;
+            } else if (k == .element_access) {
+                cur = hir_mod.elementOf(self.hir, cur).object;
+            } else if (k == .identifier) {
+                const idn = hir_mod.identifierOf(self.hir, cur);
+                return std.mem.eql(u8, self.string_interner.get(idn.name), "this");
+            } else if (k == .this_expr) {
+                return true;
+            } else {
+                return false;
+            }
+        }
+    }
+
+    /// Walks the containing scope chain looking for any sibling
+    /// statement of the form `<name>.prototype.X = ...` (member assign
+    /// of arbitrary depth so long as the leftmost object is `name` and
+    /// at least one of the chained property names is `prototype`).
+    fn findPrototypeAssignSiblingForName(
+        self: *Checker,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+    ) bool {
+        var cur = self.hir.parentOf(anchor);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .block_stmt) {
+                if (self.statementsHavePrototypeAssign(hir_mod.blockStmts(self.hir, cur), name)) return true;
+            } else if (k == .namespace_decl) {
+                if (self.statementsHavePrototypeAssign(hir_mod.namespaceBody(self.hir, cur), name)) return true;
+            }
+        }
+        return false;
+    }
+
+    fn statementsHavePrototypeAssign(
+        self: *Checker,
+        stmts: []const NodeId,
+        name: hir_mod.StringId,
+    ) bool {
+        for (stmts) |stmt| {
+            if (self.hir.kindOf(stmt) != .assignment) continue;
+            const a = hir_mod.assignmentOf(self.hir, stmt);
+            if (self.memberChainStartsWithNameAndIncludesPrototype(a.target, name)) return true;
+        }
+        return false;
+    }
+
+    fn memberChainStartsWithNameAndIncludesPrototype(
+        self: *Checker,
+        target: NodeId,
+        name: hir_mod.StringId,
+    ) bool {
+        var saw_prototype = false;
+        var cur = target;
+        while (true) {
+            const k = self.hir.kindOf(cur);
+            if (k == .member_access) {
+                const m = hir_mod.memberOf(self.hir, cur);
+                if (std.mem.eql(u8, self.string_interner.get(m.name), "prototype")) {
+                    saw_prototype = true;
+                }
+                cur = m.object;
+            } else if (k == .identifier) {
+                const idn = hir_mod.identifierOf(self.hir, cur);
+                return saw_prototype and idn.name == name;
+            } else {
+                return false;
             }
         }
     }
