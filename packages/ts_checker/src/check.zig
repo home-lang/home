@@ -17956,7 +17956,25 @@ pub const Checker = struct {
         if (text.len < 2) return null;
         const quote = text[0];
         if ((quote == '"' or quote == '\'') and text[text.len - 1] == quote) {
-            return self.string_interner.intern(text[1 .. text.len - 1]) catch null;
+            // Reject expressions like `"1" + "2"` whose trimmed text
+            // happens to start and end with the same quote but
+            // contains an unescaped closing-then-reopening quote in
+            // the middle (i.e. real source operators). Without this
+            // guard the enum-initializer fast-path swallows such
+            // binops as string members and skips the operand-type
+            // diagnostics (TS2362/TS2363). Mirrors fixture
+            // `enumConstantMemberWithString` (`"a" - "a"`).
+            const inner = text[1 .. text.len - 1];
+            var i: usize = 0;
+            while (i < inner.len) : (i += 1) {
+                const ch = inner[i];
+                if (ch == '\\') {
+                    i += 1;
+                    continue;
+                }
+                if (ch == quote) return null;
+            }
+            return self.string_interner.intern(inner) catch null;
         }
         if (sp.start > 0 and sp.end < src.len) {
             const before = src[sp.start - 1];
@@ -56690,6 +56708,30 @@ test "checker: typeof type parameter emits TS2693" {
         if (d.code == TsCodes.type_only_used_as_value) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: enum initializer `\"a\" - \"a\"` fires TS2362 + TS2363" {
+    // The non-const enum initializer slot evaluates as a real
+    // expression, so string-minus-string must surface the standard
+    // arithmetic-operand diagnostics. A previous loose source-span
+    // string-literal sniff swallowed `"a" - "a"` as a single string
+    // member and skipped the operand check entirely. Mirrors
+    // fixture `enumConstantMemberWithString.errors.txt`.
+    const s = try newSetup(
+        \\enum T1 {
+        \\  d = "a" - "a",
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var left_count: usize = 0;
+    var right_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.arithmetic_left_operand_type) left_count += 1;
+        if (d.code == TsCodes.arithmetic_right_operand_type) right_count += 1;
+    }
+    try T.expectEqual(@as(usize, 1), left_count);
+    try T.expectEqual(@as(usize, 1), right_count);
 }
 
 test "checker: enum auto-increment — `enum E { A, B, C }` assigns A=0, B=1, C=2" {
