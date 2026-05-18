@@ -2788,6 +2788,24 @@ pub const Checker = struct {
                 break;
             }
             if (suppressed) continue;
+            // Suppress TS2391 when the function name is a synthesized
+            // empty identifier (`function => …` recovers as a fn_decl
+            // with a zero-length name token). tsc treats those as
+            // already-broken declarations and only fires TS1003 /
+            // TS7010 — TS2391 would be noise on top. Mirrors
+            // `parserEqualsGreaterThanAfterFunction1` / `2` and
+            // `parserErrantEqualsGreaterThanAfterFunction1` / `2`.
+            if (self.hir.kindOf(info.last_bodyless_fn) == .fn_decl or
+                self.hir.kindOf(info.last_bodyless_fn) == .fn_expr)
+            {
+                const f_check = hir_mod.fnDeclOf(self.hir, info.last_bodyless_fn);
+                if (f_check.name != hir_mod.none_node_id and
+                    self.hir.kindOf(f_check.name) == .identifier)
+                {
+                    const name_span = self.hir.spanOf(f_check.name);
+                    if (name_span.start == name_span.end) continue;
+                }
+            }
             const anchor_node = blk: {
                 if (self.hir.kindOf(info.last_bodyless_fn) == .fn_decl or
                     self.hir.kindOf(info.last_bodyless_fn) == .fn_expr)
