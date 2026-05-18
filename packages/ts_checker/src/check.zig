@@ -26123,7 +26123,10 @@ pub const Checker = struct {
                     if (std.mem.eql(u8, self.string_interner.get(id.name), "Map")) {
                         const entry = try self.inferMapEntryTypes(args);
                         if (entry.invalid_mixed_value_entries) {
-                            try self.report(node, TsCodes.no_overload_matches, "No overload matches this call.");
+                            // tsc anchors TS2769 at the callee identifier
+                            // (`Map`), not the surrounding `new` expression
+                            // — matches `for-of39.ts(1,15)` baseline.
+                            try self.report(c.callee, TsCodes.no_overload_matches, "No overload matches this call.");
                         }
                         break :blk try self.builtinMapInstanceType(entry.key, entry.value);
                     }
