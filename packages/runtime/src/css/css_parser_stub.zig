@@ -210,16 +210,157 @@ pub const VendorPrefix = packed struct(u8) {
 /// upstream's `DefineEnumProperty` generates. The runtime paths trip
 /// `@compileError`; leaves that only spell the names through
 /// `pub const Foo = css.DefineEnumProperty(...)` still compile.
-pub fn DefineEnumProperty(comptime _: anytype) type {
+pub fn DefineEnumProperty(comptime T: anytype) type {
     return struct {
-        pub fn parse(_: *Parser) Result(@This()) {
+        pub fn parse(_: *Parser) Result(T) {
             @compileError("css_parser not yet ported — DefineEnumProperty.parse");
         }
-        pub fn toCss(_: *const @This(), _: *Printer) PrintErr!void {
+        pub fn toCss(_: *const T, _: *Printer) PrintErr!void {
             @compileError("css_parser not yet ported — DefineEnumProperty.toCss");
+        }
+        pub fn eql(_: *const T, _: *const T) bool {
+            return false;
+        }
+        pub fn hash(_: *const T, _: *std.hash.Wyhash) void {
+            @compileError("css_parser not yet ported — DefineEnumProperty.hash");
+        }
+        pub fn deepClone(this: *const T, _: std.mem.Allocator) T {
+            return this.*;
         }
     };
 }
+
+/// Mirror of upstream's `css.enum_property_util` namespace. Real impl drives
+/// the asStr/parse/toCss surface for the small enum-only properties (e.g.
+/// `TailwindStyleName`). Runtime paths trip `@compileError`; pure-data leaves
+/// still compile.
+pub const enum_property_util = struct {
+    pub fn asStr(comptime T: type, _: *const T) []const u8 {
+        @compileError("css_parser not yet ported — enum_property_util.asStr");
+    }
+    pub fn parse(comptime T: type, _: *Parser) Result(T) {
+        @compileError("css_parser not yet ported — enum_property_util.parse");
+    }
+    pub fn toCss(comptime T: type, _: *const T, _: *Printer) PrintErr!void {
+        @compileError("css_parser not yet ported — enum_property_util.toCss");
+    }
+};
+
+/// Mirrors the top-level `css.Error` enum surface. Real upstream is a
+/// many-variant error union; leaves only spell the type name (typically as a
+/// `pub const Error = css.Error;` re-export) so an empty enum is sufficient.
+pub const Error = error{CSSParseError};
+
+/// Mirror of `css.Maybe`. Upstream resolves to the same Result-shaped
+/// `Maybe(T, E)` we model as Result(T) above. Provided as a separate name so
+/// callers spelling either `css.Maybe` or `css.Result` line up.
+pub fn Maybe(comptime T: type, comptime _: type) type {
+    return union(enum) {
+        result: T,
+        err: ParseError,
+    };
+}
+
+pub const MinifyErr = error{MinifyError};
+
+/// Opaque-ish stand-in for `css.MinifyContext`. Real upstream owns a Targets
+/// + a Visitor + various per-pass state. Field count zero is enough for
+/// `MediaRule(R).minify` to type-check; runtime paths can't be reached.
+pub const MinifyContext = struct {
+    _unused: u8 = 0,
+};
+
+/// Opaque mirror of `css.MediaList`. Pure-data leaves only need the type
+/// name to resolve at the field-declaration site (`query: css.MediaList`);
+/// the methods all trip `@compileError`.
+pub const MediaList = struct {
+    _unused: u8 = 0,
+
+    pub fn deepClone(this: *const MediaList, _: std.mem.Allocator) MediaList {
+        return this.*;
+    }
+    pub fn toCss(_: *const MediaList, _: *Printer) PrintErr!void {
+        @compileError("css_parser not yet ported — MediaList.toCss");
+    }
+    pub fn neverMatches(_: *const MediaList) bool {
+        @compileError("css_parser not yet ported — MediaList.neverMatches");
+    }
+    pub fn alwaysMatches(_: *const MediaList) bool {
+        @compileError("css_parser not yet ported — MediaList.alwaysMatches");
+    }
+};
+
+/// Opaque generic mirror of `css.SmallList(T, N)`. Real upstream is an
+/// inline-buffered ArrayList with a small-capacity optimization; the stub
+/// retains only the type name + an empty `slice()` / `len()` surface so
+/// type-checks line up. Methods that touch the underlying buffer trip
+/// `@compileError`.
+pub fn SmallList(comptime T: type, comptime _: usize) type {
+    return struct {
+        items: []const T = &.{},
+
+        pub fn slice(this: *const @This()) []const T {
+            return this.items;
+        }
+
+        pub fn len(this: *const @This()) usize {
+            return this.items.len;
+        }
+
+        pub fn deepClone(this: *const @This(), _: std.mem.Allocator) @This() {
+            return this.*;
+        }
+
+        pub fn clone(this: *const @This(), _: std.mem.Allocator) @This() {
+            return this.*;
+        }
+
+        pub fn append(_: *@This(), _: std.mem.Allocator, _: T) void {
+            @compileError("css_parser not yet ported — SmallList.append");
+        }
+    };
+}
+
+/// Mirror of `css.serializer.*`. Real upstream serializes strings, numbers,
+/// dimensions, idents into a Printer. Stubs trip `@compileError`.
+pub const serializer = struct {
+    pub fn serializeDimension(_: f32, _: []const u8, _: *Printer) PrintErr!void {
+        @compileError("css_parser not yet ported — serializer.serializeDimension");
+    }
+    pub fn serializeIdentifier(_: []const u8, _: *Printer) PrintErr!void {
+        @compileError("css_parser not yet ported — serializer.serializeIdentifier");
+    }
+    pub fn serializeName(_: []const u8, _: *Printer) PrintErr!void {
+        @compileError("css_parser not yet ported — serializer.serializeName");
+    }
+};
+
+/// Mirror of `css.to_css.*`. Real upstream owns the list-printing helpers
+/// (`fromList`, `fromSlice`, `commaSeparated`). Stubs trip `@compileError`.
+pub const to_css = struct {
+    pub fn fromList(comptime _: type, _: anytype, _: *Printer) PrintErr!void {
+        @compileError("css_parser not yet ported — to_css.fromList");
+    }
+};
+
+/// Mirror of `css.selector.*` — only the surface wave-7+ leaves spell
+/// (parser.SelectorList, serialize.serializeSelectorList). Pure data.
+pub const selector = struct {
+    pub const parser = struct {
+        pub const SelectorList = struct {
+            v: struct {
+                pub fn slice(_: *const @This()) []const u8 {
+                    return &.{};
+                }
+            } = .{},
+        };
+    };
+    pub const serialize = struct {
+        pub fn serializeSelectorList(_: anytype, _: *Printer, _: anytype, _: bool) PrintErr!void {
+            @compileError("css_parser not yet ported — serialize.serializeSelectorList");
+        }
+    };
+};
 
 pub fn DeriveParse(comptime T: type) type {
     return struct {
@@ -381,6 +522,15 @@ pub const css_values = struct {
         pub const CustomIdentFns = struct {
             pub fn toCss(_: *const []const u8, _: *Printer) PrintErr!void {
                 @compileError("css_parser not yet ported — CustomIdentFns.toCss");
+            }
+        };
+        /// Real upstream is `DashedIdent { v: []const u8 }`; the stub keeps
+        /// it as the bare slice alias so leaves spelling
+        /// `css_values.ident.DashedIdent` resolve without a struct field.
+        pub const DashedIdent = []const u8;
+        pub const DashedIdentFns = struct {
+            pub fn toCss(_: *const []const u8, _: *Printer) PrintErr!void {
+                @compileError("css_parser not yet ported — DashedIdentFns.toCss");
             }
         };
     };

@@ -122,13 +122,18 @@ pub fn DifferWithEql(comptime Line: type, comptime opts: Options, comptime areLi
         /// - [An O(ND) Difference Algorithm and Its Variations](http://www.xmailserver.org/diff2.pdf)
         pub fn diff(home_allocator: Allocator, actual: []const Line, expected: []const Line) Error!DiffList(Line) {
 
-            // Edit graph's allocator
-            var graph_stack_alloc = stackFallback(graph_initial_size, home_allocator);
-            const graph_alloc = graph_stack_alloc.get();
+            // Edit graph's allocator. Zig 0.17 removed `std.heap.stackFallback`,
+            // so we fall through to the caller's allocator directly. This
+            // costs a heap allocation on the hot path that upstream avoids for
+            // small (<256-byte) inputs — re-attach a stack-fallback when one
+            // lands in stdlib again.
+            const graph_alloc = home_allocator;
 
-            // Match point trace's allocator
-            var trace_stack_alloc = stackFallback(opts.initial_trace_capacity, home_allocator);
-            const trace_alloc = trace_stack_alloc.get();
+            // Match point trace's allocator (same Zig-0.17 caveat as above).
+            const trace_alloc = home_allocator;
+            // `graph_initial_size` is exercised by the compile-time assertion
+            // above; reference it here so the helper stays load-bearing.
+            comptime std.debug.assert(graph_initial_size > 0);
 
             // const MAX \in [0, M+N]
             // let V: int array = [-MAX..MAX]. V is a flattened representation of the edit graph.
@@ -609,7 +614,7 @@ pub fn split(
     //
     // thing
     var it = std.mem.splitScalar(T, s, newline);
-    var lines = std.ArrayListUnmanaged([]const T){};
+    var lines: std.ArrayListUnmanaged([]const T) = .empty;
     try lines.ensureUnusedCapacity(alloc, s.len >> 4);
     errdefer lines.deinit(alloc);
     while (it.next()) |l| {
@@ -624,7 +629,6 @@ const builtin = @import("builtin");
 const std = @import("std");
 const t = std.testing;
 const assert = std.debug.assert;
-const stackFallback = std.heap.stackFallback;
 
 const mem = std.mem;
 const Allocator = mem.Allocator;
