@@ -28604,7 +28604,12 @@ pub const Checker = struct {
                             }
                         }
                         if (self.hir.kindOf(op.key) != .yield_expr and !try self.computedPropertyKeyTypeIsValid(key_t)) {
-                            try self.report(p, TsCodes.computed_property_name_type, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
+                            // Anchor at the `[` so getter/setter object
+                            // properties (`get [s]() {…}`) report at
+                            // the bracket column instead of the leading
+                            // `get` keyword. Mirrors upstream tsc on
+                            // `symbolProperty3.ts(5,9)`.
+                            try self.reportComputedKeyBracket(op.key, TsCodes.computed_property_name_type, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
                         }
                         if (op.value == hir_mod.none_node_id) continue;
                         const value_kind = self.hir.kindOf(op.value);
@@ -39605,7 +39610,14 @@ pub const Checker = struct {
             if (!ok and !contextual_ok and !emitted_2556) {
                 var emitted = false;
                 if (self.hir.kindOf(args[i]) == .array_literal and self.isTupleShapedTarget(param_t)) {
-                    if (self.isContextualCallShapeDiagnosticAlreadyEmitted(call_node, args, args[i])) {
+                    if (try self.formatArrayLiteralTupleArgumentNotAssignable(args[i], param_t)) |msg| {
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = args[i],
+                            .code = TsCodes.argument_type_mismatch,
+                            .message = msg,
+                        });
+                        emitted = true;
+                    } else if (self.isContextualCallShapeDiagnosticAlreadyEmitted(call_node, args, args[i])) {
                         emitted = true;
                     }
                 }
