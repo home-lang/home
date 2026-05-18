@@ -26121,6 +26121,11 @@ pub const Checker = struct {
         if (value_node == hir_mod.none_node_id or self.hir.kindOf(value_node) != .logical_op) return false;
         const l = hir_mod.logicalOf(self.hir, value_node);
         if (l.op != .@"and" and l.op != .@"or") return false;
+        const rhs_t = if (self.hir.typeOf(l.rhs) != types.Primitive.none)
+            self.hir.typeOf(l.rhs)
+        else
+            try self.checkExpression(l.rhs);
+        if (try self.expressionNodeAssignableToTarget(l.rhs, rhs_t, target_t)) return true;
         if ((self.hir.kindOf(l.rhs) == .arrow_fn or self.hir.kindOf(l.rhs) == .fn_expr) and
             try self.functionExpressionAssignableToTarget(l.rhs, target_t))
         {
@@ -39814,27 +39819,8 @@ pub const Checker = struct {
                 try self.report(l.lhs, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
             }
         }
-        const raw_lhs_result = try self.expressionLiteralType(l.lhs, lhs);
+        const lhs_result = try self.expressionLiteralType(l.lhs, lhs);
         const rhs_result = try self.expressionLiteralType(l.rhs, rhs);
-        const lhs_result: TypeId = switch (l.op) {
-            .@"and" => blk: {
-                if (self.hir.kindOf(l.lhs) == .literal_bool and hir_mod.literalBoolOf(self.hir, l.lhs)) {
-                    return rhs_result;
-                }
-                if (raw_lhs_result == types.Primitive.boolean_t or
-                    raw_lhs_result == types.Primitive.true_lit or
-                    raw_lhs_result == types.Primitive.false_lit)
-                {
-                    break :blk types.Primitive.false_lit;
-                }
-                break :blk raw_lhs_result;
-            },
-            .@"or" => blk: {
-                if (raw_lhs_result == types.Primitive.false_lit) return rhs_result;
-                break :blk raw_lhs_result;
-            },
-            .nullish => raw_lhs_result,
-        };
         return self.interner.internUnion(&.{ lhs_result, rhs_result }) catch error.OutOfMemory;
     }
 

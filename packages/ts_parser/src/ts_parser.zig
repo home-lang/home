@@ -9552,6 +9552,9 @@ pub const Parser = struct {
                         _ = self.advance();
                     }
                     const name_tok = try self.expectIdentifierLike();
+                    if (name_tok.kind == .private_identifier and self.nodeIsOptionalChain(node)) {
+                        try self.reportCodeAt(name_tok.span.start, name_tok.line, 18030, "An optional chain cannot contain private identifiers.");
+                    }
                     const name_id = try self.internToken(name_tok);
                     const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = name_tok.span.end };
                     node = try self.builder.addMemberAccess(sp, node, name_id, false);
@@ -9568,8 +9571,14 @@ pub const Parser = struct {
                     } else if (self.peek().kind == .open_bracket) {
                         _ = self.advance();
                         node = try self.finishElementAccess(node, true);
+                    } else if (self.peek().kind == .no_substitution_template or self.peek().kind == .template_head) {
+                        try self.reportCodeAt(self.peek().span.start, self.peek().line, 1358, "Tagged template expressions are not permitted in an optional chain.");
+                        node = try self.parseTaggedTemplateWithTypeArgs(node, &.{});
                     } else {
                         const name_tok = try self.expectIdentifierLike();
+                        if (name_tok.kind == .private_identifier) {
+                            try self.reportCodeAt(name_tok.span.start, name_tok.line, 18030, "An optional chain cannot contain private identifiers.");
+                        }
                         const name_id = try self.internToken(name_tok);
                         const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = name_tok.span.end };
                         node = try self.builder.addMemberAccess(sp, node, name_id, true);
@@ -9663,12 +9672,34 @@ pub const Parser = struct {
                     // a call `tag(stringsArr, …values)`. v0 just types
                     // `stringsArr` as `string[]` (no
                     // TemplateStringsArray shape yet).
+                    if (self.nodeIsOptionalChain(node)) {
+                        try self.reportCodeAt(t.span.start, t.line, 1358, "Tagged template expressions are not permitted in an optional chain.");
+                    }
                     node = try self.parseTaggedTemplateWithTypeArgs(node, &.{});
                 },
                 else => break,
             }
         }
         return node;
+    }
+
+    fn nodeIsOptionalChain(self: *Parser, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(node)) {
+            .member_access => blk: {
+                const m = hir_mod.memberOf(self.hir, node);
+                break :blk m.optional or self.nodeIsOptionalChain(m.object);
+            },
+            .element_access => blk: {
+                const e = hir_mod.elementOf(self.hir, node);
+                break :blk e.optional or self.nodeIsOptionalChain(e.object);
+            },
+            .call_expr => blk: {
+                const c = hir_mod.callOf(self.hir, node);
+                break :blk c.optional or self.nodeIsOptionalChain(c.callee);
+            },
+            else => false,
+        };
     }
 
     fn finishElementAccess(self: *Parser, object: NodeId, optional: bool) ParseError!NodeId {
@@ -11934,6 +11965,41 @@ test "parser: optional chaining" {
     const m = hir_mod.memberOf(&s.hir, top);
     try T.expect(m.optional);
     try T.expectEqualStrings("b", s.interner.get(m.name));
+}
+
+test "parser: optional chain rejects private identifiers" {
+    var s = try newTestSetup(
+        \\class A {
+        \\  #b;
+        \\  m() {
+        \\    this?.#b;
+        \\    this?.a.#b;
+        \\    this?.getA().#b;
+        \\  }
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 18030) count += 1;
+    }
+    try T.expectEqual(@as(usize, 3), count);
+}
+
+test "parser: optional chain rejects tagged templates" {
+    var s = try newTestSetup(
+        \\a?.`b`;
+        \\a?.b`c`;
+        \\a?.`b${1}c`;
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1358) count += 1;
+    }
+    try T.expectEqual(@as(usize, 3), count);
 }
 
 test "parser: element access" {
