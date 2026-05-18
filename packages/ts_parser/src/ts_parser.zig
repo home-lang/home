@@ -2200,8 +2200,12 @@ pub const Parser = struct {
             if (self.match(.kw_case)) {
                 value = try self.parseExpression();
             } else if (!self.match(.kw_default)) {
-                try self.report("expected ", "'case' or 'default' in switch body");
-                return error.UnexpectedToken;
+                // Mirror tsc: emit TS1130 at the unexpected token and break
+                // out of the switch body without consuming it. The outer
+                // context will then see a missing `}` and chain TS1005.
+                // Matches `parserErrorRecovery_SwitchStatement2` baseline.
+                try self.reportCodeAt(case_start.span.start, case_start.line, 1130, "'case' or 'default' expected.");
+                break;
             }
             _ = try self.expect(.colon, "':' after case label");
             var stmts: std.ArrayListUnmanaged(NodeId) = .empty;
@@ -3582,7 +3586,22 @@ pub const Parser = struct {
                     _ = self.match(.bang);
                 }
                 var default_value: NodeId = hir_mod.none_node_id;
-                if (self.match(.equal)) default_value = try self.parseAssignmentExpression();
+                if (self.match(.equal)) {
+                    default_value = try self.parseAssignmentExpression();
+                } else if (self.peek().kind == .string_literal or
+                    self.peek().kind == .number_literal or
+                    self.peek().kind == .open_brace or
+                    self.peek().kind == .open_bracket)
+                {
+                    // tsc emits TS1442 "Expected '=' for property
+                    // initializer." when a value-like token directly
+                    // follows the type annotation without an `=`. Consume
+                    // the would-be initializer so the recovery proceeds.
+                    // Matches `parserErrorRecovery_IncompleteMemberVariable2`.
+                    const bad = self.peek();
+                    try self.reportCodeAt(bad.span.start, bad.line, 1442, "Expected '=' for property initializer.");
+                    default_value = try self.parseAssignmentExpression();
+                }
                 try self.consumeStatementTerminator();
                 // TS1031: `export` on a class member property (e.g.
                 // `export Foo;`). `declare` is permitted on properties
@@ -6519,6 +6538,46 @@ pub const Parser = struct {
                 try accessor_pairs.put(self.gpa, name_id, pair);
                 try out.append(self.gpa, member);
                 continue;
+            }
+            // Accessibility/visibility modifiers (`public`, `private`,
+            // `protected`) and `abstract` are not allowed on type members.
+            // tsc emits TS1070 anchored at the modifier keyword, then
+            // continues parsing the (otherwise-valid) member that follows.
+            // Matches `parserModifierOnPropertySignature1` and similar
+            // baselines.
+            if (t.kind == .kw_public or t.kind == .kw_private or
+                t.kind == .kw_protected or t.kind == .kw_abstract)
+            {
+                const next_tok = self.peekAt(1);
+                const next_kind = next_tok.kind;
+                // Suppress TS1070 when the modifier sits on its own line —
+                // ASI lets tsc treat the keyword as the property name and
+                // the next identifier as a separate member. Matches
+                // `parserModifierOnPropertySignature2` (no diagnostic).
+                if (next_tok.line == t.line and
+                    next_kind != .colon and next_kind != .question and
+                    next_kind != .semicolon and next_kind != .comma and
+                    next_kind != .close_brace and next_kind != .eof and
+                    next_kind != .open_paren and next_kind != .less_than)
+                {
+                    const raw_text = if (t.span.end > t.span.start and
+                        t.span.end <= self.source.len)
+                        self.source[t.span.start..t.span.end]
+                    else
+                        "modifier";
+                    const msg = std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "'{s}' modifier cannot appear on a type member.",
+                        .{raw_text},
+                    ) catch return error.OutOfMemory;
+                    try self.diagnostics.append(self.gpa, .{
+                        .pos = t.span.start,
+                        .line = t.line,
+                        .code = 1070,
+                        .message = msg,
+                    });
+                    _ = self.advance(); // consume the modifier and fall through
+                }
             }
             var is_readonly = false;
             var is_override = false;

@@ -599,6 +599,9 @@ const ClassMethodSeen = struct {
     first_visibility: u2,
     bodyless_count: u32 = 0,
     implementation_count: u32 = 0,
+    /// Once we've back-reported TS2393 against `first_node`, suppress
+    /// further duplicates so each duplicated overload only fires once.
+    first_duplicate_reported: bool = false,
 };
 
 const IndexKind = enum { string, number, symbol };
@@ -13683,7 +13686,18 @@ pub const Checker = struct {
         if (has_body) {
             gop.value_ptr.implementation_count += 1;
             if (gop.value_ptr.implementation_count > 1) {
-                try self.report(node, TsCodes.duplicate_function_implementation, "Duplicate function implementation.");
+                // tsc anchors TS2393 at every duplicate implementation in
+                // a class, including the FIRST one once a duplicate is
+                // discovered. Mirror that by back-reporting on the first
+                // implementation seen, then again on the current node.
+                // Matches `parserMemberFunctionDeclarationAmbiguities1`.
+                if (!gop.value_ptr.first_duplicate_reported and
+                    gop.value_ptr.first_node != hir_mod.none_node_id)
+                {
+                    try self.reportDuplicateFunctionImplementation(gop.value_ptr.first_node);
+                    gop.value_ptr.first_duplicate_reported = true;
+                }
+                try self.reportDuplicateFunctionImplementation(node);
             }
         } else {
             gop.value_ptr.bodyless_count += 1;
@@ -42863,7 +42877,11 @@ pub const Checker = struct {
         const f = self.interner.pool.flagsOf(t);
         if (f.is_any or f.is_unknown) return false;
         if (f.is_null or f.is_undefined) return true;
-        if (t == types.Primitive.void_t) return true;
+        // tsc deliberately does NOT classify bare `void` as
+        // nullish for TS18048 purposes — `void.foo` should fall
+        // through to TS2339 "Property 'foo' does not exist on
+        // type 'void'.". Mirrors
+        // `parserNoASIOnCallAfterFunctionExpression1` baseline.
         if (!f.is_union) return false;
         if (self.interner.pool.payloadOf(t) >= self.interner.pool.union_payloads.items.len) return false;
         for (self.interner.unionMembers(t)) |m| {
