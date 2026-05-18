@@ -6615,8 +6615,18 @@ pub const Parser = struct {
             }
             // Call signature: `{ <T>(x: T): T }` or `{ (x: T): T }`.
             if (t.kind == .less_than or t.kind == .open_paren) {
-                const sig = try self.parseTypeSignatureMember(false);
-                try out.append(self.gpa, sig);
+                if (self.parseTypeSignatureMember(false)) |sig| {
+                    try out.append(self.gpa, sig);
+                } else |err| switch (err) {
+                    // Malformed call signature (e.g. `<T>;` with no
+                    // parameter list). Skip past the separator so the
+                    // rest of the object-type body can still parse —
+                    // without this catch the error propagates up and
+                    // discards every member parsed so far. Mirrors the
+                    // recovery shape in the bracketed path above.
+                    error.UnexpectedToken => try self.skipUntilTypeMemberSeparator(),
+                    else => return err,
+                }
                 continue;
             }
             // Construct signature: `{ new<T>(x: T): T }`.
@@ -7536,7 +7546,14 @@ pub const Parser = struct {
 
         var args: std.ArrayListUnmanaged(NodeId) = .empty;
         defer args.deinit(self.gpa);
-        if (self.peek().kind == .less_than) {
+        // TS implicit no-line-terminator rule: a `<` on a new line after a
+        // type ref does NOT extend it into a generic instantiation. The
+        // canonical case is an object-type body like `{ A: B<newline><T>; }`
+        // where `<T>;` is a stand-alone call-signature member, not type
+        // args for `B`. Without this guard we eagerly consume `<T>` as
+        // args and then trip up on the trailing `;`. Mirrors the
+        // analogous check in `parseArrayTypePostfix` for `[`.
+        if (self.peek().kind == .less_than and !self.peek().flags.preceded_by_newline) {
             _ = self.advance();
             while (self.peek().kind != .greater_than and self.peek().kind != .eof) {
                 const a = try self.parseTypeAnnotation();
