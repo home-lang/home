@@ -20892,6 +20892,25 @@ pub const Checker = struct {
                         try self.reportCannotFindNameOnce(type_node, r.name);
                         return types.Primitive.any;
                     }
+                    // Type-assertion target (`<Name>expr`) — when the bare
+                    // type name isn't a primitive/builtin/declared type
+                    // and no visible declaration exists, upstream tsc
+                    // emits TS2304 `Cannot find name '<Name>'.`. Mirrors
+                    // `parserRealSource6` (lines 127/139/143/157/172 etc.)
+                    // where `<Script>ast` / `<TypeDeclaration>ast` /
+                    // `<FuncDecl>ast` reference types never declared in
+                    // the source. The parent-is-type_assertion guard
+                    // limits this to that one syntactic shape so we
+                    // don't spuriously report TS2304 for type-position
+                    // refs that legitimately resolve through other paths
+                    // (e.g. ambient lib types not loaded by Home).
+                    const parent = self.hir.parentOf(type_node);
+                    if (parent != hir_mod.none_node_id and
+                        self.hir.kindOf(parent) == .type_assertion)
+                    {
+                        try self.reportCannotFindNameOnce(type_node, r.name);
+                        return types.Primitive.any;
+                    }
                     return lowered;
                 }
                 // `Alias<X, Y>` — instantiate the generic alias by
