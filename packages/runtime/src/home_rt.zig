@@ -44,6 +44,12 @@ const identity_context = @import("collections/identity_context.zig");
 pub const IdentityContext = identity_context.IdentityContext;
 pub const ArrayIdentityContext = identity_context.ArrayIdentityContext;
 
+// Fourth-wave collection additions (2026-05-17):
+const hive_array = @import("collections/hive_array.zig");
+pub const HiveArray = hive_array.HiveArray;
+const object_pool = @import("collections/pool.zig");
+pub const ObjectPool = object_pool.ObjectPool;
+
 // ---- src/cli/ ----------------------------------------------------------
 // Bun's CLI surface. Copy-in-progress; see src/cli/PORTING_STATUS.md.
 pub const cli = struct {
@@ -65,6 +71,13 @@ pub const jsc = struct {
     pub const StaticExport = @import("jsc/static_export.zig");
     pub const ErrorCode = @import("jsc/ErrorCode.zig").ErrorCode;
     pub const CommonAbortReason = @import("jsc/CommonAbortReason.zig").CommonAbortReason;
+    // Fourth-wave port batch (2026-05-17, 8-agent parallel dispatch):
+    pub const Exception = @import("jsc/Exception.zig").Exception;
+    pub const CppTask = @import("jsc/CppTask.zig").CppTask;
+    pub const ConcurrentCppTask = @import("jsc/CppTask.zig").ConcurrentCppTask;
+    pub const config = @import("jsc/config.zig");
+    pub const codegen = @import("jsc/codegen.zig");
+    pub const comptime_string_map_jsc = @import("jsc/comptime_string_map_jsc.zig");
 };
 
 // ---- src/io/ -----------------------------------------------------------
@@ -75,6 +88,10 @@ pub const io = struct {
     pub const Loop = @import("io/stub_event_loop.zig").Loop;
     pub const KeepAlive = @import("io/stub_event_loop.zig").KeepAlive;
     pub const FilePoll = @import("io/stub_event_loop.zig").FilePoll;
+    // Fourth-wave port batch (2026-05-17). pipes.zig is enum-only;
+    // the PollOrFd union re-attaches with the full Async substrate.
+    pub const FileType = @import("io/pipes.zig").FileType;
+    pub const ReadState = @import("io/pipes.zig").ReadState;
 };
 
 // ---- src/http/ + src/http_types/ ---------------------------------------
@@ -87,6 +104,12 @@ pub const http = struct {
     pub const HeaderValueIterator = @import("http/HeaderValueIterator.zig");
     pub const Signals = @import("http/Signals.zig");
     pub const H2FrameParser = @import("http/H2FrameParser.zig");
+    // Fourth-wave port batch (2026-05-17):
+    pub const HTTPRequestBody = @import("http/HTTPRequestBody.zig").HTTPRequestBody;
+    pub const SendFile = @import("http/HTTPRequestBody.zig").SendFile;
+    pub const ThreadSafeStreamBuffer = @import("http/HTTPRequestBody.zig").ThreadSafeStreamBuffer;
+    pub const websocket = @import("http/websocket.zig");
+    pub const lshpack = @import("http/lshpack.zig");
 };
 pub const http_types = struct {
     pub const Encoding = @import("http_types/Encoding.zig").Encoding;
@@ -95,6 +118,9 @@ pub const http_types = struct {
     pub const FetchRequestMode = @import("http_types/FetchRequestMode.zig").FetchRequestMode;
     pub const FetchCacheMode = @import("http_types/FetchCacheMode.zig").FetchCacheMode;
     pub const mime_type_list_enum = @import("http_types/mime_type_list_enum.zig");
+    // Fourth-wave port batch (2026-05-17):
+    pub const ETag = @import("http_types/ETag.zig");
+    pub const URLPath = @import("http_types/URLPath.zig");
 };
 pub const options_types = struct {
     pub const OfflineMode = @import("options_types/OfflineMode.zig").OfflineMode;
@@ -136,6 +162,24 @@ pub const install_types = struct {
     pub const NodeLinker = @import("install_types/NodeLinker.zig").NodeLinker;
 };
 
+// ---- src/install/ ------------------------------------------------------
+// Pure-Zig install/ leaves. Home replaces Bun's package manager with
+// Pantry (docs/TS_PARITY_PLAN.md §12.9); only small leaves other
+// runtime subsystems still need are copied.
+pub const install = struct {
+    pub const ExternalSlice = @import("install/ExternalSlice.zig").ExternalSlice;
+    pub const padding_checker = @import("install/padding_checker.zig");
+    pub const ConfigVersion = @import("install/ConfigVersion.zig").ConfigVersion;
+};
+
+// ---- src/ptr/ ----------------------------------------------------------
+// Smart-pointer helpers — Cow + meta. The full RefCount / Owned /
+// TaggedPointer family re-lands in a follow-up batch.
+pub const ptr = struct {
+    pub const meta = @import("ptr/meta.zig");
+    pub const Cow = @import("ptr/Cow.zig").Cow;
+};
+
 // ---- src/uws_sys/ ------------------------------------------------------
 // Opaque bindings to the `us_*` C ABI in `packages/bun-usockets`.
 // Currently only the QUIC opaques; the TCP/UDP/HTTP/3 + WebSocket
@@ -157,6 +201,13 @@ pub const uws_sys = struct {
 // can be copied today.
 pub const event_loop = struct {
     pub const DeferredTaskQueue = @import("event_loop/DeferredTaskQueue.zig");
+    // Fourth-wave port batch (2026-05-17). ConcurrentTask parks on
+    // UnboundedQueue + jsc.Task (TaggedPointerUnion, 8 bytes) +
+    // TrivialNew/TrivialDeinit — re-attaches in Phase 12.2.
+    pub const AnyTask = @import("event_loop/AnyTask.zig");
+    pub const AnyTaskWithExtraContext = @import("event_loop/AnyTaskWithExtraContext.zig");
+    pub const AutoFlusher = @import("event_loop/AutoFlusher.zig");
+    pub const ManagedTask = @import("event_loop/ManagedTask.zig");
 };
 
 // ---- src/unicode/ ------------------------------------------------------
@@ -238,6 +289,10 @@ pub const perf = struct {
 };
 pub const safety = struct {
     pub const thread_id = @import("safety/thread_id.zig");
+    // Fourth-wave port batch (2026-05-17):
+    pub const asan = @import("safety/asan.zig");
+    pub const CriticalSection = @import("safety/CriticalSection.zig");
+    pub const ThreadLock = @import("safety/ThreadLock.zig");
 };
 
 // ---- src/jsc_stub.zig --------------------------------------------------
@@ -343,6 +398,8 @@ test {
     _ = node;
     _ = meta;
     _ = crash_handler;
+    _ = install;
+    _ = ptr;
     // Pull nested module tests through their actual file imports so
     // the home_rt test runner exercises every copied leaf.
     _ = @import("event_loop/DeferredTaskQueue.zig");
@@ -374,6 +431,30 @@ test {
     _ = @import("meta/traits.zig");
     _ = @import("crash_handler/handle_oom.zig");
     _ = @import("options_types/CodeCoverageOptions.zig");
+    // Fourth-wave port batch (2026-05-17, 8-agent parallel dispatch):
+    _ = @import("jsc/Exception.zig");
+    _ = @import("jsc/CppTask.zig");
+    _ = @import("jsc/config.zig");
+    _ = @import("jsc/codegen.zig");
+    _ = @import("jsc/comptime_string_map_jsc.zig");
+    _ = @import("http/HTTPRequestBody.zig");
+    _ = @import("http/websocket.zig");
+    _ = @import("http/lshpack.zig");
+    _ = @import("install/ConfigVersion.zig");
+    _ = @import("http_types/ETag.zig");
+    _ = @import("http_types/URLPath.zig");
+    _ = @import("event_loop/AnyTask.zig");
+    _ = @import("event_loop/AnyTaskWithExtraContext.zig");
+    _ = @import("event_loop/AutoFlusher.zig");
+    _ = @import("event_loop/ManagedTask.zig");
+    _ = @import("ptr/meta.zig");
+    _ = @import("ptr/Cow.zig");
+    _ = @import("safety/asan.zig");
+    _ = @import("safety/CriticalSection.zig");
+    _ = @import("safety/ThreadLock.zig");
+    _ = @import("io/pipes.zig");
+    _ = @import("collections/hive_array.zig");
+    _ = @import("collections/pool.zig");
 }
 
 test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {

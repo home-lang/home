@@ -20293,6 +20293,61 @@ pub const Checker = struct {
         return false;
     }
 
+    fn visibleTypeOnlyDeclarationExistsAt(
+        self: *Checker,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+    ) bool {
+        const anchor_section = self.virtualSectionStartForNode(anchor);
+        var cur: hir_mod.NodeId = self.hir.parentOf(anchor);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k != .block_stmt and k != .namespace_decl) continue;
+            const stmts = if (k == .block_stmt)
+                hir_mod.blockStmts(self.hir, cur)
+            else
+                hir_mod.namespaceBody(self.hir, cur);
+            for (stmts) |raw| {
+                const decl = self.unwrapExportDecl(raw);
+                const decl_kind = self.hir.kindOf(decl);
+                if (decl_kind != .interface_decl and decl_kind != .type_alias_decl) continue;
+                if (!self.typeOnlyDeclSectionVisibleFrom(anchor, anchor_section, decl)) continue;
+                const decl_name = self.declarationName(decl) orelse continue;
+                if (decl_name == name) return true;
+            }
+        }
+        return false;
+    }
+
+    fn typeOnlyDeclSectionVisibleFrom(
+        self: *Checker,
+        anchor: NodeId,
+        anchor_section: usize,
+        decl: NodeId,
+    ) bool {
+        const decl_section = self.virtualSectionStartForNode(decl);
+        if (decl_section == anchor_section) return true;
+        if (!self.sourceHasVirtualFilenameSections()) return true;
+
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        return !self.virtualSectionHasExternalModuleSyntax(root, anchor_section) and
+            !self.virtualSectionHasExternalModuleSyntax(root, decl_section);
+    }
+
+    fn virtualSectionHasExternalModuleSyntax(
+        self: *Checker,
+        root: NodeId,
+        section_start: usize,
+    ) bool {
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.virtualSectionStartForNode(stmt) != section_start) continue;
+            const k = self.hir.kindOf(stmt);
+            if (k == .import_decl or k == .export_decl) return true;
+        }
+        return false;
+    }
+
     fn stringLiteralValueFromType(self: *Checker, t: TypeId) ?hir_mod.StringId {
         if (t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
@@ -32888,6 +32943,10 @@ pub const Checker = struct {
                 if (self.rootHasVarDeclarationNamed(node, id.name) or self.sourceHasVarDeclarationText(id.name)) return types.Primitive.any;
                 if (self.moduleHasRuntimeNamespacePrefix(module, id.name)) return types.Primitive.any;
                 if (self.identifierNamesEnclosingClassExpression(node, id.name)) return types.Primitive.any;
+                if (self.visibleTypeOnlyDeclarationExistsAt(node, id.name)) {
+                    self.reportTypeOnlyUsedAsValueOnce(node, id.name) catch {};
+                    return types.Primitive.any;
+                }
                 // Dedupe by node — `typeOfIdentifier` is reachable from
                 // both `checkExpression` and the narrowing helpers
                 // (`applyTypeGuard`, `applyIdentifierLiteralNarrow`),
@@ -33050,6 +33109,10 @@ pub const Checker = struct {
         }
         if (self.module == null and !self.isDeclNameSlot(node) and !self.isBuiltinName(id.name)) {
             if (!self.identifierNamesEnclosingClassExpression(node, id.name)) {
+                if (self.visibleTypeOnlyDeclarationExistsAt(node, id.name)) {
+                    self.reportTypeOnlyUsedAsValueOnce(node, id.name) catch {};
+                    return types.Primitive.any;
+                }
                 self.reportCannotFindNameOnce(node, id.name) catch {};
             }
         }
@@ -34196,6 +34259,22 @@ pub const Checker = struct {
         try self.diagnostics.append(self.gpa, .{
             .node = node,
             .code = TsCodes.cannot_find_name,
+            .message = msg,
+        });
+    }
+
+    fn reportTypeOnlyUsedAsValueOnce(self: *Checker, node: NodeId, name: hir_mod.StringId) !void {
+        for (self.diagnostics.items) |d| {
+            if (d.node == node and d.code == TsCodes.type_only_used_as_value) return;
+        }
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}' only refers to a type, but is being used as a value here.",
+            .{self.string_interner.get(name)},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.type_only_used_as_value,
             .message = msg,
         });
     }

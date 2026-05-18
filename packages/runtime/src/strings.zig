@@ -19,8 +19,24 @@ pub fn startsWith(slice: []const u8, prefix: []const u8) bool {
     return std.mem.startsWith(u8, slice, prefix);
 }
 
+/// Upstream Bun spells this `hasPrefix`; keep both so copied source
+/// compiles without per-callsite rewrites.
+pub fn hasPrefix(slice: []const u8, prefix: []const u8) bool {
+    return std.mem.startsWith(u8, slice, prefix);
+}
+
 pub fn endsWith(slice: []const u8, suffix: []const u8) bool {
     return std.mem.endsWith(u8, slice, suffix);
+}
+
+/// Comptime-known suffix match. Mirrors `bun.strings.endsWithComptime`.
+pub fn endsWithComptime(slice: []const u8, comptime suffix: []const u8) bool {
+    if (slice.len < suffix.len) return false;
+    return eqlComptime(slice[slice.len - suffix.len ..], suffix);
+}
+
+pub fn containsChar(slice: []const u8, char: u8) bool {
+    return std.mem.indexOfScalar(u8, slice, char) != null;
 }
 
 pub fn eql(a: []const u8, b: []const u8) bool {

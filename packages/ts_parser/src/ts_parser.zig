@@ -3422,7 +3422,8 @@ pub const Parser = struct {
                 member_start = self.peek();
             }
             const accessor_kw = self.peek().kind;
-            if ((accessor_kw == .kw_get or accessor_kw == .kw_set) and
+            if (!is_generator and
+                (accessor_kw == .kw_get or accessor_kw == .kw_set) and
                 ((self.peekAt(1).kind == .identifier or
                     self.peekAt(1).kind == .private_identifier or
                     self.peekAt(1).kind == .string_literal or
@@ -6209,9 +6210,13 @@ pub const Parser = struct {
                 const yield_tok = self.advance();
                 if (self.generator_depth > 0 and
                     self.target_es2015_or_later and
-                    self.async_function_depth == 0)
+                    (self.async_function_depth == 0 or self.class_body_depth > 0))
                 {
-                    try self.reportCodeAt(yield_tok.span.start, yield_tok.line, 1212, "Identifier expected. 'yield' is a reserved word in strict mode.");
+                    if (self.class_body_depth > 0) {
+                        try self.reportCodeAt(yield_tok.span.start, yield_tok.line, 1213, "Identifier expected. 'yield' is a reserved word in strict mode. Class definitions are automatically in strict mode.");
+                    } else {
+                        try self.reportCodeAt(yield_tok.span.start, yield_tok.line, 1212, "Identifier expected. 'yield' is a reserved word in strict mode.");
+                    }
                 }
                 const id = try self.internToken(yield_tok);
                 break :blk try self.builder.addTypeRef(tokenSpan(yield_tok), id, &.{}, &.{});
@@ -6268,13 +6273,7 @@ pub const Parser = struct {
                 // so the unresolved-type path can surface that name.
                 const bad = self.advance();
                 const carries_lexeme = switch (bad.kind) {
-                    .kw_break, .kw_continue, .kw_case, .kw_class, .kw_const,
-                    .kw_debugger, .kw_default, .kw_delete, .kw_do, .kw_else,
-                    .kw_enum, .kw_export, .kw_extends, .kw_finally, .kw_for,
-                    .kw_function, .kw_if, .kw_import, .kw_in, .kw_instanceof,
-                    .kw_let, .kw_return, .kw_super, .kw_switch, .kw_throw,
-                    .kw_try, .kw_typeof, .kw_var, .kw_while, .kw_with,
-                    .kw_yield => true,
+                    .kw_break, .kw_continue, .kw_case, .kw_class, .kw_const, .kw_debugger, .kw_default, .kw_delete, .kw_do, .kw_else, .kw_enum, .kw_export, .kw_extends, .kw_finally, .kw_for, .kw_function, .kw_if, .kw_import, .kw_in, .kw_instanceof, .kw_let, .kw_return, .kw_super, .kw_switch, .kw_throw, .kw_try, .kw_typeof, .kw_var, .kw_while, .kw_with, .kw_yield => true,
                     else => false,
                 };
                 const id = if (carries_lexeme)
@@ -9025,8 +9024,9 @@ pub const Parser = struct {
                         // tsc skips TS7057 — the recovery TS1005 is
                         // enough. Gate accordingly so #6/#7 match
                         // (`)` / `}` termination) but #10 does not.
-                        if (self.peek().kind == .close_paren or
-                            self.peek().kind == .comma)
+                        if (self.async_function_depth == 0 and
+                            (self.peek().kind == .close_paren or
+                                self.peek().kind == .comma))
                         {
                             try self.reportCodeAt(t.span.start, t.line, 7057, "'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation.");
                         }
@@ -10427,7 +10427,9 @@ pub const Parser = struct {
                 try self.reportCodeAt(mod.span.start, mod.line, 1042, msg);
             }
 
-            if ((self.peek().kind == .kw_get or self.peek().kind == .kw_set) and
+            if (!method_is_async and
+                !method_is_generator and
+                (self.peek().kind == .kw_get or self.peek().kind == .kw_set) and
                 (((self.peekAt(1).kind == .identifier or
                     self.peekAt(1).kind == .private_identifier or
                     self.peekAt(1).kind == .string_literal or
@@ -10570,6 +10572,52 @@ pub const Parser = struct {
                 try self.reportCodeAt(question_tok.span.start, question_tok.line, 1162, "An object member cannot be declared optional.");
             }
             var recovered_missing_colon_value = false;
+            if (method_is_generator and self.peek().kind != .less_than and self.peek().kind != .open_paren) {
+                const key_span_for_error = self.hir.spanOf(key);
+                const anchor_pos = if (self.peek().kind == .colon or self.peek().kind == .equal)
+                    self.peek().span.start
+                else if (self.hir.kindOf(key) == .identifier and
+                    (self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()))
+                    self.peek().span.start
+                else
+                    key_span_for_error.start;
+                try self.reportCodeAt(anchor_pos, self.lineAt(anchor_pos), 1005, "'(' expected.");
+                var depth: u32 = 0;
+                while (self.peek().kind != .eof) {
+                    const k = self.peek().kind;
+                    if (depth == 0 and (k == .close_brace or k == .comma)) break;
+                    if (k == .open_brace or k == .open_paren or k == .open_bracket) {
+                        depth += 1;
+                    } else if (k == .close_brace or k == .close_paren or k == .close_bracket) {
+                        if (depth > 0) depth -= 1;
+                    }
+                    _ = self.advance();
+                }
+                const fn_node = try self.builder.addFnDeclGeneric(
+                    .{ .start = prop_start.span.start, .end = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else prop_start.span.end },
+                    hir_mod.none_node_id,
+                    &.{},
+                    &.{},
+                    hir_mod.none_node_id,
+                    hir_mod.none_node_id,
+                    .{
+                        .is_method = true,
+                        .is_async = method_is_async,
+                        .is_generator = true,
+                    },
+                );
+                const prop = try self.builder.addObjectProperty(
+                    .{ .start = prop_start.span.start, .end = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else prop_start.span.end },
+                    key,
+                    fn_node,
+                    is_computed,
+                    false,
+                    true,
+                );
+                try props.append(self.gpa, prop);
+                if (!self.match(.comma)) break;
+                continue;
+            }
             if (self.match(.colon)) {
                 if (arrayLiteralElementCanStart(self.peek().kind)) {
                     value = try self.parseAssignmentExpression();
@@ -10586,7 +10634,11 @@ pub const Parser = struct {
                     owns_tps = true;
                 }
                 defer if (owns_tps) self.gpa.free(type_params);
+                if (method_is_generator) self.generator_depth += 1;
+                if (method_is_async) self.async_function_depth += 1;
                 const params = try self.parseParameterList();
+                if (method_is_generator) self.generator_depth -= 1;
+                if (method_is_async) self.async_function_depth -= 1;
                 defer self.gpa.free(params);
                 var return_type: NodeId = hir_mod.none_node_id;
                 if (self.match(.colon)) return_type = try self.parseReturnTypeAnnotation(params);
@@ -10595,6 +10647,12 @@ pub const Parser = struct {
                     const prev_generator_depth = self.generator_depth;
                     self.generator_depth = if (method_is_generator) prev_generator_depth + 1 else 0;
                     defer self.generator_depth = prev_generator_depth;
+                    self.function_depth += 1;
+                    if (method_is_async) self.async_function_depth += 1;
+                    defer {
+                        self.function_depth -= 1;
+                        if (method_is_async) self.async_function_depth -= 1;
+                    }
                     body = try self.parseBlockStatement();
                 }
                 value = try self.builder.addFnDeclGeneric(

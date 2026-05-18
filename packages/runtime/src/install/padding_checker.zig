@@ -125,7 +125,7 @@ test "assertNoUninitializedPadding accepts a tightly-packed struct" {
 test "assertNoUninitializedPadding accepts a struct with explicit padding" {
     const PaddedExplicit = extern struct {
         a: u8 = 0,
-        _pad: [7]u8 = .{0} ** 7,
+        _pad: [7]u8 = .{ 0, 0, 0, 0, 0, 0, 0 },
         b: u64 = 0,
     };
     comptime assertNoUninitializedPadding(PaddedExplicit);
