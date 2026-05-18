@@ -18179,7 +18179,10 @@ pub const Checker = struct {
             }
             var ext_index: usize = std.math.maxInt(usize);
             for (extends, 0..) |ee, ei| {
-                if (ee == ext_node) { ext_index = ei; break; }
+                if (ee == ext_node) {
+                    ext_index = ei;
+                    break;
+                }
             }
             for (extends, 0..) |other_ext_node, other_index| {
                 if (other_ext_node == ext_node) continue;
@@ -27789,8 +27792,8 @@ pub const Checker = struct {
                         }
                     }
                 }
-                if (type_arg_nodes.len > 0 and !callee_had_generic_record and self.interner.isSignature(callee_t)) {
-                    if (self.generic_signature_params.get(callee_t)) |type_params| {
+                if (type_arg_nodes.len > 0 and !callee_had_generic_record and self.interner.isSignature(effective_callee_t)) {
+                    if (self.generic_signature_params.get(effective_callee_t)) |type_params| {
                         callee_had_generic_record = true;
                         if (type_arg_nodes.len != type_params.len) {
                             const msg = try std.fmt.allocPrint(
@@ -27813,7 +27816,7 @@ pub const Checker = struct {
                             try subs.put(self.gpa, type_params[i], explicit_t);
                         }
                         if (subs.count() > 0) {
-                            effective_callee_t = self.substituteType(callee_t, &subs) catch callee_t;
+                            effective_callee_t = self.substituteType(effective_callee_t, &subs) catch effective_callee_t;
                             used_explicit_type_args = true;
                         }
                     }
@@ -27838,14 +27841,14 @@ pub const Checker = struct {
                     }
                 }
                 if (type_arg_nodes.len > 0 and !callee_had_generic_record) {
-                    if (callee_t == types.Primitive.any or callee_t == types.Primitive.unknown) {
+                    if (effective_callee_t == types.Primitive.any or effective_callee_t == types.Primitive.unknown) {
                         if (!self.callCalleeAlreadyHasUnresolvedNameDiagnostic(c.callee) and
                             !self.callCalleeAlreadyHasMissingPropertyDiagnostic(c.callee))
                         {
                             try self.report(node, TsCodes.untyped_function_type_args, "Untyped function calls may not accept type arguments.");
                         }
-                    } else if (self.interner.isSignature(callee_t)) {
-                        if (!self.containsFreeTypeParameter(callee_t)) {
+                    } else if (self.interner.isSignature(effective_callee_t)) {
+                        if (!self.containsFreeTypeParameter(effective_callee_t)) {
                             const msg = try std.fmt.allocPrint(
                                 self.diag_arena.allocator(),
                                 "Expected 0 type arguments, but got {d}.",

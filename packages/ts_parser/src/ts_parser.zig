@@ -5656,11 +5656,63 @@ pub const Parser = struct {
         defer self.in_switch_case_clause = prev_in_case_clause;
         var stmts: std.ArrayListUnmanaged(NodeId) = .empty;
         defer stmts.deinit(self.gpa);
+        var recovered_class_member_boundary = false;
         while (self.hasPendingStatement() or (self.peek().kind != .close_brace and self.peek().kind != .eof)) {
+            if (self.classMethodBlockHitClassMemberBoundary()) {
+                const bad = self.peek();
+                try self.reportCodeAt(bad.span.start, bad.line, 1128, "Declaration or statement expected.");
+                recovered_class_member_boundary = true;
+                break;
+            }
             try stmts.append(self.gpa, try self.parseStatement());
+        }
+        if (recovered_class_member_boundary) {
+            const end_pos = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else open.span.end;
+            return try self.builder.addBlock(.{ .start = open.span.start, .end = end_pos }, stmts.items);
         }
         const close = try self.expect(.close_brace, "'}' to close block");
         return try self.builder.addBlock(span(open, close), stmts.items);
+    }
+
+    fn classMethodBlockHitClassMemberBoundary(self: *const Parser) bool {
+        if (self.class_body_depth == 0 or self.function_depth == 0) return false;
+        const t = self.peek();
+        if (!t.flags.preceded_by_newline) return false;
+        if (t.kind != .kw_public and t.kind != .kw_private and
+            t.kind != .kw_protected and t.kind != .kw_static)
+        {
+            return false;
+        }
+        var idx: usize = @intCast(self.cursor + 1);
+        while (idx < self.tokens.len and self.tokens[idx].kind.isModifierKeyword()) : (idx += 1) {}
+        if (idx >= self.tokens.len) return false;
+        const name = self.tokens[idx];
+        if (!isClassMemberNameStart(name.kind)) return false;
+        idx += 1;
+        if (idx < self.tokens.len and self.tokens[idx].kind == .question) idx += 1;
+        if (idx < self.tokens.len and self.tokens[idx].kind == .less_than) {
+            idx = self.skipBalancedTypeArgumentLookahead(idx);
+        }
+        if (idx >= self.tokens.len) return false;
+        return self.tokens[idx].kind == .open_paren;
+    }
+
+    fn skipBalancedTypeArgumentLookahead(self: *const Parser, start: usize) usize {
+        var idx = start;
+        var depth: usize = 0;
+        while (idx < self.tokens.len) : (idx += 1) {
+            switch (self.tokens[idx].kind) {
+                .less_than => depth += 1,
+                .greater_than => {
+                    if (depth == 0) return idx;
+                    depth -= 1;
+                    if (depth == 0) return idx + 1;
+                },
+                .eof, .open_brace, .close_brace, .semicolon => return idx,
+                else => {},
+            }
+        }
+        return idx;
     }
 
     fn parseExpressionStatement(self: *Parser) ParseError!NodeId {
@@ -12666,6 +12718,28 @@ test "parser: class declaration with method and property" {
     try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(top));
     const cl = hir_mod.classOf(&s.hir, top);
     try T.expect(cl.name != hir_mod.none_node_id);
+    const members = hir_mod.classMembers(&s.hir, top);
+    try T.expectEqual(@as(usize, 2), members.len);
+}
+
+test "parser: class method block recovers before next accessibility method" {
+    var s = try newTestSetup(
+        \\class C  {
+        \\    private a(): boolean {
+        \\
+        \\    private b(): boolean {
+        \\    }
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    var saw_boundary = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1128) saw_boundary = true;
+    }
+    try T.expect(saw_boundary);
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
     const members = hir_mod.classMembers(&s.hir, top);
     try T.expectEqual(@as(usize, 2), members.len);
 }
