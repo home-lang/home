@@ -29181,7 +29181,28 @@ pub const Checker = struct {
                     if (props_t) |target| {
                         const target_has_free = self.containsFreeTypeParameter(target);
                         if (std.mem.eql(u8, attr_name, "key")) continue;
-                        if (try self.lookupObjectMember(target, a.name)) |prop_t| {
+                        // String index signature fallback: when the
+                        // attribute name has no named member on the
+                        // target but the target has `{[k: string]: V}`,
+                        // type-check the value against V. Mirrors
+                        // `tsxAttributeResolution10` where `bar='world'`
+                        // is checked against the indexer's `boolean`
+                        // value type. `data-*` attributes never flow
+                        // through the indexer — they're handled by the
+                        // dedicated `data-`-prefix branch below — so
+                        // exclude them from the fallback.
+                        const direct_prop_t = try self.lookupObjectMember(target, a.name);
+                        const try_index_sig = direct_prop_t == null and
+                            !std.mem.startsWith(u8, attr_name, "data-") and
+                            target < self.interner.pool.typeCount() and
+                            self.interner.pool.flagsOf(target).is_object_type;
+                        const index_value_t: TypeId = if (try_index_sig)
+                            self.interner.objectStringIndex(target)
+                        else
+                            types.Primitive.none;
+                        const effective_prop_t_opt: ?TypeId = direct_prop_t orelse
+                            (if (index_value_t != types.Primitive.none) index_value_t else null);
+                        if (effective_prop_t_opt) |prop_t| {
                             try self.checkJsxContextualAttributeValue(a.value, prop_t);
                             if (a.value != hir_mod.none_node_id) {
                                 const ok = try self.jsxAttributeLiteralAssignable(a.value, prop_t) or
@@ -29371,6 +29392,22 @@ pub const Checker = struct {
             if (!has_any_spread and !self.typeIsAnyLike(target) and !per_attr_assignability_fired) {
                 if (!(spread_satisfies_target and explicit_value_attr_count == 0)) {
                     const attrs_t = self.interner.internObjectType(attr_members.items) catch return error.OutOfMemory;
+                    // An empty attrs object (`<Foo />` with `data-*`
+                    // attributes only) is structurally assignable to any
+                    // indexer-only target — tsc treats it as fine.
+                    // Skip the assignability check rather than emit a
+                    // spurious `Type '{}' is not assignable to type
+                    // '{ [k: string]: V }'.` here. Mirrors
+                    // `tsxAttributeResolution10` line 17
+                    // (`<MyComponent data-bar='hello' />`).
+                    if (attr_members.items.len == 0 and
+                        target < self.interner.pool.typeCount() and
+                        self.interner.pool.flagsOf(target).is_object_type and
+                        self.interner.objectMembers(target).len == 0 and
+                        self.interner.objectStringIndex(target) != types.Primitive.none)
+                    {
+                        return types.Primitive.any;
+                    }
                     var effective_target = target;
                     if (self.containsFreeTypeParameter(target)) {
                         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;

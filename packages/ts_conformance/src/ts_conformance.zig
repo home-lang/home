@@ -281,7 +281,23 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
     var actual: std.ArrayListUnmanaged(u8) = .empty;
     defer actual.deinit(gpa);
     var actual_count: u32 = 0;
-    for (compilation.diagnostics.items) |d| {
+    // Per-diagnostic capture so we can reorder before emit. Upstream
+    // tsc groups baseline headers by file, with the principal/entry
+    // file's diagnostics first and any helper `@filename:` virtual-
+    // section diagnostics after. We emulate that by collecting the
+    // formatted lines + their per-diagnostic file, then sorting with
+    // entry-file-first / source-order-within-file at the end.
+    const FormattedEntry = struct {
+        file: []const u8,
+        line: []const u8,
+        src_idx: u32,
+    };
+    var formatted_entries: std.ArrayListUnmanaged(FormattedEntry) = .empty;
+    defer {
+        for (formatted_entries.items) |e| gpa.free(e.line);
+        formatted_entries.deinit(gpa);
+    }
+    for (compilation.diagnostics.items, 0..) |d, src_idx| {
         const pos = ts_diagnostics.positionToLineCol(c.source, d.pos);
         // Resolve the per-virtual-file (path, line) when this diagnostic
         // sits inside a `@filename:` block; otherwise fall back to the
@@ -346,9 +362,31 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             if (gop.found_existing) continue;
             gop.key_ptr.* = try gpa.dupe(u8, formatted);
         }
-        try actual.appendSlice(gpa, formatted);
-        try actual.append(gpa, '\n');
+        try formatted_entries.append(gpa, .{
+            .file = diag_file,
+            .line = try gpa.dupe(u8, formatted),
+            .src_idx = @intCast(src_idx),
+        });
         actual_count += 1;
+    }
+
+    // Upstream tsc baselines emit the principal/entry file's
+    // diagnostics first, then helper `@filename:` virtual-section
+    // diagnostics. Sort by entry-first, source-order otherwise.
+    const Ordering = struct {
+        case_path: []const u8,
+        fn lessThan(ctx: @This(), a: FormattedEntry, b: FormattedEntry) bool {
+            const a_is_entry = std.mem.eql(u8, a.file, ctx.case_path);
+            const b_is_entry = std.mem.eql(u8, b.file, ctx.case_path);
+            if (a_is_entry != b_is_entry) return a_is_entry;
+            return a.src_idx < b.src_idx;
+        }
+    };
+    std.mem.sort(FormattedEntry, formatted_entries.items, Ordering{ .case_path = c.path }, Ordering.lessThan);
+
+    for (formatted_entries.items) |e| {
+        try actual.appendSlice(gpa, e.line);
+        try actual.append(gpa, '\n');
     }
 
     // Strip trailing newlines for stable comparison.
@@ -426,6 +464,18 @@ fn shouldRouteThroughProgram(c: Case) bool {
     // "Cannot find module" diagnostics they should not have.
     if (c.expected_errors.len == 0) return false;
     if (!rawSourceHasNonCodeMarker(c.raw_source) and rawSourceHasJsLikeCodeMarker(c.raw_source)) return false;
+    // Pure-code multi-file fixtures (only `.ts` / `.tsx` / `.d.ts`,
+    // no non-code package.json / tsconfig / node_modules markers) work
+    // BETTER through the legacy concatenated path because cross-file
+    // ambient declarations (`declare namespace JSX { ... }` in a
+    // sibling `react.d.ts` virtual section) stay visible to the
+    // checker — `virtualSectionIsDeclarationFile` still scopes
+    // per-section behavior via the `@filename:` markers. Splitting
+    // these through `ts_program` lost that visibility and made
+    // `tsxAttributeResolution10/11/12` and similar fixtures fall back
+    // to `any`-typed JSX targets, suppressing the structural TS2322
+    // tsc expects at the failing attribute.
+    if (!rawSourceHasNonCodeMarker(c.raw_source)) return false;
     return true;
 }
 
