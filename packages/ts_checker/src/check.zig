@@ -5594,13 +5594,16 @@ pub const Checker = struct {
             // tsc fires TS2454 for plain string/number bindings inside
             // a property-key (e.g. `var s: string; var v = { [s]: 0 }`
             // reports TS2454 at `s`), but suppresses it inside a
-            // method-key (`{ [s]() {} }`), where the method-form
-            // declares a fresh function scope before reading `s`.
+            // method-key (`{ [s]() {} }`) or accessor-key
+            // (`get [s]() {}`), where the method form declares a
+            // fresh function scope before reading `s`. The
+            // suppression applies regardless of the binding's
+            // declared type — `var s: symbol; var v = { [s]() {} }`
+            // is silent at upstream tsc (see
+            // `symbolProperty1.ts(4,6)`/(5,10)).
             // Mirrors `computedPropertyNames4_ES{5,6}`.
             if (self.isGlobalSymbolConstructorVarDecl(decl_node)) return;
-            if (self.nodeInsideComputedMethodKey(ref_node)) {
-                if (!self.varDeclTypeContainsSymbol(decl_node)) return;
-            }
+            if (self.nodeInsideComputedMethodKey(ref_node)) return;
         }
         // `var Symbol: T;` declarations shadow the ambient global
         // `Symbol`. tsc treats reads of this binding as initialised
