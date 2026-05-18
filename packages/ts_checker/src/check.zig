@@ -29507,6 +29507,64 @@ pub const Checker = struct {
                 .is_method = false,
             });
         }
+        // Spread-override (dual case): `<Tag x="ok" {...obj} />`
+        // where the explicit `x="ok"` passes the value check but a
+        // LATER spread provides an incompatible value type for the
+        // same prop name. tsc emits the value-vs-prop diagnostic at
+        // the EXPLICIT attribute's anchor with the SPREAD's value
+        // type as the source. Mirrors `tsxAttributeResolution3` line
+        // 31 (`<test1 x="ok" {...obj5} />` where obj5.x is number
+        // and target.x is string).
+        if (props_t) |target| {
+            if (!has_any_spread and !self.typeIsAnyLike(target)) {
+                for (attrs, 0..) |attr, attr_idx| {
+                    if (self.hir.kindOf(attr) != .jsx_attribute) continue;
+                    const a = hir_mod.jsxAttributeOf(self.hir, attr);
+                    const attr_name = self.string_interner.get(a.name);
+                    if (std.mem.eql(u8, attr_name, "key")) continue;
+                    if (std.mem.startsWith(u8, attr_name, "data-")) continue;
+                    if (a.value == hir_mod.none_node_id) continue;
+                    const prop_t = (try self.lookupObjectMember(target, a.name)) orelse continue;
+                    const original_value_t = try self.checkedExpressionType(a.value);
+                    const literal_ok = try self.jsxAttributeLiteralAssignable(a.value, prop_t) or
+                        try self.jsxAttributeAssignable(original_value_t, prop_t);
+                    if (!literal_ok) continue;
+                    // Scan strictly later attributes for an incompatible spread.
+                    var override_t: TypeId = types.Primitive.none;
+                    var idx = attr_idx + 1;
+                    while (idx < attrs.len) : (idx += 1) {
+                        const later = attrs[idx];
+                        if (self.hir.kindOf(later) != .jsx_spread_attribute) continue;
+                        const sp = hir_mod.jsxSpreadAttributeOf(self.hir, later);
+                        const spread_t = try self.checkedExpressionType(sp.expression);
+                        if (try self.lookupObjectMember(spread_t, a.name)) |provided_t| {
+                            if (!(self.engine.isAssignableTo(provided_t, prop_t) catch true)) {
+                                override_t = provided_t;
+                            }
+                        }
+                    }
+                    if (override_t == types.Primitive.none) continue;
+                    const src_text = (try self.allocSimpleTypeName(override_t)) orelse
+                        (try self.allocAnonymousObjectName(override_t));
+                    const tgt_text = (try self.allocSimpleTypeName(prop_t)) orelse
+                        (try self.allocAnonymousObjectName(prop_t));
+                    if (src_text != null and tgt_text != null) {
+                        per_attr_assignability_fired = true;
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Type '{s}' is not assignable to type '{s}'.",
+                            .{ src_text.?, tgt_text.? },
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = attr,
+                            .code = TsCodes.type_not_assignable,
+                            .message = msg,
+                        });
+                    }
+                }
+            }
+        }
+
         if (props_t) |target| {
             if (!has_any_spread and !self.typeIsAnyLike(target) and !per_attr_assignability_fired) {
                 if (!(spread_satisfies_target and explicit_value_attr_count == 0)) {
