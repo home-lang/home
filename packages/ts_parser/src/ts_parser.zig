@@ -10073,6 +10073,15 @@ pub const Parser = struct {
         defer attrs.deinit(self.gpa);
         while (true) {
             const t = self.peek();
+            // Context-free lexer hazard: in `<Foo x={0} />;` the `}`
+            // of `{0}` puts the scanner in a position where `slash-
+            // starts-regex` returns true, so the rest of the line —
+            // `/>; ...` plus any trailing line comment — gets glued
+            // into a single `regex_literal`. We detect that here
+            // (regex literals always start with `/`) and break the
+            // attribute loop so the self-close handler below can
+            // unwrap it back into `/` + `>`.
+            if (t.kind == .regex_literal and tokenIsJsxSelfCloseRegex(self.source, t)) break;
             switch (t.kind) {
                 .greater_than, .slash, .eof => break,
                 .open_brace => {
@@ -10131,6 +10140,35 @@ pub const Parser = struct {
                 true,
             );
         }
+        // Self-closing `/>` whose tokens were swallowed into a
+        // `regex_literal` by the slash-starts-regex heuristic.
+        // Treat the literal as the self-close marker — consume the
+        // whole token. The regex pattern starts at `/>` (the
+        // self-close marker) and runs forward through the trailing
+        // `;` plus enough of the next line's source for the regex
+        // scanner to find a closing `/`. After consuming the
+        // regex_literal token, the lexer's residual tokenization
+        // from the closing-`/` position forward is garbage (typically
+        // `.slash` + `.identifier "OK"` from a `// OK` line comment
+        // that got bisected). Skip those until we reach a
+        // newline-prefixed token, EOF, or close-brace — equivalent
+        // to ASI eating the rest of the bogus statement tail.
+        if (self.peek().kind == .regex_literal and tokenIsJsxSelfCloseRegex(self.source, self.peek())) {
+            const tok = self.advance();
+            const close_end: u32 = @intCast(tok.span.start + 2);
+            while (true) {
+                const after = self.peek();
+                if (after.kind == .eof or after.kind == .close_brace or after.flags.preceded_by_newline) break;
+                _ = self.advance();
+            }
+            return try self.builder.addJsxElement(
+                .{ .start = open.span.start, .end = close_end },
+                tag,
+                attrs.items,
+                &.{},
+                true,
+            );
+        }
         const open_close = try self.expect(.greater_than, "'>' to close JSX opening tag");
 
         var children: std.ArrayListUnmanaged(NodeId) = .empty;
@@ -10166,6 +10204,21 @@ pub const Parser = struct {
 
     fn isJsxNamePart(kind: TokenKind) bool {
         return kind == .identifier or kind.isKeyword() or kind.isContextualKeyword();
+    }
+
+    /// `<Foo x={0} />` is a JSX self-close, but the lexer is context-
+    /// free and the `}` of `{0}` enables the slash-starts-regex
+    /// heuristic — so `/>; ...` gets swallowed into a single
+    /// `regex_literal` whenever the trailing source happens to contain
+    /// another `/`. This helper detects that shape so the JSX parser
+    /// can unwrap the bogus regex back into a self-close marker.
+    fn tokenIsJsxSelfCloseRegex(source: []const u8, tok: Token) bool {
+        if (tok.kind != .regex_literal) return false;
+        if (tok.span.end <= tok.span.start + 1) return false;
+        if (tok.span.start >= source.len) return false;
+        if (source[tok.span.start] != '/') return false;
+        if (tok.span.start + 1 >= source.len) return false;
+        return source[tok.span.start + 1] == '>';
     }
 
     fn parseJsxName(self: *Parser, what: []const u8) ParseError!JsxName {
@@ -13782,6 +13835,35 @@ test "parser: jsx self-closing element" {
     const init_node = hir_mod.varDeclOf(&s.hir, top).init;
     try T.expectEqual(hir_mod.NodeKind.jsx_self_closing, s.hir.kindOf(init_node));
     try T.expect(hir_mod.jsxElementOf(&s.hir, init_node).self_closing);
+}
+
+test "parser: jsx self-close after expression-value attribute does not glom into a regex literal" {
+    // Reduced repro for `tsxAttributeResolution1/2` and
+    // `checkJsxGenericTagHasCorrectInferences`. After `}` of `x={0}`
+    // the context-free lexer's `slash-starts-regex` heuristic was
+    // eating `/>; // OK` as a single `regex_literal`, so the JSX
+    // attribute loop hit the regex token and emitted TS1109 at the
+    // `/` of `/>`. The trailing line comment is what supplied the
+    // closing `/` for the spurious regex — without it the standalone
+    // JSX parses fine because the scanner fails to find a closing
+    // `/` and falls back to emitting a `.slash` token.
+    var s = try newTsxTestSetup(
+        \\declare namespace JSX {
+        \\  interface Element { }
+        \\  interface IntrinsicElements {
+        \\    test1: Attribs1;
+        \\    test2: { reqd: string };
+        \\  }
+        \\}
+        \\
+        \\// OK
+        \\<test1 x={0} />; // OK
+    );
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1109);
+    }
 }
 
 test "parser: jsx element with attribute" {
