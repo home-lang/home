@@ -4346,7 +4346,23 @@ pub const Parser = struct {
             );
             try members.append(self.gpa, member);
             if (recovered_bad_separator) continue;
-            if (!self.match(.comma)) break;
+            if (self.match(.comma)) continue;
+            // No separator before the next token — if it can start
+            // another enum member (identifier, string/number literal,
+            // computed `[`), tsc emits TS1357 and recovers by parsing
+            // the next member instead of bailing out of the enum
+            // body. Mirrors `parserComputedPropertyName30.ts(4,5)`.
+            const next = self.peek();
+            const can_start_member = next.kind == .identifier or
+                next.kind == .string_literal or
+                next.kind == .number_literal or
+                next.kind == .open_bracket or
+                next.kind.isContextualKeyword();
+            if (can_start_member) {
+                try self.reportCodeAt(next.span.start, next.line, 1357, "An enum member name must be followed by a ',', '=', or '}'.");
+                continue;
+            }
+            break;
         }
         const close_end = if (self.peek().kind == .close_brace) blk: {
             break :blk self.advance().span.end;
@@ -8786,6 +8802,13 @@ pub const Parser = struct {
                     }
                     _ = self.advance();
                     node = try self.buildUpdateAssignment(t, node, t.kind == .plus_plus, false);
+                    // ECMAScript: postfix `++`/`--` produces a value, not
+                    // a LeftHandSideExpression — so it cannot be followed
+                    // by `[…]`, `.id`, call `()` etc. Break the chain so
+                    // `id++[e2]` doesn't get glued together as element
+                    // access, which would swallow the following enum
+                    // member. Mirrors `parserComputedPropertyName30`.
+                    break;
                 },
                 .no_substitution_template, .template_head => {
                     // Tagged template literal: `` tag`…` `` desugars to
