@@ -5389,6 +5389,27 @@ pub const Parser = struct {
             );
             try self.pending_statements.append(self.gpa, extra_decl);
         }
+        // `var x = expr : 321` recovery. tsc treats a stray `:` after a
+        // var-decl initializer as a missing `,` between declarators
+        // (TS1005 `,` expected), then surfaces TS1134 for the
+        // misplaced literal expression that follows. Mirrors
+        // templateStringInPropertyName{1,2}, templateStringInPropertyName
+        // ES6_{1,2}, templateStringInObjectLiteral{,ES6} — where the
+        // earlier parseObjectLiteral template recovery turns
+        // `{ \`a\`: 321 }` into the tag-call init `{}\`a\`` followed
+        // by the stray `: 321`.
+        if (self.peek().kind == .colon and init_node != hir_mod.none_node_id) {
+            const colon = self.advance();
+            try self.reportCodeAt(colon.span.start, colon.line, 1005, "',' expected.");
+            const after = self.peek();
+            if (after.kind == .number_literal or after.kind == .string_literal or
+                after.kind == .kw_true or after.kind == .kw_false or
+                after.kind == .kw_null or after.kind == .kw_undefined)
+            {
+                try self.reportCodeAt(after.span.start, after.line, 1134, "Variable declaration expected.");
+                _ = self.advance();
+            }
+        }
         try self.consumeStatementTerminator();
 
         const stmt_span: Span = .{ .start = start.span.start, .end = self.tokens[self.cursor - 1].span.end };
