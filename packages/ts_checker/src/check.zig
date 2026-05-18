@@ -2636,7 +2636,9 @@ pub const Checker = struct {
             const is_fn = kind == .fn_decl or kind == .fn_expr;
             const is_type_alias = kind == .type_alias_decl;
             const is_var = kind == .var_decl;
-            if (!is_fn and !is_var and !is_type_alias) {
+            const is_block_scoped = kind == .let_decl or kind == .const_decl;
+            const is_var_kind = is_var or is_block_scoped;
+            if (!is_fn and !is_var_kind and !is_type_alias) {
                 previous_overload_name = null;
                 previous_overload_section = 0;
                 continue;

@@ -24,6 +24,7 @@
 const std = @import("std");
 const ts_program = @import("ts_program");
 const ts_driver = @import("ts_driver");
+const binder = @import("binder");
 
 pub const QueryError = ts_program.ProgramError;
 
@@ -50,6 +51,15 @@ pub const QueryStats = struct {
 /// queries.
 const Entry = struct {
     source_hash: u64,
+    /// §5.A.2 — hash of the file's *exported* symbol surface (names
+    /// + flags). When a file's source changes but this hash stays the
+    /// same, dependents don't need re-checking — they only care about
+    /// the imported-export shape, not about the internals that
+    /// produced it. Coarse first cut: covers add/remove/rename and
+    /// export-flag changes; type-signature changes that don't move
+    /// the symbol name are NOT yet caught (would need a per-decl AST
+    /// subtree hash — tracked as a v1 follow-up).
+    export_surface_hash: u64,
     last_compile_revision: u32,
     dependencies: std.ArrayListUnmanaged(ts_program.FileId),
 
@@ -125,6 +135,7 @@ pub const QueryProgram = struct {
             if (self.entries.getPtr(f.id)) |old| old.deinit(self.gpa);
             try self.entries.put(self.gpa, f.id, .{
                 .source_hash = h,
+                .export_surface_hash = computeExportSurfaceHash(c),
                 .last_compile_revision = self.revision,
                 .dependencies = .empty,
             });
@@ -166,8 +177,14 @@ pub const QueryProgram = struct {
     /// `error.NotFound`. If the new content hashes to the same value
     /// as the cached entry, returns `false` and does no work — the
     /// existing compilation stays in place. Otherwise updates the
-    /// program's source, invalidates this file plus every transitive
-    /// dependent, runs the compile pipeline, and returns `true`.
+    /// program's source, recompiles the changed file, and — **per
+    /// §5.A.2** — invalidates dependents only when the file's
+    /// *exported symbol surface* hash actually changed. Internal edits
+    /// (function-body tweaks, comment changes, whitespace) that leave
+    /// the exported surface intact no longer trigger transitive
+    /// dependent recompilation. Returns `true` when the file itself
+    /// was recompiled (regardless of whether dependents were also
+    /// invalidated).
     pub fn recompileIfChanged(
         self: *QueryProgram,
         path: []const u8,
@@ -175,24 +192,40 @@ pub const QueryProgram = struct {
     ) QueryError!bool {
         const id = self.program.lookupPath(path) orelse return error.NotFound;
         const new_hash = hashSource(new_content);
-        if (self.entries.get(id)) |entry| {
-            // Same content + still has a live compilation => no work.
+        const old_export_hash: ?u64 = if (self.entries.get(id)) |entry| blk: {
             const f = self.program.fileById(id);
             if (entry.source_hash == new_hash and f.compilation != null) {
                 return false;
             }
-        }
+            break :blk entry.export_surface_hash;
+        } else null;
 
         // Content changed (or we've never compiled it). Push the new
-        // bytes through the program and invalidate dependents.
+        // bytes through the program.
         _ = try self.program.updateSource(path, new_content);
-        self.invalidateDependents(id);
         // Drop the changed file's own entry so the next query() pass
         // recompiles it.
         if (self.entries.fetchRemove(id)) |kv| {
             var e = kv.value;
             e.deinit(self.gpa);
         }
+        // Recompile the changed file in isolation first so we can
+        // compare the new export surface hash against the captured
+        // pre-change value. Only invalidate dependents if the
+        // exported surface actually shifted.
+        _ = try self.query(.{});
+        const new_entry = self.entries.get(id) orelse return true;
+        if (old_export_hash) |old_h| {
+            if (old_h == new_entry.export_surface_hash) {
+                // §5.A.2 — exports unchanged. Dependents are still
+                // valid; leave their compilations and entries in place.
+                return true;
+            }
+        }
+        // Exported surface shifted (or first compile). Invalidate
+        // transitive dependents, then re-run the pipeline to bring
+        // them current.
+        self.invalidateDependents(id);
         _ = try self.query(.{});
         return true;
     }
@@ -270,6 +303,45 @@ fn hashSource(bytes: []const u8) u64 {
     for (bytes) |b| {
         h ^= b;
         h *%= 0x100000001b3;
+    }
+    return h;
+}
+
+/// §5.A.2 — fold every exported symbol's (name, flag-bits) into an
+/// FNV-1a hash. When this hash matches across two compiles of the
+/// same file, the exported surface is byte-equivalent in shape and
+/// dependents that only consume the surface don't need re-checking.
+/// Coarse first cut: catches add/remove/rename and export-flag
+/// changes (e.g. `export const` → `export let`). Doesn't yet detect
+/// type-signature changes that leave the symbol name intact — that
+/// requires a per-decl AST subtree hash (tracked as a v1 follow-up).
+fn computeExportSurfaceHash(c: *ts_driver.Compilation) u64 {
+    var h: u64 = 0xcbf29ce484222325;
+    // Walk the module's symbol list (declaration order, stable across
+    // compiles) and fold only is_export symbols into the hash.
+    for (c.module.symbols.items) |sym| {
+        if (!sym.flags.is_export) continue;
+        // Mix in the symbol's interned name. The StringId is stable
+        // within a single compile but NOT across compiles — strings
+        // get re-interned each time. So we fold the actual bytes.
+        const name_bytes = c.interner.get(sym.name);
+        for (name_bytes) |b| {
+            h ^= b;
+            h *%= 0x100000001b3;
+        }
+        // Sentinel between symbols to avoid `["foo", "bar"]` colliding
+        // with `["foobar"]`.
+        h ^= 0xFF;
+        h *%= 0x100000001b3;
+        // Fold in the flag bits so changing `export let` ↔
+        // `export const` ↔ `export class` invalidates dependents.
+        const fb: u32 = @bitCast(sym.flags);
+        var i: usize = 0;
+        while (i < 4) : (i += 1) {
+            const byte: u8 = @truncate(fb >> @intCast(i * 8));
+            h ^= byte;
+            h *%= 0x100000001b3;
+        }
     }
     return h;
 }
@@ -386,7 +458,11 @@ test "QueryProgram: recompileIfChanged returns true when content differs" {
     try T.expect(std.mem.indexOf(u8, p.fileById(a).compilation.?.js, "42") != null);
 }
 
-test "QueryProgram: A imports B; B changing invalidates A" {
+test "QueryProgram: §5.A.2 — body-only change in B does NOT invalidate A" {
+    // Per §5.A.2 (per-symbol invalidation), an edit to B that
+    // preserves B's exported surface (here: same exported `let y`
+    // with a different initializer value) must NOT invalidate A.
+    // A's type-checking conclusions are unchanged by B's body edits.
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
     try vfs.addFile("/proj/a.ts", "import { y } from './b'; export let z = y;");
@@ -402,25 +478,78 @@ test "QueryProgram: A imports B; B changing invalidates A" {
     defer qp.deinit();
 
     _ = try qp.query(.{});
-    // After the initial compile, A's cached dependency set should
-    // include B.
-    const a_deps = qp.cachedDependencies(a_id) orelse return error.MissingEntry;
-    var found_b = false;
-    for (a_deps) |d| {
-        if (d == b_id) found_b = true;
-    }
-    try T.expect(found_b);
+    const a_rev_initial = qp.lastCompileRevision(a_id) orelse return error.MissingEntry;
 
-    // Touch B. Even though A's bytes are identical, A should be
-    // recompiled because its dependency changed.
+    // Touch B with a body-only change (initializer 1 → 999, exported
+    // `let y` still exists with the same flags).
     const changed = try qp.recompileIfChanged("/proj/b.ts", "export let y = 999;");
     try T.expect(changed);
-    // The latest query() bumped revision and recompiled both A
-    // (transitive) and B (direct).
+    // B itself recompiles.
+    const b_rev = qp.lastCompileRevision(b_id) orelse return error.MissingEntry;
+    try T.expectEqual(qp.revision, b_rev);
+    // §5.A.2 — A's exported surface didn't change so A's cached
+    // compilation stays in place and its last_compile_revision lags.
+    const a_rev_after = qp.lastCompileRevision(a_id) orelse return error.MissingEntry;
+    try T.expectEqual(a_rev_initial, a_rev_after);
+}
+
+test "QueryProgram: §5.A.2 — export-shape change in B DOES invalidate A" {
+    // When B's exported surface changes (here: renaming the exported
+    // symbol `y` → `q`), A must be invalidated and recompiled — its
+    // type-checking now sees a missing import target.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/a.ts", "import { y } from './b'; export let z = y;");
+    try vfs.addFile("/proj/b.ts", "export let y = 1;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = ts_program.Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const a_id = try p.add("/proj/a.ts", "import { y } from './b'; export let z = y;");
+    const b_id = try p.add("/proj/b.ts", "export let y = 1;");
+
+    var qp = QueryProgram.init(T.allocator, &p);
+    defer qp.deinit();
+
+    _ = try qp.query(.{});
+    const a_rev_initial = qp.lastCompileRevision(a_id) orelse return error.MissingEntry;
+    const b_rev_initial = qp.lastCompileRevision(b_id) orelse return error.MissingEntry;
+
+    // Rename the export — surface changes.
+    const changed = try qp.recompileIfChanged("/proj/b.ts", "export let q = 1;");
+    try T.expect(changed);
     const a_rev = qp.lastCompileRevision(a_id) orelse return error.MissingEntry;
     const b_rev = qp.lastCompileRevision(b_id) orelse return error.MissingEntry;
+    // §5.A.2 — B is recompiled when its source changes (first inner
+    // query), then A is recompiled after the export-surface diff
+    // fires the transitive invalidation (second inner query). They
+    // don't need to land on the same revision; both just need to be
+    // past their pre-change baseline.
+    try T.expect(b_rev > b_rev_initial);
+    try T.expect(a_rev > a_rev_initial);
+}
+
+test "QueryProgram: §5.A.2 — adding a new export in B invalidates A" {
+    // Adding a new export to B also shifts the surface hash.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/a.ts", "import { y } from './b'; export let z = y;");
+    try vfs.addFile("/proj/b.ts", "export let y = 1;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = ts_program.Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const a_id = try p.add("/proj/a.ts", "import { y } from './b'; export let z = y;");
+    _ = try p.add("/proj/b.ts", "export let y = 1;");
+
+    var qp = QueryProgram.init(T.allocator, &p);
+    defer qp.deinit();
+
+    _ = try qp.query(.{});
+    const changed = try qp.recompileIfChanged("/proj/b.ts", "export let y = 1; export let w = 2;");
+    try T.expect(changed);
+    const a_rev = qp.lastCompileRevision(a_id) orelse return error.MissingEntry;
     try T.expectEqual(qp.revision, a_rev);
-    try T.expectEqual(qp.revision, b_rev);
 }
 
 test "QueryProgram: identical updateSource value still skips on next query" {

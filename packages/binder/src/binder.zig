@@ -760,6 +760,17 @@ pub const Binder = struct {
 /// identifier, or null if it doesn't have one in the standard slot.
 fn firstIdentifier(hir: *const hir_mod.Hir, node: NodeId) ?NodeId {
     return switch (hir.kindOf(node)) {
+        // §5.A.2 — `export let|const|var <name>` needs its underlying
+        // variable symbol tagged as exported. Without this branch,
+        // `bindExportDecl`'s post-bind lookup didn't fire for variable
+        // bindings — `export let y = 1;` left `y` un-tagged with
+        // `is_export`, which downstream queries (per-symbol invalidation,
+        // hover, completion auto-import filtering) all rely on.
+        .var_decl, .let_decl, .const_decl => blk: {
+            const v = hir_mod.varDeclOf(hir, node);
+            if (v.name != hir_mod.none_node_id and hir.kindOf(v.name) == .identifier) break :blk v.name;
+            break :blk null;
+        },
         .fn_decl, .fn_expr, .arrow_fn => blk: {
             const f = hir_mod.fnDeclOf(hir, node);
             if (f.name != hir_mod.none_node_id and hir.kindOf(f.name) == .identifier) break :blk f.name;

@@ -275,6 +275,7 @@ pub fn build(b: *std.Build) void {
     ts_query_pkg.addImport("ts_program", ts_program_pkg);
     ts_query_pkg.addImport("ts_driver", ts_driver_pkg);
     ts_query_pkg.addImport("ts_resolver", ts_resolver_pkg);
+    ts_query_pkg.addImport("binder", binder_pkg);
 
     // TS-parity Phase 4.5 — `home tsc` CLI.
     const ts_cli_pkg = createPackage(b, "packages/ts_cli/src/ts_cli.zig", target, optimize, zig_test_framework);
