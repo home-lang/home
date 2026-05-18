@@ -41929,6 +41929,13 @@ pub const Checker = struct {
             .object_literal,
             .array_literal,
             => return,
+            // Multi-declarator for-init (`for (var a = 1, b = 2 in X)`)
+            // is wrapped in a synthetic block of var_decl nodes by the
+            // parser. Treat that wrapper as a valid for-in LHS so we
+            // don't double-report TS2406 on top of the TS1091 the
+            // parser already emitted. Mirrors parserForInStatement3/6/7
+            // and parserES5ForOfStatement3/6/7.
+            .block_stmt => return,
             .identifier,
             .member_access,
             .element_access,
