@@ -23400,7 +23400,7 @@ pub const Checker = struct {
                 const a = hir_mod.assignmentOf(self.hir, el);
                 const default_t = try self.checkExpression(a.value);
                 const effective_t = try self.destructuringSourceWithDefault(source_elem_t, default_t);
-                try self.checkDestructuringAssignmentTarget(a.target, effective_t);
+                try self.checkDestructuringAssignmentTargetWithDefault(a.target, effective_t, source_elem_t, default_t);
                 continue;
             }
             if (k == .identifier) {
@@ -23565,7 +23565,7 @@ pub const Checker = struct {
                 const a = hir_mod.assignmentOf(self.hir, op.value);
                 const default_t = try self.checkExpression(a.value);
                 const effective_t = try self.destructuringSourceWithDefault(prop_t, default_t);
-                try self.checkDestructuringAssignmentTarget(a.target, effective_t);
+                try self.checkDestructuringAssignmentTargetWithDefault(a.target, effective_t, prop_t, default_t);
             } else {
                 try self.checkDestructuringAssignmentTarget(op.value, prop_t);
             }
@@ -23617,6 +23617,12 @@ pub const Checker = struct {
             .object_literal => try self.checkObjectDestructuringAssignment(target_node, source_t, hir_mod.none_node_id),
             else => {},
         }
+    }
+
+    fn checkDestructuringAssignmentTargetWithDefault(self: *Checker, target_node: NodeId, effective_t: TypeId, prop_t: TypeId, default_t: TypeId) CheckError!void {
+        _ = prop_t;
+        _ = default_t;
+        try self.checkDestructuringAssignmentTarget(target_node, effective_t);
     }
 
     fn objectBindingPatternExpectedType(self: *Checker, pattern_node: NodeId, include_empty: bool) CheckError!TypeId {
@@ -33605,9 +33611,29 @@ pub const Checker = struct {
             suggestion_budget_exhausted;
 
         const considerCandidate = struct {
-            fn call(typo: []const u8, cand_str: []const u8, b: *Best) void {
+            fn call(typo: []const u8, cand_str: []const u8, value_only: bool, b: *Best) void {
                 if (cand_str.len == 0) return;
                 if (std.mem.eql(u8, cand_str, typo)) return;
+                // Mirrors tsc's `getSuggestedSymbolForNonexistentSymbol`
+                // meaning filter: a value-only candidate (parameter,
+                // local, plain `var`/`function`) never satisfies a
+                // type-position lookup, so when its only difference
+                // from the typo is letter case the suggestion is
+                // useless — drop it so the diagnostic falls back to
+                // bare TS2304. Module-level type / namespace candidates
+                // and primitive-alias builtins pass `value_only=false`,
+                // keeping `symbol` → `Symbol` (parserSymbolIndexer5)
+                // working. Mirrors parserRealSource5/11/12/14.
+                if (value_only and cand_str.len == typo.len) {
+                    var case_only = true;
+                    for (cand_str, typo) |x, y| {
+                        if (std.ascii.toLower(x) != std.ascii.toLower(y)) {
+                            case_only = false;
+                            break;
+                        }
+                    }
+                    if (case_only) return;
+                }
                 // Quick reject mirrors tsc's `getSpellingSuggestion`
                 // length gate: `maximumLengthDifference = max(2,
                 // floor(typo.len * 0.34))`. Any candidate whose length
@@ -33641,7 +33667,7 @@ pub const Checker = struct {
                     if (pp.name == hir_mod.none_node_id) continue;
                     if (self.hir.kindOf(pp.name) != .identifier) continue;
                     const pid = hir_mod.identifierOf(self.hir, pp.name);
-                    considerCandidate(name_str, self.string_interner.get(pid.name), &best);
+                    considerCandidate(name_str, self.string_interner.get(pid.name), true, &best);
                 }
             } else if (k == .block_stmt) {
                 const stmts = hir_mod.blockStmts(self.hir, cur);
@@ -33651,13 +33677,13 @@ pub const Checker = struct {
                         const v = hir_mod.varDeclOf(self.hir, s);
                         if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
                             const vid = hir_mod.identifierOf(self.hir, v.name);
-                            considerCandidate(name_str, self.string_interner.get(vid.name), &best);
+                            considerCandidate(name_str, self.string_interner.get(vid.name), true, &best);
                         }
                     } else if (sk == .fn_decl or sk == .fn_expr) {
                         const fp = hir_mod.fnDeclOf(self.hir, s);
                         if (fp.name != hir_mod.none_node_id and self.hir.kindOf(fp.name) == .identifier) {
                             const fid = hir_mod.identifierOf(self.hir, fp.name);
-                            considerCandidate(name_str, self.string_interner.get(fid.name), &best);
+                            considerCandidate(name_str, self.string_interner.get(fid.name), true, &best);
                         }
                     }
                 }
@@ -33668,10 +33694,11 @@ pub const Checker = struct {
         // Module-level symbol names (value / type / namespace spaces).
         if (self.module) |module| {
             inline for (.{ "values", "types", "namespaces" }) |field_name| {
+                const value_only = comptime std.mem.eql(u8, field_name, "values");
                 var it = @field(module.root, field_name).iterator();
                 while (it.next()) |entry| {
                     const cand_id = entry.key_ptr.*;
-                    considerCandidate(name_str, self.string_interner.get(cand_id), &best);
+                    considerCandidate(name_str, self.string_interner.get(cand_id), value_only, &best);
                 }
             }
         }
@@ -33697,7 +33724,7 @@ pub const Checker = struct {
             "setInterval", "clearInterval",
         };
         for (builtin_suggestions) |b| {
-            considerCandidate(name_str, b, &best);
+            considerCandidate(name_str, b, false, &best);
         }
 
         // Threshold mirrors tsc's `getSpellingSuggestion`:
