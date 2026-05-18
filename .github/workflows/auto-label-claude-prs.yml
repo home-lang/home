@@ -1,0 +1,32 @@
+name: Auto-label Claude PRs
+
+# Ported from ~/Code/bun/.github/workflows/auto-label-claude-prs.yml at SHA
+# fd0b6f1a271fca0b8124b69f230b100f4d636af6. Home pin: 2026-05-17.
+# See docs/TS_PARITY_PLAN.md §12.18.a for the porting plan.
+#
+# Tags any PR whose body contains the Claude Code "Generated with" footer,
+# or that was opened by Home's bot account, with the `claude` label so
+# maintainers can triage AI-authored contributions consistently.
+
+on:
+  pull_request:
+    types: [opened]
+
+jobs:
+  auto-label:
+    if: github.event.pull_request.user.login == 'buddy-bot' || contains(github.event.pull_request.body, '🤖 Generated with')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Add claude label to PRs from Home's bot
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: ['claude']
+            });

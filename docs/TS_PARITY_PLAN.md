@@ -3743,7 +3743,83 @@ Per-file MIT attribution header is prepended at copy time:
 
 *(no entries yet — first agent in Phase 12 writes the inaugural note when claiming 12.0.1.a. Expected first note shape: "**Coordination note (YYYY-MM-DD, SHA pin landed):** Owns 12.0.1.a. Verified `/Users/chrisbreuer/Code/bun` HEAD = `fd0b6f1a271fca0b8124b69f230b100f4d636af6`, matches Phase 4.5's bundler pin. Wrote `packages/runtime/UPSTREAM_SHA.txt`, `packages/runtime/PORTING_STATUS.md` (empty), `packages/runtime/src/home_rt.zig` (empty). Next: 12.0.5 audit unblocked.")*
 
-### 12.18 · Out of scope for Phase 12 v1 (documented, not deferred to silence)
+### 12.18 · GitHub Actions porting plan (Bun → Home)
+
+> **Context (2026-05-17).** User direction: "make sure that we port all the bun github actions logically and properly over here too, document it or do it." This section enumerates every `~/Code/bun/.github/` artifact at the pinned SHA (`fd0b6f1a271fca0b8124b69f230b100f4d636af6`) and assigns each one a disposition: **port-as-is**, **port-with-rename** (Bun-specific names/paths swapped for Home), **fold-into-existing-home-workflow**, **bun-specific-skip** (only meaningful for Bun's release/distribution model), or **register-after-runtime-port** (depends on Phase 12.2+ landings).
+>
+> Inventory snapshot: Bun ships **31 workflows + 2 composite actions** under `.github/workflows/` and `.github/actions/`. Home currently has **5 workflows**: `buddy-bot.yml`, `ci.yml`, `conformance-gate.yml`, `fuzz-nightly.yml`, `release.yml`. None of them mirror the Bun maintenance-cadence workflows (vendor refreshes, slop closure, types publication, etc.), which is the gap this plan closes.
+
+#### 12.18.a · Workflow-by-workflow disposition
+
+| Bun workflow | Purpose | Disposition | Home target | Notes |
+|---|---|---|---|---|
+| `format.yml` (`autofix.ci`) | Run Prettier + clang-format + `zig fmt` on PRs, push auto-fixes | **fold-into-existing-home-workflow** | `.github/workflows/ci.yml` (extend `lint` job) | Home uses **pickier** (per CLAUDE.md, not Prettier or eslint); add a `zig fmt` step + pickier fix-mode + autofix.ci action so PRs auto-format. Skip clang-format until Home has C++ sources. |
+| `lint.yml` | oxlint + biome + zig-fmt-check | **fold-into-existing-home-workflow** | `.github/workflows/ci.yml` | Home `ci.yml` already runs `bun run lint` (= pickier); add a separate `zig-fmt-check` job for fmt verification on every PR. |
+| `bun-types.yml` | Publish `@types/bun` npm package on release | **port-with-rename** → `home-types.yml` | new `.github/workflows/home-types.yml` | Becomes "publish `@types/home` on release" once the typed surface is exported. Block on Phase 12.10/12.13. |
+| `packages-ci.yml` | CI for the Bun monorepo's `packages/` workspace | **port-with-rename** → matrix-add to `ci.yml` | extend `ci.yml` | Home's `packages/` directory has ~150 sub-packages; mirror Bun's pattern of running each package's `test`/`typecheck` script on its own runner via matrix-by-changed-files. |
+| `release.yml` | Multi-arch Bun release pipeline (Linux/macOS/Windows binaries, Docker images, Homebrew tap update) | **port-with-rename** → extend existing `release.yml` | `.github/workflows/release.yml` | Home already has a release workflow; cross-reference Bun's matrix for the binaries Phase 12.11 needs to ship (Linux x64/aarch64, macOS x64/aarch64, Windows x64, WASM). Keep Home's release as the source of truth; cherry-pick the Docker + Homebrew steps once Phase 12.10 stabilises the CLI. |
+| `freebsd-smoke.yml` | Smoke test on FreeBSD via cross-compile | **port-as-is** (defer until Phase 12.11 ships FreeBSD target) | new `.github/workflows/freebsd-smoke.yml` | Pin to Home's release matrix; reuse the same Zig version step. |
+| `vscode-release.yml` | Publish VSCode extension to marketplace + OpenVSX | **port-with-rename** → re-target `packages/vscode-home/` | new `.github/workflows/vscode-release.yml` | Home already ships `packages/vscode-home/`; this workflow publishes it on tag. Schedule for when the LSP is stable enough to ship. |
+| `test-bump.yml` | Verify the `bump version` script | **port-as-is** | new `.github/workflows/test-bump.yml` | Home uses `bumpx` (per `package.json`); rename the steps but keep the verify-bump-without-publish pattern. |
+| `stale.yaml` (`Close inactive issues`) | Auto-close stale GitHub issues | **port-as-is** | new `.github/workflows/stale.yml` | Pattern is project-agnostic. Configure label list to match Home's issue conventions. |
+| `close-stale-robobun-prs.yml` | Auto-close stale dependabot/robobun PRs | **port-with-rename** | new `.github/workflows/close-stale-bot-prs.yml` | Replace `robobun` with `buddy-bot` (Home's renovate equivalent per CLAUDE.md). |
+| `on-slop.yml` (`Close AI Slop PRs`) | Heuristic auto-close of obvious-AI-slop PRs | **port-as-is** | new `.github/workflows/on-slop.yml` | Pattern-matches PR body/diff for common slop signatures. Useful for any popular OSS repo. |
+| `auto-assign-types.yml` | Auto-assign reviewers for `packages/bun-types/` | **port-with-rename** | new `.github/workflows/auto-assign-types.yml` | Re-target to `packages/vscode-home/` and any future `packages/home-types/`. |
+| `auto-close-duplicates.yml` | Heuristic dedupe of duplicate issues | **port-as-is** | new `.github/workflows/auto-close-duplicates.yml` | |
+| `auto-label-claude-prs.yml` | Add a `claude-authored` label to PRs the Claude bot opens | **port-as-is** | new `.github/workflows/auto-label-claude-prs.yml` | Home uses Claude Code agents extensively (see `AGENTS.md`); this labelling helps triage. |
+| `claude-dedupe-issues.yml` | Claude-driven issue dedupe via API | **port-as-is** | new `.github/workflows/claude-dedupe-issues.yml` | Needs `ANTHROPIC_API_KEY` secret on the Home repo. |
+| `claude-find-issues-for-pr.yml` | Claude links PRs to related issues | **port-as-is** | new `.github/workflows/claude-find-issues-for-pr.yml` | Same secret requirement. |
+| `comment-lint.yml.disabled` | (Disabled upstream) | **bun-specific-skip** | — | Don't port a workflow Bun itself has disabled. |
+| `labeled.yml.disabled` | (Disabled upstream) | **bun-specific-skip** | — | Same. |
+| `cancel-buildkite-on-pr-close.yml` | Cancel BuildKite builds when a PR closes | **bun-specific-skip** | — | Home doesn't use BuildKite. |
+| `update-cares.yml` | Daily check for new c-ares upstream releases | **register-after-runtime-port** | new `.github/workflows/update-cares.yml` | Wire up once §12.0.11.g (c-ares) lands. Same pattern for every other native-dep refresh below. |
+| `update-hdrhistogram.yml` | Update `hdrhistogram` vendored copy | **register-after-runtime-port** | new `.github/workflows/update-hdrhistogram.yml` | Same; depends on §12.0.11. |
+| `update-highway.yml` | Update `highway` SIMD vendored copy | **register-after-runtime-port** | new `.github/workflows/update-highway.yml` | Same. |
+| `update-libarchive.yml` | Update `libarchive` vendored copy | **register-after-runtime-port** | new `.github/workflows/update-libarchive.yml` | Same. Wire up after §12.0.11.f. |
+| `update-libdeflate.yml` | Update `libdeflate` vendored copy | **register-after-runtime-port** | new `.github/workflows/update-libdeflate.yml` | Same. Wire up after §12.0.11.f. |
+| `update-lolhtml.yml` | Update `lol-html` vendored copy | **register-after-runtime-port** | new `.github/workflows/update-lolhtml.yml` | Same. |
+| `update-lshpack.yml` | Update `ls-hpack` vendored copy | **register-after-runtime-port** | new `.github/workflows/update-lshpack.yml` | Same. |
+| `update-root-certs.yml` | Daily refresh of bundled root certificates | **register-after-runtime-port** | new `.github/workflows/update-root-certs.yml` | Wire up once §12.6.b (TLS / `Home.serve` HTTPS) lands. |
+| `update-sqlite3.yml` | Update `sqlite3` vendored copy | **register-after-runtime-port** | new `.github/workflows/update-sqlite3.yml` | Wire up once §12.7 ships `node:sqlite`. |
+| `update-vendor.yml` | Unified dependency-update workflow | **port-as-is** (umbrella for the per-dep workflows above) | new `.github/workflows/update-vendor.yml` | Stays as the single dispatcher; the per-dep workflows fan-out. |
+| `update-zstd.yml` | Update `zstd` vendored copy | **register-after-runtime-port** | new `.github/workflows/update-zstd.yml` | Same. Wire up after §12.0.11.k. |
+
+#### 12.18.b · Composite actions
+
+| Bun action | Purpose | Disposition | Home target |
+|---|---|---|---|
+| `.github/actions/setup-bun/` | Composite "setup Bun + cache" action used by Bun's own workflows | **port-with-rename** | new `.github/actions/setup-home/` | Becomes "setup Home + cache." Wraps `mlugg/setup-zig@v2` + `pantry install` + an optional `home build` step. Mirrors how Home's existing CI jobs configure Zig today; centralising it removes the duplicated `Setup Zig` blocks in `ci.yml`. |
+| `.github/actions/bump/` | Composite action for the bump-version script | **port-with-rename** | new `.github/actions/bump/` | Reuse pattern with Home's `bumpx`. |
+
+#### 12.18.c · Bun-specific GHA conventions worth preserving
+
+`~/Code/bun/.github/workflows/CLAUDE.md` (the maintenance guide) documents three patterns Home should adopt verbatim:
+
+1. **Parallel-prefix log streaming** — workflows prefix each tool's output with `[prettier]`, `[clang-format]`, `[zig]` and use GitHub `::group::` markers for collapsibility. Mirrors well for Home's `[pickier]` + `[zig fmt]` + future `[home build]` outputs.
+2. **Pinned vendored toolchain** — Zig is downloaded from `oven-sh/zig` at a specific commit (`bootstrap-x86_64-linux-musl.zip`); Home should pin via `pantry.lock` (`ziglang.org@0.17.0-dev.263+0add2dfc4`) so CI and developer Macs always agree.
+3. **Minimal-install discipline** — `apt-get install --no-install-recommends --no-install-suggests -qq -o=Dpkg::Use-Pty=0 clang-format-21` style. Saves 30-60s per CI minute on Linux runners; copy the pattern into `setup-home` for any system packages.
+
+#### 12.18.d · Execution plan
+
+Phase 1 (this session, documentation only): land §12.18 + acceptance criteria. **Done in this commit.**
+
+Phase 2 (next session, low-risk ports — no runtime dependency): `stale.yml`, `on-slop.yml`, `auto-close-duplicates.yml`, `auto-assign-types.yml`, `auto-label-claude-prs.yml`, `claude-dedupe-issues.yml`, `claude-find-issues-for-pr.yml`, `close-stale-bot-prs.yml`, `test-bump.yml`. Acceptance: `gh workflow list` on the Home repo includes each one, `gh workflow run <name>` succeeds for a dry-run-able subset, and existing `ci.yml` + `release.yml` aren't regressed.
+
+Phase 3 (lint/format consolidation): extend `ci.yml` with `zig-fmt-check` + autofix.ci integration. Port the `CLAUDE.md` maintenance guide to `.github/workflows/CLAUDE.md` adapted for Home's tooling (pickier + zig fmt + future home fmt). Land the `setup-home` composite action and migrate `ci.yml` / `fuzz-nightly.yml` / `conformance-gate.yml` / `release.yml` to use it.
+
+Phase 4 (post-§12.0.11 native-dep ports): register the per-dep `update-*.yml` workflows in lockstep with the matching `12.0.11.<letter>` dependency landings. Each workflow lands the *same week* as its native-dep port so the maintenance cadence starts immediately.
+
+Phase 5 (post-§12.10): `home-types.yml` (publish `@types/home`), `vscode-release.yml` (publish `packages/vscode-home/`). These depend on the runtime exposing a stable public API surface.
+
+#### 12.18.e · Out of scope for §12.18
+
+* **BuildKite integration.** Bun runs heavy tests on BuildKite; Home uses GitHub Actions exclusively. The `cancel-buildkite-on-pr-close.yml` workflow stays unported.
+* **Homebrew tap automation.** Re-evaluate when Home is far enough along to ship a Homebrew formula; until then this is part of Phase 12.10/release.
+* **AUR (Arch User Repository) packaging.** Bun publishes to AUR via its release workflow; defer until Home has a binary release cadence.
+* **Docker image publication.** Bun publishes `oven/bun:*` images; defer to Phase 12.10 when `home` is buildable as a single static binary.
+* **Trusted Publisher / OIDC npm publishing.** Pantry CLI already supports this (`pantry oidc setup`); fold into the existing release workflow rather than copying Bun's bespoke path.
+
+### 12.19 · Out of scope for Phase 12 v1 (documented, not deferred to silence)
 
 * **CSS bundling/transform in the runtime.** Phase 4.5 bundler covers CSS as a build step; runtime CSS-in-JS is *not* a runtime feature.
 * **DevTools / inspector protocol full impl.** JSC supports it; Home shims a minimal surface in 12.10 but full inspector wire protocol is a v2.x item.

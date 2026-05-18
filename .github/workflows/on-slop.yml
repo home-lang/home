@@ -1,0 +1,46 @@
+name: Close AI Slop PRs
+
+# Ported from ~/Code/bun/.github/workflows/on-slop.yml at SHA
+# fd0b6f1a271fca0b8124b69f230b100f4d636af6. Home pin: 2026-05-17.
+# See docs/TS_PARITY_PLAN.md §12.18.a for the porting plan.
+#
+# When a maintainer labels a PR `slop`, this workflow:
+#   1. Comments explaining why the PR was closed.
+#   2. Renames the PR title to `ai slop` to remove misleading branding.
+#   3. Closes the PR.
+#
+# Many AI PRs are fine; this workflow only fires on the explicit `slop`
+# label. To recover a mistakenly-flagged PR, drop a comment and a
+# maintainer can reopen.
+
+on:
+  pull_request_target:
+    types: [labeled]
+
+jobs:
+  on-slop:
+    runs-on: ubuntu-latest
+    if: github.event.label.name == 'slop' && github.repository == 'stacksjs/home'
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Comment and close PR
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: 'This PR has been closed because it was flagged as AI slop.\n\nMany AI-generated PRs are fine, but this one was identified as having one or more of the following issues:\n- Fails to verify the problem actually exists\n- Fails to test that the fix works\n- Makes incorrect assumptions about the codebase\n- Submits changes that are incomplete or misleading\n\nIf you believe this was done in error, please leave a comment explaining why.'
+            });
+
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              title: 'ai slop',
+              body: 'This PR has been marked as AI slop and the description has been updated to avoid confusion or misleading reviewers.\n\nMany AI PRs are fine, but sometimes they submit a PR too early, fail to test if the problem is real, fail to reproduce the problem, or fail to test that the problem is fixed. If you think this PR is not AI slop, please leave a comment.',
+              state: 'closed'
+            });
