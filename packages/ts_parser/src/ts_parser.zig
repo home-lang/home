@@ -5511,6 +5511,18 @@ pub const Parser = struct {
             _ = self.advance();
             return;
         }
+        // §6.A parserArrowFunctionExpression3: `a = (() => { } || a)` —
+        // the recovery path inside `parsePrimaryExpression`'s
+        // `open_paren` arm absorbs the missing-`)` diagnostic and
+        // returns control here with the trailing `)` still unread.
+        // Treat the stray close-paren the same way as a stray
+        // close-bracket: emit canonical TS1005 `';' expected.` at the
+        // token and consume it so the next statement parses cleanly.
+        if (t.kind == .close_paren) {
+            try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
+            _ = self.advance();
+            return;
+        }
         if (t.kind == .number_literal and
             t.span.start < t.span.end and
             self.source[t.span.start] == '.' and
@@ -5541,6 +5553,25 @@ pub const Parser = struct {
         }
         if (t.kind == .open_brace or t.kind == .open_paren) {
             try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
+            return;
+        }
+        // §6.A parserArrowFunctionExpression2: `a = () => { } || a` —
+        // when an arrow with a block body completes the assignment
+        // expression and the next token is a logical infix operator
+        // (`||`, `&&`, `??`), tsc reports TS1005 at the operator and
+        // continues parsing the RHS as a separate statement so the
+        // trailing identifier still reaches the checker for TS2304.
+        // Without this branch the recovery returns
+        // `error.UnexpectedToken`, `parseSourceFile` aborts, and the
+        // LHS / RHS identifiers never bind. Advance past the operator
+        // here so `parsePrimaryExpression`'s default-else doesn't pile
+        // on an extra TS1109 the upstream baseline doesn't expect.
+        if (t.kind == .pipe_pipe or
+            t.kind == .ampersand_ampersand or
+            t.kind == .question_question)
+        {
+            try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
+            _ = self.advance();
             return;
         }
         // §6.A 2000-3000 ratchet: align the missing-terminator
@@ -9232,6 +9263,28 @@ pub const Parser = struct {
                     return err;
                 };
                 self.disallow_arrow_return_type = saved_disallow_arrow_rt;
+                // §6.A parserArrowFunctionExpression3: `(() => { } || a)`
+                // — when the speculative arrow inside the parens has a
+                // block body, `parseAssignmentExpression` exits as
+                // soon as the arrow is parsed (since the next token
+                // is `||`, not an assignment op). Control returns
+                // here with the cursor on `||`, but tsc still treats
+                // the `||` as a binary operator INSIDE the parens
+                // (so `a` on the RHS still binds and reports TS2304).
+                // Emit the TS1005 `')' expected.` at the operator
+                // (matching the baseline at col 16), then continue
+                // parsing the `|| a)` tail as if the `)` were
+                // already in place. The remaining identifier becomes
+                // its own expression-statement after the trailing
+                // `)` triggers a second TS1005 `';' expected.`.
+                if (self.peek().kind == .pipe_pipe or
+                    self.peek().kind == .ampersand_ampersand or
+                    self.peek().kind == .question_question)
+                {
+                    const op_tok = self.peek();
+                    try self.reportCodeAt(op_tok.span.start, op_tok.line, 1005, "')' expected.");
+                    return e;
+                }
                 _ = try self.expect(.close_paren, "')' to close parenthesized expression");
                 return e;
             },
@@ -9447,7 +9500,7 @@ pub const Parser = struct {
                     const id = try self.internToken(t);
                     return try self.builder.addIdentifier(tokenSpan(t), id);
                 }
-                if (t.kind == .pipe_pipe or t.kind == .ampersand_ampersand) {
+                if (t.kind == .pipe_pipe or t.kind == .ampersand_ampersand or t.kind == .question_question) {
                     _ = self.advance();
                     try self.reportCodeAt(t.span.start, t.line, 1109, "Expression expected.");
                     return try self.parseUnaryExpression();

@@ -368,6 +368,14 @@ pub const TsCodes = struct {
     pub const satisfies_constraint: u32 = 1360;
     pub const used_before_assignment: u32 = 2454;
     pub const block_scoped_used_before_decl: u32 = 2448;
+    /// TS2451 — `Cannot redeclare block-scoped variable '{0}'.` Fires
+    /// when two `let`/`const` declarations introduce the same binding
+    /// name in the same lexical scope. The destructuring case
+    /// (`let { foo, foo } = …`) is anchored at EACH occurrence's
+    /// identifier span (tsc emits one diagnostic per duplicate
+    /// position, including the first occurrence). Mirrors fixture
+    /// `destructuringSameNames`.
+    pub const cannot_redeclare_block_scoped: u32 = 2451;
     pub const property_not_initialized: u32 = 2564;
     pub const cannot_assign_const: u32 = 2588;
     pub const cannot_assign_to_function: u32 = 2630;
@@ -7929,6 +7937,69 @@ pub const Checker = struct {
         return false;
     }
 
+    /// True when `node` is a bare `identifier` HIR node whose name
+    /// has no binding visible from the current position — checked by
+    /// walking the parent chain for matching parameter/let/const/var
+    /// declarations and (when bound) the module symbol table. Used by
+    /// the computed-property-name path to short-circuit the
+    /// "must be of type 'string', 'number', 'symbol', or 'any'"
+    /// TS2464 emit when the cause is really a missing binding (which
+    /// tsc reports as TS2304 alone). Mirrors
+    /// `parserComputedPropertyName23/24` baselines.
+    fn computedNameBareIdentifierUnresolved(self: *Checker, node: NodeId) bool {
+        if (self.hir.kindOf(node) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, node);
+        const name_str = self.string_interner.get(id.name);
+        if (self.isBuiltinName(id.name)) return false;
+        if (self.lookupNarrow(id.name) != null) return false;
+        // Walk parents for parameter / let / const / var bindings.
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
+                for (hir_mod.fnParams(self.hir, cur)) |p| {
+                    if (self.hir.kindOf(p) != .parameter) continue;
+                    const pp = hir_mod.parameterOf(self.hir, p);
+                    if (pp.name == hir_mod.none_node_id) continue;
+                    if (self.hir.kindOf(pp.name) != .identifier) continue;
+                    const pid = hir_mod.identifierOf(self.hir, pp.name);
+                    if (pid.name == id.name) return false;
+                }
+            } else if (k == .block_stmt) {
+                for (hir_mod.blockStmts(self.hir, cur)) |s| {
+                    const sk = self.hir.kindOf(s);
+                    if (sk == .var_decl or sk == .let_decl or sk == .const_decl) {
+                        const v = hir_mod.varDeclOf(self.hir, s);
+                        if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
+                            const vid = hir_mod.identifierOf(self.hir, v.name);
+                            if (vid.name == id.name) return false;
+                        }
+                    } else if (sk == .fn_decl or sk == .fn_expr) {
+                        const fp = hir_mod.fnDeclOf(self.hir, s);
+                        if (fp.name != hir_mod.none_node_id and self.hir.kindOf(fp.name) == .identifier) {
+                            const fid = hir_mod.identifierOf(self.hir, fp.name);
+                            if (fid.name == id.name) return false;
+                        }
+                    } else if (sk == .class_decl or sk == .class_expr) {
+                        const cp = hir_mod.classOf(self.hir, s);
+                        if (cp.name != hir_mod.none_node_id and self.hir.kindOf(cp.name) == .identifier) {
+                            const cid = hir_mod.identifierOf(self.hir, cp.name);
+                            if (cid.name == id.name) return false;
+                        }
+                    }
+                }
+            }
+        }
+        // Module-level bindings.
+        if (self.module) |module| {
+            if (module.root.lookup(id.name) != null) return false;
+        }
+        // Source-level var-decl text scan picks up `var x;` at top.
+        if (self.sourceHasVarDeclarationText(id.name)) return false;
+        _ = name_str;
+        return true;
+    }
+
     fn objectPropertyLineHasAbstract(self: *Checker, prop_node: NodeId) bool {
         const src = self.source orelse return false;
         const span = self.hir.spanOf(prop_node);
@@ -11366,9 +11437,27 @@ pub const Checker = struct {
                         }
                         const prev_in_computed_name = self.in_computed_property_name;
                         self.in_computed_property_name = true;
+                        const computed_name_diag_before = self.diagnostics.items.len;
                         computed_fn_key_t = try self.checkExpression(fn_p.name);
                         self.in_computed_property_name = prev_in_computed_name;
-                        if (!try self.computedPropertyKeyTypeIsValid(computed_fn_key_t)) {
+                        // If the computed name is a simple identifier
+                        // that couldn't be resolved, tsc emits TS2304
+                        // on the identifier and SKIPS the TS2464
+                        // "computed property name must be string/
+                        // number/symbol/any" follow-on — the missing
+                        // binding is the root cause. In ambient
+                        // (`declare class`) members the bare-identifier
+                        // TS2304 sweep is otherwise silent, so we
+                        // synthesize it here when no diagnostic has
+                        // been emitted yet for the unresolved key.
+                        // Mirrors parserComputedPropertyName23/24.
+                        const key_is_bare_unresolved_id = self.hir.kindOf(fn_p.name) == .identifier and
+                            self.computedNameBareIdentifierUnresolved(fn_p.name);
+                        if (key_is_bare_unresolved_id and self.diagnostics.items.len == computed_name_diag_before) {
+                            const id_p = hir_mod.identifierOf(self.hir, fn_p.name);
+                            try self.reportCannotFindNamePlain(fn_p.name, id_p.name);
+                        }
+                        if (!key_is_bare_unresolved_id and !try self.computedPropertyKeyTypeIsValid(computed_fn_key_t)) {
                             try self.reportComputedKeyBracket(fn_p.name, TsCodes.computed_property_name_type, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
                         }
                     }
@@ -11655,9 +11744,23 @@ pub const Checker = struct {
                         // on `computedPropertyNames21_ES5/_ES6`.
                         const prev_in_computed_name = self.in_computed_property_name;
                         self.in_computed_property_name = true;
+                        const op_key_diag_before = self.diagnostics.items.len;
                         const key_t = try self.checkExpression(op.key);
                         self.in_computed_property_name = prev_in_computed_name;
-                        if (!try self.computedPropertyKeyTypeIsValid(key_t)) {
+                        // Mirror parserComputedPropertyName23/27 — when
+                        // the computed key is a bare unresolved
+                        // identifier and the `checkExpression` call
+                        // didn't surface a diagnostic (silent in
+                        // ambient/no-module setups), synthesize TS2304
+                        // and SKIP the TS2464 follow-on whose root
+                        // cause is the missing binding.
+                        const op_key_is_bare_unresolved_id = self.hir.kindOf(op.key) == .identifier and
+                            self.computedNameBareIdentifierUnresolved(op.key);
+                        if (op_key_is_bare_unresolved_id and self.diagnostics.items.len == op_key_diag_before) {
+                            const id_p = hir_mod.identifierOf(self.hir, op.key);
+                            try self.reportCannotFindNamePlain(op.key, id_p.name);
+                        }
+                        if (!op_key_is_bare_unresolved_id and !try self.computedPropertyKeyTypeIsValid(key_t)) {
                             try self.reportComputedKeyBracket(op.key, TsCodes.computed_property_name_type, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
                         } else if (!op_is_method and
                             !self.classMemberSourceHasLeadingKeyword(m, "accessor") and
@@ -23908,8 +24011,109 @@ pub const Checker = struct {
         return true;
     }
 
+    /// Single binding identifier occurrence inside a destructuring
+    /// pattern — used by TS2451 duplicate-detection for `let`/`const`.
+    const DestructuringBindingOccurrence = struct {
+        name: hir_mod.StringId,
+        node: NodeId,
+        pos: u32,
+    };
+
+    /// TS2451 — emit `Cannot redeclare block-scoped variable '{name}'.`
+    /// at every position where a binding identifier appears more than
+    /// once inside a `let`/`const` declaration's binding pattern.
+    ///
+    /// Mirrors tsc: for `let { foo1, foo1 } = …`, both `foo1` positions
+    /// receive their own TS2451. For `let { foo2, bar2: foo2 } = …`,
+    /// each LOCAL binding identifier counts (the key `bar2` is ignored;
+    /// only the renamed target `foo2` is a binding). Nested patterns
+    /// like `let { a: { x }, b: { x } } = …` also fire on every `x`.
+    /// Array patterns receive the same treatment: `let [a, a] = …`.
+    fn checkLetConstDestructuringDuplicates(
+        self: *Checker,
+        name_node: NodeId,
+    ) CheckError!void {
+        if (name_node == hir_mod.none_node_id) return;
+        const k = self.hir.kindOf(name_node);
+        if (k != .object_pattern and k != .array_pattern) return;
+
+        var occs: std.ArrayListUnmanaged(DestructuringBindingOccurrence) = .empty;
+        defer occs.deinit(self.gpa);
+        try self.collectDestructuringBindingOccurrences(name_node, &occs);
+        if (occs.items.len < 2) return;
+
+        for (occs.items, 0..) |occ, i| {
+            var dup = false;
+            for (occs.items, 0..) |other, j| {
+                if (i == j) continue;
+                if (other.name == occ.name) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) continue;
+            const name_str = self.string_interner.get(occ.name);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Cannot redeclare block-scoped variable '{s}'.",
+                .{name_str},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = occ.node,
+                .pos = occ.pos,
+                .code = TsCodes.cannot_redeclare_block_scoped,
+                .message = msg,
+            });
+        }
+    }
+
+    /// Walk a binding-pattern subtree and record every LOCAL binding
+    /// identifier (the binding-target name, not object-key labels) with
+    /// its source span. Used by the TS2451 duplicate-binding detector
+    /// for `let`/`const` destructuring patterns.
+    fn collectDestructuringBindingOccurrences(
+        self: *Checker,
+        pattern_node: NodeId,
+        out: *std.ArrayListUnmanaged(DestructuringBindingOccurrence),
+    ) CheckError!void {
+        if (pattern_node == hir_mod.none_node_id) return;
+        const pk = self.hir.kindOf(pattern_node);
+        if (pk != .object_pattern and pk != .array_pattern) return;
+        for (hir_mod.patternElements(self.hir, pattern_node)) |elem| {
+            if (self.hir.kindOf(elem) != .parameter) continue;
+            const pp = hir_mod.parameterOf(self.hir, elem);
+            // Skip synthetic computed-key carriers; they are NOT a
+            // binding slot — `{ [expr]: name }` materialises the
+            // computed-key parameter separately from the binding
+            // parameter for `name`.
+            if (pp.flags.is_computed_binding_key) continue;
+            if (pp.name == hir_mod.none_node_id) continue;
+            const nk = self.hir.kindOf(pp.name);
+            if (nk == .identifier) {
+                const id = hir_mod.identifierOf(self.hir, pp.name);
+                try out.append(self.gpa, .{
+                    .name = id.name,
+                    .node = pp.name,
+                    .pos = self.hir.spanOf(pp.name).start,
+                });
+            } else if (nk == .object_pattern or nk == .array_pattern) {
+                try self.collectDestructuringBindingOccurrences(pp.name, out);
+            }
+        }
+    }
+
     fn checkVarDecl(self: *Checker, node: NodeId) CheckError!void {
         const v = hir_mod.varDeclOf(self.hir, node);
+
+        // TS2451 — duplicate binding names inside a `let`/`const`
+        // destructuring pattern. tsc emits one TS2451 per occurrence,
+        // INCLUDING the first one, so we mirror that anchor-at-each-
+        // position pattern here. Skipped for `var` (no block-scoped
+        // semantics) and for ambient declarations.
+        const decl_kind = self.hir.kindOf(node);
+        if ((decl_kind == .let_decl or decl_kind == .const_decl) and !v.is_ambient) {
+            try self.checkLetConstDestructuringDuplicates(v.name);
+        }
 
         // TS2397 — `var globalThis;` (or `let`/`const`) shadows the
         // built-in lexical binding. tsc lists only `globalThis` in
@@ -36762,6 +36966,19 @@ pub const Checker = struct {
             // tsc anchors at the opening `(` for parenthesized LHS
             // forms like `({}) || s`. Mirrors fixture
             // `symbolType11.ts(7,1)`.
+            const lhs_pos = self.symbolOperandAnchorPos(l.lhs);
+            try self.reportAt(l.lhs, lhs_pos, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
+        }
+        // parserArrowFunctionExpression3: `(() => { }) || a` — tsc
+        // fires TS2872 on the arrow LHS of `||` (heap-allocated
+        // function object, always truthy). Mirror the `&&` branch
+        // below and anchor at the opening `(` for the parenthesized
+        // form. `object_literal` is handled above with its own
+        // anchor so we exclude it here.
+        if (l.op == .@"or" and
+            self.hir.kindOf(l.lhs) != .object_literal and
+            self.expressionAlwaysTruthyInLogicalAnd(l.lhs, lhs))
+        {
             const lhs_pos = self.symbolOperandAnchorPos(l.lhs);
             try self.reportAt(l.lhs, lhs_pos, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
         }
