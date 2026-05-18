@@ -3419,6 +3419,58 @@ pub const Parser = struct {
                     name_span.end = dot_tok.span.end;
                 }
                 const is_optional_member = self.match(.question);
+                // §6.A parserConstructorDeclaration8: `public constructor;`
+                // — when the member name is the literal `constructor` and
+                // the next token isn't `(` or `<`, tsc still treats this
+                // as a malformed constructor declaration: TS2390
+                // (constructor implementation missing) anchored at the
+                // member-start modifier, PLUS TS1005 ("'(' expected.")
+                // at the offending token, and skips the TS18006/TS7008
+                // "field named constructor" path entirely. Synthesize a
+                // bodyless constructor here so the checker's TS2390
+                // pass fires naturally on the missing impl.
+                if (name_tok.kind == .kw_constructor and
+                    self.peek().kind != .open_paren and
+                    self.peek().kind != .less_than and
+                    !is_generator)
+                {
+                    const missing_paren = self.peek();
+                    try self.reportCodeAt(missing_paren.span.start, missing_paren.line, 1005, "'(' expected.");
+                    // Consume any trailing `;` / `=` / `:` so the
+                    // outer class-member loop resumes cleanly.
+                    if (self.peek().kind == .colon) {
+                        _ = self.advance();
+                        _ = self.parseTypeAnnotation() catch {};
+                    }
+                    if (self.peek().kind == .equal) {
+                        _ = self.advance();
+                        _ = self.parseAssignmentExpression() catch {};
+                    }
+                    _ = self.match(.semicolon);
+                    // Anchor TS2390 at the leading modifier (e.g.
+                    // `public`) when there is one — matches tsc which
+                    // underlines the modifier+name together. When no
+                    // modifier was consumed, fall back to the
+                    // `constructor` keyword span.
+                    const anchor_start: u32 = if (mods.accessibility_token) |at| at.span.start else member_start.span.start;
+                    const fn_node = try self.builder.addFnDecl(
+                        .{ .start = anchor_start, .end = self.tokens[self.cursor - 1].span.end },
+                        hir_mod.none_node_id,
+                        &.{},
+                        hir_mod.none_node_id,
+                        hir_mod.none_node_id,
+                        .{
+                            .is_method = true,
+                            .is_constructor = true,
+                            .is_private = mods.visibility == .private,
+                            .is_protected = mods.visibility == .protected,
+                            .is_static = mods.is_static,
+                            .is_abstract = mods.is_abstract,
+                        },
+                    );
+                    try members.append(self.gpa, fn_node);
+                    continue;
+                }
                 if (is_generator or self.peek().kind == .open_paren or self.peek().kind == .less_than) {
                     var type_params: []NodeId = &.{};
                     var owns_tps = false;
