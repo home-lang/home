@@ -21472,7 +21472,31 @@ pub const Checker = struct {
             hir_mod.blockStmts(self.hir, root)
         else
             return null;
-        const ns_node = self.findNamespaceByPath(root_stmts, resolved_path) orelse return null;
+        const ns_node = self.findNamespaceByPath(root_stmts, resolved_path) orelse {
+            // Fallback for `JSX.<Type>` qualified refs in fixtures that
+            // reference the lib's `react.d.ts` via `/// <reference path
+            // ="/.lib/react.d.ts" />` but never declare the JSX
+            // namespace inline. Upstream tsc loads the lib's
+            // `declare namespace JSX { interface Element {} ... }`
+            // and resolves `JSX.Element` to the declared interface; we
+            // don't load lib files, so the namespace lookup misses and
+            // the result previously fell back to `unknown`. Synthesise
+            // an empty named object type and register its display name
+            // as the leaf identifier so diagnostics render
+            // `'Element'` / `'IntrinsicAttributes'` instead of
+            // `'unknown'`. Memoised via `type_names` so repeat lookups
+            // reuse the same TypeId.
+            if (resolved_path.len == 1 and
+                std.mem.eql(u8, self.string_interner.get(resolved_path[0]), "JSX") and
+                self.sourceHasReactJsxReference())
+            {
+                if (self.type_names.get(r.name)) |existing| return existing;
+                const synth = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+                try self.type_names.put(self.gpa, r.name, synth);
+                return synth;
+            }
+            return null;
+        };
         const decl = self.findNamedTypeDeclInNamespace(ns_node, r.name) orelse return null;
         if (self.qualifiedDeclHasMissingRequiredTypeArgs(decl, r.args_len)) {
             // Match upstream TS shape — `Generic type 'Foo<T>' requires N
@@ -47796,6 +47820,34 @@ test "checker: JSX logical union components require every arm's props" {
         if (d.code == TsCodes.type_not_assignable or d.code == TsCodes.object_literal_excess_property) count += 1;
     }
     try T.expect(count >= 3);
+}
+
+test "checker: JSX.Element resolves to a named synthetic when only /.lib/react.d.ts is referenced" {
+    // Mirrors `checkJsxChildrenProperty14`: the fixture references
+    // `/// <reference path="/.lib/react.d.ts" />` but never declares
+    // the JSX namespace inline, so the qualified `JSX.Element` type
+    // ref previously fell back to `unknown`. After the synthesis
+    // fallback in `resolveQualifiedTypeRef`, `simpleDiagnosticTypeName`
+    // renders the leaf name (`Element`) instead — so the TS2746
+    // single-child-prop diagnostic emits the upstream wording.
+    const s = try newTsxSetup(
+        \\/// <reference path="/.lib/react.d.ts" />
+        \\interface Prop { children: JSX.Element; }
+        \\function Tag(p: Prop) { return null as any; }
+        \\const k = <Tag><span></span><span></span></Tag>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.jsx_single_child_prop_multiple_children) {
+            try T.expect(std.mem.indexOf(u8, d.message, "'Element'") != null);
+            try T.expect(std.mem.indexOf(u8, d.message, "'unknown'") == null);
+            found = true;
+        }
+    }
+    try T.expect(found);
 }
 
 test "checker: JSX logical class component unions use class props" {
