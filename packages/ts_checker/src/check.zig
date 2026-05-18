@@ -29186,7 +29186,21 @@ pub const Checker = struct {
             if (self.hir.kindOf(attr) != .jsx_attribute) continue;
             const a = hir_mod.jsxAttributeOf(self.hir, attr);
             if ((try self.lookupObjectMember(spread_t, a.name)) != null) {
-                try self.report(attr, TsCodes.jsx_attribute_overwritten, "JSX attribute is specified more than once, so this usage will be overwritten.");
+                // tsc names the duplicated attribute: `'x' is
+                // specified more than once, so this usage will be
+                // overwritten.` Match that wording so exact-mode
+                // baselines (e.g. `tsxAttributeResolution3`) line up.
+                const name_str = self.string_interner.get(a.name);
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "'{s}' is specified more than once, so this usage will be overwritten.",
+                    .{name_str},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = attr,
+                    .code = TsCodes.jsx_attribute_overwritten,
+                    .message = msg,
+                });
             }
         }
     }
