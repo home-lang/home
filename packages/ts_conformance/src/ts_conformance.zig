@@ -1813,6 +1813,15 @@ fn extractDiagnosticHeaders(gpa: std.mem.Allocator, baseline: []const u8) ![]u8 
     var lines = std.mem.splitScalar(u8, baseline, '\n');
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, "\r");
+        // Stop at the `==== <file> (N errors) ====` separator that
+        // introduces the inlined source body. Any line after it is
+        // file content — including comments that happen to look like
+        // diagnostic headers (e.g. `// sample.tsx(23,22): error TS2322:`
+        // inside `tsxTypeErrors`). Without this gate the harness was
+        // treating those comments as expected diagnostics and forever
+        // failing fixtures whose own source mentions a TS code in
+        // commented-out demo text.
+        if (std.mem.startsWith(u8, line, "====") and std.mem.endsWith(u8, line, "====")) break;
         if (!isDiagnosticHeader(line)) continue;
         if (isOptionValidationDiagnostic(line)) continue;
         if (out.items.len > 0) try out.append(gpa, '\n');
@@ -4235,12 +4244,20 @@ test "conformance: countLines" {
 }
 
 test "conformance: extracts diagnostic headers from upstream baseline text" {
+    // Real tsc baselines emit all headers ABOVE the
+    // `==== <file> (N errors) ====` separator and then inline the
+    // source body below it. The extractor stops at that separator so
+    // comments in the source body that happen to mention `): error
+    // TSxxxx:` text are NOT picked up as headers.
     const headers = try extractDiagnosticHeaders(T.allocator,
-        \\==== tests/cases/conformance/types/example.ts (1 errors) ====
-        \\    let x: number = "hi";
         \\tests/cases/conformance/types/example.ts(1,5): error TS2322: Type 'string' is not assignable to type 'number'.
-        \\    let y: string = 1;
         \\tests/cases/conformance/types/example.ts(2,5): error TS2322: Type 'number' is not assignable to type 'string'.
+        \\
+        \\
+        \\==== tests/cases/conformance/types/example.ts (2 errors) ====
+        \\    let x: number = "hi";
+        \\    let y: string = 1;
+        \\    // example.ts(99,1): error TS9999: this comment-shaped header must be ignored
         \\
     );
     defer if (headers.len > 0) T.allocator.free(headers);

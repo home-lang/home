@@ -29564,8 +29564,21 @@ pub const Checker = struct {
             return try self.jsxIntrinsicPropsType(tag, id.name);
         }
         if (self.jsxClassInstanceTypeForTag(tag)) |instance_t| {
-            const props_name = self.string_interner.intern("props") catch return error.OutOfMemory;
-            if (try self.lookupObjectMember(instance_t, props_name)) |props_t| return props_t;
+            // tsc only treats `instance.props` as the JSX attrs target
+            // when `JSX.ElementAttributesProperty` is declared (and the
+            // `.lib/react` files supply that declaration). When the
+            // fixture declares neither a `JSX` namespace nor references
+            // `/.lib/react.d.ts`, tsc falls back to `any` for the JSX
+            // attrs target — `tsxTypeErrors` is the canonical case.
+            // Without this guard we structurally check JSX attrs against
+            // the raw `MyClass['props']` shape and emit spurious TS2322
+            // pairs that tsc's baseline doesn't carry.
+            if ((try self.jsxHasNamespaceDecl(tag)) or self.sourceHasReactJsxReference()) {
+                const props_name = self.string_interner.intern("props") catch return error.OutOfMemory;
+                if (try self.lookupObjectMember(instance_t, props_name)) |props_t| return props_t;
+            } else {
+                return types.Primitive.any;
+            }
         }
         if (self.hir.kindOf(tag) == .identifier) {
             const tag_name = hir_mod.identifierOf(self.hir, tag).name;
