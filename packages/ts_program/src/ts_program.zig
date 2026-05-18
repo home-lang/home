@@ -176,6 +176,17 @@ pub const Program = struct {
             if (f.compilation != null) continue;
             var per_file = options;
             per_file.is_tsx = options.is_tsx or f.is_tsx;
+            // Per-file declaration-file flag. Multi-file fixtures
+            // (e.g. `react.d.ts` + `app.tsx` in one conformance case)
+            // share a global `options.is_declaration_file` that the
+            // harness derives from a single representative path — so
+            // a regular `.tsx` file compiled in the same case as a
+            // `.d.ts` neighbour was inheriting `is_declaration_file=true`
+            // and getting class-field initializers falsely flagged with
+            // TS1039. Trust the per-file extension flag: it's accurate
+            // for every file in the program (single-file callers see
+            // the same value they'd have passed in the global option).
+            per_file.is_declaration_file = f.is_declaration;
             // Anchor checker module-resolution requests at the
             // current file when the caller hasn't overridden the
             // importer path. This is what lets
@@ -218,6 +229,7 @@ pub const Program = struct {
             }
             var per_file = options;
             per_file.is_tsx = options.is_tsx or f.is_tsx;
+            per_file.is_declaration_file = f.is_declaration;
             if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
             const c = ts_driver.compileSource(self.gpa, f.source, per_file) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
@@ -314,6 +326,7 @@ pub const Program = struct {
         for (self.files.items, 0..) |f, idx| {
             var per_file = options;
             per_file.is_tsx = options.is_tsx or f.is_tsx;
+            per_file.is_declaration_file = f.is_declaration;
             const r = ts_driver.emitWithCache(self.gpa, f.source, cache, config_blob, per_file) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 error.LexError => return error.LexError,
@@ -369,6 +382,7 @@ pub const Program = struct {
                     const f = prog.files.items[idx];
                     var per_file = opts;
                     per_file.is_tsx = opts.is_tsx or f.is_tsx;
+                    per_file.is_declaration_file = f.is_declaration;
                     if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
                     const c = ts_driver.compileSource(prog.gpa, f.source, per_file) catch {
                         _ = fail.fetchAdd(1, .seq_cst);
@@ -469,6 +483,7 @@ pub const Program = struct {
 
             var per_file = options;
             per_file.is_tsx = options.is_tsx or f.is_tsx;
+            per_file.is_declaration_file = f.is_declaration;
             const c = ts_driver.compileSource(self.gpa, f.source, per_file) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => return error.ParseError,
@@ -640,6 +655,28 @@ test "Program: declaration files marked is_declaration" {
     try T.expect(p.fileById(0).is_declaration);
     _ = try p.add("/types.d.home", "declare const Y: number;");
     try T.expect(p.fileById(1).is_declaration);
+}
+
+test "Program: compileAll routes per-file is_declaration_file (no TS1039 from .tsx neighbour of .d.ts)" {
+    // Multi-file program with a `.d.ts` neighbour next to a regular
+    // `.tsx` file: the `.tsx` file's class-field initializer must
+    // NOT inherit ambient-context semantics from the `.d.ts`
+    // sibling, even when the caller passes a global
+    // `options.is_declaration_file=true`. Anchors §6.A.4's
+    // `tsxDynamicTagName8/9` parity fix.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/react.d.ts", "declare module 'react' { class Component<T, U> {} }");
+    _ = try p.add("/app.tsx", "export class Text { _tag: string = 'div'; }");
+    try p.compileAll(.{ .is_tsx = true, .is_declaration_file = true });
+    const app = p.fileById(1).compilation orelse return error.TestFailed;
+    for (app.diagnostics.items) |d| {
+        try T.expect(d.code != 1039);
+    }
 }
 
 test "Program: reaches detects transitive imports" {

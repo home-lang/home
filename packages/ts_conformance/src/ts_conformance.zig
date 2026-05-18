@@ -1388,7 +1388,16 @@ pub fn loadDirectoryWithOptions(
             .expected_errors = expected_errors,
             .use_exact_errors = use_exact_errors,
             .is_tsx = basename_is_tsx or virtual_is_tsx,
-            .is_declaration_file = isDeclarationFilePath(diag_path),
+            // Anchor the declaration-file flag on the fixture's own
+            // basename rather than `diag_path`, which for multi-file
+            // fixtures points at the FIRST code virtual section. When
+            // that first section happens to be a `.d.ts` neighbour
+            // (e.g. `tsxDynamicTagName8.tsx` whose first @filename
+            // marker is `react.d.ts`), the legacy single-source path
+            // was treating the concatenated buffer — including the
+            // real `.tsx` content — as a declaration file and falsely
+            // emitting TS1039 on class-field initializers there.
+            .is_declaration_file = isDeclarationFilePath(entry.basename),
             .strict_flags = strict_flags,
             .always_strict = expects_error and (baselineAlwaysStrictValue(baseline_path) orelse directiveBool(case_src, "alwaysStrict") orelse false),
             .syntax_target_es2015 = directiveTargetEs2015OrLater(case_src),
