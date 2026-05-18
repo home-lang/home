@@ -172,6 +172,12 @@ pub const TsCodes = struct {
     /// one (and only one) required member is absent from the source.
     pub const property_missing_required: u32 = 2741;
     pub const super_not_derived: u32 = 2335;
+    /// TS2660 — `'super' can only be referenced in members of derived
+    /// classes or object literal expressions.` Fires when a `super`
+    /// reference appears inside a derived class but outside any of
+    /// its members (e.g. in a method decorator expression, which
+    /// runs at class-definition time).
+    pub const super_not_in_derived_member: u32 = 2660;
     /// TS2340 — `Only public and protected methods of the base class
     /// are accessible via the 'super' keyword.` Fires for `super.X`
     /// where X is a data property (not a method) on the base class,
@@ -25751,7 +25757,11 @@ pub const Checker = struct {
                             // class computed property name — TS2466 already
                             // covers it and tsc does not double-report.
                             if (!self.in_computed_property_name) {
-                                try self.report(c.callee, TsCodes.super_not_derived, "'super' can only be referenced in a derived class.");
+                                if (self.nodeInsideDecoratorOnDerivedClassMember(c.callee)) {
+                                    try self.report(c.callee, TsCodes.super_not_in_derived_member, "'super' can only be referenced in members of derived classes or object literal expressions.");
+                                } else {
+                                    try self.report(c.callee, TsCodes.super_not_derived, "'super' can only be referenced in a derived class.");
+                                }
                             }
                         } else {
                             const args = hir_mod.callArgs(self.hir, node);
@@ -26143,7 +26153,11 @@ pub const Checker = struct {
                         // canonical diagnostic for super used inside a class
                         // computed property name; tsc does not also emit TS2335.
                         if (!self.in_computed_property_name) {
-                            try self.report(m.object, TsCodes.super_not_derived, "'super' can only be referenced in a derived class.");
+                            if (self.nodeInsideDecoratorOnDerivedClassMember(m.object)) {
+                                try self.report(m.object, TsCodes.super_not_in_derived_member, "'super' can only be referenced in members of derived classes or object literal expressions.");
+                            } else {
+                                try self.report(m.object, TsCodes.super_not_derived, "'super' can only be referenced in a derived class.");
+                            }
                         }
                         obj_t = types.Primitive.any;
                     }
@@ -26372,7 +26386,11 @@ pub const Checker = struct {
                         // TS2466 (super-in-computed-property-name) already covers
                         // the same root error; skip the secondary TS2335.
                         if (!self.in_computed_property_name) {
-                            try self.report(e.object, TsCodes.super_not_derived, "'super' can only be referenced in a derived class.");
+                            if (self.nodeInsideDecoratorOnDerivedClassMember(e.object)) {
+                                try self.report(e.object, TsCodes.super_not_in_derived_member, "'super' can only be referenced in members of derived classes or object literal expressions.");
+                            } else {
+                                try self.report(e.object, TsCodes.super_not_derived, "'super' can only be referenced in a derived class.");
+                            }
                         }
                         break :blk_obj types.Primitive.any;
                     }
@@ -28277,6 +28295,40 @@ pub const Checker = struct {
         if (kind == .identifier) {
             const id = hir_mod.identifierOf(self.hir, node);
             return std.mem.eql(u8, self.string_interner.get(id.name), "super");
+        }
+        return false;
+    }
+
+    /// True when `node` appears inside a `@decorator(...)` expression
+    /// attached to a class member of a class declaration that itself
+    /// has `extends`. tsc surfaces TS2660 ("'super' can only be
+    /// referenced in members of derived classes or object literal
+    /// expressions.") instead of the generic TS2335 for this position
+    /// because the decorator runs at class-definition time, lexically
+    /// inside the derived class but outside any member. Mirrors
+    /// fixture `decoratorOnClassMethod12`.
+    fn nodeInsideDecoratorOnDerivedClassMember(self: *Checker, node: NodeId) bool {
+        var cur: NodeId = node;
+        while (cur != hir_mod.none_node_id) {
+            const parent = self.hir.parentOf(cur);
+            if (parent == hir_mod.none_node_id) return false;
+            if (self.hir.kindOf(parent) == .decorator) {
+                // Decorator nodes parent directly to the enclosing
+                // class node (the parser appends them to the class's
+                // `members` slice). Walk up one more level looking
+                // for a class with `extends`.
+                var grand = self.hir.parentOf(parent);
+                while (grand != hir_mod.none_node_id) {
+                    const k = self.hir.kindOf(grand);
+                    if (k == .class_decl or k == .class_expr) {
+                        const c = hir_mod.classOf(self.hir, grand);
+                        return c.extends != hir_mod.none_node_id;
+                    }
+                    grand = self.hir.parentOf(grand);
+                }
+                return false;
+            }
+            cur = parent;
         }
         return false;
     }
@@ -48402,6 +48454,31 @@ test "checker: super element access in non-derived class emits TS2335" {
         if (d.code == TsCodes.super_not_derived) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: super in method decorator on derived class fires TS2660 not TS2335" {
+    // Decorator expressions run at class-definition time — lexically
+    // inside the derived class but outside any member. tsc prefers
+    // TS2660 over TS2335 for this position. Mirrors fixture
+    // `decoratorOnClassMethod12.errors.txt`.
+    const s = try newSetup(
+        \\// @experimentalDecorators: true
+        \\namespace M {
+        \\  class S { decorator(target: Object, key: string): void { } }
+        \\  class C extends S {
+        \\    @(super.decorator)
+        \\    method() { }
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var has_2660 = false;
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.super_not_derived);
+        if (d.code == TsCodes.super_not_in_derived_member) has_2660 = true;
+    }
+    try T.expect(has_2660);
 }
 
 test "checker: static and instance super resolve separate class sides" {
