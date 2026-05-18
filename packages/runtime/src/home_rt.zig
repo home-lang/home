@@ -95,6 +95,14 @@ pub const jsc = struct {
     pub const CPUProfilerConfig = @import("jsc/BunCPUProfiler.zig").CPUProfilerConfig;
     pub const HeapProfiler = @import("jsc/BunHeapProfiler.zig").HeapProfiler;
     pub const HeapProfilerConfig = @import("jsc/BunHeapProfiler.zig").HeapProfilerConfig;
+    // Sixth-wave port batch (2026-05-18):
+    pub const CommonStrings = @import("jsc/CommonStrings.zig").CommonStrings;
+    pub const RegularExpression = @import("jsc/RegularExpression.zig").RegularExpression;
+    pub const URLSearchParams = @import("jsc/URLSearchParams.zig").URLSearchParams;
+    pub const ZigErrorType = @import("jsc/ZigErrorType.zig").ZigErrorType;
+    pub const TextCodec = @import("jsc/TextCodec.zig").TextCodec;
+    pub const MarkedArgumentBuffer = @import("jsc/MarkedArgumentBuffer.zig").MarkedArgumentBuffer;
+    pub const ConcurrentPromiseTask = @import("jsc/ConcurrentPromiseTask.zig").ConcurrentPromiseTask;
 };
 
 // ---- src/io/ -----------------------------------------------------------
@@ -129,6 +137,10 @@ pub const http = struct {
     pub const ThreadSafeStreamBuffer = @import("http/HTTPRequestBody.zig").ThreadSafeStreamBuffer;
     pub const websocket = @import("http/websocket.zig");
     pub const lshpack = @import("http/lshpack.zig");
+    // Sixth-wave port batch (2026-05-18):
+    pub const h3_client = struct {
+        pub const AltSvc = @import("http/h3_client/AltSvc.zig");
+    };
 };
 pub const http_types = struct {
     pub const Encoding = @import("http_types/Encoding.zig").Encoding;
@@ -170,6 +182,10 @@ pub const crash_handler = struct {
 // Additional Tier-0 helpers — pure-Zig utilities the rest of the runtime
 // leans on. (result.zig + tty.zig already wired below.)
 pub const ExactSizeMatcher = @import("core/string/immutable/exact_size_matcher.zig").ExactSizeMatcher;
+// Sixth-wave port batch (2026-05-18):
+pub const feature_flags = @import("core/feature_flags.zig");
+pub const util = @import("core/util.zig");
+pub const grapheme = @import("core/string/immutable/grapheme.zig");
 pub const BoundedArray = @import("core/bounded_array.zig").BoundedArray;
 pub const BoundedArrayAligned = @import("core/bounded_array.zig").BoundedArrayAligned;
 
@@ -257,14 +273,21 @@ pub const unicode = struct {
 pub const runtime = struct {
     pub const image = struct {
         pub const exif = @import("runtime/image/exif.zig");
+        // Sixth-wave port batch (2026-05-18):
+        pub const thumbhash = @import("runtime/image/thumbhash.zig");
+        pub const quantize = @import("runtime/image/quantize.zig");
     };
     pub const server = struct {
         pub const HTTPStatusText = @import("runtime/server/HTTPStatusText.zig");
+        // Sixth-wave port batch (2026-05-18):
+        pub const RangeRequest = @import("runtime/server/RangeRequest.zig");
     };
     pub const webcore = struct {
         pub const s3 = struct {
             pub const multipart_options = @import("runtime/webcore/s3/multipart_options.zig");
         };
+        // Sixth-wave port batch (2026-05-18):
+        pub const EncodingLabel = @import("runtime/webcore/EncodingLabel.zig").EncodingLabel;
     };
     pub const valkey = struct {
         // Per-VM Valkey state. JSC-bridge dispatch omitted — re-lands in Phase 12.2.
@@ -406,6 +429,64 @@ pub const sourcemap = struct {
     pub const VLQ = @import("sourcemap/VLQ.zig");
 };
 
+// ---- src/ast/ ----------------------------------------------------------
+// Sixth-wave port batch (2026-05-18). Pure-data AST leaves only;
+// Ref/Index, the `use client`/`use server` directive parser, and the
+// server-components boundary table. Wider AST (Expr/Stmt/Symbol/G/…)
+// re-attaches alongside the JS parser port.
+pub const ast = struct {
+    pub const Index = @import("ast/base.zig").Index;
+    pub const Ref = @import("ast/base.zig").Ref;
+    pub const RefHashCtx = @import("ast/base.zig").RefHashCtx;
+    pub const RefCtx = @import("ast/base.zig").RefCtx;
+    pub const UseDirective = @import("ast/use_directive.zig").UseDirective;
+    pub const ServerComponentBoundary = @import("ast/server_component_boundary.zig");
+};
+
+// ---- src/css/ ----------------------------------------------------------
+// Sixth-wave port batch (2026-05-18). Only the pure-data leaves that
+// don't reach into `css_parser.zig` are ported today; the broader
+// values/rules/properties tree re-attaches once `css_parser.zig`
+// lands. Strategy A (self-contained-only) per agent #5's analysis.
+pub const css = struct {
+    pub const logical = @import("css/logical.zig");
+    pub const sourcemap = @import("css/sourcemap.zig");
+    pub const values = struct {
+        pub const values = @import("css/values/values.zig");
+    };
+    pub const PropertyCategory = logical.PropertyCategory;
+    pub const LogicalGroup = logical.LogicalGroup;
+};
+
+// ---- src/analytics/ ----------------------------------------------------
+// Sixth-wave port batch (2026-05-18). The pure-std schema codec plus
+// the JSC-free analytics gate. `Features` / `PackedFeatures` /
+// `GenerateHeader` stay parked on bun.jsc.ModuleLoader + bun.Semver +
+// bun.c.uname.
+pub const analytics = struct {
+    pub const schema = @import("analytics/schema.zig");
+    pub const gate = @import("analytics/analytics.zig");
+};
+
+// ---- src/*_sys/ --------------------------------------------------------
+// Sixth-wave port batch (2026-05-18). Pure FFI extern wrappers around
+// vendored native deps. Link-time contracts; no runtime logic.
+pub const mimalloc_sys = struct {
+    pub const mimalloc = @import("mimalloc_sys/mimalloc.zig");
+};
+pub const tcc_sys = struct {
+    pub const tcc = @import("tcc_sys/tcc.zig");
+};
+pub const brotli_sys = struct {
+    pub const brotli_c = @import("brotli_sys/brotli_c.zig");
+};
+pub const libdeflate_sys = struct {
+    pub const libdeflate = @import("libdeflate_sys/libdeflate.zig");
+};
+pub const simdutf_sys = struct {
+    pub const simdutf = @import("simdutf_sys/simdutf.zig");
+};
+
 // ---- src/jsc_stub.zig --------------------------------------------------
 // WASM-target opaque stubs. Mirrors Bun's `jsc_stub` namespace exactly.
 pub const jsc_stub = @import("jsc_stub.zig");
@@ -519,6 +600,14 @@ test {
     _ = glob;
     _ = highway;
     _ = sourcemap;
+    _ = ast;
+    _ = css;
+    _ = analytics;
+    _ = mimalloc_sys;
+    _ = tcc_sys;
+    _ = brotli_sys;
+    _ = libdeflate_sys;
+    _ = simdutf_sys;
     // Pull nested module tests through their actual file imports so
     // the home_rt test runner exercises every copied leaf.
     _ = @import("event_loop/DeferredTaskQueue.zig");
@@ -610,6 +699,36 @@ test {
     _ = @import("glob/glob.zig");
     _ = @import("highway/highway.zig");
     _ = @import("sourcemap/VLQ.zig");
+    // Sixth-wave port batch (2026-05-18, 7-agent parallel dispatch):
+    _ = @import("jsc/CommonStrings.zig");
+    _ = @import("jsc/RegularExpression.zig");
+    _ = @import("jsc/URLSearchParams.zig");
+    _ = @import("jsc/ZigErrorType.zig");
+    _ = @import("jsc/TextCodec.zig");
+    _ = @import("jsc/MarkedArgumentBuffer.zig");
+    _ = @import("jsc/ConcurrentPromiseTask.zig");
+    _ = @import("core/feature_flags.zig");
+    _ = @import("core/util.zig");
+    _ = @import("core/string/immutable/grapheme.zig");
+    _ = @import("core/string/immutable/grapheme_tables.zig");
+    _ = @import("runtime/image/thumbhash.zig");
+    _ = @import("runtime/image/quantize.zig");
+    _ = @import("runtime/server/RangeRequest.zig");
+    _ = @import("runtime/webcore/EncodingLabel.zig");
+    _ = @import("analytics/schema.zig");
+    _ = @import("analytics/analytics.zig");
+    _ = @import("ast/base.zig");
+    _ = @import("ast/use_directive.zig");
+    _ = @import("ast/server_component_boundary.zig");
+    _ = @import("css/logical.zig");
+    _ = @import("css/sourcemap.zig");
+    _ = @import("css/values/values.zig");
+    _ = @import("http/h3_client/AltSvc.zig");
+    _ = @import("mimalloc_sys/mimalloc.zig");
+    _ = @import("tcc_sys/tcc.zig");
+    _ = @import("brotli_sys/brotli_c.zig");
+    _ = @import("libdeflate_sys/libdeflate.zig");
+    _ = @import("simdutf_sys/simdutf.zig");
 }
 
 test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {
