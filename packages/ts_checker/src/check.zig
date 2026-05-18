@@ -10009,7 +10009,7 @@ pub const Checker = struct {
             try members.append(self.gpa, .{
                 .name = name,
                 .type = try self.bindingPatternParameterElementType(e),
-                .is_optional = false,
+                .is_optional = ep.default_value != hir_mod.none_node_id,
                 .is_readonly = false,
                 .is_method = false,
             });
@@ -10452,6 +10452,17 @@ pub const Checker = struct {
                     // (`function f([a] = [undefined]) {}`).
                     if (pp.default_value == hir_mod.none_node_id) {
                         try self.reportImplicitAnyBindingPatternElements(pp.name, &.{});
+                    } else if (name_kind == .array_pattern and
+                        self.hir.kindOf(pp.default_value) == .array_literal)
+                    {
+                        // `function f([x, y] = [1])` — when the default is
+                        // an array literal, tsc still emits TS7031 for any
+                        // binding element whose index isn't filled in by
+                        // the default. Pass the literal's element nodes so
+                        // each slot can be checked individually. Mirrors
+                        // `destructuringWithLiteralInitializers2` lines 2/3/7/8.
+                        const init_values = hir_mod.arrayLiteralElements(self.hir, pp.default_value);
+                        try self.reportImplicitAnyBindingPatternElements(pp.name, init_values);
                     }
                 } else {
                     const param_name: []const u8 = if (pp.name != hir_mod.none_node_id and name_kind == .identifier)
@@ -17311,11 +17322,15 @@ pub const Checker = struct {
             if (self.virtualSectionStartForNode(stmt) != anchor_section) continue;
             const imp = hir_mod.importOf(self.hir, stmt);
             const spec_text = self.string_interner.get(imp.module);
-            if (std.mem.startsWith(u8, spec_text, ".")) continue;
             for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
                 if (self.hir.kindOf(spec_node) != .import_specifier) continue;
                 const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
                 if (sp.local != local_name) continue;
+                if (std.mem.startsWith(u8, spec_text, ".")) {
+                    if (try self.virtualRelativeModuleExportType(anchor, imp.module, &.{}, sp.imported)) |t| return t;
+                    if (try self.importSpecifierResolvesViaExternal(anchor, spec_text)) return types.Primitive.any;
+                    return null;
+                }
                 return try self.virtualBareModuleExportType(stmt, spec_text, sp.imported);
             }
         }
@@ -20642,6 +20657,21 @@ pub const Checker = struct {
         return false;
     }
 
+    fn ensureForwardVisibleTypeDeclChecked(
+        self: *Checker,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!void {
+        if (self.type_names.contains(name) or self.generic_aliases.contains(name)) return;
+        const decl = self.findVisibleNamedTypeDecl(anchor, name) orelse return;
+        if (self.hir.spanOf(decl).start <= self.hir.spanOf(anchor).start) return;
+        switch (self.hir.kindOf(decl)) {
+            .interface_decl => try self.checkInterfaceDecl(decl),
+            .type_alias_decl => try self.checkTypeAliasDecl(decl),
+            else => {},
+        }
+    }
+
     fn visibleTypeOnlyDeclarationExistsAt(
         self: *Checker,
         anchor: NodeId,
@@ -21012,7 +21042,11 @@ pub const Checker = struct {
                     if (try self.reportInvalidUppercasePrimitiveTypeRef(type_node, r.name)) return types.Primitive.any;
                     const lowered = try self.lowerer.lower(type_node);
                     if (lowered != types.Primitive.unknown or std.mem.eql(u8, name_str, "unknown")) return lowered;
-                    if (self.visibleTypeDeclarationExistsAt(type_node, r.name)) return lowered;
+                    if (self.visibleTypeDeclarationExistsAt(type_node, r.name)) {
+                        try self.ensureForwardVisibleTypeDeclChecked(type_node, r.name);
+                        if (self.type_names.get(r.name)) |t| return t;
+                        return lowered;
+                    }
                     if (self.isReservedKeywordTypeRefName(r.name)) {
                         try self.reportCannotFindNameOnce(type_node, r.name);
                         return types.Primitive.any;
@@ -21340,6 +21374,7 @@ pub const Checker = struct {
                     }
                     const name_str = self.string_interner.get(r.name);
                     if (try self.importedTypeRefForLocal(r.name, type_node)) |t| return t;
+                    try self.ensureForwardVisibleTypeDeclChecked(type_node, r.name);
                     if (self.typeRefNameExists(r.name) or self.visibleTypeDeclarationExistsAt(type_node, r.name)) {
                         return self.lowerer.lower(type_node);
                     }
@@ -24837,8 +24872,18 @@ pub const Checker = struct {
             var nbuf: [12]u8 = undefined;
             const name_str = std.fmt.bufPrint(&nbuf, "{d}", .{count}) catch return count;
             const name = self.string_interner.intern(name_str) catch return count;
-            if (self.interner.objectMember(target, name) == null) return count;
+            const member = self.tupleElementMember(target, name) orelse return count;
+            if (member.is_optional) return count;
         }
+    }
+
+    fn tupleElementMember(self: *Checker, target: TypeId, name: hir_mod.StringId) ?types.ObjectMember {
+        if (target >= self.interner.pool.typeCount()) return null;
+        if (!self.interner.pool.flagsOf(target).is_object_type) return null;
+        for (self.interner.objectMembers(target)) |member| {
+            if (member.name == name) return member;
+        }
+        return null;
     }
 
     fn reportTupleIndexOutOfBounds(self: *Checker, index_node: NodeId, target: TypeId, index: u64, length: u64) CheckError!void {
@@ -26628,6 +26673,20 @@ pub const Checker = struct {
         while (i < call_end) : (i += 1) {
             const ch = src[i];
             if (ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r') continue;
+            if (ch == '<') {
+                var depth: usize = 1;
+                i += 1;
+                while (i < call_end) : (i += 1) {
+                    const inner = src[i];
+                    if (inner == '<') {
+                        depth += 1;
+                    } else if (inner == '>') {
+                        depth -= 1;
+                        if (depth == 0) break;
+                    }
+                }
+                continue;
+            }
             return ch == '`';
         }
         return false;
@@ -27759,6 +27818,9 @@ pub const Checker = struct {
                         } else {
                             const args = hir_mod.callArgs(self.hir, node);
                             for (args) |arg| _ = try self.checkExpression(arg);
+                            if (self.callExprIsTaggedTemplate(node) and self.nodeIsDirectlyInsideConstructor(node)) {
+                                try self.report(c.callee, TsCodes.super_before_super_call, "'super' must be called before accessing a property of 'super' in the constructor of a derived class.");
+                            }
                             break :blk types.Primitive.any;
                         }
                     }
@@ -27840,6 +27902,11 @@ pub const Checker = struct {
                             const has_impl = self.overload_has_implementation.contains(callee_name);
                             const visible_len = if (has_impl) overload_list.items.len - 1 else overload_list.items.len;
                             const overloads = overload_list.items[0..visible_len];
+                            if (visible_len == 1 and self.callArityFitsSignature(overloads[0], args)) {
+                                try self.checkArgsAgainstSignature(node, args, arg_types.items, overloads[0]);
+                                if (self.interner.signatureReturn(overloads[0])) |ret| break :blk try self.optionalChainResult(ret, call_is_optional_chain);
+                                break :blk try self.optionalChainResult(types.Primitive.any, call_is_optional_chain);
+                            }
                             for (overloads) |sig| {
                                 if (try self.signatureAccepts(sig, args, arg_types.items)) {
                                     try self.checkArgsAgainstSignature(node, args, arg_types.items, sig);
@@ -28217,6 +28284,18 @@ pub const Checker = struct {
                 // even when the resolved type is identical inside
                 // and outside the class.
                 const access_obj_t = self.typeParameterConstraint(obj_t) orelse obj_t;
+                if (access_obj_t == types.Primitive.any and
+                    self.sourceHasCheckJsDirective() and
+                    self.isInAssignmentTargetChain(node))
+                {
+                    if (try self.checkJsImportedCallableExpandoTargetType(m.object, access_obj_t)) |target_t| {
+                        if (try self.lookupObjectMember(target_t, m.name)) |t| {
+                            break :blk try self.optionalChainResult(t, member_is_optional_chain);
+                        }
+                        try self.reportPropertyDoesNotExistOnType(node, m.name, target_t);
+                        break :blk types.Primitive.any;
+                    }
+                }
                 try self.checkPrivateMemberAccess(node, access_obj_t, m.name);
                 try self.checkProtectedMemberAccess(node, access_obj_t, m.name);
                 if (try self.commonJsExportMemberKey(node)) |key| {
@@ -28363,7 +28442,7 @@ pub const Checker = struct {
                     }
                     // No matching member and no indexer → TS2339.
                     if (self.sourceHasCheckJsDirective() and self.isInAssignmentTargetChain(node)) {
-                        if (!self.checkJsImportedCallableExpandoTarget(m.object, access_obj_t)) {
+                        if ((try self.checkJsImportedCallableExpandoTargetType(m.object, access_obj_t)) == null) {
                             break :blk types.Primitive.any;
                         }
                     }
@@ -36653,10 +36732,12 @@ pub const Checker = struct {
         switch (self.hir.kindOf(node)) {
             .call_expr => {
                 const c = hir_mod.callOf(self.hir, node);
-                if (self.hir.kindOf(c.callee) == .super_expr) return true;
+                if (self.callExprIsTaggedTemplate(node)) return false;
+                const type_args = hir_mod.callTypeArgs(self.hir, node);
+                if (self.hir.kindOf(c.callee) == .super_expr) return type_args.len == 0;
                 if (self.hir.kindOf(c.callee) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, c.callee);
-                    if (std.mem.eql(u8, self.string_interner.get(id.name), "super")) return true;
+                    if (std.mem.eql(u8, self.string_interner.get(id.name), "super")) return type_args.len == 0;
                 }
                 if (self.expressionContainsSuperCall(c.callee)) return true;
                 for (hir_mod.callArgs(self.hir, node)) |arg| {
@@ -36724,6 +36805,17 @@ pub const Checker = struct {
             const f = hir_mod.fnDeclOf(self.hir, cur);
             if (f.flags.is_constructor) return saw_nested_function;
             saw_nested_function = true;
+        }
+        return false;
+    }
+
+    fn nodeIsDirectlyInsideConstructor(self: *Checker, node: NodeId) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
+            const f = hir_mod.fnDeclOf(self.hir, cur);
+            return f.flags.is_constructor;
         }
         return false;
     }
@@ -39736,6 +39828,17 @@ pub const Checker = struct {
                 next_pred.target_type = self.substituteType(pred.target_type, subs) catch pred.target_type;
                 try self.signature_predicates.put(self.gpa, new_sig, next_pred);
             }
+            if (self.generic_signature_params.get(t)) |type_params| {
+                var preserved_params: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer preserved_params.deinit(self.gpa);
+                for (type_params) |param_t| {
+                    if (subs.contains(param_t)) continue;
+                    try preserved_params.append(self.gpa, param_t);
+                }
+                if (preserved_params.items.len == type_params.len) {
+                    try self.recordGenericSignatureParams(new_sig, preserved_params.items);
+                }
+            }
             var param_ix: usize = 0;
             while (param_ix < params_snapshot.len) : (param_ix += 1) {
                 const key: SignatureParamKey = .{ .signature = t, .param_index = @intCast(param_ix) };
@@ -40227,7 +40330,14 @@ pub const Checker = struct {
             if (!ok and !contextual_ok and !emitted_2556) {
                 var emitted = false;
                 if (self.hir.kindOf(args[i]) == .array_literal and self.isTupleShapedTarget(param_t)) {
-                    if (try self.formatArrayLiteralTupleArgumentNotAssignable(args[i], param_t)) |msg| {
+                    // Per-element TS2322 prose when the array literal
+                    // is a length-matching fixed tuple — mirrors tsc's
+                    // mutually-exclusive behavior where each offending
+                    // element emits `Type 'X' is not assignable to type
+                    // 'Y'.` and the arg-level TS2345 is suppressed.
+                    if (try self.tryReportArrayLiteralTupleElementMismatch(args[i], param_t)) {
+                        emitted = true;
+                    } else if (try self.formatArrayLiteralTupleArgumentNotAssignable(args[i], param_t)) |msg| {
                         try self.diagnostics.append(self.gpa, .{
                             .node = args[i],
                             .code = TsCodes.argument_type_mismatch,
@@ -40235,6 +40345,16 @@ pub const Checker = struct {
                         });
                         emitted = true;
                     } else if (self.isContextualCallShapeDiagnosticAlreadyEmitted(call_node, args, args[i])) {
+                        emitted = true;
+                    }
+                }
+                if (!emitted and self.hir.kindOf(args[i]) == .object_literal) {
+                    // Per-property TS2322 prose for object-literal call
+                    // args against a structurally-typed parameter.
+                    // Mirrors tsc's mutually-exclusive behavior:
+                    // emitting at least one per-property TS2322
+                    // suppresses the arg-level TS2345/TS2769.
+                    if (try self.tryReportObjectLiteralPropertyMismatch(args[i], param_t)) {
                         emitted = true;
                     }
                 }
@@ -40259,12 +40379,11 @@ pub const Checker = struct {
             const elem_t = self.interner.objectNumberIndex(rest_arr_t);
             const target_t = if (elem_t == types.Primitive.none) rest_arr_t else elem_t;
             if (target_t >= self.interner.pool.typeCount()) return;
-            // tsc emits at most one TS2345 against a tagged-template
-            // call's rest substitutions — once the first `${expr}`
-            // mismatches the rest element type, subsequent mismatches
-            // on the same call are suppressed. Mirrors fixture
-            // `taggedTemplateStringsWithIncompatibleTypedTags`.
-            const is_tagged_template_call = self.callExprIsTaggedTemplate(call_node);
+            // tsc emits at most one TS2345 for a rest slot — once the
+            // first trailing argument mismatches the rest element type,
+            // subsequent mismatches on the same call/new expression are
+            // suppressed. This also covers tagged-template substitutions,
+            // which are desugared as rest arguments here.
             if (!self.interner.pool.flagsOf(target_t).is_type_parameter) {
                 var j: usize = fixed_count;
                 var emitted_rest_mismatch = false;
@@ -40280,7 +40399,7 @@ pub const Checker = struct {
                     }
                     const ok = self.restArgumentAssignable(arg_t, target_t) catch true;
                     if (!ok) {
-                        if (is_tagged_template_call and emitted_rest_mismatch) continue;
+                        if (emitted_rest_mismatch) continue;
                         // Use the shared formatter so rest-arg TS2345
                         // sites also get the richer `Argument of type 'A'
                         // is not assignable to parameter of type 'P'.`
@@ -42552,11 +42671,9 @@ pub const Checker = struct {
         target_t: TypeId,
     ) !bool {
         if (self.hir.kindOf(init_node) != .object_literal) return false;
-        if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return false;
-        const flags = self.interner.pool.flagsOf(target_t);
-        if (!flags.is_object_type) return false;
+        const resolved_target = self.objectTypeFromMaybeOptional(target_t) orelse return false;
         var emitted = false;
-        for (self.interner.objectMembers(target_t)) |tm| {
+        for (self.interner.objectMembers(resolved_target)) |tm| {
             const prop_node = self.findObjectLiteralPropNode(init_node, tm.name) orelse continue;
             const op = hir_mod.objectPropertyOf(self.hir, prop_node);
             if (op.value == hir_mod.none_node_id) continue;
@@ -42565,7 +42682,10 @@ pub const Checker = struct {
             if (try self.literalExpressionAssignableToTarget(op.value, tm.type)) continue;
             if (self.engine.isAssignableTo(value_t, tm.type) catch true) continue;
             // Anchor at the property key so the column matches
-            // upstream — `nonPrimitiveAsProperty.ts(7,28)`.
+            // upstream — `nonPrimitiveAsProperty.ts(7,28)` and
+            // `optionalBindingParameters2.ts(7,7)`. tsc emits one
+            // TS2322 per offending member, so we no longer `break`
+            // after the first mismatch.
             const anchor = if (op.key != hir_mod.none_node_id) op.key else op.value;
             try self.reportTypeNotAssignable(
                 anchor,
@@ -42574,9 +42694,103 @@ pub const Checker = struct {
                 "Type is not assignable to property type.",
             );
             emitted = true;
-            break;
         }
         return emitted;
+    }
+
+    /// Return the unique non-undefined object-type constituent of `t`
+    /// when `t` is either a bare object type or an `Object | undefined`
+    /// union (e.g. the type of an optional parameter). Enables
+    /// per-property TS2322 prose for call-sites where the parameter is
+    /// declared `?:`.
+    fn objectTypeFromMaybeOptional(self: *Checker, t: TypeId) ?TypeId {
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_object_type) return t;
+        if (!flags.is_union) return null;
+        var object_t: ?TypeId = null;
+        for (self.interner.unionMembers(t)) |m| {
+            if (m == types.Primitive.undefined_t or m == types.Primitive.void_t or m == types.Primitive.null_t) continue;
+            if (m >= self.interner.pool.typeCount()) return null;
+            const mf = self.interner.pool.flagsOf(m);
+            if (!mf.is_object_type) return null;
+            if (object_t != null) return null;
+            object_t = m;
+        }
+        return object_t;
+    }
+
+    /// Walk array-literal arg elements against a tuple parameter type,
+    /// emitting per-element TS2322 `Type 'X' is not assignable to type
+    /// 'Y'.` anchored at the element's source span. Returns true when
+    /// at least one element diagnostic was emitted. Matches upstream
+    /// per-element prose for fixtures like `optionalBindingParameters1`
+    /// where `[false, 0, ""]` flows into `[string, number, boolean]`.
+    fn tryReportArrayLiteralTupleElementMismatch(
+        self: *Checker,
+        init_node: NodeId,
+        target_t: TypeId,
+    ) !bool {
+        if (self.hir.kindOf(init_node) != .array_literal) return false;
+        const resolved_target = self.tupleTypeFromMaybeOptional(target_t) orelse return false;
+        if (!self.isFixedNoRestTuple(resolved_target)) return false;
+        const elems = hir_mod.arrayLiteralElements(self.hir, init_node);
+        var emitted = false;
+        var i: usize = 0;
+        while (i < elems.len) : (i += 1) {
+            const elem_node = elems[i];
+            if (elem_node == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(elem_node) == .spread) continue;
+            const tgt_elem_t = self.tupleElementType(resolved_target, i);
+            if (tgt_elem_t == types.Primitive.none) continue;
+            // Upstream keeps the broad argument-level TS2345 for
+            // nested tuple/object element mismatches such as
+            // `[[string]]` flowing into `[[any]]`; the per-element
+            // TS2322 form is reserved for simple element targets.
+            if (self.tupleTypeFromMaybeOptional(tgt_elem_t) != null) continue;
+            if (tgt_elem_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(tgt_elem_t).is_object_type) continue;
+            if ((try self.simpleDiagnosticTypeName(tgt_elem_t)) == null) continue;
+            const elem_t = self.hir.typeOf(elem_node);
+            if (elem_t == types.Primitive.none) continue;
+            if (try self.literalExpressionAssignableToTarget(elem_node, tgt_elem_t)) continue;
+            if (self.engine.isAssignableTo(elem_t, tgt_elem_t) catch true) continue;
+            try self.reportTypeNotAssignable(
+                elem_node,
+                elem_t,
+                tgt_elem_t,
+                "Type is not assignable to tuple element type.",
+            );
+            emitted = true;
+        }
+        return emitted;
+    }
+
+    /// Like `objectTypeFromMaybeOptional` but for tuple-shaped
+    /// constituents (object types carrying a numeric `length` literal,
+    /// i.e. fixed tuples).
+    fn tupleTypeFromMaybeOptional(self: *Checker, t: TypeId) ?TypeId {
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (self.isTupleShapedTarget(t)) return t;
+        if (!flags.is_union) return null;
+        var tuple_t: ?TypeId = null;
+        for (self.interner.unionMembers(t)) |m| {
+            if (m == types.Primitive.undefined_t or m == types.Primitive.void_t or m == types.Primitive.null_t) continue;
+            if (m >= self.interner.pool.typeCount()) return null;
+            if (!self.isTupleShapedTarget(m)) return null;
+            if (tuple_t != null) return null;
+            tuple_t = m;
+        }
+        return tuple_t;
+    }
+
+    /// True for a fixed tuple type whose members are a non-rest run
+    /// (i.e. plain `[T1, T2, T3]` with no `...T[]` tail). Gates
+    /// per-element TS2322 emission so variadic tuple targets keep their
+    /// existing argument-shape prose.
+    fn isFixedNoRestTuple(self: *Checker, t: TypeId) bool {
+        if (!self.isTupleShapedTarget(t)) return false;
+        return self.fixedTupleLength(t) != null;
     }
 
     /// Like `findObjectLiteralPropValue` but returns the
@@ -44805,12 +45019,12 @@ pub const Checker = struct {
         }
     }
 
-    fn checkJsImportedCallableExpandoTarget(self: *Checker, object_node: NodeId, object_t: TypeId) bool {
-        if (self.hir.kindOf(object_node) != .identifier) return false;
+    fn checkJsImportedCallableExpandoTargetType(self: *Checker, object_node: NodeId, object_t: TypeId) CheckError!?TypeId {
+        if (self.hir.kindOf(object_node) != .identifier) return null;
         const id = hir_mod.identifierOf(self.hir, object_node);
-        if (!self.localNameIsImportBinding(id.name, object_node)) return false;
-        return self.objectHasCallOrConstructSignature(object_t) or
-            self.localNameIsRelativeImportOfClassOrFunction(id.name, object_node);
+        if (!self.localNameIsImportBinding(id.name, object_node)) return null;
+        if (self.objectHasCallOrConstructSignature(object_t) or self.typeUnionAllCallable(object_t)) return object_t;
+        return try self.localNameRelativeImportClassOrFunctionValueType(id.name, object_node);
     }
 
     fn localNameIsImportBinding(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) bool {
@@ -44837,11 +45051,10 @@ pub const Checker = struct {
         return false;
     }
 
-    fn localNameIsRelativeImportOfClassOrFunction(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) bool {
-        const src = self.source orelse return false;
-        if (!self.sourceHasVirtualFilenameSections()) return false;
+    fn localNameRelativeImportClassOrFunctionValueType(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
+        if (!self.sourceHasVirtualFilenameSections()) return null;
         const root = self.rootBlockFor(anchor);
-        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const anchor_section = self.virtualSectionStartForNode(anchor);
         for (hir_mod.blockStmts(self.hir, root)) |stmt| {
             if (self.hir.kindOf(stmt) != .import_decl) continue;
@@ -44859,17 +45072,30 @@ pub const Checker = struct {
                 }
             }
             const wanted = imported_name orelse continue;
+            const from = self.virtualSectionFilenameForNode(anchor) orelse return null;
+            const resolved = try self.resolveVirtualRelativePath(from, spec);
+            defer self.gpa.free(resolved);
             for (hir_mod.blockStmts(self.hir, root)) |raw| {
-                if (!self.virtualSectionMatchesSpecifier(src, raw, spec)) continue;
+                if (!self.virtualSectionMatchesResolvedModule(raw, resolved, spec)) continue;
                 if (self.hir.kindOf(raw) != .export_decl) continue;
                 const decl = self.unwrapExportDecl(raw);
                 const decl_name = self.declarationName(decl) orelse continue;
                 if (decl_name != wanted) continue;
                 const dk = self.hir.kindOf(decl);
-                return dk == .class_decl or dk == .class_expr or dk == .fn_decl or dk == .fn_expr;
+                if (dk == .class_decl or dk == .class_expr) {
+                    try self.checkClassDecl(decl);
+                    if (self.class_static_types.get(wanted)) |static_t| return static_t;
+                    return self.hir.typeOf(decl);
+                }
+                if (dk == .fn_decl or dk == .fn_expr) {
+                    try self.checkFnDeclWithFlowBoundary(decl);
+                    const fn_t = self.hir.typeOf(decl);
+                    return if (fn_t != types.Primitive.none) fn_t else types.Primitive.any;
+                }
+                return null;
             }
         }
-        return false;
+        return null;
     }
 
     /// True when `type_node` is the synthetic `type_ref` to `const`
@@ -63512,6 +63738,27 @@ test "checker: checkjs expando property assignment target does not report TS2339
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
+}
+
+test "checker: checkjs imported callable expando target reports TS2339" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @Filename: vue.js
+        \\export class Vue {}
+        \\export const config = { x: 0 };
+        \\
+        \\// @Filename: test.js
+        \\import { Vue, config } from "./vue";
+        \\Vue.config = {};
+        \\config.y = {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_does_not_exist) count += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count);
 }
 
 test "checker: checkjs CommonJS export property assignment flow reports possibly undefined call once" {
