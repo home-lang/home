@@ -5536,8 +5536,16 @@ pub const Checker = struct {
             return;
         }
         if (self.nodeInsideComputedPropertyKey(ref_node)) {
+            // tsc fires TS2454 for plain string/number bindings inside
+            // a property-key (e.g. `var s: string; var v = { [s]: 0 }`
+            // reports TS2454 at `s`), but suppresses it inside a
+            // method-key (`{ [s]() {} }`), where the method-form
+            // declares a fresh function scope before reading `s`.
+            // Mirrors `computedPropertyNames4_ES{5,6}`.
             if (self.isGlobalSymbolConstructorVarDecl(decl_node)) return;
-            if (!self.varDeclTypeContainsSymbol(decl_node)) return;
+            if (self.nodeInsideComputedMethodKey(ref_node)) {
+                if (!self.varDeclTypeContainsSymbol(decl_node)) return;
+            }
         }
         // `var Symbol: T;` declarations shadow the ambient global
         // `Symbol`. tsc treats reads of this binding as initialised
@@ -5720,6 +5728,34 @@ pub const Checker = struct {
             if (self.hir.kindOf(cur) != .object_property) continue;
             const op = hir_mod.objectPropertyOf(self.hir, cur);
             if (op.is_computed and op.key == child) return true;
+        }
+        return false;
+    }
+
+    /// True when `node` sits inside the computed key of an object-literal
+    /// METHOD (`{ [s]() {} }`), as opposed to a plain property
+    /// (`{ [s]: 0 }`). tsc treats the two differently for TS2454
+    /// suppression — see `computedPropertyNames4_ES{5,6}` where only
+    /// property-keys fire and method-keys stay silent.
+    fn nodeInsideComputedMethodKey(self: *Checker, node: NodeId) bool {
+        var child = node;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : ({
+            child = cur;
+            cur = self.hir.parentOf(cur);
+        }) {
+            if (self.hir.kindOf(cur) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, cur);
+            if (op.is_computed and op.key == child) {
+                if (op.is_method) return true;
+                if (op.value != hir_mod.none_node_id) {
+                    const vk = self.hir.kindOf(op.value);
+                    if (vk == .fn_decl or vk == .fn_expr or vk == .arrow_fn) {
+                        return self.memberSourceLooksMethod(cur);
+                    }
+                }
+                return false;
+            }
         }
         return false;
     }
