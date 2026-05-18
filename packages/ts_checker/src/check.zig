@@ -28936,35 +28936,44 @@ pub const Checker = struct {
                         !try self.jsxAttributesMatchOverload(el.tag, attrs_t, attrs.len) and
                         !(self.containsFreeTypeParameter(target) and try self.jsxRequiredPropsCovered(target, attrs_t)))
                     {
-                        // Prefer tsc's structural-shape wording
-                        // (`Type 'X' is not assignable to type 'Y'.`)
-                        // when both attrs_t and the (substituted)
-                        // target render cleanly via the existing
-                        // type-name helpers. Falls back to the
-                        // simplified JSX-specific message when either
-                        // side fails to render — better than emitting
-                        // a misshapen structural message. The
-                        // upstream-shape branch lines up
-                        // `tsxAttributeResolution3` and the
-                        // structural-message cluster with tsc; the
-                        // fallback keeps existing tests pinned.
-                        const src_text = (try self.allocAnonymousObjectName(attrs_t)) orelse
-                            (try self.allocSimpleTypeName(attrs_t));
-                        const tgt_text = (try self.allocSimpleTypeName(effective_target)) orelse
-                            (try self.allocAnonymousObjectName(effective_target));
-                        if (src_text != null and tgt_text != null) {
-                            const msg = try std.fmt.allocPrint(
-                                self.diag_arena.allocator(),
-                                "Type '{s}' is not assignable to type '{s}'.",
-                                .{ src_text.?, tgt_text.? },
-                            );
-                            try self.diagnostics.append(self.gpa, .{
-                                .node = el.tag,
-                                .code = TsCodes.type_not_assignable,
-                                .message = msg,
-                            });
-                        } else {
-                            try self.report(el.tag, TsCodes.type_not_assignable, "JSX attributes are not assignable to the target props type.");
+                        // Prefer tsc's more-specific TS2741
+                        // ("Property 'X' is missing in type ... but
+                        // required in type ...") when the gap is a
+                        // single required-property miss. Mirrors
+                        // upstream's preference (`renamed.ts` etc.)
+                        // and matches `tsxAttributeResolution3` line
+                        // 23 (`<test1 {...obj3} />` with obj3 missing
+                        // the required `x` from `Attribs1`). Falls
+                        // through to the structural TS2322 below when
+                        // the gap isn't single-required.
+                        const fired_2741 = self.tryReportSinglePropertyMissing(el.tag, hir_mod.none_node_id, attrs_t, effective_target) catch false;
+                        if (!fired_2741) {
+                            // Prefer tsc's structural-shape wording
+                            // (`Type 'X' is not assignable to type 'Y'.`)
+                            // when both attrs_t and the (substituted)
+                            // target render cleanly via the existing
+                            // type-name helpers. Falls back to the
+                            // simplified JSX-specific message when
+                            // either side fails to render — better than
+                            // emitting a misshapen structural message.
+                            const src_text = (try self.allocAnonymousObjectName(attrs_t)) orelse
+                                (try self.allocSimpleTypeName(attrs_t));
+                            const tgt_text = (try self.allocSimpleTypeName(effective_target)) orelse
+                                (try self.allocAnonymousObjectName(effective_target));
+                            if (src_text != null and tgt_text != null) {
+                                const msg = try std.fmt.allocPrint(
+                                    self.diag_arena.allocator(),
+                                    "Type '{s}' is not assignable to type '{s}'.",
+                                    .{ src_text.?, tgt_text.? },
+                                );
+                                try self.diagnostics.append(self.gpa, .{
+                                    .node = el.tag,
+                                    .code = TsCodes.type_not_assignable,
+                                    .message = msg,
+                                });
+                            } else {
+                                try self.report(el.tag, TsCodes.type_not_assignable, "JSX attributes are not assignable to the target props type.");
+                            }
                         }
                     }
                 }
@@ -47549,9 +47558,14 @@ test "checker: JSX spread validates required target props" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
+    // tsc prefers the more-specific TS2741 (`Property 'missing' is
+    // missing in type ... but required in type 'TargetProps'.`) over
+    // the generic TS2322 when the gap is a single required-property
+    // miss — accept either here so the test pins the JSX-attrs
+    // assignability behaviour without forcing one specific code.
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.type_not_assignable) found = true;
+        if (d.code == TsCodes.type_not_assignable or d.code == TsCodes.property_missing_required) found = true;
     }
     try T.expect(found);
 }
