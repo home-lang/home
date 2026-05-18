@@ -221,6 +221,7 @@ pub const TsCodes = struct {
     pub const string_iteration_requires_downlevel: u32 = 2802;
     pub const subsequent_var_type_mismatch: u32 = 2403;
     pub const interface_incorrectly_extends: u32 = 2430;
+    pub const interface_cannot_simultaneously_extend: u32 = 2320;
     /// TS2428 — emitted on EVERY declaration of an interface when
     /// merging declarations disagree on the shape of the type parameter
     /// list (different arity, names, or constraint text). Anchored at
@@ -665,6 +666,13 @@ const ClassMethodSeen = struct {
     /// Once we've back-reported TS2393 against `first_node`, suppress
     /// further duplicates so each duplicated overload only fires once.
     first_duplicate_reported: bool = false,
+    /// All prior overload + first-implementation nodes for this name.
+    /// Populated as we walk the member list; once a second
+    /// implementation is observed, TS2393 fires at every entry here
+    /// (mirrors upstream tsc anchoring duplicate-implementation
+    /// diagnostics at *every* declaration of the overload group).
+    /// See symbolProperty39 baseline.
+    prior_nodes: std.ArrayListUnmanaged(NodeId) = .empty,
 };
 
 const IndexKind = enum { string, number, symbol };
@@ -11570,9 +11578,17 @@ pub const Checker = struct {
         var static_names: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
         defer static_names.deinit(self.gpa);
         var method_seen: std.AutoHashMapUnmanaged(hir_mod.StringId, ClassMethodSeen) = .empty;
-        defer method_seen.deinit(self.gpa);
+        defer {
+            var msit = method_seen.iterator();
+            while (msit.next()) |e| e.value_ptr.prior_nodes.deinit(self.gpa);
+            method_seen.deinit(self.gpa);
+        }
         var static_method_seen: std.AutoHashMapUnmanaged(hir_mod.StringId, ClassMethodSeen) = .empty;
-        defer static_method_seen.deinit(self.gpa);
+        defer {
+            var sit = static_method_seen.iterator();
+            while (sit.next()) |e| e.value_ptr.prior_nodes.deinit(self.gpa);
+            static_method_seen.deinit(self.gpa);
+        }
         var previous_bodyless_method_name: ?hir_mod.StringId = null;
         var previous_bodyless_method_static = false;
         var instance_member_predicates: std.AutoHashMapUnmanaged(hir_mod.StringId, FnPredicate) = .empty;
@@ -14299,7 +14315,9 @@ pub const Checker = struct {
                 .first_visibility = visibility,
                 .bodyless_count = if (has_body) 0 else 1,
                 .implementation_count = if (has_body) 1 else 0,
+                .prior_nodes = .empty,
             };
+            try gop.value_ptr.prior_nodes.append(self.gpa, node);
             return;
         }
         if (gop.value_ptr.first_static != is_static) {
@@ -14312,15 +14330,16 @@ pub const Checker = struct {
         if (has_body) {
             gop.value_ptr.implementation_count += 1;
             if (gop.value_ptr.implementation_count > 1) {
-                // tsc anchors TS2393 at every duplicate implementation in
-                // a class, including the FIRST one once a duplicate is
-                // discovered. Mirror that by back-reporting on the first
-                // implementation seen, then again on the current node.
-                // Matches `parserMemberFunctionDeclarationAmbiguities1`.
-                if (!gop.value_ptr.first_duplicate_reported and
-                    gop.value_ptr.first_node != hir_mod.none_node_id)
-                {
-                    try self.reportDuplicateFunctionImplementation(gop.value_ptr.first_node);
+                // tsc anchors TS2393 at every declaration in the
+                // overload group once a duplicate implementation is
+                // observed — every prior bodyless overload AND the
+                // first implementation, plus the current implementation.
+                // Mirrors `parserMemberFunctionDeclarationAmbiguities1`
+                // (2 impls) and `symbolProperty39` (2 bodyless + 2 impls).
+                if (!gop.value_ptr.first_duplicate_reported) {
+                    for (gop.value_ptr.prior_nodes.items) |prior| {
+                        try self.reportDuplicateFunctionImplementation(prior);
+                    }
                     gop.value_ptr.first_duplicate_reported = true;
                 }
                 try self.reportDuplicateFunctionImplementation(node);
@@ -14329,6 +14348,7 @@ pub const Checker = struct {
             gop.value_ptr.bodyless_count += 1;
             gop.value_ptr.last_bodyless_node = node;
         }
+        try gop.value_ptr.prior_nodes.append(self.gpa, node);
     }
 
     fn reportClassMethodImplementationNameMismatch(
@@ -18157,8 +18177,15 @@ pub const Checker = struct {
                     continue;
                 }
             }
-            for (extends) |other_ext_node| {
+            var ext_index: usize = std.math.maxInt(usize);
+            for (extends, 0..) |ee, ei| {
+                if (ee == ext_node) { ext_index = ei; break; }
+            }
+            for (extends, 0..) |other_ext_node, other_index| {
                 if (other_ext_node == ext_node) continue;
+                // Skip symmetric pair: only emit once per (ext, other)
+                // combination. Anchors on the earlier ext_node.
+                if (ext_index >= other_index) continue;
                 const other_t = self.lowererLowerWithTypeParams(other_ext_node) catch continue;
                 if (!self.interner.pool.flagsOf(other_t).is_object_type) continue;
                 for (self.interner.objectMembers(parent_t)) |pm| {
@@ -18171,7 +18198,40 @@ pub const Checker = struct {
                         const pr = self.interner.signatureReturn(pm.type) orelse types.Primitive.void_t;
                         const or_ = self.interner.signatureReturn(om.type) orelse types.Primitive.void_t;
                         if ((self.heritageAssignable(pr, or_) catch true) or (self.heritageAssignable(or_, pr) catch true)) continue;
-                        try self.reportInterfaceExtendsIndexMismatch(node);
+                        // tsc upgrades the cross-extends symbol-named
+                        // property mismatch to TS2320 ("cannot
+                        // simultaneously extend") when both bases are
+                        // named interfaces. Anchor at the child
+                        // interface name identifier so the column
+                        // matches upstream (e.g. symbolProperty35.ts(8,11)).
+                        const child_name_node: NodeId = if (self.hir.kindOf(node) == .interface_decl)
+                            hir_mod.interfaceOf(self.hir, node).name
+                        else
+                            node;
+                        const child_name_id = if (child_name_node != hir_mod.none_node_id and self.hir.kindOf(child_name_node) == .identifier)
+                            hir_mod.identifierOf(self.hir, child_name_node).name
+                        else
+                            null;
+                        const parent_name_id = self.unqualifiedTypeRefName(ext_node);
+                        const other_name_id = self.unqualifiedTypeRefName(other_ext_node);
+                        if (child_name_id != null and parent_name_id != null and other_name_id != null) {
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Interface '{s}' cannot simultaneously extend types '{s}' and '{s}'.",
+                                .{
+                                    self.string_interner.get(child_name_id.?),
+                                    self.string_interner.get(parent_name_id.?),
+                                    self.string_interner.get(other_name_id.?),
+                                },
+                            );
+                            try self.diagnostics.append(self.gpa, .{
+                                .node = child_name_node,
+                                .code = TsCodes.interface_cannot_simultaneously_extend,
+                                .message = msg,
+                            });
+                        } else {
+                            try self.reportInterfaceExtendsIndexMismatch(node);
+                        }
                         break;
                     }
                 }
