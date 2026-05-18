@@ -333,6 +333,12 @@ pub const TsCodes = struct {
     /// JSX element has BOTH a `children=` attribute AND element /
     /// text children, e.g. `<Tag children="hi">other</Tag>`.
     pub const jsx_children_attribute_overwritten: u32 = 2710;
+    /// TS2746 — `This JSX tag's '{0}' prop expects a single child of
+    /// type '{1}', but multiple children were provided.` Fires when a
+    /// component declares `children: <T>` (single, not array) but the
+    /// JSX element body supplies more than one child. Anchored at the
+    /// JSX tag identifier, matching upstream tsc.
+    pub const jsx_single_child_prop_multiple_children: u32 = 2746;
     pub const jsx_text_child_not_accepted: u32 = 2747;
     pub const delete_operand_must_be_optional: u32 = 2790;
     pub const no_overload_matches: u32 = 2769;
@@ -28700,7 +28706,22 @@ pub const Checker = struct {
             const children_name = self.string_interner.intern("children") catch return error.OutOfMemory;
             if (try self.lookupObjectMember(props_t.?, children_name)) |children_t| {
                 if (children.len > 1 and !self.jsxChildrenTypeAllowsCount(children_t, children.len)) {
-                    try self.report(node, TsCodes.type_not_assignable, "JSX element has multiple children but the target props type expects a single child.");
+                    // §6.A — tsc's TS2746 is anchored at the JSX tag
+                    // identifier and names both the prop (always
+                    // `children` here) and the child type. Fall back to
+                    // an empty render for anonymous structural types so
+                    // the message remains well-formed.
+                    const child_text = (try self.simpleDiagnosticTypeName(children_t)) orelse "";
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "This JSX tag's 'children' prop expects a single child of type '{s}', but multiple children were provided.",
+                        .{child_text},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = el.tag,
+                        .code = TsCodes.jsx_single_child_prop_multiple_children,
+                        .message = msg,
+                    });
                 }
                 for (children) |child| {
                     if (self.hir.kindOf(child) == .literal_string and !self.jsxChildrenTypeAllowsString(children_t)) {
@@ -47021,7 +47042,7 @@ test "checker: JSX reports multiple children for single child prop" {
 
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.type_not_assignable) found = true;
+        if (d.code == TsCodes.jsx_single_child_prop_multiple_children) found = true;
     }
     try T.expect(found);
 }
@@ -47549,7 +47570,7 @@ test "checker: JSX children respect fixed tuple arity" {
 
     var count: usize = 0;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.type_not_assignable) count += 1;
+        if (d.code == TsCodes.jsx_single_child_prop_multiple_children) count += 1;
     }
     try T.expectEqual(@as(usize, 1), count);
 }
