@@ -425,6 +425,7 @@ pub const TsCodes = struct {
     pub const declared_but_not_read: u32 = 6133;
     pub const object_literal_excess_property: u32 = 2353;
     pub const satisfies_constraint: u32 = 1360;
+    pub const ts_only_satisfies_in_js: u32 = 8037;
     pub const used_before_assignment: u32 = 2454;
     pub const block_scoped_used_before_decl: u32 = 2448;
     /// TS2451 — `Cannot redeclare block-scoped variable '{0}'.` Fires
@@ -6996,6 +6997,7 @@ pub const Checker = struct {
             const nk = self.hir.kindOf(pp.name);
             if (nk == .object_pattern or nk == .array_pattern) {
                 try self.checkPatternComputedBindingKeys(pp.name);
+                try self.checkPatternComputedBindingKeysAgainstBodyVars(pp.name, &body_vars);
                 try self.checkBindingPatternDefaultReferences(pp.name, .parameter);
                 try self.checkPatternDefaultsAgainstBodyVars(pp.name, &body_vars);
             }
@@ -7227,6 +7229,41 @@ pub const Checker = struct {
             const nk = self.hir.kindOf(ep.name);
             if (nk == .object_pattern or nk == .array_pattern) {
                 try self.checkPatternComputedBindingKeys(ep.name);
+            }
+        }
+    }
+
+    fn checkPatternComputedBindingKeysAgainstBodyVars(
+        self: *Checker,
+        pattern_node: NodeId,
+        body_vars: *std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) CheckError!void {
+        const pk = self.hir.kindOf(pattern_node);
+        if (pk != .object_pattern and pk != .array_pattern) return;
+        for (hir_mod.patternElements(self.hir, pattern_node)) |e| {
+            if (self.hir.kindOf(e) != .parameter) continue;
+            const ep = hir_mod.parameterOf(self.hir, e);
+            if (ep.flags.is_computed_binding_key) {
+                var refs: std.ArrayListUnmanaged(NameRef) = .empty;
+                defer refs.deinit(self.gpa);
+                try self.collectIdentifierRefsWithNodes(ep.default_value, &refs);
+                for (refs.items) |ref| {
+                    if (!body_vars.contains(ref.name)) continue;
+                    try self.reportBindingDefaultReferenceNamedWithPattern(
+                        ref.node,
+                        .parameter,
+                        false,
+                        null,
+                        ref.name,
+                        pattern_node,
+                    );
+                }
+                continue;
+            }
+            if (ep.name == hir_mod.none_node_id) continue;
+            const nk = self.hir.kindOf(ep.name);
+            if (nk == .object_pattern or nk == .array_pattern) {
+                try self.checkPatternComputedBindingKeysAgainstBodyVars(ep.name, body_vars);
             }
         }
     }
@@ -8703,9 +8740,9 @@ pub const Checker = struct {
                 .object_literal,
                 .array_literal,
                 .as_expr,
-                .satisfies_expr,
                 .conditional,
                 => continue,
+                .satisfies_expr => return self.satisfiesProvidesContextualType(cur, fn_node),
                 .logical_op => {
                     // tsc: when an `||` / `??` expression is itself not
                     // contextually typed, the right operand is
@@ -8750,6 +8787,53 @@ pub const Checker = struct {
             }
         }
         return false;
+    }
+
+    fn satisfiesProvidesContextualType(self: *Checker, satisfies_node: NodeId, fn_node: NodeId) bool {
+        if (self.hir.kindOf(satisfies_node) != .satisfies_expr) return false;
+        const a = hir_mod.asExpressionOf(self.hir, satisfies_node);
+        if (a.type_node == hir_mod.none_node_id) return false;
+        const target_t = self.lowererLowerWithTypeParams(a.type_node) catch return false;
+        if (a.expr == fn_node) {
+            if (self.firstSignatureType(target_t) != null) return true;
+            return self.typeIsFunctionObjectLike(target_t) catch false;
+        }
+        const prop = self.enclosingObjectPropertyBetween(fn_node, satisfies_node) orelse return false;
+        const op = hir_mod.objectPropertyOf(self.hir, prop);
+        const name = self.propertyNameFromKeyNode(op.key) orelse return false;
+        const prop_t = (self.satisfiesTargetPropertyType(target_t, name) catch null) orelse return false;
+        if (self.firstSignatureType(prop_t) != null) return true;
+        return self.typeIsFunctionObjectLike(prop_t) catch false;
+    }
+
+    fn enclosingObjectPropertyBetween(self: *Checker, node: NodeId, stop: NodeId) ?NodeId {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id and cur != stop) : (cur = self.hir.parentOf(cur)) {
+            if (self.hir.kindOf(cur) == .object_property) return cur;
+        }
+        return null;
+    }
+
+    fn satisfiesTargetPropertyType(self: *Checker, target_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
+        if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(target_t);
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(target_t)) |member| {
+                if (try self.satisfiesTargetPropertyType(member, name)) |t| return t;
+            }
+            return null;
+        }
+        if (flags.is_union) {
+            for (self.interner.unionMembers(target_t)) |member| {
+                if (try self.satisfiesTargetPropertyType(member, name)) |t| return t;
+            }
+            return null;
+        }
+        if (!flags.is_object_type) return null;
+        if (self.interner.objectMember(target_t, name)) |t| return t;
+        const idx = self.interner.objectStringIndex(target_t);
+        if (idx != types.Primitive.none) return idx;
+        return null;
     }
 
     /// True when `fn_node` is a class `set x(v) {…}` accessor. tsc
@@ -26037,11 +26121,6 @@ pub const Checker = struct {
         if (value_node == hir_mod.none_node_id or self.hir.kindOf(value_node) != .logical_op) return false;
         const l = hir_mod.logicalOf(self.hir, value_node);
         if (l.op != .@"and" and l.op != .@"or") return false;
-        const rhs_t = if (self.hir.typeOf(l.rhs) != types.Primitive.none)
-            self.hir.typeOf(l.rhs)
-        else
-            try self.checkExpression(l.rhs);
-        if (try self.expressionNodeAssignableToTarget(l.rhs, rhs_t, target_t)) return true;
         if ((self.hir.kindOf(l.rhs) == .arrow_fn or self.hir.kindOf(l.rhs) == .fn_expr) and
             try self.functionExpressionAssignableToTarget(l.rhs, target_t))
         {
@@ -28442,6 +28521,8 @@ pub const Checker = struct {
                         {
                             try self.report(node, TsCodes.untyped_function_type_args, "Untyped function calls may not accept type arguments.");
                         }
+                    } else if (try self.typeIsFunctionObjectLike(callee_t)) {
+                        try self.report(node, TsCodes.untyped_function_type_args, "Untyped function calls may not accept type arguments.");
                     } else if (self.interner.isSignature(effective_callee_t)) {
                         if (!self.containsFreeTypeParameter(effective_callee_t)) {
                             const msg = try std.fmt.allocPrint(
@@ -29198,8 +29279,13 @@ pub const Checker = struct {
                 // from `as T` which uses T as the result type.
                 const a = hir_mod.asExpressionOf(self.hir, node);
                 const inner_t = try self.checkExpression(a.expr);
+                if (self.satisfiesExpressionIsInJsLikeSection(node)) {
+                    try self.report(a.type_node, TsCodes.ts_only_satisfies_in_js, "Type satisfaction expressions can only be used in TypeScript files.");
+                }
                 if (a.type_node == hir_mod.none_node_id) break :blk inner_t;
                 const target_t = try self.lowererLowerWithTypeParams(a.type_node);
+                const diag_start = self.diagnostics.items.len;
+                try self.checkSatisfiesExpressionAgainstTarget(a.expr, inner_t, target_t);
                 var ok = self.engine.isAssignableTo(inner_t, target_t) catch false;
                 if (ok and
                     self.hir.kindOf(a.expr) == .object_literal and
@@ -29207,7 +29293,7 @@ pub const Checker = struct {
                 {
                     ok = self.objectLiteralAssignableToTarget(a.expr, inner_t, target_t) catch false;
                 }
-                if (!ok) {
+                if (!ok and self.diagnostics.items.len == diag_start) {
                     // Prefer tsc's render shape:
                     // `Type 'X' does not satisfy the expected type 'Y'.`
                     // Fall back to the generic constraint wording when
@@ -29220,11 +29306,11 @@ pub const Checker = struct {
                                 "Type '{s}' does not satisfy the expected type '{s}'.",
                                 .{ src_name, dst_name },
                             );
-                            try self.report(node, TsCodes.satisfies_constraint, msg);
+                            try self.reportAt(node, self.satisfiesKeywordPos(node), TsCodes.satisfies_constraint, msg);
                             break :blk inner_t;
                         }
                     }
-                    try self.report(node, TsCodes.satisfies_constraint, "Type does not satisfy the expected constraint.");
+                    try self.reportAt(node, self.satisfiesKeywordPos(node), TsCodes.satisfies_constraint, "Type does not satisfy the expected constraint.");
                 }
                 break :blk inner_t;
             },
@@ -31725,6 +31811,13 @@ pub const Checker = struct {
             }
         }
         return true;
+    }
+
+    fn typeIsFunctionObjectLike(self: *Checker, t: TypeId) CheckError!bool {
+        if (t == types.Primitive.any or t == types.Primitive.unknown) return true;
+        const function_t = self.lowerBuiltinObjectType("Function") orelse return false;
+        if (t == function_t) return true;
+        return self.engine.isAssignableTo(t, function_t) catch false;
     }
 
     fn taggedTemplateStringsArrayArg(self: *Checker, call_node: NodeId, args: []const NodeId, arg_i: usize, param_t: TypeId) bool {
@@ -36440,6 +36533,7 @@ pub const Checker = struct {
     }
 
     fn objectTypesHaveIndependentOverlap(self: *Checker, a: TypeId, b: TypeId, depth: u8) CheckError!bool {
+        if (self.classPrivateComparableMismatch(a, b)) return false;
         var saw_common = false;
         for (self.interner.objectMembers(a)) |am| {
             const bm = self.interner.objectMemberInfo(b, am.name) orelse continue;
@@ -36448,6 +36542,36 @@ pub const Checker = struct {
             if (!try self.typesHaveComparableOverlapLimit(am.type, bm.type, depth + 1)) return false;
         }
         return saw_common or self.objectTypeIsWeak(a) or self.objectTypeIsWeak(b);
+    }
+
+    fn classPrivateComparableMismatch(self: *Checker, a: TypeId, b: TypeId) bool {
+        const a_name = self.class_name_by_instance.get(a) orelse return false;
+        const b_name = self.class_name_by_instance.get(b) orelse return false;
+        if (a_name == b_name or self.classesRelatedByHeritage(a_name, b_name)) return false;
+        if (self.classHasPrivateMembers(a_name) or self.classHasPrivateMembers(b_name)) return true;
+        return self.classPrivateMembersOverlapOther(a, b) or
+            self.classPrivateMembersOverlapOther(b, a);
+    }
+
+    fn classHasPrivateMembers(self: *Checker, class_name: hir_mod.StringId) bool {
+        const private = self.class_private_members.getPtr(class_name) orelse return false;
+        return private.count() > 0;
+    }
+
+    fn classesRelatedByHeritage(self: *Checker, a: hir_mod.StringId, b: hir_mod.StringId) bool {
+        return self.classExtendsClass(a, b) or self.classExtendsClass(b, a);
+    }
+
+    fn classExtendsClass(self: *Checker, child: hir_mod.StringId, parent: hir_mod.StringId) bool {
+        var probe: ?hir_mod.StringId = child;
+        var depth: u8 = 0;
+        while (probe) |cur| : (depth += 1) {
+            if (depth >= 32) return false;
+            const next = self.class_parent.get(cur) orelse return false;
+            if (next == parent) return true;
+            probe = next;
+        }
+        return false;
     }
 
     fn intersectionContainsObjectLike(self: *Checker, t: TypeId) bool {
@@ -38485,6 +38609,7 @@ pub const Checker = struct {
 
     fn allocPropertyMissingTargetTypeName(self: *Checker, target_t: TypeId) !?[]const u8 {
         if (try self.allocSimpleTypeName(target_t)) |name| return name;
+        if (self.alias_display_names.get(target_t)) |name| return name;
         if (target_t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(target_t);
         if (flags.is_object_type and
@@ -38693,6 +38818,14 @@ pub const Checker = struct {
         });
     }
 
+    fn reportRelationalNullishOperand(self: *Checker, node: NodeId, t: TypeId) CheckError!void {
+        if (self.nullishLiteralOperandName(node)) |name| {
+            try self.reportNullishLiteralBinaryOperand(node, name);
+            return;
+        }
+        try self.reportPossiblyNullishMember(node, t);
+    }
+
     /// `null` / `undefined` literal name, anchored on the node kind
     /// (not the type) so we mirror tsgo's "checkNonNullType" branch
     /// that gates on whether the operand source token is literally
@@ -38700,11 +38833,13 @@ pub const Checker = struct {
     /// flow-narrowed type. Returns null when the node isn't one of
     /// those literals.
     fn nullishLiteralOperandName(self: *Checker, node: NodeId) ?[]const u8 {
-        return switch (self.hir.kindOf(node)) {
+        const name: []const u8 = switch (self.hir.kindOf(node)) {
             .literal_null => "null",
             .literal_undefined => "undefined",
-            else => null,
+            else => return null,
         };
+        if (!self.nodeSourceTextIs(node, name)) return null;
+        return name;
     }
 
     fn reportNullishLiteralBinaryOperand(self: *Checker, node: NodeId, name: []const u8) CheckError!void {
@@ -38952,6 +39087,11 @@ pub const Checker = struct {
         {
             return true;
         }
+        if (self.relationalTypeHasObjectLike(lhs) and self.relationalTypeHasObjectLike(rhs) and
+            !(self.typesHaveComparableOverlapLimit(lhs, rhs, 0) catch true))
+        {
+            return true;
+        }
         // TS2365 also fires for `boolean > number` / `string > number`
         // (one side numeric, other side string/boolean primitive).
         // Restricted to pure primitives — unions like
@@ -38991,6 +39131,11 @@ pub const Checker = struct {
         try self.reportRelationalOperatorCannotBeAppliedWithTypes(node, op, types.Primitive.none, types.Primitive.none);
     }
 
+    fn allocRelationalDiagnosticTypeName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
+        if (self.enumNameFromNominal(t) != null) return "number";
+        return try self.allocSimpleTypeName(t);
+    }
+
     fn reportRelationalOperatorCannotBeAppliedWithTypes(
         self: *Checker,
         node: NodeId,
@@ -39003,8 +39148,8 @@ pub const Checker = struct {
         // 'A' and 'B'.` Fall back to the bare wording otherwise so we
         // never half-render.
         if (lhs_t != types.Primitive.none and rhs_t != types.Primitive.none) {
-            if (try self.allocSimpleTypeName(lhs_t)) |left_name| {
-                if (try self.allocSimpleTypeName(rhs_t)) |right_name| {
+            if (try self.allocRelationalDiagnosticTypeName(lhs_t)) |left_name| {
+                if (try self.allocRelationalDiagnosticTypeName(rhs_t)) |right_name| {
                     const msg = try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
                         "Operator '{s}' cannot be applied to types '{s}' and '{s}'.",
@@ -39428,8 +39573,8 @@ pub const Checker = struct {
                     // tsc — only ordered comparisons (lt/le/gt/ge).
                     const lhs_nullish = self.strict_flags.strict_null_checks and self.typeIsExactNullish(lhs);
                     const rhs_nullish = self.strict_flags.strict_null_checks and self.typeIsExactNullish(rhs);
-                    if (lhs_nullish) try self.reportNullishRelationalOperand(b.lhs, lhs);
-                    if (rhs_nullish) try self.reportNullishRelationalOperand(b.rhs, rhs);
+                    if (lhs_nullish) try self.reportRelationalNullishOperand(b.lhs, lhs);
+                    if (rhs_nullish) try self.reportRelationalNullishOperand(b.rhs, rhs);
                     if (!lhs_nullish and !rhs_nullish and (!self.isRelationalOperandAllowed(lhs) or
                         !self.isRelationalOperandAllowed(rhs) or
                         self.relationalComparisonInvalid(lhs, rhs)))
@@ -39669,8 +39814,27 @@ pub const Checker = struct {
                 try self.report(l.lhs, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
             }
         }
-        const lhs_result = try self.expressionLiteralType(l.lhs, lhs);
+        const raw_lhs_result = try self.expressionLiteralType(l.lhs, lhs);
         const rhs_result = try self.expressionLiteralType(l.rhs, rhs);
+        const lhs_result: TypeId = switch (l.op) {
+            .@"and" => blk: {
+                if (self.hir.kindOf(l.lhs) == .literal_bool and hir_mod.literalBoolOf(self.hir, l.lhs)) {
+                    return rhs_result;
+                }
+                if (raw_lhs_result == types.Primitive.boolean_t or
+                    raw_lhs_result == types.Primitive.true_lit or
+                    raw_lhs_result == types.Primitive.false_lit)
+                {
+                    break :blk types.Primitive.false_lit;
+                }
+                break :blk raw_lhs_result;
+            },
+            .@"or" => blk: {
+                if (raw_lhs_result == types.Primitive.false_lit) return rhs_result;
+                break :blk raw_lhs_result;
+            },
+            .nullish => raw_lhs_result,
+        };
         return self.interner.internUnion(&.{ lhs_result, rhs_result }) catch error.OutOfMemory;
     }
 
@@ -40394,6 +40558,7 @@ pub const Checker = struct {
                 types.Primitive.void_t;
             const is_construct = self.interner.pool.signature_payloads.items[payload_idx].is_construct;
             const new_sig = self.interner.internSignature(new.items, ret, is_construct) catch return t;
+            try self.copySignatureParamNames(new_sig, t);
             if (self.rest_signatures.contains(t)) {
                 try self.rest_signatures.put(self.gpa, new_sig, {});
             }
@@ -40754,6 +40919,84 @@ pub const Checker = struct {
         return !(too_few or too_many);
     }
 
+    fn spreadArgArityContribution(self: *Checker, arg_t: TypeId) usize {
+        if (self.fixedTupleLength(arg_t)) |len| {
+            return @max(@as(usize, @intCast(len)), 1);
+        }
+        const fixed_prefix = self.tupleFixedPrefixCount(arg_t);
+        return @max(fixed_prefix, 1);
+    }
+
+    fn firstExcessArgStartPos(self: *Checker, args: []const NodeId, arg_types: []const TypeId, max_count: usize) ?u32 {
+        var consumed: usize = 0;
+        for (args, 0..) |arg, i| {
+            const contribution: usize = if (self.hir.kindOf(arg) == .spread)
+                self.spreadArgArityContribution(arg_types[i])
+            else
+                1;
+            if (consumed >= max_count or consumed + contribution > max_count) {
+                return self.hir.spanOf(arg).start;
+            }
+            consumed += contribution;
+        }
+        return null;
+    }
+
+    fn firstExcessArgIsNonTupleSpread(self: *Checker, args: []const NodeId, arg_types: []const TypeId, max_count: usize) bool {
+        var consumed: usize = 0;
+        for (args, 0..) |arg, i| {
+            const contribution: usize = if (self.hir.kindOf(arg) == .spread)
+                self.spreadArgArityContribution(arg_types[i])
+            else
+                1;
+            if (consumed >= max_count or consumed + contribution > max_count) {
+                return self.hir.kindOf(arg) == .spread and !self.isTupleShapedTarget(arg_types[i]);
+            }
+            consumed += contribution;
+        }
+        return false;
+    }
+
+    fn callHasNonTupleSpread(self: *Checker, args: []const NodeId, arg_types: []const TypeId) bool {
+        for (args, 0..) |arg, i| {
+            if (self.hir.kindOf(arg) == .spread and !self.isTupleShapedTarget(arg_types[i])) return true;
+        }
+        return false;
+    }
+
+    fn fixedSpreadNeedsTupleDiagnostic(
+        self: *Checker,
+        arg_t: TypeId,
+        param_ts: []const TypeId,
+        start_i: usize,
+        fixed_count: usize,
+        min_required: usize,
+    ) bool {
+        if (self.isTupleShapedTarget(arg_t)) return false;
+        if (start_i >= fixed_count) return true;
+        if (start_i >= min_required) return false;
+        const elem_t = self.interner.objectNumberIndex(arg_t);
+        if (elem_t == types.Primitive.none) return true;
+        var i = start_i;
+        while (i < min_required and i < fixed_count) : (i += 1) {
+            var param_t = param_ts[i];
+            if (param_t >= self.interner.pool.typeCount()) continue;
+            if (self.interner.pool.flagsOf(param_t).is_type_parameter) {
+                param_t = self.scalarTypeParameterConstraint(param_t) orelse continue;
+            }
+            if (!(self.engine.isAssignableTo(elem_t, param_t) catch false)) return false;
+        }
+        return true;
+    }
+
+    fn laterTupleSpreadCanCoverRequired(self: *Checker, args: []const NodeId, arg_types: []const TypeId) bool {
+        for (args, 0..) |arg, i| {
+            if (self.hir.kindOf(arg) != .spread) continue;
+            if (self.tupleFixedPrefixCount(arg_types[i]) > 0) return true;
+        }
+        return false;
+    }
+
     /// Shared arg / signature checker used by both `call_expr` and
     /// `new_expr`. Emits TS2554 (count mismatch) and TS2345 (per-arg
     /// type mismatch) against `sig`'s parameter list. Type-parameter
@@ -40780,12 +41023,12 @@ pub const Checker = struct {
         var effective_min_count: usize = 0;
         for (args, 0..) |arg, arg_i| {
             if (self.hir.kindOf(arg) == .spread) {
-                const fixed_prefix = self.tupleFixedPrefixCount(arg_types[arg_i]);
-                effective_min_count += @max(fixed_prefix, 1);
+                effective_min_count += self.spreadArgArityContribution(arg_types[arg_i]);
             } else {
                 effective_min_count += 1;
             }
         }
+        const effective_count = effective_min_count;
         const rest_max_count: ?usize = if (is_variadic) blk: {
             if (self.fixedTupleLength(param_ts[param_ts.len - 1])) |len| {
                 break :blk fixed_count + @as(usize, @intCast(len));
@@ -40796,8 +41039,10 @@ pub const Checker = struct {
         const too_many = if (is_variadic)
             (if (rest_max_count) |max_count| effective_min_count > max_count else false)
         else
-            args.len > param_ts.len;
-        if (too_few or too_many) {
+            effective_count > param_ts.len;
+        const suppress_too_many_for_array_spread = too_many and self.firstExcessArgIsNonTupleSpread(args, arg_types, if (is_variadic) (rest_max_count orelse param_ts.len) else param_ts.len);
+        const suppress_too_few_for_array_spread = too_few and self.callHasNonTupleSpread(args, arg_types);
+        if ((too_few and !suppress_too_few_for_array_spread) or (too_many and !suppress_too_many_for_array_spread)) {
             const fixed_variadic_count = is_variadic and rest_max_count != null;
             // tsc renders the "Expected at least N arguments" form
             // (TS2555) for variadic-too-few and the "Expected N or
@@ -40818,13 +41063,13 @@ pub const Checker = struct {
                 try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "Expected at least {d} arguments, but got {d}.",
-                    .{ expected_n, args.len },
+                    .{ expected_n, effective_count },
                 )
             else
                 try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "Expected {d}{s} arguments, but got {d}.",
-                    .{ expected_n, expected_label, args.len },
+                    .{ expected_n, expected_label, effective_count },
                 );
             // tsc anchors a too-many TS2554 on the first excess
             // argument when one exists (matches `genericRestArity`,
@@ -40834,15 +41079,13 @@ pub const Checker = struct {
             // member name.
             var anchor_pos: ?u32 = null;
             if (too_many) {
-                const first_excess_idx: usize = if (fixed_variadic_count)
+                const first_excess_count: usize = if (fixed_variadic_count)
                     rest_max_count.?
                 else if (is_variadic)
                     min_required
                 else
                     param_ts.len;
-                if (first_excess_idx < args.len) {
-                    anchor_pos = self.hir.spanOf(args[first_excess_idx]).start;
-                }
+                anchor_pos = self.firstExcessArgStartPos(args, arg_types, first_excess_count);
             } else if (too_few) {
                 anchor_pos = self.tooFewArgsAnchorPos(call_node);
             }
@@ -40856,6 +41099,7 @@ pub const Checker = struct {
         // Fixed-position pairs.
         const npairs_fixed = @min(args.len, fixed_count);
         var i: usize = 0;
+        var emitted_spread_shape_mismatch = false;
         while (i < npairs_fixed) : (i += 1) {
             var param_t = param_ts[i];
             if (param_t >= self.interner.pool.typeCount()) continue;
@@ -40872,35 +41116,65 @@ pub const Checker = struct {
             if (self.hir.kindOf(args[i]) == .spread) {
                 if (!is_variadic or i < fixed_count) {
                     const is_union_arg = arg_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(arg_t).is_union;
-                    if (is_union_arg or !self.isTupleShapedTarget(arg_t)) {
+                    const later_tuple_covers_required = !self.isTupleShapedTarget(arg_t) and
+                        i < min_required and
+                        self.laterTupleSpreadCanCoverRequired(args[i + 1 ..], arg_types[i + 1 ..]);
+                    if (!emitted_spread_shape_mismatch and
+                        (is_union_arg or (self.fixedSpreadNeedsTupleDiagnostic(arg_t, param_ts, i, fixed_count, min_required) and !later_tuple_covers_required)))
+                    {
                         try self.report(args[i], TsCodes.spread_argument_requires_tuple_or_rest, "A spread argument must either have a tuple type or be passed to a rest parameter.");
                         emitted_2556 = true;
+                        emitted_spread_shape_mismatch = true;
                     }
                 }
-                var tuple_i: usize = 0;
-                while (i + tuple_i < fixed_count) : (tuple_i += 1) {
-                    const elem_t = self.tupleElementType(arg_t, tuple_i);
-                    if (elem_t == types.Primitive.none) break;
-                    var tuple_param_t = param_ts[i + tuple_i];
-                    if (tuple_param_t >= self.interner.pool.typeCount()) continue;
-                    if (self.interner.pool.flagsOf(tuple_param_t).is_type_parameter) {
-                        tuple_param_t = self.scalarTypeParameterConstraint(tuple_param_t) orelse continue;
+                if (self.isTupleShapedTarget(arg_t)) {
+                    var tuple_i: usize = 0;
+                    while (i + tuple_i < fixed_count) : (tuple_i += 1) {
+                        const elem_t = self.tupleElementType(arg_t, tuple_i);
+                        if (elem_t == types.Primitive.none) break;
+                        var tuple_param_t = param_ts[i + tuple_i];
+                        if (tuple_param_t >= self.interner.pool.typeCount()) continue;
+                        if (self.interner.pool.flagsOf(tuple_param_t).is_type_parameter) {
+                            tuple_param_t = self.scalarTypeParameterConstraint(tuple_param_t) orelse continue;
+                        }
+                        const tuple_ok = self.isArgumentAssignableToParam(args[i], elem_t, tuple_param_t) catch true;
+                        if (!tuple_ok) {
+                            // Prefer the typed `Argument of type 'A' is not
+                            // assignable to parameter of type 'P'` shape
+                            // when both endpoints render via
+                            // `simpleDiagnosticTypeName`; falls back to
+                            // the positional summary otherwise to keep
+                            // exact-baseline parity for cases tsc renders
+                            // with concrete type names.
+                            const msg = try self.formatArgumentNotAssignable(elem_t, tuple_param_t, i + tuple_i);
+                            try self.diagnostics.append(self.gpa, .{
+                                .node = args[i],
+                                .code = TsCodes.argument_type_mismatch,
+                                .message = msg,
+                            });
+                        }
                     }
-                    const tuple_ok = self.isArgumentAssignableToParam(args[i], elem_t, tuple_param_t) catch true;
-                    if (!tuple_ok) {
-                        // Prefer the typed `Argument of type 'A' is not
-                        // assignable to parameter of type 'P'` shape
-                        // when both endpoints render via
-                        // `simpleDiagnosticTypeName`; falls back to
-                        // the positional summary otherwise to keep
-                        // exact-baseline parity for cases tsc renders
-                        // with concrete type names.
-                        const msg = try self.formatArgumentNotAssignable(elem_t, tuple_param_t, i + tuple_i);
-                        try self.diagnostics.append(self.gpa, .{
-                            .node = args[i],
-                            .code = TsCodes.argument_type_mismatch,
-                            .message = msg,
-                        });
+                    if (is_variadic and param_ts.len > 0 and i <= fixed_count) {
+                        const fixed_prefix = self.tupleFixedPrefixCount(arg_t);
+                        const arg_rest_elem = self.interner.objectNumberIndex(arg_t);
+                        if (arg_rest_elem != types.Primitive.none and i + fixed_prefix >= fixed_count) {
+                            const rest_arr_t = param_ts[param_ts.len - 1];
+                            const rest_elem_t = self.interner.objectNumberIndex(rest_arr_t);
+                            var rest_target_t = if (rest_elem_t != types.Primitive.none) rest_elem_t else rest_arr_t;
+                            if (rest_target_t < self.interner.pool.typeCount()) {
+                                if (self.interner.pool.flagsOf(rest_target_t).is_type_parameter) {
+                                    rest_target_t = self.scalarTypeParameterConstraint(rest_target_t) orelse rest_target_t;
+                                }
+                                if (!(self.restArgumentAssignable(arg_rest_elem, rest_target_t) catch true)) {
+                                    const msg = try self.formatArgumentNotAssignable(arg_rest_elem, rest_target_t, i);
+                                    try self.diagnostics.append(self.gpa, .{
+                                        .node = args[i],
+                                        .code = TsCodes.argument_type_mismatch,
+                                        .message = msg,
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
                 const spread_elem_t = self.tupleElementType(arg_t, 0);
@@ -43210,6 +43484,169 @@ pub const Checker = struct {
         if (flags.is_signature) return false;
         if (flags.is_object_type and self.interner.objectMembers(t).len == 0) return false;
         return true;
+    }
+
+    fn satisfiesKeywordPos(self: *Checker, node: NodeId) ?u32 {
+        const src = self.source orelse return null;
+        if (self.hir.kindOf(node) != .satisfies_expr) return null;
+        const a = hir_mod.asExpressionOf(self.hir, node);
+        const expr_span = self.hir.spanOf(a.expr);
+        const type_span = self.hir.spanOf(a.type_node);
+        if (expr_span.end >= type_span.start or type_span.start > src.len) return null;
+        const between = src[expr_span.end..type_span.start];
+        const off = std.mem.indexOf(u8, between, "satisfies") orelse return null;
+        return expr_span.end + @as(u32, @intCast(off));
+    }
+
+    fn checkSatisfiesExpressionAgainstTarget(self: *Checker, expr: NodeId, expr_t: TypeId, target_t: TypeId) CheckError!void {
+        if (expr == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(expr)) {
+            .object_literal => try self.checkSatisfiesObjectLiteral(expr, expr_t, target_t),
+            .array_literal => try self.checkSatisfiesArrayLiteral(expr, target_t),
+            else => {},
+        }
+    }
+
+    fn checkSatisfiesObjectLiteral(self: *Checker, expr: NodeId, expr_t: TypeId, target_t: TypeId) CheckError!void {
+        if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return;
+        const flags = self.interner.pool.flagsOf(target_t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(target_t)) |member| {
+                const before = self.diagnostics.items.len;
+                try self.checkSatisfiesObjectLiteral(expr, expr_t, member);
+                if (self.diagnostics.items.len == before) return;
+                self.diagnostics.shrinkRetainingCapacity(before);
+            }
+            return;
+        }
+        if (flags.is_intersection) {
+            const has_open_index = self.satisfiesTargetHasOpenStringIndex(target_t);
+            for (self.interner.intersectionMembers(target_t)) |member| {
+                if (self.thisTypeMarkerConstraint(member) != null) continue;
+                if (has_open_index and self.satisfiesTargetIsClosedObject(member)) {
+                    _ = try self.tryReportObjectLiteralPropertyMismatch(expr, member);
+                    continue;
+                }
+                try self.checkSatisfiesObjectLiteral(expr, expr_t, member);
+            }
+            return;
+        }
+        if (!flags.is_object_type) return;
+
+        const string_idx = self.interner.objectStringIndex(target_t);
+        const number_idx = self.interner.objectNumberIndex(target_t);
+        if (string_idx != types.Primitive.none or number_idx != types.Primitive.none) {
+            for (hir_mod.objectLiteralProps(self.hir, expr)) |p| {
+                if (self.hir.kindOf(p) != .object_property) continue;
+                const op = hir_mod.objectPropertyOf(self.hir, p);
+                if (op.value == hir_mod.none_node_id) continue;
+                const prop_name = if (op.is_computed)
+                    try self.classMemberNameFromPropertyKey(op.key, true)
+                else
+                    self.propertyNameFromKeyNode(op.key);
+                const name = prop_name orelse continue;
+                const direct_target = try self.excessPropertyTargetMemberType(target_t, name);
+                const indexed_target = if (direct_target) |dt| dt else blk: {
+                    if (number_idx != types.Primitive.none and self.isNumericPropertyName(name)) break :blk number_idx;
+                    break :blk string_idx;
+                };
+                if (indexed_target == types.Primitive.none) {
+                    try self.reportSatisfiesExcessProperty(p, name, target_t);
+                    continue;
+                }
+                const value_t = if (self.hir.typeOf(op.value) != types.Primitive.none)
+                    self.hir.typeOf(op.value)
+                else
+                    try self.checkExpression(op.value);
+                if (self.hir.kindOf(op.value) == .object_literal) {
+                    const nested_start = self.diagnostics.items.len;
+                    try self.checkSatisfiesObjectLiteral(op.value, value_t, indexed_target);
+                    if (self.diagnostics.items.len != nested_start) continue;
+                }
+                if (try self.literalExpressionAssignableToTarget(op.value, indexed_target)) continue;
+                if (self.engine.isAssignableTo(value_t, indexed_target) catch false) continue;
+                const anchor = if (op.key != hir_mod.none_node_id) op.key else op.value;
+                try self.reportTypeNotAssignable(anchor, value_t, indexed_target, "Type is not assignable to property type.");
+            }
+            return;
+        }
+
+        try self.checkExcessProperties(expr, target_t);
+        _ = try self.tryReportObjectLiteralPropertyMismatch(expr, target_t);
+    }
+
+    fn checkSatisfiesArrayLiteral(self: *Checker, expr: NodeId, target_t: TypeId) CheckError!void {
+        if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return;
+        if (self.isTupleShapedTarget(target_t)) {
+            _ = try self.tryReportArrayLiteralTupleElementMismatch(expr, target_t);
+            return;
+        }
+        const elem_t = self.interner.objectNumberIndex(target_t);
+        if (elem_t == types.Primitive.none) return;
+        for (hir_mod.arrayLiteralElements(self.hir, expr)) |el| {
+            if (el == hir_mod.none_node_id or self.hir.kindOf(el) == .spread) continue;
+            if (try self.literalExpressionAssignableToTarget(el, elem_t)) continue;
+            const el_t = if (self.hir.typeOf(el) != types.Primitive.none) self.hir.typeOf(el) else try self.checkExpression(el);
+            if (self.engine.isAssignableTo(el_t, elem_t) catch false) continue;
+            try self.reportTypeNotAssignable(el, el_t, elem_t, "Type is not assignable to array element type.");
+        }
+    }
+
+    fn satisfiesExpressionIsInJsLikeSection(self: *Checker, node: NodeId) bool {
+        if (self.virtualSectionIsJsLike(node)) return true;
+        if (self.hir.kindOf(node) != .satisfies_expr) return false;
+        const a = hir_mod.asExpressionOf(self.hir, node);
+        return self.virtualSectionIsJsLike(a.expr) or self.virtualSectionIsJsLike(a.type_node);
+    }
+
+    fn satisfiesTargetIsClosedObject(self: *Checker, target_t: TypeId) bool {
+        if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(target_t);
+        return flags.is_object_type and
+            self.interner.objectStringIndex(target_t) == types.Primitive.none and
+            self.interner.objectNumberIndex(target_t) == types.Primitive.none and
+            self.interner.objectSymbolIndex(target_t) == types.Primitive.none;
+    }
+
+    fn satisfiesTargetHasOpenStringIndex(self: *Checker, target_t: TypeId) bool {
+        if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(target_t);
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(target_t)) |member| {
+                if (self.satisfiesTargetHasOpenStringIndex(member)) return true;
+            }
+            return false;
+        }
+        if (flags.is_union) {
+            for (self.interner.unionMembers(target_t)) |member| {
+                if (self.satisfiesTargetHasOpenStringIndex(member)) return true;
+            }
+            return false;
+        }
+        if (!flags.is_object_type) return false;
+        const idx = self.interner.objectStringIndex(target_t);
+        return idx == types.Primitive.any or idx == types.Primitive.unknown;
+    }
+
+    fn reportSatisfiesExcessProperty(self: *Checker, prop_node: NodeId, name: hir_mod.StringId, target_t: TypeId) CheckError!void {
+        const name_str = self.string_interner.get(name);
+        const msg = if (try self.allocPropertyMissingTargetTypeName(target_t)) |target_text|
+            try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Object literal may only specify known properties, and '{s}' does not exist in type '{s}'.",
+                .{ name_str, target_text },
+            )
+        else
+            try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Object literal may only specify known properties, and '{s}' does not exist on the target type.",
+                .{name_str},
+            );
+        try self.diagnostics.append(self.gpa, .{
+            .node = prop_node,
+            .code = TsCodes.object_literal_excess_property,
+            .message = msg,
+        });
     }
 
     fn objectLiteralMayMatchTarget(self: *Checker, arg_node: NodeId, target_t: TypeId) !bool {
@@ -53688,7 +54125,7 @@ test "checker: numeric property names tolerate missing interned names" {
 
 test "checker: `satisfies` preserves the original expression type" {
     const s = try newSetup(
-        \\let x = { kind: "circle", r: 1 } satisfies { kind: string };
+        \\let x = { kind: "circle", r: 1 } satisfies { kind: string; r: number };
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
@@ -53712,7 +54149,7 @@ test "checker: `satisfies` emits TS1360 when expr is not assignable to constrain
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.satisfies_constraint) found = true;
+        if (d.code == TsCodes.type_not_assignable) found = true;
     }
     try T.expect(found);
 }
@@ -53728,7 +54165,7 @@ test "checker: `satisfies Record<string, T>` validates property values" {
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.satisfies_constraint) found = true;
+        if (d.code == TsCodes.object_literal_excess_property) found = true;
     }
     try T.expect(found);
 }
@@ -63490,6 +63927,34 @@ test "checker: TS2373 renders destructuring pattern source text as parameter nam
         }
     }
     try T.expect(found_named);
+}
+
+test "checker: parameter computed binding key reports later body var" {
+    const s = try newSetup(
+        \\const a = (): { d: string } | undefined => undefined;
+        \\(({ [a()?.d]: c = "" }) => { var a; })();
+        \\const x = "";
+        \\(({ [a()?.d]: c }, d = x) => { var x; })();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_pattern = false;
+    var found_default = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.parameter_cannot_reference_later) continue;
+        if (std.mem.indexOf(u8, d.message, "Parameter '{ [a()?.d]: c = \"\" }'") != null and
+            std.mem.indexOf(u8, d.message, "'a' declared after it.") != null)
+        {
+            found_pattern = true;
+        }
+        if (std.mem.indexOf(u8, d.message, "Parameter 'd'") != null and
+            std.mem.indexOf(u8, d.message, "'x' declared after it.") != null)
+        {
+            found_default = true;
+        }
+    }
+    try T.expect(found_pattern);
+    try T.expect(found_default);
 }
 
 test "checker: binding pattern defaults reject self and later references" {
