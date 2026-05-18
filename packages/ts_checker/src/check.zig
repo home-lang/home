@@ -2679,6 +2679,13 @@ pub const Checker = struct {
                 previous_overload_section = 0;
                 continue;
             };
+            if ((kind == .var_decl or kind == .let_decl or kind == .const_decl) and
+                self.string_interner.get(name).len == 0)
+            {
+                previous_overload_name = null;
+                previous_overload_section = 0;
+                continue;
+            }
             if (kind == .interface_decl) {
                 if (self.interfaceHeritageReachesName(node, name, stmts, 0)) {
                     try self.report(node, TsCodes.interface_incorrectly_extends, "An interface cannot recursively extend itself.");
@@ -7879,15 +7886,19 @@ pub const Checker = struct {
             // type for this slot (number from `= 0`, string from
             // `= 'foo'`, etc.). tsc suppresses TS7031 in that case.
             const has_own_default = ep.default_value != hir_mod.none_node_id;
-            // The parent-level default (e.g. `= [1]` or `= [nx, sx]`)
-            // may also fill in this index with a concrete type.
-            // Conservative: only suppress when the corresponding
-            // element is a literal whose widened type isn't `any`.
+            // The parent-level default (e.g. `= [undefined, null]`)
+            // also covers this binding slot. tsc suppresses TS7031
+            // for covered slots even when the covering value is
+            // nullish; uncovered holes still report.
             var parent_default_supplies = false;
+            var nested_parent_values: []const NodeId = &.{};
             if (is_array and idx < parent_init_values.len) {
                 const v = parent_init_values[idx];
                 if (v != hir_mod.none_node_id) {
-                    parent_default_supplies = self.bindingDefaultElementIsTyped(v);
+                    parent_default_supplies = true;
+                    if (self.hir.kindOf(v) == .array_literal) {
+                        nested_parent_values = hir_mod.arrayLiteralElements(self.hir, v);
+                    }
                 }
             }
             const nk = self.hir.kindOf(ep.name);
@@ -7907,7 +7918,11 @@ pub const Checker = struct {
                     });
                 }
             } else if (nk == .object_pattern or nk == .array_pattern) {
-                try self.reportImplicitAnyBindingPatternElements(ep.name, &.{});
+                var child_parent_values = nested_parent_values;
+                if (child_parent_values.len == 0 and has_own_default and self.hir.kindOf(ep.default_value) == .array_literal) {
+                    child_parent_values = hir_mod.arrayLiteralElements(self.hir, ep.default_value);
+                }
+                try self.reportImplicitAnyBindingPatternElements(ep.name, child_parent_values);
             }
             if (is_array) idx += 1;
         }
@@ -10465,10 +10480,11 @@ pub const Checker = struct {
                         try self.reportImplicitAnyBindingPatternElements(pp.name, init_values);
                     }
                 } else {
-                    const param_name: []const u8 = if (pp.name != hir_mod.none_node_id and name_kind == .identifier)
+                    const raw_param_name: []const u8 = if (pp.name != hir_mod.none_node_id and name_kind == .identifier)
                         self.string_interner.get(hir_mod.identifierOf(self.hir, pp.name).name)
                     else
                         "<anonymous>";
+                    const param_name = if (raw_param_name.len == 0) "(Missing)" else raw_param_name;
                     // In `.js` files (or `// @allowJs` virtual sections),
                     // a leading JSDoc `@param {T} <name>` annotates the
                     // parameter and suppresses TS7006. Mirrors upstream tsc
@@ -18118,7 +18134,8 @@ pub const Checker = struct {
     }
 
     fn reportParameterImplicitAny(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!void {
-        const param_name = self.string_interner.get(name);
+        const raw_param_name = self.string_interner.get(name);
+        const param_name = if (raw_param_name.len == 0) "(Missing)" else raw_param_name;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Parameter '{s}' implicitly has an 'any' type.",
@@ -27908,7 +27925,7 @@ pub const Checker = struct {
                                 break :blk try self.optionalChainResult(types.Primitive.any, call_is_optional_chain);
                             }
                             for (overloads) |sig| {
-                                if (try self.signatureAccepts(sig, args, arg_types.items)) {
+                                if (try self.signatureAccepts(node, sig, args, arg_types.items)) {
                                     try self.checkArgsAgainstSignature(node, args, arg_types.items, sig);
                                     if (self.interner.signatureReturn(sig)) |ret| break :blk try self.optionalChainResult(ret, call_is_optional_chain);
                                 }
@@ -31275,7 +31292,7 @@ pub const Checker = struct {
     /// True if `sig` accepts the given `arg_types` — i.e., the call
     /// would type-check without TS2554 / TS2345. Used by overload
     /// resolution to pick the first applicable signature.
-    fn signatureAccepts(self: *Checker, sig: TypeId, args: []const NodeId, arg_types: []const TypeId) !bool {
+    fn signatureAccepts(self: *Checker, call_node: NodeId, sig: TypeId, args: []const NodeId, arg_types: []const TypeId) !bool {
         const params = self.interner.signatureParams(sig);
         const is_variadic = self.rest_signatures.contains(sig) and params.len > 0;
         const fixed_count: usize = if (is_variadic) params.len - 1 else params.len;
@@ -31288,6 +31305,7 @@ pub const Checker = struct {
         const n = @min(arg_types.len, fixed_count);
         for (0..n) |i| {
             if (self.interner.pool.flagsOf(params[i]).is_type_parameter) continue;
+            if (self.taggedTemplateStringsArrayArg(call_node, args, i, params[i])) continue;
             if (i < args.len and try self.literalExpressionAssignableToTarget(args[i], params[i])) continue;
             if (i < args.len and try self.templateExpressionAssignableToType(args[i], params[i])) continue;
             const ok = self.engine.isAssignableTo(arg_types[i], params[i]) catch false;
@@ -31302,6 +31320,7 @@ pub const Checker = struct {
             if (self.interner.pool.flagsOf(target_t).is_type_parameter) return true;
             if (arg_types.len > fixed_count) {
                 for (arg_types[fixed_count..], fixed_count..) |arg_t, arg_i| {
+                    if (self.taggedTemplateStringsArrayArg(call_node, args, arg_i, target_t)) continue;
                     if (arg_i < args.len and try self.literalExpressionAssignableToTarget(args[arg_i], target_t)) continue;
                     if (arg_i < args.len and try self.templateExpressionAssignableToType(args[arg_i], target_t)) continue;
                     if (!(try self.restArgumentAssignable(arg_t, target_t))) return false;
@@ -31309,6 +31328,18 @@ pub const Checker = struct {
             }
         }
         return true;
+    }
+
+    fn taggedTemplateStringsArrayArg(self: *Checker, call_node: NodeId, args: []const NodeId, arg_i: usize, param_t: TypeId) bool {
+        if (arg_i != 0 or args.len == 0) return false;
+        if (self.hir.kindOf(args[0]) != .array_literal) return false;
+        if (!self.callExprIsTaggedTemplate(call_node)) return false;
+        return self.typeIsTemplateStringsArray(param_t);
+    }
+
+    fn typeIsTemplateStringsArray(self: *Checker, t: TypeId) bool {
+        const name = self.namedTypeForId(t) orelse return false;
+        return std.mem.eql(u8, self.string_interner.get(name), "TemplateStringsArray");
     }
 
     fn signatureIsConstruct(self: *Checker, sig: TypeId) bool {
@@ -31406,7 +31437,7 @@ pub const Checker = struct {
                 effective_sig = try self.instantiateSignatureFromArgs(sig, args, arg_types);
             }
 
-            if (try self.signatureAccepts(effective_sig, args, arg_types)) {
+            if (try self.signatureAccepts(node, effective_sig, args, arg_types)) {
                 selected_sig = effective_sig;
                 found_applicable = true;
                 break;
@@ -31617,7 +31648,7 @@ pub const Checker = struct {
         }
         if (sigs.items.len <= 1) return null;
         for (sigs.items) |sig| {
-            if (try self.signatureAccepts(sig, args, arg_types)) {
+            if (try self.signatureAccepts(call_node, sig, args, arg_types)) {
                 try self.checkArgsAgainstSignature(call_node, args, arg_types, sig);
                 const ret = self.interner.signatureReturn(sig) orelse types.Primitive.any;
                 const param_ts = self.interner.signatureParams(sig);
@@ -31758,7 +31789,7 @@ pub const Checker = struct {
 
         var expected_this: TypeId = types.Primitive.none;
         for (call_sigs.items) |sig| {
-            if (!try self.signatureAccepts(sig, args, arg_types)) continue;
+            if (!try self.signatureAccepts(call_node, sig, args, arg_types)) continue;
             const this_t = self.signature_this_params.get(sig) orelse continue;
             if (expected_this == types.Primitive.none) {
                 expected_this = this_t;
@@ -31781,7 +31812,7 @@ pub const Checker = struct {
         // than the first matching sig's `this`.
         if (expected_this != types.Primitive.never) {
             for (call_sigs.items) |sig| {
-                if (!try self.signatureAccepts(sig, args, arg_types)) continue;
+                if (!try self.signatureAccepts(call_node, sig, args, arg_types)) continue;
                 const this_t = self.signature_this_params.get(sig) orelse continue;
                 if (this_t == expected_this) continue;
                 if (self.engine.isIdenticalTo(this_t, expected_this) catch false) continue;
@@ -40272,6 +40303,7 @@ pub const Checker = struct {
         while (i < npairs_fixed) : (i += 1) {
             var param_t = param_ts[i];
             if (param_t >= self.interner.pool.typeCount()) continue;
+            if (self.taggedTemplateStringsArrayArg(call_node, args, i, param_t)) continue;
             if (self.interner.pool.flagsOf(param_t).is_type_parameter) {
                 param_t = self.scalarTypeParameterConstraint(param_t) orelse continue;
             }

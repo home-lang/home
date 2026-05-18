@@ -1084,6 +1084,13 @@ pub const Parser = struct {
             },
             .kw_declare => blk: {
                 if (self.peekAt(1).flags.preceded_by_newline) break :blk try self.parseExpressionStatement();
+                if (self.peekAt(1).kind == .kw_module and
+                    (self.peekAt(2).kind == .no_substitution_template or self.peekAt(2).kind == .template_head))
+                {
+                    const name_tok = self.peekAt(2);
+                    try self.reportCodeAt(name_tok.span.start, name_tok.line, 1443, "Module declaration names may only use ' or \" quoted strings.");
+                    break :blk try self.parseExpressionStatement();
+                }
                 // `declare` is a contextual keyword. When the next
                 // token can start a tagged template, function call,
                 // member access, or any non-declaration construct
@@ -2296,6 +2303,24 @@ pub const Parser = struct {
         return try self.builder.addIdentifier(.{ .start = pos, .end = pos }, empty);
     }
 
+    fn skipTemplateLiteralTokens(self: *Parser) void {
+        const first = self.peek();
+        if (first.kind == .no_substitution_template) {
+            _ = self.advance();
+            return;
+        }
+        if (first.kind != .template_head) return;
+        _ = self.advance();
+        while (self.peek().kind != .template_tail and
+            self.peek().kind != .close_paren and
+            self.peek().kind != .close_brace and
+            self.peek().kind != .eof)
+        {
+            _ = self.advance();
+        }
+        if (self.peek().kind == .template_tail) _ = self.advance();
+    }
+
     fn parseFunctionDeclaration(self: *Parser, require_name: bool) ParseError!NodeId {
         const start = self.advance(); // function
         // TS1046: A top-level `function` in a `.d.ts` file without a
@@ -2699,7 +2724,12 @@ pub const Parser = struct {
                 // the parameter's "name" — downstream the binder walks
                 // the pattern to declare each binding, and the checker
                 // resolves identifier types through the pattern.
-                const name_node: NodeId = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
+                const name_node: NodeId = if (self.peek().kind == .no_substitution_template or self.peek().kind == .template_head) blk: {
+                    const template_tok = self.peek();
+                    try self.reportCodeAt(template_tok.span.start, template_tok.line, 1003, "Identifier expected.");
+                    self.skipTemplateLiteralTokens();
+                    break :blk try self.missingIdentifierAt(template_tok.span.start);
+                } else if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
                     const pat = try self.parseBindingPattern();
                     // TS1187 — a parameter property (carrying `public`,
                     // `private`, `protected`, or `readonly`) cannot be
@@ -5409,6 +5439,14 @@ pub const Parser = struct {
                 try self.reportCodeAt(after.span.start, after.line, 1134, "Variable declaration expected.");
                 _ = self.advance();
             }
+        }
+        if (init_node != hir_mod.none_node_id and
+            !self.peek().flags.preceded_by_newline and
+            (self.peek().kind == .kw_typeof or self.peek().kind == .kw_delete or self.peek().kind == .kw_void))
+        {
+            const bad_unary = self.peek();
+            try self.reportCodeAt(bad_unary.span.start, bad_unary.line, 1005, "',' expected.");
+            _ = try self.parseUnaryExpression();
         }
         try self.consumeStatementTerminator();
 
@@ -8988,6 +9026,11 @@ pub const Parser = struct {
     /// keeps parsing instead of bubbling `error.UnexpectedToken`.
     fn recoverUnaryMissingOperand(self: *Parser, op_tok: ts_lexer.Token, op_kind: hir_mod.UnaryOp) ParseError!NodeId {
         const at = self.peek();
+        const operand_pos = if (op_kind == .delete) op_tok.span.end else at.span.start;
+        if (op_kind == .delete) {
+            try self.reportCodeAt(operand_pos, op_tok.line, 1102, "'delete' cannot be called on an identifier in strict mode.");
+            try self.reportCodeAt(operand_pos, op_tok.line, 2703, "The operand of a 'delete' operator must be a property reference.");
+        }
         try self.reportCodeAt(at.span.start, at.line, 1109, "Expression expected.");
         // Synthesize a numeric `0` operand: it satisfies the unary
         // operator's type expectations (`+`/`-`/`~` all take number,
@@ -8995,7 +9038,7 @@ pub const Parser = struct {
         // TS2362 / TS2304 onto the already-reported parse error.
         // Mirrors the `(<bin>)` close-paren recovery a few lines
         // above which also synthesizes `0` for the missing operand.
-        const operand_span: Span = .{ .start = at.span.start, .end = at.span.start };
+        const operand_span: Span = .{ .start = operand_pos, .end = operand_pos };
         const operand = try self.builder.addLiteralNumber(operand_span, 0);
         const sp: Span = .{ .start = op_tok.span.start, .end = at.span.start };
         return try self.builder.addUnaryOp(sp, op_kind, operand);
@@ -9036,18 +9079,27 @@ pub const Parser = struct {
             },
             .kw_typeof => {
                 _ = self.advance();
+                if (self.peekIsUnaryOperandStopToken()) {
+                    return try self.recoverUnaryMissingOperand(t, .typeof);
+                }
                 const operand = try self.parseUnaryExpression();
                 const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(operand).end };
                 return try self.builder.addUnaryOp(sp, .typeof, operand);
             },
             .kw_void => {
                 _ = self.advance();
+                if (self.peekIsUnaryOperandStopToken()) {
+                    return try self.recoverUnaryMissingOperand(t, .void_);
+                }
                 const operand = try self.parseUnaryExpression();
                 const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(operand).end };
                 return try self.builder.addUnaryOp(sp, .void_, operand);
             },
             .kw_delete => {
                 _ = self.advance();
+                if (self.peekIsUnaryOperandStopToken()) {
+                    return try self.recoverUnaryMissingOperand(t, .delete);
+                }
                 const operand = try self.parseUnaryExpression();
                 if (self.strict_mode and self.hir.kindOf(operand) == .identifier and !self.isThisIdentifier(operand)) {
                     const operand_span = self.hir.spanOf(operand);
@@ -9773,7 +9825,9 @@ pub const Parser = struct {
             },
             .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set, .kw_global, .kw_from, .kw_require, .kw_module, .kw_namespace, .kw_interface, .kw_declare, .kw_of, .kw_type, .kw_using, .kw_await, .kw_static, .kw_let => {
                 _ = self.advance();
-                try self.reportInvalidFutureReservedName(t);
+                if (!(t.kind == .kw_let and self.namespace_depth > 0 and !self.strict_mode)) {
+                    try self.reportInvalidFutureReservedName(t);
+                }
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
             },
@@ -14652,6 +14706,21 @@ test "parser: empty const declaration list reports only TS1123" {
     }
     try T.expect(saw_1123);
     try T.expect(!saw_1155);
+}
+
+test "parser: bare let in non-strict namespace reports TS2304 path only" {
+    var s = try newTestSetup(
+        \\namespace Inner {
+        \\    let;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    s.parser.setTargetEs2015OrLater(true);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1212);
+    }
 }
 
 test "parser: using declaration requires initializer" {
