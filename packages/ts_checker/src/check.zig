@@ -8494,6 +8494,38 @@ pub const Checker = struct {
     ///   4. The fn/arrow is the rhs of an assignment or the init of
     ///      a typed variable declaration — tsc seeds parameters from
     ///      the lhs/declared type.
+    /// True when a JSX attribute's value gets a contextual type from
+    /// its enclosing JSX element's target props. `data-*` attributes
+    /// (which tsc treats as untyped) and attributes on intrinsic tags
+    /// with no `JSX.IntrinsicElements[<tag>]` declaration return
+    /// false. Anchors the TS7006-suppression decision for arrow
+    /// parameters used as JSX attribute values
+    /// (`<Tag c1={(x) => ...} />` in `tsxAttributeResolution2`).
+    fn jsxAttributeHasContextualType(self: *Checker, attr_node: NodeId) bool {
+        if (attr_node == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(attr_node) != .jsx_attribute) return false;
+        const a = hir_mod.jsxAttributeOf(self.hir, attr_node);
+        const name_text = self.string_interner.get(a.name);
+        // `data-*` attributes carry no typed contract upstream — leave
+        // their arrow params owing TS7006 as tsc does on
+        // `tsxAttributeResolution2` line 16's `data-c1` case.
+        if (std.mem.startsWith(u8, name_text, "data-")) return false;
+        // Walk up to the JSX element parent and resolve its prop
+        // shape. Mirrors what the attribute loop in `checkJsxElement`
+        // does but stays read-only — we only need to know whether the
+        // attribute name resolves to a member with a callable signature.
+        const el_node = self.hir.parentOf(attr_node);
+        if (el_node == hir_mod.none_node_id) return false;
+        const el_kind = self.hir.kindOf(el_node);
+        if (el_kind != .jsx_element and el_kind != .jsx_self_closing) return false;
+        const el = hir_mod.jsxElementOf(self.hir, el_node);
+        const attrs_len = hir_mod.jsxAttrs(self.hir, el_node).len;
+        const props_t = (self.jsxPropsType(el.tag, attrs_len) catch return false) orelse return false;
+        if (self.typeIsAnyLike(props_t)) return false;
+        const prop_t = (self.lookupObjectMember(props_t, a.name) catch return false) orelse return false;
+        return self.firstSignatureType(prop_t) != null;
+    }
+
     fn parameterHasContextualType(self: *Checker, fn_node: NodeId, _: NodeId) bool {
         if (self.functionIsAccessorSetter(fn_node)) return true;
         var cur = self.hir.parentOf(fn_node);
@@ -8558,6 +8590,20 @@ pub const Checker = struct {
                     if (b.op != .comma) return false;
                     if (b.rhs != prev) return false;
                     continue;
+                },
+                .jsx_expression => {
+                    // `<Tag c1={(x) => x.length} />` — the arrow lives
+                    // in a JSX expression inside a JSX attribute whose
+                    // target prop type (`c1?: (x: string) => void`)
+                    // supplies a contextual signature. Walk up so the
+                    // jsx_attribute case below handles the actual
+                    // prop-name lookup. For data-* attributes the
+                    // attribute case returns false; for typed props
+                    // it returns true.
+                    continue;
+                },
+                .jsx_attribute => {
+                    return self.jsxAttributeHasContextualType(cur);
                 },
                 else => return false,
             }

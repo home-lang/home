@@ -8578,6 +8578,23 @@ pub const Parser = struct {
             const prec = prec_mod.binaryPrec(t.kind) orelse break;
             if (@intFromEnum(prec) < @intFromEnum(min_prec)) break;
             if ((t.kind == .kw_as or t.kind == .kw_satisfies) and t.flags.preceded_by_newline) break;
+            // TSX-only ASI guard: in `.tsx` sources, a `<` token that
+            // starts on a new line and is followed by a JSX-name part
+            // (identifier/keyword) or a `>`/`/` (fragment / closing-tag
+            // start) is a NEW JSX statement, not a less-than
+            // continuation of the previous expression. Without this
+            // guard, `<Foo/>\n<Bar/>;` would parse as
+            // `<Foo/> < <Bar/>;` which then trips downstream parsers
+            // when the second JSX expression doesn't fit the binary
+            // RHS slot.
+            if (self.is_tsx and t.kind == .less_than and t.flags.preceded_by_newline) {
+                const next = self.peekAt(1).kind;
+                if (next == .identifier or
+                    next == .greater_than or
+                    next == .slash or
+                    next.isKeyword() or
+                    next.isContextualKeyword()) break;
+            }
             _ = self.advance();
             if (t.kind == .asterisk_asterisk) {
                 try self.reportUnaryExponentiationLeft(left, t.line);
