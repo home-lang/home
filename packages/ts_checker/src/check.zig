@@ -1713,7 +1713,16 @@ pub const Checker = struct {
                     // `comparisonOperatorWithIdenticalObjects.ts(8,9)`
                     // miss — upstream tsc anchors the diagnostic on
                     // the `return` keyword.
-                    if (self.strict_flags.strict_null_checks and
+                    // `return undefined`/`return null` against a type parameter
+                    // return is rejected regardless of `strictNullChecks`
+                    // because `T` could be instantiated to any type. tsc emits
+                    // TS2322 unconditionally in this case. Primitive-target
+                    // rejection (e.g. `return null` against `: string`) stays
+                    // strict-only — that requires `strictNullChecks` to fire.
+                    const declared_is_tp = declared >= types.Primitive.first_dynamic and
+                        declared < self.interner.pool.typeCount() and
+                        self.interner.pool.flagsOf(declared).is_type_parameter;
+                    if ((self.strict_flags.strict_null_checks or declared_is_tp) and
                         r.value != hir_mod.none_node_id and
                         self.returnValueIsNullishLiteral(r.value) and
                         self.declaredReturnRejectsNullish(declared, ret_t))
@@ -37957,6 +37966,20 @@ pub const Checker = struct {
                 if (m == types.Primitive.null_t or m == types.Primitive.undefined_t) return false;
                 if (m == types.Primitive.any or m == types.Primitive.unknown) return false;
             }
+        }
+        // Type parameters: tsc emits TS2322 for `return undefined` against
+        // a `: T` declared return because `T` could be instantiated to a
+        // non-`undefined` type — `undefined` does not flow through every
+        // possible `T`. This fires regardless of `strictNullChecks` (per
+        // upstream baselines). `return null`, by contrast, is allowed in
+        // non-strict mode (`null` is implicitly in every type when
+        // `strictNullChecks` is off) — so the `null` case stays guarded by
+        // `strict_null_checks` like the primitive-target paths below.
+        // Mirrors `typeArgumentInferenceWithClassExpression1/2/3.ts(2,5)`
+        // and pairs with the unchanged
+        // `objectTypesIdentityWithCallSignatures.ts` baseline (no diags).
+        if (flags.is_type_parameter and ret_t == types.Primitive.undefined_t) {
+            return true;
         }
         if (ret_t == types.Primitive.null_t) {
             return declared == types.Primitive.string_t or
