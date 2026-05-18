@@ -85,6 +85,8 @@ pub const http = struct {
     pub const InitError = @import("http/InitError.zig").InitError;
     pub const CertificateInfo = @import("http/CertificateInfo.zig");
     pub const HeaderValueIterator = @import("http/HeaderValueIterator.zig");
+    pub const Signals = @import("http/Signals.zig");
+    pub const H2FrameParser = @import("http/H2FrameParser.zig");
 };
 pub const http_types = struct {
     pub const Encoding = @import("http_types/Encoding.zig").Encoding;
@@ -92,6 +94,7 @@ pub const http_types = struct {
     pub const FetchRedirect = @import("http_types/FetchRedirect.zig").FetchRedirect;
     pub const FetchRequestMode = @import("http_types/FetchRequestMode.zig").FetchRequestMode;
     pub const FetchCacheMode = @import("http_types/FetchCacheMode.zig").FetchCacheMode;
+    pub const mime_type_list_enum = @import("http_types/mime_type_list_enum.zig");
 };
 pub const options_types = struct {
     pub const OfflineMode = @import("options_types/OfflineMode.zig").OfflineMode;
@@ -191,6 +194,21 @@ pub const tty = @import("bun_core/tty.zig");
 pub const c_allocator = @import("bun_alloc/fallback.zig").c_allocator;
 pub const z_allocator = @import("bun_alloc/fallback.zig").z_allocator;
 pub const freeWithoutSize = @import("bun_alloc/fallback.zig").freeWithoutSize;
+// Sub-namespace for the zero-init allocator. Re-exports the canonical
+// `z_allocator` above plus the internal helpers needed by callers that
+// want to spell `home_rt.bun_alloc.fallback.z.alloc(...)` like upstream.
+pub const bun_alloc = struct {
+    pub const fallback = struct {
+        pub const z = @import("bun_alloc/fallback/z.zig");
+    };
+};
+pub const io_heap = @import("io/heap.zig");
+pub const perf = struct {
+    // Zig 0.17 compat: perf/system_timer.zig depends on `std.time.Timer`,
+    // which 0.17.0-dev.263 removed. Parked until a thin `std.Io.Clock`
+    // adapter lands.
+    pub const generated_perf_trace_events = @import("perf/generated_perf_trace_events.zig");
+};
 pub const safety = struct {
     pub const thread_id = @import("safety/thread_id.zig");
 };
@@ -214,6 +232,7 @@ pub const sql = struct {
         pub const TLSStatus = @import("sql/mysql/TLSStatus.zig").TLSStatus;
         pub const QueryStatus = @import("sql/mysql/QueryStatus.zig").Status;
         pub const MySQLQueryResult = @import("sql/mysql/MySQLQueryResult.zig");
+        pub const MySQLTypes = @import("sql/mysql/MySQLTypes.zig");
         pub const protocol = struct {
             pub const PacketType = @import("sql/mysql/protocol/PacketType.zig").PacketType;
             pub const PacketHeader = @import("sql/mysql/protocol/PacketHeader.zig");
@@ -311,6 +330,14 @@ test {
     // myers_diff parked on Zig 0.17 compat.
     _ = @import("uws_sys/quic/Header.zig");
     _ = @import("sql/mysql/protocol/PacketHeader.zig");
+    // Second-wave port batch (2026-05-17, agent A–H follow-up):
+    _ = @import("bun_alloc/fallback/z.zig");
+    _ = @import("http/H2FrameParser.zig");
+    _ = @import("http/Signals.zig");
+    _ = @import("http_types/mime_type_list_enum.zig");
+    _ = @import("io/heap.zig");
+    _ = @import("perf/generated_perf_trace_events.zig");
+    _ = @import("sql/mysql/MySQLTypes.zig");
 }
 
 test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {
