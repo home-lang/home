@@ -34504,17 +34504,10 @@ pub const Checker = struct {
             return self.engine.isComparableTo(a, b) catch true;
         }
         if (af.is_object_type and bf.is_object_type) {
-            // Two object types whose only members are call /
-            // construct signatures (function-like values) always
-            // overlap at runtime — they're both `Function`-shaped
-            // and could be the same closure / constructor. tsc
-            // suppresses TS2367 in this case; mirrors fixtures
-            // `comparisonOperatorWithNoRelationshipObjects`
-            // `OnInstantiatedConstructorSignature.ts` and friends.
-            if (self.objectTypeIsCallOrConstructOnly(a) and
+            if (self.objectTypeIsCallOrConstructOnly(a) or
                 self.objectTypeIsCallOrConstructOnly(b))
             {
-                return true;
+                return try self.signatureObjectTypesHaveComparableOverlap(a, b, depth + 1);
             }
             if (try self.objectTypesHaveIndependentOverlap(a, b, depth + 1)) return true;
         }
@@ -34594,6 +34587,7 @@ pub const Checker = struct {
         if (t >= self.interner.pool.typeCount()) return false;
         const f = self.interner.pool.flagsOf(t);
         if (!f.is_object_type) return false;
+        if (self.objectTypeIsCallOrConstructOnly(t)) return false;
         if (self.interner.objectStringIndex(t) != types.Primitive.none or
             self.interner.objectNumberIndex(t) != types.Primitive.none or
             self.interner.objectSymbolIndex(t) != types.Primitive.none)
@@ -34609,9 +34603,6 @@ pub const Checker = struct {
     /// True when `t` is an object whose every member is a call
     /// (`__call`) or construct (`__construct`) signature — i.e. the
     /// type denotes a function value with no instance properties.
-    /// Used by `typesHaveComparableOverlapLimit` to suppress TS2367
-    /// between two callable/constructible shapes (tsc treats them as
-    /// runtime-overlapping Function-typed values).
     fn objectTypeIsCallOrConstructOnly(self: *Checker, t: TypeId) bool {
         if (t >= self.interner.pool.typeCount()) return false;
         const f = self.interner.pool.flagsOf(t);
@@ -34624,6 +34615,65 @@ pub const Checker = struct {
             if (m.name != call_id and m.name != construct_id) return false;
         }
         return true;
+    }
+
+    fn signatureObjectTypesHaveComparableOverlap(self: *Checker, a: TypeId, b: TypeId, depth: u8) CheckError!bool {
+        const call_id = self.string_interner.intern("__call") catch return true;
+        const construct_id = self.string_interner.intern("__construct") catch return true;
+        var saw_signature_pair = false;
+        for (self.interner.objectMembers(a)) |am| {
+            if (am.name != call_id and am.name != construct_id) continue;
+            const bm = self.interner.objectMemberInfo(b, am.name) orelse continue;
+            saw_signature_pair = true;
+            if (try self.signaturesHaveComparableOverlap(am.type, bm.type, depth + 1)) return true;
+        }
+        return !saw_signature_pair and
+            !self.objectTypeIsCallOrConstructOnly(a) and
+            !self.objectTypeIsCallOrConstructOnly(b);
+    }
+
+    fn signaturesHaveComparableOverlap(self: *Checker, a: TypeId, b: TypeId, depth: u8) CheckError!bool {
+        if (!self.interner.isSignature(a) or !self.interner.isSignature(b)) return true;
+        if (self.containsFreeTypeParameter(a) or self.containsFreeTypeParameter(b)) return true;
+        const ar = self.interner.signatureReturn(a) orelse types.Primitive.any;
+        const br = self.interner.signatureReturn(b) orelse types.Primitive.any;
+        if (!try self.typesHaveComparableOverlapLimit(ar, br, depth + 1)) return false;
+        if (self.signaturesHaveZeroArgOverlap(a, b)) return true;
+        if (try self.signatureAssignableForOverlap(a, b)) return true;
+        if (try self.signatureAssignableForOverlap(b, a)) return true;
+        return false;
+    }
+
+    fn signaturesHaveZeroArgOverlap(self: *Checker, a: TypeId, b: TypeId) bool {
+        const ap = self.interner.signatureParams(a);
+        const bp = self.interner.signatureParams(b);
+        if (ap.len == 0 or bp.len == 0) return true;
+        if (ap.len != 1 or bp.len != 1) return false;
+        const af = self.interner.pool.flagsOf(ap[0]);
+        const bf = self.interner.pool.flagsOf(bp[0]);
+        if (af.is_array or bf.is_array or af.is_tuple or bf.is_tuple) return false;
+        return self.typeIncludesUndefined(ap[0]) and self.typeIncludesUndefined(bp[0]);
+    }
+
+    fn signatureAssignableForOverlap(self: *Checker, source: TypeId, target: TypeId) CheckError!bool {
+        const sp = self.interner.signatureParams(source);
+        const tp = self.interner.signatureParams(target);
+        var source_required: usize = sp.len;
+        while (source_required > 0) {
+            if (!self.typeIncludesUndefined(sp[source_required - 1]) and
+                sp[source_required - 1] != types.Primitive.void_t) break;
+            source_required -= 1;
+        }
+        if (source_required > tp.len) return false;
+        const compare_len = @min(sp.len, tp.len);
+        for (sp[0..compare_len], 0..) |s_param, i| {
+            const t_param = tp[i];
+            if (!(self.engine.isAssignableTo(t_param, s_param) catch false)) return false;
+        }
+        const s_ret = self.interner.signatureReturn(source) orelse return true;
+        const t_ret = self.interner.signatureReturn(target) orelse return true;
+        if (t_ret == types.Primitive.void_t) return true;
+        return self.engine.isAssignableTo(s_ret, t_ret) catch false;
     }
 
     fn objectTypesHaveIndependentOverlap(self: *Checker, a: TypeId, b: TypeId, depth: u8) CheckError!bool {
@@ -36937,7 +36987,9 @@ pub const Checker = struct {
         {
             return true;
         }
-        if (self.objectTypeIsCallOrConstructOnly(lhs) or self.objectTypeIsCallOrConstructOnly(rhs)) {
+        if ((self.objectTypeIsCallOrConstructOnly(lhs) or self.objectTypeIsCallOrConstructOnly(rhs)) and
+            !(self.signatureObjectTypesHaveComparableOverlap(lhs, rhs, 0) catch true))
+        {
             return true;
         }
         // TS2365 also fires for `boolean > number` / `string > number`
