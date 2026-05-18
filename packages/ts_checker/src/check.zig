@@ -159,6 +159,10 @@ pub const TsCodes = struct {
     pub const rest_element_must_be_last: u32 = 2462;
     pub const ambient_initializer_not_allowed: u32 = 1039;
     pub const object_literal_duplicate_property: u32 = 1117;
+    /// TS1118 — `An object literal cannot have multiple get/set
+    /// accessors with the same name.` Mirrors
+    /// `computedPropertyNames49/50_ES{5,6}`.
+    pub const object_literal_multiple_accessors: u32 = 1118;
     pub const type_not_assignable: u32 = 2322;
     /// TS2559 — `Type 'A' has no properties in common with type 'B'.`
     /// Weak-type check: target type's members are all optional (or
@@ -19072,13 +19076,21 @@ pub const Checker = struct {
         const member_id = member_name orelse return;
         if (!self.enumHasMember(enum_id, member_id)) return;
         const member_str = self.string_interner.get(member_id);
+        // tsc renders enum-member assignment via the generic read-only
+        // property prose (TS2540), anchored at the property-name segment
+        // (col 3 for `E.A = null`). Mirrors `assignments.ts(18,3)`.
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
-            "Cannot assign to '{s}' because it is an enum member.",
+            "Cannot assign to '{s}' because it is a read-only property.",
             .{member_str},
         );
+        const prop_pos: ?u32 = switch (self.hir.kindOf(target)) {
+            .member_access => self.memberAccessNamePos(target),
+            else => null,
+        };
         try self.diagnostics.append(self.gpa, .{
             .node = target,
+            .pos = prop_pos,
             .code = TsCodes.readonly_property,
             .message = msg,
         });
