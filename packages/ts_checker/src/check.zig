@@ -254,6 +254,7 @@ pub const TsCodes = struct {
     pub const import_assignment_es_module: u32 = 1202;
     pub const await_reserved_top_level_module: u32 = 1262;
     pub const top_level_await_target_module: u32 = 1378;
+    pub const top_level_await_non_module: u32 = 1375;
     pub const for_await_only_in_async: u32 = 1103;
     pub const for_await_script_not_module: u32 = 1431;
     pub const for_await_target_module: u32 = 1432;
@@ -5611,6 +5612,33 @@ pub const Checker = struct {
         return self.nodeHasAncestorKind(node, .fn_decl) or
             self.nodeHasAncestorKind(node, .fn_expr) or
             self.nodeHasAncestorKind(node, .arrow_fn);
+    }
+
+    fn sourceFileIsModule(self: *Checker) bool {
+        const text = self.source orelse return false;
+        var lines = std.mem.splitScalar(u8, text, '\n');
+        while (lines.next()) |raw| {
+            const line = std.mem.trim(u8, raw, " \t\r");
+            if (line.len == 0) continue;
+            if (std.mem.startsWith(u8, line, "//")) continue;
+            if (std.mem.startsWith(u8, line, "import ") or
+                std.mem.startsWith(u8, line, "import{") or
+                std.mem.startsWith(u8, line, "import*") or
+                std.mem.startsWith(u8, line, "import\"") or
+                std.mem.startsWith(u8, line, "import'") or
+                std.mem.eql(u8, line, "import") or
+                std.mem.startsWith(u8, line, "export ") or
+                std.mem.startsWith(u8, line, "export{") or
+                std.mem.startsWith(u8, line, "export*") or
+                std.mem.startsWith(u8, line, "export=") or
+                std.mem.eql(u8, line, "export") or
+                std.mem.eql(u8, line, "export {}") or
+                std.mem.eql(u8, line, "export {};"))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     fn enclosingFunctionLike(self: *Checker, node: NodeId) ?NodeId {
@@ -37883,6 +37911,47 @@ pub const Checker = struct {
         const rn = (try self.allocSimpleTypeName(ret)) orelse return null;
         try buf.appendSlice(arena, rn);
         return buf.items;
+    }
+
+    fn returnValueIsNullishLiteral(self: *Checker, value: NodeId) bool {
+        switch (self.hir.kindOf(value)) {
+            .literal_null => return true,
+            .literal_undefined => return true,
+            .identifier => {
+                const id = hir_mod.identifierOf(self.hir, value);
+                return std.mem.eql(u8, self.string_interner.get(id.name), "undefined");
+            },
+            else => return false,
+        }
+    }
+
+    fn declaredReturnRejectsNullish(self: *Checker, declared: TypeId, ret_t: TypeId) bool {
+        if (declared == ret_t) return false;
+        if (declared == types.Primitive.any or declared == types.Primitive.unknown) return false;
+        if (declared == types.Primitive.void_t) return false;
+        if (declared == types.Primitive.never) return false;
+        if (declared == types.Primitive.null_t or declared == types.Primitive.undefined_t) return false;
+        if (declared >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(declared);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(declared)) |m| {
+                if (m == types.Primitive.null_t or m == types.Primitive.undefined_t) return false;
+                if (m == types.Primitive.any or m == types.Primitive.unknown) return false;
+            }
+        }
+        if (ret_t == types.Primitive.null_t) {
+            return declared == types.Primitive.string_t or
+                declared == types.Primitive.number_t or
+                declared == types.Primitive.boolean_t or
+                declared == types.Primitive.bigint_t;
+        }
+        if (ret_t == types.Primitive.undefined_t) {
+            return declared == types.Primitive.string_t or
+                declared == types.Primitive.number_t or
+                declared == types.Primitive.boolean_t or
+                declared == types.Primitive.bigint_t;
+        }
+        return false;
     }
 
     /// Restricted variant of `allocSimpleTypeName` for diagnostic
