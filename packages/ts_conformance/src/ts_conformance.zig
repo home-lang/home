@@ -340,7 +340,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             .code_prefix = prefix,
             .severity = .err,
             .message = d.message,
-            .span_len = 0,
+            .span_len = d.span_len,
         };
         const formatted = try ts_diagnostics.formatDefault(gpa, fdiag);
         defer gpa.free(formatted);
@@ -942,7 +942,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
                 .code_prefix = prefix,
                 .severity = .err,
                 .message = message,
-                .span_len = 0,
+                .span_len = d.span_len,
             };
             const formatted = try ts_diagnostics.formatDefault(gpa, fdiag);
             // Mirror the baseline-side option-validation filter on the
@@ -4177,6 +4177,8 @@ test "conformance: virtual tsconfig sections are preserved as comments" {
 
 test "conformance: program path sees script-global type-only virtual declarations" {
     const source =
+        \\// @filename: /package.json
+        \\{}
         \\// @filename: yieldAsTypeIsStrictError.ts
         \\interface yield {}
         \\// @filename: yieldInClassComputedPropertyIsError.ts

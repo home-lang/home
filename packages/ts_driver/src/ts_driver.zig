@@ -32,6 +32,10 @@ pub const Diagnostic = struct {
     phase: Phase,
     pos: u32,
     line: u32,
+    /// Source-span length used for TypeScript-compatible diagnostic
+    /// ordering when two diagnostics start at the same byte. Zero
+    /// means "unknown", which falls back to the legacy code tie-break.
+    span_len: u32 = 0,
     /// TypeScript-compatible diagnostic code (e.g. 2322). 0 means
     /// uncategorized — consumers fall back to a phase-derived code.
     code: u32 = 0,
@@ -834,6 +838,7 @@ pub fn compileSource(
     for (checker.diagnostics.items) |d| {
         if (suppress_js_check_diagnostics and !checkerDiagnosticSurfacesInUncheckedJs(d.code, source)) continue;
         const diag_pos = d.pos orelse c.hir.spanOf(d.node).start;
+        const diag_span_len = diagnosticSpanLen(&c.hir, d.node, diag_pos);
 
         // TS2300 (parser) vs TS2451 (checker) coalesce: tsc emits ONLY
         // TS2451 for `let`/`const` destructuring duplicate-binding
@@ -858,6 +863,7 @@ pub fn compileSource(
             .phase = .bind,
             .pos = diag_pos,
             .line = 0,
+            .span_len = diag_span_len,
             .code = d.code,
             .code_prefix = switch (d.code_prefix) {
                 .TS => .TS,
@@ -894,24 +900,34 @@ pub fn compileSource(
 
     // Diagnostics were appended in phase order (lex -> parse -> bind ->
     // check -> emit). Upstream tsc emits in source order — top-to-bottom
-    // by `(line, col)`. Re-sort the merged list using a STABLE sort so
-    // that ties (identical positions) preserve their original emit
-    // order. `pos` (byte offset) is monotonic with `(line, col)`, so
-    // sorting by `pos` is equivalent and avoids re-walking newlines.
+    // by `(line, col)`. `pos` (byte offset) is monotonic with
+    // `(line, col)`, so sorting by `pos` is equivalent and avoids
+    // re-walking newlines.
     sortDiagnosticsBySourceOrder(c.diagnostics.items);
 
     return c;
+}
+
+fn diagnosticSpanLen(hir: *const Hir, node: NodeId, pos: u32) u32 {
+    if (node == hir_mod.none_node_id) return 0;
+    const span = hir.spanOf(node);
+    if (span.end <= span.start) return 0;
+    if (pos < span.start or pos >= span.end) return 0;
+    return span.end - pos;
 }
 
 fn sortDiagnosticsBySourceOrder(diags: []Diagnostic) void {
     const lessThan = struct {
         fn lt(_: void, a: Diagnostic, b: Diagnostic) bool {
             if (a.pos != b.pos) return a.pos < b.pos;
-            // tsc baseline orders diagnostics at the same position by
-            // ascending code (smaller TS code first). For
-            // `exponentiationOperatorSyntaxError2` this puts the
-            // checker's TS2362 ahead of the parser's TS17006 even
-            // though the parser emit ran first.
+            // TypeScript's `compareDiagnostics` orders same-start
+            // diagnostics by span length before falling back to the
+            // diagnostic code. This matters when an identifier-level
+            // diagnostic (e.g. TS2454) shares the binary expression's
+            // start with a wider operator diagnostic (TS2365/TS2367).
+            if (a.span_len != 0 and b.span_len != 0 and a.span_len != b.span_len) {
+                return a.span_len < b.span_len;
+            }
             return a.code < b.code;
         }
     }.lt;
@@ -1248,6 +1264,32 @@ fn isDirectiveNameChar(c: u8) bool {
 // =============================================================================
 
 const T = std.testing;
+
+test "driver: same-position diagnostics prefer shorter source span" {
+    var diags = [_]Diagnostic{
+        .{
+            .phase = .bind,
+            .pos = 10,
+            .line = 0,
+            .span_len = 12,
+            .code = 2365,
+            .message = "wide binary diagnostic",
+        },
+        .{
+            .phase = .bind,
+            .pos = 10,
+            .line = 0,
+            .span_len = 2,
+            .code = 2454,
+            .message = "identifier diagnostic",
+        },
+    };
+
+    sortDiagnosticsBySourceOrder(diags[0..]);
+
+    try T.expectEqual(@as(u32, 2454), diags[0].code);
+    try T.expectEqual(@as(u32, 2365), diags[1].code);
+}
 
 test "driver: empty source produces empty JS" {
     var c = try compileSource(T.allocator, "", .{});

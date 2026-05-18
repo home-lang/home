@@ -10420,18 +10420,13 @@ pub const Checker = struct {
                 // wrong code, span, and (typically) name.
                 const name_kind: hir_mod.NodeKind = if (pp.name != hir_mod.none_node_id) self.hir.kindOf(pp.name) else .identifier;
                 if (pp.name != hir_mod.none_node_id and (name_kind == .array_pattern or name_kind == .object_pattern)) {
-                    // When the parameter has `= [literal, …]` as
-                    // its default, those per-index values supply
-                    // concrete types that suppress TS7031 for the
-                    // corresponding inner binding elements. Mirrors
-                    // upstream `destructuringWithLiteralInitializers2.ts`.
-                    const init_values: []const NodeId = if (pp.default_value != hir_mod.none_node_id and
-                        name_kind == .array_pattern and
-                        self.hir.kindOf(pp.default_value) == .array_literal)
-                        hir_mod.arrayLiteralElements(self.hir, pp.default_value)
-                    else
-                        &.{};
-                    try self.reportImplicitAnyBindingPatternElements(pp.name, init_values);
+                    // A parameter-level default supplies the binding
+                    // pattern's contextual type, so tsc suppresses the
+                    // per-element implicit-any diagnostics there
+                    // (`function f([a] = [undefined]) {}`).
+                    if (pp.default_value == hir_mod.none_node_id) {
+                        try self.reportImplicitAnyBindingPatternElements(pp.name, &.{});
+                    }
                 } else {
                     const param_name: []const u8 = if (pp.name != hir_mod.none_node_id and name_kind == .identifier)
                         self.string_interner.get(hir_mod.identifierOf(self.hir, pp.name).name)
@@ -17912,6 +17907,7 @@ pub const Checker = struct {
                 if (ft.return_type == hir_mod.none_node_id) {
                     try self.reportInterfaceMethodImplicitAnyReturn(m, im.name);
                 }
+                try self.reportImplicitAnyFnTypeParameters(im.type_node);
             }
             var has_base_member = false;
             for (extends) |extends_node| {
@@ -18043,6 +18039,40 @@ pub const Checker = struct {
             .code = TsCodes.function_return_implicitly_any,
             .message = msg,
         });
+    }
+
+    fn reportParameterImplicitAny(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!void {
+        const param_name = self.string_interner.get(name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Parameter '{s}' implicitly has an 'any' type.",
+            .{param_name},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.parameter_implicitly_any,
+            .message = msg,
+        });
+    }
+
+    fn reportImplicitAnyFnTypeParameters(self: *Checker, fn_type_node: NodeId) CheckError!void {
+        const ft = hir_mod.fnTypeOf(self.hir, fn_type_node);
+        const params = self.hir.childSlice(ft.params_start, @intCast(ft.params_len));
+        for (params) |p| {
+            if (self.hir.kindOf(p) != .parameter) continue;
+            if (self.isThisParameter(p)) continue;
+            const pp = hir_mod.parameterOf(self.hir, p);
+            if (pp.type_annotation != hir_mod.none_node_id or pp.default_value != hir_mod.none_node_id) continue;
+            if (pp.name == hir_mod.none_node_id) continue;
+            switch (self.hir.kindOf(pp.name)) {
+                .identifier => {
+                    const id = hir_mod.identifierOf(self.hir, pp.name);
+                    try self.reportParameterImplicitAny(p, id.name);
+                },
+                .array_pattern, .object_pattern => try self.reportImplicitAnyBindingPatternElements(pp.name, &.{}),
+                else => {},
+            }
+        }
     }
 
     fn reportObjectLiteralPropertyImplicitAny(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!void {
