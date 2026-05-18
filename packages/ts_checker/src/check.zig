@@ -1920,24 +1920,17 @@ pub const Checker = struct {
                 try self.checkForOfTarget(fr.target);
                 try self.checkForOfVarSelfReferenceDiagnostics(node, fr.target, fr.source);
                 if (!self.isIterableLikeType(src_t)) {
-                    // Render the named type when available so the
-                    // baseline matches `Type 'MyIter' must have …`
-                    // shape upstream tsc emits. Falls back to the
-                    // bare wording for anonymous types.
-                    if (try self.simpleDiagnosticTypeName(src_t)) |type_name| {
-                        const msg = try std.fmt.allocPrint(
-                            self.diag_arena.allocator(),
-                            "Type '{s}' must have a '[Symbol.iterator]()' method that returns an iterator.",
-                            .{type_name},
-                        );
-                        try self.diagnostics.append(self.gpa, .{
-                            .node = fr.source,
-                            .code = TsCodes.yield_star_not_iterable,
-                            .message = msg,
-                        });
-                    } else {
-                        try self.report(fr.source, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
-                    }
+                    // Delegate to `reportIteratorRequired` which prefers
+                    // the named type, then falls back to the object-type
+                    // shape (`{ [Symbol.iterator]?(): Iterator<string>; }`),
+                    // and only then to the bare prose. Matches the
+                    // `for-of29.ts(5,15)` baseline where the source is an
+                    // anonymous object-literal type with an optional
+                    // `[Symbol.iterator]` member — tsc renders the full
+                    // structural shape, not the bare "Type must have …"
+                    // form. Anchoring on `fr.source` keeps the column at
+                    // the source expression (matches existing baselines).
+                    try self.reportIteratorRequired(fr.source, src_t);
                 } else {
                     try self.checkForOfIteratorShape(fr.source, src_t);
                 }
@@ -40667,6 +40660,21 @@ pub const Checker = struct {
     /// the TS2741 missing-property message when the target type
     /// has named members and `allocSimpleTypeName` returns null.
     /// Returns null when any constituent member type can't be named.
+    /// Render a property-name segment for object-type prose. Well-known
+    /// symbol-keyed members (`Symbol.iterator`, `Symbol.toPrimitive`, …)
+    /// must be wrapped in `[...]` brackets to match upstream tsc's
+    /// `{ [Symbol.iterator]?(): … }` shape. Plain identifier keys go in
+    /// verbatim. Mirrors `for-of29` baseline.
+    fn appendObjectShapeMemberName(buf: *std.ArrayListUnmanaged(u8), arena: std.mem.Allocator, name: []const u8) !void {
+        if (std.mem.startsWith(u8, name, "Symbol.")) {
+            try buf.append(arena, '[');
+            try buf.appendSlice(arena, name);
+            try buf.append(arena, ']');
+            return;
+        }
+        try buf.appendSlice(arena, name);
+    }
+
     fn allocObjectTypeShapeOpts(self: *Checker, t: TypeId, optional_undefined_suffix: bool) !?[]const u8 {
         if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
@@ -40742,7 +40750,7 @@ pub const Checker = struct {
                 if (try self.allocCallSignatureFnTypeName(m.type)) |sig_text| {
                     const arrow = std.mem.indexOf(u8, sig_text, ") => ");
                     if (arrow) |a| {
-                        try buf.appendSlice(arena, name);
+                        try appendObjectShapeMemberName(&buf, arena, name);
                         if (m.is_optional) try buf.append(arena, '?');
                         try buf.appendSlice(arena, sig_text[0 .. a + 1]);
                         try buf.appendSlice(arena, ": ");
@@ -40752,7 +40760,7 @@ pub const Checker = struct {
                     }
                 }
             }
-            try buf.appendSlice(arena, name);
+            try appendObjectShapeMemberName(&buf, arena, name);
             if (m.is_optional) try buf.append(arena, '?');
             // Method-shorthand members render as `name(params): ret`
             // rather than the property-with-arrow form
