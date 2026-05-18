@@ -11337,7 +11337,17 @@ pub const Checker = struct {
                         // computed-key fields) surface TS2304 on each
                         // unbound name. Mirrors upstream tsc on
                         // `parserComputedPropertyName25.ts`.
-                        if (op.value != hir_mod.none_node_id) {
+                        //
+                        // Skip this pre-walk for METHOD values: pass 2
+                        // (re-)checks the body inside the proper
+                        // `this`/`super` narrow scope. Walking it here
+                        // misses the super-narrow and spuriously
+                        // fires TS2335 for `super[x]()` inside a
+                        // computed-key method whose key (e.g. a
+                        // `declare`d unique symbol) doesn't resolve.
+                        // Mirrors fixture
+                        // `superSymbolIndexedAccess1.ts(12,16)`.
+                        if (op.value != hir_mod.none_node_id and !op_is_method) {
                             _ = self.checkExpression(op.value) catch {};
                         }
                         continue;
