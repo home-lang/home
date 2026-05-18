@@ -36467,15 +36467,30 @@ pub const Checker = struct {
         value_t: TypeId,
     ) CheckError!void {
         if (self.typeContainsSymbol(target_t) or self.typeContainsSymbol(value_t)) {
-            // tsc prefers the type-rich
+            // tsc emits TS2469 ("The '+=' operator cannot be applied
+            // to type 'symbol'.") whenever one operand is symbol and
+            // the other is string-like — string concat would otherwise
+            // be valid for `+`, so the violation is the symbol side
+            // specifically. Anchor at the symbol-typed operand.
+            // Mirrors `symbolType12.ts(11,1)` (`s += ""`) and `(12,8)`
+            // (`str += s` — anchored at `s`).
+            const target_has_symbol = self.typeContainsSymbol(target_t);
+            const value_has_symbol = self.typeContainsSymbol(value_t);
+            const target_is_string_like = self.typeMaybeStringLike(target_t);
+            const value_is_string_like = self.typeMaybeStringLike(value_t);
+            if ((target_has_symbol and value_is_string_like) or
+                (value_has_symbol and target_is_string_like))
+            {
+                const anchor_node = if (target_has_symbol) target else value;
+                const pos = self.symbolOperandAnchorPos(anchor_node);
+                try self.reportSymbolOperatorAt(anchor_node, pos, "+=");
+                return;
+            }
+            // Otherwise prefer the type-rich
             // `Operator '+=' cannot be applied to types 'A' and 'B'.`
-            // (TS2365) when both operand types render as simple names —
-            // even when one of them is `symbol`. Only fall back to
-            // TS2469 ("'+=' cannot be applied to type 'symbol'.") when
-            // the target side is non-simple (the rich form would mis-
-            // render). Mirrors `symbolType12.ts(9,1)` / `(10,1)` for
-            // the `s += s` / `s += 0` rows, and `(11,1)` / `(12,8)`
-            // where TS2469 with the `+=` lexeme still fires.
+            // (TS2365) when both operand types render as simple names.
+            // Mirrors `symbolType12.ts(9,1)` / `(10,1)` for `s += s`
+            // and `s += 0`.
             if (try self.simpleDiagnosticTypeName(target_t)) |t_name| {
                 if (try self.simpleDiagnosticTypeName(value_t)) |v_name| {
                     const msg = try std.fmt.allocPrint(
