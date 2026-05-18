@@ -10420,10 +10420,26 @@ pub const Parser = struct {
                 );
                 is_method = true;
             } else if (can_be_shorthand_property) {
-                // Shorthand property: `{ foo }` — value mirrors the key
-                // identifier.
+                // Shorthand property: `{ foo }` — value mirrors the
+                // key. With trailing `= expr` it's the
+                // CoverInitializedName production used in destructuring
+                // assignment patterns like `({ y = E.x } = o)` and the
+                // for-of variant `for ({y = E.x} of …)`. Lower to an
+                // assignment node so destructuring checks observe the
+                // default value.
                 is_shorthand = true;
-                value = key;
+                if (self.peek().kind == .equal) {
+                    _ = self.advance();
+                    const default_expr = try self.parseAssignmentExpression();
+                    value = try self.builder.addAssignment(
+                        .{ .start = self.hir.spanOf(key).start, .end = self.hir.spanOf(default_expr).end },
+                        key,
+                        default_expr,
+                        null,
+                    );
+                } else {
+                    value = key;
+                }
             } else {
                 try self.reportCodeAt(self.peek().span.start, self.peek().line, 1005, "':' expected.");
             }
