@@ -4441,11 +4441,7 @@ pub const Checker = struct {
                 }
             }
         }
-        if (f.flags.is_getter and !self.fnBodyHasReturn(f.body) and !self.statementDefinitelyExits(f.body)) {
-            // Per tsc: TS2378 fires only when the body has an implicit
-            // (fall-through) return path AND no explicit `return <value>`.
-            // A getter that always throws (`get x() { throw e; }`) never
-            // implicitly returns, so the diagnostic is suppressed.
+        if (f.flags.is_getter and !self.fnBodyHasReturn(f.body)) {
             const pos = if (f.name != hir_mod.none_node_id) self.accessorDiagnosticPos(f.name) else self.hir.spanOf(node).start;
             try self.reportAt(node, pos, TsCodes.getter_must_return_value, "A 'get' accessor must return a value.");
         }
@@ -35837,7 +35833,6 @@ pub const Checker = struct {
     }
 
     fn relationalComparisonInvalid(self: *Checker, lhs: TypeId, rhs: TypeId) bool {
-        if (self.typeIsAnyLike(lhs) or self.typeIsAnyLike(rhs)) return false;
         const lhs_tp = self.isUnconstrainedTypeParameter(lhs);
         const rhs_tp = self.isUnconstrainedTypeParameter(rhs);
         if (lhs_tp and rhs_tp and lhs != rhs) return true;
@@ -35851,41 +35846,7 @@ pub const Checker = struct {
         {
             return true;
         }
-        // Mirror tsc's relational rule: both operands must be
-        // assignable-to-number|bigint OR neither is. Otherwise TS2365
-        // fires. The widening to base primitives is already handled
-        // upstream of this call (literal `1` is checked as `number`,
-        // not the literal `1`). See `checker.go:12178` for the upstream
-        // shape. Restricted to primitive booleans/strings on the
-        // mismatched side so we don't regress class/enum cases that
-        // earlier branches handle.
-        const lhs_numeric = self.relationalOperandIsNumeric(lhs);
-        const rhs_numeric = self.relationalOperandIsNumeric(rhs);
-        if (lhs_numeric != rhs_numeric) {
-            const non_numeric = if (lhs_numeric) rhs else lhs;
-            if (self.relationalOperandIsStringOrBoolean(non_numeric)) return true;
-        }
         return false;
-    }
-
-    fn relationalOperandIsNumeric(self: *Checker, t: TypeId) bool {
-        if (t >= self.interner.pool.typeCount()) return false;
-        const f = self.interner.pool.flagsOf(t);
-        if (f.is_number or f.is_bigint) return true;
-        // Numeric enum nominal types (`number & { __enum:X }`) — see
-        // `relationalTypeHasNumberLike` for the same heuristic.
-        if (f.is_intersection) {
-            for (self.interner.intersectionMembers(t)) |m| {
-                if (m == types.Primitive.number_t or m == types.Primitive.bigint_t) return true;
-            }
-        }
-        return false;
-    }
-
-    fn relationalOperandIsStringOrBoolean(self: *Checker, t: TypeId) bool {
-        if (t >= self.interner.pool.typeCount()) return false;
-        const f = self.interner.pool.flagsOf(t);
-        return f.is_string or f.is_boolean;
     }
 
     fn reportRelationalOperatorCannotBeApplied(self: *Checker, node: NodeId, op: []const u8) CheckError!void {
