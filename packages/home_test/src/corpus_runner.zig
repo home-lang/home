@@ -187,6 +187,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/014865.test.ts",
     "regression/issue/07736.test.ts",
     "js/node/buffer-inspectmaxbytes.test.ts",
+    "js/web/workers/message-event.test.ts",
 };
 
 const harness_prelude =
@@ -421,8 +422,11 @@ const harness_prelude =
     \\        __home_assert(expected.test(String(thrown && thrown.message)), isNot, "Expected thrown message" + (isNot ? " not" : "") + " to match " + String(expected));
     \\        return;
     \\      }
-    \\      if (expected && typeof expected === "object" && "message" in expected) {
-    \\        __home_assert(Object.is(thrown && thrown.message, expected.message), isNot, "Expected thrown message" + (isNot ? " not" : "") + " to match " + String(expected.message));
+    \\      if (expected && typeof expected === "object" && ("message" in expected || "name" in expected)) {
+    \\        let pass = true;
+    \\        if ("message" in expected) pass = pass && Object.is(thrown && thrown.message, expected.message);
+    \\        if ("name" in expected) pass = pass && Object.is(thrown && thrown.name, expected.name);
+    \\        __home_assert(pass, isNot, "Expected thrown error" + (isNot ? " not" : "") + " to match " + __home_format(expected));
     \\        return;
     \\      }
     \\      if (expected !== undefined) {
@@ -465,6 +469,18 @@ const harness_prelude =
     \\        __home_fail("Expected value must be a string or array");
     \\      }
     \\      __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to contain " + __home_format(expected));
+    \\    },
+    \\    toMatchObject(expected) {
+    \\      if (expected === null || typeof expected !== "object") __home_fail("toMatchObject() requires an object");
+    \\      if (value === null || typeof value !== "object") __home_fail("Expected value must be an object");
+    \\      let pass = true;
+    \\      for (const key of Object.keys(expected)) {
+    \\        if (!__home_deep_equal(value[key], expected[key], false, new Map())) {
+    \\          pass = false;
+    \\          break;
+    \\        }
+    \\      }
+    \\      __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to match object " + __home_format(expected));
     \\    },
     \\    toContainKey(expected) {
     \\      if (arguments.length < 1) __home_fail("toContainKey() takes 1 argument");
@@ -844,6 +860,46 @@ const harness_prelude =
     \\  }
     \\  return HomeDOMException;
     \\})();
+    \\if (typeof Event !== "function") {
+    \\  var Event = function(type) {
+    \\    if (arguments.length < 1) throw new TypeError("Not enough arguments");
+    \\    this.type = String(type);
+    \\  };
+    \\}
+    \\if (typeof MessagePort !== "function") {
+    \\  var MessagePort = function() {};
+    \\}
+    \\if (typeof MessageChannel !== "function") {
+    \\  var MessageChannel = function() {
+    \\    this.port1 = new MessagePort();
+    \\    this.port2 = new MessagePort();
+    \\  };
+    \\}
+    \\if (typeof MessageEvent !== "function") {
+    \\  var MessageEvent = function(type, options) {
+    \\    if (arguments.length < 1) throw new TypeError("Not enough arguments");
+    \\    if (options !== undefined && options !== null && typeof options !== "object") throw new TypeError("Options must be an object");
+    \\    const init = options || {};
+    \\    Event.call(this, type);
+    \\    this.data = Object.prototype.hasOwnProperty.call(init, "data") ? init.data : null;
+    \\    this.origin = Object.prototype.hasOwnProperty.call(init, "origin") ? String(init.origin) : "";
+    \\    this.lastEventId = Object.prototype.hasOwnProperty.call(init, "lastEventId") ? String(init.lastEventId) : "";
+    \\    this.source = Object.prototype.hasOwnProperty.call(init, "source") ? init.source : null;
+    \\    if (this.source !== null && !(this.source instanceof MessagePort)) {
+    \\      const typeName = typeof this.source;
+    \\      const received = typeName === "object" ? "Received an instance of Object" : "Received type " + typeName + " (" + String(this.source) + ")";
+    \\      throw new TypeError('The "eventInitDict.source" property must be of type MessagePort. ' + received);
+    \\    }
+    \\    const ports = Object.prototype.hasOwnProperty.call(init, "ports") ? init.ports : [];
+    \\    if (ports == null || typeof ports[Symbol.iterator] !== "function") throw new TypeError("MessageEvent constructor: eventInitDict.ports is not iterable.");
+    \\    this.ports = Array.from(ports);
+    \\    for (const port of this.ports) {
+    \\      if (!(port instanceof MessagePort)) throw new TypeError("MessageEvent constructor: Expected every item of eventInitDict.ports to be an instance of MessagePort.");
+    \\    }
+    \\  };
+    \\  MessageEvent.prototype = Object.create(Event.prototype);
+    \\  MessageEvent.prototype.constructor = MessageEvent;
+    \\}
     \\
 ;
 
@@ -1346,6 +1402,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/014865.test.ts", filesForSubset(.minimal_js)[29]);
     try std.testing.expectEqualStrings("regression/issue/07736.test.ts", filesForSubset(.minimal_js)[30]);
     try std.testing.expectEqualStrings("js/node/buffer-inspectmaxbytes.test.ts", filesForSubset(.minimal_js)[31]);
+    try std.testing.expectEqualStrings("js/web/workers/message-event.test.ts", filesForSubset(.minimal_js)[32]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -1365,6 +1422,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function beforeAll(fn, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_finish_tests") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContain(expected)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toMatchObject(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toIncludeRepeated() requires the expect(value) to be a string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContainKey(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContainAnyKeys(expected)") != null);
@@ -1389,6 +1447,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:buffer\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toString(16).padStart") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Error.prepareStackTrace") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var MessageEvent = function(type, options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var MessageChannel = function()") != null);
 }
 
 test "Bun test import rewrite lowers to the virtual test module" {
