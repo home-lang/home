@@ -14861,7 +14861,7 @@ pub const Checker = struct {
                     },
                     .enum_decl => {
                         try self.checkEnumDecl(member_node);
-                        return try self.enumNominalType(member_name);
+                        return try self.enumNamespaceValueType(member_node, member_name);
                     },
                     .namespace_decl => return types.Primitive.any,
                     else => return null,
@@ -72676,6 +72676,29 @@ test "checker: import equals relative namespace exposes exported enum members" {
     for (b.base.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
+}
+
+test "checker: exported namespace enum exposes member values" {
+    const b = try newBoundSetup(
+        \\namespace A {
+        \\  export enum Color { Red, Blue }
+        \\  enum Day { Monday, Tuesday }
+        \\}
+        \\var a: A.Color = A.Color.Red;
+        \\var b = A.Day.Monday;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var saw_private_day = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.property_does_not_exist) continue;
+        const sp = b.base.hir.spanOf(d.node);
+        const src = b.base.checker.source.?;
+        const text = src[sp.start..sp.end];
+        try T.expect(!std.mem.eql(u8, text, "A.Color.Red"));
+        if (std.mem.eql(u8, text, "A.Day")) saw_private_day = true;
+    }
+    try T.expect(saw_private_day);
 }
 
 test "checker: ambient namespace can be used as a value" {
