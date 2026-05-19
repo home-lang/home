@@ -3554,13 +3554,15 @@ pub const Checker = struct {
                 // branch only adds TS2393 when names differ.
                 if (info.has_body and default_fn_impl != hir_mod.none_node_id) {
                     const same_name = if (default_fn_name) |n| (info.name == n) else false;
-                    try self.reportAt(default_fn_impl, self.defaultExportNamePos(default_fn_impl), TsCodes.export_default_redeclared, "Cannot redeclare exported variable 'default'.");
+                    const impl_name_node = self.defaultExportNameNode(default_fn_impl);
+                    const stmt_name_node = self.defaultExportNameNode(stmt);
+                    try self.reportAt(impl_name_node, self.defaultExportNamePos(default_fn_impl), TsCodes.export_default_redeclared, "Cannot redeclare exported variable 'default'.");
                     if (!same_name) {
-                        try self.reportAt(default_fn_impl, self.defaultExportNamePos(default_fn_impl), TsCodes.duplicate_function_implementation, "Duplicate function implementation.");
+                        try self.reportAt(impl_name_node, self.defaultExportNamePos(default_fn_impl), TsCodes.duplicate_function_implementation, "Duplicate function implementation.");
                     }
-                    try self.reportAt(stmt, self.defaultExportNamePos(stmt), TsCodes.export_default_redeclared, "Cannot redeclare exported variable 'default'.");
+                    try self.reportAt(stmt_name_node, self.defaultExportNamePos(stmt), TsCodes.export_default_redeclared, "Cannot redeclare exported variable 'default'.");
                     if (!same_name) {
-                        try self.reportAt(stmt, self.defaultExportNamePos(stmt), TsCodes.duplicate_function_implementation, "Duplicate function implementation.");
+                        try self.reportAt(stmt_name_node, self.defaultExportNamePos(stmt), TsCodes.duplicate_function_implementation, "Duplicate function implementation.");
                     }
                     return;
                 }
@@ -3623,13 +3625,15 @@ pub const Checker = struct {
                 // different-name case.
                 if (info.has_body and state.default_fn_impl != hir_mod.none_node_id) {
                     const same_name = if (state.default_fn_name) |n| (info.name == n) else false;
-                    try self.reportAt(state.default_fn_impl, self.defaultExportNamePos(state.default_fn_impl), TsCodes.export_default_redeclared, "Cannot redeclare exported variable 'default'.");
+                    const impl_name_node = self.defaultExportNameNode(state.default_fn_impl);
+                    const stmt_name_node = self.defaultExportNameNode(stmt);
+                    try self.reportAt(impl_name_node, self.defaultExportNamePos(state.default_fn_impl), TsCodes.export_default_redeclared, "Cannot redeclare exported variable 'default'.");
                     if (!same_name) {
-                        try self.reportAt(state.default_fn_impl, self.defaultExportNamePos(state.default_fn_impl), TsCodes.duplicate_function_implementation, "Duplicate function implementation.");
+                        try self.reportAt(impl_name_node, self.defaultExportNamePos(state.default_fn_impl), TsCodes.duplicate_function_implementation, "Duplicate function implementation.");
                     }
-                    try self.reportAt(stmt, self.defaultExportNamePos(stmt), TsCodes.export_default_redeclared, "Cannot redeclare exported variable 'default'.");
+                    try self.reportAt(stmt_name_node, self.defaultExportNamePos(stmt), TsCodes.export_default_redeclared, "Cannot redeclare exported variable 'default'.");
                     if (!same_name) {
-                        try self.reportAt(stmt, self.defaultExportNamePos(stmt), TsCodes.duplicate_function_implementation, "Duplicate function implementation.");
+                        try self.reportAt(stmt_name_node, self.defaultExportNamePos(stmt), TsCodes.duplicate_function_implementation, "Duplicate function implementation.");
                     }
                     state.first_reported = true;
                     continue;
@@ -3750,6 +3754,27 @@ pub const Checker = struct {
             .name = hir_mod.identifierOf(self.hir, fd.name).name,
             .has_body = fd.body != hir_mod.none_node_id,
         };
+    }
+
+    /// For an `export default <decl>` statement, return the name node
+    /// of the inner function/class declaration. Used when anchoring
+    /// duplicate-default diagnostics (TS2323, TS2393, TS2528) at the
+    /// identifier so the diagnostic's effective span length matches
+    /// tsc's `f`/`C` underline rather than the whole `export default
+    /// function …` span — letting the source-order sort tie-break
+    /// correctly by code at the same position.
+    fn defaultExportNameNode(self: *Checker, node: NodeId) NodeId {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .export_decl) return node;
+        const ex = hir_mod.exportOf(self.hir, node);
+        if (!ex.is_default or ex.decl == hir_mod.none_node_id) return node;
+        const decl = ex.decl;
+        const name_node: NodeId = switch (self.hir.kindOf(decl)) {
+            .fn_decl => hir_mod.fnDeclOf(self.hir, decl).name,
+            .class_decl => hir_mod.classOf(self.hir, decl).name,
+            else => return node,
+        };
+        if (name_node == hir_mod.none_node_id) return node;
+        return name_node;
     }
 
     /// For an `export default <decl>` statement, return the position of
