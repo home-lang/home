@@ -5394,21 +5394,7 @@ pub const Checker = struct {
         switch (k) {
             .let_decl, .var_decl => {
                 const v = hir_mod.varDeclOf(self.hir, node);
-                if (!v.is_ambient and
-                    !self.declarationSourceHasLeadingDeclare(node) and
-                    !self.declarationLineHasDeclare(node) and
-                    !self.sourceHasDeclareAnyVar(v.name) and
-                    v.init == hir_mod.none_node_id and
-                    v.type_annotation != hir_mod.none_node_id and
-                    !self.varDeclHasExplicitAnyAnnotation(node) and
-                    !self.varDeclTypeIncludesUndefined(node) and
-                    !self.varDeclHasDefiniteAssertion(node) and
-                    !self.isGlobalSymbolConstructorVarDecl(node) and
-                    !self.typeAnnotationReferencesGenericWithoutArgs(v.type_annotation) and
-                    !self.typeAnnotationRootIsUnresolved(v.type_annotation) and
-                    v.name != hir_mod.none_node_id and
-                    self.hir.kindOf(v.name) == .identifier)
-                {
+                if (self.varDeclIsUsedBeforeAssignCandidate(node)) {
                     const id = hir_mod.identifierOf(self.hir, v.name);
                     try pending.put(self.gpa, id.name, node);
                 }
@@ -5706,6 +5692,69 @@ pub const Checker = struct {
             },
             else => {},
         }
+    }
+
+    fn varDeclIsUsedBeforeAssignCandidate(self: *Checker, node: NodeId) bool {
+        switch (self.hir.kindOf(node)) {
+            .var_decl, .let_decl, .const_decl => {},
+            else => return false,
+        }
+        const v = hir_mod.varDeclOf(self.hir, node);
+        return !v.is_ambient and
+            !self.declarationSourceHasLeadingDeclare(node) and
+            !self.declarationLineHasDeclare(node) and
+            !self.sourceHasDeclareAnyVar(v.name) and
+            v.init == hir_mod.none_node_id and
+            self.varDeclHasTypeAnnotation(node) and
+            !self.varDeclHasExplicitAnyAnnotation(node) and
+            !self.varDeclTypeIncludesUndefined(node) and
+            !self.varDeclHasDefiniteAssertion(node) and
+            !self.isGlobalSymbolConstructorVarDecl(node) and
+            (v.type_annotation == hir_mod.none_node_id or !self.typeAnnotationReferencesGenericWithoutArgs(v.type_annotation)) and
+            (v.type_annotation == hir_mod.none_node_id or !self.typeAnnotationRootIsUnresolved(v.type_annotation)) and
+            v.name != hir_mod.none_node_id and
+            self.hir.kindOf(v.name) == .identifier;
+    }
+
+    fn identifierIsPendingJsDocTypedVar(self: *Checker, ident_node: NodeId) bool {
+        if (self.hir.kindOf(ident_node) != .identifier) return false;
+        if (!self.sourceHasCheckJsDirective() and !self.check_js_enabled) return false;
+        if (!self.virtualSectionIsJsLike(ident_node)) return false;
+
+        const id = hir_mod.identifierOf(self.hir, ident_node);
+        const root = self.rootBlockFor(ident_node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const ref_start = self.hir.spanOf(ident_node).start;
+        const has_sections = self.sourceHasVirtualFilenameSections();
+        const section = if (has_sections) self.virtualSectionStartForNode(ident_node) else 0;
+
+        var pending = false;
+        for (hir_mod.blockStmts(self.hir, root)) |raw_stmt| {
+            const stmt_span = self.hir.spanOf(raw_stmt);
+            if (stmt_span.start >= ref_start) break;
+            if (has_sections and self.virtualSectionStartForNode(raw_stmt) != section) continue;
+
+            const stmt = self.unwrapExportDecl(raw_stmt);
+            switch (self.hir.kindOf(stmt)) {
+                .var_decl, .let_decl, .const_decl => {
+                    const v = hir_mod.varDeclOf(self.hir, stmt);
+                    if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) continue;
+                    if (hir_mod.identifierOf(self.hir, v.name).name != id.name) continue;
+                    pending = self.varDeclHasJsDocTypeTag(stmt) and self.varDeclIsUsedBeforeAssignCandidate(stmt);
+                },
+                .fn_decl, .class_decl => {
+                    if (self.declarationName(stmt)) |decl_name| {
+                        if (decl_name == id.name) pending = false;
+                    }
+                },
+                else => {
+                    if (pending and stmt_span.end <= ref_start and self.nodeAssignsIdentifier(stmt, id.name)) {
+                        pending = false;
+                    }
+                },
+            }
+        }
+        return pending;
     }
 
     fn removeAssignedTargetFromPending(
@@ -6561,7 +6610,7 @@ pub const Checker = struct {
             else => return false,
         }
         const v = hir_mod.varDeclOf(self.hir, node);
-        return v.type_annotation != hir_mod.none_node_id;
+        return v.type_annotation != hir_mod.none_node_id or self.varDeclHasJsDocTypeTag(node);
     }
 
     fn varDeclHasExplicitAnyAnnotation(self: *Checker, node: NodeId) bool {
@@ -6570,7 +6619,11 @@ pub const Checker = struct {
             else => return false,
         }
         const v = hir_mod.varDeclOf(self.hir, node);
-        if (v.type_annotation == hir_mod.none_node_id) return false;
+        if (v.type_annotation == hir_mod.none_node_id) {
+            const type_text = self.varDeclLeadingJsDocTypeText(node) orelse return false;
+            const trimmed = std.mem.trim(u8, type_text, " \t\r\n");
+            return std.mem.eql(u8, trimmed, "any") or std.mem.eql(u8, trimmed, "*");
+        }
         if (self.hir.kindOf(v.type_annotation) != .type_ref) return false;
         const r = hir_mod.typeRefOf(self.hir, v.type_annotation);
         return r.qualifier_len == 0 and std.mem.eql(u8, self.string_interner.get(r.name), "any");
@@ -6631,7 +6684,11 @@ pub const Checker = struct {
             else => return false,
         }
         const v = hir_mod.varDeclOf(self.hir, node);
-        if (v.type_annotation == hir_mod.none_node_id) return false;
+        if (v.type_annotation == hir_mod.none_node_id) {
+            const t = (self.jsDocTypeForLeadingNode(node) catch null) orelse return false;
+            if (t == types.Primitive.any or t == types.Primitive.unknown) return false;
+            return self.typeIncludesUndefined(t);
+        }
         const t = self.hir.typeOf(node);
         if (t != types.Primitive.none) {
             if (t == types.Primitive.any or t == types.Primitive.unknown) return false;
@@ -26975,15 +27032,19 @@ pub const Checker = struct {
     /// `parameterHasContextualType` so an arrow/fn initializer of a
     /// JSDoc-typed variable suppresses TS7006 on its parameters.
     fn varDeclHasJsDocTypeTag(self: *Checker, node: NodeId) bool {
-        const src = self.source orelse return false;
+        return self.varDeclLeadingJsDocTypeText(node) != null;
+    }
+
+    fn varDeclLeadingJsDocTypeText(self: *Checker, node: NodeId) ?[]const u8 {
+        const src = self.source orelse return null;
         const span = self.hir.spanOf(node);
-        const body = self.leadingJsDocBody(src, span.start) orelse return false;
-        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return false;
+        const body = self.leadingJsDocBody(src, span.start) orelse return null;
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
         defer self.gpa.free(tags);
         for (tags) |tag| {
-            if (tag.kind == .type_tag and tag.type_text.len > 0) return true;
+            if (tag.kind == .type_tag and tag.type_text.len > 0) return tag.type_text;
         }
-        return false;
+        return null;
     }
 
     const JsDocParamInfo = struct {
@@ -30414,7 +30475,9 @@ pub const Checker = struct {
                     try self.report(m.object, TsCodes.object_possibly_undefined, "Object is possibly 'undefined'.");
                 }
                 if (!member_is_optional_chain and self.strict_flags.strict_null_checks and self.typeIsPossiblyNullishStrict(obj_t)) {
-                    try self.reportPossiblyNullishMember(m.object, obj_t);
+                    if (!self.identifierIsPendingJsDocTypedVar(m.object)) {
+                        try self.reportPossiblyNullishMember(m.object, obj_t);
+                    }
                     obj_t = self.subtractNullUndefined(obj_t) catch obj_t;
                 } else if (member_is_optional_chain) {
                     obj_t = self.subtractNullUndefined(obj_t) catch obj_t;
