@@ -29544,6 +29544,7 @@ pub const Checker = struct {
                 }
                 if (!target_is_destructuring and !target_is_untyped_uninitialized_var and !target_is_commonjs_export_assignment and a.op == null and
                     !readonly_target_fired and
+                    !assignment_target_diag_fired and
                     target_t != types.Primitive.none and
                     target_t != types.Primitive.any and
                     target_t != types.Primitive.unknown)
