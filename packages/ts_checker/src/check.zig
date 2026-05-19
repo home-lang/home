@@ -36300,29 +36300,44 @@ pub const Checker = struct {
             suggestion_budget_exhausted or
             is_reserved_keyword_identifier;
 
+        // When the unresolved name appears in a TYPE position (HIR
+        // `type_ref`), tsc's `getSpellingSuggestionForName` applies a
+        // `meaning` filter that rejects candidates whose symbol flags
+        // don't include `SymbolFlagsType`/`Namespace`. A bare value
+        // (parameter, plain `var`/`function`) therefore can't surface
+        // as `Did you mean 'foo'?` from a type-ref. Mirrors
+        // `parserClass2.ts(2,37)` where `ILogger` must report bare
+        // TS2304 even though the constructor parameter `logger` is
+        // only one Levenshtein edit away.
+        const in_type_position = self.hir.kindOf(node) == .type_ref;
+
         const considerCandidate = struct {
-            fn call(typo: []const u8, cand_str: []const u8, value_only: bool, b: *Best) void {
+            fn call(typo: []const u8, cand_str: []const u8, value_only: bool, in_type_pos: bool, b: *Best) void {
                 if (cand_str.len == 0) return;
                 if (std.mem.eql(u8, cand_str, typo)) return;
                 // Mirrors tsc's `getSuggestedSymbolForNonexistentSymbol`
                 // meaning filter: a value-only candidate (parameter,
                 // local, plain `var`/`function`) never satisfies a
-                // type-position lookup, so when its only difference
-                // from the typo is letter case the suggestion is
-                // useless — drop it so the diagnostic falls back to
-                // bare TS2304. Module-level type / namespace candidates
-                // and primitive-alias builtins pass `value_only=false`,
-                // keeping `symbol` → `Symbol` (parserSymbolIndexer5)
-                // working. Mirrors parserRealSource5/11/12/14.
-                if (value_only and cand_str.len == typo.len) {
-                    var case_only = true;
-                    for (cand_str, typo) |x, y| {
-                        if (std.ascii.toLower(x) != std.ascii.toLower(y)) {
-                            case_only = false;
-                            break;
+                // type-position lookup. When we're checking from a
+                // `type_ref` node, reject those candidates outright.
+                // When we're checking from a value-position node, fall
+                // back to the legacy case-only equal-length filter so
+                // `symbol` → `Symbol` (parserSymbolIndexer5) still
+                // works and bare lowercase typos still suggest
+                // matching builtins. Mirrors parserRealSource5/11/12/14
+                // and parserClass2.
+                if (value_only) {
+                    if (in_type_pos) return;
+                    if (cand_str.len == typo.len) {
+                        var case_only = true;
+                        for (cand_str, typo) |x, y| {
+                            if (std.ascii.toLower(x) != std.ascii.toLower(y)) {
+                                case_only = false;
+                                break;
+                            }
                         }
+                        if (case_only) return;
                     }
-                    if (case_only) return;
                 }
                 // Quick reject mirrors tsc's `getSpellingSuggestion`
                 // length gate: `maximumLengthDifference = max(2,
@@ -36357,7 +36372,7 @@ pub const Checker = struct {
                     if (pp.name == hir_mod.none_node_id) continue;
                     if (self.hir.kindOf(pp.name) != .identifier) continue;
                     const pid = hir_mod.identifierOf(self.hir, pp.name);
-                    considerCandidate(name_str, self.string_interner.get(pid.name), true, &best);
+                    considerCandidate(name_str, self.string_interner.get(pid.name), true, in_type_position, &best);
                 }
             } else if (k == .block_stmt) {
                 const stmts = hir_mod.blockStmts(self.hir, cur);
@@ -36367,13 +36382,13 @@ pub const Checker = struct {
                         const v = hir_mod.varDeclOf(self.hir, s);
                         if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
                             const vid = hir_mod.identifierOf(self.hir, v.name);
-                            considerCandidate(name_str, self.string_interner.get(vid.name), true, &best);
+                            considerCandidate(name_str, self.string_interner.get(vid.name), true, in_type_position, &best);
                         }
                     } else if (sk == .fn_decl or sk == .fn_expr) {
                         const fp = hir_mod.fnDeclOf(self.hir, s);
                         if (fp.name != hir_mod.none_node_id and self.hir.kindOf(fp.name) == .identifier) {
                             const fid = hir_mod.identifierOf(self.hir, fp.name);
-                            considerCandidate(name_str, self.string_interner.get(fid.name), true, &best);
+                            considerCandidate(name_str, self.string_interner.get(fid.name), true, in_type_position, &best);
                         }
                     }
                 }
@@ -36388,7 +36403,7 @@ pub const Checker = struct {
                 var it = @field(module.root, field_name).iterator();
                 while (it.next()) |entry| {
                     const cand_id = entry.key_ptr.*;
-                    considerCandidate(name_str, self.string_interner.get(cand_id), value_only, &best);
+                    considerCandidate(name_str, self.string_interner.get(cand_id), value_only, in_type_position, &best);
                 }
             }
         }
@@ -36414,7 +36429,7 @@ pub const Checker = struct {
             "setInterval", "clearInterval",
         };
         for (builtin_suggestions) |b| {
-            considerCandidate(name_str, b, false, &best);
+            considerCandidate(name_str, b, false, in_type_position, &best);
         }
 
         // Threshold mirrors tsc's `getSpellingSuggestion`:
