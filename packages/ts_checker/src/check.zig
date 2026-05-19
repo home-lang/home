@@ -19659,20 +19659,15 @@ pub const Checker = struct {
                 if (self.type_names.get(id.name)) |existing_t| {
                     if (self.interfaceDeclScopesMatchExistingType(node, id.name)) {
                         const merged = self.mergeInterfaceDeclarationType(existing_t, iface_t) catch iface_t;
-                        // Back-patch the previously-registered
+                        // Back-patch EVERY prior same-scope same-named
                         // interface_decl's HIR type to the merged
                         // shape — `resolveUnqualifiedNamespaceTypeRef`
                         // and friends pick the FIRST same-named decl
                         // in a namespace body and read its
-                        // `hir.typeOf`, so we need every same-scope
-                        // declaration to point at the merged type.
-                        if (self.last_iface_decl_for_name.get(id.name)) |prev_decl| {
-                            self.hir.setType(prev_decl, merged);
-                            const prev_iface = hir_mod.interfaceOf(self.hir, prev_decl);
-                            if (prev_iface.name != hir_mod.none_node_id) {
-                                self.hir.setType(prev_iface.name, merged);
-                            }
-                        }
+                        // `hir.typeOf`, so all earlier decls must
+                        // point at the latest merged type, not just
+                        // the immediate predecessor (mergeThreeInterfaces).
+                        self.backPatchSameScopeInterfaces(node, id.name, merged);
                         break :blk merged;
                     }
                 }
@@ -19709,6 +19704,31 @@ pub const Checker = struct {
     fn interfaceDeclScopesMatchExistingType(self: *Checker, iface_decl: NodeId, name: hir_mod.StringId) bool {
         const previous = self.last_iface_decl_for_name.get(name) orelse return false;
         return self.nearestDeclarationScope(iface_decl) == self.nearestDeclarationScope(previous);
+    }
+
+    /// Walk the body of `iface_decl`'s nearest declaration scope
+    /// (namespace_decl / module_decl, or the root block) and re-tag
+    /// every interface_decl whose name matches `name` with the merged
+    /// type. Runs before the current decl's own `setType`, so the
+    /// caller still needs to update `iface_decl` itself afterward.
+    fn backPatchSameScopeInterfaces(self: *Checker, iface_decl: NodeId, name: hir_mod.StringId, merged_t: TypeId) void {
+        const scope = self.nearestDeclarationScope(iface_decl);
+        if (scope == hir_mod.none_node_id) return;
+        const body = switch (self.hir.kindOf(scope)) {
+            .namespace_decl, .module_decl => hir_mod.namespaceBody(self.hir, scope),
+            .block_stmt => hir_mod.blockStmts(self.hir, scope),
+            else => return,
+        };
+        for (body) |raw| {
+            const inner = self.unwrapExportDecl(raw);
+            if (inner == hir_mod.none_node_id or self.hir.kindOf(inner) != .interface_decl) continue;
+            if (inner == iface_decl) continue;
+            const it = hir_mod.interfaceOf(self.hir, inner);
+            if (it.name == hir_mod.none_node_id or self.hir.kindOf(it.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, it.name).name != name) continue;
+            self.hir.setType(inner, merged_t);
+            self.hir.setType(it.name, merged_t);
+        }
     }
 
     fn nearestDeclarationScope(self: *Checker, node: NodeId) NodeId {
