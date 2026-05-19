@@ -8698,7 +8698,10 @@ pub const Checker = struct {
                 .is_method = false,
             },
         };
-        return self.interner.internObjectType(&members) catch return error.OutOfMemory;
+        const promise_t = self.interner.internObjectType(&members) catch return error.OutOfMemory;
+        const promise_name = self.string_interner.intern("Promise") catch return error.OutOfMemory;
+        try self.registerAliasDisplayName(promise_t, promise_name, &[_]TypeId{value_t});
+        return promise_t;
     }
 
     fn moduleNamespaceTypeForImportBinding(self: *Checker, decl: NodeId) CheckError!?TypeId {
@@ -33115,6 +33118,57 @@ pub const Checker = struct {
         return null;
     }
 
+    fn visibleAnnotatedIdentifierTypeText(self: *Checker, node: NodeId) ?[]const u8 {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return null;
+        const id = hir_mod.identifierOf(self.hir, node);
+        const use_start = self.hir.spanOf(node).start;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
+                for (hir_mod.fnParams(self.hir, cur)) |p| {
+                    if (self.hir.kindOf(p) != .parameter) continue;
+                    const pp = hir_mod.parameterOf(self.hir, p);
+                    if (pp.name == hir_mod.none_node_id or self.hir.kindOf(pp.name) != .identifier) continue;
+                    if (hir_mod.identifierOf(self.hir, pp.name).name != id.name) continue;
+                    if (pp.type_annotation == hir_mod.none_node_id) return null;
+                    return self.nodeSourceTextOrEmpty(pp.type_annotation);
+                }
+            }
+            const stmts: ?[]const NodeId = switch (k) {
+                .block_stmt => hir_mod.blockStmts(self.hir, cur),
+                .namespace_decl => hir_mod.namespaceBody(self.hir, cur),
+                else => null,
+            };
+            if (stmts) |items| {
+                for (items) |stmt| {
+                    if (self.hir.spanOf(stmt).start > use_start) break;
+                    const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
+                    if (decl == hir_mod.none_node_id) continue;
+                    const dk = self.hir.kindOf(decl);
+                    if (dk != .var_decl and dk != .let_decl and dk != .const_decl) continue;
+                    const v = hir_mod.varDeclOf(self.hir, decl);
+                    if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) continue;
+                    if (hir_mod.identifierOf(self.hir, v.name).name != id.name) continue;
+                    if (v.type_annotation == hir_mod.none_node_id) return null;
+                    return self.nodeSourceTextOrEmpty(v.type_annotation);
+                }
+            }
+        }
+        if (self.module) |module| {
+            if (module.root.lookup(id.name)) |sym| {
+                if (sym.decls.items.len == 0) return null;
+                const decl = sym.decls.items[0];
+                const dk = self.hir.kindOf(decl);
+                if (dk != .var_decl and dk != .let_decl and dk != .const_decl) return null;
+                const v = hir_mod.varDeclOf(self.hir, decl);
+                if (v.type_annotation == hir_mod.none_node_id) return null;
+                return self.nodeSourceTextOrEmpty(v.type_annotation);
+            }
+        }
+        return null;
+    }
+
     /// Detect simple type guards in `cond` and write their
     /// narrowing into the current scope.
     ///
@@ -37711,6 +37765,7 @@ pub const Checker = struct {
 
         const af = self.interner.pool.flagsOf(a);
         const bf = self.interner.pool.flagsOf(b);
+        if (self.classPrivateComparableMismatch(a, b)) return false;
         if (af.is_union) {
             for (self.interner.unionMembers(a)) |member| {
                 if (try self.typesHaveComparableOverlapLimit(member, b, depth + 1)) return true;
@@ -37847,7 +37902,7 @@ pub const Checker = struct {
         if (t >= self.interner.pool.typeCount()) return false;
         const f = self.interner.pool.flagsOf(t);
         if (!f.is_object_type) return false;
-        if (self.class_name_by_instance.get(t)) |class_name| {
+        if (self.classNameForInstanceType(t)) |class_name| {
             if (self.classHasPrivateMembers(class_name)) return false;
         }
         if (self.objectTypeIsCallOrConstructOnly(t)) return false;
@@ -37937,16 +37992,60 @@ pub const Checker = struct {
             }
             if (!try self.typesHaveComparableOverlapLimit(am.type, bm.type, depth + 1)) return false;
         }
+        if (try self.objectIndexSignaturesHaveComparableOverlap(a, b, depth + 1)) |index_overlap| {
+            return index_overlap;
+        }
         return saw_common or self.objectTypeIsWeak(a) or self.objectTypeIsWeak(b);
     }
 
+    fn objectIndexSignaturesHaveComparableOverlap(self: *Checker, a: TypeId, b: TypeId, depth: u8) CheckError!?bool {
+        var saw_pair = false;
+        const a_string = self.interner.objectStringIndex(a);
+        const b_string = self.interner.objectStringIndex(b);
+        if (a_string != types.Primitive.none and b_string != types.Primitive.none) {
+            saw_pair = true;
+            if (try self.typesHaveComparableOverlapLimit(a_string, b_string, depth + 1)) return true;
+        }
+        const a_number = self.interner.objectNumberIndex(a);
+        const b_number = self.interner.objectNumberIndex(b);
+        if (a_number != types.Primitive.none and b_number != types.Primitive.none) {
+            saw_pair = true;
+            if (try self.typesHaveComparableOverlapLimit(a_number, b_number, depth + 1)) return true;
+        }
+        if (a_number != types.Primitive.none and b_string != types.Primitive.none) {
+            saw_pair = true;
+            if (try self.typesHaveComparableOverlapLimit(a_number, b_string, depth + 1)) return true;
+        }
+        if (a_string != types.Primitive.none and b_number != types.Primitive.none) {
+            saw_pair = true;
+            if (try self.typesHaveComparableOverlapLimit(a_string, b_number, depth + 1)) return true;
+        }
+        return if (saw_pair) false else null;
+    }
+
     fn classPrivateComparableMismatch(self: *Checker, a: TypeId, b: TypeId) bool {
-        const a_name = self.class_name_by_instance.get(a) orelse return false;
-        const b_name = self.class_name_by_instance.get(b) orelse return false;
+        const a_name = self.classNameForInstanceType(a) orelse return false;
+        const b_name = self.classNameForInstanceType(b) orelse return false;
         if (a_name == b_name or self.classesRelatedByHeritage(a_name, b_name)) return false;
         if (self.classHasPrivateMembers(a_name) or self.classHasPrivateMembers(b_name)) return true;
         return self.classPrivateMembersOverlapOther(a, b) or
             self.classPrivateMembersOverlapOther(b, a);
+    }
+
+    fn classNameForInstanceType(self: *Checker, t: TypeId) ?hir_mod.StringId {
+        if (self.class_name_by_instance.get(t)) |name| return name;
+        if (t < self.interner.pool.typeCount()) {
+            const f = self.interner.pool.flagsOf(t);
+            const payload_idx = self.interner.pool.payloadOf(t);
+            if (f.is_intersection and payload_idx < self.interner.pool.intersection_payloads.items.len) {
+                for (self.interner.intersectionMembers(t)) |member| {
+                    if (self.classNameForInstanceType(member)) |member_name| return member_name;
+                }
+            }
+        }
+        const named = self.namedTypeForId(t) orelse return null;
+        if (self.class_private_members.contains(named) or self.class_instance_types.contains(named)) return named;
+        return null;
     }
 
     fn classHasPrivateMembers(self: *Checker, class_name: hir_mod.StringId) bool {
@@ -40876,6 +40975,79 @@ pub const Checker = struct {
         return try self.allocSimpleTypeName(t);
     }
 
+    fn relationalDiagnosticOperandType(self: *Checker, operand: NodeId, checked_t: TypeId) CheckError!TypeId {
+        if (self.hir.kindOf(operand) == .identifier) {
+            const declared_t = self.typeOfIdentifierDeclared(operand);
+            if (try self.unionContainsComparableMember(declared_t, checked_t)) {
+                if ((try self.allocRelationalDiagnosticTypeName(declared_t)) != null) return declared_t;
+            }
+        }
+        const checked_name = (try self.allocRelationalDiagnosticTypeName(checked_t)) orelse return checked_t;
+        if (!std.mem.eql(u8, checked_name, "{}")) return checked_t;
+        if (self.hir.kindOf(operand) == .identifier) {
+            const declared_t = self.typeOfIdentifierDeclared(operand);
+            if (declared_t != types.Primitive.none and
+                declared_t != types.Primitive.any and
+                declared_t != types.Primitive.unknown)
+            {
+                if (try self.allocRelationalDiagnosticTypeName(declared_t)) |declared_name| {
+                    if (!std.mem.eql(u8, declared_name, "{}")) return declared_t;
+                }
+            }
+        }
+        const visible_t = self.visibleAnnotatedIdentifierType(operand) orelse return checked_t;
+        if (try self.allocRelationalDiagnosticTypeName(visible_t)) |visible_name| {
+            if (!std.mem.eql(u8, visible_name, "{}")) return visible_t;
+        }
+        return checked_t;
+    }
+
+    fn relationalDiagnosticOperandName(self: *Checker, operand: NodeId, checked_t: TypeId) CheckError!?[]const u8 {
+        const type_name = try self.allocRelationalDiagnosticTypeName(checked_t);
+        if (self.visibleAnnotatedIdentifierTypeText(operand)) |source_name| {
+            if (source_name.len > 0) {
+                const normalized_source = try self.normalizedTypeAnnotationText(source_name);
+                if (type_name == null) return normalized_source;
+                const rendered = type_name.?;
+                if (std.mem.eql(u8, rendered, "{}") or
+                    std.mem.indexOf(u8, rendered, "__home_promise_value") != null or
+                    (std.mem.indexOfScalar(u8, source_name, '[') != null and
+                        std.mem.indexOfScalar(u8, source_name, ']') != null) or
+                    std.mem.indexOfScalar(u8, source_name, '|') != null)
+                {
+                    return normalized_source;
+                }
+            }
+        }
+        return type_name;
+    }
+
+    fn normalizedTypeAnnotationText(self: *Checker, text: []const u8) CheckError![]const u8 {
+        const trimmed = std.mem.trim(u8, text, " \t\r\n");
+        if (trimmed.len >= 2 and
+            trimmed[0] == '{' and
+            trimmed[trimmed.len - 1] == '}' and
+            trimmed[trimmed.len - 2] != ';')
+        {
+            return try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "{s}; }}",
+                .{std.mem.trim(u8, trimmed[0 .. trimmed.len - 1], " \t\r\n")},
+            );
+        }
+        return trimmed;
+    }
+
+    fn unionContainsComparableMember(self: *Checker, union_t: TypeId, member_t: TypeId) CheckError!bool {
+        if (union_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(union_t).is_union) return false;
+        for (self.interner.unionMembers(union_t)) |member| {
+            if (member == member_t) return true;
+            if (try self.typesHaveComparableOverlapLimit(member, member_t, 0)) return true;
+        }
+        return false;
+    }
+
     fn reportRelationalOperatorCannotBeAppliedWithTypes(
         self: *Checker,
         node: NodeId,
@@ -41317,7 +41489,7 @@ pub const Checker = struct {
                 if (!try self.typesHaveComparableOverlap(cmp_lhs, cmp_rhs) or
                     self.templateTypesHaveNoOverlap(cmp_lhs, cmp_rhs))
                 {
-                    try self.reportNoOverlapComparison(node, cmp_lhs, cmp_rhs);
+                    try self.reportNoOverlapComparison(node, b.lhs, b.rhs, cmp_lhs, cmp_rhs);
                 }
                 break :blk types.Primitive.boolean_t;
             },
@@ -41356,7 +41528,15 @@ pub const Checker = struct {
                         !self.isRelationalOperandAllowed(rhs) or
                         self.relationalComparisonInvalid(lhs, rhs)))
                     {
-                        try self.reportRelationalOperatorCannotBeAppliedWithTypes(node, op_text, lhs, rhs);
+                        const lhs_diag = try self.relationalDiagnosticOperandType(b.lhs, lhs);
+                        const rhs_diag = try self.relationalDiagnosticOperandType(b.rhs, rhs);
+                        if (try self.relationalDiagnosticOperandName(b.lhs, lhs_diag)) |left_name| {
+                            if (try self.relationalDiagnosticOperandName(b.rhs, rhs_diag)) |right_name| {
+                                try self.reportRelationalOperatorCannotBeAppliedWithNames(node, op_text, left_name, right_name);
+                                break :blk types.Primitive.boolean_t;
+                            }
+                        }
+                        try self.reportRelationalOperatorCannotBeAppliedWithTypes(node, op_text, lhs_diag, rhs_diag);
                     }
                 }
                 break :blk types.Primitive.boolean_t;
@@ -41709,6 +41889,25 @@ pub const Checker = struct {
             },
             else => {},
         }
+    }
+
+    fn reportRelationalOperatorCannotBeAppliedWithNames(
+        self: *Checker,
+        node: NodeId,
+        op: []const u8,
+        left_name: []const u8,
+        right_name: []const u8,
+    ) CheckError!void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Operator '{s}' cannot be applied to types '{s}' and '{s}'.",
+            .{ op, left_name, right_name },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.operator_cannot_be_applied,
+            .message = msg,
+        });
     }
 
     /// Variant of `reportStaticTruthiness` used for if/while/do-while
@@ -43626,6 +43825,9 @@ pub const Checker = struct {
                 if (self.alias_display_names.get(t)) |display| {
                     break :blk display;
                 }
+                if (try self.allocPromiseDisplayName(t)) |display| {
+                    break :blk display;
+                }
                 if (self.interner.typeParameterName(t)) |tp_name| {
                     break :blk self.string_interner.get(tp_name);
                 }
@@ -43720,7 +43922,7 @@ pub const Checker = struct {
                 // surface only as object types with a numeric
                 // `length` literal); detect via `fixedTupleLength`
                 // which gates on the `length` member.
-                if (flags.is_object_type) {
+                if (flags.is_object_type and !flags.is_union and !flags.is_intersection) {
                     if (self.fixedTupleLength(t)) |fixed_len_u64| {
                         // A fixed-length tuple has a literal `length: N`
                         // member (variadic tuples lower to `length:
@@ -44814,7 +45016,8 @@ pub const Checker = struct {
 
     fn promisePayloadType(self: *Checker, t: TypeId) ?TypeId {
         if (t >= self.interner.pool.typeCount()) return null;
-        if (!self.interner.pool.flagsOf(t).is_object_type) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_object_type or flags.is_union or flags.is_intersection) return null;
         const value_id = self.string_interner.intern("__home_promise_value") catch return null;
         return self.interner.objectMember(t, value_id);
     }
@@ -47260,7 +47463,7 @@ pub const Checker = struct {
         try self.report(node, TsCodes.switch_case_not_comparable, "Type is not comparable to switch expression type.");
     }
 
-    fn reportNoOverlapComparison(self: *Checker, node: NodeId, lhs: TypeId, rhs: TypeId) !void {
+    fn reportNoOverlapComparison(self: *Checker, node: NodeId, lhs_node: NodeId, rhs_node: NodeId, lhs: TypeId, rhs: TypeId) !void {
         const pos = self.adjustedComparisonDiagnosticPos(node);
         // When one operand is a literal type but the other is the
         // base primitive of a DIFFERENT family (e.g. `"foo" == 42`,
@@ -47280,8 +47483,12 @@ pub const Checker = struct {
         if (self.shouldWidenLiteralAgainstPrimitive(rhs, lhs)) {
             display_rhs = self.widenLiteralType(rhs);
         }
-        if (try self.allocComparisonOperandName(display_lhs)) |lhs_name| {
-            if (try self.allocComparisonOperandName(display_rhs)) |rhs_name| {
+        const lhs_name_opt = (try self.comparisonDiagnosticOperandName(lhs_node, display_lhs)) orelse
+            (try self.allocComparisonOperandName(display_lhs));
+        if (lhs_name_opt) |lhs_name| {
+            const rhs_name_opt = (try self.comparisonDiagnosticOperandName(rhs_node, display_rhs)) orelse
+                (try self.allocComparisonOperandName(display_rhs));
+            if (rhs_name_opt) |rhs_name| {
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "This comparison appears to be unintentional because the types '{s}' and '{s}' have no overlap.",
@@ -47292,6 +47499,18 @@ pub const Checker = struct {
             }
         }
         try self.reportAt(node, pos, TsCodes.no_overlap_comparison, "This comparison appears to be unintentional because the types have no overlap.");
+    }
+
+    fn comparisonDiagnosticOperandName(self: *Checker, operand: NodeId, display_t: TypeId) CheckError!?[]const u8 {
+        _ = display_t;
+        const source_name = self.visibleAnnotatedIdentifierTypeText(operand) orelse return null;
+        if (source_name.len == 0) return null;
+        if (std.mem.indexOfScalar(u8, source_name, '[') == null or
+            std.mem.indexOfScalar(u8, source_name, ']') == null)
+        {
+            return null;
+        }
+        return try self.normalizedTypeAnnotationText(source_name);
     }
 
     /// Returns true when `lit` is a literal type and `other` is the
@@ -47820,6 +48039,9 @@ pub const Checker = struct {
                 if (self.alias_display_names.get(t)) |display| {
                     break :blk display;
                 }
+                if (try self.allocPromiseDisplayName(t)) |display| {
+                    break :blk display;
+                }
                 // Defensive guard: `typeParameterName` indexes the
                 // type-parameter payloads directly without bounds
                 // checking the payload index. Non-tp types occasionally
@@ -48242,6 +48464,12 @@ pub const Checker = struct {
                 };
             },
         };
+    }
+
+    fn allocPromiseDisplayName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
+        const payload_t = self.promisePayloadType(t) orelse return null;
+        const payload_name = (try self.allocSimpleTypeName(payload_t)) orelse return null;
+        return try std.fmt.allocPrint(self.diag_arena.allocator(), "Promise<{s}>", .{payload_name});
     }
 
     fn namedTypeForId(self: *Checker, t: TypeId) ?hir_mod.StringId {
