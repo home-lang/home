@@ -30745,11 +30745,18 @@ pub const Checker = struct {
                         // the spread expression's own type otherwise.
                         const sp = hir_mod.spreadOf(self.hir, el);
                         const inner_t = try self.checkExpression(sp.expression);
-                        if (!self.isIterableLikeType(inner_t)) {
+                        if (!self.isIterableLikeType(inner_t) and
+                            !self.identifierIsUntypedUninitializedVar(sp.expression))
+                        {
                             // Prefer the named TS2488 form
                             // (`Type 'SymbolIterator' must have …`) when the
                             // source type can be named. Mirrors
                             // `iteratorSpreadInArray8` / `iteratorSpreadInArray10`.
+                            // Identifiers referencing an evolving-any var
+                            // (`var p;` with no annotation) are
+                            // any-typed under tsc's flow rules — TS7005
+                            // is the appropriate diagnostic there, not
+                            // TS2488 on a literal `undefined`.
                             try self.reportIteratorRequired(sp.expression, inner_t);
                         }
                         const elem_inner = self.interner.objectNumberIndex(inner_t);
