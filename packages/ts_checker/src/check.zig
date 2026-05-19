@@ -37531,6 +37531,34 @@ pub const Checker = struct {
             try self.reportCannotFindJQueryName(node, name);
             return;
         }
+        // Lowercase primitive type names (`string`, `number`, `boolean`,
+        // `symbol`, `bigint`, `object`) used in a value-position
+        // identifier reference are TS2693 ("only refers to a type"),
+        // not TS2552 ("Did you mean 'String'?"). Upstream tsc routes
+        // these through `resolveName` finding the type-only symbol and
+        // then emitting TS2693. Mirrors `parserRealSource10.ts(128,36)`
+        // and `parserRealSource10.ts(129,41)` for `new string[]` /
+        // `new number[]`. Skip type_ref nodes — those have their own
+        // resolution path and the lowercase primitives are valid there.
+        const is_primitive_type_name = std.mem.eql(u8, name_str, "string") or
+            std.mem.eql(u8, name_str, "number") or
+            std.mem.eql(u8, name_str, "boolean") or
+            std.mem.eql(u8, name_str, "symbol") or
+            std.mem.eql(u8, name_str, "bigint") or
+            std.mem.eql(u8, name_str, "object");
+        if (is_primitive_type_name and self.hir.kindOf(node) != .type_ref) {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "'{s}' only refers to a type, but is being used as a value here.",
+                .{name_str},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .code = TsCodes.type_only_used_as_value,
+                .message = msg,
+            });
+            return;
+        }
         // tsc's spelling-suggestion pass DOES surface `await` →
         // `Awaited` in type position (TS 4.5 added the lib type and
         // the suggestion mirrors that): `var v: await;` produces
