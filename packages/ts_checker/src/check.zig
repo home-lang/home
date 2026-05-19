@@ -15055,6 +15055,37 @@ pub const Checker = struct {
                 }
             }
         }
+        if (try self.directQualifiedNamespaceValueMemberType(root, namespace_name, member_name)) |member_t| {
+            return member_t;
+        }
+        return null;
+    }
+
+    fn directQualifiedNamespaceValueMemberType(
+        self: *Checker,
+        root: NodeId,
+        namespace_name: hir_mod.StringId,
+        member_name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        var found: NodeId = hir_mod.none_node_id;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            const ns_node = self.unwrapExportDecl(raw);
+            if (self.hir.kindOf(ns_node) != .namespace_decl) continue;
+            const ns = hir_mod.namespaceOf(self.hir, ns_node);
+            if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) continue;
+            const ns_name = self.string_interner.get(hir_mod.identifierOf(self.hir, ns.name).name);
+            var parts = std.mem.splitScalar(u8, ns_name, '.');
+            const head = parts.next() orelse continue;
+            const tail = parts.next() orelse continue;
+            if (parts.next() != null) continue;
+            if (!std.mem.eql(u8, head, self.string_interner.get(namespace_name))) continue;
+            if (!std.mem.eql(u8, tail, self.string_interner.get(member_name))) continue;
+            if (!self.namespaceHasRuntimeValue(ns_node)) return null;
+            if (found != hir_mod.none_node_id) return null;
+            found = ns_node;
+        }
+        if (found != hir_mod.none_node_id) return try self.namespaceValueObjectType(found);
         return null;
     }
 
@@ -72958,6 +72989,27 @@ test "checker: typeof nested namespace value satisfies repeated var declaration"
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
+        try T.expect(d.code != TsCodes.subsequent_var_type_mismatch);
+    }
+}
+
+test "checker: dotted namespace value exposes exported member namespace" {
+    const s = try newSetup(
+        \\namespace A.B {
+        \\  export var x: number;
+        \\}
+        \\namespace A {
+        \\  namespace B {
+        \\    export var x: string;
+        \\  }
+        \\}
+        \\var x: number;
+        \\var x = A.B.x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
         try T.expect(d.code != TsCodes.subsequent_var_type_mismatch);
     }
 }
