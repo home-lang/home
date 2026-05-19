@@ -174,17 +174,14 @@ pub fn PathParsed(comptime T: type) type {
 // ---- Predicates ------------------------------------------------------------
 
 pub fn isSepPosixT(comptime T: type, byte: T) bool {
-    _ = T;
     return byte == CHAR_FORWARD_SLASH;
 }
 
 pub fn isSepWindowsT(comptime T: type, byte: T) bool {
-    _ = T;
     return byte == CHAR_FORWARD_SLASH or byte == CHAR_BACKWARD_SLASH;
 }
 
 pub fn isWindowsDeviceRootT(comptime T: type, byte: T) bool {
-    _ = T;
     return (byte >= 'A' and byte <= 'Z') or (byte >= 'a' and byte <= 'z');
 }
 

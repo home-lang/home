@@ -33,6 +33,55 @@ pub const OOM = Global.OOM;
 pub const handleOom = Global.handleOom;
 pub const default_allocator: std.mem.Allocator = std.heap.smp_allocator;
 
+// Wave-14 (2026-05-18): small helpers used by newly-ported Tier-0
+// leaves (bun_alloc/*, string/*, ptr/weak_ptr). Each mirrors the
+// upstream `bun.X` surface its callers reach for. Kept here rather
+// than in `Global.zig` because they live at the top-level `bun.*`
+// namespace upstream.
+
+/// Mirrors Bun's `bun.debugAssert` — Debug-only invariant check. In
+/// release builds the entire call site disappears.
+pub inline fn debugAssert(ok: bool) void {
+    if (@import("builtin").mode == .Debug) {
+        std.debug.assert(ok);
+    }
+}
+
+/// Mirrors Bun's `bun.assertf(cond, fmt, args)` — Debug-only assert
+/// with a printf-style message. In release the entire call site
+/// disappears.
+pub inline fn assertf(ok: bool, comptime _fmt: []const u8, args: anytype) void {
+    if (@import("builtin").mode == .Debug) {
+        if (!ok) std.debug.panic(_fmt, args);
+    }
+}
+
+/// Mirrors Bun's `bun.cast(To, value)` — `@ptrCast(@alignCast(value))`
+/// for pointers, `@ptrFromInt(@as(usize, value))` for integers.
+pub inline fn cast(comptime To: type, value: anytype) To {
+    if (@typeInfo(@TypeOf(value)) == .int) {
+        return @ptrFromInt(@as(usize, value));
+    }
+    return @ptrCast(@alignCast(value));
+}
+
+/// Mirrors Bun's `bun.hash(content)` — Wyhash with seed 0.
+pub fn hash(content: []const u8) u64 {
+    return std.hash.Wyhash.hash(0, content);
+}
+
+/// Mirrors Bun's `bun.destroy(value)` — release a single value back to
+/// the runtime allocator. Phase 12 routes through `default_allocator`;
+/// the per-context allocator from Phase 12.2 takes over once the JSC
+/// bridge lands.
+pub inline fn destroy(value: anytype) void {
+    default_allocator.destroy(value);
+}
+
+/// Mirrors Bun's `bun.MAX_PATH_BYTES`. Sourced from `paths/paths.zig`
+/// so this stays a single source of truth.
+pub const MAX_PATH_BYTES: usize = @import("paths/paths.zig").MAX_PATH_BYTES;
+
 // Comptime string map (copied from Bun, JSC methods stripped — they'll
 // be re-added under src/jsc/ once Phase 12.2 lands).
 const comptime_string_map = @import("collections/comptime_string_map.zig");
@@ -275,6 +324,49 @@ pub const install = struct {
 pub const ptr = struct {
     pub const meta = @import("ptr/meta.zig");
     pub const Cow = @import("ptr/Cow.zig").Cow;
+    // Wave-14 port batch (2026-05-18). `weak_ptr` was copied into the
+    // tree during wave-13 but never wired. WeakPtr(T, "data_field") +
+    // its 32-bit WeakPtrData header give upstream's lazy-finalize
+    // pattern: the owner is freed when the last weak goes away, not
+    // when the underlying value is destroyed.
+    pub const WeakPtr = @import("ptr/weak_ptr.zig").WeakPtr;
+    pub const WeakPtrData = @import("ptr/weak_ptr.zig").WeakPtrData;
+};
+
+// ---- src/bun_alloc/ ----------------------------------------------------
+// Wave-14 port batch (2026-05-18). Tier-0 allocator helpers — pure
+// std once the upstream `#`-private-field syntax (forthcoming Zig 0.18)
+// is rewritten to plain field names. BufferFallbackAllocator is the
+// borrowed-buffer-with-fallback adapter; MaxHeapAllocator the
+// single-allocation arena; NullableAllocator the size-1 nullable
+// wrapper around `std.mem.Allocator`.
+pub const bun_alloc = struct {
+    pub const BufferFallbackAllocator = @import("bun_alloc/BufferFallbackAllocator.zig");
+    pub const MaxHeapAllocator = @import("bun_alloc/MaxHeapAllocator.zig");
+    pub const NullableAllocator = @import("bun_alloc/NullableAllocator.zig");
+};
+
+// ---- src/string/ -------------------------------------------------------
+// Wave-14 (2026-05-18). Singular `string` namespace (the plural
+// `strings` is already taken by the lower-level substrate). Pure-data
+// borrowed-slice wrappers: HashedString carries a 32-bit Wyhash digest
+// for fast equality short-circuit; PathString packs `{ptr, len}` into
+// a single u64 on macOS/Linux (53-bit truncated pointer) so paths
+// fit in a register.
+pub const string = struct {
+    pub const HashedString = @import("string/HashedString.zig");
+    pub const PathString = @import("string/PathString.zig").PathString;
+};
+
+// ---- src/js_parser/ ----------------------------------------------------
+// Wave-14 (2026-05-18). Auto-generated lexer tables only; the full
+// JS scanner / parser re-lands once `home_rt.ast` carries
+// Expr/Stmt/Token. `lexer/identifier.zig` is a 3-level bitmap
+// classifier — zero `bun.*` deps, std only.
+pub const js_parser = struct {
+    pub const lexer = struct {
+        pub const identifier = @import("js_parser/lexer/identifier.zig");
+    };
 };
 
 // ---- src/uws_sys/ ------------------------------------------------------
@@ -429,11 +521,7 @@ pub const node = struct {
     pub const assert = struct {
         pub const myers_diff = @import("node/assert/myers_diff.zig");
     };
-    // TODO(phase-12-13): wire node/path.zig — file currently fails three
-    // Zig 0.17 `pointless discard of function parameter` checks in
-    // `isSepPosixT` / `isSepWindowsT` / `isWindowsDeviceRootT` (each
-    // discards `comptime T` while still naming it for trait inference);
-    // the fix is a body edit and skipped per orphan-wave wiring rules.
+    pub const path = @import("node/path.zig");
 };
 
 // ---- src/core/ + src/alloc/ + src/safety/ ----------------------
@@ -609,6 +697,12 @@ pub const css = struct {
         pub const display = @import("css/properties/display.zig");
         pub const overflow = @import("css/properties/overflow.zig");
         pub const position = @import("css/properties/position.zig");
+        // Wave-14 port batch (2026-05-18). SVG `<paint>` / `<marker>`
+        // / `<stroke-dasharray>` shapes and the seven enum-property
+        // aliases. Strategy A: routes through `css_parser_stub.zig`
+        // so the enum-property `DefineEnumProperty(todo_stuff.depth)`
+        // lines compile cleanly while the real parser is parked.
+        pub const svg = @import("css/properties/svg.zig");
     };
     pub const PropertyCategory = logical.PropertyCategory;
     pub const LogicalGroup = logical.LogicalGroup;
@@ -637,10 +731,7 @@ pub const css = struct {
 pub const analytics = struct {
     pub const schema = @import("analytics/schema.zig");
     pub const gate = @import("analytics/analytics.zig");
-    // TODO(phase-12-13): wire analytics/Features.zig — file currently
-    // trips Zig 0.17 `binary operator '*' has whitespace on one side` lint
-    // at line 110 of the copied source; whitespace-only fix is a file edit
-    // and skipped per orphan-wave wiring rules.
+    pub const Features = @import("analytics/Features.zig");
 };
 
 // ---- src/*_sys/ --------------------------------------------------------
@@ -1149,11 +1240,8 @@ test {
     // Thirteenth-wave port batch (2026-05-18) — orphan-wave wiring.
     // Pull each newly-aggregated leaf into the test runner so inline
     // tests fire under `zig build test -Dfilter=home_rt`.
-    // TODO(phase-12-13): wire analytics/Features.zig once the Zig-0.17
-    // whitespace-around-`*` lint at line 110 is fixed in the source.
-    // TODO(phase-12-13): wire node/path.zig once the Zig-0.17
-    // pointless-discard lint on `_ = T` in `isSepPosixT` / `isSepWindowsT`
-    // / `isWindowsDeviceRootT` is resolved in the source.
+    _ = @import("analytics/Features.zig");
+    _ = @import("node/path.zig");
     _ = @import("jsc/generated_classes_list.zig");
     _ = @import("runtime/api/bun/Terminal.zig");
     _ = @import("runtime/api/bun/spawn.zig");
@@ -1163,6 +1251,17 @@ test {
     _ = @import("runtime/webcore/ObjectURLRegistry.zig");
     _ = @import("runtime/webcore/Sink.zig");
     _ = @import("safety/safety.zig");
+    // Wave-14 port batch (2026-05-18) — Tier-0 grinder additions:
+    // bun_alloc/* allocators, smart pointer (weak_ptr), borrowed-slice
+    // string wrappers, identifier classifier tables, SVG CSS leaves.
+    _ = @import("bun_alloc/BufferFallbackAllocator.zig");
+    _ = @import("bun_alloc/MaxHeapAllocator.zig");
+    _ = @import("bun_alloc/NullableAllocator.zig");
+    _ = @import("string/HashedString.zig");
+    _ = @import("string/PathString.zig");
+    _ = @import("js_parser/lexer/identifier.zig");
+    _ = @import("css/properties/svg.zig");
+    _ = @import("ptr/weak_ptr.zig");
 }
 
 test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {

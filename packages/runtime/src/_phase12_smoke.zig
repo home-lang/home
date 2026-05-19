@@ -15,11 +15,8 @@ test {
     // Thirteenth-wave port batch (2026-05-18) — orphan-wave smoke check.
     // Mirrors the home_rt aggregator additions so the smoke driver
     // exercises each file even before the test-step runs.
-    // TODO(phase-12-13): wire analytics/Features.zig — Zig-0.17
-    // whitespace-around-`*` lint trips at line 110 of the copy.
-    // TODO(phase-12-13): wire node/path.zig — Zig-0.17 pointless-discard
-    // lint trips on `_ = T` in the `isSep*T` / `isWindowsDeviceRootT`
-    // comptime helpers.
+    _ = @import("analytics/Features.zig");
+    _ = @import("node/path.zig");
     _ = @import("jsc/generated_classes_list.zig");
     _ = @import("runtime/api/bun/Terminal.zig");
     _ = @import("runtime/api/bun/spawn.zig");

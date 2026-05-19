@@ -107,7 +107,12 @@ pub const Formatter = struct {
     pub fn format(_: Formatter, writer: *std.Io.Writer) !void {
         const fields = comptime brk: {
             const info: std.builtin.Type = @typeInfo(Features);
-            var buffer: [info.@"struct".decls.len][]const u8 = .{""} ** info.@"struct".decls.len;
+            // Note: upstream uses `.{""} ** info.@"struct".decls.len` (array
+            // repetition). Zig 0.17-dev.263 `zig fmt` mis-tokenizes the `**`
+            // after `}` as two `*` (which is a semantic-breaking rewrite to
+            // multiply-deref). `@splat("")` is the modern equivalent and
+            // round-trips cleanly through fmt.
+            var buffer: [info.@"struct".decls.len][]const u8 = @splat("");
             var count: usize = 0;
             for (info.@"struct".decls) |decl| {
                 var f = &@field(Features, decl.name);
