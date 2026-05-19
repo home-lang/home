@@ -515,6 +515,7 @@ pub const TsCodes = struct {
     pub const cannot_assign_to_function: u32 = 2630;
     pub const cannot_assign_to_namespace: u32 = 2631;
     pub const cannot_invoke_possibly_undefined: u32 = 2722;
+    pub const property_used_before_assigned: u32 = 2565;
     pub const property_used_before_initialization: u32 = 2729;
     pub const await_only_in_async: u32 = 1308;
     pub const return_outside_function: u32 = 1108;
@@ -1711,6 +1712,7 @@ pub const Checker = struct {
         for (stmts) |s| try self.checkStatement(s);
         try self.checkTopLevelDecoratorDiagnostics(stmts);
         try self.checkUsedBeforeAssignment(stmts);
+        try self.checkExpandoPropertyUsedBeforeAssignment(stmts);
         try self.checkClassUsedBeforeDeclaration(stmts);
         try self.detectInvalidParamProperty();
         try self.detectThisInStaticContext();
@@ -5506,6 +5508,7 @@ pub const Checker = struct {
                 try self.reportImplicitAnyYieldOperands(f.body);
             }
             try self.checkUsedBeforeAssignment(stmts);
+            try self.checkExpandoPropertyUsedBeforeAssignment(stmts);
             try self.checkClassUsedBeforeDeclaration(stmts);
         } else {
             // Arrow with expression body — its expression IS the
@@ -5931,6 +5934,295 @@ pub const Checker = struct {
         var pending: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
         defer pending.deinit(self.gpa);
         for (stmts) |s| try self.scanForUsedBeforeAssign(s, &pending);
+    }
+
+    const ExpandoAssignmentState = enum { assigned, maybe_unassigned };
+    const ExpandoAssignmentMap = std.AutoHashMapUnmanaged(MemberKey, ExpandoAssignmentState);
+
+    /// TS2565 — "Property 'X' is used before being assigned." for
+    /// function-object expando properties.
+    ///
+    /// TypeScript tracks properties assigned to function values inside the
+    /// same initializing scope. A direct assignment (`f.x = 1`) makes later
+    /// reads safe, but an assignment that only happens along some branch
+    /// (`if (cond) f.x = 1`) leaves `f.x` maybe-unassigned until all joined
+    /// branches write it. This lightweight source-order pass mirrors that
+    /// behavior for function declarations and function-valued bindings.
+    fn checkExpandoPropertyUsedBeforeAssignment(self: *Checker, stmts: []const NodeId) CheckError!void {
+        if (!self.strict_flags.strict_null_checks) return;
+        var states: ExpandoAssignmentMap = .empty;
+        defer states.deinit(self.gpa);
+        for (stmts) |s| try self.scanExpandoPropertyUseBeforeAssign(s, &states);
+    }
+
+    fn scanExpandoPropertyUseBeforeAssign(
+        self: *Checker,
+        node: NodeId,
+        states: *ExpandoAssignmentMap,
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .block_stmt => {
+                for (hir_mod.blockStmts(self.hir, node)) |s| {
+                    try self.scanExpandoPropertyUseBeforeAssign(s, states);
+                }
+            },
+            .namespace_decl => {
+                for (hir_mod.namespaceBody(self.hir, node)) |s| {
+                    try self.scanExpandoPropertyUseBeforeAssign(s, states);
+                }
+            },
+            .export_decl => {
+                const ex = hir_mod.exportOf(self.hir, node);
+                try self.scanExpandoPropertyUseBeforeAssign(ex.decl, states);
+            },
+            .return_stmt => {
+                const r = hir_mod.returnOf(self.hir, node);
+                try self.scanExpandoPropertyUseBeforeAssign(r.value, states);
+            },
+            .let_decl, .var_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, node);
+                try self.scanExpandoPropertyUseBeforeAssign(v.init, states);
+            },
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                try self.scanExpandoPropertyUseBeforeAssign(i.cond, states);
+
+                var before: ExpandoAssignmentMap = .empty;
+                defer before.deinit(self.gpa);
+                try self.cloneExpandoAssignmentStates(states, &before);
+
+                var then_states: ExpandoAssignmentMap = .empty;
+                defer then_states.deinit(self.gpa);
+                try self.cloneExpandoAssignmentStates(states, &then_states);
+                try self.scanExpandoPropertyUseBeforeAssign(i.then_branch, &then_states);
+
+                if (i.else_branch != hir_mod.none_node_id) {
+                    var else_states: ExpandoAssignmentMap = .empty;
+                    defer else_states.deinit(self.gpa);
+                    try self.cloneExpandoAssignmentStates(states, &else_states);
+                    try self.scanExpandoPropertyUseBeforeAssign(i.else_branch, &else_states);
+                    try self.joinExpandoAssignmentStates(states, &before, &then_states, &else_states);
+                } else {
+                    try self.joinExpandoAssignmentStatesNoElse(states, &before, &then_states);
+                }
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                if (a.op == null) {
+                    try self.scanExpandoPropertyUseBeforeAssign(a.value, states);
+                    if (try self.expandoFunctionMemberKey(a.target)) |key| {
+                        try states.put(self.gpa, key, .assigned);
+                    } else {
+                        try self.scanExpandoPropertyUseBeforeAssign(a.target, states);
+                    }
+                } else {
+                    try self.scanExpandoPropertyUseBeforeAssign(a.target, states);
+                    try self.scanExpandoPropertyUseBeforeAssign(a.value, states);
+                }
+            },
+            .member_access => {
+                if (try self.expandoFunctionMemberKey(node)) |key| {
+                    if (states.get(key) == .maybe_unassigned) {
+                        try self.reportExpandoPropertyUsedBeforeAssignment(node, key.prop_name);
+                    }
+                }
+                const m = hir_mod.memberOf(self.hir, node);
+                try self.scanExpandoPropertyUseBeforeAssign(m.object, states);
+            },
+            .element_access => {
+                const e = hir_mod.elementOf(self.hir, node);
+                try self.scanExpandoPropertyUseBeforeAssign(e.object, states);
+                try self.scanExpandoPropertyUseBeforeAssign(e.index, states);
+            },
+            .call_expr, .new_expr => {
+                const c = hir_mod.callOf(self.hir, node);
+                try self.scanExpandoPropertyUseBeforeAssign(c.callee, states);
+                for (hir_mod.callArgs(self.hir, node)) |arg| {
+                    try self.scanExpandoPropertyUseBeforeAssign(arg, states);
+                }
+            },
+            .binary_op => {
+                const b = hir_mod.binopOf(self.hir, node);
+                try self.scanExpandoPropertyUseBeforeAssign(b.lhs, states);
+                try self.scanExpandoPropertyUseBeforeAssign(b.rhs, states);
+            },
+            .logical_op => {
+                const l = hir_mod.logicalOf(self.hir, node);
+                try self.scanExpandoPropertyUseBeforeAssign(l.lhs, states);
+                try self.scanExpandoPropertyUseBeforeAssign(l.rhs, states);
+            },
+            .unary_op => {
+                const u = hir_mod.unaryOf(self.hir, node);
+                try self.scanExpandoPropertyUseBeforeAssign(u.operand, states);
+            },
+            .conditional => {
+                const c = hir_mod.conditionalOf(self.hir, node);
+                try self.scanExpandoPropertyUseBeforeAssign(c.cond, states);
+                try self.scanExpandoPropertyUseBeforeAssign(c.then_branch, states);
+                try self.scanExpandoPropertyUseBeforeAssign(c.else_branch, states);
+            },
+            .array_literal => {
+                for (hir_mod.arrayLiteralElements(self.hir, node)) |el| {
+                    try self.scanExpandoPropertyUseBeforeAssign(el, states);
+                }
+            },
+            .object_literal => {
+                for (hir_mod.objectLiteralProps(self.hir, node)) |p| {
+                    if (self.hir.kindOf(p) == .object_property) {
+                        const op = hir_mod.objectPropertyOf(self.hir, p);
+                        if (op.is_computed) try self.scanExpandoPropertyUseBeforeAssign(op.key, states);
+                        try self.scanExpandoPropertyUseBeforeAssign(op.value, states);
+                    } else {
+                        try self.scanExpandoPropertyUseBeforeAssign(p, states);
+                    }
+                }
+            },
+            .spread => {
+                const sp = hir_mod.spreadOf(self.hir, node);
+                try self.scanExpandoPropertyUseBeforeAssign(sp.expression, states);
+            },
+            .as_expr, .satisfies_expr, .type_assertion => {
+                const a = hir_mod.asExpressionOf(self.hir, node);
+                try self.scanExpandoPropertyUseBeforeAssign(a.expr, states);
+            },
+            .fn_decl, .fn_expr, .arrow_fn, .class_decl, .class_expr => return,
+            else => {},
+        }
+    }
+
+    fn cloneExpandoAssignmentStates(self: *Checker, src: *const ExpandoAssignmentMap, dst: *ExpandoAssignmentMap) !void {
+        var it = src.iterator();
+        while (it.next()) |entry| {
+            try dst.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+        }
+    }
+
+    fn joinExpandoAssignmentStates(
+        self: *Checker,
+        out: *ExpandoAssignmentMap,
+        before: *const ExpandoAssignmentMap,
+        then_states: *const ExpandoAssignmentMap,
+        else_states: *const ExpandoAssignmentMap,
+    ) !void {
+        var keys: std.AutoHashMapUnmanaged(MemberKey, void) = .empty;
+        defer keys.deinit(self.gpa);
+        try self.collectExpandoStateKeys(before, &keys);
+        try self.collectExpandoStateKeys(then_states, &keys);
+        try self.collectExpandoStateKeys(else_states, &keys);
+
+        out.clearRetainingCapacity();
+        var it = keys.iterator();
+        while (it.next()) |entry| {
+            const key = entry.key_ptr.*;
+            const then_state = then_states.get(key);
+            const else_state = else_states.get(key);
+            const state: ExpandoAssignmentState = if (then_state == .assigned and else_state == .assigned)
+                .assigned
+            else if (then_state != null or else_state != null or before.get(key) != null)
+                .maybe_unassigned
+            else
+                continue;
+            try out.put(self.gpa, key, state);
+        }
+    }
+
+    fn joinExpandoAssignmentStatesNoElse(
+        self: *Checker,
+        out: *ExpandoAssignmentMap,
+        before: *const ExpandoAssignmentMap,
+        then_states: *const ExpandoAssignmentMap,
+    ) !void {
+        var keys: std.AutoHashMapUnmanaged(MemberKey, void) = .empty;
+        defer keys.deinit(self.gpa);
+        try self.collectExpandoStateKeys(before, &keys);
+        try self.collectExpandoStateKeys(then_states, &keys);
+
+        out.clearRetainingCapacity();
+        var it = keys.iterator();
+        while (it.next()) |entry| {
+            const key = entry.key_ptr.*;
+            const before_state = before.get(key);
+            const state: ExpandoAssignmentState = if (before_state == .assigned)
+                .assigned
+            else if (before_state != null or then_states.get(key) != null)
+                .maybe_unassigned
+            else
+                continue;
+            try out.put(self.gpa, key, state);
+        }
+    }
+
+    fn collectExpandoStateKeys(
+        self: *Checker,
+        states: *const ExpandoAssignmentMap,
+        keys: *std.AutoHashMapUnmanaged(MemberKey, void),
+    ) !void {
+        var it = states.iterator();
+        while (it.next()) |entry| {
+            try keys.put(self.gpa, entry.key_ptr.*, {});
+        }
+    }
+
+    fn expandoFunctionMemberKey(self: *Checker, node: NodeId) CheckError!?MemberKey {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .member_access) return null;
+        const m = hir_mod.memberOf(self.hir, node);
+        if (m.object == hir_mod.none_node_id or self.hir.kindOf(m.object) != .identifier) return null;
+        const obj_id = hir_mod.identifierOf(self.hir, m.object);
+        if (!self.identifierNamesFunctionValueInScope(obj_id.name, node)) return null;
+        return .{ .obj_name = obj_id.name, .prop_name = m.name };
+    }
+
+    fn identifierNamesFunctionValueInScope(self: *Checker, name: hir_mod.StringId, from_node: NodeId) bool {
+        var cur = from_node;
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            if (self.hir.kindOf(cur) != .block_stmt) continue;
+            for (hir_mod.blockStmts(self.hir, cur)) |stmt| {
+                if (self.statementDeclaresFunctionValueName(stmt, name)) return true;
+            }
+        }
+        return false;
+    }
+
+    fn statementDeclaresFunctionValueName(self: *Checker, stmt: NodeId, name: hir_mod.StringId) bool {
+        const inner = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
+        if (inner == hir_mod.none_node_id) return false;
+        switch (self.hir.kindOf(inner)) {
+            .fn_decl => {
+                const f = hir_mod.fnDeclOf(self.hir, inner);
+                if (f.name == hir_mod.none_node_id or self.hir.kindOf(f.name) != .identifier) return false;
+                return hir_mod.identifierOf(self.hir, f.name).name == name;
+            },
+            .let_decl, .var_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, inner);
+                if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) return false;
+                if (hir_mod.identifierOf(self.hir, v.name).name != name) return false;
+                return v.init != hir_mod.none_node_id and switch (self.hir.kindOf(v.init)) {
+                    .fn_decl, .fn_expr, .arrow_fn => true,
+                    else => false,
+                };
+            },
+            else => return false,
+        }
+    }
+
+    fn reportExpandoPropertyUsedBeforeAssignment(
+        self: *Checker,
+        access_node: NodeId,
+        prop_name: hir_mod.StringId,
+    ) CheckError!void {
+        const prop_str = self.string_interner.get(prop_name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Property '{s}' is used before being assigned.",
+            .{prop_str},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = access_node,
+            .pos = self.memberAccessPropertyNamePos(access_node),
+            .code = TsCodes.property_used_before_assigned,
+            .message = msg,
+        });
     }
 
     fn scanForUsedBeforeAssign(
@@ -57010,6 +57302,31 @@ test "checker: property assignment target reads object for TS2454" {
         if (d.code == TsCodes.used_before_assignment) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: function expando reads require definite assignment across branches" {
+    const s = try newSetup(
+        \\function f(b: boolean) {
+        \\  function d() {}
+        \\  if (b) d.q = false;
+        \\  d.q;
+        \\  if (b) d.r = 1;
+        \\  else d.r = 2;
+        \\  d.r;
+        \\}
+        \\const g = function() {};
+        \\if (false) g.expando = 1;
+        \\g.expando;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    var used_before_assigned: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_used_before_assigned) used_before_assigned += 1;
+    }
+    try T.expectEqual(@as(usize, 2), used_before_assigned);
 }
 
 test "checker: compound assignment target reads typed var for TS2454" {
