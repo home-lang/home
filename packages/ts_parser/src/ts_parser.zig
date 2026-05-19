@@ -7555,6 +7555,16 @@ pub const Parser = struct {
                 is_readonly = true;
             }
             if (self.peek().kind == .kw_override and self.peekAt(1).kind != .colon) {
+                // `override` is not a valid modifier on interface / type
+                // members. tsc reports TS1070 anchored at the keyword.
+                // Matches override9.ts baseline.
+                const ov_tok = self.peek();
+                try self.diagnostics.append(self.gpa, .{
+                    .pos = ov_tok.span.start,
+                    .line = ov_tok.line,
+                    .code = 1070,
+                    .message = try self.diag_arena.allocator().dupe(u8, "'override' modifier cannot appear on a type member."),
+                });
                 _ = self.advance();
                 is_override = true;
             }

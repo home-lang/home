@@ -15172,11 +15172,20 @@ pub const Checker = struct {
         }
         if (!has_override and has_base and self.strict_flags.no_implicit_override) {
             const code = if (is_parameter_property) TsCodes.missing_parameter_property_override else TsCodes.missing_override;
+            // TS4115 (parameter property variant) uses different prose:
+            //   "This parameter property must have an 'override' modifier
+            //    because it overrides a member in base class 'X'." — note
+            //    `in base class` (no `the`).
+            // Regular members (TS4114) use:
+            //   "This member must have an 'override' modifier because it
+            //    overrides a member in the base class 'X'." — with `the`.
+            const prefix: []const u8 = if (is_parameter_property) "This parameter property" else "This member";
+            const article: []const u8 = if (is_parameter_property) "" else "the ";
             if (base_name_opt) |bn| {
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
-                    "This member must have an 'override' modifier because it overrides a member in the base class '{s}'.",
-                    .{bn},
+                    "{s} must have an 'override' modifier because it overrides a member in {s}base class '{s}'.",
+                    .{ prefix, article, bn },
                 );
                 try self.diagnostics.append(self.gpa, .{
                     .node = node,
@@ -15184,7 +15193,16 @@ pub const Checker = struct {
                     .message = msg,
                 });
             } else {
-                try self.report(node, code, "This member must have an 'override' modifier because it overrides a member in the base class.");
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "{s} must have an 'override' modifier because it overrides a member in {s}base class.",
+                    .{ prefix, article },
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = node,
+                    .code = code,
+                    .message = msg,
+                });
             }
         }
     }
@@ -19374,19 +19392,12 @@ pub const Checker = struct {
                 }
                 try self.reportImplicitAnyFnTypeParameters(im.type_node);
             }
-            var has_base_member = false;
-            for (extends) |extends_node| {
-                const parent_t = self.lowererLowerWithTypeParams(extends_node) catch continue;
-                if (self.baseClassHasMember(parent_t, im.name)) {
-                    has_base_member = true;
-                    break;
-                }
-            }
-            if (im.is_override and !has_base_member) {
-                try self.report(m, TsCodes.override_not_in_base, "This member cannot have an 'override' modifier because it is not declared in the base interface.");
-            } else if (!im.is_override and has_base_member and self.strict_flags.no_implicit_override) {
-                try self.report(m, TsCodes.missing_override, "This member must have an 'override' modifier because it overrides a member in the base interface.");
-            }
+            // `override` modifiers on interface members are not a
+            // valid TS construct — the parser already emits TS1070 at
+            // the keyword. We therefore do NOT run the
+            // missing_override / override_not_in_base semantic checks
+            // on interface members (matches override9.ts baseline,
+            // which only emits the TS1070 pair).
             try iface_members.append(self.gpa, .{
                 .name = im.name,
                 .type = member_t,
@@ -55000,7 +55011,11 @@ test "checker: computed class member key expressions are checked" {
     try T.expect(found);
 }
 
-test "checker: interface override modifiers participate in extends diagnostics" {
+test "checker: interface override modifier emits TS1070, not TS4114/TS4113" {
+    // `override` on an interface member is a syntactic error in tsc
+    // (TS1070, anchored at the modifier). The checker MUST NOT also
+    // emit the missing_override / override_not_in_base semantic
+    // diagnostics that fire for class members. Pins override9.ts.
     const s = try newSetup(
         \\interface A { x(): void; }
         \\interface B extends A { x(): void; override y(): void; }
@@ -55008,15 +55023,11 @@ test "checker: interface override modifiers participate in extends diagnostics" 
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_override = true });
     try s.checker.checkSourceFile(s.root);
-    var saw_missing = false;
-    var saw_not_base = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.missing_override) saw_missing = true;
-        if (d.code == TsCodes.override_not_in_base or
-            d.code == TsCodes.override_not_in_base_did_you_mean) saw_not_base = true;
+        try T.expect(d.code != TsCodes.missing_override);
+        try T.expect(d.code != TsCodes.override_not_in_base);
+        try T.expect(d.code != TsCodes.override_not_in_base_did_you_mean);
     }
-    try T.expect(saw_missing);
-    try T.expect(saw_not_base);
 }
 
 test "checker: merged interfaces reject conflicting property declarations" {
