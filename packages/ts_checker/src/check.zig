@@ -17687,11 +17687,11 @@ pub const Checker = struct {
             //   * `var`/`let`/`const X = …`    → TS2503 Cannot find namespace
             //   * `class X` / `interface X` / `type X = …` → TS2702
             //   * `enum X` / `function X` / `namespace X` → silent
-            // Qualified entity names (`import alias = X.Y`) are
-            // handled separately via the namespace member-resolution
-            // branch below — those don't fire TS2702/TS2503 here.
+            // Qualified entity names (`import alias = X.Y`) keep their
+            // existing silent path — the namespace member-resolution
+            // branch below handles those.
             if (qualifiers.len == 0) {
-                if (self.rootDeclarationKindForName(root_name)) |kind| {
+                if (self.rootDeclarationKindForImportEquals(root_name)) |kind| {
                     const root_text = self.string_interner.get(root_name);
                     switch (kind) {
                         .var_decl, .let_decl, .const_decl => {
@@ -17741,19 +17741,40 @@ pub const Checker = struct {
         }
     }
 
-    /// Walk the HIR root once and return the NodeKind of the first
-    /// non-import top-level declaration whose declared name matches
-    /// `name`. Used by import-equals diagnostics to choose between
-    /// TS2503/TS2702 when the root resolves to a same-file decl.
-    fn rootDeclarationKindForName(self: *Checker, name: hir_mod.StringId) ?hir_mod.NodeKind {
+    /// Walk the HIR root once and return a representative NodeKind
+    /// for declarations named `name`. Used by import-equals diagnostics
+    /// to choose between TS2503/TS2702 when the root resolves to a
+    /// same-file decl. Resolution order mirrors tsc's namespace
+    /// resolution: a `namespace`/`enum`/`function` declaration (a
+    /// value with a namespace meaning) wins over a type-only `class`/
+    /// `interface`/`type` declaration, which in turn wins over a
+    /// plain `var`/`let`/`const`. Returns the FIRST namespace-bearing
+    /// kind seen if any exists; otherwise the first type-bearing
+    /// kind; otherwise the first var-bearing kind; otherwise null.
+    fn rootDeclarationKindForImportEquals(self: *Checker, name: hir_mod.StringId) ?hir_mod.NodeKind {
+        var ns_kind: ?hir_mod.NodeKind = null;
+        var type_kind: ?hir_mod.NodeKind = null;
+        var var_kind: ?hir_mod.NodeKind = null;
         var i: hir_mod.NodeId = 1;
         while (i < self.hir.nodeCount()) : (i += 1) {
             if (self.nodeHasAncestorKind(i, .import_decl) or self.hir.kindOf(i) == .import_decl) continue;
             const decl_name = self.declarationName(i) orelse continue;
             if (decl_name != name) continue;
-            return self.hir.kindOf(i);
+            const k = self.hir.kindOf(i);
+            switch (k) {
+                .namespace_decl, .enum_decl, .fn_decl, .fn_expr => {
+                    if (ns_kind == null) ns_kind = k;
+                },
+                .class_decl, .class_expr, .interface_decl, .type_alias_decl => {
+                    if (type_kind == null) type_kind = k;
+                },
+                .var_decl, .let_decl, .const_decl => {
+                    if (var_kind == null) var_kind = k;
+                },
+                else => {},
+            }
         }
-        return null;
+        return ns_kind orelse type_kind orelse var_kind;
     }
 
     fn recordImportEqualsAbstractAlias(self: *Checker, imp: hir_mod.ImportPayload) CheckError!void {
