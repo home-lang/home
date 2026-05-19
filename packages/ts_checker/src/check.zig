@@ -15816,19 +15816,19 @@ pub const Checker = struct {
         const parent_string_idx = self.interner.objectStringIndex(parent_t);
         if (parent_string_idx != types.Primitive.none and child_string_idx != types.Primitive.none) {
             if (!(self.heritageAssignable(child_string_idx, parent_string_idx) catch false)) {
-                try self.reportClassExtendsIndexMismatch(extends_expr);
+                try self.reportClassExtendsIndexMismatch(child_node, extends_expr);
             }
         }
         const parent_symbol_idx = self.interner.objectSymbolIndex(parent_t);
         if (parent_symbol_idx != types.Primitive.none and child_symbol_idx != types.Primitive.none) {
             if (!(self.heritageAssignable(child_symbol_idx, parent_symbol_idx) catch false)) {
-                try self.reportClassExtendsIndexMismatch(extends_expr);
+                try self.reportClassExtendsIndexMismatch(child_node, extends_expr);
             }
         }
         const parent_number_idx = self.interner.objectNumberIndex(parent_t);
         if (parent_number_idx != types.Primitive.none and child_number_idx != types.Primitive.none) {
             if (!(self.heritageAssignable(child_number_idx, parent_number_idx) catch false)) {
-                try self.reportClassExtendsIndexMismatch(extends_expr);
+                try self.reportClassExtendsIndexMismatch(child_node, extends_expr);
             }
         }
         // Copy `parent_members` locally — the slice borrows from the
@@ -16803,12 +16803,82 @@ pub const Checker = struct {
         }
     }
 
-    fn reportClassExtendsIndexMismatch(self: *Checker, node: NodeId) CheckError!void {
+    fn reportClassExtendsIndexMismatch(self: *Checker, child_node: NodeId, extends_expr: NodeId) CheckError!void {
+        // TS emits TS2415 "Class '<child>' incorrectly extends base class
+        // '<parent>'." anchored at the class-name span when a child class
+        // declares an index signature that is not assignable to the
+        // parent's same-kind indexer. The parent text mirrors the
+        // syntactic form in `extends ...` (e.g. `A<T>`), not the
+        // structural reduction. Fall back to the legacy short form
+        // (TS2416, anchored on the `extends` clause) only when we
+        // can't resolve the child class name — that path keeps
+        // anonymous class expressions reporting something useful.
+        if (try self.classDisplayNameFromNode(child_node)) |cd| {
+            defer self.gpa.free(cd);
+            if (self.classExtendsDisplayText(extends_expr)) |parent_disp| {
+                defer self.gpa.free(parent_disp);
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Class '{s}' incorrectly extends base class '{s}'.",
+                    .{ cd, parent_disp },
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = child_node,
+                    .pos = self.classNameSpanStart(child_node),
+                    .code = TsCodes.class_incorrectly_extends_base,
+                    .message = msg,
+                });
+                return;
+            }
+        }
         try self.diagnostics.append(self.gpa, .{
-            .node = node,
+            .node = extends_expr,
             .code = TsCodes.property_not_assignable_to_base,
             .message = "Class incorrectly extends base class; index signatures are incompatible.",
         });
+    }
+
+    /// Render a class declaration's display name including its own
+    /// type-parameter list (`B3<T>`) by reading the payload directly,
+    /// without a name-based lookup. Returns null on anonymous classes.
+    /// Caller must free the returned slice (allocated via `gpa`).
+    fn classDisplayNameFromNode(self: *Checker, class_node: NodeId) !?[]u8 {
+        const k = self.hir.kindOf(class_node);
+        if (k != .class_decl and k != .class_expr) return null;
+        const c = hir_mod.classOf(self.hir, class_node);
+        if (c.name == hir_mod.none_node_id or self.hir.kindOf(c.name) != .identifier) return null;
+        const cname = hir_mod.identifierOf(self.hir, c.name).name;
+        const base = self.string_interner.get(cname);
+        if (c.type_params_len == 0) {
+            return try self.gpa.dupe(u8, base);
+        }
+        const type_params = self.hir.childSlice(c.type_params_start, c.type_params_len);
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        errdefer buf.deinit(self.gpa);
+        try buf.appendSlice(self.gpa, base);
+        try buf.append(self.gpa, '<');
+        var first = true;
+        for (type_params) |tp| {
+            if (self.hir.kindOf(tp) != .type_parameter) continue;
+            const tpp = hir_mod.typeParameterOf(self.hir, tp);
+            if (!first) try buf.appendSlice(self.gpa, ", ");
+            first = false;
+            try buf.appendSlice(self.gpa, self.string_interner.get(tpp.name));
+        }
+        try buf.append(self.gpa, '>');
+        return try buf.toOwnedSlice(self.gpa);
+    }
+
+    /// Render the syntactic text of a class `extends X` clause for
+    /// diagnostic prose. Returns an owned slice allocated with `gpa`
+    /// (mirrors `classDisplayName`). Caller must free.
+    fn classExtendsDisplayText(self: *Checker, extends_expr: NodeId) ?[]u8 {
+        const src = self.source orelse return null;
+        const span = self.hir.spanOf(extends_expr);
+        if (span.start >= span.end or span.end > src.len) return null;
+        const raw = std.mem.trim(u8, src[span.start..span.end], " \t\r\n");
+        if (raw.len == 0) return null;
+        return self.gpa.dupe(u8, raw) catch null;
     }
 
     fn heritageAssignable(self: *Checker, source: TypeId, target: TypeId) !bool {
@@ -55320,7 +55390,7 @@ test "checker: class extends rejects incompatible number index signature" {
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.property_not_assignable_to_base) found = true;
+        if (d.code == TsCodes.class_incorrectly_extends_base) found = true;
     }
     try T.expect(found);
 }
@@ -55336,7 +55406,7 @@ test "checker: generic class extends rejects concrete child indexer for parent T
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.property_not_assignable_to_base) found = true;
+        if (d.code == TsCodes.class_incorrectly_extends_base) found = true;
     }
     try T.expect(found);
 }
