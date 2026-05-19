@@ -47,6 +47,10 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/domexception-node.test.js",
     "js/bun/jsc/shadow.test.js",
     "js/node/dirname.test.js",
+    "regression/issue/03091.test.ts",
+    "regression/issue/15326.test.ts",
+    "regression/issue/15314.test.ts",
+    "regression/issue/02005.test.ts",
 };
 
 const prelude =
@@ -512,6 +516,10 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/node/domexception-node.test.js", filesForSubset(.minimal_js)[4]);
     try std.testing.expectEqualStrings("js/bun/jsc/shadow.test.js", filesForSubset(.minimal_js)[5]);
     try std.testing.expectEqualStrings("js/node/dirname.test.js", filesForSubset(.minimal_js)[6]);
+    try std.testing.expectEqualStrings("regression/issue/03091.test.ts", filesForSubset(.minimal_js)[7]);
+    try std.testing.expectEqualStrings("regression/issue/15326.test.ts", filesForSubset(.minimal_js)[8]);
+    try std.testing.expectEqualStrings("regression/issue/15314.test.ts", filesForSubset(.minimal_js)[9]);
+    try std.testing.expectEqualStrings("regression/issue/02005.test.ts", filesForSubset(.minimal_js)[10]);
 }
 
 test "Bun test import rewrite installs the bootstrap prelude" {

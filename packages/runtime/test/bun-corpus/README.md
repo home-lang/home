@@ -16,7 +16,7 @@ macOS, Linux, and the WASM target.
   `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
   That subset currently executes the todo-registration smoke, the Web
-  `atob`/`btoa` smoke, two pure-JS regression smokes, and the Node
+  `atob`/`btoa` smoke, six pure-JS regression smokes, and the Node
   `DOMException`, JSC `ShadowRealm`, and Bun file-metadata smokes. It is only
   a smoke path for JSC + `home_test`; it is not the release gate.
 - No source renames. `Bun.serve`, `Bun.write`, `Bun.spawn`, etc. appear
