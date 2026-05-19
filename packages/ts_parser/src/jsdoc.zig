@@ -60,6 +60,10 @@ pub const Tag = struct {
     /// `{T=}` type-suffix or `[name]` / `[name=default]` bracket
     /// forms. Mirrors the JSDoc spec used by upstream tsc.
     optional: bool = false,
+    /// True only for the `{T=}` type-suffix form. The checker uses
+    /// this to model postfix optionality without conflating it with
+    /// bracket-name optionality.
+    optional_from_type_suffix: bool = false,
     /// Captured default-value expression when the source used the
     /// `@param {T} [name=DEFAULT]` form. Empty otherwise.
     default_text: []const u8 = "",
@@ -123,17 +127,14 @@ fn parseLine(line: []const u8) ?Tag {
     // Optional `{T}` type expression.
     var type_text: []const u8 = "";
     var optional = false;
+    var optional_from_type_suffix = false;
     if (rest.len > 0 and rest[0] == '{') {
-        const end = matchBalancedBrace(rest);
-        if (end == 0) return null;
-        type_text = rest[1 .. end - 1];
-        rest = std.mem.trimStart(u8, rest[end..], " \t");
-        // JSDoc `{T=}` form: trailing `=` inside the braces marks the
-        // parameter as optional. Strip the marker so downstream type
-        // resolution sees the plain `T`.
-        if (type_text.len > 0 and type_text[type_text.len - 1] == '=') {
+        const parsed = parseTypeExpression(rest) orelse return null;
+        type_text = parsed.type_text;
+        rest = std.mem.trimStart(u8, rest[parsed.len..], " \t");
+        if (parsed.optional_from_type_suffix) {
             optional = true;
-            type_text = std.mem.trimEnd(u8, type_text[0 .. type_text.len - 1], " \t");
+            optional_from_type_suffix = true;
         }
     }
     // Optional name token. `@param`, `@template`, `@typedef` all
@@ -154,11 +155,24 @@ fn parseLine(line: []const u8) ?Tag {
                 name_text = std.mem.trim(u8, inner, " \t");
             }
             rest = std.mem.trimStart(u8, rest[close + 1 ..], " \t");
+        } else if (kind == .param_tag and rest.len > 0 and rest[0] == '`') {
+            const close = std.mem.indexOfScalarPos(u8, rest, 1, '`') orelse return null;
+            name_text = rest[1..close];
+            rest = std.mem.trimStart(u8, rest[close + 1 ..], " \t");
         } else {
             var m: usize = 0;
             while (m < rest.len and isIdentChar(rest[m])) m += 1;
             name_text = rest[0..m];
             rest = std.mem.trimStart(u8, rest[m..], " \t");
+        }
+        if (kind == .param_tag and type_text.len == 0 and rest.len > 0 and rest[0] == '{') {
+            const parsed = parseTypeExpression(rest) orelse return null;
+            type_text = parsed.type_text;
+            rest = std.mem.trimStart(u8, rest[parsed.len..], " \t");
+            if (parsed.optional_from_type_suffix) {
+                optional = true;
+                optional_from_type_suffix = true;
+            }
         }
     }
     return .{
@@ -167,6 +181,7 @@ fn parseLine(line: []const u8) ?Tag {
         .name = name_text,
         .description = rest,
         .optional = optional,
+        .optional_from_type_suffix = optional_from_type_suffix,
         .default_text = default_text,
     };
 }
@@ -178,6 +193,104 @@ fn isTagNameChar(c: u8) bool {
 fn isIdentChar(c: u8) bool {
     return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
         (c >= '0' and c <= '9') or c == '_' or c == '$';
+}
+
+const ParsedTypeExpression = struct {
+    type_text: []const u8,
+    len: usize,
+    optional_from_type_suffix: bool,
+};
+
+fn parseTypeExpression(rest: []const u8) ?ParsedTypeExpression {
+    const end = matchBalancedBrace(rest);
+    if (end == 0) return null;
+    var type_text = rest[1 .. end - 1];
+    if (firstInvalidPostfixNullableOffset(type_text)) |invalid| {
+        type_text = type_text[0..invalid];
+        return .{
+            .type_text = type_text,
+            .len = 1 + invalid,
+            .optional_from_type_suffix = false,
+        };
+    }
+    var optional_from_type_suffix = false;
+    // JSDoc `{T=}` form: trailing `=` inside the braces marks the
+    // parameter as optional. Strip the marker so downstream type
+    // resolution sees the plain `T`.
+    if (type_text.len > 0 and type_text[type_text.len - 1] == '=') {
+        optional_from_type_suffix = true;
+        type_text = std.mem.trimEnd(u8, type_text[0 .. type_text.len - 1], " \t");
+    }
+    return .{
+        .type_text = type_text,
+        .len = end,
+        .optional_from_type_suffix = optional_from_type_suffix,
+    };
+}
+
+/// TypeScript accepts postfix JSDoc nullable (`T?`) only after the full
+/// primary/postfix type. `T?[]` and `T?!` are parse errors at `?`; callers use
+/// the offset both for diagnostics and for TS-like tag recovery.
+pub fn firstInvalidPostfixNullableOffset(type_text: []const u8) ?usize {
+    var paren_depth: i32 = 0;
+    var bracket_depth: i32 = 0;
+    var brace_depth: i32 = 0;
+    var angle_depth: i32 = 0;
+    var quote: u8 = 0;
+    var i: usize = 0;
+    while (i < type_text.len) : (i += 1) {
+        const c = type_text[i];
+        if (quote != 0) {
+            if (c == '\\') {
+                i += 1;
+            } else if (c == quote) {
+                quote = 0;
+            }
+            continue;
+        }
+        if (c == '\'' or c == '"') {
+            quote = c;
+            continue;
+        }
+        switch (c) {
+            '(' => paren_depth += 1,
+            ')' => {
+                if (paren_depth > 0) paren_depth -= 1;
+            },
+            '[' => bracket_depth += 1,
+            ']' => {
+                if (bracket_depth > 0) bracket_depth -= 1;
+            },
+            '{' => brace_depth += 1,
+            '}' => {
+                if (brace_depth > 0) brace_depth -= 1;
+            },
+            '<' => angle_depth += 1,
+            '>' => {
+                if (angle_depth > 0) angle_depth -= 1;
+            },
+            '?' => {
+                if (paren_depth == 0 and bracket_depth == 0 and brace_depth == 0 and angle_depth == 0) {
+                    const next = nextNonWhitespace(type_text, i + 1);
+                    if (next < type_text.len and (type_text[next] == '[' or type_text[next] == '!')) return i;
+                }
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+pub fn isValidRestType(type_text: []const u8) bool {
+    const trimmed = std.mem.trim(u8, type_text, " \t\r\n");
+    if (!std.mem.startsWith(u8, trimmed, "...")) return false;
+    return firstInvalidPostfixNullableOffset(trimmed[3..]) == null;
+}
+
+fn nextNonWhitespace(s: []const u8, start: usize) usize {
+    var i = start;
+    while (i < s.len and (s[i] == ' ' or s[i] == '\t' or s[i] == '\r' or s[i] == '\n')) : (i += 1) {}
+    return i;
 }
 
 /// Returns the index *after* the matching `}` for a brace at offset 0.
@@ -322,6 +435,7 @@ test "jsdoc: @param with type-suffix `=` optional marker" {
     try T.expectEqualStrings("number", tags[0].type_text);
     try T.expectEqualStrings("q", tags[0].name);
     try T.expect(tags[0].optional);
+    try T.expect(tags[0].optional_from_type_suffix);
 }
 
 test "jsdoc: @param plain name is not optional" {
@@ -333,6 +447,48 @@ test "jsdoc: @param plain name is not optional" {
     try T.expectEqual(@as(usize, 1), tags.len);
     try T.expectEqualStrings("a", tags[0].name);
     try T.expect(!tags[0].optional);
+}
+
+test "jsdoc: backquoted param names support type before and after name" {
+    const body =
+        \\ * @param {string=} `args`
+        \\ * @param `bwarg` {?number?}
+    ;
+    const tags = try parse(T.allocator, body);
+    defer T.allocator.free(tags);
+    try T.expectEqual(@as(usize, 2), tags.len);
+    try T.expectEqual(TagKind.param_tag, tags[0].kind);
+    try T.expectEqualStrings("string", tags[0].type_text);
+    try T.expectEqualStrings("args", tags[0].name);
+    try T.expect(tags[0].optional);
+    try T.expect(tags[0].optional_from_type_suffix);
+    try T.expectEqual(TagKind.param_tag, tags[1].kind);
+    try T.expectEqualStrings("?number?", tags[1].type_text);
+    try T.expectEqualStrings("bwarg", tags[1].name);
+    try T.expect(!tags[1].optional);
+}
+
+test "jsdoc: postfix nullable before array recovers before the invalid marker" {
+    const body =
+        \\ * @param {number?[]} a
+        \\ * @param {...number?!} h
+    ;
+    const tags = try parse(T.allocator, body);
+    defer T.allocator.free(tags);
+    try T.expectEqual(@as(usize, 2), tags.len);
+    try T.expectEqualStrings("number", tags[0].type_text);
+    try T.expectEqualStrings("", tags[0].name);
+    try T.expectEqualStrings("...number", tags[1].type_text);
+    try T.expectEqualStrings("", tags[1].name);
+}
+
+test "jsdoc: rest type syntax recognizes valid prefix and postfix forms" {
+    try T.expect(isValidRestType("...?number"));
+    try T.expect(isValidRestType("...number?"));
+    try T.expect(isValidRestType("...number!?"));
+    try T.expect(isValidRestType("...number![]?"));
+    try T.expect(!isValidRestType("...number?!"));
+    try T.expect(!isValidRestType("...number?[]!"));
 }
 
 test "jsdoc: bracket-optional mixed with required parameters keeps each tag distinct" {

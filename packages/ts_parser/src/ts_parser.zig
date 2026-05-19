@@ -52,6 +52,7 @@ pub const ParseError = error{
 pub const Diagnostic = struct {
     pos: u32,
     line: u32,
+    span_len: u32 = 0,
     /// TypeScript-compatible diagnostic code. 0 means callers should
     /// fall back to their phase-level parse code.
     code: u32 = 0,
@@ -190,6 +191,15 @@ pub const Parser = struct {
     /// TS1169 vs. TS1170 when a computed key isn't a literal-resolved
     /// name. Mirrors `computedPropertyNamesDeclarationEmit3/4_ES{5,6}`.
     parsing_interface_body: bool = false,
+    /// Stack-style counter for tuple type elements. A trailing `?`
+    /// before `,`/`]` is valid tuple optionality here, not JSDoc
+    /// postfix nullable syntax.
+    tuple_type_depth: u32,
+    /// Stack-style counter while parsing a binding pattern used as a
+    /// function-type parameter. Object renames in this position are
+    /// parsed as destructuring, but TypeScript reports likely-missing
+    /// type annotations as TS2842.
+    fn_type_binding_pattern_depth: u32,
     /// True for `.tsx` files. Enables JSX parsing in expression
     /// position; the parser disambiguates `<T>x` (generic type
     /// assertion) vs. `<T>x</T>` (JSX) via the `<T,>` and
@@ -259,6 +269,8 @@ pub const Parser = struct {
             .top_level_export_indicator = false,
             .in_top_level_module_binding_decl = false,
             .in_export_declaration = false,
+            .tuple_type_depth = 0,
+            .fn_type_binding_pattern_depth = 0,
             .is_tsx = false,
             .is_declaration_file = false,
         };
@@ -531,10 +543,15 @@ pub const Parser = struct {
     }
 
     fn reportCodeAt(self: *Parser, pos: u32, line: u32, code: u32, message: []const u8) ParseError!void {
+        try self.reportCodeAtWithSpan(pos, line, 0, code, message);
+    }
+
+    fn reportCodeAtWithSpan(self: *Parser, pos: u32, line: u32, span_len: u32, code: u32, message: []const u8) ParseError!void {
         const msg = try self.diag_arena.allocator().dupe(u8, message);
         try self.diagnostics.append(self.gpa, .{
             .pos = pos,
             .line = line,
+            .span_len = span_len,
             .code = code,
             .message = msg,
         });
@@ -716,98 +733,475 @@ pub const Parser = struct {
             const body_start = i + 3;
             const close_rel = std.mem.indexOf(u8, self.source[body_start..], "*/") orelse return;
             const body_end = body_start + close_rel;
+            try self.scanJSDocParamTypeDiagnostics(body_start, body_end);
+            try self.scanJSDocParamParentDiagnostics(body_start, body_end);
             try self.scanJSDocCommentTypeExpressions(body_start, body_end);
+            try self.scanJSDocImportTagDiagnostics(body_start, body_end);
+            try self.scanJSDocTypedefDuplicateTypeTags(body_start, body_end);
+            try self.scanJSDocTemplateModifierDiagnostics(body_start, body_end);
+            try self.scanJSDocPropertyNameDiagnostics(body_start, body_end);
+            try self.scanJSDocImplementsTypeDiagnostics(body_start, body_end);
             i = body_end + 2;
         }
     }
 
-    /// TS8032 — scan `/** ... */` JSDoc blocks in `.js`/`.jsx`/`.mjs`/`.cjs`
-    /// virtual sections for `@param {T} a.b(.c)*` entries with a qualified
-    /// name whose immediate parent is not declared as a parameter (either
-    /// a function parameter or a previously-seen `@param ... a.b`). Mirrors
-    /// upstream `checkUnmatchedJSDocParameters` (jsdoc.go:65). Anchored at
-    /// the start of the qualified name in the source.
-    fn reportJSDocQualifiedParamNameDiagnostics(self: *Parser) ParseError!void {
-        var i: usize = 0;
-        while (i + 2 < self.source.len) {
-            if (!(self.source[i] == '/' and self.source[i + 1] == '*' and self.source[i + 2] == '*')) {
-                i += 1;
+    fn scanJSDocParamTypeDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            const tag_name = self.source[tag_name_start..tag_name_end];
+            i = tag_name_end;
+            if (!std.mem.eql(u8, tag_name, "param")) continue;
+
+            const open = firstNonWhitespace(self.source, tag_name_end, end);
+            if (open >= end or self.source[open] != '{') continue;
+            const close_after = self.jsDocTagTypeAnnotationEnd(tag_name_end, end) orelse continue;
+            const close = close_after - 1;
+            const type_text = self.source[open + 1 .. close];
+            if (jsdoc.firstInvalidPostfixNullableOffset(type_text)) |invalid| {
+                const pos: u32 = @intCast(open + 1 + invalid);
+                try self.reportCodeAtWithSpan(
+                    pos,
+                    self.lineAt(pos),
+                    1,
+                    8024,
+                    "JSDoc '@param' tag has name '', but there is no parameter with that name.",
+                );
+                try self.reportCodeAtWithSpan(pos, self.lineAt(pos), 2, 1005, "'}' expected.");
                 continue;
             }
-            // Only fire in JS-mode virtual sections. Without an explicit
-            // `// @filename:` marker the parser sees a unified .ts source
-            // and TS8032 would over-fire on TS sources too.
-            const file_at = self.virtualSectionFilenameAt(@intCast(i));
-            const is_js = blk: {
-                if (file_at) |fname| {
-                    break :blk std.mem.endsWith(u8, fname, ".js") or
-                        std.mem.endsWith(u8, fname, ".jsx") or
-                        std.mem.endsWith(u8, fname, ".mjs") or
-                        std.mem.endsWith(u8, fname, ".cjs");
-                }
-                break :blk false;
-            };
-            const body_start = i + 3;
-            const close_rel = std.mem.indexOf(u8, self.source[body_start..], "*/") orelse return;
-            const body_end = body_start + close_rel;
-            if (is_js) try self.scanJSDocQualifiedParamNames(body_start, body_end);
-            i = body_end + 2;
+            if (jsdoc.isValidRestType(type_text) and self.hasFollowingJSDocParamTag(close_after, end)) {
+                const pos: u32 = @intCast(open + 1);
+                try self.reportCodeAt(pos, self.lineAt(pos), 1014, "A rest parameter must be last in a parameter list.");
+            }
         }
     }
 
-    /// Walk a JSDoc comment body (between `/**` and `*/`) and emit TS8032
-    /// for each qualified `@param {T} a.b(.c)*` whose parent (`a.b...`
-    /// without the last segment) is not declared earlier in the SAME
-    /// JSDoc block. Skips lines whose tag isn't `@param`. Declared
-    /// parents include any prior `@param` tag's name verbatim.
-    fn scanJSDocQualifiedParamNames(self: *Parser, body_start: usize, body_end: usize) ParseError!void {
-        // Two passes: first pass collects all declared names (so order
-        // doesn't matter for "leading"); upstream uses the same flat
-        // set semantics post-binding.
-        var declared = std.StringHashMapUnmanaged(void){};
-        defer declared.deinit(self.gpa);
-        var off = body_start;
-        while (off < body_end) {
-            const line_end = std.mem.indexOfScalarPos(u8, self.source, off, '\n') orelse body_end;
-            const line_lim = @min(line_end, body_end);
-            if (findJSDocParamName(self.source, off, line_lim)) |found| {
-                _ = try declared.getOrPut(self.gpa, found.name);
-            }
-            if (line_end >= body_end) break;
-            off = line_end + 1;
+    fn hasFollowingJSDocParamTag(self: *const Parser, start: usize, end: usize) bool {
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse return false;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            if (std.mem.eql(u8, self.source[tag_name_start..tag_name_end], "param")) return true;
+            i = tag_name_end;
         }
-        // Second pass: emit TS8032 for each qualified name whose parent
-        // (everything before the final dot) is not in `declared`.
-        off = body_start;
-        while (off < body_end) {
-            const line_end = std.mem.indexOfScalarPos(u8, self.source, off, '\n') orelse body_end;
-            const line_lim = @min(line_end, body_end);
-            if (findJSDocParamName(self.source, off, line_lim)) |found| {
-                if (std.mem.indexOfScalar(u8, found.name, '.')) |last_dot| {
-                    // Compute the parent (everything up to the LAST
-                    // dot, since `xyz.bar.p`'s immediate parent is
-                    // `xyz.bar`, not `xyz`).
-                    const last_dot_pos = std.mem.lastIndexOfScalar(u8, found.name, '.').?;
-                    _ = last_dot;
-                    const parent = found.name[0..last_dot_pos];
-                    if (!declared.contains(parent)) {
-                        const msg = try std.fmt.allocPrint(
-                            self.diag_arena.allocator(),
-                            "Qualified name '{s}' is not allowed without a leading '@param {{object}} {s}'.",
-                            .{ found.name, parent },
-                        );
-                        try self.diagnostics.append(self.gpa, .{
-                            .pos = @intCast(found.pos),
-                            .line = self.lineAt(@intCast(found.pos)),
-                            .code = 8032,
-                            .message = msg,
-                        });
+        return false;
+    }
+
+    fn scanJSDocParamParentDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
+        var object_params: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer object_params.deinit(self.gpa);
+
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            const tag_name = self.source[tag_name_start..tag_name_end];
+            if (!std.mem.eql(u8, tag_name, "param")) {
+                i = tag_name_end;
+                continue;
+            }
+
+            const line_end = self.jsDocTagLineEnd(tag_name_end, end);
+            var cursor = firstNonWhitespace(self.source, tag_name_end, line_end);
+            var type_text: []const u8 = "";
+            if (cursor < line_end and self.source[cursor] == '{') {
+                const close_after = self.jsDocTagTypeAnnotationEnd(cursor, line_end) orelse {
+                    i = line_end;
+                    continue;
+                };
+                type_text = self.source[cursor + 1 .. close_after - 1];
+                cursor = close_after;
+            }
+
+            const name = self.jsDocParamNameAt(firstNonWhitespace(self.source, cursor, line_end), line_end) orelse {
+                i = line_end;
+                continue;
+            };
+            cursor = name.next;
+
+            if (type_text.len == 0) {
+                const type_start = firstNonWhitespace(self.source, cursor, line_end);
+                if (type_start < line_end and self.source[type_start] == '{') {
+                    if (self.jsDocTagTypeAnnotationEnd(type_start, line_end)) |close_after| {
+                        type_text = self.source[type_start + 1 .. close_after - 1];
                     }
                 }
             }
-            if (line_end >= body_end) break;
-            off = line_end + 1;
+
+            const full_name = self.source[name.start..name.end];
+            if (std.mem.lastIndexOfScalar(u8, full_name, '.')) |dot| {
+                const parent_name = full_name[0..dot];
+                if (!hasJSDocObjectParamName(object_params.items, parent_name)) {
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Qualified name '{s}' is not allowed without a leading '@param {{object}} {s}'.",
+                        .{ full_name, parent_name },
+                    );
+                    try self.reportCodeAtWithSpan(
+                        @intCast(name.start),
+                        self.lineAt(@intCast(name.start)),
+                        @intCast(full_name.len),
+                        8032,
+                        msg,
+                    );
+                }
+            }
+
+            if (full_name.len > 0 and isJSDocObjectType(type_text)) {
+                try object_params.append(self.gpa, full_name);
+            }
+            i = line_end;
         }
+    }
+
+    const JSDocParamName = struct {
+        start: usize,
+        end: usize,
+        next: usize,
+    };
+
+    fn jsDocParamNameAt(self: *const Parser, start: usize, end: usize) ?JSDocParamName {
+        if (start >= end) return null;
+        if (self.source[start] == '[') {
+            const close = std.mem.indexOfScalarPos(u8, self.source, start + 1, ']') orelse return null;
+            if (close > end) return null;
+            var name_start = start + 1;
+            var name_end = if (std.mem.indexOfScalar(u8, self.source[name_start..close], '=')) |eq|
+                name_start + eq
+            else
+                close;
+            trimJSDocNameRange(self.source, &name_start, &name_end);
+            if (name_start >= name_end) return null;
+            return .{ .start = name_start, .end = name_end, .next = close + 1 };
+        }
+        if (self.source[start] == '`') {
+            const close = std.mem.indexOfScalarPos(u8, self.source, start + 1, '`') orelse return null;
+            if (close > end or close == start + 1) return null;
+            return .{ .start = start + 1, .end = close, .next = close + 1 };
+        }
+
+        var name_end = start;
+        while (name_end < end and isJSDocParamNameChar(self.source[name_end])) : (name_end += 1) {}
+        if (name_end == start) return null;
+        return .{ .start = start, .end = name_end, .next = name_end };
+    }
+
+    fn trimJSDocNameRange(source: []const u8, start: *usize, end: *usize) void {
+        while (start.* < end.* and (source[start.*] == ' ' or source[start.*] == '\t')) start.* += 1;
+        while (end.* > start.* and (source[end.* - 1] == ' ' or source[end.* - 1] == '\t')) end.* -= 1;
+    }
+
+    fn hasJSDocObjectParamName(names: []const []const u8, wanted: []const u8) bool {
+        for (names) |name| {
+            if (std.mem.eql(u8, name, wanted)) return true;
+        }
+        return false;
+    }
+
+    fn isJSDocObjectType(type_text: []const u8) bool {
+        var trimmed = std.mem.trim(u8, type_text, " \t\r\n");
+        if (trimmed.len > 0 and trimmed[trimmed.len - 1] == '=') {
+            trimmed = std.mem.trim(u8, trimmed[0 .. trimmed.len - 1], " \t\r\n");
+        }
+        return std.ascii.eqlIgnoreCase(trimmed, "object");
+    }
+
+    fn isJSDocParamNameChar(c: u8) bool {
+        return isJSDocIdentifierChar(c) or c == '.';
+    }
+
+    fn scanJSDocPropertyNameDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            const tag_name = self.source[tag_name_start..tag_name_end];
+            i = tag_name_end;
+            if (!(std.mem.eql(u8, tag_name, "property") or std.mem.eql(u8, tag_name, "prop"))) continue;
+            const after_type = self.jsDocTagTypeAnnotationEnd(tag_name_end, end) orelse tag_name_end;
+            const name_start = firstNonWhitespace(self.source, after_type, end);
+            if (name_start >= end or self.source[name_start] != '#') continue;
+            try self.reportCodeAt(
+                @intCast(name_start),
+                self.lineAt(@intCast(name_start)),
+                1003,
+                "Identifier expected.",
+            );
+        }
+    }
+
+    fn scanJSDocImplementsTypeDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            const tag_name = self.source[tag_name_start..tag_name_end];
+            i = tag_name_end;
+            if (!std.mem.eql(u8, tag_name, "implements")) continue;
+
+            const line_end = self.jsDocTagLineEnd(tag_name_end, end);
+            const type_start = firstNonWhitespace(self.source, tag_name_end, line_end);
+            if (type_start >= line_end) {
+                try self.reportCodeAt(
+                    @intCast(tag_name_end),
+                    self.lineAt(@intCast(tag_name_end)),
+                    1003,
+                    "Identifier expected.",
+                );
+                continue;
+            }
+            if (self.source[type_start] != '{') continue;
+            const close_after = self.jsDocTagTypeAnnotationEnd(tag_name_end, line_end) orelse continue;
+            const close = close_after - 1;
+            if (std.mem.trim(u8, self.source[type_start + 1 .. close], " \t\r\n").len != 0) continue;
+            try self.reportCodeAt(
+                @intCast(type_start + 1),
+                self.lineAt(@intCast(type_start + 1)),
+                1003,
+                "Identifier expected.",
+            );
+        }
+    }
+
+    fn scanJSDocImportTagDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            const tag_name = self.source[tag_name_start..tag_name_end];
+            i = tag_name_end;
+            if (!std.mem.eql(u8, tag_name, "import")) continue;
+
+            const tag_end = self.nextJSDocTagStart(tag_name_end, end) orelse end;
+            const first = self.firstJSDocContentByte(tag_name_end, tag_end);
+            if (first >= tag_end) {
+                try self.reportCodeAt(
+                    @intCast(tag_name_end),
+                    self.lineAt(@intCast(tag_name_end)),
+                    1109,
+                    "Expression expected.",
+                );
+                continue;
+            }
+
+            const from = self.findJSDocImportKeyword(first, tag_end, "from");
+            if (from) |from_start| {
+                const from_end = from_start + "from".len;
+                const module_start = self.firstJSDocContentByte(from_end, tag_end);
+                if (module_start >= tag_end) {
+                    try self.reportCodeAt(
+                        @intCast(from_end),
+                        self.lineAt(@intCast(from_end)),
+                        1109,
+                        "Expression expected.",
+                    );
+                }
+                continue;
+            }
+
+            if (!isJSDocIdentifierChar(self.source[first])) continue;
+            const name_end = jsDocIdentifierEnd(self.source, first, tag_end);
+            const after_name = self.firstJSDocContentByte(name_end, tag_end);
+            if (after_name < tag_end) continue;
+
+            try self.reportCodeAt(
+                @intCast(name_end),
+                self.lineAt(@intCast(name_end)),
+                1109,
+                "Expression expected.",
+            );
+            try self.reportCodeAt(
+                @intCast(end),
+                self.lineAt(@intCast(end)),
+                1005,
+                "'from' expected.",
+            );
+        }
+    }
+
+    fn scanJSDocTemplateModifierDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
+        const has_typedef = self.jsDocBlockHasTag(start, end, "typedef");
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            const tag_name = self.source[tag_name_start..tag_name_end];
+            i = tag_name_end;
+            if (!std.mem.eql(u8, tag_name, "template")) continue;
+            const modifier_start = firstNonWhitespace(self.source, tag_name_end, end);
+            const modifier_end = jsDocIdentifierEnd(self.source, modifier_start, end);
+            if (modifier_start == modifier_end) continue;
+            const modifier = self.source[modifier_start..modifier_end];
+            if (std.mem.eql(u8, modifier, "private")) {
+                try self.reportCodeAt(
+                    @intCast(modifier_start),
+                    self.lineAt(@intCast(modifier_start)),
+                    1273,
+                    "'private' modifier cannot appear on a type parameter",
+                );
+                continue;
+            }
+            if (has_typedef and std.mem.eql(u8, modifier, "const")) {
+                try self.reportCodeAt(
+                    @intCast(modifier_start),
+                    self.lineAt(@intCast(modifier_start)),
+                    1277,
+                    "'const' modifier can only appear on a type parameter of a function, method or class",
+                );
+            }
+        }
+    }
+
+    fn jsDocBlockHasTag(self: *const Parser, start: usize, end: usize, wanted: []const u8) bool {
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse return false;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            if (std.mem.eql(u8, self.source[tag_name_start..tag_name_end], wanted)) return true;
+            i = tag_name_end;
+        }
+        return false;
+    }
+
+    fn scanJSDocTypedefDuplicateTypeTags(self: *Parser, start: usize, end: usize) ParseError!void {
+        var has_typedef = false;
+        var type_tag_count: u32 = 0;
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            const tag_name = self.source[tag_name_start..tag_name_end];
+            if (std.mem.eql(u8, tag_name, "typedef")) {
+                has_typedef = true;
+                i = tag_name_end;
+                continue;
+            }
+            if (!std.mem.eql(u8, tag_name, "type")) {
+                i = tag_name_end;
+                continue;
+            }
+            type_tag_count += 1;
+            if (has_typedef and type_tag_count >= 2) {
+                const report_pos = self.jsDocTagTypeAnnotationEnd(tag_name_end, end) orelse tag_name_end;
+                try self.reportCodeAt(
+                    @intCast(report_pos),
+                    self.lineAt(@intCast(report_pos)),
+                    8033,
+                    "A JSDoc '@typedef' comment may not contain multiple '@type' tags.",
+                );
+                return;
+            }
+            i = tag_name_end;
+        }
+    }
+
+    fn nextJSDocTagStart(self: *const Parser, start: usize, end: usize) ?usize {
+        var i = start;
+        var at_line_start = true;
+        while (i < end) : (i += 1) {
+            const ch = self.source[i];
+            if (ch == '\n' or ch == '\r') {
+                at_line_start = true;
+                continue;
+            }
+            if (at_line_start) {
+                if (ch == ' ' or ch == '\t') continue;
+                if (ch == '*') {
+                    i += 1;
+                    while (i < end and (self.source[i] == ' ' or self.source[i] == '\t')) : (i += 1) {}
+                    if (i >= end) return null;
+                }
+                at_line_start = false;
+            }
+            if (self.source[i] == '@') return i;
+            while (i < end and self.source[i] != '\n' and self.source[i] != '\r') : (i += 1) {}
+            at_line_start = true;
+        }
+        return null;
+    }
+
+    fn jsDocTagLineEnd(self: *const Parser, start: usize, end: usize) usize {
+        var i = start;
+        while (i < end and self.source[i] != '\n' and self.source[i] != '\r') : (i += 1) {}
+        return i;
+    }
+
+    fn firstJSDocContentByte(self: *const Parser, start: usize, end: usize) usize {
+        var i = start;
+        var at_line_start = false;
+        while (i < end) {
+            while (i < end and (self.source[i] == ' ' or self.source[i] == '\t')) : (i += 1) {}
+            if (i >= end) return i;
+            if (self.source[i] == '\n' or self.source[i] == '\r') {
+                if (self.source[i] == '\r' and i + 1 < end and self.source[i + 1] == '\n') i += 1;
+                i += 1;
+                at_line_start = true;
+                continue;
+            }
+            if (at_line_start and self.source[i] == '*') {
+                i += 1;
+                while (i < end and (self.source[i] == ' ' or self.source[i] == '\t')) : (i += 1) {}
+                at_line_start = false;
+                continue;
+            }
+            return i;
+        }
+        return i;
+    }
+
+    fn findJSDocImportKeyword(self: *const Parser, start: usize, end: usize, keyword: []const u8) ?usize {
+        var i = start;
+        while (i + keyword.len <= end) : (i += 1) {
+            if (!std.mem.eql(u8, self.source[i .. i + keyword.len], keyword)) continue;
+            if (i > start and isJSDocIdentifierChar(self.source[i - 1])) continue;
+            if (i + keyword.len < end and isJSDocIdentifierChar(self.source[i + keyword.len])) continue;
+            return i;
+        }
+        return null;
+    }
+
+    fn jsDocTagTypeAnnotationEnd(self: *const Parser, start: usize, end: usize) ?usize {
+        var i = start;
+        while (i < end and (self.source[i] == ' ' or self.source[i] == '\t')) : (i += 1) {}
+        if (i >= end or self.source[i] != '{') return null;
+        var depth: u32 = 1;
+        i += 1;
+        while (i < end) : (i += 1) {
+            switch (self.source[i]) {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if (depth == 0) return i + 1;
+                },
+                '\n', '\r' => return null,
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    fn isJSDocTagNameChar(c: u8) bool {
+        return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z');
     }
 
     fn scanJSDocCommentTypeExpressions(self: *Parser, start: usize, end: usize) ParseError!void {
@@ -870,6 +1264,17 @@ pub const Parser = struct {
         var i = start;
         while (i < end and (source[i] == ' ' or source[i] == '\t' or source[i] == '\r' or source[i] == '\n')) : (i += 1) {}
         return i;
+    }
+
+    fn jsDocIdentifierEnd(source: []const u8, start: usize, end: usize) usize {
+        var i = start;
+        while (i < end and isJSDocIdentifierChar(source[i])) : (i += 1) {}
+        return i;
+    }
+
+    fn isJSDocIdentifierChar(c: u8) bool {
+        return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+            (c >= '0' and c <= '9') or c == '_' or c == '$';
     }
 
     fn lastNonWhitespaceBefore(source: []const u8, start: usize, end: usize) ?usize {
@@ -1289,6 +1694,11 @@ pub const Parser = struct {
             .kw_module => blk: {
                 if (self.peekAt(1).flags.preceded_by_newline) break :blk try self.parseExpressionStatement();
                 if (self.peekAt(1).kind == .dot) break :blk try self.parseExpressionStatement();
+                if (self.peekAt(1).kind == .no_substitution_template or self.peekAt(1).kind == .template_head) {
+                    const expr = try self.parseExpression();
+                    if (self.peek().kind != .open_brace) try self.consumeStatementTerminator();
+                    break :blk expr;
+                }
                 if (self.peekAt(1).kind != .identifier and self.peekAt(1).kind != .string_literal) {
                     break :blk try self.parseExpressionStatement();
                 }
@@ -1300,8 +1710,10 @@ pub const Parser = struct {
                     (self.peekAt(2).kind == .no_substitution_template or self.peekAt(2).kind == .template_head))
                 {
                     const name_tok = self.peekAt(2);
+                    const declare_tok = self.advance();
                     try self.reportCodeAt(name_tok.span.start, name_tok.line, 1443, "Module declaration names may only use ' or \" quoted strings.");
-                    break :blk try self.parseExpressionStatement();
+                    const name_id = try self.internToken(declare_tok);
+                    break :blk try self.builder.addIdentifier(tokenSpan(declare_tok), name_id);
                 }
                 // `declare` is a contextual keyword. When the next
                 // token can start a tagged template, function call,
@@ -1617,7 +2029,7 @@ pub const Parser = struct {
         return self.strict_mode or self.target_es2015_or_later or self.generator_depth > 0;
     }
 
-    fn reportInvalidYieldName(self: *Parser, tok: Token) ParseError!void {
+    fn reportInvalidYieldName(self: *Parser, tok: Token, target_reserved: bool) ParseError!void {
         if (!self.tokenTextEquals(tok, "yield")) return;
         // Inside a class body, strict mode is implicit and tsc emits
         // the class-strict TS1213 variant ("…Class definitions are
@@ -1644,11 +2056,13 @@ pub const Parser = struct {
             try self.reportCodeAt(tok.span.start, tok.line, 1359, "Identifier expected. 'yield' is a reserved word that cannot be used here.");
             return;
         }
-        // Outside any [Yield] grammar context, the binder is reserved
-        // when the source is strict mode OR ES2015+ (where `yield` is
-        // a future-reserved word). Mirrors `FunctionDeclaration4_es6`
-        // (`function yield() {}` at top level, es6 target).
-        if (self.strict_mode or self.target_es2015_or_later) {
+        // Outside any [Yield] grammar context, most binders are reserved
+        // when the source is strict mode OR ES2015+ (where `yield` is a
+        // future-reserved word). A generator declaration name is parsed
+        // in the outer binding scope, though, so sloppy-mode
+        // `async function * yield() {}` remains legal even with an
+        // ES2018 target. Strict mode still reports TS1212.
+        if (self.strict_mode or (target_reserved and self.target_es2015_or_later)) {
             try self.reportCodeAt(tok.span.start, tok.line, 1212, "Identifier expected. 'yield' is a reserved word in strict mode.");
         }
     }
@@ -2615,7 +3029,11 @@ pub const Parser = struct {
         if (self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) {
             const name_tok = self.advance();
             try self.reportInvalidStrictName(name_tok);
-            try self.reportInvalidYieldName(name_tok);
+            const yield_target_reserved = !(is_generator and
+                require_name and
+                self.generator_depth == 0 and
+                self.async_function_depth > 0);
+            try self.reportInvalidYieldName(name_tok, yield_target_reserved);
             // `async function await()` as a DECLARATION is legal (the
             // function name binds in the outer scope where `await` is
             // not reserved). The same name as a function EXPRESSION
@@ -3011,7 +3429,7 @@ pub const Parser = struct {
                         try self.reportCodeAt(name_tok.span.start, name_tok.line, 18009, "Private identifiers cannot be used as parameters.");
                     }
                     if (!self.suppress_strict_param_names) try self.reportInvalidStrictName(name_tok);
-                    try self.reportInvalidYieldName(name_tok);
+                    try self.reportInvalidYieldName(name_tok, true);
                     try self.reportInvalidFutureReservedName(name_tok);
                     try self.reportInvalidClassStrictIdentifier(name_tok);
                     try self.reportAwaitReservedInAsyncContext(name_tok);
@@ -3261,7 +3679,12 @@ pub const Parser = struct {
         const close_kind: TokenKind = if (is_object) .close_brace else .close_bracket;
         var elements: std.ArrayListUnmanaged(NodeId) = .empty;
         defer elements.deinit(self.gpa);
-        var seen_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        const BindingNameSeen = struct {
+            start: u32,
+            line: u32,
+            reported_first: bool = false,
+        };
+        var seen_names: std.AutoHashMapUnmanaged(hir_mod.StringId, BindingNameSeen) = .empty;
         defer seen_names.deinit(self.gpa);
         if (self.peek().kind != close_kind) {
             while (true) {
@@ -3299,6 +3722,7 @@ pub const Parser = struct {
                     if (self.match(.colon)) {
                         const target_tok = self.peek();
                         const target = try self.parseBindingTarget();
+                        try self.reportUnusedRenameInFnTypeBindingPattern(key_tok, target);
                         if (isReservedBindingNameToken(target_tok.kind)) {
                             try self.reportCodeAt(self.peek().span.start, self.peek().line, 1005, "':' expected.");
                         }
@@ -3347,10 +3771,17 @@ pub const Parser = struct {
                 }
                 if (self.hir.kindOf(name_node) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, name_node);
-                    if (seen_names.contains(id.name)) {
+                    if (seen_names.getPtr(id.name)) |first| {
+                        if (!first.reported_first) {
+                            try self.reportDuplicateIdentifierNamed(first.start, first.line, id.name);
+                            first.reported_first = true;
+                        }
                         try self.reportDuplicateIdentifierNamed(self.hir.spanOf(name_node).start, elem_start.line, id.name);
                     } else {
-                        try seen_names.put(self.gpa, id.name, {});
+                        try seen_names.put(self.gpa, id.name, .{
+                            .start = self.hir.spanOf(name_node).start,
+                            .line = elem_start.line,
+                        });
                     }
                 }
                 const elem = try self.builder.addParameter(
@@ -4780,7 +5211,10 @@ pub const Parser = struct {
                 _ = self.match(.bang);
             }
             if (self.match(.equal)) value = try self.parseAssignmentExpression();
-            try self.consumeStatementTerminator();
+            self.consumeStatementTerminator() catch |err| switch (err) {
+                error.UnexpectedToken => self.skipMalformedClassFieldTail(),
+                else => return err,
+            };
         }
 
         return try self.builder.addObjectPropertyFull(
@@ -4795,6 +5229,14 @@ pub const Parser = struct {
             mods.visibility,
             mods.is_override,
         );
+    }
+
+    fn skipMalformedClassFieldTail(self: *Parser) void {
+        while (self.peek().kind != .eof and self.peek().kind != .close_brace) {
+            if (self.match(.semicolon)) return;
+            if (self.peek().flags.preceded_by_newline) return;
+            _ = self.advance();
+        }
     }
 
     fn parseClassMemberDecoratorExpression(self: *Parser) ParseError!NodeId {
@@ -5156,8 +5598,10 @@ pub const Parser = struct {
         var type_kw_start: u32 = start.span.start;
         var type_kw_line: u32 = start.line;
         if (self.peek().kind == .kw_type) {
-            if (!(self.peekAt(1).kind == .kw_from and self.peekAt(2).kind == .string_literal)) {
-                const type_tok = self.advance();
+            if (self.peekAt(1).kind != .equal and
+                !(self.peekAt(1).kind == .kw_from and self.peekAt(2).kind == .string_literal))
+            {
+                _ = self.advance();
                 is_type_only = true;
                 type_kw_start = type_tok.span.start;
                 type_kw_line = type_tok.line;
@@ -6831,6 +7275,26 @@ pub const Parser = struct {
                 node = try self.builder.addIndexedAccessType(sp, node, index);
                 continue;
             }
+            if ((self.peek().kind == .question or self.peek().kind == .bang) and
+                self.jsDocPostfixTypeMarkerCanRecover())
+            {
+                const marker = self.advance();
+                const base_text = self.source[self.hir.spanOf(node).start..self.hir.spanOf(node).end];
+                const suggestion = if (marker.kind == .question)
+                    try std.fmt.allocPrint(self.diag_arena.allocator(), "{s} | undefined", .{base_text})
+                else
+                    base_text;
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "'{s}' at the end of a type is not valid TypeScript syntax. Did you mean to write '{s}'?",
+                    .{ self.source[marker.span.start..marker.span.end], suggestion },
+                );
+                try self.reportCodeAt(self.hir.spanOf(node).start, self.lineAt(self.hir.spanOf(node).start), 17019, msg);
+                if (marker.kind == .question) {
+                    node = try self.makeNullableType(node, false, marker.span.end);
+                }
+                continue;
+            }
             break;
         }
         return node;
@@ -6910,6 +7374,40 @@ pub const Parser = struct {
             .open_bracket => try self.parseTupleType(),
             .open_brace => try self.parseObjectOrMappedType(),
             .less_than => try self.parseGenericFnType(),
+            .asterisk => blk: {
+                const star = self.advance();
+                try self.reportCodeAt(star.span.start, star.line, 8020, "JSDoc types can only be used inside documentation comments.");
+                break :blk try self.typeRefName("any", tokenSpan(star));
+            },
+            .question => blk: {
+                const question = self.advance();
+                if (!self.tokenCanStartJSDocNullableType(self.peek().kind)) {
+                    try self.reportCodeAt(question.span.start, question.line, 8020, "JSDoc types can only be used inside documentation comments.");
+                    break :blk try self.typeRefName("any", tokenSpan(question));
+                }
+                const inner = try self.parseTypeOperator();
+                const inner_text = self.source[self.hir.spanOf(inner).start..self.hir.spanOf(inner).end];
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "'?' at the start of a type is not valid TypeScript syntax. Did you mean to write '{s} | null | undefined'?",
+                    .{inner_text},
+                );
+                try self.reportCodeAt(question.span.start, question.line, 17020, msg);
+                break :blk try self.makeNullableType(inner, true, self.hir.spanOf(inner).end);
+            },
+            .bang => blk: {
+                const bang = self.advance();
+                const inner = try self.parseTypeOperator();
+                const inner_text = self.source[self.hir.spanOf(inner).start..self.hir.spanOf(inner).end];
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "'!' at the start of a type is not valid TypeScript syntax. Did you mean to write '{s}'?",
+                    .{inner_text},
+                );
+                try self.reportCodeAt(bang.span.start, bang.line, 17020, msg);
+                break :blk inner;
+            },
+            .kw_function => try self.parseJSDocFunctionTypeInTypeScript(),
             .close_paren => blk: {
                 try self.reportCodeAt(t.span.start, t.line, 1110, "Type expected.");
                 const id = self.interner.intern("unknown") catch return error.OutOfMemory;
@@ -7012,6 +7510,144 @@ pub const Parser = struct {
                 return try self.builder.addTypeRef(tokenSpan(bad), id, &.{}, &.{});
             },
         };
+    }
+
+    fn tokenCanStartJSDocNullableType(self: *const Parser, kind: TokenKind) bool {
+        _ = self;
+        return switch (kind) {
+            .identifier,
+            .kw_any,
+            .kw_unknown,
+            .kw_never,
+            .kw_void,
+            .kw_string,
+            .kw_number,
+            .kw_boolean,
+            .kw_bigint,
+            .kw_symbol,
+            .kw_object,
+            .kw_undefined,
+            .kw_null,
+            .kw_this,
+            .kw_import,
+            .kw_function,
+            .open_paren,
+            .open_bracket,
+            .open_brace,
+            .asterisk,
+            .bang,
+            => true,
+            else => false,
+        };
+    }
+
+    fn jsDocPostfixTypeMarkerCanRecover(self: *const Parser) bool {
+        if (self.peek().kind == .question and self.tuple_type_depth > 0) {
+            const next = self.peekAt(1).kind;
+            if (next == .comma or next == .close_bracket) return false;
+        }
+        const next = self.peekAt(1).kind;
+        return switch (next) {
+            .equal,
+            .comma,
+            .semicolon,
+            .close_paren,
+            .close_bracket,
+            .close_brace,
+            .greater_than,
+            .greater_greater,
+            .greater_greater_greater,
+            .eof,
+            => true,
+            else => false,
+        };
+    }
+
+    fn typeRefName(self: *Parser, name: []const u8, type_span: Span) ParseError!NodeId {
+        const id = self.interner.intern(name) catch return error.OutOfMemory;
+        return try self.builder.addTypeRef(type_span, id, &.{}, &.{});
+    }
+
+    fn makeNullableType(self: *Parser, inner: NodeId, include_undefined: bool, end_pos: u32) ParseError!NodeId {
+        var members: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer members.deinit(self.gpa);
+        try members.append(self.gpa, inner);
+        try members.append(self.gpa, try self.typeRefName("null", .{ .start = end_pos, .end = end_pos }));
+        if (include_undefined) {
+            try members.append(self.gpa, try self.typeRefName("undefined", .{ .start = end_pos, .end = end_pos }));
+        }
+        return try self.builder.addUnionType(
+            .{ .start = self.hir.spanOf(inner).start, .end = end_pos },
+            members.items,
+        );
+    }
+
+    fn parseJSDocFunctionTypeInTypeScript(self: *Parser) ParseError!NodeId {
+        const function_tok = self.advance();
+        var params: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer params.deinit(self.gpa);
+        var is_constructor = false;
+        var constructor_return: NodeId = hir_mod.none_node_id;
+
+        _ = try self.expect(.open_paren, "'(' after JSDoc function type");
+        if (self.peek().kind != .close_paren) {
+            var index: usize = 0;
+            while (true) : (index += 1) {
+                if (index == 0 and self.peek().kind == .kw_new and self.peekAt(1).kind == .colon) {
+                    is_constructor = true;
+                    _ = self.advance();
+                    _ = self.advance();
+                    constructor_return = try self.parseTypeAnnotation();
+                } else {
+                    const param_start = self.peek();
+                    var name_node: NodeId = hir_mod.none_node_id;
+                    var type_ann: NodeId = hir_mod.none_node_id;
+                    if ((self.peek().kind == .kw_this or self.peek().kind == .identifier) and self.peekAt(1).kind == .colon) {
+                        const name_tok = self.advance();
+                        _ = self.advance();
+                        const parsed_type = try self.parseTypeAnnotation();
+                        type_ann = try self.typeRefName("any", self.hir.spanOf(parsed_type));
+                        const name_id = try self.internToken(name_tok);
+                        name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+                    } else {
+                        const parsed_type = try self.parseTypeAnnotation();
+                        type_ann = try self.typeRefName("any", self.hir.spanOf(parsed_type));
+                        var buf: [32]u8 = undefined;
+                        const synthetic = std.fmt.bufPrint(&buf, "__arg{d}", .{params.items.len}) catch return error.OutOfMemory;
+                        name_node = try self.builder.addIdentifier(
+                            .{ .start = param_start.span.start, .end = param_start.span.start },
+                            self.interner.intern(synthetic) catch return error.OutOfMemory,
+                        );
+                    }
+                    try params.append(self.gpa, try self.builder.addParameter(
+                        .{ .start = param_start.span.start, .end = self.hir.spanOf(type_ann).end },
+                        name_node,
+                        type_ann,
+                        hir_mod.none_node_id,
+                        .{},
+                    ));
+                }
+                if (!self.match(.comma)) break;
+                if (self.peek().kind == .close_paren) break;
+            }
+        }
+        const close_tok = try self.expect(.close_paren, "')' after JSDoc function type");
+        var ret: NodeId = if (constructor_return != hir_mod.none_node_id)
+            constructor_return
+        else
+            try self.typeRefName("any", .{ .start = close_tok.span.end, .end = close_tok.span.end });
+        if (!is_constructor and self.match(.colon)) {
+            ret = try self.parseTypeAnnotation();
+        }
+        const end_pos = self.hir.spanOf(ret).end;
+        try self.reportCodeAt(function_tok.span.start, function_tok.line, 8020, "JSDoc types can only be used inside documentation comments.");
+        return try self.builder.addFnType(
+            .{ .start = function_tok.span.start, .end = end_pos },
+            &.{},
+            params.items,
+            ret,
+            is_constructor,
+        );
     }
 
     /// `(T)` (paren type) or `(a: T) => U` (function type).
@@ -7121,6 +7757,8 @@ pub const Parser = struct {
                 var seen_name: ?hir_mod.StringId = null;
                 var type_ann: NodeId = hir_mod.none_node_id;
                 if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) {
+                    self.fn_type_binding_pattern_depth += 1;
+                    defer self.fn_type_binding_pattern_depth -= 1;
                     name_node = try self.parseBindingPattern();
                     name_span = self.hir.spanOf(name_node);
                     if (self.match(.question)) flags.is_optional = true;
@@ -7206,20 +7844,45 @@ pub const Parser = struct {
                 const from = self.interner.get(im.name);
                 const to = self.interner.get(tr.name);
                 if (to.len == 0 or !std.ascii.isLower(to[0])) continue;
-                const msg = try std.fmt.allocPrint(
-                    self.diag_arena.allocator(),
-                    "'{s}' is an unused renaming of '{s}'. Did you intend to use it as a type annotation?",
-                    .{ to, from },
-                );
-                try self.diagnostics.append(self.gpa, .{
-                    .pos = self.hir.spanOf(im.type_node).start,
-                    .line = self.lineAt(self.hir.spanOf(im.type_node).start),
-                    .code = 2842,
-                    .message = msg,
-                });
+                const type_span = self.hir.spanOf(im.type_node);
+                try self.reportUnusedRenameInFnTypeParamAt(type_span.start, self.lineAt(type_span.start), from, to);
             },
             else => {},
         }
+    }
+
+    fn reportUnusedRenameInFnTypeBindingPattern(self: *Parser, key_tok: Token, target: NodeId) ParseError!void {
+        if (self.fn_type_binding_pattern_depth == 0) return;
+        if (key_tok.kind != .identifier) return;
+        if (target == hir_mod.none_node_id or self.hir.kindOf(target) != .identifier) return;
+        const from_id = try self.internToken(key_tok);
+        const target_ident = hir_mod.identifierOf(self.hir, target);
+        if (from_id == target_ident.name) return;
+        const to = self.interner.get(target_ident.name);
+        if (to.len == 0 or !std.ascii.isLower(to[0])) return;
+        const from = self.interner.get(from_id);
+        const target_span = self.hir.spanOf(target);
+        try self.reportUnusedRenameInFnTypeParamAt(target_span.start, self.lineAt(target_span.start), from, to);
+    }
+
+    fn reportUnusedRenameInFnTypeParamAt(
+        self: *Parser,
+        pos: u32,
+        line: u32,
+        from: []const u8,
+        to: []const u8,
+    ) ParseError!void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}' is an unused renaming of '{s}'. Did you intend to use it as a type annotation?",
+            .{ to, from },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .pos = pos,
+            .line = line,
+            .code = 2842,
+            .message = msg,
+        });
     }
 
     /// Parse a template-literal type: `\`a${T}b${U}c\``. Cursor at
@@ -7275,6 +7938,8 @@ pub const Parser = struct {
 
     fn parseTupleType(self: *Parser) ParseError!NodeId {
         const open = try self.expect(.open_bracket, "'[' to start tuple type");
+        self.tuple_type_depth += 1;
+        defer self.tuple_type_depth -= 1;
         var elems: std.ArrayListUnmanaged(NodeId) = .empty;
         defer elems.deinit(self.gpa);
         var saw_optional = false;
@@ -8435,6 +9100,10 @@ pub const Parser = struct {
         while (self.peek().kind == .dot or self.peek().kind == .question_dot) {
             const dot = self.advance();
             if (dot.kind == .question_dot) saw_question_dot = true;
+            if (dot.kind == .dot and self.peek().kind == .less_than and !self.peek().flags.preceded_by_newline) {
+                try self.reportCodeAt(dot.span.start, dot.line, 8020, "JSDoc types can only be used inside documentation comments.");
+                break;
+            }
             if (self.peek().flags.preceded_by_newline or self.peek().kind == .eof) {
                 try self.reportCodeAt(dot.span.end, dot.line, 1003, "Identifier expected.");
                 const prev_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
@@ -10589,7 +11258,9 @@ pub const Parser = struct {
             },
             .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set, .kw_global, .kw_from, .kw_require, .kw_module, .kw_namespace, .kw_interface, .kw_declare, .kw_of, .kw_type, .kw_using, .kw_await, .kw_static, .kw_let => {
                 _ = self.advance();
-                if (!(t.kind == .kw_let and self.namespace_depth > 0 and !self.strict_mode)) {
+                if (!(t.kind == .kw_let and self.namespace_depth > 0 and !self.strict_mode) and
+                    !(t.kind == .kw_static and self.accessibilityKeywordIsMemberRoot(t)))
+                {
                     try self.reportInvalidFutureReservedName(t);
                 }
                 const id = try self.internToken(t);
@@ -10605,8 +11276,10 @@ pub const Parser = struct {
                 // reports TS2304 instead of TS1109. Mirrors fixtures
                 // `parserComputedPropertyName36`-`39`.
                 _ = self.advance();
-                try self.reportInvalidClassStrictIdentifier(t);
-                try self.reportInvalidFutureReservedName(t);
+                if (!self.accessibilityKeywordIsMemberRoot(t)) {
+                    try self.reportInvalidClassStrictIdentifier(t);
+                    try self.reportInvalidFutureReservedName(t);
+                }
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
             },
@@ -11122,10 +11795,116 @@ pub const Parser = struct {
             defer children.deinit(self.gpa);
             const content_start = self.tokens[self.cursor - 1].span.end;
             try self.parseJsxChildren(&children, content_start);
-            // Closing `</>`.
-            _ = try self.expect(.less_than, "'<' to start fragment close");
+            // Closing `</>`. Recover when the user wrote a NAMED
+            // closing tag (`</div>`) instead of the empty `</>` —
+            // emit tsc's TS17015 (`Expected corresponding closing tag
+            // for JSX fragment.`) at the offending tag identifier and
+            // continue parsing as if it were a fragment close. Mirrors
+            // upstream `tsxFragmentErrors` line 13 (`<>hi</div>`).
+            // Custom error path when the fragment was never closed:
+            // tsc emits `'</' expected.` (TS1005) anchored just past
+            // the trailing source content of the fragment's last
+            // child — i.e. at the end of the same line where the
+            // children ran out, not the start of the NEXT statement.
+            // Mirrors `tsxFragmentErrors` line 11's unterminated
+            // `<>eof   // Error` fragment where tsc anchors at col 17
+            // (end of `<>eof   // Error`).
+            if (self.peek().kind != .less_than) {
+                const t = self.peek();
+                const src = self.source;
+                // tsc anchors `'</' expected.` at the end of the
+                // line that the fragment's last content was on,
+                // INCLUDING any trailing `// …` line comments —
+                // i.e. just past the last non-newline character on
+                // that line. Walk back from the next token's start
+                // through whitespace + newlines, then forward to the
+                // newline that terminates the current line, then back
+                // to the last non-whitespace character on that line.
+                var anchor = t.span.start;
+                if (anchor > 0 and anchor <= src.len) {
+                    var i: usize = anchor;
+                    // Skip leading whitespace/newlines back to the
+                    // previous non-empty char.
+                    while (i > 0 and (src[i - 1] == ' ' or src[i - 1] == '\t' or src[i - 1] == '\r' or src[i - 1] == '\n')) i -= 1;
+                    // Now `i` sits just past the last significant byte
+                    // on the previous content line. That's the column
+                    // tsc uses.
+                    anchor = @intCast(i);
+                }
+                var anchor_line: u32 = 1;
+                {
+                    var j: usize = 0;
+                    while (j < @as(usize, anchor) and j < src.len) : (j += 1) {
+                        if (src[j] == '\n') anchor_line += 1;
+                    }
+                }
+                try self.reportCodeAt(anchor, anchor_line, 1005, "'</' expected.");
+                return try self.builder.addJsxFragment(.{ .start = open.span.start, .end = anchor }, children.items);
+            }
+            const lt_tok = self.advance();
             _ = try self.expect(.slash, "'/' in fragment close");
-            const close = try self.expect(.greater_than, "'>' to close fragment");
+            const after_slash = self.peek();
+            var named_close_recovered = false;
+            var named_close_end: u32 = after_slash.span.end;
+            if (after_slash.kind != .greater_than and isJsxNamePart(after_slash.kind)) {
+                // tsc treats the bogus close-tag name as a regular
+                // identifier reference (not a JSX tag) and runs it
+                // through normal name resolution, so an unresolved
+                // `</div>` inside a fragment emits BOTH TS2304 and
+                // TS17015 at the name. Mirrors tsxFragmentErrors line 9
+                // `<>hi</div>` — `Cannot find name 'div'.` precedes
+                // `Expected corresponding closing tag for JSX fragment.`
+                // The close-tag name never participates in real value
+                // resolution from this recovery, so emitting from the
+                // parser keeps the path self-contained.
+                const name_text = self.source[after_slash.span.start..after_slash.span.end];
+                const ts2304_msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Cannot find name '{s}'.",
+                    .{name_text},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .pos = after_slash.span.start,
+                    .line = after_slash.line,
+                    .code = 2304,
+                    .message = ts2304_msg,
+                });
+                try self.reportCodeAt(after_slash.span.start, after_slash.line, 17015, "Expected corresponding closing tag for JSX fragment.");
+                // Consume the bogus name (and any hyphenation /
+                // namespacing) so the trailing `>` is reachable.
+                named_close_recovered = true;
+                const first = self.advance();
+                named_close_end = first.span.end;
+                while (true) {
+                    const k = self.peek().kind;
+                    if ((k == .minus or k == .colon) and isJsxNamePart(self.peekAt(1).kind)) {
+                        _ = self.advance();
+                        const part = self.advance();
+                        named_close_end = part.span.end;
+                        continue;
+                    }
+                    break;
+                }
+            }
+            // tsc additionally emits TS17014 (`JSX fragment has no
+            // corresponding closing tag.`) at the `>` that closes
+            // the bogus `</name>` (or at the position immediately
+            // after the consumed name when no `>` is present). The
+            // fragment was never closed by a matching `</>`.
+            if (named_close_recovered) {
+                const anchor = if (self.peek().kind == .greater_than)
+                    self.peek().span.end
+                else
+                    named_close_end;
+                try self.reportCodeAt(anchor, lt_tok.line, 17014, "JSX fragment has no corresponding closing tag.");
+            }
+            if (self.peek().kind != .greater_than) {
+                if (!named_close_recovered) {
+                    try self.reportCodeAt(lt_tok.span.start, lt_tok.line, 17014, "JSX fragment has no corresponding closing tag.");
+                }
+                return try self.builder.addJsxFragment(.{ .start = open.span.start, .end = lt_tok.span.end }, children.items);
+            }
+            const close = self.advance();
             return try self.builder.addJsxFragment(.{ .start = open.span.start, .end = close.span.end }, children.items);
         }
 
@@ -11952,6 +12731,14 @@ pub const Parser = struct {
         }
         try self.reportCodeAt(t.span.start, t.line, 1003, "Identifier expected.");
         return error.UnexpectedToken;
+    }
+
+    fn accessibilityKeywordIsMemberRoot(self: *Parser, tok: Token) bool {
+        if (self.strict_mode) return false;
+        return switch (tok.kind) {
+            .kw_public, .kw_private, .kw_protected, .kw_static => self.peek().kind == .dot or self.peek().kind == .open_bracket,
+            else => false,
+        };
     }
 };
 
@@ -13541,7 +14328,7 @@ test "parser: duplicate names in binding pattern report TS2300" {
     for (s.parser.diagnostics.items) |d| {
         if (d.code == 2300) count += 1;
     }
-    try T.expectEqual(@as(usize, 2), count);
+    try T.expectEqual(@as(usize, 4), count);
 }
 
 test "parser: duplicate parameter names report TS2300" {
@@ -13585,7 +14372,7 @@ test "parser: TS2300 duplicate identifier emits include the name" {
     }
     try T.expectEqual(@as(usize, 0), bare);
     try T.expectEqual(@as(usize, 2), x_named);
-    try T.expectEqual(@as(usize, 1), foo_named);
+    try T.expectEqual(@as(usize, 2), foo_named);
     try T.expectEqual(@as(usize, 2), a_named);
     try T.expectEqual(@as(usize, 2), p_named);
 }
@@ -14320,6 +15107,7 @@ test "parser: ambient external module permits default export" {
 test "parser: import equals accepts type/contextual aliases and ASI" {
     var s = try newTestSetup(
         \\import type _foo = require("./foo.ts");
+        \\import type = require("./type");
         \\import await = foo.await;
         \\import foo2 = require("./foo2")
         \\class C extends foo2.x {}
@@ -14328,12 +15116,17 @@ test "parser: import equals accepts type/contextual aliases and ASI" {
 
     const root = try s.parser.parseSourceFile();
     const stmts = hir_mod.blockStmts(&s.hir, root);
-    try T.expectEqual(@as(usize, 4), stmts.len);
+    try T.expectEqual(@as(usize, 5), stmts.len);
     try T.expectEqual(hir_mod.NodeKind.import_decl, s.hir.kindOf(stmts[0]));
     try T.expectEqual(hir_mod.NodeKind.import_decl, s.hir.kindOf(stmts[1]));
     try T.expectEqual(hir_mod.NodeKind.import_decl, s.hir.kindOf(stmts[2]));
-    try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(stmts[3]));
-    const imp = hir_mod.importOf(&s.hir, stmts[1]);
+    try T.expectEqual(hir_mod.NodeKind.import_decl, s.hir.kindOf(stmts[3]));
+    try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(stmts[4]));
+    const type_only_imp = hir_mod.importOf(&s.hir, stmts[0]);
+    try T.expect(type_only_imp.is_type_only);
+    const type_alias_imp = hir_mod.importOf(&s.hir, stmts[1]);
+    try T.expect(!type_alias_imp.is_type_only);
+    const imp = hir_mod.importOf(&s.hir, stmts[2]);
     try T.expect(imp.import_equals != hir_mod.none_node_id);
     try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(imp.import_equals));
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
@@ -14882,6 +15675,31 @@ test "parser: type annotation — fn type accepts type-only and this parameters"
     const member = hir_mod.interfaceMemberOf(&s.hir, iface_members[0]);
     try T.expect(member.is_method);
     try T.expectEqual(hir_mod.NodeKind.fn_type, s.hir.kindOf(member.type_node));
+}
+
+test "parser: function type destructuring renames report TS2842" {
+    var s = try newTestSetup(
+        \\type T3 = ([{ a: b }, { b: a }]);
+        \\type F3 = ([{ a: b }, { b: a }]) => void;
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    var saw_b_from_a = false;
+    var saw_a_from_b = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code != 2842) continue;
+        count += 1;
+        if (std.mem.eql(u8, d.message, "'b' is an unused renaming of 'a'. Did you intend to use it as a type annotation?")) {
+            saw_b_from_a = true;
+        }
+        if (std.mem.eql(u8, d.message, "'a' is an unused renaming of 'b'. Did you intend to use it as a type annotation?")) {
+            saw_a_from_b = true;
+        }
+    }
+    try T.expectEqual(@as(usize, 2), count);
+    try T.expect(saw_b_from_a);
+    try T.expect(saw_a_from_b);
 }
 
 test "parser: type annotation — literal types" {
@@ -16589,6 +17407,46 @@ test "parser: strict-mode top-level reserves yield in function names and params"
     try T.expect(count_1212 >= 2);
 }
 
+test "parser: ES2015 generator declaration reserves yield as name" {
+    var s = try newTestSetup("function * yield() {}");
+    defer destroyTestSetup(s);
+
+    s.parser.setTargetEs2015OrLater(true);
+    _ = try s.parser.parseSourceFile();
+    var saw_1212 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1212) saw_1212 = true;
+    }
+    try T.expect(saw_1212);
+}
+
+test "parser: sloppy top-level async-generator declaration may be named yield" {
+    // Mirrors `parser.asyncGenerators.functionDeclarations.es2018` /
+    // `yieldNameIsOk`: the declaration name binds in the outer sloppy
+    // script scope, not in the generator's [Yield] context. The
+    // `alwaysStrict=true` variant still reports TS1212.
+    var sloppy = try newTestSetup("async function * yield() {}");
+    defer destroyTestSetup(sloppy);
+
+    sloppy.parser.setTargetEs2015OrLater(true);
+    _ = try sloppy.parser.parseSourceFile();
+    for (sloppy.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1212);
+    }
+
+    var strict = try newTestSetup("async function * yield() {}");
+    defer destroyTestSetup(strict);
+
+    strict.parser.setTargetEs2015OrLater(true);
+    strict.parser.setStrictMode(true);
+    _ = try strict.parser.parseSourceFile();
+    var saw_1212 = false;
+    for (strict.parser.diagnostics.items) |d| {
+        if (d.code == 1212) saw_1212 = true;
+    }
+    try T.expect(saw_1212);
+}
+
 test "parser: nested function declaration named yield inside async generator reports TS1359" {
     // Mirrors `parser.asyncGenerators.functionDeclarations.es2018`
     // (`nestedFunctionDeclarationNamedYieldIsError`). Inside an async
@@ -17464,6 +18322,22 @@ test "parser: invalid enum member still reports missing close brace" {
     try T.expect(close_found);
 }
 
+test "parser: JSDoc postfix nullable diagnostics keep TypeScript order" {
+    const src =
+        \\/** @param {number?[]} a */
+        \\function f(a) {}
+    ;
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expect(s.parser.diagnostics.items.len >= 2);
+    try T.expectEqual(@as(u32, 8024), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1), s.parser.diagnostics.items[0].span_len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 2), s.parser.diagnostics.items[1].span_len);
+}
+
 test "parser: enum reserved declaration name reports TS1359" {
     var s = try newTestSetup("enum void {\n}");
     defer destroyTestSetup(s);
@@ -17527,6 +18401,168 @@ test "parser: JSDoc Closure type arguments report empty and trailing-comma diagn
     try T.expectEqual(@as(u32, 1009), s.parser.diagnostics.items[1].code);
     try T.expectEqual(@as(u32, 14), s.parser.diagnostics.items[0].pos);
     try T.expectEqual(@as(u32, 44), s.parser.diagnostics.items[1].pos);
+}
+
+test "parser: qualified JSDoc param requires object-typed parent" {
+    var s = try newTestSetup(
+        \\/**
+        \\ * @param {object} xyz
+        \\ * @param {number} xyz.bar.p
+        \\ */
+        \\function g(xyz) {
+        \\    return xyz.bar.p;
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    const d = s.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 8032), d.code);
+    try T.expectEqualStrings(
+        "Qualified name 'xyz.bar.p' is not allowed without a leading '@param {object} xyz.bar'.",
+        d.message,
+    );
+    try T.expectEqual(@as(u32, 3), d.line);
+    try T.expectEqual(@as(u32, 9), d.span_len);
+    const line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..d.pos], '\n').? + 1;
+    try T.expectEqual(@as(u32, 20), d.pos - @as(u32, @intCast(line_start)) + 1);
+}
+
+test "parser: qualified JSDoc param parent check preserves object child for later tags" {
+    var s = try newTestSetup(
+        \\/**
+        \\ * @param {object} xyz.bar
+        \\ * @param {number} xyz.bar.p
+        \\ */
+        \\function g(xyz) {
+        \\    return xyz.bar.p;
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    const d = s.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 8032), d.code);
+    try T.expectEqualStrings(
+        "Qualified name 'xyz.bar' is not allowed without a leading '@param {object} xyz'.",
+        d.message,
+    );
+    try T.expectEqual(@as(u32, 2), d.line);
+    try T.expectEqual(@as(u32, 7), d.span_len);
+}
+
+test "parser: malformed JSDoc import tags mirror TypeScript recovery" {
+    {
+        var s = try newTestSetup(
+            \\/**
+            \\ * @import
+            \\ */
+        );
+        defer destroyTestSetup(s);
+
+        _ = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+        const d = s.parser.diagnostics.items[0];
+        try T.expectEqual(@as(u32, 1109), d.code);
+        try T.expectEqualStrings("Expression expected.", d.message);
+        try T.expectEqual(@as(u32, 2), d.line);
+        const line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..d.pos], '\n').? + 1;
+        try T.expectEqual(@as(u32, 11), d.pos - @as(u32, @intCast(line_start)) + 1);
+    }
+
+    {
+        var s = try newTestSetup(
+            \\/**
+            \\ * @import foo
+            \\ */
+        );
+        defer destroyTestSetup(s);
+
+        _ = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+        const expr = s.parser.diagnostics.items[0];
+        try T.expectEqual(@as(u32, 1109), expr.code);
+        try T.expectEqual(@as(u32, 2), expr.line);
+        const expr_line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..expr.pos], '\n').? + 1;
+        try T.expectEqual(@as(u32, 15), expr.pos - @as(u32, @intCast(expr_line_start)) + 1);
+
+        const from = s.parser.diagnostics.items[1];
+        try T.expectEqual(@as(u32, 1005), from.code);
+        try T.expectEqualStrings("'from' expected.", from.message);
+        try T.expectEqual(@as(u32, 3), from.line);
+        const from_line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..from.pos], '\n').? + 1;
+        try T.expectEqual(@as(u32, 2), from.pos - @as(u32, @intCast(from_line_start)) + 1);
+    }
+}
+
+test "parser: JSDoc typedef with multiple type tags reports TS8033" {
+    var s = try newTestSetup(
+        \\/**
+        \\ * @typedef Name
+        \\ * @type {string}
+        \\ * @type {Oops}
+        \\ */
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    const d = s.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 8033), d.code);
+    try T.expectEqual(@as(u32, 4), d.line);
+    const line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..d.pos], '\n').? + 1;
+    try T.expectEqual(@as(u32, 16), d.pos - @as(u32, @intCast(line_start)) + 1);
+}
+
+test "parser: JSDoc property private-name spelling reports TS1003" {
+    var s = try newTestSetup(
+        \\/**
+        \\ * @typedef Foo
+        \\ * @property {string} #id
+        \\ */
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    const d = s.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 1003), d.code);
+    try T.expectEqualStrings("Identifier expected.", d.message);
+    try T.expectEqual(@as(u32, 3), d.line);
+    const line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..d.pos], '\n').? + 1;
+    try T.expectEqual(@as(u32, 23), d.pos - @as(u32, @intCast(line_start)) + 1);
+}
+
+test "parser: JSDoc implements missing type reports TS1003" {
+    var s = try newTestSetup(
+        \\class A {}
+        \\/** @implements */
+        \\class B {}
+        \\/** @implements {} */
+        \\class C {}
+        \\/** @implements A */
+        \\class D {}
+        \\/** @implements {A} */
+        \\class E {}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    const missing = s.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 1003), missing.code);
+    try T.expectEqualStrings("Identifier expected.", missing.message);
+    try T.expectEqual(@as(u32, 2), missing.line);
+    const missing_line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..missing.pos], '\n').? + 1;
+    try T.expectEqual(@as(u32, 16), missing.pos - @as(u32, @intCast(missing_line_start)) + 1);
+
+    const empty = s.parser.diagnostics.items[1];
+    try T.expectEqual(@as(u32, 1003), empty.code);
+    try T.expectEqual(@as(u32, 4), empty.line);
+    const empty_line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..empty.pos], '\n').? + 1;
+    try T.expectEqual(@as(u32, 18), empty.pos - @as(u32, @intCast(empty_line_start)) + 1);
 }
 
 test "parser: top-level public before break reports declaration expected" {

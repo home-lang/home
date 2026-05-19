@@ -718,6 +718,7 @@ pub fn compileSource(
             .phase = .parse,
             .pos = d.pos,
             .line = d.line,
+            .span_len = d.span_len,
             .code = d.code,
             .message = try gpa.dupe(u8, d.message),
             .span_len = d.span_len,
@@ -1144,6 +1145,11 @@ fn checkerDiagnosticSurfacesInUncheckedJs(code: u32, source: []const u8) bool {
     // which emits this unconditionally for JS sources. Fires for
     // `typeSatisfaction_js`.
     if (code == ts_checker.check.TsCodes.ts_only_satisfies_in_js) return true;
+    // TS2839 — strict equality between fresh object/array/function
+    // references is reported even in unchecked `--allowJs` files.
+    // Mirrors `plainJSTypeErrors`, where `{} === {}` errors while
+    // loose `{} == {}` stays accepted.
+    if (code == ts_checker.check.TsCodes.object_reference_comparison) return true;
     // TS2451 — cross-declaration block-scoped duplicates fire as
     // binder/grammar errors in tsc even under `--allowJs` without
     // `--checkJs`. Suppressed only when the fixture explicitly opts
@@ -1408,6 +1414,22 @@ test "driver: unchecked allowJs still surfaces JS grammar diagnostics" {
     }
     try T.expect(found_await);
     try T.expect(found_private);
+}
+
+test "driver: unchecked allowJs still surfaces satisfies JS grammar diagnostic" {
+    var c = try compileSource(T.allocator,
+        \\var v = undefined satisfies 1;
+    , .{ .no_emit = true, .suppress_js_check_diagnostics = true, .importer_path = "/src/a.js" });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == ts_checker.check.TsCodes.ts_only_satisfies_in_js) found = true;
+    }
+    try T.expect(found);
 }
 
 test "driver: allowJs node_modules js does not suppress project ts diagnostics" {

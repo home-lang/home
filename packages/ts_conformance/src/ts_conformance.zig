@@ -157,6 +157,7 @@ pub const Case = struct {
 pub fn countLeadingDirectiveLines(source: []const u8) u32 {
     var count: u32 = 0;
     var directive_seen = false;
+    var skipped_preamble_comment = false;
     var pending_blanks: u32 = 0;
     // Strip a leading UTF-8 BOM (`\xEF\xBB\xBF`) before scanning —
     // many upstream fixtures start with a BOM that otherwise prevents
@@ -181,7 +182,13 @@ pub fn countLeadingDirectiveLines(source: []const u8) u32 {
         }
         if (!std.mem.startsWith(u8, trimmed, "//")) break;
         const after_slashes = std.mem.trim(u8, trimmed[2..], " \t");
-        if (!std.mem.startsWith(u8, after_slashes, "@")) break;
+        if (!std.mem.startsWith(u8, after_slashes, "@")) {
+            if (!directive_seen) {
+                skipped_preamble_comment = true;
+                continue;
+            }
+            break;
+        }
         const body = after_slashes[1..];
         var name_end: usize = 0;
         while (name_end < body.len and (std.ascii.isAlphanumeric(body[name_end]) or
@@ -200,7 +207,7 @@ pub fn countLeadingDirectiveLines(source: []const u8) u32 {
         directive_seen = true;
     }
     // Trailing blanks immediately after the last directive also strip.
-    count += pending_blanks;
+    if (!skipped_preamble_comment) count += pending_blanks;
     return count;
 }
 
@@ -290,6 +297,8 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
     // entry-file-first / source-order-within-file at the end.
     const FormattedEntry = struct {
         file: []const u8,
+        diag_line: u32,
+        diag_col: u32,
         line: []const u8,
         src_idx: u32,
     };
@@ -365,6 +374,8 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         }
         try formatted_entries.append(gpa, .{
             .file = diag_file,
+            .diag_line = diag_line,
+            .diag_col = diag_col,
             .line = try gpa.dupe(u8, formatted),
             .src_idx = @intCast(src_idx),
         });
@@ -373,13 +384,18 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
 
     // Upstream tsc baselines emit the principal/entry file's
     // diagnostics first, then helper `@filename:` virtual-section
-    // diagnostics. Sort by entry-first, source-order otherwise.
+    // diagnostics. Sort helper virtual files the same way the program
+    // path does: rendered file, line, column, original order.
     const Ordering = struct {
         case_path: []const u8,
         fn lessThan(ctx: @This(), a: FormattedEntry, b: FormattedEntry) bool {
             const a_is_entry = std.mem.eql(u8, a.file, ctx.case_path);
             const b_is_entry = std.mem.eql(u8, b.file, ctx.case_path);
             if (a_is_entry != b_is_entry) return a_is_entry;
+            const file_order = std.mem.order(u8, a.file, b.file);
+            if (file_order != .eq) return file_order == .lt;
+            if (a.diag_line != b.diag_line) return a.diag_line < b.diag_line;
+            if (a.diag_col != b.diag_col) return a.diag_col < b.diag_col;
             return a.src_idx < b.src_idx;
         }
     };
@@ -514,8 +530,15 @@ fn shouldRouteThroughProgram(c: Case) bool {
     // `tsxAttributeResolution10/11/12` and similar fixtures fall back
     // to `any`-typed JSX targets, suppressing the structural TS2322
     // tsc expects at the failing attribute.
-    if (!rawSourceHasNonCodeMarker(c.raw_source)) return false;
+    if (!rawSourceHasNonCodeMarker(c.raw_source)) {
+        if (parserSuiteNeedsVirtualFileBoundaries(c)) return true;
+        return false;
+    }
     return true;
+}
+
+fn parserSuiteNeedsVirtualFileBoundaries(c: Case) bool {
+    return std.mem.startsWith(u8, c.name, "parser.") and rawSourceHasMultipleCodeMarkers(c.raw_source);
 }
 
 fn rawSourceHasNonCodeMarker(raw: []const u8) bool {
@@ -535,6 +558,19 @@ fn rawSourceHasJsLikeCodeMarker(raw: []const u8) bool {
         const line = std.mem.trim(u8, line_with_cr, "\r");
         const path = virtualFilename(line) orelse continue;
         if (isCodeVirtualFile(path) and isJsLikeVirtualFile(path)) return true;
+    }
+    return false;
+}
+
+fn rawSourceHasMultipleCodeMarkers(raw: []const u8) bool {
+    var count: u32 = 0;
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    while (lines.next()) |line_with_cr| {
+        const line = std.mem.trim(u8, line_with_cr, "\r");
+        const path = virtualFilename(line) orelse continue;
+        if (!isCodeVirtualFile(path)) continue;
+        count += 1;
+        if (count >= 2) return true;
     }
     return false;
 }
@@ -5047,6 +5083,15 @@ test "conformance: countLeadingDirectiveLines mirrors upstream baseline strip" {
         \\// @useUnknownInCatchVariables: true,false
         \\
         \\try {} catch (e) {}
+    ));
+    // Banner comments before the first directive are preserved as
+    // display text, but upstream still strips the following directive
+    // from diagnostic line counts.
+    try T.expectEqual(@as(u32, 1), countLeadingDirectiveLines(
+        \\// Conformance for emitting ES6
+        \\// @target: es6
+        \\
+        \\function f() {}
     ));
     // No directives at all → no strip (the leading blank is content).
     try T.expectEqual(@as(u32, 0), countLeadingDirectiveLines(
