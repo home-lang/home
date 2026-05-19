@@ -26771,6 +26771,7 @@ pub const Checker = struct {
                 if (self.dynamicImportDefinitelyMismatchesTypeofNamespace(v.init, v.type_annotation)) break :blk false;
                 break :blk self.engine.isAssignableTo(init_type, declared_type) catch return error.OutOfMemory;
             };
+            try self.checkArrayLiteralContextualElements(v.init, declared_type);
             if (!ok) {
                 if (binding_pattern_source_diag_fired) {
                     // The declared destructuring source itself is invalid
@@ -26806,7 +26807,6 @@ pub const Checker = struct {
             // declared type is a known object — otherwise extra
             // properties may legitimately come from elsewhere.
             try self.checkExcessProperties(v.init, declared_type);
-            try self.checkArrayLiteralContextualElements(v.init, declared_type);
             // TS2375: `exactOptionalPropertyTypes` rejects literal
             // `undefined` flowing into an optional-but-not-undefined
             // property.
@@ -51291,6 +51291,26 @@ pub const Checker = struct {
         if (elem_t == types.Primitive.none) return;
         for (hir_mod.arrayLiteralElements(self.hir, init_node)) |el| {
             if (el == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(el) == .spread) {
+                const sp = hir_mod.spreadOf(self.hir, el);
+                var spread_t = self.hir.typeOf(sp.expression);
+                if (spread_t == types.Primitive.none) {
+                    spread_t = try self.checkExpression(sp.expression);
+                }
+                const number_elem_t = self.interner.objectNumberIndex(spread_t);
+                const spread_elem_t = if (number_elem_t != types.Primitive.none)
+                    number_elem_t
+                else
+                    try self.iterableElementType(spread_t);
+                if (spread_elem_t != types.Primitive.none and
+                    spread_elem_t != types.Primitive.any and
+                    spread_elem_t != types.Primitive.unknown and
+                    !(self.engine.isAssignableTo(spread_elem_t, elem_t) catch return error.OutOfMemory))
+                {
+                    try self.reportTypeNotAssignable(el, spread_elem_t, elem_t, "Type is not assignable to array element type.");
+                }
+                continue;
+            }
             try self.checkExcessProperties(el, elem_t);
             try self.checkArrayLiteralContextualElements(el, elem_t);
         }

@@ -6722,6 +6722,26 @@ pub const Parser = struct {
                 node = try self.builder.addIndexedAccessType(sp, node, index);
                 continue;
             }
+            if ((self.peek().kind == .question or self.peek().kind == .bang) and
+                self.jsDocPostfixTypeMarkerCanRecover())
+            {
+                const marker = self.advance();
+                const base_text = self.source[self.hir.spanOf(node).start..self.hir.spanOf(node).end];
+                const suggestion = if (marker.kind == .question)
+                    try std.fmt.allocPrint(self.diag_arena.allocator(), "{s} | undefined", .{base_text})
+                else
+                    base_text;
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "'{s}' at the end of a type is not valid TypeScript syntax. Did you mean to write '{s}'?",
+                    .{ self.source[marker.span.start..marker.span.end], suggestion },
+                );
+                try self.reportCodeAt(self.hir.spanOf(node).start, self.lineAt(self.hir.spanOf(node).start), 17019, msg);
+                if (marker.kind == .question) {
+                    node = try self.makeNullableType(node, false, marker.span.end);
+                }
+                continue;
+            }
             break;
         }
         return node;
@@ -6801,6 +6821,40 @@ pub const Parser = struct {
             .open_bracket => try self.parseTupleType(),
             .open_brace => try self.parseObjectOrMappedType(),
             .less_than => try self.parseGenericFnType(),
+            .asterisk => blk: {
+                const star = self.advance();
+                try self.reportCodeAt(star.span.start, star.line, 8020, "JSDoc types can only be used inside documentation comments.");
+                break :blk try self.typeRefName("any", tokenSpan(star));
+            },
+            .question => blk: {
+                const question = self.advance();
+                if (!self.tokenCanStartJSDocNullableType(self.peek().kind)) {
+                    try self.reportCodeAt(question.span.start, question.line, 8020, "JSDoc types can only be used inside documentation comments.");
+                    break :blk try self.typeRefName("any", tokenSpan(question));
+                }
+                const inner = try self.parseTypeOperator();
+                const inner_text = self.source[self.hir.spanOf(inner).start..self.hir.spanOf(inner).end];
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "'?' at the start of a type is not valid TypeScript syntax. Did you mean to write '{s} | null | undefined'?",
+                    .{inner_text},
+                );
+                try self.reportCodeAt(question.span.start, question.line, 17020, msg);
+                break :blk try self.makeNullableType(inner, true, self.hir.spanOf(inner).end);
+            },
+            .bang => blk: {
+                const bang = self.advance();
+                const inner = try self.parseTypeOperator();
+                const inner_text = self.source[self.hir.spanOf(inner).start..self.hir.spanOf(inner).end];
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "'!' at the start of a type is not valid TypeScript syntax. Did you mean to write '{s}'?",
+                    .{inner_text},
+                );
+                try self.reportCodeAt(bang.span.start, bang.line, 17020, msg);
+                break :blk inner;
+            },
+            .kw_function => try self.parseJSDocFunctionTypeInTypeScript(),
             .close_paren => blk: {
                 try self.reportCodeAt(t.span.start, t.line, 1110, "Type expected.");
                 const id = self.interner.intern("unknown") catch return error.OutOfMemory;
@@ -6903,6 +6957,140 @@ pub const Parser = struct {
                 return try self.builder.addTypeRef(tokenSpan(bad), id, &.{}, &.{});
             },
         };
+    }
+
+    fn tokenCanStartJSDocNullableType(self: *const Parser, kind: TokenKind) bool {
+        _ = self;
+        return switch (kind) {
+            .identifier,
+            .kw_any,
+            .kw_unknown,
+            .kw_never,
+            .kw_void,
+            .kw_string,
+            .kw_number,
+            .kw_boolean,
+            .kw_bigint,
+            .kw_symbol,
+            .kw_object,
+            .kw_undefined,
+            .kw_null,
+            .kw_this,
+            .kw_import,
+            .kw_function,
+            .open_paren,
+            .open_bracket,
+            .open_brace,
+            .asterisk,
+            .bang,
+            => true,
+            else => false,
+        };
+    }
+
+    fn jsDocPostfixTypeMarkerCanRecover(self: *const Parser) bool {
+        const next = self.peekAt(1).kind;
+        return switch (next) {
+            .equal,
+            .comma,
+            .semicolon,
+            .close_paren,
+            .close_bracket,
+            .close_brace,
+            .greater_than,
+            .greater_greater,
+            .greater_greater_greater,
+            .eof,
+            => true,
+            else => false,
+        };
+    }
+
+    fn typeRefName(self: *Parser, name: []const u8, type_span: Span) ParseError!NodeId {
+        const id = self.interner.intern(name) catch return error.OutOfMemory;
+        return try self.builder.addTypeRef(type_span, id, &.{}, &.{});
+    }
+
+    fn makeNullableType(self: *Parser, inner: NodeId, include_undefined: bool, end_pos: u32) ParseError!NodeId {
+        var members: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer members.deinit(self.gpa);
+        try members.append(self.gpa, inner);
+        try members.append(self.gpa, try self.typeRefName("null", .{ .start = end_pos, .end = end_pos }));
+        if (include_undefined) {
+            try members.append(self.gpa, try self.typeRefName("undefined", .{ .start = end_pos, .end = end_pos }));
+        }
+        return try self.builder.addUnionType(
+            .{ .start = self.hir.spanOf(inner).start, .end = end_pos },
+            members.items,
+        );
+    }
+
+    fn parseJSDocFunctionTypeInTypeScript(self: *Parser) ParseError!NodeId {
+        const function_tok = self.advance();
+        var params: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer params.deinit(self.gpa);
+        var is_constructor = false;
+        var constructor_return: NodeId = hir_mod.none_node_id;
+
+        _ = try self.expect(.open_paren, "'(' after JSDoc function type");
+        if (self.peek().kind != .close_paren) {
+            var index: usize = 0;
+            while (true) : (index += 1) {
+                if (index == 0 and self.peek().kind == .kw_new and self.peekAt(1).kind == .colon) {
+                    is_constructor = true;
+                    _ = self.advance();
+                    _ = self.advance();
+                    constructor_return = try self.parseTypeAnnotation();
+                } else {
+                    const param_start = self.peek();
+                    var name_node: NodeId = hir_mod.none_node_id;
+                    var type_ann: NodeId = hir_mod.none_node_id;
+                    if ((self.peek().kind == .kw_this or self.peek().kind == .identifier) and self.peekAt(1).kind == .colon) {
+                        const name_tok = self.advance();
+                        _ = self.advance();
+                        const parsed_type = try self.parseTypeAnnotation();
+                        type_ann = try self.typeRefName("any", self.hir.spanOf(parsed_type));
+                        const name_id = try self.internToken(name_tok);
+                        name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+                    } else {
+                        const parsed_type = try self.parseTypeAnnotation();
+                        type_ann = try self.typeRefName("any", self.hir.spanOf(parsed_type));
+                        var buf: [32]u8 = undefined;
+                        const synthetic = std.fmt.bufPrint(&buf, "__arg{d}", .{params.items.len}) catch return error.OutOfMemory;
+                        name_node = try self.builder.addIdentifier(
+                            .{ .start = param_start.span.start, .end = param_start.span.start },
+                            self.interner.intern(synthetic) catch return error.OutOfMemory,
+                        );
+                    }
+                    try params.append(self.gpa, try self.builder.addParameter(
+                        .{ .start = param_start.span.start, .end = self.hir.spanOf(type_ann).end },
+                        name_node,
+                        type_ann,
+                        hir_mod.none_node_id,
+                        .{},
+                    ));
+                }
+                if (!self.match(.comma)) break;
+                if (self.peek().kind == .close_paren) break;
+            }
+        }
+        const close_tok = try self.expect(.close_paren, "')' after JSDoc function type");
+        var ret: NodeId = if (constructor_return != hir_mod.none_node_id)
+            constructor_return
+        else
+            try self.typeRefName("any", .{ .start = close_tok.span.end, .end = close_tok.span.end });
+        if (!is_constructor and self.match(.colon)) {
+            ret = try self.parseTypeAnnotation();
+        }
+        const end_pos = self.hir.spanOf(ret).end;
+        try self.reportCodeAt(function_tok.span.start, function_tok.line, 8020, "JSDoc types can only be used inside documentation comments.");
+        return try self.builder.addFnType(
+            .{ .start = function_tok.span.start, .end = end_pos },
+            &.{},
+            params.items,
+            ret,
+            is_constructor,
+        );
     }
 
     /// `(T)` (paren type) or `(a: T) => U` (function type).
@@ -8307,6 +8495,10 @@ pub const Parser = struct {
         while (self.peek().kind == .dot or self.peek().kind == .question_dot) {
             const dot = self.advance();
             if (dot.kind == .question_dot) saw_question_dot = true;
+            if (dot.kind == .dot and self.peek().kind == .less_than and !self.peek().flags.preceded_by_newline) {
+                try self.reportCodeAt(dot.span.start, dot.line, 8020, "JSDoc types can only be used inside documentation comments.");
+                break;
+            }
             if (self.peek().flags.preceded_by_newline or self.peek().kind == .eof) {
                 try self.reportCodeAt(dot.span.end, dot.line, 1003, "Identifier expected.");
                 const prev_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
