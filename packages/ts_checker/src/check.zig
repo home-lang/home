@@ -32027,9 +32027,12 @@ pub const Checker = struct {
                     // problem). Mirror that here so fixtures with many
                     // top-level awaits — `topLevelAwait.1`, etc. — match
                     // the baseline exactly.
+                    const in_decorator = self.nodeHasAncestorKind(node, .decorator);
                     var already_reported = false;
                     for (self.diagnostics.items) |d| {
-                        if (d.code == TsCodes.top_level_await_target_module) {
+                        if (d.code == TsCodes.top_level_await_target_module and
+                            self.nodeHasAncestorKind(d.node, .decorator) == in_decorator)
+                        {
                             already_reported = true;
                             break;
                         }
@@ -70745,6 +70748,29 @@ test "checker: top-level await respects low target directives" {
         if (d.code == TsCodes.top_level_await_target_module) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: low-target top-level await reports decorator await separately" {
+    const s = try newSetup(
+        \\// @target: es2015
+        \\// @module: esnext
+        \\// @experimentalDecorators: true
+        \\export const x = 1;
+        \\await x;
+        \\await [x];
+        \\declare const dec: any;
+        \\@(await dec)
+        \\class C {}
+        \\await
+        \\    1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.top_level_await_target_module) count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count);
 }
 
 test "checker: noImplicitAny reports object literal null properties in loose null mode" {
