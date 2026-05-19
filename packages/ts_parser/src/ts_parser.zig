@@ -10496,7 +10496,11 @@ pub const Parser = struct {
                     return try self.recoverUnaryMissingOperand(t, .delete);
                 }
                 const operand = try self.parseUnaryExpression();
-                if (self.strict_mode and self.hir.kindOf(operand) == .identifier and !self.isThisIdentifier(operand)) {
+                // ES2015+ parsing uses the strict-mode delete-identifier
+                // early-error shape for unqualified identifiers, while
+                // `delete this` and property references stay on their
+                // ordinary checker paths.
+                if ((self.strict_mode or self.target_es2015_or_later) and self.hir.kindOf(operand) == .identifier and !self.isThisIdentifier(operand)) {
                     const operand_span = self.hir.spanOf(operand);
                     try self.reportCodeAt(operand_span.start, self.lineAt(operand_span.start), 1102, "'delete' cannot be called on an identifier in strict mode.");
                 }
@@ -17114,6 +17118,16 @@ test "parser: strict mode restricted names and delete operands report diagnostic
 test "parser: strict mode delete identifier reports TS1102 at operand" {
     var s = try newTestSetup("\"use strict\"; delete a;");
     defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1102), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: ES2015 target delete identifier reports TS1102" {
+    var s = try newTestSetup("delete a; delete this;");
+    defer destroyTestSetup(s);
+    s.parser.setTargetEs2015OrLater(true);
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
