@@ -7762,6 +7762,7 @@ pub const Checker = struct {
                 if (self.hir.kindOf(elem) != .parameter) continue;
                 const ep = hir_mod.parameterOf(self.hir, elem);
                 if (ep.flags.is_rest) continue;
+                if (ep.default_value != hir_mod.none_node_id) continue;
                 if (i >= tuple_length) {
                     const anchor = if (ep.name != hir_mod.none_node_id) ep.name else elem;
                     try self.reportTupleIndexOutOfBounds(anchor, container_t, @intCast(i), tuple_length);
@@ -7802,6 +7803,7 @@ pub const Checker = struct {
             if (ep.flags.is_rest) continue;
             const anchor = if (ep.name != hir_mod.none_node_id) ep.name else elem;
             if (i >= values.len) {
+                if (ep.default_value != hir_mod.none_node_id) continue;
                 if (values.len != 0) continue;
                 if (ep.name != hir_mod.none_node_id and self.hir.kindOf(ep.name) == .array_pattern) {
                     try self.reportIteratorRequired(ep.name, types.Primitive.undefined_t);
@@ -24631,7 +24633,7 @@ pub const Checker = struct {
             if (el == hir_mod.none_node_id) continue;
             const k = self.hir.kindOf(el);
             if (tuple_length_opt) |tuple_length| {
-                if (k != .spread and source_offset + i >= tuple_length) {
+                if (k != .spread and k != .assignment and source_offset + i >= tuple_length) {
                     try self.reportTupleIndexOutOfBounds(el, source_t, source_offset + i, tuple_length);
                 }
             }
