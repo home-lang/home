@@ -56,6 +56,7 @@ pub const minimal_js_files = [_][]const u8{
     "bundler/transpiler_constant_fold_eqeq.test.ts",
     "regression/issue/19107.test.ts",
     "cli/test/expectations.test.ts",
+    "regression/issue/prepare-stack-trace-crash.test.ts",
 };
 
 const prelude =
@@ -166,6 +167,9 @@ const prelude =
     \\    toBeDefined() {
     \\      __home_assert(value !== undefined, isNot, "Expected value" + (isNot ? " not" : "") + " to be defined");
     \\    },
+    \\    toBeUndefined() {
+    \\      __home_assert(value === undefined, isNot, "Expected value" + (isNot ? " not" : "") + " to be undefined");
+    \\    },
     \\    toBeInstanceOf(ctor) {
     \\      __home_assert(value instanceof ctor, isNot, "Expected value" + (isNot ? " not" : "") + " to be instance of " + (ctor && ctor.name || "<anonymous>"));
     \\    },
@@ -214,6 +218,13 @@ const prelude =
     \\}
     \\function expect(value) {
     \\  return __home_make_expectation(value, false);
+    \\}
+    \\if (typeof Error.prepareStackTrace !== "function") {
+    \\  Error.prepareStackTrace = function(error, stack) {
+    \\    const name = error && error.name ? String(error.name) : "Error";
+    \\    const message = error && error.message ? String(error.message) : "";
+    \\    return message.length > 0 ? name + ": " + message : name;
+    \\  };
     \\}
     \\function btoa(value) {
     \\  if (arguments.length < 1) throw new TypeError("btoa requires 1 argument (a string)");
@@ -567,6 +578,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("bundler/transpiler_constant_fold_eqeq.test.ts", filesForSubset(.minimal_js)[11]);
     try std.testing.expectEqualStrings("regression/issue/19107.test.ts", filesForSubset(.minimal_js)[12]);
     try std.testing.expectEqualStrings("cli/test/expectations.test.ts", filesForSubset(.minimal_js)[13]);
+    try std.testing.expectEqualStrings("regression/issue/prepare-stack-trace-crash.test.ts", filesForSubset(.minimal_js)[14]);
 }
 
 test "Bun test import rewrite installs the bootstrap prelude" {
@@ -580,6 +592,8 @@ test "Bun test import rewrite installs the bootstrap prelude" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "function it(name, fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "function __home_is_thenable(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeInstanceOf(ctor)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeUndefined()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Error.prepareStackTrace") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "var __dirname = \"js/node\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "it(\"works\"") != null);
