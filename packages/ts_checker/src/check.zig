@@ -202,6 +202,12 @@ pub const TsCodes = struct {
     /// `superCallBeforeThisAccessing4`.
     pub const super_call_when_extends_null: u32 = 17005;
     pub const super_before_super_call: u32 = 17011;
+    /// TS2337 — `Super calls are not permitted outside constructors
+    /// or in nested functions inside constructors.` Fires for
+    /// `super(...)` calls inside arrow/function/method bodies that
+    /// live inside a constructor (or outside any constructor in a
+    /// derived class member). Mirrors tsc grammar check.
+    pub const super_call_not_permitted: u32 = 2337;
     /// TS2340 — `Only public and protected methods of the base class
     /// are accessible via the 'super' keyword.` Fires for `super.X`
     /// where X is a data property (not a method) on the base class,
@@ -17676,6 +17682,46 @@ pub const Checker = struct {
         } else r.name;
         if (self.rootHasNonImportDeclarationNamed(root_name)) {
             try self.recordImportEqualsAbstractAlias(imp);
+            // Upstream tsc differentiates the diagnostic by root-decl
+            // kind for unqualified `import alias = X`:
+            //   * `var`/`let`/`const X = …`    → TS2503 Cannot find namespace
+            //   * `class X` / `interface X` / `type X = …` → TS2702
+            //   * `enum X` / `function X` / `namespace X` → silent
+            // Qualified entity names (`import alias = X.Y`) are
+            // handled separately via the namespace member-resolution
+            // branch below — those don't fire TS2702/TS2503 here.
+            if (qualifiers.len == 0) {
+                if (self.rootDeclarationKindForName(root_name)) |kind| {
+                    const root_text = self.string_interner.get(root_name);
+                    switch (kind) {
+                        .var_decl, .let_decl, .const_decl => {
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Cannot find namespace '{s}'.",
+                                .{root_text},
+                            );
+                            try self.diagnostics.append(self.gpa, .{
+                                .node = imp.import_equals,
+                                .code = TsCodes.cannot_find_namespace,
+                                .message = msg,
+                            });
+                        },
+                        .class_decl, .class_expr, .interface_decl, .type_alias_decl => {
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "'{s}' only refers to a type, but is being used as a namespace here.",
+                                .{root_text},
+                            );
+                            try self.diagnostics.append(self.gpa, .{
+                                .node = imp.import_equals,
+                                .code = TsCodes.type_used_as_namespace,
+                                .message = msg,
+                            });
+                        },
+                        else => {},
+                    }
+                }
+            }
             return;
         }
         if (try self.moduleNamespaceTypeForLocalImport(root_name, node)) |_| return;
@@ -17693,6 +17739,21 @@ pub const Checker = struct {
         if (std.mem.eql(u8, root_text, "module")) {
             try self.reportCannotFindNodeName(imp.import_equals, root_name);
         }
+    }
+
+    /// Walk the HIR root once and return the NodeKind of the first
+    /// non-import top-level declaration whose declared name matches
+    /// `name`. Used by import-equals diagnostics to choose between
+    /// TS2503/TS2702 when the root resolves to a same-file decl.
+    fn rootDeclarationKindForName(self: *Checker, name: hir_mod.StringId) ?hir_mod.NodeKind {
+        var i: hir_mod.NodeId = 1;
+        while (i < self.hir.nodeCount()) : (i += 1) {
+            if (self.nodeHasAncestorKind(i, .import_decl) or self.hir.kindOf(i) == .import_decl) continue;
+            const decl_name = self.declarationName(i) orelse continue;
+            if (decl_name != name) continue;
+            return self.hir.kindOf(i);
+        }
+        return null;
     }
 
     fn recordImportEqualsAbstractAlias(self: *Checker, imp: hir_mod.ImportPayload) CheckError!void {
@@ -28559,6 +28620,9 @@ pub const Checker = struct {
                             if (self.callExprIsTaggedTemplate(node) and self.nodeIsDirectlyInsideConstructor(node)) {
                                 try self.report(c.callee, TsCodes.super_before_super_call, "'super' must be called before accessing a property of 'super' in the constructor of a derived class.");
                             }
+                            if (self.superCallIsInNestedFunctionInsideConstructor(c.callee)) {
+                                try self.report(c.callee, TsCodes.super_call_not_permitted, "Super calls are not permitted outside constructors or in nested functions inside constructors.");
+                            }
                             break :blk types.Primitive.any;
                         }
                     }
@@ -29922,7 +29986,7 @@ pub const Checker = struct {
                             if (!gop.found_existing) gop.value_ptr.* = .{};
                             const conflict = if (acc_f.flags.is_getter) gop.value_ptr.has_getter else gop.value_ptr.has_setter;
                             if (conflict) {
-                                try self.reportAt(p, self.hir.spanOf(op.key).start, TsCodes.object_literal_multiple_accessors, "An object literal cannot have multiple get/set accessors with the same name.");
+                                try self.reportAt(op.key, self.hir.spanOf(op.key).start, TsCodes.object_literal_multiple_accessors, "An object literal cannot have multiple get/set accessors with the same name.");
                                 try self.reportDuplicateIdentifier(op.key, k.name);
                                 // Emit TS2300 on the earlier same-kind
                                 // accessor too — tsc anchors on both.
