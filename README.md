@@ -4,53 +4,13 @@ A modern programming language for systems, apps, and games. Combines the speed o
 
 > **Status**: Home is under active development. The lexer, parser, type
 > inference, and tree-walking interpreter are usable today; native codegen,
-> tooling, and most of the stdlib are still maturing. See the [capability
-> matrix](#capability-matrix) below — and [`docs/CAPABILITY_MATRIX.md`](./docs/CAPABILITY_MATRIX.md)
-> for the full breakdown — for an honest view of what works vs. what is
-> in progress.
-
-## Capability Matrix
-
-A condensed view; see [`docs/CAPABILITY_MATRIX.md`](./docs/CAPABILITY_MATRIX.md)
-for the full list. Legend: ✅ Stable · 🚧 In progress / partial · ❌ Not yet.
-
-| Area | Feature | Status |
-|---|---|---|
-| Frontend (Home) | Lexer | ✅ Stable |
-| Frontend (Home) | Parser (with error recovery) | ✅ Stable |
-| Frontend (Home) | Type inference | ✅ Stable |
-| Frontend (Home) | Tree-walking interpreter | ✅ Stable |
-| Frontend (TS) | TS lexer (full ES2024 + TS keyword set) | 🚧 In progress |
-| Frontend (TS) | TS parser (statements, expressions, decls, JSX, generics, decorators) | 🚧 In progress |
-| Frontend (TS) | Type-annotation parser (unions/intersections/generics/conditional/mapped/keyof/typeof/tuple/fn types) | 🚧 In progress |
-| TS pipeline | Binder + symbol table (3 meaning-spaces, declaration merging) | 🚧 In progress |
-| TS pipeline | Type checker (interner + relation cache + expression typing + assignability) | 🚧 In progress |
-| TS pipeline | JS emitter (full Phase 1 surface, source maps V3) | 🚧 In progress |
-| TS pipeline | `.d.ts` emitter (symbol-driven + zig-dtsx fast path via pantry) | 🚧 In progress |
-| TS pipeline | Multi-file program graph + parallel compile | 🚧 In progress |
-| TS pipeline | Module resolver (5 strategies + paths) | 🚧 In progress |
-| TS pipeline | tsc-compatible diagnostic formatting | 🚧 In progress |
-| TS pipeline | `home tsc` CLI flag surface | 🚧 In progress |
-| TS pipeline | `home-lsp` Language Server (~50 LSP methods routed: hover, definition, references, completion, codeActions, semantic tokens, inlay hints, folding, …) | 🚧 In progress |
-| TS pipeline | Conformance harness (tsc-baseline format) | 🚧 In progress |
-| Language | Pattern matching | 🚧 In progress |
-| Language | Closures | 🚧 In progress |
-| Language | Traits / `impl` | 🚧 In progress |
-| Language | Trait objects | 🚧 In progress |
-| Language | Generics | 🚧 In progress |
-| Language | Const generics | ❌ Not yet |
-| Language | Comptime evaluation | 🚧 In progress |
-| Language | Async / await | 🚧 In progress |
-| Language | Ownership / borrow checking | 🚧 In progress |
-| Codegen | x86-64 native | 🚧 In progress |
-| Codegen | arm64 native | 🚧 Partial |
-| Codegen | WebAssembly | 🚧 Stub |
-| Codegen | LLVM backend | 🚧 In progress |
-| Tooling | `home check` / `home run` | ✅ Stable |
-| Tooling | `home build` | 🚧 In progress |
-| Tooling | Formatter / Linter / LSP / REPL | 🚧 In progress |
-| Stdlib | Strings, ranges, arrays | ✅ Stable |
-| Stdlib | HTTP, database, threading, FFI | 🚧 In progress |
+> tooling, the TypeScript frontend, and the Bun-compatible runtime are
+> still maturing. See the [parity status](#parity-status) section
+> below for percentage-based numbers across every area, with
+> per-feature drill-down pages in [`docs/PARITY-TYPESCRIPT.md`](./docs/PARITY-TYPESCRIPT.md),
+> [`docs/PARITY-NODE.md`](./docs/PARITY-NODE.md),
+> [`docs/PARITY-BUN.md`](./docs/PARITY-BUN.md), and the wider
+> [`docs/CAPABILITY_MATRIX.md`](./docs/CAPABILITY_MATRIX.md).
 
 For release notes see [`CHANGELOG.md`](./CHANGELOG.md).
 
@@ -76,7 +36,7 @@ view; these are the drill-down pages — modeled after Bun's
 - [`docs/CAPABILITY_MATRIX.md`](./docs/CAPABILITY_MATRIX.md) — full language / codegen / tooling / stdlib matrix
 - [`docs/TS_PARITY_PLAN.md`](./docs/TS_PARITY_PLAN.md) — parity plan + dated journal entries
 - [`docs/CONFORMANCE_CATEGORIES.md`](./docs/CONFORMANCE_CATEGORIES.md) — per-category TS conformance breakdown
-- [`packages/runtime/PORT_AUDIT_2026-05-18.md`](./packages/runtime/PORT_AUDIT_2026-05-18.md) — Bun runtime port audit (1,193 upstream files, tier-classified)
+- [`packages/runtime/PORT_AUDIT_2026-05-20.md`](./packages/runtime/PORT_AUDIT_2026-05-20.md) — Bun runtime port audit (471 / 1,193 ported, supersedes the 2026-05-18 audit)
 
 ### Headline numbers
 
@@ -88,11 +48,11 @@ view; these are the drill-down pages — modeled after Bun's
 | **TypeScript — named-category survey** | **86 / 86 — 100%** | `assignmentCompatibility` + `comparable` + `inOperator` + `stringLiteral` |
 | **TypeScript — diagnostic codes** | **~2,000 entries** | mirrors the full upstream `diag(code, …)` table |
 | **LSP wire methods** | **53 / ~70 — ~76%** | `SUPPORTED_METHODS` in `packages/ts_lsp_server/` |
-| **Bun runtime — source files ported** | **471 / 1,193 — ~39.5%** | substrate + JSC M6 milestone landed |
+| **Bun runtime — source files ported** | **472 / 1,193 — ~39.6%** | substrate + JSC M6 milestone landed |
 | **Bun compat shim — `bun.*` symbols** | **7 / ~103 — ~6.8%** | Tier-0 lets vendored Bun source compile against Home's stdlib |
-| **Node.js — `node:*` binding files** | **21 files** | Zig substrate landing module-by-module (buffer / stream / fs / events / util / assert) |
+| **Node.js — `node:*` binding files** | **22 files** | Zig substrate landing module-by-module (buffer / stream / fs / events / util / assert / os) |
 | **JSC bring-up (Phase 12.2)** | **95 files** | M6 milestone — JSON + Promise + Iterator + Global helpers landed |
-| **Language features (capability matrix)** | **9 stable / 33 partial / 1 not-yet — 43 total** | ~21% stable, ~77% in progress, ~2% not yet |
+| **Language features (capability matrix)** | **18 stable / 43 partial / 2 not-yet — 63 total** | ~28.6% stable, ~68.3% in progress, ~3.2% not yet (includes TS frontend + Runtime/Bun rows) |
 | **Total test count** | **3,300+ / 3,300+ — ~100%** | `zig build test --summary all` (pre-existing `d_ts_fast` + `home_rt` env aside) |
 
 ### TypeScript parity — `home tsc` vs `tsc` / `tsgo`
@@ -142,17 +102,16 @@ to wire up.
 
 | Measurement | Coverage | % |
 |---|---|---|
-| **Bun source files ported** | **471 / 1,193** | **~39.5%** |
+| **Bun source files ported** | **472 / 1,193** | **~39.6%** |
 | Subsystems scaffolded | 59 directories under `packages/runtime/src/` | — |
 | Functional runtime | 🚧 JSC M6 landed; JS-callable bridge pending | — |
 | JSC bring-up (Phase 12.2) | 95 files | M1-M6 landed (Engine stub, exception + coerce + array helpers, call + callback helpers, JSON + Promise + Iterator + Global helpers) |
-| `node:*` substrate (Phase 12.7) | 21 files | round-10 landed (buffer, stream, fs, events, util, assert + 15 binding files) |
+| `node:*` substrate (Phase 12.7) | 22 files | round-10 landed (buffer, stream, fs, events, util, assert, os + 15 binding files) |
 
 Upstream pinned at `fd0b6f1a` (see
 [`packages/runtime/UPSTREAM_SHA.txt`](./packages/runtime/UPSTREAM_SHA.txt));
 full audit at
-[`packages/runtime/PORT_AUDIT_2026-05-18.md`](./packages/runtime/PORT_AUDIT_2026-05-18.md)
-(file counts in the audit are pre-Phase-12.2-M6 and pre-Phase-12.7-round-10).
+[`packages/runtime/PORT_AUDIT_2026-05-20.md`](./packages/runtime/PORT_AUDIT_2026-05-20.md).
 The release gate per [`packages/runtime/README.md`](./packages/runtime/README.md):
 Bun's `test/` corpus must pass **100% with no skips** once feature-complete.
 
@@ -166,7 +125,7 @@ Bun's `test/` corpus must pass **100% with no skips** once feature-complete.
 | 12.4 — Module loader | `resolver/`, `module_loader.zig` | 🚧 blocked on 12.2 |
 | 12.5 — Web / HTTP / DNS | `web/`, `http/`, `csrf/`, `dns/` | 🚧 blocked on 12.3 |
 | 12.6 — Home.* JS surface | `bun.zig` (renamed to `Home.*`) | 🚧 blocked on 12.2 |
-| 12.7 — `node:*` shims | `node/` | 🟡 substrate landing module-by-module (21 files: buffer, stream, fs, events, util, assert) |
+| 12.7 — `node:*` shims | `node/` | 🟡 substrate landing module-by-module (22 files: buffer, stream, fs, events, util, assert, os) |
 | 12.8 — `home test` runner | `test/` | 🚧 blocked on 12.2 |
 | 12.9 — Pantry integration | `install/` | 🚧 scaffold in progress |
 | 12.10 — CLI surface | `cli/` | 🚧 scaffold landed |
@@ -216,7 +175,7 @@ Promise + Iterator + Global helpers — across 95 files).
 
 | Measurement | Coverage | Notes |
 |---|---|---|
-| Node binding files ported | 21 files | `path`, `Stat`, `StatFS`, `dir_iterator`, `time_like`, `fs_events`, `os_constants`, `nodejs_error_code`, `node_fs_constant`, `node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`, `types`, `util/parse_args_utils`, `assert/myers_diff`, plus top-level `buffer.zig`, `stream.zig`, `fs.zig`, `events.zig`, `util.zig`, `assert.zig` (Phase 12.7 round-10). |
+| Node binding files ported | 22 files | `path`, `Stat`, `StatFS`, `dir_iterator`, `time_like`, `fs_events`, `os_constants`, `nodejs_error_code`, `node_fs_constant`, `node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`, `types`, `util/parse_args_utils`, `assert/myers_diff`, plus top-level `buffer.zig`, `stream.zig`, `fs.zig`, `events.zig`, `util.zig`, `assert.zig`, `os.zig` (Phase 12.7 round-10). |
 | Functional `node:*` modules | 🚧 Awaiting JSC JS-callable bridge | Pantry CLI replaces `npm install` / `bun install`; everything else routes through the Bun runtime port once JSC ships its JS bridge (Phase 12.2 milestones M3-M6 are in; the JS-callable wire-up is the remaining piece). |
 
 ### LSP / IDE coverage — `home-lsp` vs `tsserver`
@@ -296,7 +255,7 @@ cross-file interner search.
 |---|---|
 | Tree-walking interpreter | ✅ Stable |
 | x86-64 native codegen | 🚧 Substantial (primary target) |
-| arm64 codegen | 🚧 Partial (assembler scaffolding only) |
+| arm64 codegen | 🚧 In progress (Path B-lite M1-M11 shipped) |
 | WebAssembly codegen | 🚧 Stub |
 | LLVM backend | 🚧 In progress |
 | ELF object emission | 🚧 In progress |
@@ -353,13 +312,14 @@ cross-file interner search.
 
 ### Capability matrix — combined totals
 
-All 43 rows from [`docs/CAPABILITY_MATRIX.md`](./docs/CAPABILITY_MATRIX.md):
+All 63 rows from [`docs/CAPABILITY_MATRIX.md`](./docs/CAPABILITY_MATRIX.md)
+(language + codegen + tooling + stdlib + TypeScript frontend + runtime/Bun):
 
 | Status | Count | % |
 |---|---|---|
-| ✅ Stable | 9 | ~20.9% |
-| 🚧 In progress / partial | 33 | ~76.7% |
-| ❌ Not yet | 1 | ~2.3% |
+| ✅ Stable | 18 | ~28.6% |
+| 🚧 In progress / partial | 43 | ~68.3% |
+| ❌ Not yet | 2 | ~3.2% |
 
 The conservative bias is intentional: anything not exercised by an
 example or test stays 🚧 even when the underlying code is largely there.
@@ -897,9 +857,14 @@ zig build run -- examples/fibonacci.home
 
 Home is under active development. For a granular, conservative view of what
 works today vs. what is partial, in progress, or not yet started, see the
-[capability matrix](#capability-matrix) above and the longer write-up at
-[`docs/CAPABILITY_MATRIX.md`](./docs/CAPABILITY_MATRIX.md). Release notes live
-in [`CHANGELOG.md`](./CHANGELOG.md).
+[parity status](#parity-status) section above (percentage-based, per-area
+tables) plus the detailed per-feature pages in
+[`docs/PARITY-TYPESCRIPT.md`](./docs/PARITY-TYPESCRIPT.md),
+[`docs/PARITY-NODE.md`](./docs/PARITY-NODE.md),
+[`docs/PARITY-BUN.md`](./docs/PARITY-BUN.md),
+[`docs/PARITY-BUN-COMPAT.md`](./docs/PARITY-BUN-COMPAT.md), and
+[`docs/CAPABILITY_MATRIX.md`](./docs/CAPABILITY_MATRIX.md). Release notes
+live in [`CHANGELOG.md`](./CHANGELOG.md).
 
 ## Contributing
 

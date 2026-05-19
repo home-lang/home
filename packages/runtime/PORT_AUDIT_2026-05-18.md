@@ -1,5 +1,11 @@
 # Bun Runtime Port Audit
 
+> **Superseded by [`PORT_AUDIT_2026-05-20.md`](./PORT_AUDIT_2026-05-20.md).**
+> This audit's totals (366 ported / 852 remaining) are stale —
+> +105 files have landed since (Phase 12.2 M1-M6 JSC + Phase 12.7
+> round-10 `node:*`). The Tier 0 / Tier 1 file catalogues below
+> remain useful as a reference for the next-to-port pool.
+
 **Date:** 2026-05-18  
 **Upstream pinned at:** `fd0b6f1a271fca0b8124b69f230b100f4d636af6`  
 **Destination:** `packages/runtime/src/`

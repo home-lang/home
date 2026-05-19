@@ -1,6 +1,15 @@
 # Home Runtime (`packages/runtime/`)
 
-> **Status:** Phase 12 substrate landed 2026-05-17. Source copy from Bun in progress.
+> **Status (2026-05-20):** **472 / 1,193 Bun source files ported (~39.6%).**
+> Phase 12.2 (JSC bring-up) has reached the M6 milestone — JSON + Promise
+> + Iterator + Global helpers across 95 files. Phase 12.7 round-10
+> dropped seven top-level `node:*` substrate modules (`buffer`,
+> `stream`, `fs`, `events`, `util`, `assert`, `os`). End-to-end
+> `home run app.ts` waits
+> on the JS-callable JSC bridge to wire up. Detailed per-area status:
+> [`docs/PARITY-BUN.md`](../../docs/PARITY-BUN.md) and
+> [`docs/PARITY-NODE.md`](../../docs/PARITY-NODE.md). Live recount:
+> `scripts/measure-parity.sh --values`.
 
 This package is Home's JavaScript / TypeScript runtime, equivalent to Bun in surface area. Once complete, `home run app.ts`, `home test`, `home x <pkg>`, `home build src/index.ts --target=native`, `home add <pkg>`, etc. all work natively, with package management deferring to Pantry (`~/Code/Tools/pantry`).
 
@@ -43,34 +52,44 @@ This is the hard release gate for Phase 12. Substrate is in place today; the gat
 
 ## What's here today
 
-- `src/home_rt.zig` — aggregator skeleton (empty until copies land).
-- `src/cli/` — destination for Bun's `src/cli/` command dispatch (Phase 12.10 target).
-- `src/install/` — placeholder; Pantry handles package management so this directory only holds the `home <-> pantry` shim.
+- `src/home_rt.zig` — aggregator that re-exports every ported subsystem.
+- `src/jsc/` — 95 files; Phase 12.2 milestones M1-M6 (Engine stub, exception + coerce + array helpers, call + callback helpers, JSON + Promise + Iterator + Global helpers).
+- `src/node/` — 22 files; Phase 12.7 round-10 (top-level `assert.zig`, `buffer.zig`, `events.zig`, `fs.zig`, `os.zig`, `path.zig`, `stream.zig`, `util.zig`, plus 14 binding files: `Stat`, `StatFS`, `dir_iterator`, `fs_events`, `os_constants`, `nodejs_error_code`, `node_fs_constant`, `node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`, `types`, `time_like`, `util/parse_args_utils`, `assert/myers_diff`).
+- `src/cli/` — destination for Bun's `src/cli/` command dispatch (Phase 12.10 scaffold landed).
+- `src/install/` — `home <-> pantry` shim. Pantry replaces `bun install` entirely.
+- `src/event_loop/`, `src/io/`, `src/async/`, `src/web/`, `src/http/`, `src/runtime/`, `src/string/`, `src/threading/`, `src/css/`, `src/sql/`, `src/uws_sys/`, … — 59 subsystem directories under `src/`, most populated by wave-19+ grinder rounds (Tier-0 / Tier-1 leaves, no JSC dependency yet).
 
 ## What's deferred to follow-up sub-phases
 
 | Sub-phase | Source under `~/Code/bun/src/` | Destination | Status |
 |---|---|---|---|
-| 12.1 | `cli/` | `src/cli/` | not-started |
-| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | blocked on JSC C++ engine availability |
-| 12.3 | `event_loop/`, `io/`, `async/` | `src/event_loop/` | not-started |
-| 12.4 | `resolver/`, `module_loader.zig` | `src/module_loader/` | blocked on 12.2 |
-| 12.5 | `web/`, `http/`, `csrf/`, `dns/` | `src/web/` | blocked on 12.3 |
-| 12.6 | `bun.zig` (Home.* surface) | `src/home/` | blocked on 12.2 |
-| 12.7 | `node/` namespace shims | `src/node/` | blocked on 12.2 |
-| 12.8 | `test/` runner | `src/test/` | blocked on 12.2 |
-| 12.9 | Pantry CLI integration | `src/install/pantry.zig` | scaffold in progress |
-| 12.10 | CLI surface | `src/cli/` | scaffold landed |
-| 12.11 | Cross-compile + single-file builds | `src/build/` | not-started |
+| 12.1 | `cli/` | `src/cli/` | 🟡 scaffold landed |
+| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone landed (95 files; JS-callable bridge pending) |
+| 12.3 | `event_loop/`, `io/`, `async/` | `src/event_loop/` | 🟡 substrate landing (~30+ leaves via wave-19+ grinders) |
+| 12.4 | `resolver/`, `module_loader.zig` | `src/module_loader/` | 🔴 blocked on 12.2 |
+| 12.5 | `web/`, `http/`, `csrf/`, `dns/` | `src/web/` | 🔴 blocked on 12.3 |
+| 12.6 | `bun.zig` (Home.* surface) | `src/home/` | 🔴 blocked on 12.2 |
+| 12.7 | `node/` namespace shims | `src/node/` | 🟡 round-10 landed (22 files) |
+| 12.8 | `test/` runner | `src/test/` | 🔴 blocked on 12.2 |
+| 12.9 | Pantry CLI integration | `src/install/pantry.zig` | 🟡 scaffold in progress |
+| 12.10 | CLI surface | `src/cli/` | 🟡 scaffold landed |
+| 12.11 | Cross-compile + single-file builds | `src/build/` | 🔴 not started |
 
-While substantive sub-phases are blocked on JSC engine bring-up, the Home CLI surface (`home run`, `home test`, `home add`, `home x`) is exposed today via a delegation shim that calls into pantry / the system Bun runtime. This is intentional scaffolding — every delegation site has a `TODO(phase-12-N)` marker in `src/main.zig` so progressive replacement is mechanical.
+While the JS-callable JSC bridge isn't wired up yet, the Home CLI surface (`home run`, `home test`, `home add`, `home x`) is exposed today via a delegation shim that calls into pantry / the system Bun runtime. This is intentional scaffolding — every delegation site has a `TODO(phase-12-N)` marker in `src/main.zig` so progressive replacement is mechanical.
 
 ## Building
 
-The runtime package is wired into the Home build but has no test surface yet (substrate only). It compiles to nothing useful until Phase 12.2 (JSC bring-up). Verification today is:
+The runtime package is wired into the Home build. Substrate + JSC milestones M1-M6 currently compile and pass their inline tests; the runtime won't actually run JS / TS until the JS-callable JSC bridge is wired up. Verification today:
 
 ```sh
 zig build --summary all   # under pantry-managed Zig 0.17.0-dev.263+0add2dfc4
+zig build test --summary all   # substrate + JSC inline tests
 ```
 
-Substrate adds zero new test failures.
+To recount the port progress in one shot:
+
+```sh
+scripts/measure-parity.sh --values   # raw counts (RUNTIME_FILES, JSC_FILES, NODE_FILES, …)
+scripts/measure-parity.sh --markdown # README headline-numbers table block
+scripts/measure-parity.sh --diff     # exits non-zero if README has gone stale
+```

@@ -10,7 +10,7 @@ section.
 > + Global helpers across 95 files. Phase 12.7 round-10 dropped
 > six new top-level `node:*` substrate modules (`buffer`, `stream`,
 > `fs`, `events`, `util`, `assert`) alongside the original 15
-> binding files. Total **21 Zig substrate files** ported; no
+> binding files. Total **22 Zig substrate files** ported; no
 > `node:*` module is JavaScript-callable yet, but the runway is
 > shortening. Once JSC reaches the JS-callable milestone, each
 > module flips from 🔴 to 🟡 or 🟢 based on Bun's existing port.
@@ -128,8 +128,9 @@ landed: `packages/runtime/src/node/node_net_binding.zig` —
 ### [`node:os`](https://nodejs.org/api/os.html)
 
 🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
-landed: `packages/runtime/src/node/os_constants.zig` (constants
-table).
+landed:
+- `packages/runtime/src/node/os.zig` — top-level `node:os` shim (Phase 12.7).
+- `packages/runtime/src/node/os_constants.zig` — constants table.
 
 ### [`node:path`](https://nodejs.org/api/path.html)
 
@@ -266,13 +267,14 @@ equivalent in JSC.
 | 🔴 Not implemented (JS-callable) | 47 | ~98% |
 | ❌ Won't implement | 1 | ~2% |
 
-**Zig substrate ported:** 21 files (Phase 12.7 round-10 just dropped
-six top-level module shims — `buffer.zig`, `stream.zig`, `fs.zig`,
-`events.zig`, `util.zig`, `assert.zig` — on top of the 15 binding
-files already present: `path`, `Stat`, `StatFS`, `dir_iterator`,
-`fs_events`, `os_constants`, `nodejs_error_code`, `node_fs_constant`,
-`node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`,
-`types`, `time_like`, `util/parse_args_utils`, `assert/myers_diff`).
+**Zig substrate ported:** 22 files. Phase 12.7 round-10 dropped six
+top-level module shims — `buffer.zig`, `stream.zig`, `fs.zig`,
+`events.zig`, `util.zig`, `assert.zig`; a follow-on landing added
+`os.zig`. On top of the 15 binding files already present: `path`,
+`Stat`, `StatFS`, `dir_iterator`, `fs_events`, `os_constants`,
+`nodejs_error_code`, `node_fs_constant`, `node_net_binding`,
+`node_error_binding`, `uv_signal_handle_windows`, `types`,
+`time_like`, `util/parse_args_utils`, `assert/myers_diff`.
 
 JSC bring-up (Phase 12.2) has reached the M6 milestone — JSON +
 Promise + Iterator + Global helpers across 95 files. Once the

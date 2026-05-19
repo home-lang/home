@@ -52,6 +52,20 @@ once a stable release is cut.
   scripting (`--values`), or diffs the README against live counts and
   exits non-zero if it has drifted (`--diff`).
 
+- **`packages/runtime/PORT_AUDIT_2026-05-20.md`** — refreshed runtime
+
+  port audit (472 / 1,193 files; +106 since the 2026-05-18 audit
+  driven by Phase 12.2 M1-M6 JSC milestones and Phase 12.7 round-10
+  `node:*` shims). The 2026-05-18 audit is retained for its Tier 0 /
+  Tier 1 file catalogues with a Superseded-by banner.
+
+- **TypeScript-frontend and Runtime/Bun rows in CAPABILITY_MATRIX.md** —
+
+  20 new rows breaking down `home tsc` (conformance modes, emit
+  capabilities, LSP wire surface) and `home run` (port progress, JSC
+  bring-up, `node:*` substrate, compat shim) into per-capability
+  status entries.
+
 ### Changed
 
 - Dropped the "88% complete (43/49 tasks)" framing from `docs/ARCHITECTURE.md`
@@ -62,3 +76,23 @@ once a stable release is cut.
 
   `docs/internal/` so the work is preserved as internal notes without
   overstating project status to new users.
+
+- **Replaced the top-of-README `## Capability Matrix` table with a one-
+
+  paragraph callout linking to the new parity-status section and
+  per-feature drill-down pages. The condensed status table at the top
+  of the README had drifted out of sync with the per-area Parity status
+  section below; consolidating leaves a single source of truth for each
+  area.
+
+- **`packages/runtime/README.md`** — refreshed the status header,
+
+  expanded "What's here today" with the 22 `node:*` files and 95 JSC
+  files, flipped the sub-phase status badges (12.2 / 12.3 / 12.7 from
+  "blocked" / "not-started" to 🟡 partial), and updated the build
+  instructions to mention `scripts/measure-parity.sh`.
+
+- **`docs/CAPABILITY_MATRIX.md`** — bumped arm64 row from "🚧 Partial
+
+  (assembler scaffolding only)" to "🚧 In progress (Path B-lite
+  M1-M11 shipped)" to reflect the closed Issue #5.

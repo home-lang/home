@@ -35,12 +35,50 @@ Legend:
 | Ownership / move checking | 🚧 In progress |
 | Borrow checker | 🚧 In progress |
 
+## TypeScript frontend (`home tsc`)
+
+Drop-in `tsc` / `tsgo` replacement. Detailed per-feature status:
+[`PARITY-TYPESCRIPT.md`](./PARITY-TYPESCRIPT.md). At-a-glance:
+
+| Capability | Status |
+|---|---|
+| Conformance coarse mode (5,907-case corpus) | ✅ 5,907 / 5,907 (100%) |
+| Conformance exact mode (byte-for-byte) | 🚧 ~4,060 / 5,907 (~68.7%) |
+| Baseline-aware categories (19 folders, 586 cases) | ✅ 586 / 586 (100%) |
+| Diagnostic-code catalogue | ✅ ~2,000 entries |
+| JS emit (full Phase 1 surface) | ✅ Stable |
+| `.d.ts` emit (symbol-driven + zig-dtsx fast path) | ✅ Stable |
+| Source maps V3 | ✅ Stable |
+| Multi-file program graph + parallel compile | ✅ Stable |
+| Module resolver (5 strategies + paths) | ✅ Stable |
+| Watch mode (`home-tsc --watch`) | ✅ Stable |
+| LSP wire surface (`home-lsp`) | 🚧 53 / ~70 methods (~76%) |
+| `.d.hm` emit (Home declaration files) | 🚧 Basic framing |
+| Generator state-machine downlevel | 🚧 Partial |
+
+## Runtime / Bun + Node compat (`home run`)
+
+Drop-in Bun replacement. Detailed per-area status:
+[`PARITY-BUN.md`](./PARITY-BUN.md),
+[`PARITY-NODE.md`](./PARITY-NODE.md),
+[`PARITY-BUN-COMPAT.md`](./PARITY-BUN-COMPAT.md). At-a-glance:
+
+| Capability | Status |
+|---|---|
+| Bun source files ported | 🚧 471 / 1,193 (~39.5%) |
+| JSC bring-up (Phase 12.2) | 🚧 M1-M6 landed (95 files); JS-callable bridge pending |
+| `node:*` namespace substrate | 🚧 21 files (`assert`, `buffer`, `events`, `fs`, `path`, `stream`, `util` + bindings) |
+| `bun` compat shim (`packages/compat/`) | 🚧 7 / ~103 Tier-0 symbols |
+| Functional runtime (`home run app.ts`) | 🚧 Awaiting JSC JS-callable wire-up |
+| `home test` runner | 🚧 Blocked on JSC + Phase 12.8 |
+| Acceptance gate (Bun `test/` corpus 100%) | ❌ Not yet (becomes enforceable after Phase 12.2 + 12.8) |
+
 ## Codegen targets
 
 | Target | Status |
 |---|---|
 | x86-64 native codegen | 🚧 In progress (substantial; primary target) |
-| arm64 codegen | 🚧 Partial (assembler scaffolding only) |
+| arm64 codegen | 🚧 In progress (Path B-lite M1-M11 shipped: function calls + AAPCS64, structs + field access, fixed-size arrays, match, bare-tag + payload-bearing enums, enum ABI for fn args/returns) |
 | WebAssembly codegen | 🚧 Stub |
 | LLVM backend | 🚧 In progress |
 | ELF object emission | 🚧 In progress |

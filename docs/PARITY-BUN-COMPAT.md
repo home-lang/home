@@ -206,5 +206,5 @@ modification. Each subsequent tier follows the same pattern: a
 vendor file lands, the shim grows just enough to make it compile,
 inline + integration tests pin the surface, then the file becomes
 buildable from `zig build`. See
-[`packages/runtime/PORT_AUDIT_2026-05-18.md`](../packages/runtime/PORT_AUDIT_2026-05-18.md)
+[`packages/runtime/PORT_AUDIT_2026-05-20.md`](../packages/runtime/PORT_AUDIT_2026-05-20.md)
 for the next-to-port queue.
