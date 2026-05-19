@@ -1156,6 +1156,12 @@ pub const Checker = struct {
     /// generic instantiation, lowerer-only paths, or signatures
     /// whose params are binding patterns).
     signature_param_names: std.AutoHashMapUnmanaged(TypeId, []hir_mod.StringId),
+    /// Signature TypeId -> first-parameter names observed for each source
+    /// occurrence of an otherwise-identical single-parameter signature.
+    /// This preserves diagnostic wording for repeated callback slots like
+    /// `(a: T) => T`, `(b: T) => T`, `(c: T) => T`, which intern to the
+    /// same structural TypeId but upstream prints the slot-local name.
+    signature_param_name_occurrences: std.AutoHashMapUnmanaged(TypeId, []hir_mod.StringId),
     /// `(enum_name, member_name) → numeric value` for enum members
     /// whose value the checker resolved (either from an explicit
     /// numeric initializer or auto-incremented from the prior
@@ -1353,6 +1359,7 @@ pub const Checker = struct {
             .rest_signatures = .empty,
             .signature_min_args = .empty,
             .signature_param_names = .empty,
+            .signature_param_name_occurrences = .empty,
             .enum_member_values = .empty,
             .const_enums = .empty,
             .numeric_enums = .empty,
@@ -1533,6 +1540,9 @@ pub const Checker = struct {
         var spn_it = self.signature_param_names.valueIterator();
         while (spn_it.next()) |names| self.gpa.free(names.*);
         self.signature_param_names.deinit(self.gpa);
+        var spno_it = self.signature_param_name_occurrences.valueIterator();
+        while (spno_it.next()) |names| self.gpa.free(names.*);
+        self.signature_param_name_occurrences.deinit(self.gpa);
         self.enum_member_values.deinit(self.gpa);
         self.const_enums.deinit(self.gpa);
         self.numeric_enums.deinit(self.gpa);
@@ -10793,7 +10803,7 @@ pub const Checker = struct {
                 continue;
             }
             try param_types.append(self.gpa, signature_t);
-            try param_omittable.append(self.gpa, pp.flags.is_rest or !has_anno or pp.flags.is_optional or pp.default_value != hir_mod.none_node_id or t == types.Primitive.void_t);
+            try param_omittable.append(self.gpa, pp.flags.is_rest or !has_anno or pp.flags.is_optional or pp.default_value != hir_mod.none_node_id or self.parameterTypeAllowsVoidOmission(t));
             if (self.signature_predicates.get(t)) |param_pred| {
                 try param_predicates.append(self.gpa, .{ .param_index = value_param_index, .pred = param_pred });
             }
@@ -19729,7 +19739,7 @@ pub const Checker = struct {
             if (try self.simpleDiagnosticTypeName(prop_type)) |n| break :blk n;
             if (try self.allocObjectTypeShape(prop_type)) |s| break :blk s;
             if (self.interner.isSignature(prop_type)) {
-                if (try self.allocCallSignatureFnTypeName(prop_type)) |s| break :blk s;
+                if (try self.allocCallSignatureFnTypeName(prop_type, null)) |s| break :blk s;
             }
             break :blk null;
         };
@@ -19737,7 +19747,7 @@ pub const Checker = struct {
             if (try self.simpleDiagnosticTypeName(index_type)) |n| break :blk n;
             if (try self.allocObjectTypeShape(index_type)) |s| break :blk s;
             if (self.interner.isSignature(index_type)) {
-                if (try self.allocCallSignatureFnTypeName(index_type)) |s| break :blk s;
+                if (try self.allocCallSignatureFnTypeName(index_type, null)) |s| break :blk s;
             }
             break :blk null;
         };
@@ -22568,7 +22578,7 @@ pub const Checker = struct {
                         continue;
                     }
                     try fn_param_ts.append(self.gpa, t);
-                    try fn_param_omittable.append(self.gpa, pp.flags.is_rest or pp.type_annotation == hir_mod.none_node_id or pp.flags.is_optional or pp.default_value != hir_mod.none_node_id or t == types.Primitive.void_t);
+                    try fn_param_omittable.append(self.gpa, pp.flags.is_rest or pp.type_annotation == hir_mod.none_node_id or pp.flags.is_optional or pp.default_value != hir_mod.none_node_id or self.parameterTypeAllowsVoidOmission(t));
                 }
                 const is_predicate = ft.return_type != hir_mod.none_node_id and
                     self.hir.kindOf(ft.return_type) == .type_predicate_type;
@@ -22580,6 +22590,12 @@ pub const Checker = struct {
                 const sig = self.interner.internSignature(fn_param_ts.items, ret_t, is_construct) catch return error.OutOfMemory;
                 try self.recordSignatureMinArgs(sig, fn_param_omittable.items);
                 try self.recordSignatureParamNames(sig, fn_params);
+                if (fn_param_ts.items.len == 1 and fn_params.len == 1 and self.hir.kindOf(fn_params[0]) == .parameter) {
+                    const only_param = hir_mod.parameterOf(self.hir, fn_params[0]);
+                    if (only_param.name != hir_mod.none_node_id and self.hir.kindOf(only_param.name) == .identifier) {
+                        try self.appendSignatureParamNameOccurrence(sig, hir_mod.identifierOf(self.hir, only_param.name).name);
+                    }
+                }
                 if (explicit_this_t != types.Primitive.none) try self.signature_this_params.put(self.gpa, sig, explicit_this_t);
                 if (is_predicate) {
                     const pred = hir_mod.typePredicateOf(self.hir, ft.return_type);
@@ -26099,6 +26115,11 @@ pub const Checker = struct {
             if (declared_type == types.Primitive.none and !v.is_ambient and self.hir.kindOf(node) == .const_decl) {
                 init_type = try self.constInitializerType(v.init, init_type);
             }
+            if (declared_type != types.Primitive.none) {
+                if (try self.contextualGenericCallResult(v.init, init_type, declared_type)) |contextual_t| {
+                    init_type = contextual_t;
+                }
+            }
             // Anonymous class-expression assigned to a `var X = class {…}`
             // (or `let`/`const`) binding: register the static-side type
             // under the binding name so TS2339 prose renders as
@@ -26413,11 +26434,19 @@ pub const Checker = struct {
     }
 
     fn virtualSectionIsJsLike(self: *Checker, node: NodeId) bool {
-        const filename = self.virtualSectionFilenameForNode(node) orelse return false;
-        return std.mem.endsWith(u8, filename, ".js") or
-            std.mem.endsWith(u8, filename, ".jsx") or
-            std.mem.endsWith(u8, filename, ".mjs") or
-            std.mem.endsWith(u8, filename, ".cjs");
+        const filename = self.virtualSectionFilenameForNode(node) orelse {
+            if (self.sourceHasVirtualFilenameSections()) return false;
+            return self.pathIsJsLike(self.importer_path);
+        };
+        return self.pathIsJsLike(filename);
+    }
+
+    fn pathIsJsLike(self: *Checker, path: []const u8) bool {
+        _ = self;
+        return std.mem.endsWith(u8, path, ".js") or
+            std.mem.endsWith(u8, path, ".jsx") or
+            std.mem.endsWith(u8, path, ".mjs") or
+            std.mem.endsWith(u8, path, ".cjs");
     }
 
     /// True when `name_node`'s source span begins with a string-literal
@@ -28304,13 +28333,19 @@ pub const Checker = struct {
                 if (self.hir.kindOf(a.target) == .element_access) {
                     try self.checkReadonlyIndexAssignment(a.target);
                 }
-                const value_t = try self.checkExpression(a.value);
-                const assignment_check_value_t = if (self.hir.kindOf(a.value) == .identifier) blk_assign_value: {
+                var value_t = try self.checkExpression(a.value);
+                var assignment_check_value_t = if (self.hir.kindOf(a.value) == .identifier) blk_assign_value: {
                     if (try self.jsDocTypeForPreviousIdentifierDecl(a.value)) |declared_t| break :blk_assign_value declared_t;
                     const value_id = hir_mod.identifierOf(self.hir, a.value);
                     if (self.lookupNarrow(value_id.name) != null) break :blk_assign_value value_t;
                     break :blk_assign_value self.typeOfIdentifierDeclared(a.value);
                 } else value_t;
+                if (a.op == null) {
+                    if (try self.contextualGenericCallResult(a.value, assignment_check_value_t, target_t)) |contextual_t| {
+                        value_t = contextual_t;
+                        assignment_check_value_t = contextual_t;
+                    }
+                }
                 const target_is_destructuring = a.op == null and
                     (self.hir.kindOf(a.target) == .array_literal or self.hir.kindOf(a.target) == .object_literal);
                 const target_is_untyped_uninitialized_var =
@@ -29282,6 +29317,15 @@ pub const Checker = struct {
                     obj_t = try self.checkExpression(m.object);
                 }
                 const member_is_optional_chain = m.optional or self.expressionIsOptionalChain(m.object);
+                if (self.strict_flags.strict_null_checks and
+                    self.memberNameIsEcmaPrivate(m.name) and
+                    !m.optional and
+                    self.hir.kindOf(m.object) == .member_access and
+                    hir_mod.memberOf(self.hir, m.object).optional and
+                    self.typeIncludesUndefined(obj_t))
+                {
+                    try self.report(m.object, TsCodes.object_possibly_undefined, "Object is possibly 'undefined'.");
+                }
                 if (!member_is_optional_chain and self.strict_flags.strict_null_checks and self.typeIsPossiblyNullishStrict(obj_t)) {
                     try self.reportPossiblyNullishMember(m.object, obj_t);
                     obj_t = self.subtractNullUndefined(obj_t) catch obj_t;
@@ -29771,7 +29815,7 @@ pub const Checker = struct {
                         if (try self.allocSimpleTypeName(idx_t)) |n| break :ix_name_blk n;
                         if (try self.allocObjectTypeShape(idx_t)) |s| break :ix_name_blk s;
                         if (self.interner.isSignature(idx_t)) {
-                            if (try self.allocCallSignatureFnTypeName(idx_t)) |s| break :ix_name_blk s;
+                            if (try self.allocCallSignatureFnTypeName(idx_t, null)) |s| break :ix_name_blk s;
                         }
                         break :ix_name_blk null;
                     };
@@ -38820,6 +38864,83 @@ pub const Checker = struct {
         return self.unionWithUndefined(t) catch return error.OutOfMemory;
     }
 
+    fn contextualGenericCallResult(self: *Checker, node: NodeId, source_t: TypeId, target_t: TypeId) CheckError!?TypeId {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .call_expr) return null;
+        if (target_t == types.Primitive.none or target_t == types.Primitive.any or target_t == types.Primitive.unknown) return null;
+        if (!self.typeIsOrContainsUnknown(source_t)) return null;
+        const c = hir_mod.callOf(self.hir, node);
+        var callee_t = self.hir.typeOf(c.callee);
+        if (callee_t == types.Primitive.none) return null;
+        const call_is_optional_chain = c.optional or self.expressionIsOptionalChain(c.callee);
+        if (call_is_optional_chain) {
+            callee_t = self.subtractNullUndefined(callee_t) catch callee_t;
+        }
+        const sig = self.firstCallableSignatureForContextualReturn(callee_t) orelse return null;
+        const ret_t = self.interner.signatureReturn(sig) orelse return null;
+        if (!self.containsFreeTypeParameter(ret_t)) return null;
+        var expected_ret = if (call_is_optional_chain)
+            (try self.subtractUndefined(target_t))
+        else
+            target_t;
+        if (expected_ret == types.Primitive.never and call_is_optional_chain) expected_ret = target_t;
+        if (expected_ret == types.Primitive.none or expected_ret == types.Primitive.never) return null;
+        return try self.optionalChainResult(expected_ret, call_is_optional_chain);
+    }
+
+    fn firstCallableSignatureForContextualReturn(self: *Checker, t: TypeId) ?TypeId {
+        if (t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_signature) return t;
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.firstCallableSignatureForContextualReturn(member)) |sig| return sig;
+            }
+            return null;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.firstCallableSignatureForContextualReturn(member)) |sig| return sig;
+            }
+            return null;
+        }
+        if (flags.is_object_type) {
+            const call_member_id = self.string_interner.intern("__call") catch return null;
+            if (self.interner.objectMember(t, call_member_id)) |call_t| {
+                return self.firstCallableSignatureForContextualReturn(call_t);
+            }
+        }
+        return null;
+    }
+
+    fn typeIsOrContainsUnknown(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_unknown) return true;
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.typeIsOrContainsUnknown(member)) return true;
+            }
+        }
+        return false;
+    }
+
+    fn subtractUndefined(self: *Checker, t: TypeId) !TypeId {
+        if (t >= self.interner.pool.typeCount()) return t;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_undefined) return types.Primitive.never;
+        if (!flags.is_union) return t;
+        const members = self.interner.unionMembers(t);
+        var kept: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer kept.deinit(self.gpa);
+        for (members) |member| {
+            if (self.interner.pool.flagsOf(member).is_undefined) continue;
+            try kept.append(self.gpa, member);
+        }
+        if (kept.items.len == 0) return types.Primitive.never;
+        if (kept.items.len == 1) return kept.items[0];
+        return self.interner.internUnion(kept.items) catch return error.OutOfMemory;
+    }
+
     fn expressionIsOptionalChain(self: *Checker, node: NodeId) bool {
         if (node == hir_mod.none_node_id) return false;
         return switch (self.hir.kindOf(node)) {
@@ -41365,7 +41486,7 @@ pub const Checker = struct {
                 var omittable: std.ArrayListUnmanaged(bool) = .empty;
                 defer omittable.deinit(self.gpa);
                 for (new.items, 0..) |param_t, param_i| {
-                    try omittable.append(self.gpa, param_i >= old_min_required or param_t == types.Primitive.void_t);
+                    try omittable.append(self.gpa, param_i >= old_min_required or self.parameterTypeAllowsVoidOmission(param_t));
                 }
                 try self.recordSignatureMinArgs(new_sig, omittable.items);
             }
@@ -41848,7 +41969,8 @@ pub const Checker = struct {
             // with optionals; the two diverged in TS 2.0 to give
             // overload diagnostics a distinct discriminator.
             const use_at_least_form = is_variadic and too_few and !fixed_variadic_count;
-            const expected_label: []const u8 = if (fixed_variadic_count)
+            const use_range_form = !is_variadic and too_few and min_required < param_ts.len;
+            const expected_label: []const u8 = if (use_range_form or fixed_variadic_count)
                 ""
             else if (is_variadic)
                 " or more"
@@ -41856,12 +41978,18 @@ pub const Checker = struct {
                 ""
             else
                 " or fewer";
-            const expected_n: usize = if (fixed_variadic_count) rest_max_count.? else if (is_variadic) min_required else param_ts.len;
+            const expected_n: usize = if (use_range_form) min_required else if (fixed_variadic_count) rest_max_count.? else if (is_variadic) min_required else param_ts.len;
             const msg = if (use_at_least_form)
                 try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "Expected at least {d} arguments, but got {d}.",
                     .{ expected_n, effective_count },
+                )
+            else if (use_range_form)
+                try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Expected {d}-{d} arguments, but got {d}.",
+                    .{ expected_n, param_ts.len, effective_count },
                 )
             else
                 try std.fmt.allocPrint(
@@ -42069,6 +42197,11 @@ pub const Checker = struct {
                     }
                     const ok = self.restArgumentAssignable(arg_t, target_t) catch true;
                     if (!ok) {
+                        if (self.hir.kindOf(args[j]) == .spread and
+                            self.spreadExpressionAlreadyHasCallShapeDiagnostic(args[j]))
+                        {
+                            continue;
+                        }
                         if (emitted_rest_mismatch) continue;
                         // Use the shared formatter so rest-arg TS2345
                         // sites also get the richer `Argument of type 'A'
@@ -42087,6 +42220,25 @@ pub const Checker = struct {
                 }
             }
         }
+    }
+
+    fn spreadExpressionAlreadyHasCallShapeDiagnostic(self: *Checker, spread_node: NodeId) bool {
+        if (self.hir.kindOf(spread_node) != .spread) return false;
+        const expr = hir_mod.spreadOf(self.hir, spread_node).expression;
+        if (expr == hir_mod.none_node_id) return false;
+        const span = self.hir.spanOf(expr);
+        for (self.diagnostics.items) |d| {
+            switch (d.code) {
+                TsCodes.no_overload_matches,
+                TsCodes.expected_n_arguments,
+                TsCodes.argument_type_mismatch,
+                => {},
+                else => continue,
+            }
+            const start = self.diagnosticStart(d);
+            if (start >= span.start and start < span.end) return true;
+        }
+        return false;
     }
 
     /// TS2345: render upstream's `Argument of type 'A' is not
@@ -42123,7 +42275,7 @@ pub const Checker = struct {
         // render them as `(p: T) => U` so fixtures like
         // `subtypingWithCallSignaturesA` get upstream-shaped TS2345
         // prose instead of the positional placeholder.
-        if (self.argumentCallSignatureNames(arg_t, param_t)) |pair| {
+        if (self.argumentCallSignatureNames(arg_t, param_t, position)) |pair| {
             return try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
@@ -42289,17 +42441,18 @@ pub const Checker = struct {
         self: *Checker,
         arg_t: TypeId,
         param_t: TypeId,
+        position: usize,
     ) ?struct { arg: []const u8, param: []const u8 } {
         if (!self.interner.isSignature(arg_t) or !self.interner.isSignature(param_t)) return null;
-        const arg_name = (self.allocCallSignatureFnTypeName(arg_t) catch return null) orelse return null;
-        const param_name = (self.allocCallSignatureFnTypeName(param_t) catch return null) orelse return null;
+        const arg_name = (self.allocCallSignatureFnTypeName(arg_t, null) catch return null) orelse return null;
+        const param_name = (self.allocCallSignatureFnTypeName(param_t, position) catch return null) orelse return null;
         return .{ .arg = arg_name, .param = param_name };
     }
 
     /// Render a callable signature TypeId as `(p: T, q: U) => R`.
     /// Returns null when any constituent type isn't nameable so
     /// callers fall through to the positional placeholder.
-    fn allocCallSignatureFnTypeName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
+    fn allocCallSignatureFnTypeName(self: *Checker, t: TypeId, occurrence_index: ?usize) CheckError!?[]const u8 {
         if (!self.interner.isSignature(t)) return null;
         if (t >= self.interner.pool.typeCount()) return null;
         const sig_payload_idx = self.interner.pool.payloadOf(t);
@@ -42314,6 +42467,13 @@ pub const Checker = struct {
         for (params, 0..) |p, i| {
             if (i > 0) try buf.appendSlice(arena, ", ");
             const name_text: []const u8 = blk: {
+                if (occurrence_index) |idx| {
+                    if (params.len == 1) {
+                        if (self.signature_param_name_occurrences.get(t)) |occurrences| {
+                            if (idx < occurrences.len) break :blk self.string_interner.get(occurrences[idx]);
+                        }
+                    }
+                }
                 if (recorded_names) |names| if (i < names.len) {
                     break :blk self.string_interner.get(names[i]);
                 };
@@ -43949,7 +44109,7 @@ pub const Checker = struct {
                 param_t = self.unionWithUndefined(param_t) catch param_t;
             }
             try param_types.append(self.gpa, param_t);
-            try omittable.append(self.gpa, !has_anno or p.flags.is_optional or p.default_value != hir_mod.none_node_id or param_t == types.Primitive.void_t);
+            try omittable.append(self.gpa, !has_anno or p.flags.is_optional or p.default_value != hir_mod.none_node_id or self.parameterTypeAllowsVoidOmission(param_t));
         }
         const ret_t = if (f.return_type != hir_mod.none_node_id)
             try self.lowererLowerWithTypeParams(f.return_type)
@@ -45380,7 +45540,7 @@ pub const Checker = struct {
             // `functionLiterals.ts(28,1)`, and the construct-signature
             // family matches the tsc baselines.
             if ((m.name == call_id or m.name == construct_id) and self.interner.isSignature(m.type)) {
-                const sig_text = (try self.allocCallSignatureFnTypeName(m.type)) orelse return null;
+                const sig_text = (try self.allocCallSignatureFnTypeName(m.type, null)) orelse return null;
                 // `allocCallSignatureFnTypeName` already prefixes
                 // `new ` for construct sigs and produces `(p: T) => R`;
                 // call-signature object-member form drops the `=>`
@@ -45408,7 +45568,7 @@ pub const Checker = struct {
             // arrow form for anything else (e.g. method members whose
             // signature already widened to `any`).
             if (m.is_method and self.interner.isSignature(m.type)) {
-                if (try self.allocCallSignatureFnTypeName(m.type)) |sig_text| {
+                if (try self.allocCallSignatureFnTypeName(m.type, null)) |sig_text| {
                     const arrow = std.mem.indexOf(u8, sig_text, ") => ");
                     if (arrow) |a| {
                         try appendObjectShapeMemberName(&buf, arena, name);
@@ -45432,7 +45592,7 @@ pub const Checker = struct {
             // `{ f(): void; }` would otherwise render as
             // `{ f: () => void; }`.
             if (m.is_method and self.interner.isSignature(m.type)) {
-                const sig_text = (try self.allocCallSignatureFnTypeName(m.type)) orelse return null;
+                const sig_text = (try self.allocCallSignatureFnTypeName(m.type, null)) orelse return null;
                 const arrow = std.mem.indexOf(u8, sig_text, ") => ") orelse {
                     try buf.appendSlice(arena, ": ");
                     try buf.appendSlice(arena, sig_text);
@@ -48044,7 +48204,8 @@ pub const Checker = struct {
         if (self.interner.pool.payloadOf(t) >= self.interner.pool.union_payloads.items.len) return false;
         for (self.interner.unionMembers(t)) |m| {
             if (m >= self.interner.pool.typeCount()) continue;
-            if (self.interner.pool.flagsOf(m).is_undefined) return true;
+            const mf = self.interner.pool.flagsOf(m);
+            if (mf.is_undefined or mf.is_void) return true;
         }
         return false;
     }
@@ -48098,6 +48259,25 @@ pub const Checker = struct {
         const dup = self.gpa.dupe(hir_mod.StringId, donor_names) catch return error.OutOfMemory;
         if (self.signature_param_names.fetchRemove(target_sig)) |old| self.gpa.free(old.value);
         try self.signature_param_names.put(self.gpa, target_sig, dup);
+        try self.copySignatureParamNameOccurrences(target_sig, donor_sig);
+    }
+
+    fn appendSignatureParamNameOccurrence(self: *Checker, sig: TypeId, name: hir_mod.StringId) CheckError!void {
+        const old = self.signature_param_name_occurrences.get(sig);
+        const old_len = if (old) |items| items.len else 0;
+        const next = self.gpa.alloc(hir_mod.StringId, old_len + 1) catch return error.OutOfMemory;
+        if (old) |items| {
+            @memcpy(next[0..old_len], items);
+            self.gpa.free(items);
+        }
+        next[old_len] = name;
+        try self.signature_param_name_occurrences.put(self.gpa, sig, next);
+    }
+
+    fn copySignatureParamNameOccurrences(self: *Checker, target_sig: TypeId, donor_sig: TypeId) CheckError!void {
+        if (target_sig == donor_sig) return;
+        const donor_names = self.signature_param_name_occurrences.get(donor_sig) orelse return;
+        for (donor_names) |name| try self.appendSignatureParamNameOccurrence(target_sig, name);
     }
 
     fn signatureMinRequiredArgs(self: *Checker, sig: TypeId, params: []const TypeId) usize {
@@ -48145,6 +48325,18 @@ pub const Checker = struct {
     fn parameterTypeCanBeOmitted(self: *Checker, t: TypeId) bool {
         if (t == types.Primitive.void_t) return true;
         if (self.typeIncludesUndefined(t)) return true;
+        return false;
+    }
+
+    fn parameterTypeAllowsVoidOmission(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.void_t) return true;
+        if (t >= self.interner.pool.typeCount()) return false;
+        const f = self.interner.pool.flagsOf(t);
+        if (!f.is_union) return false;
+        if (self.interner.pool.payloadOf(t) >= self.interner.pool.union_payloads.items.len) return false;
+        for (self.interner.unionMembers(t)) |m| {
+            if (m == types.Primitive.void_t) return true;
+        }
         return false;
     }
 
@@ -55089,6 +55281,20 @@ test "checker: `satisfies` emits TS1360 when expr is not assignable to constrain
     try T.expect(found);
 }
 
+test "checker: `satisfies` in program-routed JS file emits TS8037" {
+    const s = try newSetup(
+        \\var v = undefined satisfies 1;
+    );
+    defer destroySetup(s);
+    s.checker.setImporterPath("/src/a.js");
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.ts_only_satisfies_in_js) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: `satisfies Record<string, T>` validates property values" {
     const s = try newSetup(
         \\type Color = { r: number, g: number, b: number };
@@ -56485,6 +56691,29 @@ test "checker: optional chaining widens the result with undefined" {
     try T.expect(has_undef);
 }
 
+test "checker: private access after optional property reports possibly undefined receiver" {
+    const s = try newSetup(
+        \\class A {
+        \\    a?: A;
+        \\    #b?: A;
+        \\    getA(): A { return new A(); }
+        \\    m() {
+        \\        this?.#b;
+        \\        this?.a.#b;
+        \\        this?.getA().#b;
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var possibly_undefined: usize = 0;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code == TsCodes.object_possibly_undefined) possibly_undefined += 1;
+    }
+    try T.expectEqual(@as(usize, 1), possibly_undefined);
+}
+
 test "checker: tuple literal-index resolves to the specific member type" {
     const s = try newSetup(
         \\function fst(p: [number, string]): number { return p[0]; }
@@ -57080,13 +57309,37 @@ test "checker: omitting an optional argument compiles cleanly" {
 test "checker: trailing void parameter can be omitted" {
     const s = try newSetup(
         \\declare function f(p: void): void;
+        \\declare function g(p: number | void): void;
         \\f();
+        \\g();
+        \\g(void 0);
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.expected_n_arguments);
     }
+}
+
+test "checker: instantiated void parameter can be omitted" {
+    const s = try newSetup(
+        \\class X<T> { f(t: T): void {} }
+        \\declare const x: X<void>;
+        \\declare const xu: X<void | number>;
+        \\declare const xa: X<any>;
+        \\declare const xk: X<unknown>;
+        \\x.f();
+        \\xu.f();
+        \\xa.f();
+        \\xk.f();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count_2554: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.expected_n_arguments) count_2554 += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count_2554);
 }
 
 test "checker: trailing undefined parameter is still required" {
@@ -59896,6 +60149,26 @@ test "checker: higher-order generic compose instantiates callback returns" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: optional generic call uses contextual return target" {
+    const s = try newSetup(
+        \\declare function absorb<T>(): T;
+        \\declare const a: { m?<T>(obj: {x: T}): T } | undefined;
+        \\const n1: number = a?.m?.({x: 12 });
+        \\const n2: number = a?.m?.({x: absorb()});
+        \\const n3: number | undefined = a?.m?.({x: 12});
+        \\const n4: number | undefined = a?.m?.({x: absorb()});
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    var assignability_errors: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) assignability_errors += 1;
+    }
+    try T.expectEqual(@as(usize, 2), assignability_errors);
 }
 
 test "checker: nested generic call uses expected return for keyof inference" {
@@ -65148,6 +65421,21 @@ test "checker: spread Map entries preserve inferred value type" {
     try T.expect(found);
 }
 
+test "checker: spread Map constructor overload error suppresses outer rest mismatch" {
+    const s = try newSetup(
+        \\function f(...[[k1, v1], [k2, v2]]: [string, number][]) {}
+        \\f(...new Map([["", 0], ["hello", true]]));
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_overload = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.no_overload_matches) found_overload = true;
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+    try T.expect(found_overload);
+}
+
 test "checker: recursive type alias — `LinkedList<T>` self-referential body parses and types" {
     // `type LinkedList<T> = { value: T; next: LinkedList<T> | null }`
     // — the body references the alias being defined. Pre-registration
@@ -67783,6 +68071,24 @@ test "checker: TS2345 renders argument and parameter type names" {
         }
     }
     try T.expect(saw_2345);
+}
+
+test "checker: TS2345 preserves repeated callback parameter names" {
+    const s = try newSetup(
+        \\function f<A>(a: (a: A) => A, b: (b: A) => A, c: (c: A) => A) {}
+        \\f<number>((n: number) => n, (n: string) => n, (n: number) => n);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_b_name = false;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code != TsCodes.argument_type_mismatch) continue;
+        if (std.mem.indexOf(u8, diag.message, "parameter of type '(b: number) => number'") != null) {
+            saw_b_name = true;
+        }
+    }
+    try T.expect(saw_b_name);
 }
 
 test "checker: TS2411 renders bracketed computed accessor name and anchors at `[`" {

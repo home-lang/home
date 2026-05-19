@@ -1405,6 +1405,22 @@ test "driver: unchecked allowJs still surfaces JS grammar diagnostics" {
     try T.expect(found_private);
 }
 
+test "driver: unchecked allowJs still surfaces satisfies JS grammar diagnostic" {
+    var c = try compileSource(T.allocator,
+        \\var v = undefined satisfies 1;
+    , .{ .no_emit = true, .suppress_js_check_diagnostics = true, .importer_path = "/src/a.js" });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == ts_checker.check.TsCodes.ts_only_satisfies_in_js) found = true;
+    }
+    try T.expect(found);
+}
+
 test "driver: allowJs node_modules js does not suppress project ts diagnostics" {
     var c = try compileSource(T.allocator,
         \\// @allowJs: true

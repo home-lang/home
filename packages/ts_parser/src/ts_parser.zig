@@ -693,8 +693,92 @@ pub const Parser = struct {
             const close_rel = std.mem.indexOf(u8, self.source[body_start..], "*/") orelse return;
             const body_end = body_start + close_rel;
             try self.scanJSDocCommentTypeExpressions(body_start, body_end);
+            try self.scanJSDocTypedefDuplicateTypeTags(body_start, body_end);
             i = body_end + 2;
         }
+    }
+
+    fn scanJSDocTypedefDuplicateTypeTags(self: *Parser, start: usize, end: usize) ParseError!void {
+        var has_typedef = false;
+        var type_tag_count: u32 = 0;
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            const tag_name = self.source[tag_name_start..tag_name_end];
+            if (std.mem.eql(u8, tag_name, "typedef")) {
+                has_typedef = true;
+                i = tag_name_end;
+                continue;
+            }
+            if (!std.mem.eql(u8, tag_name, "type")) {
+                i = tag_name_end;
+                continue;
+            }
+            type_tag_count += 1;
+            if (has_typedef and type_tag_count >= 2) {
+                const report_pos = self.jsDocTagTypeAnnotationEnd(tag_name_end, end) orelse tag_name_end;
+                try self.reportCodeAt(
+                    @intCast(report_pos),
+                    self.lineAt(@intCast(report_pos)),
+                    8033,
+                    "A JSDoc '@typedef' comment may not contain multiple '@type' tags.",
+                );
+                return;
+            }
+            i = tag_name_end;
+        }
+    }
+
+    fn nextJSDocTagStart(self: *const Parser, start: usize, end: usize) ?usize {
+        var i = start;
+        var at_line_start = true;
+        while (i < end) : (i += 1) {
+            const ch = self.source[i];
+            if (ch == '\n' or ch == '\r') {
+                at_line_start = true;
+                continue;
+            }
+            if (at_line_start) {
+                if (ch == ' ' or ch == '\t') continue;
+                if (ch == '*') {
+                    i += 1;
+                    while (i < end and (self.source[i] == ' ' or self.source[i] == '\t')) : (i += 1) {}
+                    if (i >= end) return null;
+                }
+                at_line_start = false;
+            }
+            if (self.source[i] == '@') return i;
+            while (i < end and self.source[i] != '\n' and self.source[i] != '\r') : (i += 1) {}
+            at_line_start = true;
+        }
+        return null;
+    }
+
+    fn jsDocTagTypeAnnotationEnd(self: *const Parser, start: usize, end: usize) ?usize {
+        var i = start;
+        while (i < end and (self.source[i] == ' ' or self.source[i] == '\t')) : (i += 1) {}
+        if (i >= end or self.source[i] != '{') return null;
+        var depth: u32 = 1;
+        i += 1;
+        while (i < end) : (i += 1) {
+            switch (self.source[i]) {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if (depth == 0) return i + 1;
+                },
+                '\n', '\r' => return null,
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    fn isJSDocTagNameChar(c: u8) bool {
+        return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z');
     }
 
     fn scanJSDocCommentTypeExpressions(self: *Parser, start: usize, end: usize) ParseError!void {
@@ -17113,6 +17197,25 @@ test "parser: JSDoc Closure type arguments report empty and trailing-comma diagn
     try T.expectEqual(@as(u32, 1009), s.parser.diagnostics.items[1].code);
     try T.expectEqual(@as(u32, 14), s.parser.diagnostics.items[0].pos);
     try T.expectEqual(@as(u32, 44), s.parser.diagnostics.items[1].pos);
+}
+
+test "parser: JSDoc typedef with multiple type tags reports TS8033" {
+    var s = try newTestSetup(
+        \\/**
+        \\ * @typedef Name
+        \\ * @type {string}
+        \\ * @type {Oops}
+        \\ */
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    const d = s.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 8033), d.code);
+    try T.expectEqual(@as(u32, 4), d.line);
+    const line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..d.pos], '\n').? + 1;
+    try T.expectEqual(@as(u32, 16), d.pos - @as(u32, @intCast(line_start)) + 1);
 }
 
 test "parser: top-level public before break reports declaration expected" {
