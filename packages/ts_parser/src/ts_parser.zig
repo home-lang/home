@@ -706,6 +706,7 @@ pub const Parser = struct {
             try self.scanJSDocParamTypeDiagnostics(body_start, body_end);
             try self.scanJSDocParamParentDiagnostics(body_start, body_end);
             try self.scanJSDocCommentTypeExpressions(body_start, body_end);
+            try self.scanJSDocImportTagDiagnostics(body_start, body_end);
             try self.scanJSDocTypedefDuplicateTypeTags(body_start, body_end);
             try self.scanJSDocTemplateModifierDiagnostics(body_start, body_end);
             try self.scanJSDocPropertyNameDiagnostics(body_start, body_end);
@@ -944,6 +945,64 @@ pub const Parser = struct {
         }
     }
 
+    fn scanJSDocImportTagDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            const tag_name = self.source[tag_name_start..tag_name_end];
+            i = tag_name_end;
+            if (!std.mem.eql(u8, tag_name, "import")) continue;
+
+            const tag_end = self.nextJSDocTagStart(tag_name_end, end) orelse end;
+            const first = self.firstJSDocContentByte(tag_name_end, tag_end);
+            if (first >= tag_end) {
+                try self.reportCodeAt(
+                    @intCast(tag_name_end),
+                    self.lineAt(@intCast(tag_name_end)),
+                    1109,
+                    "Expression expected.",
+                );
+                continue;
+            }
+
+            const from = self.findJSDocImportKeyword(first, tag_end, "from");
+            if (from) |from_start| {
+                const from_end = from_start + "from".len;
+                const module_start = self.firstJSDocContentByte(from_end, tag_end);
+                if (module_start >= tag_end) {
+                    try self.reportCodeAt(
+                        @intCast(from_end),
+                        self.lineAt(@intCast(from_end)),
+                        1109,
+                        "Expression expected.",
+                    );
+                }
+                continue;
+            }
+
+            if (!isJSDocIdentifierChar(self.source[first])) continue;
+            const name_end = jsDocIdentifierEnd(self.source, first, tag_end);
+            const after_name = self.firstJSDocContentByte(name_end, tag_end);
+            if (after_name < tag_end) continue;
+
+            try self.reportCodeAt(
+                @intCast(name_end),
+                self.lineAt(@intCast(name_end)),
+                1109,
+                "Expression expected.",
+            );
+            try self.reportCodeAt(
+                @intCast(end),
+                self.lineAt(@intCast(end)),
+                1005,
+                "'from' expected.",
+            );
+        }
+    }
+
     fn scanJSDocTemplateModifierDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
         const has_typedef = self.jsDocBlockHasTag(start, end, "typedef");
         var i = start;
@@ -1055,6 +1114,40 @@ pub const Parser = struct {
         var i = start;
         while (i < end and self.source[i] != '\n' and self.source[i] != '\r') : (i += 1) {}
         return i;
+    }
+
+    fn firstJSDocContentByte(self: *const Parser, start: usize, end: usize) usize {
+        var i = start;
+        var at_line_start = false;
+        while (i < end) {
+            while (i < end and (self.source[i] == ' ' or self.source[i] == '\t')) : (i += 1) {}
+            if (i >= end) return i;
+            if (self.source[i] == '\n' or self.source[i] == '\r') {
+                if (self.source[i] == '\r' and i + 1 < end and self.source[i + 1] == '\n') i += 1;
+                i += 1;
+                at_line_start = true;
+                continue;
+            }
+            if (at_line_start and self.source[i] == '*') {
+                i += 1;
+                while (i < end and (self.source[i] == ' ' or self.source[i] == '\t')) : (i += 1) {}
+                at_line_start = false;
+                continue;
+            }
+            return i;
+        }
+        return i;
+    }
+
+    fn findJSDocImportKeyword(self: *const Parser, start: usize, end: usize, keyword: []const u8) ?usize {
+        var i = start;
+        while (i + keyword.len <= end) : (i += 1) {
+            if (!std.mem.eql(u8, self.source[i .. i + keyword.len], keyword)) continue;
+            if (i > start and isJSDocIdentifierChar(self.source[i - 1])) continue;
+            if (i + keyword.len < end and isJSDocIdentifierChar(self.source[i + keyword.len])) continue;
+            return i;
+        }
+        return null;
     }
 
     fn jsDocTagTypeAnnotationEnd(self: *const Parser, start: usize, end: usize) ?usize {
@@ -17958,6 +18051,50 @@ test "parser: qualified JSDoc param parent check preserves object child for late
     );
     try T.expectEqual(@as(u32, 2), d.line);
     try T.expectEqual(@as(u32, 7), d.span_len);
+}
+
+test "parser: malformed JSDoc import tags mirror TypeScript recovery" {
+    {
+        var s = try newTestSetup(
+            \\/**
+            \\ * @import
+            \\ */
+        );
+        defer destroyTestSetup(s);
+
+        _ = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+        const d = s.parser.diagnostics.items[0];
+        try T.expectEqual(@as(u32, 1109), d.code);
+        try T.expectEqualStrings("Expression expected.", d.message);
+        try T.expectEqual(@as(u32, 2), d.line);
+        const line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..d.pos], '\n').? + 1;
+        try T.expectEqual(@as(u32, 11), d.pos - @as(u32, @intCast(line_start)) + 1);
+    }
+
+    {
+        var s = try newTestSetup(
+            \\/**
+            \\ * @import foo
+            \\ */
+        );
+        defer destroyTestSetup(s);
+
+        _ = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+        const expr = s.parser.diagnostics.items[0];
+        try T.expectEqual(@as(u32, 1109), expr.code);
+        try T.expectEqual(@as(u32, 2), expr.line);
+        const expr_line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..expr.pos], '\n').? + 1;
+        try T.expectEqual(@as(u32, 15), expr.pos - @as(u32, @intCast(expr_line_start)) + 1);
+
+        const from = s.parser.diagnostics.items[1];
+        try T.expectEqual(@as(u32, 1005), from.code);
+        try T.expectEqualStrings("'from' expected.", from.message);
+        try T.expectEqual(@as(u32, 3), from.line);
+        const from_line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..from.pos], '\n').? + 1;
+        try T.expectEqual(@as(u32, 2), from.pos - @as(u32, @intCast(from_line_start)) + 1);
+    }
 }
 
 test "parser: JSDoc typedef with multiple type tags reports TS8033" {
