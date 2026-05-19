@@ -704,6 +704,7 @@ pub const Parser = struct {
             const close_rel = std.mem.indexOf(u8, self.source[body_start..], "*/") orelse return;
             const body_end = body_start + close_rel;
             try self.scanJSDocParamTypeDiagnostics(body_start, body_end);
+            try self.scanJSDocParamParentDiagnostics(body_start, body_end);
             try self.scanJSDocCommentTypeExpressions(body_start, body_end);
             try self.scanJSDocTypedefDuplicateTypeTags(body_start, body_end);
             try self.scanJSDocTemplateModifierDiagnostics(body_start, body_end);
@@ -759,6 +760,131 @@ pub const Parser = struct {
             i = tag_name_end;
         }
         return false;
+    }
+
+    fn scanJSDocParamParentDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
+        var object_params: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer object_params.deinit(self.gpa);
+
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            const tag_name = self.source[tag_name_start..tag_name_end];
+            if (!std.mem.eql(u8, tag_name, "param")) {
+                i = tag_name_end;
+                continue;
+            }
+
+            const line_end = self.jsDocTagLineEnd(tag_name_end, end);
+            var cursor = firstNonWhitespace(self.source, tag_name_end, line_end);
+            var type_text: []const u8 = "";
+            if (cursor < line_end and self.source[cursor] == '{') {
+                const close_after = self.jsDocTagTypeAnnotationEnd(cursor, line_end) orelse {
+                    i = line_end;
+                    continue;
+                };
+                type_text = self.source[cursor + 1 .. close_after - 1];
+                cursor = close_after;
+            }
+
+            const name = self.jsDocParamNameAt(firstNonWhitespace(self.source, cursor, line_end), line_end) orelse {
+                i = line_end;
+                continue;
+            };
+            cursor = name.next;
+
+            if (type_text.len == 0) {
+                const type_start = firstNonWhitespace(self.source, cursor, line_end);
+                if (type_start < line_end and self.source[type_start] == '{') {
+                    if (self.jsDocTagTypeAnnotationEnd(type_start, line_end)) |close_after| {
+                        type_text = self.source[type_start + 1 .. close_after - 1];
+                    }
+                }
+            }
+
+            const full_name = self.source[name.start..name.end];
+            if (std.mem.lastIndexOfScalar(u8, full_name, '.')) |dot| {
+                const parent_name = full_name[0..dot];
+                if (!hasJSDocObjectParamName(object_params.items, parent_name)) {
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Qualified name '{s}' is not allowed without a leading '@param {{object}} {s}'.",
+                        .{ full_name, parent_name },
+                    );
+                    try self.reportCodeAtWithSpan(
+                        @intCast(name.start),
+                        self.lineAt(@intCast(name.start)),
+                        @intCast(full_name.len),
+                        8032,
+                        msg,
+                    );
+                }
+            }
+
+            if (full_name.len > 0 and isJSDocObjectType(type_text)) {
+                try object_params.append(self.gpa, full_name);
+            }
+            i = line_end;
+        }
+    }
+
+    const JSDocParamName = struct {
+        start: usize,
+        end: usize,
+        next: usize,
+    };
+
+    fn jsDocParamNameAt(self: *const Parser, start: usize, end: usize) ?JSDocParamName {
+        if (start >= end) return null;
+        if (self.source[start] == '[') {
+            const close = std.mem.indexOfScalarPos(u8, self.source, start + 1, ']') orelse return null;
+            if (close > end) return null;
+            var name_start = start + 1;
+            var name_end = if (std.mem.indexOfScalar(u8, self.source[name_start..close], '=')) |eq|
+                name_start + eq
+            else
+                close;
+            trimJSDocNameRange(self.source, &name_start, &name_end);
+            if (name_start >= name_end) return null;
+            return .{ .start = name_start, .end = name_end, .next = close + 1 };
+        }
+        if (self.source[start] == '`') {
+            const close = std.mem.indexOfScalarPos(u8, self.source, start + 1, '`') orelse return null;
+            if (close > end or close == start + 1) return null;
+            return .{ .start = start + 1, .end = close, .next = close + 1 };
+        }
+
+        var name_end = start;
+        while (name_end < end and isJSDocParamNameChar(self.source[name_end])) : (name_end += 1) {}
+        if (name_end == start) return null;
+        return .{ .start = start, .end = name_end, .next = name_end };
+    }
+
+    fn trimJSDocNameRange(source: []const u8, start: *usize, end: *usize) void {
+        while (start.* < end.* and (source[start.*] == ' ' or source[start.*] == '\t')) start.* += 1;
+        while (end.* > start.* and (source[end.* - 1] == ' ' or source[end.* - 1] == '\t')) end.* -= 1;
+    }
+
+    fn hasJSDocObjectParamName(names: []const []const u8, wanted: []const u8) bool {
+        for (names) |name| {
+            if (std.mem.eql(u8, name, wanted)) return true;
+        }
+        return false;
+    }
+
+    fn isJSDocObjectType(type_text: []const u8) bool {
+        var trimmed = std.mem.trim(u8, type_text, " \t\r\n");
+        if (trimmed.len > 0 and trimmed[trimmed.len - 1] == '=') {
+            trimmed = std.mem.trim(u8, trimmed[0 .. trimmed.len - 1], " \t\r\n");
+        }
+        return std.ascii.eqlIgnoreCase(trimmed, "object");
+    }
+
+    fn isJSDocParamNameChar(c: u8) bool {
+        return isJSDocIdentifierChar(c) or c == '.';
     }
 
     fn scanJSDocPropertyNameDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
@@ -17782,6 +17908,56 @@ test "parser: JSDoc Closure type arguments report empty and trailing-comma diagn
     try T.expectEqual(@as(u32, 1009), s.parser.diagnostics.items[1].code);
     try T.expectEqual(@as(u32, 14), s.parser.diagnostics.items[0].pos);
     try T.expectEqual(@as(u32, 44), s.parser.diagnostics.items[1].pos);
+}
+
+test "parser: qualified JSDoc param requires object-typed parent" {
+    var s = try newTestSetup(
+        \\/**
+        \\ * @param {object} xyz
+        \\ * @param {number} xyz.bar.p
+        \\ */
+        \\function g(xyz) {
+        \\    return xyz.bar.p;
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    const d = s.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 8032), d.code);
+    try T.expectEqualStrings(
+        "Qualified name 'xyz.bar.p' is not allowed without a leading '@param {object} xyz.bar'.",
+        d.message,
+    );
+    try T.expectEqual(@as(u32, 3), d.line);
+    try T.expectEqual(@as(u32, 9), d.span_len);
+    const line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..d.pos], '\n').? + 1;
+    try T.expectEqual(@as(u32, 20), d.pos - @as(u32, @intCast(line_start)) + 1);
+}
+
+test "parser: qualified JSDoc param parent check preserves object child for later tags" {
+    var s = try newTestSetup(
+        \\/**
+        \\ * @param {object} xyz.bar
+        \\ * @param {number} xyz.bar.p
+        \\ */
+        \\function g(xyz) {
+        \\    return xyz.bar.p;
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    const d = s.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 8032), d.code);
+    try T.expectEqualStrings(
+        "Qualified name 'xyz.bar' is not allowed without a leading '@param {object} xyz'.",
+        d.message,
+    );
+    try T.expectEqual(@as(u32, 2), d.line);
+    try T.expectEqual(@as(u32, 7), d.span_len);
 }
 
 test "parser: JSDoc typedef with multiple type tags reports TS8033" {
