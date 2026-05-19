@@ -27460,6 +27460,18 @@ pub const Checker = struct {
     }
 
     fn lowerBuiltinObjectTypeRaw(self: *Checker, name: []const u8) ?TypeId {
+        if (std.mem.eql(u8, name, "Event")) {
+            const members = [_]types.ObjectMember{
+                .{
+                    .name = self.string_interner.intern("type") catch return types.Primitive.unknown,
+                    .type = types.Primitive.string_t,
+                    .is_optional = false,
+                    .is_readonly = true,
+                    .is_method = false,
+                },
+            };
+            return self.interner.internObjectType(&members) catch types.Primitive.unknown;
+        }
         if (std.mem.eql(u8, name, "Date")) {
             const sig_void_number = self.interner.internSignature(&[_]TypeId{}, types.Primitive.number_t, false) catch
                 return types.Primitive.unknown;
@@ -32567,6 +32579,9 @@ pub const Checker = struct {
                 if (self.hir.kindOf(a.target) == .element_access) {
                     try self.checkReadonlyIndexAssignment(a.target);
                 }
+                if (target_kind == .member_access) {
+                    _ = try self.reportCheckJsPrototypeThisMissingMemberAssignment(a.target);
+                }
                 var value_t = try self.checkExpression(a.value);
                 var assignment_check_value_t = if (self.hir.kindOf(a.value) == .identifier) blk_assign_value: {
                     if (try self.jsDocTypeForPreviousIdentifierDecl(a.value)) |declared_t| break :blk_assign_value declared_t;
@@ -33803,6 +33818,9 @@ pub const Checker = struct {
                     // No matching member and no indexer → TS2339.
                     if (self.sourceHasCheckJsDirective() and self.isInAssignmentTargetChain(node)) {
                         if ((try self.checkJsImportedCallableExpandoTargetType(m.object, access_obj_t)) == null) {
+                            if (self.checkJsAssignmentTargetShouldReportMissingMember(access_obj_t)) {
+                                try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
+                            }
                             break :blk types.Primitive.any;
                         }
                     }
@@ -39305,6 +39323,7 @@ pub const Checker = struct {
             if (self.nodeInsideAmbientVarInitializer(node)) return types.Primitive.any;
             if (self.nodeHasAncestorKind(node, .decorator)) return types.Primitive.any;
             if (self.thisInsideCheckJsConstructorFunction(node)) return types.Primitive.any;
+            if (self.checkJsPrototypeAssignmentThisType(node)) |this_t| return this_t;
             if (self.thisInsideCheckJsPrototypeAssignmentFunction(node)) return types.Primitive.any;
             if (self.thisInsideCheckJsFunctionWithThisTag(node)) return types.Primitive.any;
             if (self.thisInsideCheckJsCallbackWithThis(node)) return types.Primitive.any;
@@ -39907,6 +39926,9 @@ pub const Checker = struct {
                 },
             };
             return self.interner.internObjectType(&members) catch types.Primitive.any;
+        }
+        if (std.mem.eql(u8, name_str, "Event")) {
+            return self.domEventGlobalType() catch types.Primitive.any;
         }
         if (std.mem.eql(u8, name_str, "Symbol")) {
             return self.symbolGlobalType() catch types.Primitive.any;
@@ -40994,6 +41016,28 @@ pub const Checker = struct {
         try members.append(self.gpa, .{ .name = has_id, .type = bool_sig, .is_optional = false, .is_readonly = false, .is_method = true });
         try members.append(self.gpa, .{ .name = delete_id, .type = bool_sig, .is_optional = false, .is_readonly = false, .is_method = true });
         return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+    }
+
+    fn domEventGlobalType(self: *Checker) CheckError!TypeId {
+        const event_t = self.lowerBuiltinObjectType("Event") orelse types.Primitive.any;
+        const construct_sig = self.interner.internSignature(&[_]TypeId{types.Primitive.string_t}, event_t, true) catch return error.OutOfMemory;
+        const members = [_]types.ObjectMember{
+            .{
+                .name = self.string_interner.intern("prototype") catch return error.OutOfMemory,
+                .type = event_t,
+                .is_optional = false,
+                .is_readonly = true,
+                .is_method = false,
+            },
+            .{
+                .name = self.string_interner.intern("__construct") catch return error.OutOfMemory,
+                .type = construct_sig,
+                .is_optional = false,
+                .is_readonly = true,
+                .is_method = true,
+            },
+        };
+        return self.interner.internObjectType(&members) catch return error.OutOfMemory;
     }
 
     fn isBuiltinObjectConstructor(self: *const Checker, name: hir_mod.StringId) bool {
@@ -43594,6 +43638,7 @@ pub const Checker = struct {
         if (self.nodeInsideAmbientVarInitializer(node)) return types.Primitive.any;
         if (self.sourceHasStrictFalseDirective() and self.thisInsideNonArrowPlainFunction(node)) return types.Primitive.any;
         if (self.thisInsideCheckJsConstructorFunction(node)) return types.Primitive.any;
+        if (self.checkJsPrototypeAssignmentThisType(node)) |this_t| return this_t;
         if (self.thisInsideCheckJsPrototypeAssignmentFunction(node)) return types.Primitive.any;
         if (self.thisInsideCheckJsFunctionWithThisTag(node)) return types.Primitive.any;
         if (self.thisInsideCheckJsCallbackWithThis(node)) return types.Primitive.any;
@@ -43806,6 +43851,87 @@ pub const Checker = struct {
             if (std.mem.indexOf(u8, prefix, ".prototype.") != null) return true;
         }
         return false;
+    }
+
+    fn checkJsPrototypeAssignmentThisType(self: *Checker, node: NodeId) ?TypeId {
+        if (!self.sourceHasCheckJsDirective()) return null;
+        const owner = self.checkJsPrototypeAssignmentOwnerName(node) orelse blk: {
+            if (!self.thisInsideCheckJsPrototypeAssignmentFunction(node)) return null;
+            break :blk self.checkJsPrototypeOwnerNameBeforeNode(node) orelse return null;
+        };
+        const owner_str = self.string_interner.get(owner);
+        if (std.mem.eql(u8, owner_str, "Event")) {
+            return self.lowerBuiltinObjectType("Event") orelse types.Primitive.any;
+        }
+        return null;
+    }
+
+    fn checkJsPrototypeAssignmentOwnerName(self: *Checker, node: NodeId) ?hir_mod.StringId {
+        var fn_node = hir_mod.none_node_id;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .arrow_fn) return null;
+            if (k == .fn_decl or k == .fn_expr) {
+                fn_node = cur;
+                break;
+            }
+        }
+        if (fn_node == hir_mod.none_node_id) return null;
+        const parent = self.hir.parentOf(fn_node);
+        if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .assignment) {
+            const assign = hir_mod.assignmentOf(self.hir, parent);
+            if (assign.value == fn_node and assign.target != hir_mod.none_node_id and self.hir.kindOf(assign.target) == .member_access) {
+                const target = hir_mod.memberOf(self.hir, assign.target);
+                if (target.object != hir_mod.none_node_id and self.hir.kindOf(target.object) == .member_access) {
+                    const proto = hir_mod.memberOf(self.hir, target.object);
+                    if (std.mem.eql(u8, self.string_interner.get(proto.name), "prototype") and
+                        proto.object != hir_mod.none_node_id and self.hir.kindOf(proto.object) == .identifier)
+                    {
+                        return hir_mod.identifierOf(self.hir, proto.object).name;
+                    }
+                }
+            }
+        }
+
+        const src = self.source orelse return null;
+        const fn_span = self.hir.spanOf(fn_node);
+        if (fn_span.start > src.len) return null;
+        const prefix = src[0..fn_span.start];
+        const proto_pos = std.mem.lastIndexOf(u8, prefix, ".prototype.") orelse return null;
+        var owner_start = proto_pos;
+        while (owner_start > 0 and isJsDocIdentChar(prefix[owner_start - 1])) : (owner_start -= 1) {}
+        if (owner_start == proto_pos) return null;
+        return self.string_interner.intern(prefix[owner_start..proto_pos]) catch null;
+    }
+
+    fn checkJsPrototypeOwnerNameBeforeNode(self: *Checker, node: NodeId) ?hir_mod.StringId {
+        const src = self.source orelse return null;
+        const span = self.hir.spanOf(node);
+        if (span.start > src.len) return null;
+        const prefix = src[0..span.start];
+        const proto_pos = std.mem.lastIndexOf(u8, prefix, ".prototype.") orelse return null;
+        var owner_start = proto_pos;
+        while (owner_start > 0 and isJsDocIdentChar(prefix[owner_start - 1])) : (owner_start -= 1) {}
+        if (owner_start == proto_pos) return null;
+        return self.string_interner.intern(prefix[owner_start..proto_pos]) catch null;
+    }
+
+    fn checkJsAssignmentTargetShouldReportMissingMember(self: *Checker, receiver_t: TypeId) bool {
+        const builtin = self.builtin_object_names.get(receiver_t) orelse return false;
+        return std.mem.eql(u8, builtin, "Event");
+    }
+
+    fn reportCheckJsPrototypeThisMissingMemberAssignment(self: *Checker, target: NodeId) CheckError!bool {
+        if (!self.sourceHasCheckJsDirective()) return false;
+        if (target == hir_mod.none_node_id or self.hir.kindOf(target) != .member_access) return false;
+        const member = hir_mod.memberOf(self.hir, target);
+        if (!self.nodeIsThisReference(member.object)) return false;
+        const this_t = self.checkJsPrototypeAssignmentThisType(member.object) orelse return false;
+        if (!self.checkJsAssignmentTargetShouldReportMissingMember(this_t)) return false;
+        if ((try self.lookupObjectMember(this_t, member.name)) != null) return false;
+        try self.reportPropertyDoesNotExistOnType(target, member.name, this_t);
+        return true;
     }
 
     fn thisInsideCheckJsFunctionWithThisTag(self: *Checker, node: NodeId) bool {
@@ -73553,6 +73679,27 @@ test "checker: inherited checkjs class accessor is visible from subclass getter"
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
+}
+
+test "checker: checkjs ambient Event prototype assignment does not create DOM expando" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\Event.prototype.removeChildren = function () {
+        \\  this.textContent = "nope";
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var remove_children = false;
+    var text_content = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.property_does_not_exist) continue;
+        if (std.mem.indexOf(u8, d.message, "Property 'removeChildren' does not exist on type 'Event'.") != null) remove_children = true;
+        if (std.mem.indexOf(u8, d.message, "Property 'textContent' does not exist on type 'Event'.") != null) text_content = true;
+    }
+    try T.expect(remove_children);
+    try T.expect(text_content);
 }
 
 test "checker: undeclared ECMAScript private field reports TS2339" {
