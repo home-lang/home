@@ -24,13 +24,14 @@ pub extern fn libdeflate_gzip_compress_bound(compressor: *Compressor, in_nbytes:
 pub extern fn libdeflate_free_compressor(compressor: *Compressor) void;
 
 // mimalloc malloc/free signatures must match `libdeflate_set_memory_allocator`'s.
-// Re-declare them locally so this module does not need a sibling-module import
-// (mirrors what upstream does via `bun.mimalloc.mi_malloc`/`mi_free`).
-extern fn mi_malloc(size: usize) ?*anyopaque;
-extern fn mi_free(p: ?*anyopaque) void;
+// Route through home_rt.mimalloc_sys.mimalloc, which today resolves to the
+// libc shim in mimalloc_shim.zig (mi_malloc -> std.c.malloc, etc.). When
+// Phase 12.2 lands mimalloc-bun the shim is swapped back to the real wrapper
+// and these call sites unchanged.
+const mimalloc = @import("home_rt").mimalloc_sys.mimalloc;
 
 fn load_once() void {
-    libdeflate_set_memory_allocator(mi_malloc, mi_free);
+    libdeflate_set_memory_allocator(mimalloc.mi_malloc, mimalloc.mi_free);
 }
 
 var loaded_once = std.once(load_once);

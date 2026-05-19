@@ -742,7 +742,12 @@ pub const analytics = struct {
 // Sixth-wave port batch (2026-05-18). Pure FFI extern wrappers around
 // vendored native deps. Link-time contracts; no runtime logic.
 pub const mimalloc_sys = struct {
-    pub const mimalloc = @import("mimalloc_sys/mimalloc.zig");
+    // Round-4 (2026-05-19): swap from the upstream wrapper to the libc
+    // shim so `mi_malloc`/`mi_free`/`mi_calloc`/`mi_realloc` resolve at
+    // link time without requiring a vendored mimalloc-bun build.
+    // The real wrapper at `mimalloc_sys/mimalloc.zig` stays on disk and
+    // re-enables when Phase 12.2 lands mimalloc-bun (revert this line).
+    pub const mimalloc = @import("mimalloc_shim.zig");
 };
 pub const tcc_sys = struct {
     pub const tcc = @import("tcc_sys/tcc.zig");
