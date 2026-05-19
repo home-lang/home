@@ -28838,18 +28838,12 @@ pub const Checker = struct {
                         } else {
                             const args = hir_mod.callArgs(self.hir, node);
                             for (args) |arg| _ = try self.checkExpression(arg);
-                            // TS2754 — `super<T>()` is illegal regardless of
-                            // whether the base class is generic. Anchored at
-                            // the `<` token (immediately after the `super`
-                            // callee), matching `errorSuperCalls.ts(46,14)`.
-                            // The parser already emits TS2754 for the
-                            // tagged-template form `super<T>` `` `…` ``, so
-                            // we only emit when there are no template args.
-                            const super_type_args = hir_mod.callTypeArgs(self.hir, node);
-                            if (super_type_args.len > 0 and !self.callExprIsTaggedTemplate(node)) {
-                                const callee_span = self.hir.spanOf(c.callee);
-                                try self.reportAt(c.callee, callee_span.end, TsCodes.super_type_arguments_not_allowed, "'super' may not use type arguments.");
-                            }
+                            // TS2754 is now emitted unconditionally by the
+                            // parser when it encounters `super<T>` — see
+                            // `parseCallOrMemberExpression`. The checker no
+                            // longer re-emits it here to avoid double-
+                            // reporting on derived classes
+                            // (`errorSuperCalls.ts(46,14)`).
                             if (self.callExprIsTaggedTemplate(node) and self.nodeIsDirectlyInsideConstructor(node)) {
                                 try self.report(c.callee, TsCodes.super_before_super_call, "'super' must be called before accessing a property of 'super' in the constructor of a derived class.");
                             }

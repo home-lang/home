@@ -9931,6 +9931,19 @@ pub const Parser = struct {
                     // a tagged-template literal. Otherwise we bail out
                     // and leave `<` to the binop path.
                     if (self.findCallTypeArgsEnd(self.cursor)) |after_gt| {
+                        // `super<T>(...)` — TS2754 fires unconditionally at
+                        // the `<`, mirroring typescript-go parser.go where
+                        // the diagnostic is emitted as soon as type
+                        // arguments are encountered on a `super` callee.
+                        // We anchor at the `<` token so the column matches
+                        // upstream (`parserSuperExpression2.ts(3,10)`).
+                        const less_tok = self.peek();
+                        if (self.hir.kindOf(node) == .identifier) {
+                            const ident = hir_mod.identifierOf(self.hir, node);
+                            if (std.mem.eql(u8, self.interner.get(ident.name), "super")) {
+                                try self.reportCodeAt(less_tok.span.start, less_tok.line, 2754, "'super' may not use type arguments.");
+                            }
+                        }
                         // Parse the type args so the checker can use
                         // them to override call-site inference.
                         const type_args = try self.parseExplicitCallTypeArgs(after_gt);
