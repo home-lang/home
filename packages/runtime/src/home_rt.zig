@@ -782,6 +782,31 @@ pub const libarchive_sys = struct {
 pub const zlib_sys = struct {
     pub const shared = @import("zlib_sys/shared.zig");
     pub const posix = @import("zlib_sys/posix.zig");
+    // Sixteenth-wave port batch (2026-05-18). Translate-c'd zlib.h
+    // Windows-LLP64 shape; routes through shared.zig at compile time.
+    pub const win32 = @import("zlib_sys/win32.zig");
+};
+
+// ---- src/md/ -----------------------------------------------------------
+// Sixteenth-wave port batch (2026-05-18). Pure-data markdown tables:
+// unicode case-fold map + HTML named entity table.
+pub const md = struct {
+    pub const unicode = @import("md/unicode.zig");
+    pub const entity = @import("md/entity.zig");
+};
+
+// ---- src/windows_sys/ --------------------------------------------------
+// Sixteenth-wave port batch (2026-05-18). Raw Win32 extern decls
+// (aliases over std.os.windows).
+pub const windows_sys = struct {
+    pub const externs = @import("windows_sys/externs.zig");
+};
+
+// ---- src/codegen/ ------------------------------------------------------
+// Sixteenth-wave port batch (2026-05-18). Translate-c post-processing
+// tool for Windows headers.
+pub const codegen = struct {
+    pub const process_windows_translate_c = @import("codegen/process_windows_translate_c.zig");
 };
 
 // ---- src/s3_signing/ ---------------------------------------------------
@@ -893,6 +918,13 @@ pub const sql = struct {
             pub const TransactionStatusIndicator = @import("sql/postgres/protocol/TransactionStatusIndicator.zig").TransactionStatusIndicator;
             pub const PortalOrPreparedStatement = @import("sql/postgres/protocol/PortalOrPreparedStatement.zig").PortalOrPreparedStatement;
             pub const zHelpers = @import("sql/postgres/protocol/zHelpers.zig");
+            // Sixteenth-wave port batch (2026-05-18). Generic
+            // decoder/writer factories + concrete BackendKeyData
+            // packet leaf. NewReader/NewWriter are TODO(phase-12-N)
+            // stubs pending the bun.strings + Data.zig port.
+            pub const DecoderWrap = @import("sql/postgres/protocol/DecoderWrap.zig").DecoderWrap;
+            pub const WriteWrap = @import("sql/postgres/protocol/WriteWrap.zig").WriteWrap;
+            pub const BackendKeyData = @import("sql/postgres/protocol/BackendKeyData.zig");
         };
     };
 };
@@ -1293,6 +1325,17 @@ test {
     _ = @import("runtime/cli/fuzzilli_command.zig");
     _ = @import("sql/mysql/AuthMethod.zig");
     _ = @import("css/properties/contain.zig");
+    // Wave-16 Tier-0 grinder (2026-05-18):
+    _ = @import("md/unicode.zig");
+    _ = @import("md/entity.zig");
+    _ = @import("windows_sys/externs.zig");
+    _ = @import("codegen/process_windows_translate_c.zig");
+    _ = @import("zlib_sys/win32.zig");
+    _ = @import("sql/postgres/protocol/DecoderWrap.zig");
+    _ = @import("sql/postgres/protocol/WriteWrap.zig");
+    _ = @import("sql/postgres/protocol/NewReader.zig");
+    _ = @import("sql/postgres/protocol/NewWriter.zig");
+    _ = @import("sql/postgres/protocol/BackendKeyData.zig");
 }
 
 test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {
