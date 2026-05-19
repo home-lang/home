@@ -193,6 +193,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/04947.test.js",
     "js/node/buffer-compare-bounds.test.ts",
     "regression/issue/014865.test.ts",
+    "regression/issue/07736.test.ts",
 };
 
 const harness_prelude =
@@ -241,7 +242,7 @@ const harness_prelude =
     \\  return Object.prototype.hasOwnProperty.call(value, key);
     \\}
     \\function __home_is_unsupported_deep_value(value) {
-    \\  return value !== null && typeof value === "object" && (value instanceof Map || value instanceof Set || value instanceof ArrayBuffer || ArrayBuffer.isView(value) || value instanceof Error);
+    \\  return value !== null && typeof value === "object" && (value instanceof ArrayBuffer || ArrayBuffer.isView(value) || value instanceof Error);
     \\}
     \\function __home_deep_equal(a, b, strict, seen) {
     \\  if (Object.is(a, b)) return true;
@@ -251,6 +252,28 @@ const harness_prelude =
     \\  if (strict && Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false;
     \\  if (a instanceof Date || b instanceof Date) return a instanceof Date && b instanceof Date && Object.is(a.getTime(), b.getTime());
     \\  if (a instanceof RegExp || b instanceof RegExp) return a instanceof RegExp && b instanceof RegExp && a.source === b.source && a.flags === b.flags;
+    \\  if (a instanceof Map || b instanceof Map) {
+    \\    if (!(a instanceof Map) || !(b instanceof Map) || a.size !== b.size) return false;
+    \\    const previous = seen.get(a);
+    \\    if (previous === b) return true;
+    \\    seen.set(a, b);
+    \\    for (const entry of a) {
+    \\      const key = entry[0];
+    \\      const value = entry[1];
+    \\      if (!b.has(key) || !__home_deep_equal(value, b.get(key), strict, seen)) return false;
+    \\    }
+    \\    return true;
+    \\  }
+    \\  if (a instanceof Set || b instanceof Set) {
+    \\    if (!(a instanceof Set) || !(b instanceof Set) || a.size !== b.size) return false;
+    \\    const previous = seen.get(a);
+    \\    if (previous === b) return true;
+    \\    seen.set(a, b);
+    \\    for (const value of a) {
+    \\      if (!b.has(value)) return false;
+    \\    }
+    \\    return true;
+    \\  }
     \\  if (Array.isArray(a) || Array.isArray(b)) {
     \\    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
     \\    for (let i = 0; i < a.length; i++) {
@@ -956,6 +979,10 @@ fn appendBootstrapTypeScriptReplacement(
         replacement: []const u8,
     }{
         .{ .needle = ": string[] =", .replacement = " =" },
+        .{ .needle = ": number =", .replacement = " =" },
+        .{ .needle = ": any)", .replacement = ")" },
+        .{ .needle = ": any;", .replacement = ";" },
+        .{ .needle = "<any, any>", .replacement = "" },
         .{ .needle = " as const", .replacement = "" },
     };
 
@@ -1309,6 +1336,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/04947.test.js", filesForSubset(.minimal_js)[27]);
     try std.testing.expectEqualStrings("js/node/buffer-compare-bounds.test.ts", filesForSubset(.minimal_js)[28]);
     try std.testing.expectEqualStrings("regression/issue/014865.test.ts", filesForSubset(.minimal_js)[29]);
+    try std.testing.expectEqualStrings("regression/issue/07736.test.ts", filesForSubset(.minimal_js)[30]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -1319,6 +1347,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTypeOf(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTypeOf() requires a valid type string argument") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeUndefined()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "a instanceof Map || b instanceof Map") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "a instanceof Set || b instanceof Set") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toIncludeRepeated(needle, expectedCount)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function beforeAll(fn, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_finish_tests") != null);
@@ -1402,6 +1432,29 @@ test "bootstrap rewrite erases const assertions" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, " as const") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const values = [\"default\"];") != null);
+}
+
+test "bootstrap rewrite erases admitted type-only syntax" {
+    const source =
+        \\import { describe, expect, test } from "bun:test";
+        \\class CustomMap extends Map {
+        \\  abc: number = 123;
+        \\  constructor(iterable: any) { super(iterable); }
+        \\  value: any;
+        \\}
+        \\test("works", () => {
+        \\  const x = new CustomMap<any, any>([]);
+        \\  expect(x.abc).toBe(123);
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/07736.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "abc = 123") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "constructor(iterable)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "new CustomMap([])") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, ": any") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "<any, any>") == null);
 }
 
 test "Bun test import rewrite installs globals for no-import tests" {
