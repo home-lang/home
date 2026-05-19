@@ -3869,6 +3869,16 @@ pub const Parser = struct {
                     const dot_tok = self.advance();
                     name_span.end = dot_tok.span.end;
                 }
+                // TS18012 — `#constructor` is reserved as a private
+                // member name; only the unhashed `constructor`
+                // keyword names the class constructor. Mirrors
+                // upstream fixture `privateNameConstructorReserved`.
+                if (name_tok.kind == .private_identifier) {
+                    const name_text = self.source[name_tok.span.start..name_tok.span.end];
+                    if (std.mem.eql(u8, name_text, "#constructor")) {
+                        try self.reportCodeAt(name_tok.span.start, name_tok.line, 18012, "'#constructor' is a reserved word.");
+                    }
+                }
                 const is_optional_member = self.match(.question);
                 // §6.A parserConstructorDeclaration8: `public constructor;`
                 // — when the member name is the literal `constructor` and
@@ -4943,6 +4953,12 @@ pub const Parser = struct {
                     try self.expectIdentifierLike();
                 if (member_tok.kind == .number_literal) {
                     try self.reportCodeAt(member_tok.span.start, member_tok.line, 2452, "An enum member cannot have a numeric name.");
+                }
+                // TS18024 — ECMAScript `#name` identifiers may only
+                // appear as class member names; an enum member named
+                // `#x` is invalid. Mirrors upstream `privateNameEnum`.
+                if (member_tok.kind == .private_identifier) {
+                    try self.reportCodeAt(member_tok.span.start, member_tok.line, 18024, "An enum member cannot be named with a private identifier.");
                 }
                 const name_id = try self.internPropertyName(member_tok, tokenSpan(member_tok));
                 break :blk try self.builder.addIdentifier(tokenSpan(member_tok), name_id);
