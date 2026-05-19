@@ -26,4 +26,13 @@ test {
     _ = @import("runtime/webcore/ObjectURLRegistry.zig");
     _ = @import("runtime/webcore/Sink.zig");
     _ = @import("safety/safety.zig");
+    // Wave-14 port batch (2026-05-18) — Tier-0 grinder.
+    _ = @import("bun_alloc/BufferFallbackAllocator.zig");
+    _ = @import("bun_alloc/MaxHeapAllocator.zig");
+    _ = @import("bun_alloc/NullableAllocator.zig");
+    _ = @import("string/HashedString.zig");
+    _ = @import("string/PathString.zig");
+    _ = @import("js_parser/lexer/identifier.zig");
+    _ = @import("css/properties/svg.zig");
+    _ = @import("ptr/weak_ptr.zig");
 }
