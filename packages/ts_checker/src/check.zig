@@ -11553,6 +11553,7 @@ pub const Checker = struct {
             if (pp.name != hir_mod.none_node_id and
                 (self.hir.kindOf(pp.name) == .object_pattern or self.hir.kindOf(pp.name) == .array_pattern) and
                 jsdoc_marks_optional and
+                pp.default_value == hir_mod.none_node_id and
                 f.body != hir_mod.none_node_id)
             {
                 try self.report(pp.name, TsCodes.binding_pattern_optional_parameter, "A binding pattern parameter cannot be optional in an implementation signature.");
@@ -71536,6 +71537,23 @@ test "checker: checkjs optional JSDoc param rejects binding pattern implementati
         if (d.code == TsCodes.binding_pattern_optional_parameter) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: checkjs optional JSDoc binding pattern with default does not emit TS2463" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: /a.js
+        \\/** @param {{ a?: string }} [options] */
+        \\function f({ a } = {}) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.binding_pattern_optional_parameter) found = true;
+    }
+    try T.expect(!found);
 }
 
 test "checker: checkjs object property @type validates initializer" {
