@@ -21,6 +21,8 @@ test {
     _ = @import("node/util.zig");
     // Phase 12.7 round-8 (2026-05-19) — `node:fs` sync substrate.
     _ = @import("node/fs.zig");
+    // Phase 12.7 round-9 (2026-05-19) — `node:buffer` Zig substrate.
+    _ = @import("node/buffer.zig");
     _ = @import("jsc/generated_classes_list.zig");
     _ = @import("runtime/api/bun/Terminal.zig");
     _ = @import("runtime/api/bun/spawn.zig");
