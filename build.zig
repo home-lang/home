@@ -934,6 +934,17 @@ pub fn build(b: *std.Build) void {
 
     // Home Runtime substrate tests
     const home_rt_tests = b.addTest(.{ .root_module = home_rt_pkg });
+    // Wave-11 brotli/zlib/zstd wrappers declare extern C symbols; link
+    // libc + system libs here, mirroring the prod-exe linkage at L507.
+    // Mimalloc deferred: Bun upstream vendors mimalloc-bun (Phase 12.2).
+    home_rt_tests.root_module.link_libc = true;
+    if (target.result.os.tag == .macos) {
+        home_rt_tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+    }
+    home_rt_tests.root_module.linkSystemLibrary("z", .{});
+    home_rt_tests.root_module.linkSystemLibrary("brotlidec", .{});
+    home_rt_tests.root_module.linkSystemLibrary("brotlienc", .{});
+    home_rt_tests.root_module.linkSystemLibrary("zstd", .{});
     const run_home_rt_tests = b.addRunArtifact(home_rt_tests);
     dependOnTest(test_step, &run_home_rt_tests.step, test_filter, "home_rt");
 
