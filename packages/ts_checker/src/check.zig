@@ -15557,9 +15557,39 @@ pub const Checker = struct {
         }
         if (span.start == 0) return false;
         var i: usize = span.start;
-        while (i > 0 and std.ascii.isWhitespace(src[i - 1])) : (i -= 1) {}
+        // Walk back over modifier keywords (e.g. `async`, `export`,
+        // `default`, `public`, `private`, `protected`, `readonly`,
+        // `static`, `abstract`, `override`, `accessor`) and any
+        // intervening whitespace so `declare async function …` still
+        // detects the leading `declare`. Without this, the span-walker
+        // stopped at the `async` keyword and reported the function as
+        // non-ambient, double-firing TS2391 on overloadless ambient
+        // async signatures.
+        const modifiers = [_][]const u8{
+            "async",   "export",   "default", "public",
+            "private", "protected", "readonly", "static",
+            "abstract", "override", "accessor",
+        };
+        outer: while (true) {
+            while (i > 0 and std.ascii.isWhitespace(src[i - 1])) : (i -= 1) {}
+            for (modifiers) |m| {
+                if (i < m.len) continue;
+                if (!std.mem.eql(u8, src[i - m.len .. i], m)) continue;
+                // Ensure preceded by whitespace or start-of-source.
+                if (i == m.len or std.ascii.isWhitespace(src[i - m.len - 1]) or !isJsDocIdentChar(src[i - m.len - 1])) {
+                    i -= m.len;
+                    continue :outer;
+                }
+            }
+            break;
+        }
         if (i < word.len) return false;
-        return std.mem.eql(u8, src[i - word.len .. i], word);
+        if (!std.mem.eql(u8, src[i - word.len .. i], word)) return false;
+        // Ensure preceded by whitespace or start-of-source (avoid
+        // false-matching identifiers ending in `…declare`).
+        if (i == word.len) return true;
+        const prev = src[i - word.len - 1];
+        return std.ascii.isWhitespace(prev) or !isJsDocIdentChar(prev);
     }
 
     fn declarationLineHasDeclare(self: *Checker, node: NodeId) bool {
