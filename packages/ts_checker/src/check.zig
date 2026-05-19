@@ -232,6 +232,7 @@ pub const TsCodes = struct {
     pub const parameter_cannot_reference_self: u32 = 2372;
     pub const parameter_cannot_reference_later: u32 = 2373;
     pub const duplicate_index_signature: u32 = 2374;
+    pub const binding_pattern_optional_parameter: u32 = 2463;
     pub const overloads_must_all_be_exported_or_not: u32 = 2383;
     pub const overloads_must_all_be_ambient_or_not: u32 = 2384;
     pub const overloads_must_all_have_same_visibility: u32 = 2385;
@@ -1698,7 +1699,9 @@ pub const Checker = struct {
         var pending_ignore: bool = false;
         var pending_expect: bool = false;
         var pending_expect_line: u32 = 0;
+        var pending_expect_reports_unused: bool = true;
         var in_block_comment = false;
+        var in_jsdoc_block_comment = false;
 
         while (true) {
             const line_start = i;
@@ -1712,7 +1715,10 @@ pub const Checker = struct {
             const trimmed = line_text[t..];
 
             const is_blank = trimmed.len == 0;
-            const comment = directiveCommentText(trimmed, &in_block_comment);
+            const comment_is_jsdoc = in_jsdoc_block_comment or
+                std.mem.startsWith(u8, trimmed, "/**") or
+                std.mem.startsWith(u8, trimmed, "{/**");
+            const comment = directiveCommentText(trimmed, &in_block_comment, &in_jsdoc_block_comment);
             const is_comment = comment != null;
             const directive_text = comment orelse "";
             const is_ignore_directive = matchDirectiveText(directive_text, "@ts-ignore");
@@ -1724,6 +1730,7 @@ pub const Checker = struct {
             if (is_expect_directive) {
                 pending_expect = true;
                 pending_expect_line = line;
+                pending_expect_reports_unused = !comment_is_jsdoc;
             }
             if (is_nocheck_directive) self.nocheck_file = true;
 
@@ -1734,8 +1741,11 @@ pub const Checker = struct {
                 }
                 if (pending_expect) {
                     try self.ts_expect_error_lines.put(self.gpa, line, {});
-                    try self.ts_expect_error_directive_lines.put(self.gpa, line, pending_expect_line);
+                    if (pending_expect_reports_unused) {
+                        try self.ts_expect_error_directive_lines.put(self.gpa, line, pending_expect_line);
+                    }
                     pending_expect = false;
+                    pending_expect_reports_unused = true;
                 }
             }
 
@@ -1784,9 +1794,10 @@ pub const Checker = struct {
         var it = self.ts_expect_error_lines.keyIterator();
         while (it.next()) |line_ptr| {
             if (used_expect.contains(line_ptr.*)) continue;
+            const directive_line = self.ts_expect_error_directive_lines.get(line_ptr.*) orelse continue;
             try self.diagnostics.append(self.gpa, .{
                 .node = root,
-                .pos = byteOffsetOfLine(src, self.ts_expect_error_directive_lines.get(line_ptr.*) orelse line_ptr.*),
+                .pos = byteOffsetOfLine(src, directive_line),
                 .code = TsCodes.unused_ts_expect_error,
                 .code_prefix = .TS,
                 .message = "Unused '@ts-expect-error' directive.",
@@ -11026,17 +11037,29 @@ pub const Checker = struct {
             if (has_anno) {
                 try self.reportUnresolvedBodylessSignatureTypeRefs(pp.type_annotation, type_params);
             }
-            const jsdoc_param_info: ?JsDocParamInfo = if (!has_anno and !is_this_param and self.sourceHasCheckJsDirective() and
-                pp.name != hir_mod.none_node_id and self.hir.kindOf(pp.name) == .identifier)
-                try self.jsDocParamInfoForFunctionParam(
-                    node,
-                    self.string_interner.get(hir_mod.identifierOf(self.hir, pp.name).name),
-                )
+            const jsdoc_param_info: ?JsDocParamInfo = if (!has_anno and !is_this_param and self.sourceHasCheckJsDirective())
+                if (pp.name != hir_mod.none_node_id and self.hir.kindOf(pp.name) == .identifier)
+                    try self.jsDocParamInfoForFunctionParam(
+                        node,
+                        self.string_interner.get(hir_mod.identifierOf(self.hir, pp.name).name),
+                    )
+                else if (pp.name != hir_mod.none_node_id and
+                    (self.hir.kindOf(pp.name) == .object_pattern or self.hir.kindOf(pp.name) == .array_pattern))
+                    try self.jsDocParamInfoForFunctionParamIndex(node, value_param_index)
+                else
+                    null
             else
                 null;
             const jsdoc_param_t: ?TypeId = if (jsdoc_param_info) |info| info.typ else null;
             const jsdoc_marks_optional = if (jsdoc_param_info) |info| info.optional else false;
             const has_jsdoc_param_type = jsdoc_param_t != null;
+            if (pp.name != hir_mod.none_node_id and
+                (self.hir.kindOf(pp.name) == .object_pattern or self.hir.kindOf(pp.name) == .array_pattern) and
+                jsdoc_marks_optional and
+                f.body != hir_mod.none_node_id)
+            {
+                try self.report(pp.name, TsCodes.binding_pattern_optional_parameter, "A binding pattern parameter cannot be optional in an implementation signature.");
+            }
             if (!is_this_param and self.sourceHasCheckJsDirective()) {
                 const is_required_now = !pp.flags.is_optional and
                     !pp.flags.is_rest and
@@ -27078,6 +27101,32 @@ pub const Checker = struct {
         return found;
     }
 
+    fn jsDocParamInfoForFunctionParamIndex(self: *Checker, fn_node: NodeId, param_index: u16) CheckError!?JsDocParamInfo {
+        const src = self.source orelse return null;
+        const body = self.leadingJsDocBodyForFunctionOrOwner(src, fn_node) orelse return null;
+        if (std.mem.indexOf(u8, body, "@overload") != null) return null;
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
+        defer self.gpa.free(tags);
+        var current: u16 = 0;
+        for (tags) |tag| {
+            if (tag.kind != .param_tag) continue;
+            if (current == param_index) {
+                var t: ?TypeId = null;
+                if (tag.optional_from_type_suffix or jsDocTypeTextIsObjectIndexSignature(tag.type_text)) {
+                    if (try self.jsDocTypeTextToType(src, tag.type_text)) |param_t| {
+                        t = if (tag.optional) try self.unionWithUndefined(param_t) else param_t;
+                    }
+                }
+                return .{
+                    .typ = t,
+                    .optional = tag.optional,
+                };
+            }
+            current += 1;
+        }
+        return null;
+    }
+
     fn jsDocParamTypeForFunctionParam(self: *Checker, fn_node: NodeId, param_name: []const u8) CheckError!?TypeId {
         const info = (try self.jsDocParamInfoForFunctionParam(fn_node, param_name)) orelse return null;
         return info.typ;
@@ -30898,6 +30947,23 @@ pub const Checker = struct {
                     if (idx_flags.is_symbol) {
                         const v = self.interner.objectSymbolIndex(obj_t);
                         if (v != types.Primitive.none) break :blk try self.optionalChainResult(self.maybeWidenWithUndefined(v), element_is_optional_chain);
+                    }
+                    if (self.strict_flags.no_implicit_any and
+                        self.memberAccessObjectIsGlobalThisThis(e.object) and
+                        (self.typeMaybeStringLike(idx_t) or self.typeMaybeNumericLike(idx_t) or idx_flags.is_symbol))
+                    {
+                        const idx_name = (try self.allocSimpleTypeName(idx_t)) orelse "any";
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Element implicitly has an 'any' type because expression of type '{s}' can't be used to index type 'typeof globalThis'.",
+                            .{idx_name},
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = node,
+                            .code = TsCodes.element_implicitly_any,
+                            .message = msg,
+                        });
+                        break :blk types.Primitive.any;
                     }
                     if (literal_string_key) |key_id| {
                         if (self.strict_flags.no_implicit_any and
@@ -51433,10 +51499,11 @@ fn matchDirectiveText(text: []const u8, name: []const u8) bool {
     return !(std.ascii.isAlphanumeric(c) or c == '_' or c == '-');
 }
 
-fn directiveCommentText(trimmed: []const u8, in_block_comment: *bool) ?[]const u8 {
+fn directiveCommentText(trimmed: []const u8, in_block_comment: *bool, in_jsdoc_block_comment: *bool) ?[]const u8 {
     if (in_block_comment.*) {
         if (std.mem.indexOf(u8, trimmed, "*/")) |end| {
             in_block_comment.* = false;
+            in_jsdoc_block_comment.* = false;
             return trimmed[0..end];
         }
         return trimmed;
@@ -51450,6 +51517,7 @@ fn directiveCommentText(trimmed: []const u8, in_block_comment: *bool) ?[]const u
             return body[0..end];
         }
         in_block_comment.* = true;
+        in_jsdoc_block_comment.* = std.mem.startsWith(u8, trimmed, "/**");
         return body;
     }
     if (std.mem.startsWith(u8, trimmed, "{/*")) {
@@ -51458,6 +51526,7 @@ fn directiveCommentText(trimmed: []const u8, in_block_comment: *bool) ?[]const u
             return body[0..end];
         }
         in_block_comment.* = true;
+        in_jsdoc_block_comment.* = std.mem.startsWith(u8, trimmed, "{/**");
         return body;
     }
     return null;
@@ -52534,6 +52603,19 @@ test "checker: unused @ts-expect-error emits TS2578" {
         }
     }
     try T.expect(found);
+}
+
+test "checker: unused JSDoc @ts-expect-error does not emit TS2578" {
+    const s = try newSetup(
+        \\/**
+        \\ @ts-expect-error */
+        \\let x: number = 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.unused_ts_expect_error);
+    }
 }
 
 test "checker: unused @ts-expect-error diagnostics are position sorted" {
@@ -55912,6 +55994,25 @@ test "checker: global script this missing property reports globalThis index diag
         }
     }
     try T.expect(saw_global_this);
+}
+
+test "checker: global script this computed index reports TS7053 under noImplicitAny" {
+    const s = try newSetup("this[\"a\" + \"b\"] = 0;");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_7053 = false;
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.this_implicitly_any);
+        if (d.code == TsCodes.element_implicitly_any and
+            std.mem.indexOf(u8, d.message, "expression of type 'string'") != null and
+            std.mem.indexOf(u8, d.message, "typeof globalThis") != null)
+        {
+            saw_7053 = true;
+        }
+    }
+    try T.expect(saw_7053);
 }
 
 test "checker: class method with non-void return type must return value" {
@@ -68461,6 +68562,23 @@ test "checker: checkjs JSDoc param optional suffix rejects null" {
     }
     try T.expect(assignment_found);
     try T.expect(argument_found);
+}
+
+test "checker: checkjs optional JSDoc param rejects binding pattern implementation parameter" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: /a.js
+        \\/** @param {{ a: string }} [options] */
+        \\function f({ a = "a" }) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.binding_pattern_optional_parameter) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: checkjs object property @type validates initializer" {

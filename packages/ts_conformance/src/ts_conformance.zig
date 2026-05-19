@@ -297,6 +297,8 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
     // entry-file-first / source-order-within-file at the end.
     const FormattedEntry = struct {
         file: []const u8,
+        diag_line: u32,
+        diag_col: u32,
         line: []const u8,
         src_idx: u32,
     };
@@ -372,6 +374,8 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         }
         try formatted_entries.append(gpa, .{
             .file = diag_file,
+            .diag_line = diag_line,
+            .diag_col = diag_col,
             .line = try gpa.dupe(u8, formatted),
             .src_idx = @intCast(src_idx),
         });
@@ -380,13 +384,18 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
 
     // Upstream tsc baselines emit the principal/entry file's
     // diagnostics first, then helper `@filename:` virtual-section
-    // diagnostics. Sort by entry-first, source-order otherwise.
+    // diagnostics. Sort helper virtual files the same way the program
+    // path does: rendered file, line, column, original order.
     const Ordering = struct {
         case_path: []const u8,
         fn lessThan(ctx: @This(), a: FormattedEntry, b: FormattedEntry) bool {
             const a_is_entry = std.mem.eql(u8, a.file, ctx.case_path);
             const b_is_entry = std.mem.eql(u8, b.file, ctx.case_path);
             if (a_is_entry != b_is_entry) return a_is_entry;
+            const file_order = std.mem.order(u8, a.file, b.file);
+            if (file_order != .eq) return file_order == .lt;
+            if (a.diag_line != b.diag_line) return a.diag_line < b.diag_line;
+            if (a.diag_col != b.diag_col) return a.diag_col < b.diag_col;
             return a.src_idx < b.src_idx;
         }
     };
