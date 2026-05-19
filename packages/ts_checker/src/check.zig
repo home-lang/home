@@ -450,6 +450,7 @@ pub const TsCodes = struct {
     pub const function_return_self_reference_implicitly_any: u32 = 7023;
     pub const binding_element_implicitly_any: u32 = 7031;
     pub const rest_parameter_implicitly_any: u32 = 7019;
+    pub const jsdoc_param_name_matches_arguments_if_array: u32 = 8029;
     pub const setter_property_implicitly_any: u32 = 7032;
     pub const new_expression_implicitly_any: u32 = 7009;
     pub const generator_implicit_yield_type: u32 = 7055;
@@ -10846,6 +10847,9 @@ pub const Checker = struct {
         var has_rest_param = false;
         var explicit_this_t: TypeId = types.Primitive.none;
         var value_param_index: u16 = 0;
+        if (params.len == 0 and self.sourceHasCheckJsDirective()) {
+            try self.applyArgumentsJsDocParamTags(node, &param_types, &param_omittable, &has_rest_param);
+        }
         // Pre-scan: if this is an accessor (`get`/`set`) and any
         // parameter is a `this:` param (which is invalid — TS2784
         // already fires), upstream tsc also suppresses TS7006 for any
@@ -26922,6 +26926,62 @@ pub const Checker = struct {
         return found;
     }
 
+    fn applyArgumentsJsDocParamTags(
+        self: *Checker,
+        fn_node: NodeId,
+        param_types: *std.ArrayListUnmanaged(TypeId),
+        param_omittable: *std.ArrayListUnmanaged(bool),
+        has_rest_param: *bool,
+    ) CheckError!void {
+        const src = self.source orelse return;
+        const span = self.hir.spanOf(fn_node);
+        const jsdoc = self.leadingJsDocBodyWithStart(src, span.start) orelse return;
+        const tags = ts_parser.jsdoc.parse(self.gpa, jsdoc.body) catch return;
+        defer self.gpa.free(tags);
+        const uses_arguments = try self.functionBodyReferencesArguments(fn_node);
+        for (tags) |tag| {
+            if (tag.kind != .param_tag) continue;
+            const type_text = std.mem.trim(u8, tag.type_text, " \t\r\n");
+            if (std.mem.startsWith(u8, type_text, "...")) {
+                const elem_text = std.mem.trim(u8, type_text[3..], " \t\r\n");
+                const elem_t = (try self.jsDocTypeTextToType(src, elem_text)) orelse types.Primitive.any;
+                const array_t = self.interner.internArrayType(self.string_interner, elem_t) catch return error.OutOfMemory;
+                try param_types.append(self.gpa, array_t);
+                try param_omittable.append(self.gpa, true);
+                has_rest_param.* = true;
+                return;
+            }
+            if (!uses_arguments) continue;
+            if (tag.name.len == 0) continue;
+            const pos = if (std.mem.indexOf(u8, jsdoc.body, tag.name)) |rel|
+                @as(u32, @intCast(jsdoc.start + rel))
+            else
+                span.start;
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "JSDoc '@param' tag has name '{s}', but there is no parameter with that name. It would match 'arguments' if it had an array type.",
+                .{tag.name},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = fn_node,
+                .pos = pos,
+                .code = TsCodes.jsdoc_param_name_matches_arguments_if_array,
+                .message = msg,
+            });
+        }
+    }
+
+    fn functionBodyReferencesArguments(self: *Checker, fn_node: NodeId) CheckError!bool {
+        const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (f.body == hir_mod.none_node_id) return false;
+        var refs: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer refs.deinit(self.gpa);
+        try self.collectIdentifierRefs(f.body, &refs);
+        var it = refs.keyIterator();
+        while (it.next()) |name| if (std.mem.eql(u8, self.string_interner.get(name.*), "arguments")) return true;
+        return false;
+    }
+
     fn expressionNodeAssignableToTarget(self: *Checker, value_node: NodeId, value_t: TypeId, target_t: TypeId) CheckError!bool {
         if (try self.literalExpressionAssignableToTarget(value_node, target_t)) return true;
         if (try self.templateExpressionAssignableToType(value_node, target_t)) return true;
@@ -27390,6 +27450,16 @@ pub const Checker = struct {
     }
 
     fn leadingJsDocBody(self: *Checker, src: []const u8, decl_start: u32) ?[]const u8 {
+        const jsdoc = self.leadingJsDocBodyWithStart(src, decl_start) orelse return null;
+        return jsdoc.body;
+    }
+
+    const JsDocBody = struct {
+        body: []const u8,
+        start: usize,
+    };
+
+    fn leadingJsDocBodyWithStart(self: *Checker, src: []const u8, decl_start: u32) ?JsDocBody {
         _ = self;
         const limit = @min(@as(usize, decl_start), src.len);
         const before = src[0..limit];
@@ -27397,7 +27467,10 @@ pub const Checker = struct {
         const between = std.mem.trim(u8, before[end + 2 ..], " \t\r\n");
         if (between.len != 0) return null;
         const start = std.mem.lastIndexOf(u8, before[0..end], "/**") orelse return null;
-        return before[start + 3 .. end];
+        return .{
+            .body = before[start + 3 .. end],
+            .start = start + 3,
+        };
     }
 
     fn jsDocTypeBaseName(type_text: []const u8) []const u8 {
