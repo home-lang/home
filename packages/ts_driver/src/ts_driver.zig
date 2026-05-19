@@ -798,7 +798,9 @@ pub fn compileSource(
     // individual strict-family flag in TS; options.strict is the CLI
     // override, then tsconfig, then tsc's default (`false`).
     if (options.strict_flags) |flags| {
-        checker.setStrictFlags(flags);
+        var merged_flags = flags;
+        if (options.always_strict) merged_flags.always_strict = true;
+        checker.setStrictFlags(merged_flags);
     } else if (options.pub_tsconfig) |cfg| {
         const co = cfg.compiler_options;
         const strict_on = options.strict orelse (co.strict orelse false);
@@ -819,6 +821,7 @@ pub fn compileSource(
             .isolated_modules = co.isolated_modules orelse false,
             .resolve_json_module = co.resolve_json_module orelse false,
             .no_implicit_override = co.no_implicit_override orelse false,
+            .always_strict = options.always_strict or (co.always_strict orelse false),
         });
     } else {
         const strict_on = options.strict orelse false;
@@ -827,6 +830,7 @@ pub fn compileSource(
             .strict_function_types = strict_on,
             .strict_null_checks = strict_on,
             .strict_property_initialization = strict_on,
+            .always_strict = options.always_strict,
         });
     }
     if (c.root != hir_mod.none_node_id) {

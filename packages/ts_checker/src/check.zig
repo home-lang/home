@@ -882,6 +882,15 @@ pub const StrictFlags = struct {
     /// true, unannotated `catch (e)` bindings are typed as `unknown`
     /// rather than `any`.
     use_unknown_in_catch_variables: bool = false,
+    /// `alwaysStrict`: parse the file under strict-mode semantics.
+    /// Gates grammar-only-in-strict diagnostics such as TS1102
+    /// (`delete <identifier>` is illegal in strict mode). When false
+    /// AND the source has no `"use strict"` directive AND the file is
+    /// not implicitly strict (module / class body), TS1102 must not
+    /// fire. The checker only consults this flag for strict-only
+    /// diagnostics — narrowing / null-check behavior lives under
+    /// `strict_null_checks` instead.
+    always_strict: bool = false,
 };
 
 pub const Checker = struct {
@@ -2627,6 +2636,24 @@ pub const Checker = struct {
         if (ns.name == hir_mod.none_node_id) return false;
         const sp = self.hir.spanOf(ns.name);
         return sp.start < src.len and (src[sp.start] == '"' or src[sp.start] == '\'');
+    }
+
+    /// Whether strict-mode grammar rules apply at `node`. Strict mode
+    /// is implicit inside class bodies and inside external modules
+    /// (files carrying `import` / `export`), and explicit when the
+    /// compiler is invoked with `alwaysStrict`. Used to gate the
+    /// strict-only grammar diagnostics (currently TS1102).
+    fn strictModeAppliesAt(self: *Checker, node: NodeId) bool {
+        if (self.strict_flags.always_strict) return true;
+        if (self.rootHasTopLevelExternalModuleMarker(node)) return true;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            switch (self.hir.kindOf(cur)) {
+                .class_decl, .class_expr => return true,
+                else => {},
+            }
+        }
+        return false;
     }
 
     fn rootHasTopLevelExternalModuleMarker(self: *Checker, node: NodeId) bool {
@@ -27938,7 +27965,16 @@ pub const Checker = struct {
         if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) return;
         if (final_type == types.Primitive.none) return;
         const id = hir_mod.identifierOf(self.hir, v.name);
-        const scope = self.hir.parentOf(node);
+        // `var` bindings hoist to the enclosing function-like (or
+        // module / namespace / source-file) scope, so we walk past
+        // intervening block/if/for/while/switch/try statements when
+        // selecting the dedup key. Without this, sibling `var x`
+        // declarations in distinct then/else blocks (and other
+        // statement bodies) failed to flag TS2403 because their
+        // parentOf() was the block — not the hoist scope. See
+        // typeGuardOfFormTypeOfEqualEqualHasNoEffect.ts and the rest
+        // of the typeGuards conformance cluster.
+        const scope = self.enclosingVarDeclScope(node);
         if (scope == hir_mod.none_node_id) return;
         const key: VarDeclKey = .{
             .scope = scope,
@@ -27950,7 +27986,16 @@ pub const Checker = struct {
             const prior_explicit = self.var_decl_explicit.get(key) orelse false;
             if (final_type == types.Primitive.any and (!has_annotation or self.varDeclAnnotationIsQualifiedName(v.type_annotation))) return;
             if (prior == types.Primitive.any and !prior_explicit and has_annotation) return;
-            if (!has_annotation and !prior_explicit and !self.typeIsEnumNominal(prior)) return;
+            // Historically we bailed when neither declaration had an
+            // explicit annotation (unless the prior was enum-nominal).
+            // Upstream tsc emits TS2403 whenever the inferred types
+            // disagree under control-flow narrowing — e.g. sibling
+            // `var r1 = strOrNum` declarations in different then/else
+            // branches that narrow to `string` / `number`. The
+            // compatibility check below already handles the common
+            // `var x = 1; var x = 2;` case (both widen to `number` →
+            // identical → no diag), so unconditionally falling through
+            // is safe and unlocks the typeGuards conformance cluster.
             const compatible = blk: {
                 if (self.isThisTypeParameter(prior) or self.isThisTypeParameter(final_type)) break :blk false;
                 if (self.typeContainsUnknown(final_type)) break :blk true;
@@ -27986,6 +28031,43 @@ pub const Checker = struct {
             !self.typeIsEnumNominal(final_type)) return;
         try self.var_decl_types.put(self.gpa, key, final_type);
         try self.var_decl_explicit.put(self.gpa, key, has_annotation);
+    }
+
+    /// Walk up the parent chain past control-flow statements
+    /// (block / if / for / while / do-while / switch / try) until
+    /// we hit a function-like, namespace/module, or source-file
+    /// boundary. Matches `var` hoist semantics so two `var x`
+    /// declarations in distinct then/else blocks dedup to the same
+    /// key. Returns the immediate parent when no such boundary is
+    /// reachable.
+    fn enclosingVarDeclScope(self: *Checker, node: NodeId) NodeId {
+        var cur = self.hir.parentOf(node);
+        var last = cur;
+        while (cur != hir_mod.none_node_id) {
+            last = cur;
+            switch (self.hir.kindOf(cur)) {
+                .source_file,
+                .fn_decl,
+                .fn_expr,
+                .arrow_fn,
+                .namespace_decl,
+                .module_decl,
+                => return cur,
+                .block_stmt,
+                .if_stmt,
+                .for_stmt,
+                .for_in_stmt,
+                .for_of_stmt,
+                .while_stmt,
+                .do_while_stmt,
+                .switch_stmt,
+                .try_stmt,
+                .switch_case,
+                => cur = self.hir.parentOf(cur),
+                else => return cur,
+            }
+        }
+        return last;
     }
 
     /// Scan accumulated diagnostics for a TS2502 whose message
@@ -41701,18 +41783,20 @@ pub const Checker = struct {
             .delete => blk: {
                 const operand_kind = self.hir.kindOf(u.operand);
                 if (operand_kind == .identifier) {
-                    // TS always parses in strict mode, so this is a
-                    // grammar error regardless of an explicit "use
-                    // strict" directive. TS2703 still fires below
-                    // because an identifier is not a property reference.
-                    // `this` is parsed as an identifier in our HIR but
-                    // is a reserved keyword, not a variable binding;
-                    // upstream restricts TS1102 to real identifiers and
-                    // only emits TS2703 for `delete this`. Mirrors
-                    // `parserStrictMode16.ts(2,8)` baseline.
+                    // TS1102 is a grammar restriction that only applies
+                    // in strict mode. The file is in strict mode when
+                    // `alwaysStrict` is set, when the source is an
+                    // external module (carries `import` / `export`
+                    // declarations), or when the `delete` sits inside
+                    // a class body. `this` is parsed as an identifier
+                    // in our HIR but is a reserved keyword, not a
+                    // variable binding; upstream restricts TS1102 to
+                    // real identifiers and only emits TS2703 for
+                    // `delete this`. Mirrors `parserStrictMode16.ts`
+                    // and `deleteOperatorWithAnyOtherType` baselines.
                     const ident_name = hir_mod.identifierOf(self.hir, u.operand).name;
                     const is_this_keyword = std.mem.eql(u8, self.string_interner.get(ident_name), "this");
-                    if (!is_this_keyword) {
+                    if (!is_this_keyword and self.strictModeAppliesAt(u.operand)) {
                         try self.report(u.operand, TsCodes.delete_identifier_strict_mode, "'delete' cannot be called on an identifier in strict mode.");
                     }
                 }
@@ -57328,14 +57412,17 @@ test "checker: delete this reports property-reference error without implicit thi
 }
 
 test "checker: delete on identifier emits TS1102 alongside TS2703" {
-    // TS always runs in strict mode, so `delete x` where `x` is a
-    // bare identifier should fire BOTH:
+    // In strict mode, `delete x` where `x` is a bare identifier
+    // should fire BOTH:
     //   * TS1102 "delete cannot be called on an identifier in strict mode"
     //   * TS2703 "operand of a delete operator must be a property reference"
     // Mirrors `controlFlowDeleteOperator.ts(14,12)` and the same line
-    // across `deleteOperatorWith*.ts` fixtures.
+    // across `deleteOperatorWith*.ts` fixtures. Strict mode is implicit
+    // inside modules and inside class bodies, or explicit via the
+    // `alwaysStrict` flag — exercise the flag path here.
     const s = try newSetup("let x = 1; delete x;");
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .always_strict = true });
     try s.checker.checkSourceFile(s.root);
     var found_1102 = false;
     var found_2703 = false;
