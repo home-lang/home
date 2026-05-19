@@ -45371,19 +45371,52 @@ pub const Checker = struct {
         // target, upstream tsc surfaces TS2559 in place of TS2322.
         // See `assignmentCompatWithObjectMembersOptionality2.ts(33,5)`.
         if (try self.tryReportWeakTypeNoOverlap(node, source, target)) return;
+        // Anchor at the leftmost `(` when the assignment's LHS is a
+        // parenthesized expression — `(x) = '';` reports at column 1
+        // (the `(`) in upstream tsc, not at the inner identifier.
+        // Mirrors `assignmentToParenthesizedIdentifiers.ts(5,1)` etc.
+        const anchor_pos = self.assignmentDiagnosticAnchor(node);
         const source_name = self.objectAnnotationNameForIdentifier(value_node) orelse
             (try self.allocSimpleTypeName(source)) orelse
             (try self.allocObjectTypeShape(source)) orelse
-            return try self.report(node, TsCodes.type_not_assignable, fallback);
+            return try self.reportAt(node, anchor_pos, TsCodes.type_not_assignable, fallback);
         const target_name = (try self.allocSimpleTypeName(target)) orelse
             (try self.allocObjectTypeShape(target)) orelse
-            return try self.report(node, TsCodes.type_not_assignable, fallback);
+            return try self.reportAt(node, anchor_pos, TsCodes.type_not_assignable, fallback);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Type '{s}' is not assignable to type '{s}'.",
             .{ source_name, target_name },
         );
-        try self.report(node, TsCodes.type_not_assignable, msg);
+        try self.reportAt(node, anchor_pos, TsCodes.type_not_assignable, msg);
+    }
+
+    /// Computes the source position to anchor a TS2322 assignment
+    /// diagnostic. When the assignment's left-hand side is wrapped in
+    /// one or more `( … )` pairs, tsc anchors at the leftmost `(`. We
+    /// walk backward from the LHS span start through whitespace and
+    /// match consecutive `(` tokens. Returns `null` when the
+    /// assignment is not parenthesized (preserving the default
+    /// node-span anchoring used by `report`).
+    fn assignmentDiagnosticAnchor(self: *Checker, node: NodeId) ?u32 {
+        if (self.hir.kindOf(node) != .assignment) return null;
+        const a = hir_mod.assignmentOf(self.hir, node);
+        const src = self.source orelse return null;
+        var pos: u32 = self.hir.spanOf(a.target).start;
+        var found = false;
+        while (pos > 0) {
+            var probe: u32 = pos;
+            while (probe > 0) {
+                const c = src[probe - 1];
+                if (!std.ascii.isWhitespace(c)) break;
+                probe -= 1;
+            }
+            if (probe == 0) break;
+            if (src[probe - 1] != '(') break;
+            pos = probe - 1;
+            found = true;
+        }
+        return if (found) pos else null;
     }
 
     fn objectAnnotationNameForIdentifier(self: *Checker, node: NodeId) ?[]const u8 {
