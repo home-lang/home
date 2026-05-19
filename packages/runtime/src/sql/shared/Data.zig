@@ -37,7 +37,10 @@ pub const Data = union(enum) {
     };
 
     pub const InlineStorage = struct {
-        buffer: [15]u8 = .{0} ** 15,
+        // Zig 0.17 dropped `.{0} ** N` tuple-init repetition; use the
+        // builtin `@splat` form instead. Behavior is identical: all 15
+        // bytes initialized to 0.
+        buffer: [15]u8 = @splat(0),
         len: u8 = 0,
 
         pub fn slice(this: *const @This()) []const u8 {

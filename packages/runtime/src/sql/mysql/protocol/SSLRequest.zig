@@ -36,8 +36,12 @@ pub fn writeInternal(this: *SSLRequest, comptime Context: type, writer: NewWrite
     // Write character set (1 byte)
     try writer.int1(@intFromEnum(this.character_set));
 
-    // Write 23 bytes of padding
-    try writer.write(&[_]u8{0} ** 23);
+    // Write 23 bytes of padding. `[N]u8{0} ** K` is the upstream form;
+    // Zig 0.17 dropped that syntax for tuple-init repetition, so
+    // `[K]u8{0} ** 1` (or simply a fixed-size zero-init) is the local
+    // shape. Mirrors the `Aligner.zig` / `thumbhash.zig` migration.
+    const padding: [23]u8 = @splat(0);
+    try writer.write(&padding);
 
     try packet.end();
 }
