@@ -3967,7 +3967,7 @@ pub const Parser = struct {
                 try self.reportCodeAt(implements_tok.span.end, implements_tok.line, 1097, "'implements' list cannot be empty.");
             } else {
                 while (true) {
-                    const ref = try self.parseTypeReference();
+                    const ref = try self.parseImplementsTypeReference();
                     try implements_list.append(self.gpa, ref);
                     if (self.peek().kind != .comma) break;
                     const comma = self.advance();
@@ -3994,7 +3994,7 @@ pub const Parser = struct {
                         self.peek().kind != .open_brace and
                         self.peek().kind != .eof)
                     {
-                        const ref = try self.parseTypeReference();
+                        const ref = try self.parseImplementsTypeReference();
                         try implements_list.append(self.gpa, ref);
                     }
                 } else if (self.peek().kind == .kw_implements) {
@@ -9082,6 +9082,24 @@ pub const Parser = struct {
     }
 
     fn parseTypeReference(self: *Parser) ParseError!NodeId {
+        return try self.parseTypeReferenceWithOptionalChainDiagnostic(
+            2499,
+            "An interface can only extend an identifier/qualified-name with optional type arguments.",
+        );
+    }
+
+    fn parseImplementsTypeReference(self: *Parser) ParseError!NodeId {
+        return try self.parseTypeReferenceWithOptionalChainDiagnostic(
+            2500,
+            "A class can only implement an identifier/qualified-name with optional type arguments.",
+        );
+    }
+
+    fn parseTypeReferenceWithOptionalChainDiagnostic(
+        self: *Parser,
+        optional_chain_code: u32,
+        optional_chain_message: []const u8,
+    ) ParseError!NodeId {
         const start = self.peek();
         const name_tok = try self.expect(.identifier, "type name");
         const final_name = try self.internToken(name_tok);
@@ -9150,7 +9168,7 @@ pub const Parser = struct {
 
         const end_pos = self.tokens[self.cursor - 1].span.end;
         if (saw_question_dot) {
-            try self.reportCodeAt(start.span.start, start.line, 2499, "An interface can only extend an identifier/qualified-name with optional type arguments.");
+            try self.reportCodeAt(start.span.start, start.line, optional_chain_code, optional_chain_message);
         }
         return try self.builder.addTypeRef(
             .{ .start = start.span.start, .end = end_pos },
@@ -18675,6 +18693,16 @@ test "parser: malformed class heritage reports upstream diagnostics" {
     _ = try trailing_implements.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), trailing_implements.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1009), trailing_implements.parser.diagnostics.items[0].code);
+
+    var optional_chain_implements = try newTestSetup(
+        \\namespace A { export class B {} }
+        \\class C implements A?.B {}
+    );
+    defer destroyTestSetup(optional_chain_implements);
+    optional_chain_implements.parser.setTargetEs2015OrLater(true);
+    _ = try optional_chain_implements.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), optional_chain_implements.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2500), optional_chain_implements.parser.diagnostics.items[0].code);
 }
 
 test "parser: primitive keyword may finish qualified type name" {
