@@ -192,6 +192,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/2993.test.ts",
     "regression/issue/04947.test.js",
     "js/node/buffer-compare-bounds.test.ts",
+    "regression/issue/014865.test.ts",
 };
 
 const harness_prelude =
@@ -578,7 +579,7 @@ const harness_prelude =
     \\      this.cache = input.cache;
     \\      this.mode = input.mode;
     \\    } else {
-    \\      this.url = String(input);
+    \\      this.url = input && typeof input.href === "string" ? input.href : String(input);
     \\      this.cache = "default";
     \\      this.mode = "cors";
     \\    }
@@ -1307,6 +1308,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/2993.test.ts", filesForSubset(.minimal_js)[26]);
     try std.testing.expectEqualStrings("regression/issue/04947.test.js", filesForSubset(.minimal_js)[27]);
     try std.testing.expectEqualStrings("js/node/buffer-compare-bounds.test.ts", filesForSubset(.minimal_js)[28]);
+    try std.testing.expectEqualStrings("regression/issue/014865.test.ts", filesForSubset(.minimal_js)[29]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -1335,6 +1337,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.redirect") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.json") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var Request = function(input, init)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "typeof input.href === \"string\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Request.prototype.clone") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node-fetch\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.alloc = function(size, fill)") != null);
