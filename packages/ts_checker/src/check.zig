@@ -228,6 +228,11 @@ pub const TsCodes = struct {
     /// `Reflect.get` / class-field semantics (practically target=es5).
     pub const super_only_methods_accessible: u32 = 2340;
     pub const property_does_not_exist: u32 = 2339;
+    /// TS2576 — `instance.foo` where `foo` is only a *static* member
+    /// of the class. tsc emits TS2576 instead of TS2339 with a
+    /// "Did you mean to access the static member 'C.foo' instead?"
+    /// hint. Mirrors `staticPropertyNotInClassType`.
+    pub const property_does_not_exist_static_member: u32 = 2576;
     pub const argument_type_mismatch: u32 = 2345;
     pub const conversion_may_be_mistake: u32 = 2352;
     pub const this_context_not_assignable: u32 = 2684;
@@ -43342,6 +43347,37 @@ pub const Checker = struct {
                 .message = msg,
             });
             return;
+        }
+        // TS2576: when the property exists as a static member of the
+        // class whose instance we're accessing through, surface the
+        // "Did you mean to access the static member '<C>.x' instead?"
+        // hint. Mirrors `staticPropertyNotInClassType` baselines.
+        // Skip for ECMAScript private identifiers (`#x`): upstream
+        // tsc never offers this hint when the property name starts
+        // with `#` (the lexical-scoping rules for private names make
+        // it unreachable through the static side).
+        if (!self.memberNameIsEcmaPrivate(name)) {
+        if (self.class_name_by_instance.get(target_t)) |class_name| {
+            if (self.class_static_member_names.getPtr(class_name)) |statics| {
+                if (statics.contains(name)) {
+                    if (try self.allocPropertyMissingTargetTypeName(target_t)) |target_text| {
+                        const class_str = self.string_interner.get(class_name);
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Property '{s}' does not exist on type '{s}'. Did you mean to access the static member '{s}.{s}' instead?",
+                            .{ name_str, target_text, class_str, name_str },
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = node,
+                            .pos = self.memberAccessNamePos(node),
+                            .code = TsCodes.property_does_not_exist_static_member,
+                            .message = msg,
+                        });
+                        return;
+                    }
+                }
+            }
+        }
         }
         if (try self.allocPropertyMissingTargetTypeName(target_t)) |target_text| {
             const msg = try std.fmt.allocPrint(
