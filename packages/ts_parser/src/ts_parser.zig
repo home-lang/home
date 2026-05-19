@@ -2843,6 +2843,20 @@ pub const Parser = struct {
                     try self.reportCodeAt(template_tok.span.start, template_tok.line, 1003, "Identifier expected.");
                     self.skipTemplateLiteralTokens();
                     break :blk try self.missingIdentifierAt(template_tok.span.start);
+                } else if (self.peek().kind == .comma) {
+                    // `(,)` / `(...,,...)` — a leading or doubled comma
+                    // inside a parameter list. Upstream tsc reports
+                    // TS1138 `Parameter declaration expected.` at the
+                    // comma position and drops the empty slot so the
+                    // accessor sees zero parameters (no cascading
+                    // TS1054 / TS7006). Skip the comma and continue
+                    // to the next parameter. Mirrors
+                    // `trailingCommasInGetter.ts(2,11)`.
+                    const comma_tok = self.peek();
+                    try self.reportCodeAt(comma_tok.span.start, comma_tok.line, 1138, "Parameter declaration expected.");
+                    _ = self.advance();
+                    if (self.peek().kind == .close_paren) break;
+                    continue;
                 } else if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
                     const pat = try self.parseBindingPattern();
                     // TS1187 — a parameter property (carrying `public`,
