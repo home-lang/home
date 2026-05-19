@@ -255,6 +255,11 @@ pub const TsCodes = struct {
     /// the interface name; mirrors tsc's "All declarations of '<name>'
     /// must have identical type parameters." baselines.
     pub const interface_declarations_must_have_identical_type_parameters: u32 = 2428;
+    /// TS2717 — `Subsequent property declarations must have the same
+    /// type.  Property 'X' must be of type 'A', but here has type 'B'.`
+    /// Emitted on the second (or later) declaration of a property with
+    /// the same name but a different type when interfaces merge.
+    pub const subsequent_property_declaration_same_type: u32 = 2717;
     pub const property_not_assignable_to_base: u32 = 2416;
     pub const class_incorrectly_extends_base: u32 = 2415;
     /// TS2417 — emitted when a derived class narrows the
@@ -3102,9 +3107,81 @@ pub const Checker = struct {
             try self.reportInterfaceTypeParameterMismatch(current, name);
             return;
         }
-        if (!try self.interfaceMembersMerge(first, current)) {
-            try self.reportDuplicateIdentifier(current, name);
+        try self.checkInterfaceMembersMerge(first, current);
+    }
+
+    /// Check whether all members between two merged interface
+    /// declarations agree on shape. For property-with-property
+    /// mismatches we emit canonical TS2717 anchored at the second
+    /// occurrence's member span; legacy/other conflicts still fall
+    /// back to a TS2300 "Duplicate identifier" on the second decl.
+    fn checkInterfaceMembersMerge(self: *Checker, first: NodeId, current: NodeId) CheckError!void {
+        const a_members = hir_mod.interfaceMembers(self.hir, first);
+        const b_members = hir_mod.interfaceMembers(self.hir, current);
+        var any_conflict_unreported = false;
+        for (b_members) |b_member| {
+            const bp = if (self.hir.kindOf(b_member) == .interface_member)
+                hir_mod.interfaceMemberOf(self.hir, b_member)
+            else
+                continue;
+            if (bp.name == 0 or bp.is_method) continue;
+            for (a_members) |a_member| {
+                if (self.hir.kindOf(a_member) != .interface_member) continue;
+                const ap = hir_mod.interfaceMemberOf(self.hir, a_member);
+                if (ap.name == 0 or ap.is_method) continue;
+                if (ap.name != bp.name) continue;
+                if (ap.is_optional != bp.is_optional) {
+                    any_conflict_unreported = true;
+                    continue;
+                }
+                if (self.nodeSourceTextEqual(ap.type_node, bp.type_node)) continue;
+                // Found a property-with-property type mismatch. Emit
+                // canonical TS2717 anchored at the second occurrence's
+                // member span (which starts at the property name in our
+                // parser).
+                const a_type_src = self.nodeSourceTextOrEmpty(ap.type_node);
+                const b_type_src = self.nodeSourceTextOrEmpty(bp.type_node);
+                const name_str = self.string_interner.get(bp.name);
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Subsequent property declarations must have the same type.  Property '{s}' must be of type '{s}', but here has type '{s}'.",
+                    .{ name_str, a_type_src, b_type_src },
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = b_member,
+                    .code = TsCodes.subsequent_property_declaration_same_type,
+                    .message = msg,
+                });
+            }
         }
+        // Index-signature conflicts (and any other not-handled case)
+        // still surface as the legacy TS2300 marker on the second
+        // declaration so existing baselines that depend on that signal
+        // don't regress.
+        if (any_conflict_unreported) {
+            try self.reportDuplicateIdentifier(current, hir_mod.interfaceOf(self.hir, current).name);
+        } else {
+            for (a_members) |a_member| {
+                for (b_members) |b_member| {
+                    if (self.hir.kindOf(a_member) == .index_signature and
+                        self.hir.kindOf(b_member) == .index_signature)
+                    {
+                        if (self.interfaceMembersConflict(a_member, b_member)) {
+                            try self.reportDuplicateIdentifier(current, hir_mod.interfaceOf(self.hir, current).name);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn nodeSourceTextOrEmpty(self: *Checker, node: NodeId) []const u8 {
+        if (node == hir_mod.none_node_id) return "";
+        const src = self.source orelse return "";
+        const span = self.hir.spanOf(node);
+        if (span.end > src.len or span.start > span.end) return "";
+        return src[span.start..span.end];
     }
 
     fn interfaceMembersMerge(self: *Checker, first: NodeId, current: NodeId) CheckError!bool {
@@ -53730,7 +53807,7 @@ test "checker: merged interfaces reject conflicting property declarations" {
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.duplicate_identifier) found = true;
+        if (d.code == TsCodes.subsequent_property_declaration_same_type) found = true;
     }
     try T.expect(found);
 }
