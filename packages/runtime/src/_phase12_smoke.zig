@@ -44,6 +44,13 @@ test {
     _ = @import("jsc/opaques.zig");
     _ = @import("jsc/extern_fns.zig");
     _ = @import("jsc/types.zig");
+    // Phase 12.2 M4 (2026-05-19) — exception + coerce + array helper
+    // surfaces. Bodies panic with TODO(phase-12.2-M3) until the C++
+    // bridge lands; the smoke driver only compiles (and runs the
+    // signature-shape tests), so these are safe here.
+    _ = @import("jsc/exception_helpers.zig");
+    _ = @import("jsc/coerce.zig");
+    _ = @import("jsc/array.zig");
     // Wave-18 Tier-0 grinder (2026-05-18) — sql wire-protocol leaves.
     _ = @import("sql/shared/Data.zig");
     _ = @import("sql/mysql/protocol/NewReader.zig");

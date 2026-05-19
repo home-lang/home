@@ -188,6 +188,15 @@ pub const jsc = struct {
     // Phase 12.2 M3 prep (2026-05-19) — Engine stub. Bodies panic with
     // TODO(phase-12.2-M3) until the C++ engine wiring lands.
     pub const engine = @import("jsc/engine.zig");
+    // Phase 12.2 M4 (2026-05-19) — exception + coerce + array helpers
+    // per `JSC_BRIDGE_SCOPE_2026-05-19.md` §M4. Each namespace exposes
+    // a uniform Zig-shaped surface on top of the M1 extern fn set;
+    // bodies panic with TODO(phase-12.2-M3) until the C++ engine
+    // wiring lands. Downstream callers can be written against these
+    // signatures today without waiting on linker resolution.
+    pub const exception = @import("jsc/exception_helpers.zig");
+    pub const coerce = @import("jsc/coerce.zig");
+    pub const array = @import("jsc/array.zig");
 };
 
 // ---- src/io/ -----------------------------------------------------------
