@@ -10599,6 +10599,21 @@ pub const Parser = struct {
                             after_star_kind == .close_brace or
                             after_star_kind == .comma;
                     }
+                    const operand_follows = !next_is_star and
+                        self.peek().kind != .open_paren and
+                        self.peek().kind != .semicolon and
+                        !self.peek().flags.preceded_by_newline and
+                        self.peek().kind != .close_paren and
+                        self.peek().kind != .close_bracket and
+                        self.peek().kind != .close_brace and
+                        self.peek().kind != .comma and
+                        self.peek().kind != .eof;
+                    if (operand_follows and (self.target_es2015_or_later or self.strict_mode)) {
+                        try self.reportCodeAt(t.span.start, t.line, 1163, "A 'yield' expression is only allowed in a generator body.");
+                        const operand = try self.parseAssignmentExpression();
+                        const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(operand).end };
+                        return try self.builder.addYieldExpr(sp, operand, false);
+                    }
                     if (!star_operand_missing and self.isYieldReservedName(t)) {
                         if (self.class_body_depth > 0) {
                             try self.reportCodeAt(t.span.start, t.line, 1213, "Identifier expected. 'yield' is a reserved word in strict mode. Class definitions are automatically in strict mode.");
@@ -17673,6 +17688,25 @@ test "parser: top-level yield(call) parses as call without spurious TS1005" {
     }
     try T.expectEqual(@as(usize, 1), count_1212);
     try T.expectEqual(@as(usize, 0), count_1005);
+}
+
+test "parser: top-level `yield expr` reports TS1163" {
+    // Mirrors YieldExpression2_es6: unlike `yield;` or `yield(foo)`,
+    // a bare operand after top-level `yield` is parsed as an invalid
+    // yield expression and reports TS1163 instead of TS1212.
+    var s = try newTestSetup("yield foo;");
+    defer destroyTestSetup(s);
+
+    s.parser.setTargetEs2015OrLater(true);
+    _ = try s.parser.parseSourceFile();
+    var count_1163: usize = 0;
+    var count_1212: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1163) count_1163 += 1;
+        if (d.code == 1212) count_1212 += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count_1163);
+    try T.expectEqual(@as(usize, 0), count_1212);
 }
 
 test "parser: top-level `yield *` does NOT emit TS1212 (yield-star form)" {
