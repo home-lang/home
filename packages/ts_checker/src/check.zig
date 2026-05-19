@@ -26878,6 +26878,7 @@ pub const Checker = struct {
         // doesn't apply to ambient names — they're externally
         // declared and unchangeable. We mirror that split here.
         if (self.strict_flags.no_implicit_any and
+            declared_type == types.Primitive.none and
             v.type_annotation == hir_mod.none_node_id and
             v.init == hir_mod.none_node_id and
             !self.varDeclHasMalformedListSyntax(node, v.name) and
@@ -27462,8 +27463,48 @@ pub const Checker = struct {
         for (tags) |tag| {
             if (tag.kind != .type_tag) continue;
             if (try self.jsDocTypeTextToType(src, tag.type_text)) |t| return t;
+            if (try self.jsDocQualifiedNameTypeForNode(src, tag.type_text, node)) |t| return t;
         }
         return null;
+    }
+
+    fn jsDocQualifiedNameTypeForNode(self: *Checker, src: []const u8, type_text: []const u8, at_node: NodeId) CheckError!?TypeId {
+        const trimmed = jsDocTrimOuterParens(std.mem.trim(u8, type_text, " \t\r\n"));
+        if (trimmed.len == 0) return null;
+        var dot_count: usize = 0;
+        var dot_pos: usize = 0;
+        for (trimmed, 0..) |c, i| {
+            if (c == '.') {
+                dot_count += 1;
+                dot_pos = i;
+                continue;
+            }
+            if (!isJsDocIdentChar(c)) return null;
+        }
+        if (dot_count != 1 or dot_pos == 0 or dot_pos + 1 >= trimmed.len) return null;
+        const root_text = trimmed[0..dot_pos];
+        const leaf_text = trimmed[dot_pos + 1 ..];
+        const root_name = self.string_interner.intern(root_text) catch return error.OutOfMemory;
+        const leaf_name = self.string_interner.intern(leaf_text) catch return error.OutOfMemory;
+        const root_t = (try self.typeOfVisibleNameNoDiag(at_node, root_name)) orelse return null;
+        if (try self.lookupObjectMember(root_t, leaf_name)) |member_t| return member_t;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Namespace '{s}' has no exported member '{s}'.",
+            .{ root_text, leaf_text },
+        );
+        const base_pos = self.sliceStartPos(src, trimmed);
+        const leaf_pos = if (base_pos) |base| base + @as(u32, @intCast(dot_pos + 1)) else null;
+        for (self.diagnostics.items) |d| {
+            if (d.code == TsCodes.namespace_no_exported_member and d.pos == leaf_pos) return types.Primitive.unknown;
+        }
+        try self.diagnostics.append(self.gpa, .{
+            .node = at_node,
+            .pos = leaf_pos,
+            .code = TsCodes.namespace_no_exported_member,
+            .message = msg,
+        });
+        return types.Primitive.unknown;
     }
 
     fn jsDocTypeTextToType(self: *Checker, src: []const u8, type_text: []const u8) CheckError!?TypeId {
@@ -68426,6 +68467,30 @@ test "checker: checkjs JSDoc Object string map exposes string indexer" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
+}
+
+test "checker: checkjs JSDoc qualified value namespace miss reports TS2694" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @noImplicitAny: true
+        \\var ns = (function() {})();
+        \\/** @type {ns.NotFound} */
+        \\var crash;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.namespace_no_exported_member and
+            std.mem.indexOf(u8, d.message, "Namespace 'ns' has no exported member 'NotFound'.") != null)
+        {
+            found = true;
+            if (d.pos) |pos| try T.expectEqual(@as(u8, 'N'), s.checker.source.?[pos]);
+        }
+        try T.expect(d.code != TsCodes.variable_implicitly_any_declaration);
+    }
+    try T.expect(found);
 }
 
 test "checker: checkjs JSDoc callback @this suppresses implicit this" {
