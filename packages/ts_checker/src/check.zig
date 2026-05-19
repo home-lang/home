@@ -19698,36 +19698,118 @@ pub const Checker = struct {
     }
 
     /// True when `iface_decl` and the previously-registered
-    /// interface_decl for `name` share the same lexical scope
-    /// (their nearest enclosing namespace_decl / module_decl /
-    /// root-block ancestor is the same node).
+    /// interface_decl for `name` share the same lexical scope. Two
+    /// interfaces share a scope when their enclosing
+    /// namespace-name-path matches (root-level: empty path; nested:
+    /// the dotted list of enclosing namespaces). Two SEPARATE
+    /// `namespace M2 { ... }` blocks at the same parent compare
+    /// equal because their interfaces are expected to merge across
+    /// the namespace's own re-opening (`mergeTwoInterfaces2`).
     fn interfaceDeclScopesMatchExistingType(self: *Checker, iface_decl: NodeId, name: hir_mod.StringId) bool {
         const previous = self.last_iface_decl_for_name.get(name) orelse return false;
-        return self.nearestDeclarationScope(iface_decl) == self.nearestDeclarationScope(previous);
+        var a_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer a_path.deinit(self.gpa);
+        var b_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer b_path.deinit(self.gpa);
+        self.collectEnclosingNamespacePathNoFail(iface_decl, &a_path);
+        self.collectEnclosingNamespacePathNoFail(previous, &b_path);
+        if (a_path.items.len != b_path.items.len) return false;
+        for (a_path.items, b_path.items) |a, b| {
+            if (a != b) return false;
+        }
+        return true;
     }
 
-    /// Walk the body of `iface_decl`'s nearest declaration scope
-    /// (namespace_decl / module_decl, or the root block) and re-tag
-    /// every interface_decl whose name matches `name` with the merged
-    /// type. Runs before the current decl's own `setType`, so the
-    /// caller still needs to update `iface_decl` itself afterward.
+    fn collectEnclosingNamespacePathNoFail(
+        self: *Checker,
+        node: NodeId,
+        path: *std.ArrayListUnmanaged(hir_mod.StringId),
+    ) void {
+        var stack: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer stack.deinit(self.gpa);
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            switch (self.hir.kindOf(cur)) {
+                .namespace_decl, .module_decl => stack.append(self.gpa, cur) catch return,
+                else => {},
+            }
+        }
+        var i = stack.items.len;
+        while (i > 0) {
+            i -= 1;
+            const ns_node = stack.items[i];
+            const ns = hir_mod.namespaceOf(self.hir, ns_node);
+            if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) continue;
+            const name_str = self.string_interner.get(hir_mod.identifierOf(self.hir, ns.name).name);
+            var it = std.mem.splitScalar(u8, name_str, '.');
+            while (it.next()) |segment| {
+                const seg_id = self.string_interner.intern(segment) catch return;
+                path.append(self.gpa, seg_id) catch return;
+            }
+        }
+    }
+
+    /// Walk the body of `iface_decl`'s nearest declaration scope and
+    /// every sibling namespace with the same enclosing path,
+    /// re-tagging every interface_decl whose name matches `name` with
+    /// the merged type. Runs before the current decl's own `setType`,
+    /// so the caller still needs to update `iface_decl` itself
+    /// afterward. The cross-namespace walk handles re-opened
+    /// `namespace M2 { ... }` blocks where interfaces declared in
+    /// different bodies still merge into one (`mergeTwoInterfaces2`).
     fn backPatchSameScopeInterfaces(self: *Checker, iface_decl: NodeId, name: hir_mod.StringId, merged_t: TypeId) void {
-        const scope = self.nearestDeclarationScope(iface_decl);
-        if (scope == hir_mod.none_node_id) return;
-        const body = switch (self.hir.kindOf(scope)) {
-            .namespace_decl, .module_decl => hir_mod.namespaceBody(self.hir, scope),
-            .block_stmt => hir_mod.blockStmts(self.hir, scope),
-            else => return,
-        };
-        for (body) |raw| {
+        var target_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer target_path.deinit(self.gpa);
+        self.collectEnclosingNamespacePathNoFail(iface_decl, &target_path);
+        const root = self.rootBlockFor(iface_decl);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
+        self.backPatchInterfacesInStmts(
+            hir_mod.blockStmts(self.hir, root),
+            target_path.items,
+            0,
+            iface_decl,
+            name,
+            merged_t,
+        );
+    }
+
+    fn backPatchInterfacesInStmts(
+        self: *Checker,
+        stmts: []const NodeId,
+        target_path: []const hir_mod.StringId,
+        depth: usize,
+        skip_decl: NodeId,
+        name: hir_mod.StringId,
+        merged_t: TypeId,
+    ) void {
+        for (stmts) |raw| {
             const inner = self.unwrapExportDecl(raw);
-            if (inner == hir_mod.none_node_id or self.hir.kindOf(inner) != .interface_decl) continue;
-            if (inner == iface_decl) continue;
-            const it = hir_mod.interfaceOf(self.hir, inner);
-            if (it.name == hir_mod.none_node_id or self.hir.kindOf(it.name) != .identifier) continue;
-            if (hir_mod.identifierOf(self.hir, it.name).name != name) continue;
-            self.hir.setType(inner, merged_t);
-            self.hir.setType(it.name, merged_t);
+            if (inner == hir_mod.none_node_id) continue;
+            const k = self.hir.kindOf(inner);
+            if (k == .interface_decl) {
+                if (depth != target_path.len) continue;
+                if (inner == skip_decl) continue;
+                const it = hir_mod.interfaceOf(self.hir, inner);
+                if (it.name == hir_mod.none_node_id or self.hir.kindOf(it.name) != .identifier) continue;
+                if (hir_mod.identifierOf(self.hir, it.name).name != name) continue;
+                self.hir.setType(inner, merged_t);
+                self.hir.setType(it.name, merged_t);
+                continue;
+            }
+            if (k == .namespace_decl or k == .module_decl) {
+                const ns = hir_mod.namespaceOf(self.hir, inner);
+                if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) continue;
+                const ns_name_str = self.string_interner.get(hir_mod.identifierOf(self.hir, ns.name).name);
+                const consumed = self.namespaceNameConsumesPath(ns_name_str, target_path[depth..]) orelse continue;
+                self.backPatchInterfacesInStmts(
+                    hir_mod.namespaceBody(self.hir, inner),
+                    target_path,
+                    depth + consumed,
+                    skip_decl,
+                    name,
+                    merged_t,
+                );
+            }
         }
     }
 
