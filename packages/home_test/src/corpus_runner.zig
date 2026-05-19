@@ -84,7 +84,6 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/07736.test.ts",
     "js/node/buffer-inspectmaxbytes.test.ts",
     "js/web/workers/message-event.test.ts",
-    "js/bun/jsc/native-constructor-identity.test.ts",
     "js/bun/test/bun-test.test.ts",
     "regression/issue/16007.test.ts",
 };
@@ -569,12 +568,6 @@ const harness_prelude =
     \\  };
     \\}
     \\globalThis.__home_modules["node-fetch"] = { Request };
-    \\if (typeof Blob !== "function") {
-    \\  var Blob = function(parts, options) {
-    \\    this.parts = parts || [];
-    \\    this.type = options && options.type ? String(options.type) : "";
-    \\  };
-    \\}
     \\if (typeof Buffer !== "function") {
     \\  var Buffer = function(size) {
     \\    const bytes = new Uint8Array(size);
@@ -1328,9 +1321,8 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/07736.test.ts", filesForSubset(.minimal_js)[30]);
     try std.testing.expectEqualStrings("js/node/buffer-inspectmaxbytes.test.ts", filesForSubset(.minimal_js)[31]);
     try std.testing.expectEqualStrings("js/web/workers/message-event.test.ts", filesForSubset(.minimal_js)[32]);
-    try std.testing.expectEqualStrings("js/bun/jsc/native-constructor-identity.test.ts", filesForSubset(.minimal_js)[33]);
-    try std.testing.expectEqualStrings("js/bun/test/bun-test.test.ts", filesForSubset(.minimal_js)[34]);
-    try std.testing.expectEqualStrings("regression/issue/16007.test.ts", filesForSubset(.minimal_js)[35]);
+    try std.testing.expectEqualStrings("js/bun/test/bun-test.test.ts", filesForSubset(.minimal_js)[33]);
+    try std.testing.expectEqualStrings("regression/issue/16007.test.ts", filesForSubset(.minimal_js)[34]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -1382,7 +1374,6 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Error.prepareStackTrace") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var MessageEvent = function(type, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var MessageChannel = function()") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var Blob = function(parts, options)") != null);
 }
 
 test "Bun test import rewrite lowers to the virtual test module" {
