@@ -26141,7 +26141,15 @@ pub const Checker = struct {
             // upstream baselines for `iterableArrayPattern22/23` and the
             // `destructuringArrayBindingPatternAndAssignment*` family use
             // the structural form for object-literal sources.
+            const is_union_src = source_t < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(source_t).is_union;
             const name_opt: ?[]const u8 = blk: {
+                // Unions preserve `A | B` prose (`number[] | null`) so
+                // fixtures like `destructuringArrayBindingPatternAndAssignment4`
+                // render the full source type instead of just one member.
+                if (is_union_src) {
+                    if (self.simpleDiagnosticTypeName(source_t) catch null) |n| break :blk n;
+                }
                 if (self.allocSimpleTypeName(source_t) catch null) |n| break :blk n;
                 if (self.allocObjectTypeShape(source_t) catch null) |s| break :blk s;
                 break :blk null;
@@ -43656,6 +43664,15 @@ pub const Checker = struct {
             try self.checkExcessProperties(args[i], param_t);
         }
         if (is_variadic) {
+            // When the call already failed the rest-tuple arity check
+            // (TS2554 emitted because `rest_min_required > 0` and the
+            // user supplied fewer args than the rest tuple's required
+            // length), tsc suppresses the follow-up TS2345 per-arg type
+            // checks against the rest element. Mirrors
+            // `iterableArrayPattern25` where `takeFirstTwoEntries(map)`
+            // emits only TS2554 and not a TS2345 against
+            // `[[any, any], [any, any]]`.
+            if (too_few and rest_min_required > 0 and !suppress_too_few_for_array_spread) return;
             // Trailing args bind to the rest slot. The rest's declared
             // type is an array (`number[]`); each individual call-site
             // arg is checked against the array's element type, which
