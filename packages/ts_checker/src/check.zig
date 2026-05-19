@@ -37401,6 +37401,21 @@ pub const Checker = struct {
                     return;
                 }
             }
+            // `x instanceof Function` and `x instanceof Object` are
+            // structurally too loose to refine `any` — every callable
+            // / object value matches, and tsc deliberately leaves
+            // `any` as `any` so subsequent `.prop` / `()` accesses
+            // stay tolerated. Mirrors `narrowFromAnyWithInstanceof.ts`
+            // where the `Function` / `Object` branches keep `x.prop`
+            // and `x(args)` legal.
+            if (self.typeIsAnyLike(current) and self.hir.kindOf(b.rhs) == .identifier) {
+                const rhs_id = hir_mod.identifierOf(self.hir, b.rhs);
+                const rhs_name = self.string_interner.get(rhs_id.name);
+                if (std.mem.eql(u8, rhs_name, "Function") or std.mem.eql(u8, rhs_name, "Object")) {
+                    try self.recordNarrow(id.name, current);
+                    return;
+                }
+            }
             if (when_true) {
                 const narrowed = self.narrowTypeByPredicate(current, target) catch target;
                 try self.recordNarrow(id.name, narrowed);
