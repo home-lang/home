@@ -65,6 +65,11 @@ test {
     // smoke driver compiles and runs the inline signature-shape tests.
     _ = @import("jsc/call.zig");
     _ = @import("jsc/callback.zig");
+    // Phase 12.2 M3-real (2026-05-19) — first live JSC C++ smoke.
+    // Tests gate on @import("build_options").enable_jsc and skip
+    // when off. When -Denable_jsc=true is set, they call into
+    // JavaScriptCore.framework directly and assert round-trips work.
+    _ = @import("jsc/_m3_real_smoke.zig");
     // Wave-18 Tier-0 grinder (2026-05-18) — sql wire-protocol leaves.
     _ = @import("sql/shared/Data.zig");
     _ = @import("sql/mysql/protocol/NewReader.zig");
@@ -131,4 +136,8 @@ test {
     _ = @import("sql/mysql/protocol/ColumnDefinition41.zig");
     _ = @import("sql/mysql/MySQLRequest.zig");
     _ = @import("sql/postgres/protocol/Authentication.zig");
+    // Wave-25 grinder (2026-05-19) — pure descriptor leaf used by the
+    // upstream `Query.zig` / `PreparedStatement.zig` writers. Drops in
+    // over `FieldType` + `ColumnDefinition41.ColumnFlags` (both wave-23).
+    _ = @import("sql/mysql/MySQLParam.zig");
 }
