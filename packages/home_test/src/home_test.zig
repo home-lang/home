@@ -130,6 +130,9 @@ pub const corpus = @import("corpus.zig");
 pub const corpus_runner = @import("corpus_runner.zig");
 pub const result = @import("result.zig");
 pub const runner = @import("runner.zig");
+pub const adapters = struct {
+    pub const jsc_bootstrap = @import("adapters/jsc_bootstrap.zig");
+};
 
 /// Stub. Once the `compat` shim is in place, this module will
 /// re-export `bun_test`, `jest`, `expect`, and the rest of the surface
@@ -158,4 +161,8 @@ test "home_test result model is linked" {
 
 test "home_test runner contract is linked" {
     try std.testing.expectEqualStrings("jsc-bootstrap", runner.Adapter.jsc_bootstrap.label());
+}
+
+test "home_test jsc bootstrap adapter is linked" {
+    try std.testing.expect(@hasDecl(adapters.jsc_bootstrap, "Runtime"));
 }

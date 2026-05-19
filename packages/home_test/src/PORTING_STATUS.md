@@ -18,10 +18,11 @@ modules are active and compiled into the `home` executable. `corpus.zig`
 owns discovery and test-file classification for `home test
 packages/runtime/test/bun-corpus/`; `result.zig` owns the native
 file/run result model; `runner.zig` owns the adapter-neutral
-prepared-file and file-run contracts; `corpus_runner.zig` owns the explicit
-`--bun-corpus-native-subset=minimal-js` bootstrap path and now reports
-through that contract. The full runner remains blocked on the native
-`bun:test` port and JSC host-call bridge.
+prepared-file and file-run contracts; `adapters/jsc_bootstrap.zig` owns
+the current JSC bootstrap execution adapter; `corpus_runner.zig` owns the
+explicit `--bun-corpus-native-subset=minimal-js` allowlist, source
+preparation, and summary aggregation. The full runner remains blocked on
+the native `bun:test` port and JSC host-call bridge.
 
 The bootstrap harness is intentionally narrow but now installs once per
 JSC engine, resets counters before each allowlisted file, and reports a

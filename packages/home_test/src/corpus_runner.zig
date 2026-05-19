@@ -6,7 +6,7 @@
 
 const std = @import("std");
 const build_options = @import("build_options");
-const home_rt = @import("home_rt");
+const jsc_bootstrap = @import("adapters/jsc_bootstrap.zig");
 const runner = @import("runner.zig");
 const test_result = @import("result.zig");
 
@@ -47,110 +47,6 @@ pub const Summary = struct {
         self.passed += file.passed;
         self.failed += file.failed + file.unsupported;
         self.todo += file.todo;
-    }
-};
-
-const CorpusRuntime = struct {
-    engine: home_rt.jsc.engine.Engine,
-
-    pub fn init(allocator: std.mem.Allocator) !CorpusRuntime {
-        var self = CorpusRuntime{
-            .engine = try home_rt.jsc.engine.Engine.init(allocator),
-        };
-        errdefer self.deinit();
-
-        try self.installHarness(allocator);
-        return self;
-    }
-
-    pub fn deinit(self: *CorpusRuntime) void {
-        self.engine.deinit();
-    }
-
-    fn installHarness(self: *CorpusRuntime, allocator: std.mem.Allocator) !void {
-        const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(
-            allocator,
-            self.engine.currentContext(),
-            harness_prelude,
-            "home:corpus-harness",
-            1,
-        );
-        defer evaluation.deinit(allocator);
-
-        if (evaluation.exception != null or evaluation.value == null) {
-            return error.CorpusHarnessInstallFailed;
-        }
-    }
-
-    fn resetFileState(self: *CorpusRuntime, allocator: std.mem.Allocator) !void {
-        const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(
-            allocator,
-            self.engine.currentContext(),
-            "globalThis.__home_reset_tests();",
-            "home:corpus-reset",
-            1,
-        );
-        defer evaluation.deinit(allocator);
-
-        if (evaluation.exception != null or evaluation.value == null) {
-            return error.CorpusHarnessResetFailed;
-        }
-    }
-
-    fn readCounters(self: *CorpusRuntime, allocator: std.mem.Allocator) !Counters {
-        return .{
-            .passed = try readCounter(allocator, &self.engine, "__home_bun_tests.passed"),
-            .failed = try readCounter(allocator, &self.engine, "__home_bun_tests.failed"),
-            .todo = try readCounter(allocator, &self.engine, "__home_bun_tests.todo"),
-        };
-    }
-
-    fn runFile(self: *CorpusRuntime, allocator: std.mem.Allocator, spec: runner.FileSpec) !runner.FileRun {
-        self.resetFileState(allocator) catch |err| {
-            return runner.FileRun.failBorrowed(spec.path, @errorName(err));
-        };
-
-        const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(
-            allocator,
-            self.engine.currentContext(),
-            spec.source,
-            spec.path,
-            1,
-        );
-        defer evaluation.deinit(allocator);
-
-        if (evaluation.exception != null or evaluation.value == null) {
-            return runner.FileRun.failOwned(allocator, spec.path, evaluation.exception_message);
-        }
-
-        const finish_evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(
-            allocator,
-            self.engine.currentContext(),
-            "globalThis.__home_finish_tests();",
-            "home:corpus-finish",
-            1,
-        );
-        defer finish_evaluation.deinit(allocator);
-
-        if (finish_evaluation.exception != null or finish_evaluation.value == null) {
-            return runner.FileRun.failOwned(allocator, spec.path, finish_evaluation.exception_message);
-        }
-
-        const counters = self.readCounters(allocator) catch |err| {
-            return runner.FileRun.failBorrowed(spec.path, @errorName(err));
-        };
-        if (counters.passed + counters.failed + counters.todo == 0) {
-            return runner.FileRun.unsupportedBorrowed(spec.path, "no bun:test tests registered by corpus file");
-        }
-
-        return .{
-            .result = .{
-                .path = spec.path,
-                .passed = counters.passed,
-                .failed = counters.failed,
-                .todo = counters.todo,
-            },
-        };
     }
 };
 
@@ -1320,7 +1216,7 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
         };
     }
 
-    var runtime = try CorpusRuntime.init(allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(allocator, harness_prelude);
     defer runtime.deinit();
 
     var summary = Summary{};
@@ -1353,29 +1249,6 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
     }
 
     return summary;
-}
-
-const Counters = struct {
-    passed: usize,
-    failed: usize,
-    todo: usize,
-};
-
-fn readCounter(allocator: std.mem.Allocator, engine: *home_rt.jsc.engine.Engine, expr: []const u8) !usize {
-    const value = (try home_rt.jsc.evaluate.evaluateUtf8(
-        allocator,
-        engine.currentContext(),
-        expr,
-        "home:corpus-counter",
-        1,
-        null,
-    )) orelse return error.CounterEvaluateFailed;
-
-    const number = home_rt.jsc.extern_fns.JSValueToNumber(engine.currentContext(), value, null);
-    if (!std.math.isFinite(number) or number < 0 or @floor(number) != number) {
-        return error.InvalidCorpusCounter;
-    }
-    return @intFromFloat(number);
 }
 
 fn recordFailure(
@@ -1607,7 +1480,7 @@ test "bootstrap runner reports zero registered tests as unsupported" {
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/empty-describe.test.js");
     defer prepared.deinit(std.testing.allocator);
 
-    var runtime = try CorpusRuntime.init(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
 
     var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
@@ -1626,7 +1499,7 @@ test "bootstrap runner keeps todo-only files as todo" {
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "snippets/pending.test.js");
     defer prepared.deinit(std.testing.allocator);
 
-    var runtime = try CorpusRuntime.init(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
 
     var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
@@ -1650,7 +1523,7 @@ test "bootstrap toMatchObject rejects missing keys and array length mismatches" 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/to-match-object-fidelity.test.js");
     defer prepared.deinit(std.testing.allocator);
 
-    var runtime = try CorpusRuntime.init(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
 
     var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
