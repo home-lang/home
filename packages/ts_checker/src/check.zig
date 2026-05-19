@@ -19712,9 +19712,19 @@ pub const Checker = struct {
                 if (ext_index >= other_index) continue;
                 const other_t = self.lowererLowerWithTypeParams(other_ext_node) catch continue;
                 if (!self.interner.pool.flagsOf(other_t).is_object_type) continue;
-                for (self.interner.objectMembers(parent_t)) |pm| {
+                // Snapshot both member slices (HIGH-RISK dangling-slice fix per
+                // DANGLING_SLICE_AUDIT_2026-05-19.md): heritageAssignable() below
+                // can recursively intern types and grow object_member_pool,
+                // invalidating the borrowed slices' base pointers mid-loop.
+                var parent_members_buf = std.ArrayListUnmanaged(types.ObjectMember){};
+                defer parent_members_buf.deinit(self.gpa);
+                try parent_members_buf.appendSlice(self.gpa, self.interner.objectMembers(parent_t));
+                var other_members_buf = std.ArrayListUnmanaged(types.ObjectMember){};
+                defer other_members_buf.deinit(self.gpa);
+                try other_members_buf.appendSlice(self.gpa, self.interner.objectMembers(other_t));
+                for (parent_members_buf.items) |pm| {
                     if (!self.isSymbolNamedMember(pm.name)) continue;
-                    for (self.interner.objectMembers(other_t)) |om| {
+                    for (other_members_buf.items) |om| {
                         if (om.name != pm.name) continue;
                         const pm_flags = self.interner.pool.flagsOf(pm.type);
                         const om_flags = self.interner.pool.flagsOf(om.type);
@@ -19988,7 +19998,14 @@ pub const Checker = struct {
         const sf = self.interner.pool.flagsOf(source);
         const tf = self.interner.pool.flagsOf(target);
         if (!sf.is_object_type or !tf.is_object_type) return true;
-        for (self.interner.objectMembers(target)) |tm| {
+        // Snapshot target members before the inner `heritageAssignable()` /
+        // recursive `presentObjectMembersAssignable()` calls can grow
+        // object_member_pool and invalidate the borrowed slice (HIGH-RISK
+        // dangling-slice fix per DANGLING_SLICE_AUDIT_2026-05-19.md).
+        var target_members_buf = std.ArrayListUnmanaged(types.ObjectMember){};
+        defer target_members_buf.deinit(self.gpa);
+        try target_members_buf.appendSlice(self.gpa, self.interner.objectMembers(target));
+        for (target_members_buf.items) |tm| {
             const sm_t = self.interner.objectMember(source, tm.name) orelse {
                 if (tm.is_optional) continue;
                 return false;
@@ -28363,7 +28380,13 @@ pub const Checker = struct {
         for (members, 0..) |a, ai| {
             if (a >= self.interner.pool.typeCount()) continue;
             if (!self.interner.pool.flagsOf(a).is_object_type) continue;
-            for (self.interner.objectMembers(a)) |a_member| {
+            // Snapshot a's members before the inner `heritageAssignable()`
+            // calls can grow object_member_pool and invalidate the borrowed
+            // slice (HIGH-RISK dangling-slice fix per
+            // DANGLING_SLICE_AUDIT_2026-05-19.md).
+            const a_members = self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(a)) catch return false;
+            defer self.gpa.free(a_members);
+            for (a_members) |a_member| {
                 for (members[ai + 1 ..]) |b| {
                     if (b >= self.interner.pool.typeCount()) continue;
                     if (!self.interner.pool.flagsOf(b).is_object_type) continue;
