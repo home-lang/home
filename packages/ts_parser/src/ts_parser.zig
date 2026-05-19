@@ -1630,13 +1630,27 @@ pub const Parser = struct {
         for (raw[1..]) |ch| {
             if (ch == '8' or ch == '9' or ch == '.' or ch == 'e' or ch == 'E') return;
         }
+        // Strip leading zeros from the octal-digit run when rendering
+        // the `0o{digits}` suggestion — tsc renders `001` as `0o1`,
+        // not `0o01`. Mirrors fixture `literals.ts(19,9)` / `(24,9)`.
+        const digits = stripLeadingOctalZeros(raw[1..]);
         if (self.precedingUnaryMinusForNumeric()) |minus| {
-            const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Octal literals are not allowed. Use the syntax '-0o{s}'.", .{raw[1..]});
+            const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Octal literals are not allowed. Use the syntax '-0o{s}'.", .{digits});
             try self.reportCodeAt(minus.span.start, minus.line, 1121, msg);
         } else {
-            const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Octal literals are not allowed. Use the syntax '0o{s}'.", .{raw[1..]});
+            const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Octal literals are not allowed. Use the syntax '0o{s}'.", .{digits});
             try self.reportCodeAt(tok.span.start, tok.line, 1121, msg);
         }
+    }
+
+    /// Strip leading `0`s from a legacy-octal digit run for use in the
+    /// `0o<digits>` TS1121 suggestion. `0` itself becomes `0` (we keep a
+    /// single trailing zero so the message never reads `0o`). Mirrors
+    /// upstream tsc's renderer which prints the minimal digits.
+    fn stripLeadingOctalZeros(s: []const u8) []const u8 {
+        var i: usize = 0;
+        while (i + 1 < s.len and s[i] == '0') : (i += 1) {}
+        return s[i..];
     }
 
     /// Returns the unary `-` token immediately preceding the current
@@ -1705,16 +1719,17 @@ pub const Parser = struct {
                     // emit TS1121 on the octal-prefix slice, TS1005 at
                     // the `.`/`e`. This matches tsc's split tokenization.
                     const split_at = if (dot_pos) |dp| dp else exp_pos.?;
-                    const octal_part = raw[1..split_at];
+                    const octal_part = stripLeadingOctalZeros(raw[1..split_at]);
                     const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Octal literals are not allowed. Use the syntax '0o{s}'.", .{octal_part});
                     try self.reportCodeAt(tok.span.start, tok.line, 1121, msg);
                     try self.reportCodeAt(tok.span.start + @as(u32, @intCast(split_at)), tok.line, 1005, "';' expected.");
                 } else if (!self.strict_mode) {
+                    const digits = stripLeadingOctalZeros(raw[1..]);
                     if (self.precedingUnaryMinusForNumeric()) |minus| {
-                        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Octal literals are not allowed. Use the syntax '-0o{s}'.", .{raw[1..]});
+                        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Octal literals are not allowed. Use the syntax '-0o{s}'.", .{digits});
                         try self.reportCodeAt(minus.span.start, minus.line, 1121, msg);
                     } else {
-                        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Octal literals are not allowed. Use the syntax '0o{s}'.", .{raw[1..]});
+                        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Octal literals are not allowed. Use the syntax '0o{s}'.", .{digits});
                         try self.reportCodeAt(tok.span.start, tok.line, 1121, msg);
                     }
                 }

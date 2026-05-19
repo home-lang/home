@@ -1132,6 +1132,13 @@ fn sourceExplicitlyDisablesCheckJs(source: []const u8) bool {
 fn checkerDiagnosticSurfacesInUncheckedJs(code: u32, source: []const u8) bool {
     if (code == ts_checker.check.TsCodes.private_name_not_declared) return true;
     if (code == ts_checker.check.TsCodes.await_only_in_async) return true;
+    // TS8037 — "Type satisfaction expressions can only be used in
+    // TypeScript files." ALWAYS surfaces in JS files (with or without
+    // `--checkJs`) because it flags TS syntax that isn't valid
+    // JavaScript at all, independent of type checking. Mirrors tsc
+    // which emits this unconditionally for JS sources. Fires for
+    // `typeSatisfaction_js`.
+    if (code == ts_checker.check.TsCodes.ts_only_satisfies_in_js) return true;
     // TS2451 — cross-declaration block-scoped duplicates fire as
     // binder/grammar errors in tsc even under `--allowJs` without
     // `--checkJs`. Suppressed only when the fixture explicitly opts
