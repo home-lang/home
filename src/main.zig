@@ -2895,20 +2895,46 @@ fn isBunCorpusPath(path: []const u8) bool {
         std.mem.endsWith(u8, normalized, "/packages/runtime/test/bun-corpus");
 }
 
+fn isBunCorpusSubsetFlag(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--bun-corpus-native-subset") or
+        std.mem.eql(u8, arg, "--bun-corpus-subset");
+}
+
 fn argTargetsBunCorpus(args: []const [:0]const u8) ?[]const u8 {
+    var skip_next = false;
     for (args) |arg| {
+        if (skip_next) {
+            skip_next = false;
+            continue;
+        }
+        if (isBunCorpusSubsetFlag(arg)) {
+            skip_next = true;
+            continue;
+        }
         if (arg.len == 0 or arg[0] == '-') continue;
         if (isBunCorpusPath(arg)) return arg;
     }
     return null;
 }
 
-fn argBunCorpusSubset(args: []const [:0]const u8) ?home_test.corpus_runner.Subset {
+const BunCorpusSubsetArg = union(enum) {
+    none,
+    ok: home_test.corpus_runner.Subset,
+    missing_value: []const u8,
+    unknown_value: []const u8,
+};
+
+fn argBunCorpusSubset(args: []const [:0]const u8) BunCorpusSubsetArg {
     for (args, 0..) |arg, i| {
-        if ((std.mem.eql(u8, arg, "--bun-corpus-native-subset") or
-            std.mem.eql(u8, arg, "--bun-corpus-subset")) and i + 1 < args.len)
-        {
-            return home_test.corpus_runner.parseSubsetFlagValue(args[i + 1]);
+        if (isBunCorpusSubsetFlag(arg)) {
+            if (i + 1 >= args.len or args[i + 1].len == 0 or args[i + 1][0] == '-') {
+                return .{ .missing_value = arg };
+            }
+            const value = args[i + 1];
+            if (home_test.corpus_runner.parseSubsetFlagValue(value)) |subset| {
+                return .{ .ok = subset };
+            }
+            return .{ .unknown_value = value };
         }
         const prefixes = [_][]const u8{
             "--bun-corpus-native-subset=",
@@ -2916,11 +2942,52 @@ fn argBunCorpusSubset(args: []const [:0]const u8) ?home_test.corpus_runner.Subse
         };
         for (prefixes) |prefix| {
             if (std.mem.startsWith(u8, arg, prefix)) {
-                return home_test.corpus_runner.parseSubsetFlagValue(arg[prefix.len..]);
+                const value = arg[prefix.len..];
+                if (value.len == 0) return .{ .missing_value = arg };
+                if (home_test.corpus_runner.parseSubsetFlagValue(value)) |subset| {
+                    return .{ .ok = subset };
+                }
+                return .{ .unknown_value = value };
             }
         }
     }
-    return null;
+    return .none;
+}
+
+fn failBunCorpusSubsetArg(reason: []const u8, value: []const u8) noreturn {
+    std.debug.print("\n{s}Bun Corpus Native Subset: INVALID{s}\n", .{ Color.Red.code(), Color.Reset.code() });
+    std.debug.print("{s}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
+    std.debug.print("reason: {s}\n", .{reason});
+    if (value.len != 0) std.debug.print("value: {s}\n", .{value});
+    std.debug.print("supported subsets: minimal-js\n\n", .{});
+    std.process.exit(1);
+}
+
+test "bun corpus target parser skips subset flag values" {
+    const args = [_][:0]const u8{ "--bun-corpus-native-subset", "packages/runtime/test/bun-corpus" };
+    try std.testing.expect(argTargetsBunCorpus(&args) == null);
+}
+
+test "bun corpus subset parser reports missing and unknown values" {
+    const missing = [_][:0]const u8{"--bun-corpus-native-subset"};
+    switch (argBunCorpusSubset(&missing)) {
+        .missing_value => |flag| try std.testing.expectEqualStrings("--bun-corpus-native-subset", flag),
+        else => return error.ExpectedMissingSubsetValue,
+    }
+
+    const unknown = [_][:0]const u8{"--bun-corpus-native-subset=all"};
+    switch (argBunCorpusSubset(&unknown)) {
+        .unknown_value => |value| try std.testing.expectEqualStrings("all", value),
+        else => return error.ExpectedUnknownSubsetValue,
+    }
+}
+
+test "bun corpus subset parser accepts minimal js" {
+    const args = [_][:0]const u8{ "packages/runtime/test/bun-corpus", "--bun-corpus-native-subset=minimal-js" };
+    switch (argBunCorpusSubset(&args)) {
+        .ok => |subset| try std.testing.expectEqual(home_test.corpus_runner.Subset.minimal_js, subset),
+        else => return error.ExpectedSubset,
+    }
 }
 
 fn runBunCorpusNativeSubset(allocator: std.mem.Allocator, corpus_path: []const u8, subset: home_test.corpus_runner.Subset) !void {
@@ -2994,11 +3061,19 @@ fn runBunCorpusNativeGate(allocator: std.mem.Allocator, corpus_path: []const u8)
 }
 
 fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
+    const bun_corpus_subset_arg = argBunCorpusSubset(args);
     if (argTargetsBunCorpus(args)) |corpus_path| {
-        if (argBunCorpusSubset(args)) |subset| {
-            return runBunCorpusNativeSubset(allocator, corpus_path, subset);
+        switch (bun_corpus_subset_arg) {
+            .none => return runBunCorpusNativeGate(allocator, corpus_path),
+            .ok => |subset| return runBunCorpusNativeSubset(allocator, corpus_path, subset),
+            .missing_value => |flag| failBunCorpusSubsetArg("missing-subset-value", flag),
+            .unknown_value => |value| failBunCorpusSubsetArg("unknown-subset", value),
         }
-        return runBunCorpusNativeGate(allocator, corpus_path);
+    } else switch (bun_corpus_subset_arg) {
+        .none => {},
+        .ok => |subset| failBunCorpusSubsetArg("subset-requires-bun-corpus-path", subset.label()),
+        .missing_value => |flag| failBunCorpusSubsetArg("missing-subset-value", flag),
+        .unknown_value => |value| failBunCorpusSubsetArg("unknown-subset", value),
     }
 
     // Phase 12 routing: if the cwd looks like a JS/TS project, delegate
