@@ -15,6 +15,10 @@ pub const isMac = switch (builtin.os.tag) {
 pub const isLinux = builtin.os.tag == .linux;
 pub const isPosix = !isWindows;
 pub const isWasi = builtin.os.tag == .wasi;
+pub const isWasm = switch (builtin.cpu.arch) {
+    .wasm32, .wasm64 => true,
+    else => false,
+};
 pub const isAndroid = false; // Home does not currently target Android.
 pub const isDebug = builtin.mode == .Debug;
 pub const isRelease = !isDebug;
