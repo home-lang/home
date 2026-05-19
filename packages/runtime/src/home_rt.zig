@@ -986,6 +986,11 @@ pub const sql = struct {
         // packet decoders/encoders that field-store `Data` compile;
         // `toOwned`/`zdeinit`/`create` defer to Phase 12.2.
         pub const Data = @import("sql/shared/Data.zig").Data;
+        // Wave-22 grinder (2026-05-19). JSC distinguishes index-vs-name
+        // property names, so column identifiers parse decimal-only names
+        // into `.index : u32` ahead of time. `.duplicate` flags sibling
+        // collision. Pure data over the wave-18 Data stub.
+        pub const ColumnIdentifier = @import("sql/shared/ColumnIdentifier.zig").ColumnIdentifier;
     };
     pub const mysql = struct {
         pub const SSLMode = @import("sql/mysql/SSLMode.zig").SSLMode;
@@ -1014,6 +1019,26 @@ pub const sql = struct {
             pub const StmtPrepareOKPacket = @import("sql/mysql/protocol/StmtPrepareOKPacket.zig");
             pub const LocalInfileRequest = @import("sql/mysql/protocol/LocalInfileRequest.zig");
             pub const OKPacket = @import("sql/mysql/protocol/OKPacket.zig");
+            // Wave-22 grinder (2026-05-19). MySQL wire-protocol writer
+            // factory + `writeWrap` glue. Stub today (no body for
+            // `start/int1/write/writeLengthEncodedString`) — packet
+            // encoders that field-store `NewWriter(Context)` compile;
+            // the real writer lands once `bun.ByteList` is ported.
+            pub const NewWriter = @import("sql/mysql/protocol/NewWriter.zig").NewWriter;
+            pub const writeWrap = @import("sql/mysql/protocol/NewWriter.zig").writeWrap;
+            // Wave-22 grinder (2026-05-19). Three additional MySQL
+            // wire-protocol leaves from less-mined corners:
+            //   - ResultSetHeader (`field_count`): leading row-set
+            //     marker carrying the upcoming ColumnDefinition41 count.
+            //   - AuthSwitchResponse: client → server reply after a
+            //     server-side auth switch (header 0xfe).
+            //   - ErrorPacket: server → client error response (0xff
+            //     header, optional SQL state, error message). JSC-bridge
+            //     `createMySQLError` + `toJS` re-exports omitted —
+            //     Phase 12.2.
+            pub const ResultSetHeader = @import("sql/mysql/protocol/ResultSetHeader.zig");
+            pub const AuthSwitchResponse = @import("sql/mysql/protocol/AuthSwitchResponse.zig");
+            pub const ErrorPacket = @import("sql/mysql/protocol/ErrorPacket.zig");
         };
     };
     pub const postgres = struct {
@@ -1071,6 +1096,20 @@ pub const sql = struct {
             pub const CommandComplete = @import("sql/postgres/protocol/CommandComplete.zig");
             pub const CopyData = @import("sql/postgres/protocol/CopyData.zig");
             pub const CopyFail = @import("sql/postgres/protocol/CopyFail.zig");
+            // Wave-22 grinder (2026-05-19). Postgres backend
+            // RowDescription ('T') + nested FieldDescription record
+            // (1-per-column) + extended-query ParameterDescription ('t').
+            // All three decode via the wave-16 NewReader stub method
+            // surface; exercising decode() trips a natural compile
+            // error until the real reader lands (Phase 12.2).
+            pub const FieldDescription = @import("sql/postgres/protocol/FieldDescription.zig");
+            pub const RowDescription = @import("sql/postgres/protocol/RowDescription.zig");
+            pub const ParameterDescription = @import("sql/postgres/protocol/ParameterDescription.zig");
+            // Wave-22 grinder (2026-05-19). Postgres startup packet
+            // (`user` / `database` / `client_encoding` + protocol
+            // version 196608). Writer body reaches into the wave-16
+            // NewWriter stub method surface.
+            pub const StartupMessage = @import("sql/postgres/protocol/StartupMessage.zig");
         };
     };
 };

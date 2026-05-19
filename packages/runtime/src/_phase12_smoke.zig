@@ -93,4 +93,25 @@ test {
     _ = @import("sql/postgres/protocol/ArrayList.zig");
     _ = @import("sql/postgres/protocol/StackReader.zig");
     _ = @import("sql/mysql/protocol/AuthSwitchRequest.zig");
+    // Wave-22 grinder (2026-05-19) — sql wire-protocol leaves
+    // recovered from the round-8 attempt (uncommitted orphans) plus
+    // additional ports from less-mined areas. Each carries the
+    // standard `home_rt` rewrite + inline tests; bodies that reach
+    // into wave-16/18 NewReader/NewWriter method stubs trip a normal
+    // Zig "no method named X" compile error if exercised, which is
+    // the trigger to port the real reader/writer.
+    _ = @import("sql/shared/ColumnIdentifier.zig");
+    _ = @import("sql/mysql/protocol/NewWriter.zig");
+    _ = @import("sql/postgres/protocol/FieldDescription.zig");
+    _ = @import("sql/postgres/protocol/ParameterDescription.zig");
+    _ = @import("sql/postgres/protocol/RowDescription.zig");
+    // Wave-22 grinder (2026-05-19) — additional wire-protocol leaves
+    // mined from less-touched bun/src/sql corners. Each is purely
+    // declarative over the wave-18 Data + NewReader/NewWriter stubs;
+    // exercising decode/write trips a compile error pointing back at
+    // the stub method surface.
+    _ = @import("sql/mysql/protocol/ResultSetHeader.zig");
+    _ = @import("sql/mysql/protocol/AuthSwitchResponse.zig");
+    _ = @import("sql/mysql/protocol/ErrorPacket.zig");
+    _ = @import("sql/postgres/protocol/StartupMessage.zig");
 }
