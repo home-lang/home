@@ -1,10 +1,11 @@
 # Home Runtime (`packages/runtime/`)
 
-> **Status (2026-05-20):** **472 / 1,193 Bun source files ported (~39.6%).**
+> **Status (2026-05-20):** **484 / 1,193 Bun source files ported (~40.6%).**
 > Phase 12.2 (JSC bring-up) has reached the M6 milestone — JSON + Promise
-> + Iterator + Global helpers across 95 files. Phase 12.7 round-10
-> dropped seven top-level `node:*` substrate modules (`buffer`,
-> `stream`, `fs`, `events`, `util`, `assert`, `os`). End-to-end
+> + Iterator + Global helpers across 96 files. Phase 12.7 round-14
+> has top-level `node:*` substrate modules for `buffer`, `stream`,
+> `fs`, `events`, `util`, `assert`, `os`, `url`, `querystring`, and
+> `crypto`, `process`, and `string_decoder`. End-to-end
 > `home run app.ts` waits
 > on the JS-callable JSC bridge to wire up. Detailed per-area status:
 > [`docs/PARITY-BUN.md`](../../docs/PARITY-BUN.md) and
@@ -53,23 +54,23 @@ This is the hard release gate for Phase 12. Substrate is in place today; the gat
 ## What's here today
 
 - `src/home_rt.zig` — aggregator that re-exports every ported subsystem.
-- `src/jsc/` — 95 files; Phase 12.2 milestones M1-M6 (Engine stub, exception + coerce + array helpers, call + callback helpers, JSON + Promise + Iterator + Global helpers).
-- `src/node/` — 22 files; Phase 12.7 round-10 (top-level `assert.zig`, `buffer.zig`, `events.zig`, `fs.zig`, `os.zig`, `path.zig`, `stream.zig`, `util.zig`, plus 14 binding files: `Stat`, `StatFS`, `dir_iterator`, `fs_events`, `os_constants`, `nodejs_error_code`, `node_fs_constant`, `node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`, `types`, `time_like`, `util/parse_args_utils`, `assert/myers_diff`).
+- `src/jsc/` — 96 files; Phase 12.2 milestones M1-M6 (Engine stub, exception + coerce + array helpers, call + callback helpers, JSON + Promise + Iterator + Global helpers).
+- `src/node/` — 27 files; Phase 12.7 round-14 (top-level `assert.zig`, `buffer.zig`, `crypto.zig`, `events.zig`, `fs.zig`, `os.zig`, `path.zig`, `process.zig`, `querystring.zig`, `stream.zig`, `string_decoder.zig`, `url.zig`, `util.zig`, plus binding/helper files: `Stat`, `StatFS`, `dir_iterator`, `fs_events`, `os_constants`, `nodejs_error_code`, `node_fs_constant`, `node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`, `types`, `time_like`, `util/parse_args_utils`, `assert/myers_diff`).
 - `src/cli/` — destination for Bun's `src/cli/` command dispatch (Phase 12.10 scaffold landed).
 - `src/install/` — `home <-> pantry` shim. Pantry replaces `bun install` entirely.
-- `src/event_loop/`, `src/io/`, `src/async/`, `src/web/`, `src/http/`, `src/runtime/`, `src/string/`, `src/threading/`, `src/css/`, `src/sql/`, `src/uws_sys/`, … — 59 subsystem directories under `src/`, most populated by wave-19+ grinder rounds (Tier-0 / Tier-1 leaves, no JSC dependency yet).
+- `src/event_loop/`, `src/io/`, `src/async/`, `src/web/`, `src/http/`, `src/runtime/`, `src/string/`, `src/threading/`, `src/css/`, `src/sql/`, `src/uws_sys/`, … — 60 subsystem directories under `src/`, most populated by wave-19+ grinder rounds (Tier-0 / Tier-1 leaves, no JSC dependency yet).
 
 ## What's deferred to follow-up sub-phases
 
 | Sub-phase | Source under `~/Code/bun/src/` | Destination | Status |
 |---|---|---|---|
 | 12.1 | `cli/` | `src/cli/` | 🟡 scaffold landed |
-| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone landed (95 files; JS-callable bridge pending) |
+| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone landed (96 files; JS-callable bridge pending) |
 | 12.3 | `event_loop/`, `io/`, `async/` | `src/event_loop/` | 🟡 substrate landing (~30+ leaves via wave-19+ grinders) |
 | 12.4 | `resolver/`, `module_loader.zig` | `src/module_loader/` | 🔴 blocked on 12.2 |
 | 12.5 | `web/`, `http/`, `csrf/`, `dns/` | `src/web/` | 🔴 blocked on 12.3 |
 | 12.6 | `bun.zig` (Home.* surface) | `src/home/` | 🔴 blocked on 12.2 |
-| 12.7 | `node/` namespace shims | `src/node/` | 🟡 round-10 landed (22 files) |
+| 12.7 | `node/` namespace shims | `src/node/` | 🟡 round-14 landed (27 files) |
 | 12.8 | `test/` runner | `src/test/` | 🔴 blocked on 12.2 |
 | 12.9 | Pantry CLI integration | `src/install/pantry.zig` | 🟡 scaffold in progress |
 | 12.10 | CLI surface | `src/cli/` | 🟡 scaffold landed |

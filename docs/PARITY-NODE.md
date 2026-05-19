@@ -7,10 +7,11 @@ section.
 
 > **Status:** Substrate landing module-by-module. JSC bring-up
 > (Phase 12.2) is at the M6 milestone — JSON + Promise + Iterator
-> + Global helpers across 95 files. Phase 12.7 round-10 dropped
-> six new top-level `node:*` substrate modules (`buffer`, `stream`,
-> `fs`, `events`, `util`, `assert`) alongside the original 15
-> binding files. Total **22 Zig substrate files** ported; no
+> + Global helpers across 96 files. Phase 12.7 round-14 has
+> top-level `node:*` substrate modules (`buffer`, `stream`, `fs`,
+> `events`, `util`, `assert`, `os`, `url`, `querystring`, `crypto`,
+> `process`, `string_decoder`) alongside the binding/helper files.
+> Total **27 Zig substrate files** ported; no
 > `node:*` module is JavaScript-callable yet, but the runway is
 > shortening. Once JSC reaches the JS-callable milestone, each
 > module flips from 🔴 to 🟡 or 🟢 based on Bun's existing port.
@@ -64,7 +65,11 @@ signal numbers, fs constants).
 
 ### [`node:crypto`](https://nodejs.org/api/crypto.html)
 
-🔴 Not implemented.
+🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
+landed: `packages/runtime/src/node/crypto.zig` — CSPRNG,
+`randomBytes`, `randomFillSync`, `randomUUID`, hash/HMAC families
+built on `std.crypto`; OpenSSL/BoringSSL-backed surfaces remain
+stubbed until the native crypto bindings port.
 
 ### [`node:dgram`](https://nodejs.org/api/dgram.html)
 
@@ -145,7 +150,12 @@ path resolution algorithms vendored verbatim from Bun. Will flip
 
 ### [`node:process`](https://nodejs.org/api/process.html)
 
-🔴 Not implemented.
+🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
+landed: `packages/runtime/src/node/process.zig` — host facts and
+mutators for `cwd` / `chdir`, env reads/writes/snapshots, `pid`,
+`ppid`, `platform`, `arch`, `uptime`, `hrtime`, `memoryUsage`, and
+`cpuUsage`. EventEmitter, `nextTick`, native bindings, and JS export
+shape attach with the JS-callable bridge.
 
 ### [`node:punycode`](https://nodejs.org/api/punycode.html)
 
@@ -153,7 +163,11 @@ path resolution algorithms vendored verbatim from Bun. Will flip
 
 ### [`node:querystring`](https://nodejs.org/api/querystring.html)
 
-🔴 Not implemented.
+🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
+landed: `packages/runtime/src/node/querystring.zig` — legacy
+`parse` / `stringify` / `escape` / `unescape` plus `encode` /
+`decode` aliases, preserving duplicate keys as ordered entries until
+the JS object surface attaches.
 
 ### [`node:readline`](https://nodejs.org/api/readline.html)
 
@@ -187,7 +201,12 @@ port of Bun's `node:stream`).
 
 ### [`node:string_decoder`](https://nodejs.org/api/string_decoder.html)
 
-🔴 Not implemented.
+🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
+landed: `packages/runtime/src/node/string_decoder.zig` — allocator
+owned `StringDecoder` state machine for split UTF-8, UTF-16LE/`ucs2`,
+base64/base64url grouping, hex, ascii, latin1, and binary decoding.
+The public `require("string_decoder").StringDecoder` constructor
+attaches once the JS module bridge is live.
 
 ### [`node:test`](https://nodejs.org/api/test.html)
 
@@ -217,7 +236,10 @@ the runner is a port of Bun's test runner, not Node's, but the
 
 ### [`node:url`](https://nodejs.org/api/url.html)
 
-🔴 Not implemented.
+🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
+landed: `packages/runtime/src/node/url.zig` — WHATWG `URL`,
+`URLSearchParams`, legacy `parse` / `format` / `resolve`, and
+file-URL helpers.
 
 ### [`node:util`](https://nodejs.org/api/util.html)
 
@@ -267,19 +289,20 @@ equivalent in JSC.
 | 🔴 Not implemented (JS-callable) | 47 | ~98% |
 | ❌ Won't implement | 1 | ~2% |
 
-**Zig substrate ported:** 22 files. Phase 12.7 round-10 dropped six
-top-level module shims — `buffer.zig`, `stream.zig`, `fs.zig`,
-`events.zig`, `util.zig`, `assert.zig`; a follow-on landing added
-`os.zig`. On top of the 15 binding files already present: `path`,
-`Stat`, `StatFS`, `dir_iterator`, `fs_events`, `os_constants`,
-`nodejs_error_code`, `node_fs_constant`, `node_net_binding`,
-`node_error_binding`, `uv_signal_handle_windows`, `types`,
-`time_like`, `util/parse_args_utils`, `assert/myers_diff`.
+**Zig substrate ported:** 27 files. Phase 12.7 round-14 has top-level
+module shims for `assert.zig`, `buffer.zig`, `crypto.zig`,
+`events.zig`, `fs.zig`, `os.zig`, `path.zig`, `process.zig`,
+`querystring.zig`, `stream.zig`, `string_decoder.zig`, `url.zig`,
+and `util.zig`. On top of the 14 binding/helper files already
+present: `Stat`, `StatFS`, `dir_iterator`, `fs_events`,
+`os_constants`, `nodejs_error_code`, `node_fs_constant`,
+`node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`,
+`types`, `time_like`, `util/parse_args_utils`, `assert/myers_diff`.
 
 JSC bring-up (Phase 12.2) has reached the M6 milestone — JSON +
-Promise + Iterator + Global helpers across 95 files. Once the
+Promise + Iterator + Global helpers across 96 files. Once the
 JS-callable bridge wires up, the substrate-backed modules
-(`assert`, `buffer`, `events`, `fs`, `path`, `stream`, `util`,
-`os`, `net`) flip from 🔴 to 🟡 / 🟢 based on Bun's existing port,
-and the remaining modules grow substrate per their own Phase 12.7
-rounds.
+(`assert`, `buffer`, `crypto`, `events`, `fs`, `net`, `os`, `path`,
+`process`, `querystring`, `stream`, `string_decoder`, `url`, `util`)
+flip from 🔴 to 🟡 / 🟢 based on Bun's existing port, and the
+remaining modules grow substrate per their own Phase 12.7 rounds.
