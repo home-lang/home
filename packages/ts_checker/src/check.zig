@@ -15779,14 +15779,43 @@ pub const Checker = struct {
     }
 
     fn checkReadonlyIndexAssignment(self: *Checker, target: NodeId) CheckError!void {
-        if (self.hir.kindOf(target) != .element_access) return;
-        const e = hir_mod.elementOf(self.hir, target);
-        var obj_t = self.hir.typeOf(e.object);
+        const target_kind = self.hir.kindOf(target);
+        const obj_node: NodeId = blk: {
+            if (target_kind == .element_access) {
+                break :blk hir_mod.elementOf(self.hir, target).object;
+            }
+            if (target_kind == .member_access) {
+                // `C.bar = 2;` — also covered by tsc's TS2542 when the
+                // class has a readonly index signature. The named
+                // member acts as an index key under the string signer.
+                // Mirrors `staticIndexSignature2.ts(7)`.
+                break :blk hir_mod.memberOf(self.hir, target).object;
+            }
+            return;
+        };
+        var obj_t = self.hir.typeOf(obj_node);
         if (obj_t == types.Primitive.none) return;
-        if (!self.typeHasReadonlyIndexSignature(obj_t) and self.hir.kindOf(e.object) == .identifier) {
-            obj_t = self.typeOfIdentifierDeclared(e.object);
+        if (!self.typeHasReadonlyIndexSignature(obj_t) and self.hir.kindOf(obj_node) == .identifier) {
+            obj_t = self.typeOfIdentifierDeclared(obj_node);
         }
         if (!self.typeHasReadonlyIndexSignature(obj_t)) return;
+        // For named member access (`C.bar`), only fire if the class
+        // has no concrete static member of that name — otherwise the
+        // signature doesn't apply and the assignment is fine.
+        if (target_kind == .member_access) {
+            const m = hir_mod.memberOf(self.hir, target);
+            // Probe via static_types map keyed on class names: walk
+            // every entry and skip if any matches obj_t AND has a
+            // direct member with the same name. Cheap because the
+            // map size is bounded by the number of classes seen.
+            var st_it = self.class_static_types.iterator();
+            while (st_it.next()) |entry| {
+                if (entry.value_ptr.* != obj_t) continue;
+                if (self.class_static_member_names.getPtr(entry.key_ptr.*)) |statics| {
+                    if (statics.contains(m.name)) return;
+                }
+            }
+        }
         // tsc renders the message as "Index signature in type 'X' only
         // permits reading." when a type name is available — typically
         // the static side of a class (`typeof C`). Falls back to the
@@ -31413,6 +31442,13 @@ pub const Checker = struct {
                 var readonly_target_fired = false;
                 if (self.hir.kindOf(a.target) == .member_access) {
                     readonly_target_fired = try self.checkReadonlyAssignment(a.target);
+                    // tsc also emits TS2542 for `C.bar = ...` when the
+                    // class has a readonly index signature and no
+                    // concrete static member named `bar`. Mirrors
+                    // `staticIndexSignature2.ts(7,1)`.
+                    if (!readonly_target_fired) {
+                        try self.checkReadonlyIndexAssignment(a.target);
+                    }
                 }
                 if (self.hir.kindOf(a.target) == .element_access) {
                     try self.checkReadonlyIndexAssignment(a.target);
