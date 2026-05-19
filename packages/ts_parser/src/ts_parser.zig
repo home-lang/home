@@ -1550,6 +1550,20 @@ pub const Parser = struct {
                 .kw_let,
                 => {
                     const raw = self.source[tok.span.start..tok.span.end];
+                    // Modules are automatically in strict mode — tsc
+                    // surfaces TS1214 with the trailing "Modules are
+                    // automatically in strict mode." sentence instead of
+                    // the bare TS1212. Mirrors fixtures
+                    // `exportNonInitializedVariables{ES6,UMD,CommonJS,AMD,System}`.
+                    if (self.top_level_external_module_indicator) {
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Identifier expected. '{s}' is a reserved word in strict mode. Modules are automatically in strict mode.",
+                            .{raw},
+                        );
+                        try self.reportCodeAt(tok.span.start, tok.line, 1214, msg);
+                        return;
+                    }
                     const msg = try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
                         "Identifier expected. '{s}' is a reserved word in strict mode.",
@@ -1563,6 +1577,10 @@ pub const Parser = struct {
         }
         if (!self.strict_mode and !self.target_es2015_or_later) return;
         if (!self.tokenTextEquals(tok, "interface")) return;
+        if (self.top_level_external_module_indicator) {
+            try self.reportCodeAt(tok.span.start, tok.line, 1214, "Identifier expected. 'interface' is a reserved word in strict mode. Modules are automatically in strict mode.");
+            return;
+        }
         try self.reportCodeAt(tok.span.start, tok.line, 1212, "Identifier expected. 'interface' is a reserved word in strict mode.");
     }
 
