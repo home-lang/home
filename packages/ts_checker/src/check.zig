@@ -25546,6 +25546,81 @@ pub const Checker = struct {
         return null;
     }
 
+    /// Like `findNamedValueDeclInNamespace` but only returns decls
+    /// wrapped in an `export_decl`. Used at the member-access-on-
+    /// namespace path to distinguish "member is private to the
+    /// namespace" (→ TS2339 `Property '<x>' does not exist on type
+    /// 'typeof <ns>'.`) from "member is visible". Mirrors the
+    /// `ModuleWithExportedAndNonExported*` fixture cluster
+    /// (`A.y`, `A.fn2`, `A.Day`, `Geometry.Lines`).
+    fn findExportedValueDeclInNamespace(
+        self: *Checker,
+        ns_node: NodeId,
+        name: hir_mod.StringId,
+    ) ?NodeId {
+        for (hir_mod.namespaceBody(self.hir, ns_node)) |raw| {
+            if (self.hir.kindOf(raw) != .export_decl) continue;
+            const node = self.unwrapExportDecl(raw);
+            switch (self.hir.kindOf(node)) {
+                .var_decl,
+                .let_decl,
+                .const_decl,
+                .fn_decl,
+                .fn_expr,
+                .class_decl,
+                .class_expr,
+                .enum_decl,
+                => {
+                    const decl_name = self.declarationName(node) orelse continue;
+                    if (decl_name == name) return node;
+                },
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    /// Emit TS2339 `Property '<x>' does not exist on type 'typeof <ns>'.`
+    /// when a `<ns>.<x>` member-access expression names a value member
+    /// that lives inside the namespace but is *not* wrapped in an
+    /// `export` modifier. Returns `true` when the diagnostic fired so
+    /// the caller can short-circuit its lookup. Returns `false`
+    /// (without diagnosing) when no namespace by that name exists or
+    /// when the member is exported / absent — those paths are handled
+    /// by sibling lookups. Mirrors the `ModuleWithExportedAndNonExported*`
+    /// fixture cluster.
+    fn reportNonExportedNamespaceMember(
+        self: *Checker,
+        node: NodeId,
+        ns_name: hir_mod.StringId,
+        member_name: hir_mod.StringId,
+    ) CheckError!bool {
+        const root = self.rootBlockFor(node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const root_stmts = hir_mod.blockStmts(self.hir, root);
+        const one = [_]hir_mod.StringId{ns_name};
+        const ns_node = self.findNamespaceByPath(root_stmts, &one) orelse return false;
+        // A same-name *exported* value decl is handled upstream by
+        // `mergedNamespaceValueMemberType`; only fire when the member
+        // exists but is private to the namespace.
+        if (self.findExportedValueDeclInNamespace(ns_node, member_name) != null) return false;
+        if (self.findNamedValueDeclInNamespace(ns_node, member_name) == null) return false;
+        const ns_text = self.string_interner.get(ns_name);
+        const leaf_text = self.string_interner.get(member_name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Property '{s}' does not exist on type 'typeof {s}'.",
+            .{ leaf_text, ns_text },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = self.memberAccessNamePos(node),
+            .code = TsCodes.property_does_not_exist,
+            .message = msg,
+        });
+        return true;
+    }
+
     fn typeOfQualifiedNamespaceValue(
         self: *Checker,
         raw: []const u8,
@@ -32406,6 +32481,16 @@ pub const Checker = struct {
                     }
                     if (try self.mergedNamespaceValueMemberType(obj_id.name, m.name, node)) |member_t| {
                         break :blk try self.optionalChainResult(member_t, member_is_optional_chain);
+                    }
+                    // TS2339: `<ns>.<x>` where `<x>` lives inside `<ns>`
+                    // but isn't exported. Mirrors the
+                    // `ModuleWithExportedAndNonExported*` cluster
+                    // (`A.y`, `A.fn2`, `A.Day`, `Geometry.Lines`). The
+                    // `findExportedValueDeclInNamespace` filter
+                    // distinguishes "private to namespace" from "absent",
+                    // matching the diagnostic shape tsc emits.
+                    if (try self.reportNonExportedNamespaceMember(node, obj_id.name, m.name)) {
+                        break :blk types.Primitive.any;
                     }
                     if (try self.virtualNamespaceImportExportsMember(obj_id.name, m.name, node)) {
                         break :blk try self.optionalChainResult(types.Primitive.any, member_is_optional_chain);
@@ -46604,7 +46689,7 @@ pub const Checker = struct {
         for (hir_mod.arrayLiteralElements(self.hir, init_node)) |el| {
             if (el != hir_mod.none_node_id and self.hir.kindOf(el) == .spread) return false;
         }
-        const source_name = try self.arrayLiteralTupleDisplayName(init_node);
+        const source_name = try self.arrayLiteralTupleDisplayName(init_node, target_t);
         const maybe_target_name = (try self.tupleDiagnosticDisplayName(target_t)) orelse
             (try self.allocSimpleTypeName(target_t));
         if (maybe_target_name) |target_name| {

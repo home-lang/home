@@ -52,7 +52,6 @@ pub const ParseError = error{
 pub const Diagnostic = struct {
     pos: u32,
     line: u32,
-    span_len: u32 = 0,
     /// TypeScript-compatible diagnostic code. 0 means callers should
     /// fall back to their phase-level parse code.
     code: u32 = 0,
@@ -707,7 +706,6 @@ pub const Parser = struct {
     /// `NodeId` (currently a synthesized block).
     pub fn parseSourceFile(self: *Parser) ParseError!NodeId {
         try self.reportJSDocTypeArgumentSyntaxDiagnostics();
-        try self.reportJSDocQualifiedParamNameDiagnostics();
         self.top_level_external_module_indicator = self.sourceHasTopLevelExternalModuleIndicator();
         if (self.top_level_external_module_indicator) self.strict_mode = true;
         var stmts: std.ArrayListUnmanaged(NodeId) = .empty;
@@ -5601,7 +5599,7 @@ pub const Parser = struct {
             if (self.peekAt(1).kind != .equal and
                 !(self.peekAt(1).kind == .kw_from and self.peekAt(2).kind == .string_literal))
             {
-                _ = self.advance();
+                const type_tok = self.advance();
                 is_type_only = true;
                 type_kw_start = type_tok.span.start;
                 type_kw_line = type_tok.line;
@@ -6293,7 +6291,7 @@ pub const Parser = struct {
             try self.reportInvalidVariableDeclarationName(name_tok);
             try self.reportInvalidStrictName(name_tok);
             try self.reportInvalidFutureReservedName(name_tok);
-            try self.reportInvalidYieldName(name_tok);
+            try self.reportInvalidYieldName(name_tok, true);
             try self.reportAwaitBindingIfReserved(name_tok);
             try self.reportAwaitReservedInAsyncContext(name_tok);
             const name_id = try self.internToken(name_tok);
