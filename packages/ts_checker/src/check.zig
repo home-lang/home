@@ -29786,10 +29786,18 @@ pub const Checker = struct {
         return info.is_optional or self.typeIncludesUndefined(info.type);
     }
 
-    fn deleteOperandAllowed(self: *Checker, operand: NodeId) bool {
+    fn namespaceMemberAllowsDelete(self: *Checker, object: NodeId, name: hir_mod.StringId, anchor: NodeId) CheckError!?bool {
+        if (self.hir.kindOf(object) != .identifier) return null;
+        const obj_id = hir_mod.identifierOf(self.hir, object);
+        const member_t = (try self.mergedNamespaceValueMemberType(obj_id.name, name, anchor)) orelse return null;
+        return self.typeIncludesUndefined(member_t);
+    }
+
+    fn deleteOperandAllowed(self: *Checker, operand: NodeId) CheckError!bool {
         return switch (self.hir.kindOf(operand)) {
             .member_access => blk: {
                 const m = hir_mod.memberOf(self.hir, operand);
+                if (try self.namespaceMemberAllowsDelete(m.object, m.name, operand)) |allowed| break :blk allowed;
                 const obj_t = self.hir.typeOf(m.object);
                 if (obj_t == types.Primitive.none) break :blk true;
                 break :blk self.propertyAllowsDelete(obj_t, m.name);
@@ -29797,9 +29805,10 @@ pub const Checker = struct {
             .element_access => blk: {
                 const e = hir_mod.elementOf(self.hir, operand);
                 if (self.hir.kindOf(e.index) != .literal_string) break :blk true;
+                const key = hir_mod.literalStringOf(self.hir, e.index).value;
+                if (try self.namespaceMemberAllowsDelete(e.object, key, operand)) |allowed| break :blk allowed;
                 const obj_t = self.hir.typeOf(e.object);
                 if (obj_t == types.Primitive.none) break :blk true;
-                const key = hir_mod.literalStringOf(self.hir, e.index).value;
                 break :blk self.propertyAllowsDelete(obj_t, key);
             },
             else => true,
@@ -42892,7 +42901,7 @@ pub const Checker = struct {
                     // since tsc emits TS2704 even without `strict`.
                     // Mirrors `symbolType3.ts(2,8)` `delete Symbol.iterator`.
                     try self.report(u.operand, TsCodes.delete_operand_read_only, "The operand of a 'delete' operator cannot be a read-only property.");
-                } else if (self.strict_flags.strict_null_checks and !self.deleteOperandAllowed(u.operand)) {
+                } else if (self.strict_flags.strict_null_checks and !(try self.deleteOperandAllowed(u.operand))) {
                     try self.reportAt(u.operand, self.deleteOperandOptionalityAnchorPos(u.operand), TsCodes.delete_operand_must_be_optional, "The operand of a 'delete' operator must be optional.");
                 }
                 break :blk types.Primitive.boolean_t;
@@ -59451,6 +59460,23 @@ test "checker: delete optionality diagnostic anchors at parenthesized operand" {
     }
     try T.expect(found);
     try T.expect(found_inner);
+}
+
+test "checker: delete namespace value member requires optional operand" {
+    const src =
+        \\namespace M { export var n: number; }
+        \\var r = delete M.n;
+        \\delete M.n;
+    ;
+    const s = try newSetup(src);
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var found: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.delete_operand_must_be_optional) found += 1;
+    }
+    try T.expectEqual(@as(usize, 2), found);
 }
 
 test "checker: delete this does not emit TS1102" {
