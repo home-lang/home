@@ -194,6 +194,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/buffer-compare-bounds.test.ts",
     "regression/issue/014865.test.ts",
     "regression/issue/07736.test.ts",
+    "js/node/buffer-inspectmaxbytes.test.ts",
 };
 
 const harness_prelude =
@@ -376,6 +377,9 @@ const harness_prelude =
     \\    },
     \\    toBeUndefined() {
     \\      __home_assert(value === undefined, isNot, "Expected value" + (isNot ? " not" : "") + " to be undefined");
+    \\    },
+    \\    toBeNumber() {
+    \\      __home_assert(typeof value === "number", isNot, "Expected value" + (isNot ? " not" : "") + " to be a number");
     \\    },
     \\    toBeTypeOf(expected) {
     \\      if (arguments.length < 1) __home_fail("toBeTypeOf() requires 1 argument");
@@ -708,6 +712,9 @@ const harness_prelude =
     \\    return written;
     \\  };
     \\}
+    \\Buffer.INSPECT_MAX_BYTES = 50;
+    \\Buffer.default = Buffer;
+    \\globalThis.__home_modules["node:buffer"] = Buffer;
     \\if (typeof Error.prepareStackTrace !== "function") {
     \\  Error.prepareStackTrace = function(error, stack) {
     \\    const name = error && error.name ? String(error.name) : "Error";
@@ -1067,6 +1074,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .needle = "import { Request } from \"node-fetch\";",
             .replacement = "const { Request } = globalThis.__home_import(\"node-fetch\");",
         },
+        .{
+            .needle = "import buffer, { INSPECT_MAX_BYTES } from \"node:buffer\";",
+            .replacement = "const __home_node_buffer = globalThis.__home_import(\"node:buffer\");\nconst buffer = __home_node_buffer.default;\nconst { INSPECT_MAX_BYTES } = __home_node_buffer;",
+        },
     };
 
     var cursor: usize = 0;
@@ -1339,6 +1350,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/node/buffer-compare-bounds.test.ts", filesForSubset(.minimal_js)[28]);
     try std.testing.expectEqualStrings("regression/issue/014865.test.ts", filesForSubset(.minimal_js)[29]);
     try std.testing.expectEqualStrings("regression/issue/07736.test.ts", filesForSubset(.minimal_js)[30]);
+    try std.testing.expectEqualStrings("js/node/buffer-inspectmaxbytes.test.ts", filesForSubset(.minimal_js)[31]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -1351,6 +1363,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTypeOf(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTypeOf() requires a valid type string argument") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeUndefined()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeNumber()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "a instanceof Map || b instanceof Map") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "a instanceof Set || b instanceof Set") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toIncludeRepeated(needle, expectedCount)") != null);
@@ -1377,6 +1390,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.alloc = function(size, fill)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.from") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.prototype.compare") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.INSPECT_MAX_BYTES") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:buffer\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toString(16).padStart") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Error.prepareStackTrace") != null);
 }
@@ -1421,6 +1436,21 @@ test "bootstrap rewrite lowers node-fetch Request imports" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { Request } = globalThis.__home_import(\"node-fetch\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"node-fetch\"") == null);
+}
+
+test "bootstrap rewrite lowers node buffer default and named imports" {
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import buffer, { INSPECT_MAX_BYTES } from "node:buffer";
+        \\test("works", () => expect(INSPECT_MAX_BYTES).toBeNumber());
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/node/buffer-inspectmaxbytes.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const __home_node_buffer = globalThis.__home_import(\"node:buffer\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const buffer = __home_node_buffer.default;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { INSPECT_MAX_BYTES } = __home_node_buffer;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"node:buffer\"") == null);
 }
 
 test "bootstrap rewrite erases const assertions" {
