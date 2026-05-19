@@ -38977,6 +38977,9 @@ pub const Checker = struct {
                 return ng;
             } else |_| {}
         }
+        if (std.mem.eql(u8, name_str, "Date")) {
+            return self.dateGlobalType() catch types.Primitive.any;
+        }
         if (std.mem.eql(u8, name_str, "RegExp")) {
             const regexp_t = self.lowerBuiltinObjectType("RegExp") orelse types.Primitive.any;
             const escape_sig = self.interner.internSignature(&[_]TypeId{types.Primitive.string_t}, types.Primitive.string_t, false) catch
@@ -39807,6 +39810,36 @@ pub const Checker = struct {
             .{ .name = self.string_interner.intern("stack") catch return error.OutOfMemory, .type = string_t, .is_optional = true, .is_readonly = false, .is_method = false },
             .{ .name = self.string_interner.intern("prototype") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = false, .is_method = false },
             .{ .name = self.string_interner.intern("captureStackTrace") catch return error.OutOfMemory, .type = try self.seedAnySig2(types.Primitive.void_t), .is_optional = true, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("__call") catch return error.OutOfMemory, .type = call_sig, .is_optional = false, .is_readonly = false, .is_method = true },
+        };
+        return self.interner.internObjectType(&m) catch return error.OutOfMemory;
+    }
+
+    fn dateGlobalType(self: *Checker) CheckError!TypeId {
+        const number_t = types.Primitive.number_t;
+        const string_t = types.Primitive.string_t;
+        const undefined_t = types.Primitive.undefined_t;
+        const optional_number_t = try self.interner.internUnion(&[_]TypeId{ number_t, undefined_t });
+        const utc_sig = try self.interner.internSignature(
+            &[_]TypeId{
+                number_t,
+                number_t,
+                optional_number_t,
+                optional_number_t,
+                optional_number_t,
+                optional_number_t,
+                optional_number_t,
+            },
+            number_t,
+            false,
+        );
+        const call_sig = try self.interner.internSignature(&[_]TypeId{}, string_t, false);
+        const date_instance_t = self.lowerBuiltinObjectType("Date") orelse types.Primitive.any;
+        const m = [_]types.ObjectMember{
+            .{ .name = self.string_interner.intern("UTC") catch return error.OutOfMemory, .type = utc_sig, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("now") catch return error.OutOfMemory, .type = try self.seedAnySig0(number_t), .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("parse") catch return error.OutOfMemory, .type = try self.seedAnySig1(number_t), .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("prototype") catch return error.OutOfMemory, .type = date_instance_t, .is_optional = false, .is_readonly = false, .is_method = false },
             .{ .name = self.string_interner.intern("__call") catch return error.OutOfMemory, .type = call_sig, .is_optional = false, .is_readonly = false, .is_method = true },
         };
         return self.interner.internObjectType(&m) catch return error.OutOfMemory;
@@ -67937,6 +67970,23 @@ test "checker: lib — new Date() is assignable to Date" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: lib — Date.UTC requires monthIndex" {
+    const s = try newSetup("Date.UTC(2017);");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.expected_n_arguments and
+            std.mem.indexOf(u8, d.message, "Expected 2-7 arguments, but got 1.") != null)
+        {
+            found = true;
+        }
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+        try T.expect(d.code != TsCodes.not_callable);
+    }
+    try T.expect(found);
 }
 
 test "checker: lib — Function assertion remains callable" {
