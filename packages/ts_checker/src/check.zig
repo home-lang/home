@@ -44143,9 +44143,27 @@ pub const Checker = struct {
         if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return false;
         const id = hir_mod.identifierOf(self.hir, node);
         const raw = self.string_interner.get(id.name);
-        return std.mem.eql(u8, raw, "Array") or
+        if (std.mem.eql(u8, raw, "Array") or
             std.mem.eql(u8, raw, "Object") or
-            std.mem.eql(u8, raw, "Function");
+            std.mem.eql(u8, raw, "Function")) return true;
+        // Forward-referenced class / function identifiers: when the
+        // RHS is an identifier that resolves to a class (or function)
+        // declared elsewhere in the module — including AFTER the use
+        // site, as inside a `this is X` predicate body — accept it
+        // as a valid construct-bearing operand. The forward-reference
+        // path may not have lowered the constructor type yet, so
+        // `isInstanceofRightAllowed` returns false; this symbol-table
+        // lookup mirrors tsc's semantic resolution and matches
+        // `declarationEmitThisPredicates01.ts` /
+        // `declarationEmitThisPredicatesWithPrivateName01.ts` which
+        // both reference `D` from inside `class C`'s method body
+        // before `class D extends C` appears later in the file.
+        if (self.module) |module| {
+            if (module.root.lookup(id.name)) |sym| {
+                if (sym.flags.is_class or sym.flags.is_function) return true;
+            }
+        }
+        return false;
     }
 
     fn instanceofHasInstanceSignature(self: *Checker, t: TypeId) CheckError!?TypeId {
