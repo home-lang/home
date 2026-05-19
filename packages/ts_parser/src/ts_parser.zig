@@ -10662,7 +10662,26 @@ pub const Parser = struct {
                         if (is_defer and self.peekAt(2).kind != .open_paren) {
                             try self.reportCodeAt(prop.span.end, prop.line, 1005, "'(' expected.");
                         } else if (!is_meta and !is_defer) {
-                            try self.reportCodeAt(prop.span.start, prop.line, 17012, "This is not a valid meta-property for keyword 'import'. Did you mean 'meta'?");
+                            // `import.foo()` → TS18061 (call site suggests
+                            // both `meta` and `defer`); `import.foo` →
+                            // TS17012 (non-call site only suggests `meta`).
+                            // Mirrors upstream `importMetaPropertyInvalidInCall`.
+                            const prop_text = self.source[prop.span.start..prop.span.end];
+                            if (self.peekAt(2).kind == .open_paren) {
+                                const msg = try std.fmt.allocPrint(
+                                    self.diag_arena.allocator(),
+                                    "'{s}' is not a valid meta-property for keyword 'import'. Did you mean 'meta' or 'defer'?",
+                                    .{prop_text},
+                                );
+                                try self.reportCodeAt(prop.span.start, prop.line, 18061, msg);
+                            } else {
+                                const msg = try std.fmt.allocPrint(
+                                    self.diag_arena.allocator(),
+                                    "'{s}' is not a valid meta-property for keyword 'import'. Did you mean 'meta'?",
+                                    .{prop_text},
+                                );
+                                try self.reportCodeAt(prop.span.start, prop.line, 17012, msg);
+                            }
                         }
                     }
                     // Not a dynamic import — return the synthesized
@@ -14065,12 +14084,15 @@ test "parser: import.meta.url chained access" {
 }
 
 test "parser: invalid import meta properties report diagnostics" {
+    // `import.foo()` → TS18061 (call form suggests `meta` or `defer`);
+    // `import.defer;` (no parens) → TS1005 missing `(` for defer.
+    // Mirrors upstream `importMetaPropertyInvalidInCall`.
     var s = try newTestSetup("import.foo(); import.defer;");
     defer destroyTestSetup(s);
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
-    try T.expectEqual(@as(u32, 17012), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 18061), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
 }
 
