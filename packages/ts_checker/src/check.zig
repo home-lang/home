@@ -15776,7 +15776,11 @@ pub const Checker = struct {
                 else
                     try self.heritageMemberAssignable(cm.type, pm.type);
                 if (!assignable) {
-                    const prop_str = self.string_interner.get(pm.name);
+                    // Use the source-written form for the property name so
+                    // string-literal keys (`'2.0'`) and computed keys keep
+                    // their original quoting / bracketing in TS2416 prose --
+                    // mirrors `subtypingWithObjectMembers.ts(34,5)`.
+                    const prop_str = self.classOrInterfaceMemberDisplayName(child_node, pm.name);
                     const msg = try self.allocPropertyNotAssignableToBaseMessage(child_node, prop_str, parent_t);
                     // Anchor at the *child's* property declaration so
                     // TS2416 matches the upstream column (the property
