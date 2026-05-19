@@ -17256,6 +17256,7 @@ pub const Checker = struct {
             try self.checkImportEqualsEntity(node, imp);
             return;
         }
+        try self.checkTypeOnlyImportInJs(node, imp);
         // TS1202 fires for any ECMAScript-module `// @module` target —
         // not just `esnext`. Upstream tsc treats `es2015`, `es2020`,
         // `es2022`, `es6`, and the `preserve` mode the same way: the
@@ -17355,6 +17356,40 @@ pub const Checker = struct {
             .code = TsCodes.cannot_find_module,
             .message = msg,
         });
+    }
+
+    fn checkTypeOnlyImportInJs(self: *Checker, node: NodeId, imp: hir_mod.ImportPayload) CheckError!void {
+        if (!self.virtualSectionIsJsLike(node)) return;
+
+        const msg = "'import...type' declarations can only be used in TypeScript files.";
+        if (imp.is_type_only) {
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .pos = self.importTypeKeywordPos(node),
+                .code = TsCodes.ts_only_decl_in_js,
+                .message = msg,
+            });
+            return;
+        }
+
+        for (hir_mod.importNamed(self.hir, node)) |spec_node| {
+            const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
+            if (!sp.is_type_only) continue;
+            try self.diagnostics.append(self.gpa, .{
+                .node = spec_node,
+                .code = TsCodes.ts_only_decl_in_js,
+                .message = msg,
+            });
+        }
+    }
+
+    fn importTypeKeywordPos(self: *Checker, node: NodeId) ?u32 {
+        const src = self.source orelse return null;
+        const span = self.hir.spanOf(node);
+        if (span.start >= span.end or span.end > src.len) return null;
+        const text = src[span.start..span.end];
+        const rel = std.mem.indexOf(u8, text, "type") orelse return null;
+        return @intCast(span.start + rel);
     }
 
     fn nodeSourceContainsImportAttributes(self: *Checker, node: NodeId) bool {
@@ -73494,6 +73529,27 @@ test "checker: for-await await-using same-name source does not emit TS7022" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.variable_self_reference_implicitly_any);
     }
+}
+
+test "checker: import type specifier in .js virtual section emits TS8006" {
+    // Mirrors upstream `importSpecifiers_js`: `import { type foo }`
+    // in a `.js` file is TS-only syntax and reports TS8006 at the
+    // type-only specifier.
+    const b = try newBoundSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: b.ts
+        \\export type foo = number;
+        \\// @filename: a.js
+        \\import { type foo } from "./b";
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found_8006 = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.ts_only_decl_in_js) found_8006 = true;
+    }
+    try T.expect(found_8006);
 }
 
 test "checker: export type specifier in .js virtual section emits TS8006" {
