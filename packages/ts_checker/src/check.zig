@@ -959,6 +959,11 @@ pub const Checker = struct {
     /// `exports.x` and `module.exports.x`. Unlike branch narrows, these
     /// must also work at file scope where `narrow_scopes` is empty.
     commonjs_export_narrows: std.AutoHashMapUnmanaged(MemberKey, TypeId),
+    /// Source-order CheckJS namespace-object expando assignments for
+    /// `var Ns = {}; Ns.C = class { ... }`. These are value-shape
+    /// discoveries, not branch narrows, so they must be visible at
+    /// file scope for later `new Ns.C()` and `class D extends Ns.C`.
+    checkjs_object_expando_narrows: std.AutoHashMapUnmanaged(MemberKey, TypeId),
     /// Class-name → instance type. Populated by `checkClassDecl`
     /// when a class is declared; consulted by `instanceof` narrowing
     /// and `new` expression typing — both of which require the name
@@ -1414,6 +1419,7 @@ pub const Checker = struct {
             .checking_update_assignment_target = false,
             .member_narrow_scopes = .empty,
             .commonjs_export_narrows = .empty,
+            .checkjs_object_expando_narrows = .empty,
             .class_instance_types = .empty,
             .checked_class_decls = .empty,
             .class_constructor_sigs = .empty,
@@ -1566,6 +1572,7 @@ pub const Checker = struct {
         }
         self.member_narrow_scopes.deinit(self.gpa);
         self.commonjs_export_narrows.deinit(self.gpa);
+        self.checkjs_object_expando_narrows.deinit(self.gpa);
         self.class_instance_types.deinit(self.gpa);
         self.checked_class_decls.deinit(self.gpa);
         self.class_constructor_sigs.deinit(self.gpa);
@@ -32605,6 +32612,10 @@ pub const Checker = struct {
                     try self.commonJsExportMemberKey(a.target)
                 else
                     null;
+                const checkjs_object_expando_key = if (a.op == null and target_kind == .member_access)
+                    try self.checkJsObjectLiteralExpandoMemberKey(a.target)
+                else
+                    null;
                 const target_is_commonjs_export_assignment = commonjs_export_key != null;
                 var assignment_result_t = value_t;
                 if (a.op == null) {
@@ -32616,6 +32627,9 @@ pub const Checker = struct {
                     {
                         if (commonjs_export_key) |key| {
                             try self.recordCommonJsExportNarrow(key, assignment_result_t);
+                        }
+                        if (checkjs_object_expando_key) |key| {
+                            try self.recordCheckJsObjectExpandoNarrow(key, assignment_result_t);
                         }
                     }
                     const has_active_target_narrow = if (self.hir.kindOf(a.target) == .identifier)
@@ -33677,6 +33691,9 @@ pub const Checker = struct {
                     const obj_id = hir_mod.identifierOf(self.hir, m.object);
                     const key: MemberKey = .{ .obj_name = obj_id.name, .prop_name = m.name };
                     if (self.lookupMemberNarrow(key)) |nt| {
+                        break :blk try self.optionalChainResult(nt, member_is_optional_chain);
+                    }
+                    if (self.checkjs_object_expando_narrows.get(key)) |nt| {
                         break :blk try self.optionalChainResult(nt, member_is_optional_chain);
                     }
                     // `const enum E { A = 1 }` — `E.A` should type as
@@ -36712,6 +36729,13 @@ pub const Checker = struct {
         try self.commonjs_export_narrows.put(self.gpa, key, t);
     }
 
+    fn recordCheckJsObjectExpandoNarrow(self: *Checker, key: MemberKey, t: TypeId) !void {
+        if (self.member_narrow_scopes.items.len > 0) {
+            try self.recordMemberNarrow(key, t);
+        }
+        try self.checkjs_object_expando_narrows.put(self.gpa, key, t);
+    }
+
     fn commonJsExportMemberKey(self: *Checker, node: NodeId) CheckError!?MemberKey {
         if (!self.sourceHasCheckJsDirective()) return null;
         if (self.hir.kindOf(node) != .member_access) return null;
@@ -36729,6 +36753,58 @@ pub const Checker = struct {
             return .{ .obj_name = module_exports, .prop_name = m.name };
         }
         return null;
+    }
+
+    fn checkJsObjectLiteralExpandoMemberKey(self: *Checker, node: NodeId) CheckError!?MemberKey {
+        if (!self.sourceHasCheckJsDirective()) return null;
+        if (self.hir.kindOf(node) != .member_access) return null;
+        const m = hir_mod.memberOf(self.hir, node);
+        if (m.object == hir_mod.none_node_id or self.hir.kindOf(m.object) != .identifier) return null;
+        const obj_id = hir_mod.identifierOf(self.hir, m.object);
+        const obj_name = self.string_interner.get(obj_id.name);
+        if (std.mem.eql(u8, obj_name, "exports") or std.mem.eql(u8, obj_name, "module")) return null;
+        if (self.localNameIsImportBinding(obj_id.name, m.object)) return null;
+        if (!self.identifierNamesUntypedObjectLiteralBindingInScope(obj_id.name, node)) return null;
+        return .{ .obj_name = obj_id.name, .prop_name = m.name };
+    }
+
+    fn identifierNamesUntypedObjectLiteralBindingInScope(self: *Checker, name: hir_mod.StringId, from_node: NodeId) bool {
+        const use_start = self.hir.spanOf(from_node).start;
+        const has_sections = self.sourceHasVirtualFilenameSections();
+        const section_start = if (has_sections) self.virtualSectionStartForNode(from_node) else 0;
+        var cur = self.hir.parentOf(from_node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
+                for (hir_mod.fnParams(self.hir, cur)) |p| {
+                    if (self.hir.kindOf(p) != .parameter) continue;
+                    const pp = hir_mod.parameterOf(self.hir, p);
+                    if (pp.name == hir_mod.none_node_id or self.hir.kindOf(pp.name) != .identifier) continue;
+                    if (hir_mod.identifierOf(self.hir, pp.name).name == name) return false;
+                }
+            }
+            const stmts: ?[]const NodeId = switch (k) {
+                .block_stmt => hir_mod.blockStmts(self.hir, cur),
+                .namespace_decl => hir_mod.namespaceBody(self.hir, cur),
+                else => null,
+            };
+            if (stmts) |items| {
+                for (items) |stmt| {
+                    if (self.hir.spanOf(stmt).start > use_start) break;
+                    const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
+                    if (decl == hir_mod.none_node_id) continue;
+                    if (has_sections and self.virtualSectionStartForNode(decl) != section_start) continue;
+                    const dk = self.hir.kindOf(decl);
+                    if (dk != .var_decl and dk != .let_decl and dk != .const_decl) continue;
+                    const v = hir_mod.varDeclOf(self.hir, decl);
+                    if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) continue;
+                    if (hir_mod.identifierOf(self.hir, v.name).name != name) continue;
+                    if (v.type_annotation != hir_mod.none_node_id or self.varDeclHasJsDocTypeTag(decl)) return false;
+                    return v.init != hir_mod.none_node_id and self.hir.kindOf(v.init) == .object_literal;
+                }
+            }
+        }
+        return false;
     }
 
     fn memberAccessIsModuleExports(self: *Checker, node: NodeId) bool {
@@ -73523,6 +73599,46 @@ test "checker: checkjs imported callable expando target reports TS2339" {
         if (d.code == TsCodes.property_does_not_exist) count += 1;
     }
     try T.expectEqual(@as(usize, 1), count);
+}
+
+test "checker: checkjs object namespace class expando is visible to new and extends" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\var UI = {};
+        \\UI.TreeElement = class {
+        \\  constructor() {
+        \\    this.treeOutline = 12;
+        \\  }
+        \\};
+        \\UI.context = new UI.TreeElement();
+        \\class C extends UI.TreeElement {
+        \\  onpopulate() {
+        \\    this.treeOutline.doesntExistEither();
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var number_member_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_does_not_exist and
+            std.mem.indexOf(u8, d.message, "TreeElement") != null)
+        {
+            return error.TestExpectedEqual;
+        }
+        if (d.code == TsCodes.property_does_not_exist and
+            std.mem.indexOf(u8, d.message, "treeOutline") != null)
+        {
+            return error.TestExpectedEqual;
+        }
+        if (d.code == TsCodes.property_does_not_exist and
+            std.mem.indexOf(u8, d.message, "doesntExistEither") != null)
+        {
+            number_member_count += 1;
+        }
+    }
+    try T.expectEqual(@as(usize, 1), number_member_count);
 }
 
 test "checker: checkjs CommonJS export property assignment flow reports possibly undefined call once" {
