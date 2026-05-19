@@ -720,6 +720,7 @@ pub fn compileSource(
             .line = d.line,
             .code = d.code,
             .message = try gpa.dupe(u8, d.message),
+            .span_len = d.span_len,
         });
         c.has_errors = true;
     }

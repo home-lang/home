@@ -56,6 +56,14 @@ pub const Diagnostic = struct {
     /// fall back to their phase-level parse code.
     code: u32 = 0,
     message: []const u8,
+    /// Optional span width (in bytes) for the underlined region. When
+    /// non-zero the driver uses this to disambiguate same-`pos`
+    /// diagnostics so the smaller-span entry sorts first (matching
+    /// tsc's `compareDiagnostics`). Defaults to 0 (unset) so the
+    /// driver's fall-through path keeps the existing
+    /// sort-by-code-when-zero behavior for all the existing call sites
+    /// that don't carry width.
+    span_len: u32 = 0,
 };
 
 /// One active labeled statement on the parse-time label scope stack.
@@ -529,6 +537,21 @@ pub const Parser = struct {
             .line = line,
             .code = code,
             .message = msg,
+        });
+    }
+
+    /// Variant of `reportCodeAt` that records a non-zero `span_len`
+    /// for the underlined region. Used to disambiguate same-`pos`
+    /// diagnostics where ordering depends on width (e.g. enum recovery
+    /// where TS1357 sits on `[` while TS1164 covers `[name]`).
+    fn reportCodeWithSpanAt(self: *Parser, pos: u32, line: u32, code: u32, span_len: u32, message: []const u8) ParseError!void {
+        const msg = try self.diag_arena.allocator().dupe(u8, message);
+        try self.diagnostics.append(self.gpa, .{
+            .pos = pos,
+            .line = line,
+            .code = code,
+            .message = msg,
+            .span_len = span_len,
         });
     }
 
@@ -4951,7 +4974,14 @@ pub const Parser = struct {
                 const open = self.advance();
                 const key = try self.parseExpression();
                 _ = try self.expect(.close_bracket, "']' to close computed enum member name");
-                try self.reportCodeAt(open.span.start, open.line, 1164, "Computed property names are not allowed in enums.");
+                // Record the full `[name]` width so a colocated TS1357
+                // (single-`[` width) at the same `(line,col)` sorts
+                // before this wider TS1164 per tsc's
+                // `compareDiagnostics` (smaller length wins).
+                // Mirrors `parserComputedPropertyName30.ts(4,5)`.
+                const close_end = self.tokens[self.cursor - 1].span.end;
+                const ts1164_span: u32 = if (close_end > open.span.start) close_end - open.span.start else 1;
+                try self.reportCodeWithSpanAt(open.span.start, open.line, 1164, ts1164_span, "Computed property names are not allowed in enums.");
                 is_computed = true;
                 break :blk key;
             } else blk: {
@@ -5002,7 +5032,12 @@ pub const Parser = struct {
                 next.kind == .open_bracket or
                 next.kind.isContextualKeyword();
             if (can_start_member) {
-                try self.reportCodeAt(next.span.start, next.line, 1357, "An enum member name must be followed by a ',', '=', or '}'.");
+                // Width = 1 so a colocated TS1164 (wider `[name]`
+                // span) at the same `(line,col)` sorts after this
+                // TS1357 per tsc's `compareDiagnostics` (smaller
+                // length wins). See the matching wide-span TS1164
+                // emission in the computed-key branch above.
+                try self.reportCodeWithSpanAt(next.span.start, next.line, 1357, 1, "An enum member name must be followed by a ',', '=', or '}'.");
                 continue;
             }
             break;
