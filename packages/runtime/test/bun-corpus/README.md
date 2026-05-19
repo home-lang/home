@@ -16,15 +16,15 @@ macOS, Linux, and the WASM target.
   `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
   That subset currently executes the todo-registration smoke, the Web
-  `atob`/`btoa` smoke, six pure-JS regression smokes, one bundler
+  `atob`/`btoa` smoke, seven regression smokes, one bundler
   constant-fold smoke, four test-runner expectation smokes, one nested-describe
   smoke, one `Bun.stripANSI` smoke, and the Node `DOMException`, Web
   `Response.json` / `Response.redirect`, JSC `ShadowRealm`, Bun
-  file-metadata, and stack-trace smokes. It is only a smoke path for JSC +
-  `home_test`; it is not the release gate. The bootstrap harness is installed
-  once per JSC engine, resets counters before each file, and lowers supported
-  `bun:test` imports through a virtual `globalThis.__home_import("bun:test")`
-  module shim.
+  file-metadata, Node `Buffer`, and stack-trace smokes. It is only a smoke path
+  for JSC + `home_test`; it is not the release gate. The bootstrap harness is
+  installed once per JSC engine, resets counters before each file, and lowers
+  supported `bun:test` imports through a virtual
+  `globalThis.__home_import("bun:test")` module shim.
 - No source renames. `Bun.serve`, `Bun.write`, `Bun.spawn`, etc. appear
   verbatim. The `Bun.* -> Home.*` rename happens at **test-runtime** (via the
   host runtime's surface aliasing), not at copy time, so the corpus stays a

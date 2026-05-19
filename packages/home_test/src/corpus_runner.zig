@@ -130,6 +130,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/21257.test.ts",
     "regression/issue/07397.test.ts",
     "js/bun/test/expect-unreaachable.test.ts",
+    "regression/issue/06467.test.ts",
 };
 
 const harness_prelude =
@@ -392,6 +393,38 @@ const harness_prelude =
     \\  const text = JSON.stringify(value);
     \\  return new Response(text, init);
     \\};
+    \\if (typeof Buffer !== "function") {
+    \\  var Buffer = function(size) {
+    \\    const bytes = new Uint8Array(size);
+    \\    Object.setPrototypeOf(bytes, Buffer.prototype);
+    \\    return bytes;
+    \\  };
+    \\  Buffer.prototype = Object.create(Uint8Array.prototype);
+    \\  Buffer.prototype.constructor = Buffer;
+    \\  Buffer.alloc = function(size) {
+    \\    if (!Number.isFinite(size) || size < 0) throw new RangeError("Invalid Buffer size");
+    \\    return new Buffer(size >>> 0);
+    \\  };
+    \\  Buffer.prototype.write = function(value, offsetOrEncoding, lengthOrEncoding, encodingMaybe) {
+    \\    let offset = 0;
+    \\    let encoding = "utf8";
+    \\    if (typeof offsetOrEncoding === "number") {
+    \\      offset = offsetOrEncoding >>> 0;
+    \\      if (typeof lengthOrEncoding === "string") encoding = lengthOrEncoding;
+    \\      if (typeof encodingMaybe === "string") encoding = encodingMaybe;
+    \\    } else if (typeof offsetOrEncoding === "string") {
+    \\      encoding = offsetOrEncoding;
+    \\    }
+    \\    if (encoding !== "binary" && encoding !== "latin1") __home_unsupported("Only Buffer.write(..., 'binary') is supported by the Home Bun corpus bootstrap runner");
+    \\    const text = String(value);
+    \\    let written = 0;
+    \\    for (let i = 0; i < text.length && offset + i < this.length; i++) {
+    \\      this[offset + i] = text.charCodeAt(i) & 0xff;
+    \\      written++;
+    \\    }
+    \\    return written;
+    \\  };
+    \\}
     \\if (typeof Error.prepareStackTrace !== "function") {
     \\  Error.prepareStackTrace = function(error, stack) {
     \\    const name = error && error.name ? String(error.name) : "Error";
@@ -902,6 +935,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/21257.test.ts", filesForSubset(.minimal_js)[18]);
     try std.testing.expectEqualStrings("regression/issue/07397.test.ts", filesForSubset(.minimal_js)[19]);
     try std.testing.expectEqualStrings("js/bun/test/expect-unreaachable.test.ts", filesForSubset(.minimal_js)[20]);
+    try std.testing.expectEqualStrings("regression/issue/06467.test.ts", filesForSubset(.minimal_js)[21]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -919,6 +953,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_import") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.redirect") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.alloc") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Error.prepareStackTrace") != null);
 }
 
