@@ -1030,6 +1030,13 @@ pub const Checker = struct {
     /// `lowererLowerWithTypeParams` so `b: Box`, `b: SomeInterface`,
     /// or `b: SomeAlias` all resolve at the annotation site.
     type_names: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId),
+    /// Most-recent `interface_decl` node that registered a type under
+    /// each name. Lets the interface-merge logic in
+    /// `checkInterfaceDecl` confirm the previous declaration shares
+    /// the same lexical scope (root or same namespace) before merging
+    /// — guards against `twoInterfacesDifferentRootModule`-style
+    /// false merges across namespace boundaries.
+    last_iface_decl_for_name: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
     /// Generic alias name → (params, body) mapping. Populated by
     /// `checkTypeAliasDecl` when an alias declares type parameters.
     /// Consulted by `lowererLowerWithTypeParams` to instantiate
@@ -1348,6 +1355,7 @@ pub const Checker = struct {
             .class_accessor_members = .empty,
             .class_method_members = .empty,
             .type_names = .empty,
+            .last_iface_decl_for_name = .empty,
             .generic_aliases = .empty,
             .active_generic_aliases = .empty,
             .resolving_value_types = .empty,
@@ -1518,6 +1526,7 @@ pub const Checker = struct {
         while (cmm_it.next()) |set| set.deinit(self.gpa);
         self.class_method_members.deinit(self.gpa);
         self.type_names.deinit(self.gpa);
+        self.last_iface_decl_for_name.deinit(self.gpa);
         var ga_it = self.generic_aliases.valueIterator();
         while (ga_it.next()) |info| self.gpa.free(info.params);
         self.generic_aliases.deinit(self.gpa);
@@ -19487,7 +19496,47 @@ pub const Checker = struct {
                     try self.signature_this_params.put(self.gpa, member.type, iface_t);
                 }
             }
-            try self.type_names.put(self.gpa, id.name, iface_t);
+            // Interface declaration merging: when a previous
+            // `interface X { ... }` at the SAME lexical scope already
+            // registered a type under this name, union our members
+            // into it so later references see the full merged shape.
+            // Scope check guards against false merges across namespace
+            // boundaries (`namespace M { interface A {} }` +
+            // `namespace M2 { interface A {} }` must stay separate —
+            // `twoInterfacesDifferentRootModule.ts`). Mirrors upstream
+            // tsc's `mergeTwoInterfaces` / `mergeThreeInterfaces`.
+            const final_t = blk: {
+                if (self.type_names.get(id.name)) |existing_t| {
+                    if (self.interfaceDeclScopesMatchExistingType(node, id.name)) {
+                        const merged = self.mergeInterfaceDeclarationType(existing_t, iface_t) catch iface_t;
+                        // Back-patch the previously-registered
+                        // interface_decl's HIR type to the merged
+                        // shape — `resolveUnqualifiedNamespaceTypeRef`
+                        // and friends pick the FIRST same-named decl
+                        // in a namespace body and read its
+                        // `hir.typeOf`, so we need every same-scope
+                        // declaration to point at the merged type.
+                        if (self.last_iface_decl_for_name.get(id.name)) |prev_decl| {
+                            self.hir.setType(prev_decl, merged);
+                            const prev_iface = hir_mod.interfaceOf(self.hir, prev_decl);
+                            if (prev_iface.name != hir_mod.none_node_id) {
+                                self.hir.setType(prev_iface.name, merged);
+                            }
+                        }
+                        break :blk merged;
+                    }
+                }
+                break :blk iface_t;
+            };
+            try self.type_names.put(self.gpa, id.name, final_t);
+            if (final_t != iface_t) {
+                self.hir.setType(node, final_t);
+                self.hir.setType(it.name, final_t);
+            }
+            // Remember this declaration as the most-recent registrar
+            // for `name` so subsequent same-name interface_decls can
+            // confirm same-scope before merging.
+            try self.last_iface_decl_for_name.put(self.gpa, id.name, node);
             if (param_ids.items.len > 0) {
                 const owned_params = try self.gpa.dupe(TypeId, param_ids.items);
                 if (self.generic_aliases.get(id.name)) |old| {
@@ -19495,12 +19544,74 @@ pub const Checker = struct {
                 }
                 try self.generic_aliases.put(self.gpa, id.name, .{
                     .params = owned_params,
-                    .body = iface_t,
+                    .body = final_t,
                     .body_node = hir_mod.none_node_id,
                 });
             }
-            self.hir.setType(it.name, iface_t);
+            self.hir.setType(it.name, final_t);
         }
+    }
+
+    /// True when `iface_decl` and the previously-registered
+    /// interface_decl for `name` share the same lexical scope
+    /// (their nearest enclosing namespace_decl / module_decl /
+    /// root-block ancestor is the same node).
+    fn interfaceDeclScopesMatchExistingType(self: *Checker, iface_decl: NodeId, name: hir_mod.StringId) bool {
+        const previous = self.last_iface_decl_for_name.get(name) orelse return false;
+        return self.nearestDeclarationScope(iface_decl) == self.nearestDeclarationScope(previous);
+    }
+
+    fn nearestDeclarationScope(self: *Checker, node: NodeId) NodeId {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            switch (self.hir.kindOf(cur)) {
+                .namespace_decl, .module_decl => return cur,
+                else => {},
+            }
+        }
+        // Top-level: collapse to a single sentinel (the root block).
+        return self.rootBlockFor(node);
+    }
+
+    /// Combine the members of two interface types for declaration
+    /// merging. Inputs are object types produced by
+    /// `internObjectTypeWithIndexAndSymbol`. Properties override by
+    /// name; method members append (concatenating overloads). Indexers
+    /// keep the existing entry when only one side has one.
+    fn mergeInterfaceDeclarationType(
+        self: *Checker,
+        existing_t: TypeId,
+        new_t: TypeId,
+    ) !TypeId {
+        const existing_members = self.interner.objectMembers(existing_t);
+        const new_members = self.interner.objectMembers(new_t);
+        if (existing_members.len == 0 and new_members.len == 0) return new_t;
+        var combined: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer combined.deinit(self.gpa);
+        try combined.appendSlice(self.gpa, existing_members);
+        outer: for (new_members) |nm| {
+            if (!nm.is_method) {
+                for (combined.items, 0..) |cm, i| {
+                    if (!cm.is_method and cm.name == nm.name) {
+                        combined.items[i] = nm;
+                        continue :outer;
+                    }
+                }
+            }
+            // Methods: always append so overload sets concatenate.
+            // Properties: append when not already present.
+            try combined.append(self.gpa, nm);
+        }
+        const existing_str = self.interner.objectStringIndex(existing_t);
+        const new_str = self.interner.objectStringIndex(new_t);
+        const merged_str = if (existing_str != types.Primitive.none) existing_str else new_str;
+        const existing_num = self.interner.objectNumberIndex(existing_t);
+        const new_num = self.interner.objectNumberIndex(new_t);
+        const merged_num = if (existing_num != types.Primitive.none) existing_num else new_num;
+        const existing_sym = self.interner.objectSymbolIndex(existing_t);
+        const new_sym = self.interner.objectSymbolIndex(new_t);
+        const merged_sym = if (existing_sym != types.Primitive.none) existing_sym else new_sym;
+        return self.interner.internObjectTypeWithIndexAndSymbol(combined.items, merged_str, merged_num, merged_sym);
     }
 
     fn interfaceMemberHasSelfThisParameter(
