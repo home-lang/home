@@ -245,6 +245,10 @@ pub const TsCodes = struct {
     pub const subsequent_var_type_mismatch: u32 = 2403;
     pub const interface_incorrectly_extends: u32 = 2430;
     pub const interface_cannot_simultaneously_extend: u32 = 2320;
+    /// TS2310 — `Type '<name>' recursively references itself as a base
+    /// type.` Anchored at the interface name identifier. Mirrors tsc's
+    /// `interfaceThatInheritsFromItself` baseline.
+    pub const type_recursively_references_itself_as_base: u32 = 2310;
     /// TS2428 — emitted on EVERY declaration of an interface when
     /// merging declarations disagree on the shape of the type parameter
     /// list (different arity, names, or constraint text). Anchored at
@@ -2716,7 +2720,30 @@ pub const Checker = struct {
             }
             if (kind == .interface_decl) {
                 if (self.interfaceHeritageReachesName(node, name, stmts, 0)) {
-                    try self.report(node, TsCodes.interface_incorrectly_extends, "An interface cannot recursively extend itself.");
+                    const name_pos = self.declarationNameSpanStart(node);
+                    const it = hir_mod.interfaceOf(self.hir, node);
+                    const tp_nodes = self.hir.childSlice(it.type_params_start, it.type_params_len);
+                    var name_buf: std.ArrayListUnmanaged(u8) = .empty;
+                    defer name_buf.deinit(self.diag_arena.allocator());
+                    try name_buf.appendSlice(self.diag_arena.allocator(), self.string_interner.get(name));
+                    if (tp_nodes.len > 0) {
+                        try name_buf.append(self.diag_arena.allocator(), '<');
+                        var first_tp = true;
+                        for (tp_nodes) |tp_node| {
+                            if (self.hir.kindOf(tp_node) != .type_parameter) continue;
+                            const tp = hir_mod.typeParameterOf(self.hir, tp_node);
+                            if (!first_tp) try name_buf.appendSlice(self.diag_arena.allocator(), ", ");
+                            try name_buf.appendSlice(self.diag_arena.allocator(), self.string_interner.get(tp.name));
+                            first_tp = false;
+                        }
+                        try name_buf.append(self.diag_arena.allocator(), '>');
+                    }
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Type '{s}' recursively references itself as a base type.",
+                        .{name_buf.items},
+                    );
+                    try self.reportAt(node, name_pos, TsCodes.type_recursively_references_itself_as_base, msg);
                 }
                 const key: DeclarationKey = .{ .name = name, .virtual_section_start = virtual_section };
                 const gop = try seen_interfaces.getOrPut(self.gpa, key);
@@ -28706,7 +28733,7 @@ pub const Checker = struct {
                         try self.report(node, TsCodes.invalid_import_call, "This use of 'import' is invalid. 'import()' calls can be written, but they must have parentheses and cannot have type arguments.");
                     }
                     if (self.dynamicImportModuleKindDisallowsImportCall()) {
-                        try self.report(node, TsCodes.dynamic_import_bad_module, "Dynamic imports are only supported when the '--module' flag is set to a dynamic-import-capable module kind.");
+                        try self.report(node, TsCodes.dynamic_import_bad_module, "Dynamic imports are only supported when the '--module' flag is set to 'es2020', 'es2022', 'esnext', 'commonjs', 'amd', 'system', 'umd', 'node16', 'node18', 'node20', or 'nodenext'.");
                     }
                     if (args.len == 0) {
                         const msg = try std.fmt.allocPrint(
@@ -54006,7 +54033,7 @@ test "checker: interface heritage detects recursive extends chain" {
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.interface_incorrectly_extends) found = true;
+        if (d.code == TsCodes.type_recursively_references_itself_as_base) found = true;
     }
     try T.expect(found);
 }
