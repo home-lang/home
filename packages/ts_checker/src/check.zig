@@ -18456,6 +18456,7 @@ pub const Checker = struct {
                     return true;
                 },
                 .declaration => {
+                    if (try self.reportExternalArbitraryExtensionDeclarationImport(node, spec, external.resolved_path)) return true;
                     if (isDeclarationFileSpecifier(spec) and
                         !resolvedPathEndsWithRelativeSpecifier(external.resolved_path, spec))
                         return false;
@@ -18589,6 +18590,35 @@ pub const Checker = struct {
             .message = msg,
         });
         return true;
+    }
+
+    fn reportExternalArbitraryExtensionDeclarationImport(self: *Checker, node: NodeId, spec: []const u8, resolved_path: []const u8) CheckError!bool {
+        const display = externalArbitraryExtensionDeclarationDisplayPath(spec, resolved_path) orelse return false;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Module '{s}' was resolved to '{s}', but '--allowArbitraryExtensions' is not set.",
+            .{ spec, display },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = self.moduleSpecifierQuotePos(node, spec),
+            .code = TsCodes.arbitrary_extension_requires_option,
+            .message = msg,
+        });
+        return true;
+    }
+
+    fn externalArbitraryExtensionDeclarationDisplayPath(spec: []const u8, resolved_path: []const u8) ?[]const u8 {
+        if (!std.mem.startsWith(u8, spec, ".")) return null;
+        const dot = std.mem.lastIndexOfScalar(u8, spec, '.') orelse return null;
+        const ext = spec[dot..];
+        if (isStandardModuleSpecifierExtension(ext)) return null;
+        if (!std.mem.endsWith(u8, resolved_path, ".ts")) return null;
+        if (std.mem.indexOf(u8, resolved_path, ".d.") == null) return null;
+        if (!std.mem.endsWith(u8, resolved_path[0 .. resolved_path.len - ".ts".len], ext)) return null;
+        var display = resolved_path;
+        while (std.mem.startsWith(u8, display, "/")) display = display[1..];
+        return display;
     }
 
     /// TS2307 for re-export forms (`export * from`, `export * as ns

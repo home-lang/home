@@ -270,6 +270,11 @@ pub const Resolver = struct {
                 };
             }
         }
+        if (!explicit_known) {
+            if (try self.tryArbitraryExtensionDeclaration(base)) |resolution| {
+                return resolution;
+            }
+        }
         // Probe each extension in order.
         for (self.config.extensions) |ext| {
             const candidate = std.fmt.allocPrint(self.ar(), "{s}{s}", .{ base, ext }) catch return error.OutOfMemory;
@@ -292,6 +297,19 @@ pub const Resolver = struct {
             }
         }
         return null;
+    }
+
+    fn tryArbitraryExtensionDeclaration(self: *Resolver, base: []const u8) ResolveError!?Resolution {
+        const dot = std.mem.lastIndexOfScalar(u8, base, '.') orelse return null;
+        const slash = std.mem.lastIndexOfScalar(u8, base, '/');
+        if (slash != null and dot < slash.?) return null;
+        const candidate = std.fmt.allocPrint(self.ar(), "{s}.d{s}.ts", .{ base[0..dot], base[dot..] }) catch return error.OutOfMemory;
+        if (!self.fs.fileExists(candidate)) return null;
+        return .{
+            .path = candidate,
+            .source = .relative,
+            .is_declaration = true,
+        };
     }
 
     fn tryDirectoryIndex(self: *Resolver, dir: []const u8) ResolveError!?Resolution {
@@ -890,7 +908,8 @@ fn isDeclarationPath(s: []const u8) bool {
         std.mem.endsWith(u8, s, ".d.mts") or
         std.mem.endsWith(u8, s, ".d.cts") or
         std.mem.endsWith(u8, s, ".d.hm") or
-        std.mem.endsWith(u8, s, ".d.home");
+        std.mem.endsWith(u8, s, ".d.home") or
+        (std.mem.endsWith(u8, s, ".ts") and std.mem.indexOf(u8, s, ".d.") != null);
 }
 
 fn hasExtension(s: []const u8, ext: []const u8) bool {
@@ -1293,6 +1312,19 @@ test "Resolver: .d.ts marked as declaration" {
     defer r.deinit();
     const res = try r.resolve("./types", "/proj/main.ts");
     try T.expectEqualStrings("/proj/types.d.ts", res.path);
+    try T.expect(res.is_declaration);
+}
+
+test "Resolver: arbitrary extension declaration companion resolves" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/dir/native.d.node.ts", "export function doNativeThing(): unknown;");
+    try vfs.addFile("/proj/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const res = try r.resolve("./dir/native.node", "/proj/main.ts");
+    try T.expectEqualStrings("/proj/dir/native.d.node.ts", res.path);
     try T.expect(res.is_declaration);
 }
 

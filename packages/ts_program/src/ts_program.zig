@@ -115,11 +115,7 @@ pub const Program = struct {
             .source = owned_source,
             .compilation = null,
             .imports = .empty,
-            .is_declaration = std.mem.endsWith(u8, path, ".d.ts") or
-                std.mem.endsWith(u8, path, ".d.mts") or
-                std.mem.endsWith(u8, path, ".d.cts") or
-                std.mem.endsWith(u8, path, ".d.hm") or
-                std.mem.endsWith(u8, path, ".d.home"),
+            .is_declaration = isDeclarationPath(path),
             .is_tsx = std.mem.endsWith(u8, path, ".tsx") or std.mem.endsWith(u8, path, ".jsx"),
         };
 
@@ -136,6 +132,15 @@ pub const Program = struct {
 
     pub fn fileById(self: *const Program, id: FileId) *File {
         return self.files.items[id];
+    }
+
+    fn isDeclarationPath(path: []const u8) bool {
+        return std.mem.endsWith(u8, path, ".d.ts") or
+            std.mem.endsWith(u8, path, ".d.mts") or
+            std.mem.endsWith(u8, path, ".d.cts") or
+            std.mem.endsWith(u8, path, ".d.hm") or
+            std.mem.endsWith(u8, path, ".d.home") or
+            (std.mem.endsWith(u8, path, ".ts") and std.mem.indexOf(u8, path, ".d.") != null);
     }
 
     /// Replace the source bytes for an existing file (matched by
@@ -655,6 +660,8 @@ test "Program: declaration files marked is_declaration" {
     try T.expect(p.fileById(0).is_declaration);
     _ = try p.add("/types.d.home", "declare const Y: number;");
     try T.expect(p.fileById(1).is_declaration);
+    _ = try p.add("/native.d.node.ts", "export function doNativeThing(): unknown;");
+    try T.expect(p.fileById(2).is_declaration);
 }
 
 test "Program: compileAll routes per-file is_declaration_file (no TS1039 from .tsx neighbour of .d.ts)" {
