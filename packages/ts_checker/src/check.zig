@@ -44033,7 +44033,12 @@ pub const Checker = struct {
                     if (p.type_annotation != hir_mod.none_node_id and
                         self.typeNodeReferencesTypeParams(p.type_annotation, visible_params))
                     {
-                        try self.report(param, TsCodes.static_member_type_parameter, "Static members cannot reference class type parameters.");
+                        // tsc anchors TS2302 at the first
+                        // class-type-parameter reference inside the
+                        // annotation, not at the parameter binding.
+                        // Mirrors `staticMembersUsingClassTypeParameter.ts(4,17)`.
+                        const anchor_node = self.firstTypeParamRefIn(p.type_annotation, visible_params) orelse p.type_annotation;
+                        try self.report(anchor_node, TsCodes.static_member_type_parameter, "Static members cannot reference class type parameters.");
                     }
                 }
                 if (f.return_type != hir_mod.none_node_id and self.typeNodeReferencesTypeParams(f.return_type, visible_params)) {
