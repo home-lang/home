@@ -493,6 +493,7 @@ pub const TsCodes = struct {
     pub const generator_void_return: u32 = 2505;
     pub const yield_star_not_iterable: u32 = 2488;
     pub const type_not_array_type: u32 = 2461;
+    pub const type_not_array_or_string_type: u32 = 2495;
     pub const for_of_lhs_invalid: u32 = 2487;
     pub const assignment_lhs_not_variable: u32 = 2364;
     pub const symbol_operator_not_allowed: u32 = 2469;
@@ -2169,17 +2170,21 @@ pub const Checker = struct {
                 try self.checkForOfTarget(fr.target);
                 try self.checkForOfVarSelfReferenceDiagnostics(node, fr.target, fr.source);
                 if (!self.isIterableLikeType(src_t)) {
-                    // Delegate to `reportIteratorRequired` which prefers
-                    // the named type, then falls back to the object-type
-                    // shape (`{ [Symbol.iterator]?(): Iterator<string>; }`),
-                    // and only then to the bare prose. Matches the
-                    // `for-of29.ts(5,15)` baseline where the source is an
-                    // anonymous object-literal type with an optional
-                    // `[Symbol.iterator]` member — tsc renders the full
-                    // structural shape, not the bare "Type must have …"
-                    // form. Anchoring on `fr.source` keeps the column at
-                    // the source expression (matches existing baselines).
-                    try self.reportIteratorRequired(fr.source, src_t);
+                    if (self.target_es5_baseline) {
+                        try self.reportTypeNotArrayOrStringForForOf(fr.source, src_t, fr.source);
+                    } else {
+                        // Delegate to `reportIteratorRequired` which prefers
+                        // the named type, then falls back to the object-type
+                        // shape (`{ [Symbol.iterator]?(): Iterator<string>; }`),
+                        // and only then to the bare prose. Matches the
+                        // `for-of29.ts(5,15)` baseline where the source is an
+                        // anonymous object-literal type with an optional
+                        // `[Symbol.iterator]` member — tsc renders the full
+                        // structural shape, not the bare "Type must have …"
+                        // form. Anchoring on `fr.source` keeps the column at
+                        // the source expression (matches existing baselines).
+                        try self.reportIteratorRequired(fr.source, src_t);
+                    }
                 } else {
                     try self.checkForOfIteratorShape(fr.source, src_t);
                 }
@@ -26092,6 +26097,23 @@ pub const Checker = struct {
         else
             "Type is not an array type.";
         try self.report(target_node, TsCodes.type_not_array_type, msg);
+    }
+
+    fn reportTypeNotArrayOrStringForForOf(self: *Checker, target_node: NodeId, source_t: TypeId, source_node: NodeId) CheckError!void {
+        const name_opt: ?[]const u8 = blk: {
+            if (source_node != hir_mod.none_node_id and self.hir.kindOf(source_node) == .literal_number) {
+                const text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(source_node), " \t\r\n");
+                if (text.len != 0) break :blk text;
+            }
+            if (self.allocSimpleTypeName(source_t) catch null) |n| break :blk n;
+            if (self.allocObjectTypeShape(source_t) catch null) |s| break :blk s;
+            break :blk null;
+        };
+        const msg = if (name_opt) |source_name|
+            try std.fmt.allocPrint(self.diag_arena.allocator(), "Type '{s}' is not an array type or a string type.", .{source_name})
+        else
+            "Type is not an array type or a string type.";
+        try self.report(target_node, TsCodes.type_not_array_or_string_type, msg);
     }
 
     fn checkArrayDestructuringAssignment(self: *Checker, target_node: NodeId, source_t: TypeId, source_node: NodeId, source_offset: usize) CheckError!void {
@@ -59615,6 +59637,25 @@ test "checker: for-of binds the loop variable to the array's element type" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: ES5 for-of over non-array source emits TS2495" {
+    const s = try newSetup(
+        \\for (let x of 0) {
+        \\  x;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setTargetEs5Baseline(true);
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.type_not_array_or_string_type) continue;
+        try T.expectEqualStrings("Type '0' is not an array type or a string type.", d.message);
+        found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: for-of element references a typed identifier" {
