@@ -18,16 +18,19 @@ macOS, Linux, and the WASM target.
   That subset currently executes the todo-registration smoke, the Web
   `atob`/`btoa` smoke, fourteen regression smokes, one bundler
   constant-fold smoke, six test-runner expectation smokes, one nested-describe
-  smoke, one `Bun.stripANSI` smoke, and the Node `DOMException`, Web
-  `Response.json` / `Response.redirect`, Web `Request` cache/mode/clone, JSC
-  `ShadowRealm`, Bun file-metadata, Node `Buffer`
-  binary/UTF-16LE/compare/inspect limit, `Map`/`Set` deep-equality, lifecycle
-  hook, `Bun.inspect` Set formatting, `MessageEvent` constructor behavior, Bun
-  version aliases, own-key matcher, and stack-trace smokes. It is only a smoke
-  path for JSC + `home_test`; it is not the release gate. The bootstrap harness is
-  installed once per JSC engine, resets counters before each file, and lowers
-  supported `bun:test` imports through a virtual
-  `globalThis.__home_import("bun:test")` module shim.
+  smoke, one `Bun.stripANSI` smoke, and narrow bootstrap coverage for Node
+  `DOMException`, Web `Response.json` / `Response.redirect`, Web `Request`
+  cache/mode/clone, JSC `ShadowRealm`, Bun file metadata, Node `Buffer`
+  binary/UTF-16LE/compare/inspect-limit behavior, `Map`/`Set` deep-equality,
+  lifecycle hooks, `Bun.inspect` Set formatting, `MessageEvent` constructor
+  behavior, Bun version aliases, own-key matchers, and a `prepareStackTrace`
+  crash smoke. It is only a smoke path for JSC + `home_test`; it is not the
+  release gate. The bootstrap harness is installed once per JSC engine, resets
+  counters before each file, lowers supported `bun:test` imports through a
+  virtual `globalThis.__home_import("bun:test")` module shim, and fails closed
+  as unsupported for unsupported import shapes, unsupported module syntax,
+  async tests or hooks, explicit unsupported shim paths, and files that
+  register zero tests.
 - No source renames. `Bun.serve`, `Bun.write`, `Bun.spawn`, etc. appear
   verbatim. The `Bun.* -> Home.*` rename happens at **test-runtime** (via the
   host runtime's surface aliasing), not at copy time, so the corpus stays a

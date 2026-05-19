@@ -95,7 +95,9 @@ ported as Tier-0 leaves).
 
 ### `Bun.inspect`
 
-🔴 Not implemented.
+🔴 Not implemented. The Bun corpus bootstrap has a narrow
+`Bun.inspect({ key: Set<string> })` shim for one allowlisted smoke; this
+is not a JS-callable runtime API.
 
 ### `Bun.peek`
 
@@ -136,7 +138,9 @@ ported as Tier-0 leaves).
 
 ### `Bun.version` / `Bun.revision`
 
-🔴 Not implemented.
+🔴 Not implemented. The Bun corpus bootstrap exposes smoke-test aliases
+for allowlisted files only; the runtime namespace does not yet provide
+these as real APIs.
 
 ## Bundler (`packages/bundler/`)
 
@@ -168,19 +172,22 @@ Bootstrap smoke: `home test packages/runtime/test/bun-corpus
 --bun-corpus-native-subset=minimal-js` executes thirty-five allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
-todo-registration smoke, the Web `atob`/`btoa` smoke, fourteen regression
-smokes, one bundler constant-fold smoke, six test-runner
+todo-registration smoke, the Web `atob`/`btoa` smoke, fourteen
+regression smokes, one bundler constant-fold smoke, six test-runner
 expectation smokes, one nested-describe smoke, one `Bun.stripANSI`
-smoke, and the Node `DOMException`, Web `Response.json` /
-`Response.redirect`, Web `Request` cache/mode/clone, JSC `ShadowRealm`,
-Bun file-metadata, Node `Buffer` binary/UTF-16LE/compare/inspect limit,
-`Map`/`Set` deep-equality, `Bun.inspect` Set formatting, `MessageEvent`
-constructor behavior, Bun version aliases, lifecycle hook, own-key matcher, and
-stack-trace smokes. The bootstrap harness is
-installed once per JSC engine, resets counters before each file, and
-lowers supported `bun:test` imports through a virtual
-`globalThis.__home_import("bun:test")` module shim. This is deliberately
-not the acceptance gate.
+smoke, and narrow bootstrap coverage for Node `DOMException`, Web
+`Response.json` / `Response.redirect`, Web `Request` cache/mode/clone,
+JSC `ShadowRealm`, Bun file metadata, Node `Buffer`
+binary/UTF-16LE/compare/inspect-limit behavior, `Map`/`Set`
+deep-equality, `Bun.inspect` Set formatting, `MessageEvent` constructor
+behavior, Bun version aliases, lifecycle hooks, own-key matchers, and a
+`prepareStackTrace` crash smoke. The bootstrap harness is installed once
+per JSC engine, resets counters before each file, lowers supported
+`bun:test` imports through a virtual
+`globalThis.__home_import("bun:test")` module shim, and fails closed as
+unsupported for unsupported import shapes, unsupported module syntax,
+async tests or hooks, explicit unsupported shim paths, and files that
+register zero tests. This is deliberately not the acceptance gate.
 
 ## Summary
 

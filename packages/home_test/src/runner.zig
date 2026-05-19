@@ -83,6 +83,18 @@ pub const FileRun = struct {
             .first_failure_message_owned = true,
         };
     }
+
+    pub fn unsupportedOwned(allocator: std.mem.Allocator, path: []const u8, message: []const u8) !FileRun {
+        const copied = try allocator.dupe(u8, message);
+        return .{
+            .result = .{
+                .path = path,
+                .unsupported = 1,
+                .first_failure_message = copied,
+            },
+            .first_failure_message_owned = true,
+        };
+    }
 };
 
 test "runner adapter labels are stable" {
@@ -118,4 +130,13 @@ test "file run can report borrowed unsupported reasons" {
     try std.testing.expectEqual(result.TestStatus.unsupported, file_run.result.status());
     try std.testing.expectEqualStrings("no tests", file_run.result.first_failure_message);
     try std.testing.expect(!file_run.first_failure_message_owned);
+}
+
+test "file run owns copied unsupported reasons" {
+    var file_run = try FileRun.unsupportedOwned(std.testing.allocator, "sample.test.ts", "not implemented");
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(result.TestStatus.unsupported, file_run.result.status());
+    try std.testing.expectEqualStrings("not implemented", file_run.result.first_failure_message);
+    try std.testing.expect(file_run.first_failure_message_owned);
 }

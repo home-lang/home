@@ -25,26 +25,33 @@ preparation, and summary aggregation. The full runner remains blocked on
 the native `bun:test` port and JSC host-call bridge.
 
 The bootstrap harness is intentionally narrow but now installs once per
-JSC engine, resets counters before each allowlisted file, and reports a
-file as unsupported if it registers zero `bun:test` tests. It covers
-the first real smoke slice: basic `describe` / `test` / `it`,
-`it.todo`, `it.failing`, returned-thenable rejection, `.not`, `toBe`,
-`toBeDefined`, `toBeUndefined`, `toBeTypeOf`, `toBeInstanceOf`, small
-`toEqual` / `toStrictEqual` deep equality, `toThrow`, `expect.any`,
-`expect.unreachable`, a small `expect.extend` asymmetric matcher path,
-`toIncludeRepeated`, `toContainKey`, `toContainKeys`,
-`toContainAnyKeys`, `atob` / `btoa`, `Bun` branding plus
-`Bun.stripANSI`, a DOMException shim, a tiny Node `Buffer.alloc` /
-`Buffer.write(..., "binary")` / `Buffer.from(..., "utf-16le")` shim, Web
-`Response.json` / `Response.redirect` shims, and a narrow
-`ShadowRealm.evaluate` shim. The source rewrite lowers supported
-`bun:test` imports to a virtual `globalThis.__home_import("bun:test")`
-module and lowers `import.meta.dir/path` to the same per-file metadata
-used for the directory and filename globals. Unsupported deep-equality
-types such as `Map`, `Set`, typed arrays, `ArrayBuffer`, and `Error`
-now fail closed instead of silently comparing as empty-key objects. It
-is a stepping stone for corpus bring-up, not a substitute for the
-vendored Zig runner below.
+JSC engine, resets counters before each allowlisted file, reports a file
+as unsupported if it registers zero `bun:test` tests, and preserves
+explicit harness unsupported errors across the
+`adapters/jsc_bootstrap.zig` boundary instead of counting them as
+assertion failures. It covers the first real smoke slice: basic
+`describe` / `test` / `it`, `it.todo`, `it.failing`, lifecycle hooks,
+returned-thenable rejection, `.not`, `toBe`, `toBeDefined`,
+`toBeUndefined`, `toBeTruthy`, `toBeNumber`, `toBeTypeOf`,
+`toBeInstanceOf`, `toMatchObject`, object-form error matching in
+`toThrow`, small `toEqual` / `toStrictEqual` deep equality including
+`Map` / `Set`, `expect.any`, `expect.unreachable`, a small
+`expect.extend` asymmetric matcher path, `toIncludeRepeated`,
+`toContainKey`, `toContainKeys`, `toContainAnyKeys`, `atob` / `btoa`,
+`Bun` branding plus `Bun.version`, `Bun.revision`, `Bun.stripANSI`,
+`process.versions.bun`, `process.revision`, DOMException,
+Request/Response/Headers/URL, `node-fetch`, `node:buffer`, Node
+`Buffer.alloc` / fill / `Buffer.from(..., "utf-16le")` / compare /
+write / toString / inspect-limit subsets, Event / MessageChannel /
+MessagePort / MessageEvent constructor shims, `Bun.inspect({ key:
+Set<string> })`, and a narrow `ShadowRealm.evaluate` shim. The source
+rewrite lowers supported `bun:test` imports to a virtual
+`globalThis.__home_import("bun:test")` module and lowers
+`import.meta.dir/path` to the same per-file metadata used for the
+directory and filename globals. Unsupported deep-equality types such as
+typed arrays, `ArrayBuffer`, and `Error` now fail closed instead of
+silently comparing as empty-key objects. It is a stepping stone for
+corpus bring-up, not a substitute for the vendored Zig runner below.
 
 > **Why a verbatim copy?** Per direction 2026-05-14: Bun is shifting
 > its core to Rust; we want to continue maintaining the Zig portion

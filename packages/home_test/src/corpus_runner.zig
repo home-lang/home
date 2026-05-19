@@ -140,7 +140,8 @@ const harness_prelude =
     \\  throw new Error(message);
     \\}
     \\function __home_unsupported(message) {
-    \\  const error = new Error(message);
+    \\  const error = new Error("__home_unsupported__:" + message);
+    \\  error.name = "HomeUnsupportedError";
     \\  error.__home_unsupported = true;
     \\  throw error;
     \\}
@@ -1529,6 +1530,67 @@ test "bootstrap runner keeps todo-only files as todo" {
 
     try std.testing.expectEqual(test_result.TestStatus.todo, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
+}
+
+test "bootstrap runner reports unsupported thrown by harness as unsupported" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\test("unsupported Buffer path", () => {
+        \\  Buffer.from("x");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/buffer-unsupported.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.unsupported, file_run.result.status());
+    try std.testing.expect(std.mem.indexOf(u8, file_run.result.first_failure_message, "Only Buffer.from") != null);
+}
+
+test "bootstrap runner reports returned promises as unsupported" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\test("async path", () => Promise.resolve());
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/async-unsupported.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.unsupported, file_run.result.status());
+    try std.testing.expect(std.mem.indexOf(u8, file_run.result.first_failure_message, "Async tests are not supported") != null);
+}
+
+test "bootstrap runner keeps real assertion failures as failed" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\test("real failure", () => {
+        \\  expect(1).toBe(2);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/assertion-failure.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.failed, file_run.result.status());
+    try std.testing.expect(std.mem.indexOf(u8, file_run.result.first_failure_message, "Expected 1 to be 2") != null);
 }
 
 test "bootstrap toMatchObject rejects missing keys and array length mismatches" {

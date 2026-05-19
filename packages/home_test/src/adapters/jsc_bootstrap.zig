@@ -71,8 +71,14 @@ pub const Runtime = struct {
         );
         defer evaluation.deinit(allocator);
 
-        if (evaluation.exception != null or evaluation.value == null) {
+        if (evaluation.exception != null) {
+            if (unsupportedExceptionReason(evaluation.exception_message)) |reason| {
+                return runner.FileRun.unsupportedOwned(allocator, spec.path, reason);
+            }
             return runner.FileRun.failOwned(allocator, spec.path, evaluation.exception_message);
+        }
+        if (evaluation.value == null) {
+            return runner.FileRun.failOwned(allocator, spec.path, null);
         }
 
         const finish_evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(
@@ -84,8 +90,14 @@ pub const Runtime = struct {
         );
         defer finish_evaluation.deinit(allocator);
 
-        if (finish_evaluation.exception != null or finish_evaluation.value == null) {
+        if (finish_evaluation.exception != null) {
+            if (unsupportedExceptionReason(finish_evaluation.exception_message)) |reason| {
+                return runner.FileRun.unsupportedOwned(allocator, spec.path, reason);
+            }
             return runner.FileRun.failOwned(allocator, spec.path, finish_evaluation.exception_message);
+        }
+        if (finish_evaluation.value == null) {
+            return runner.FileRun.failOwned(allocator, spec.path, null);
         }
 
         const counters = self.readCounters(allocator) catch |err| {
@@ -129,6 +141,24 @@ fn readCounter(allocator: std.mem.Allocator, engine: *home_rt.jsc.engine.Engine,
     return @intFromFloat(number);
 }
 
+const unsupported_error_name = "HomeUnsupportedError";
+const unsupported_error_marker = "__home_unsupported__:";
+
+fn unsupportedExceptionReason(message: ?[]const u8) ?[]const u8 {
+    const text = message orelse return null;
+    if (std.mem.indexOf(u8, text, unsupported_error_name) == null) return null;
+    const marker_index = std.mem.indexOf(u8, text, unsupported_error_marker) orelse return null;
+    return text[marker_index + unsupported_error_marker.len ..];
+}
+
 test "adapter label is stable" {
     try std.testing.expectEqualStrings("jsc-bootstrap", runner.Adapter.jsc_bootstrap.label());
+}
+
+test "adapter recognizes HomeUnsupported exceptions" {
+    try std.testing.expectEqualStrings("Async tests are not supported", unsupportedExceptionReason("HomeUnsupportedError: __home_unsupported__:Async tests are not supported").?);
+    try std.testing.expectEqualStrings("Only Buffer.from is supported", unsupportedExceptionReason("Exception: HomeUnsupportedError: __home_unsupported__:Only Buffer.from is supported").?);
+    try std.testing.expect(unsupportedExceptionReason("HomeUnsupportedError: assertion failed") == null);
+    try std.testing.expect(unsupportedExceptionReason("Error: __home_unsupported__:assertion failed") == null);
+    try std.testing.expect(unsupportedExceptionReason("Error: assertion failed") == null);
 }
