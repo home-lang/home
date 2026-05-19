@@ -48,9 +48,9 @@ view; these are the drill-down pages — modeled after Bun's
 | **TypeScript — named-category survey** | **86 / 86 — 100%** | `assignmentCompatibility` + `comparable` + `inOperator` + `stringLiteral` |
 | **TypeScript — diagnostic codes** | **~2,076 entries** | mirrors the full upstream `diag(code, …)` table |
 | **LSP wire methods** | **53 / ~70 — ~76%** | `SUPPORTED_METHODS` in `packages/ts_lsp_server/` |
-| **Bun runtime — source files ported** | **484 / 1,193 — ~40.6%** | substrate + JSC M6 milestone landed |
+| **Bun runtime — source files ported** | **485 / 1,193 — ~40.7%** | substrate + JSC M6 milestone landed |
 | **Bun compat shim — `bun.*` symbols** | **7 / ~103 — ~6.8%** | Tier-0 lets vendored Bun source compile against Home's stdlib |
-| **Node.js — `node:*` binding files** | **27 files** | Zig substrate landing module-by-module (buffer / stream / fs / events / util / assert / os / url / querystring / crypto / process / string_decoder) |
+| **Node.js — `node:*` binding files** | **28 files** | Zig substrate landing module-by-module (buffer / stream / fs / events / util / assert / os / url / querystring / crypto / process / string_decoder / tty) |
 | **JSC bring-up (Phase 12.2)** | **96 files** | M6 milestone — JSON + Promise + Iterator + Global helpers landed |
 | **Language features (capability matrix)** | **18 stable / 43 partial / 2 not-yet — 63 total** | ~28.6% stable, ~68.3% in progress, ~3.2% not yet (includes TS frontend + Runtime/Bun rows) |
 | **Total test count** | **3,300+ / 3,300+ — ~100%** | `zig build test --summary all` (pre-existing `d_ts_fast` + `home_rt` env aside) |
@@ -102,11 +102,11 @@ to wire up.
 
 | Measurement | Coverage | % |
 |---|---|---|
-| **Bun source files ported** | **484 / 1,193** | **~40.6%** |
+| **Bun source files ported** | **485 / 1,193** | **~40.7%** |
 | Subsystems scaffolded | 60 directories under `packages/runtime/src/` | — |
 | Functional runtime | 🚧 JSC M6 landed; JS-callable bridge pending | — |
 | JSC bring-up (Phase 12.2) | 96 files | M1-M6 landed (Engine stub, exception + coerce + array helpers, call + callback helpers, JSON + Promise + Iterator + Global helpers) |
-| `node:*` substrate (Phase 12.7) | 27 files | round-14 landed (buffer, stream, fs, events, util, assert, os, url, querystring, crypto, process, string_decoder + binding files) |
+| `node:*` substrate (Phase 12.7) | 28 files | round-15 landed (buffer, stream, fs, events, util, assert, os, url, querystring, crypto, process, string_decoder, tty + binding files) |
 
 Upstream pinned at `fd0b6f1a` (see
 [`packages/runtime/UPSTREAM_SHA.txt`](./packages/runtime/UPSTREAM_SHA.txt));
@@ -125,7 +125,7 @@ Bun's `test/` corpus must pass **100% with no skips** once feature-complete.
 | 12.4 — Module loader | `resolver/`, `module_loader.zig` | 🚧 blocked on 12.2 |
 | 12.5 — Web / HTTP / DNS | `web/`, `http/`, `csrf/`, `dns/` | 🚧 blocked on 12.3 |
 | 12.6 — Home.* JS surface | `bun.zig` (renamed to `Home.*`) | 🚧 blocked on 12.2 |
-| 12.7 — `node:*` shims | `node/` | 🟡 substrate landing module-by-module (27 files: buffer, stream, fs, events, util, assert, os, url, querystring, crypto, process, string_decoder) |
+| 12.7 — `node:*` shims | `node/` | 🟡 substrate landing module-by-module (28 files: buffer, stream, fs, events, util, assert, os, url, querystring, crypto, process, string_decoder, tty) |
 | 12.8 — `home test` runner | `test/` | 🚧 blocked on 12.2 |
 | 12.9 — Pantry integration | `install/` | 🚧 scaffold in progress |
 | 12.10 — CLI surface | `cli/` | 🚧 scaffold landed |
@@ -175,7 +175,7 @@ Promise + Iterator + Global helpers — across 96 files).
 
 | Measurement | Coverage | Notes |
 |---|---|---|
-| Node binding files ported | 27 files | `path`, `Stat`, `StatFS`, `dir_iterator`, `time_like`, `fs_events`, `os_constants`, `nodejs_error_code`, `node_fs_constant`, `node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`, `types`, `util/parse_args_utils`, `assert/myers_diff`, plus top-level `buffer.zig`, `stream.zig`, `fs.zig`, `events.zig`, `util.zig`, `assert.zig`, `os.zig`, `url.zig`, `querystring.zig`, `crypto.zig`, `process.zig`, `string_decoder.zig` (Phase 12.7 round-14). |
+| Node binding files ported | 28 files | `path`, `Stat`, `StatFS`, `dir_iterator`, `time_like`, `fs_events`, `os_constants`, `nodejs_error_code`, `node_fs_constant`, `node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`, `types`, `util/parse_args_utils`, `assert/myers_diff`, plus top-level `buffer.zig`, `stream.zig`, `fs.zig`, `events.zig`, `util.zig`, `assert.zig`, `os.zig`, `url.zig`, `querystring.zig`, `crypto.zig`, `process.zig`, `string_decoder.zig`, `tty.zig` (Phase 12.7 round-15). |
 | Functional `node:*` modules | 🚧 Awaiting JSC JS-callable bridge | Pantry CLI replaces `npm install` / `bun install`; everything else routes through the Bun runtime port once JSC ships its JS bridge (Phase 12.2 milestones M3-M6 are in; the JS-callable wire-up is the remaining piece). |
 
 ### LSP / IDE coverage — `home-lsp` vs `tsserver`

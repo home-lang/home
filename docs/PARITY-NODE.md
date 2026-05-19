@@ -7,11 +7,11 @@ section.
 
 > **Status:** Substrate landing module-by-module. JSC bring-up
 > (Phase 12.2) is at the M6 milestone — JSON + Promise + Iterator
-> + Global helpers across 96 files. Phase 12.7 round-14 has
+> + Global helpers across 96 files. Phase 12.7 round-15 has
 > top-level `node:*` substrate modules (`buffer`, `stream`, `fs`,
 > `events`, `util`, `assert`, `os`, `url`, `querystring`, `crypto`,
-> `process`, `string_decoder`) alongside the binding/helper files.
-> Total **27 Zig substrate files** ported; no
+> `process`, `string_decoder`, `tty`) alongside the binding/helper
+> files. Total **28 Zig substrate files** ported; no
 > `node:*` module is JavaScript-callable yet, but the runway is
 > shortening. Once JSC reaches the JS-callable milestone, each
 > module flips from 🔴 to 🟡 or 🟢 based on Bun's existing port.
@@ -232,7 +232,12 @@ the runner is a port of Bun's test runner, not Node's, but the
 
 ### [`node:tty`](https://nodejs.org/api/tty.html)
 
-🔴 Not implemented.
+🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
+landed: `packages/runtime/src/node/tty.zig`, backed by
+`packages/runtime/src/core/tty.zig` — `isatty`, window-size probing,
+raw/normal/io terminal modes, color-depth environment rules, and
+lightweight stream state for future `ReadStream` / `WriteStream`
+wrappers.
 
 ### [`node:url`](https://nodejs.org/api/url.html)
 
@@ -289,11 +294,11 @@ equivalent in JSC.
 | 🔴 Not implemented (JS-callable) | 47 | ~98% |
 | ❌ Won't implement | 1 | ~2% |
 
-**Zig substrate ported:** 27 files. Phase 12.7 round-14 has top-level
+**Zig substrate ported:** 28 files. Phase 12.7 round-15 has top-level
 module shims for `assert.zig`, `buffer.zig`, `crypto.zig`,
 `events.zig`, `fs.zig`, `os.zig`, `path.zig`, `process.zig`,
-`querystring.zig`, `stream.zig`, `string_decoder.zig`, `url.zig`,
-and `util.zig`. On top of the 14 binding/helper files already
+`querystring.zig`, `stream.zig`, `string_decoder.zig`, `tty.zig`,
+`url.zig`, and `util.zig`. On top of the 14 binding/helper files already
 present: `Stat`, `StatFS`, `dir_iterator`, `fs_events`,
 `os_constants`, `nodejs_error_code`, `node_fs_constant`,
 `node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`,
@@ -303,6 +308,6 @@ JSC bring-up (Phase 12.2) has reached the M6 milestone — JSON +
 Promise + Iterator + Global helpers across 96 files. Once the
 JS-callable bridge wires up, the substrate-backed modules
 (`assert`, `buffer`, `crypto`, `events`, `fs`, `net`, `os`, `path`,
-`process`, `querystring`, `stream`, `string_decoder`, `url`, `util`)
+`process`, `querystring`, `stream`, `string_decoder`, `tty`, `url`, `util`)
 flip from 🔴 to 🟡 / 🟢 based on Bun's existing port, and the
 remaining modules grow substrate per their own Phase 12.7 rounds.

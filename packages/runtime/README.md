@@ -1,11 +1,11 @@
 # Home Runtime (`packages/runtime/`)
 
-> **Status (2026-05-20):** **484 / 1,193 Bun source files ported (~40.6%).**
+> **Status (2026-05-20):** **485 / 1,193 Bun source files ported (~40.7%).**
 > Phase 12.2 (JSC bring-up) has reached the M6 milestone — JSON + Promise
-> + Iterator + Global helpers across 96 files. Phase 12.7 round-14
+> + Iterator + Global helpers across 96 files. Phase 12.7 round-15
 > has top-level `node:*` substrate modules for `buffer`, `stream`,
 > `fs`, `events`, `util`, `assert`, `os`, `url`, `querystring`, and
-> `crypto`, `process`, and `string_decoder`. End-to-end
+> `crypto`, `process`, `string_decoder`, and `tty`. End-to-end
 > `home run app.ts` waits
 > on the JS-callable JSC bridge to wire up. Detailed per-area status:
 > [`docs/PARITY-BUN.md`](../../docs/PARITY-BUN.md) and
@@ -45,17 +45,20 @@ Per user direction (2026-05-17): once the runtime copy is feature-complete, Home
 
 1. Copy `~/Code/bun/test/` into `packages/runtime/test/bun-corpus/` at the pinned SHA.
 2. `home test packages/runtime/test/bun-corpus/` must produce zero failures on macOS, Linux, and the WASM target.
-3. Every test that uses Bun-specific APIs (`Bun.serve`, `Bun.write`, `Bun.spawn`, …) is renamed at copy time to `Home.*` but otherwise unchanged.
+3. The corpus stays verbatim on disk. `Bun.*` APIs are provided by Home's Bun-compat runtime surface at test-runtime, not rewritten at copy time.
 4. Any test that the corpus marks as `bun-only` (e.g. macOS Bonjour specifics) is preserved verbatim and must pass — no skipping.
-5. CI gate is `home test packages/runtime/test/bun-corpus/ --bail=0 --reporter=junit`. A regression on any case blocks merge.
+5. CI gate is `home test packages/runtime/test/bun-corpus/ --bail=0 --reporter=junit --reporter-outfile zig-out/bun-corpus.junit.xml`. A regression on any case blocks merge.
 
-This is the hard release gate for Phase 12. Substrate is in place today; the gate becomes enforceable after Phase 12.2 (JSC bring-up) and Phase 12.8 (test runner copy).
+This is the hard release gate for Phase 12. Substrate is in place today; the
+gate becomes enforceable after Phase 12.2 (JSC bring-up) and Phase 12.8 (test
+runner copy). Until then, `home test packages/runtime/test/bun-corpus/` must
+fail as a native Home gate, not silently delegate to system Bun.
 
 ## What's here today
 
 - `src/home_rt.zig` — aggregator that re-exports every ported subsystem.
 - `src/jsc/` — 96 files; Phase 12.2 milestones M1-M6 (Engine stub, exception + coerce + array helpers, call + callback helpers, JSON + Promise + Iterator + Global helpers).
-- `src/node/` — 27 files; Phase 12.7 round-14 (top-level `assert.zig`, `buffer.zig`, `crypto.zig`, `events.zig`, `fs.zig`, `os.zig`, `path.zig`, `process.zig`, `querystring.zig`, `stream.zig`, `string_decoder.zig`, `url.zig`, `util.zig`, plus binding/helper files: `Stat`, `StatFS`, `dir_iterator`, `fs_events`, `os_constants`, `nodejs_error_code`, `node_fs_constant`, `node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`, `types`, `time_like`, `util/parse_args_utils`, `assert/myers_diff`).
+- `src/node/` — 28 files; Phase 12.7 round-15 (top-level `assert.zig`, `buffer.zig`, `crypto.zig`, `events.zig`, `fs.zig`, `os.zig`, `path.zig`, `process.zig`, `querystring.zig`, `stream.zig`, `string_decoder.zig`, `tty.zig`, `url.zig`, `util.zig`, plus binding/helper files: `Stat`, `StatFS`, `dir_iterator`, `fs_events`, `os_constants`, `nodejs_error_code`, `node_fs_constant`, `node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`, `types`, `time_like`, `util/parse_args_utils`, `assert/myers_diff`).
 - `src/cli/` — destination for Bun's `src/cli/` command dispatch (Phase 12.10 scaffold landed).
 - `src/install/` — `home <-> pantry` shim. Pantry replaces `bun install` entirely.
 - `src/event_loop/`, `src/io/`, `src/async/`, `src/web/`, `src/http/`, `src/runtime/`, `src/string/`, `src/threading/`, `src/css/`, `src/sql/`, `src/uws_sys/`, … — 60 subsystem directories under `src/`, most populated by wave-19+ grinder rounds (Tier-0 / Tier-1 leaves, no JSC dependency yet).
@@ -70,7 +73,7 @@ This is the hard release gate for Phase 12. Substrate is in place today; the gat
 | 12.4 | `resolver/`, `module_loader.zig` | `src/module_loader/` | 🔴 blocked on 12.2 |
 | 12.5 | `web/`, `http/`, `csrf/`, `dns/` | `src/web/` | 🔴 blocked on 12.3 |
 | 12.6 | `bun.zig` (Home.* surface) | `src/home/` | 🔴 blocked on 12.2 |
-| 12.7 | `node/` namespace shims | `src/node/` | 🟡 round-14 landed (27 files) |
+| 12.7 | `node/` namespace shims | `src/node/` | 🟡 round-15 landed (28 files) |
 | 12.8 | `test/` runner | `src/test/` | 🔴 blocked on 12.2 |
 | 12.9 | Pantry CLI integration | `src/install/pantry.zig` | 🟡 scaffold in progress |
 | 12.10 | CLI surface | `src/cli/` | 🟡 scaffold landed |

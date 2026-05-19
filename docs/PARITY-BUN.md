@@ -6,8 +6,8 @@ row is in the
 [README parity status](../README.md#bun-runtime-port-packagesruntime)
 section.
 
-> **Status:** Substrate + JSC M6 landed. **484 / 1,193 Bun source
-> files ported** (~40.6%); the runtime is not yet JavaScript-callable
+> **Status:** Substrate + JSC M6 landed. **485 / 1,193 Bun source
+> files ported** (~40.7%); the runtime is not yet JavaScript-callable
 > end-to-end, but Phase 12.2 (JSC bring-up) has reached the M6
 > milestone — JSON + Promise + Iterator + Global helpers — across
 > 96 files in `packages/runtime/src/jsc/`. Full audit:
@@ -29,7 +29,7 @@ Legend:
 | 12.4 | `resolver/`, `module_loader.zig` | `src/module_loader/` | 🔴 blocked on 12.2 |
 | 12.5 | `web/`, `http/`, `csrf/`, `dns/` | `src/web/` | 🔴 blocked on 12.3 |
 | 12.6 | `bun.zig` (Home.* surface) | `src/home/` | 🔴 blocked on 12.2 |
-| 12.7 | `node/` namespace shims | `src/node/` | 🟡 round-14 landed (27 files: path / Stat / buffer / stream / fs / events / util / assert / os / url / querystring / crypto / process / string_decoder + bindings) |
+| 12.7 | `node/` namespace shims | `src/node/` | 🟡 round-15 landed (28 files: path / Stat / buffer / stream / fs / events / util / assert / os / url / querystring / crypto / process / string_decoder / tty + bindings) |
 | 12.8 | `test/` runner | `src/test/` | 🔴 blocked on 12.2 |
 | 12.9 | Pantry CLI integration | `src/install/pantry.zig` | 🟡 scaffold in progress |
 | 12.10 | CLI surface | `src/cli/` | 🟡 scaffold landed |
@@ -170,10 +170,10 @@ Substrate file-count progress (the only objective number today):
 | Metric | Count | Notes |
 |---|---|---|
 | Bun upstream files (excluding test/codegen/jsc/macros) | 1,193 | pinned at `fd0b6f1a` |
-| Files ported to `packages/runtime/src/` | 484 | ~40.6% |
-| Files remaining to port | 709 | ~59.4% |
+| Files ported to `packages/runtime/src/` | 485 | ~40.7% |
+| Files remaining to port | 708 | ~59.3% |
 | JSC bring-up (`packages/runtime/src/jsc/`) | 96 files | Phase 12.2 M6 milestone |
-| Node namespace (`packages/runtime/src/node/`) | 27 files | Phase 12.7 round-14 |
+| Node namespace (`packages/runtime/src/node/`) | 28 files | Phase 12.7 round-15 |
 | Tier-0 leaves (≤100 LOC, zero subsystem coupling) | 30 catalogued | next-to-port pool |
 | Tier-1 leaves (≤300 LOC, light coupling) | 30 catalogued | follow-on pool |
 
