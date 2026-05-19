@@ -70,11 +70,17 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/prepare-stack-trace-crash.test.ts",
     "js/bun/test/nested-describes.test.ts",
     "regression/issue/issue-12276.test.ts",
+    "regression/issue/27014.test.ts",
 };
 
 const prelude =
     \\var __home_bun_tests = { passed: 0, failed: 0, todo: 0 };
-    \\var Bun = { [Symbol.toStringTag]: "Bun" };
+    \\var Bun = {
+    \\  [Symbol.toStringTag]: "Bun",
+    \\  stripANSI(value) {
+    \\    return String(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+    \\  },
+    \\};
     \\function __home_fail(message) {
     \\  throw new Error(message);
     \\}
@@ -749,6 +755,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/prepare-stack-trace-crash.test.ts", filesForSubset(.minimal_js)[14]);
     try std.testing.expectEqualStrings("js/bun/test/nested-describes.test.ts", filesForSubset(.minimal_js)[15]);
     try std.testing.expectEqualStrings("regression/issue/issue-12276.test.ts", filesForSubset(.minimal_js)[16]);
+    try std.testing.expectEqualStrings("regression/issue/27014.test.ts", filesForSubset(.minimal_js)[17]);
 }
 
 test "Bun test import rewrite installs the bootstrap prelude" {
@@ -761,6 +768,7 @@ test "Bun test import rewrite installs the bootstrap prelude" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "function it(name, fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "function __home_is_thenable(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "stripANSI(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeInstanceOf(ctor)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeUndefined()") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "toIncludeRepeated(needle, expectedCount)") != null);
