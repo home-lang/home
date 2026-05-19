@@ -188,6 +188,7 @@ pub const jsc = struct {
     // Phase 12.2 M3 prep (2026-05-19) — Engine stub. Bodies panic with
     // TODO(phase-12.2-M3) until the C++ engine wiring lands.
     pub const engine = @import("jsc/engine.zig");
+    pub const evaluate = @import("jsc/evaluate.zig");
     // Phase 12.2 M4 (2026-05-19) — exception + coerce + array helpers
     // per `JSC_BRIDGE_SCOPE_2026-05-19.md` §M4. Each namespace exposes
     // a uniform Zig-shaped surface on top of the M1 extern fn set;
@@ -1658,6 +1659,8 @@ test {
     _ = @import("jsc/opaques.zig");
     _ = @import("jsc/extern_fns.zig");
     _ = @import("jsc/types.zig");
+    _ = @import("jsc/engine.zig");
+    _ = @import("jsc/evaluate.zig");
     // Wave-18 Tier-0 grinder (2026-05-18) — sql wire-protocol leaves.
     _ = @import("sql/shared/Data.zig");
     _ = @import("sql/mysql/protocol/NewReader.zig");

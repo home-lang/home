@@ -551,9 +551,11 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "enable_sanitize_address", enable_sanitize_address);
     build_options.addOption(bool, "enable_sanitize_undefined", enable_sanitize_undefined);
     build_options.addOption(bool, "enable_sanitize_thread", enable_sanitize_thread);
+    build_options.addOption(bool, "enable_jsc", enable_jsc);
 
     // Add build options to executable
     exe.root_module.addImport("build_options", build_options.createModule());
+    home_rt_pkg.addImport("build_options", build_options.createModule());
 
     // Link Craft if enabled
     if (enable_craft) {

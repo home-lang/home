@@ -29,6 +29,7 @@
 // the minimum needed to validate the binding round-trip.
 
 const std = @import("std");
+const extern_fns = @import("extern_fns.zig");
 const opaques = @import("opaques.zig");
 
 const JSContextRef = opaques.JSContextRef;
@@ -57,30 +58,38 @@ pub const Engine = struct {
     /// fills in the body by calling `JSGlobalContextCreate(null)` and
     /// stashing the returned `*JSContextRef` in `self.context`.
     pub fn init(allocator: std.mem.Allocator) !Engine {
-        _ = allocator;
-        @panic("TODO(phase-12.2-M3): JSC C++ engine wiring");
+        const context = extern_fns.JSGlobalContextCreate(null) orelse
+            return error.JSCInitFailed;
+
+        return .{
+            .allocator = allocator,
+            .vm = null,
+            .context = context,
+        };
     }
 
     /// Tear down the engine and release the underlying VM. Currently
     /// panics; M3 fills in the body by calling `JSGlobalContextRelease`.
     pub fn deinit(self: *Engine) void {
-        _ = self;
-        @panic("TODO(phase-12.2-M3): JSC C++ engine wiring");
+        if (self.context) |context| {
+            extern_fns.JSGlobalContextRelease(context);
+            self.context = null;
+        }
+        self.vm = null;
     }
 
     /// Return the current `*JSContextRef`. M3 fills in the body to
     /// return `self.context.?` after asserting init succeeded.
     pub fn currentContext(self: *const Engine) *JSContextRef {
-        _ = self;
-        @panic("TODO(phase-12.2-M3): JSC C++ engine wiring");
+        return self.context.?;
     }
 
     /// Return the global object for the realm. M3 fills in the body by
     /// calling `JSContextGetGlobalObject(self.context)` and casting the
     /// `*JSObject` result down to `*JSGlobalObject`.
     pub fn currentGlobalObject(self: *const Engine) *JSGlobalObject {
-        _ = self;
-        @panic("TODO(phase-12.2-M3): JSC C++ engine wiring");
+        const global = extern_fns.JSContextGetGlobalObject(self.currentContext()).?;
+        return @ptrCast(global);
     }
 };
 

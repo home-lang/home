@@ -2,7 +2,7 @@
 
 > **Status (2026-05-20):** **485 / 1,193 Bun source files ported (~40.7%).**
 > Phase 12.2 (JSC bring-up) has reached the M6 milestone — JSON + Promise
-> + Iterator + Global helpers across 96 files. Phase 12.7 round-15
+> + Iterator + Global helpers across 97 files. Phase 12.7 round-15
 > has top-level `node:*` substrate modules for `buffer`, `stream`,
 > `fs`, `events`, `util`, `assert`, `os`, `url`, `querystring`, and
 > `crypto`, `process`, `string_decoder`, and `tty`. End-to-end
@@ -60,7 +60,10 @@ packages while the execution engine is still blocked.
 ## What's here today
 
 - `src/home_rt.zig` — aggregator that re-exports every ported subsystem.
-- `src/jsc/` — 96 files; Phase 12.2 milestones M1-M6 (Engine stub, exception + coerce + array helpers, call + callback helpers, JSON + Promise + Iterator + Global helpers).
+- `src/jsc/` — 97 files; Phase 12.2 milestones M1-M6 plus the first
+  native `JSEvaluateScript` helper. Default tests compile the surface;
+  `./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=true`
+  runs a live `1 + 2` evaluation through JavaScriptCore.
 - `src/node/` — 28 files; Phase 12.7 round-15 (top-level `assert.zig`, `buffer.zig`, `crypto.zig`, `events.zig`, `fs.zig`, `os.zig`, `path.zig`, `process.zig`, `querystring.zig`, `stream.zig`, `string_decoder.zig`, `tty.zig`, `url.zig`, `util.zig`, plus binding/helper files: `Stat`, `StatFS`, `dir_iterator`, `fs_events`, `os_constants`, `nodejs_error_code`, `node_fs_constant`, `node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`, `types`, `time_like`, `util/parse_args_utils`, `assert/myers_diff`).
 - `src/cli/` — destination for Bun's `src/cli/` command dispatch (Phase 12.10 scaffold landed).
 - `src/install/` — `home <-> pantry` shim. Pantry replaces `bun install` entirely.
