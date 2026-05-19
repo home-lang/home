@@ -7782,11 +7782,24 @@ pub const Parser = struct {
                     name_node = try self.builder.addIdentifier(name_span, name_id);
                     seen_name = name_id;
                 }
+                var default_value: NodeId = hir_mod.none_node_id;
+                if (self.match(.equal)) {
+                    self.param_initializer_depth += 1;
+                    defer self.param_initializer_depth -= 1;
+                    default_value = try self.parseAssignmentExpression();
+                    if (flags.is_optional) {
+                        try self.reportCodeAt(ps.span.start, ps.line, 1015, "Parameter cannot have question mark and initializer.");
+                    }
+                    if (flags.is_rest) {
+                        const name_anchor = self.hir.spanOf(name_node);
+                        try self.reportCodeAt(name_anchor.start, self.lineAt(name_anchor.start), 1048, "A rest parameter cannot have an initializer.");
+                    }
+                }
                 const param = try self.builder.addParameter(
                     .{ .start = ps.span.start, .end = self.tokens[self.cursor - 1].span.end },
                     name_node,
                     type_ann,
-                    hir_mod.none_node_id,
+                    default_value,
                     flags,
                 );
                 if (saw_param_property_mod) {
@@ -13349,6 +13362,18 @@ test "parser: TS1015 fires for `?` and initializer on the same parameter" {
         if (d.code == 1015) saw_1015 += 1;
     }
     try T.expectEqual(@as(u32, 1), saw_1015);
+}
+
+test "parser: type member parameter initializers recover without missing close" {
+    // Interface and type-literal signatures may carry illegal defaults
+    // syntactically; the checker reports TS2371. The parser must not
+    // stop at `=` and emit a spurious TS1005.
+    var s = try newTestSetup("interface I { (x = 1); foo(y: number = 1): void; }");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1005);
+    }
 }
 
 test "parser: contextual keyword may be variable name" {

@@ -24972,6 +24972,9 @@ pub const Checker = struct {
                     {
                         try self.report(p, TsCodes.rest_parameter_must_be_array_type, "A rest parameter must be of an array type.");
                     }
+                    if (pp.default_value != hir_mod.none_node_id) {
+                        try self.report(p, TsCodes.parameter_initializer_implementation_only, "A parameter initializer is only allowed in a function or constructor implementation.");
+                    }
                     if (pp.flags.is_optional or pp.default_value != hir_mod.none_node_id) {
                         t = self.unionWithUndefined(t) catch t;
                     }
@@ -63820,6 +63823,20 @@ test "checker: overload signatures cannot have parameter initializers" {
         if (d.code == TsCodes.parameter_initializer_implementation_only) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: type signatures cannot have parameter initializers" {
+    const s = try newSetup(
+        \\interface I { (x = 1): void; foo(y: number = 1): void; }
+        \\declare var a: { (x = 1): void; foo(y = 1): void; };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.parameter_initializer_implementation_only) count += 1;
+    }
+    try T.expectEqual(@as(usize, 4), count);
 }
 
 test "checker: function implementation name must match overload" {
