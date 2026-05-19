@@ -73,6 +73,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/27014.test.ts",
     "regression/issue/21257.test.ts",
     "regression/issue/07397.test.ts",
+    "js/bun/test/expect-unreaachable.test.ts",
 };
 
 const prelude =
@@ -191,6 +192,13 @@ const prelude =
     \\    toBeUndefined() {
     \\      __home_assert(value === undefined, isNot, "Expected value" + (isNot ? " not" : "") + " to be undefined");
     \\    },
+    \\    toBeTypeOf(expected) {
+    \\      if (arguments.length < 1) __home_fail("toBeTypeOf() requires 1 argument");
+    \\      if (typeof expected !== "string") __home_fail("toBeTypeOf() requires a string argument");
+    \\      const valid = expected === "function" || expected === "object" || expected === "bigint" || expected === "boolean" || expected === "number" || expected === "string" || expected === "symbol" || expected === "undefined";
+    \\      if (!valid) __home_fail("toBeTypeOf() requires a valid type string argument ('function', 'object', 'bigint', 'boolean', 'number', 'string', 'symbol', 'undefined')");
+    \\      __home_assert(typeof value === expected, isNot, "Expected value" + (isNot ? " not" : "") + " to be typeof " + String(expected));
+    \\    },
     \\    toBeInstanceOf(ctor) {
     \\      __home_assert(value instanceof ctor, isNot, "Expected value" + (isNot ? " not" : "") + " to be instance of " + (ctor && ctor.name || "<anonymous>"));
     \\    },
@@ -227,6 +235,10 @@ const prelude =
     \\        __home_assert(expected.test(String(thrown && thrown.message)), isNot, "Expected thrown message" + (isNot ? " not" : "") + " to match " + String(expected));
     \\        return;
     \\      }
+    \\      if (expected && typeof expected === "object" && "message" in expected) {
+    \\        __home_assert(String(thrown && thrown.message) === String(expected.message), isNot, "Expected thrown message" + (isNot ? " not" : "") + " to match " + String(expected.message));
+    \\        return;
+    \\      }
     \\      if (expected !== undefined) {
     \\        __home_assert(String(thrown && thrown.message).includes(String(expected)), isNot, "Expected thrown message" + (isNot ? " not" : "") + " to include " + String(expected));
     \\      }
@@ -254,6 +266,14 @@ const prelude =
     \\function expect(value) {
     \\  return __home_make_expectation(value, false);
     \\}
+    \\expect.unreachable = function(reason) {
+    \\  if (reason === undefined || reason === null || typeof reason === "string") {
+    \\    const error = new Error(reason == null ? "reached unreachable code" : reason);
+    \\    error.name = "UnreachableError";
+    \\    throw error;
+    \\  }
+    \\  throw reason;
+    \\};
     \\globalThis.__home_bun_test = { describe, expect, it, test };
     \\if (typeof Headers !== "function") {
     \\  var Headers = function(init) {
@@ -810,6 +830,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/27014.test.ts", filesForSubset(.minimal_js)[17]);
     try std.testing.expectEqualStrings("regression/issue/21257.test.ts", filesForSubset(.minimal_js)[18]);
     try std.testing.expectEqualStrings("regression/issue/07397.test.ts", filesForSubset(.minimal_js)[19]);
+    try std.testing.expectEqualStrings("js/bun/test/expect-unreaachable.test.ts", filesForSubset(.minimal_js)[20]);
 }
 
 test "Bun test import rewrite installs the bootstrap prelude" {
@@ -824,8 +845,12 @@ test "Bun test import rewrite installs the bootstrap prelude" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "function __home_is_thenable(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "stripANSI(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeInstanceOf(ctor)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeTypeOf(expected)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeTypeOf() requires a valid type string argument") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeUndefined()") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "toIncludeRepeated(needle, expectedCount)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "expect.unreachable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "UnreachableError") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "globalThis.__home_bun_test") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "Response.redirect") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "Response.json") != null);
