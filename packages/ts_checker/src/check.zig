@@ -4580,7 +4580,6 @@ pub const Checker = struct {
     fn checkFnReturnPathExits(self: *Checker, node: NodeId) CheckError!void {
         const f = hir_mod.fnDeclOf(self.hir, node);
         if (f.body == hir_mod.none_node_id) return;
-        if (f.return_type == hir_mod.none_node_id) return;
         if (f.flags.is_generator or f.flags.is_async) return;
         if (f.flags.is_setter) return;
         // TS1093 already covers the misuse of a return-type annotation
@@ -4604,8 +4603,17 @@ pub const Checker = struct {
         }
         // Type-predicate annotations (`x is T`) always have a boolean
         // return — handled by the explicit predicate path elsewhere.
-        if (self.hir.kindOf(f.return_type) == .type_predicate_type) return;
-        const return_t = self.lowererLowerWithTypeParams(f.return_type) catch return;
+        var report_node = f.return_type;
+        var report_pos: ?u32 = null;
+        const return_t: TypeId = if (f.return_type != hir_mod.none_node_id) blk: {
+            if (self.hir.kindOf(f.return_type) == .type_predicate_type) return;
+            break :blk self.lowererLowerWithTypeParams(f.return_type) catch return;
+        } else blk: {
+            const jsdoc_return = (try self.jsDocDeclaredReturnForFunction(node)) orelse return;
+            report_node = node;
+            report_pos = jsdoc_return.pos;
+            break :blk jsdoc_return.type;
+        };
         if (return_t == types.Primitive.none) return;
         if (return_t == types.Primitive.any or
             return_t == types.Primitive.unknown or
@@ -4614,11 +4622,67 @@ pub const Checker = struct {
             return_t == types.Primitive.never) return;
         if (self.typeContainsAnyOrUndefinedOrVoid(return_t)) return;
         if (self.statementDefinitelyExits(f.body)) return;
-        try self.report(
-            f.return_type,
+        try self.reportAt(
+            report_node,
+            report_pos,
             TsCodes.fn_must_return_value,
             "A function whose declared type is neither 'undefined', 'void', nor 'any' must return a value.",
         );
+    }
+
+    const JsDocDeclaredReturn = struct {
+        type: TypeId,
+        pos: u32,
+    };
+
+    fn jsDocDeclaredReturnForFunction(self: *Checker, node: NodeId) CheckError!?JsDocDeclaredReturn {
+        if (!self.sourceHasCheckJsDirective()) return null;
+        if (!self.virtualSectionIsJsLike(node)) return null;
+        const src = self.source orelse return null;
+        const span = self.hir.spanOf(node);
+        const body = self.leadingJsDocBody(src, span.start) orelse return null;
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
+        defer self.gpa.free(tags);
+
+        for (tags) |tag| {
+            if (tag.kind == .type_tag) {
+                const type_text = std.mem.trim(u8, tag.type_text, " \t\r\n");
+                const sig = (try self.jsDocFunctionType(type_text)) orelse continue;
+                const ret_t = self.interner.signatureReturn(sig) orelse types.Primitive.any;
+                const pos = self.jsDocFunctionReturnTypePos(src, type_text) orelse
+                    self.sliceStartPos(src, type_text) orelse
+                    span.start;
+                return .{ .type = ret_t, .pos = pos };
+            }
+            if (tag.kind == .returns_tag) {
+                const ret_t = (try self.jsDocTypeTextToType(src, tag.type_text)) orelse types.Primitive.any;
+                const pos = self.sliceStartPos(src, tag.type_text) orelse span.start;
+                return .{ .type = ret_t, .pos = pos };
+            }
+        }
+        return null;
+    }
+
+    fn jsDocFunctionReturnTypePos(self: *Checker, src: []const u8, type_text: []const u8) ?u32 {
+        const close = jsDocMatchingParen(type_text, "function".len) orelse return null;
+        var i = close + 1;
+        while (i < type_text.len and (type_text[i] == ' ' or type_text[i] == '\t' or type_text[i] == '\r' or type_text[i] == '\n')) : (i += 1) {}
+        if (i >= type_text.len or type_text[i] != ':') return null;
+        i += 1;
+        while (i < type_text.len and (type_text[i] == ' ' or type_text[i] == '\t' or type_text[i] == '\r' or type_text[i] == '\n')) : (i += 1) {}
+        if (i >= type_text.len) return null;
+        const base = self.sliceStartPos(src, type_text) orelse return null;
+        return base + @as(u32, @intCast(i));
+    }
+
+    fn sliceStartPos(self: *Checker, src: []const u8, slice: []const u8) ?u32 {
+        _ = self;
+        if (slice.len == 0) return null;
+        const src_start = @intFromPtr(src.ptr);
+        const src_end = src_start + src.len;
+        const slice_start = @intFromPtr(slice.ptr);
+        if (slice_start < src_start or slice_start > src_end) return null;
+        return @intCast(slice_start - src_start);
     }
 
     fn typeContainsAnyOrUndefinedOrVoid(self: *Checker, t: TypeId) bool {
@@ -10725,6 +10789,12 @@ pub const Checker = struct {
                 break :blk_default types.Primitive.any;
             } else types.Primitive.any;
             const declared_param_t = t;
+            if (has_anno and pp.name != hir_mod.none_node_id) {
+                const name_kind = self.hir.kindOf(pp.name);
+                if (name_kind == .array_pattern or name_kind == .object_pattern) {
+                    _ = try self.checkBindingPatternSourceType(pp.name, declared_param_t, hir_mod.none_node_id);
+                }
+            }
             if (has_anno and pp.default_value != hir_mod.none_node_id) {
                 const default_t = try self.checkExpression(pp.default_value);
                 const literal_ok = try self.literalExpressionAssignableToTarget(pp.default_value, declared_param_t);
@@ -22095,7 +22165,9 @@ pub const Checker = struct {
                                         .is_method = false,
                                     });
                                 }
-                                return self.interner.internObjectType(record_members.items) catch return error.OutOfMemory;
+                                const record_t = self.interner.internObjectType(record_members.items) catch return error.OutOfMemory;
+                                try self.registerAliasDisplayName(record_t, r.name, &.{ key_t, value_t });
+                                return record_t;
                             }
                             if (self.enumNameFromNominal(key_t)) |enum_name| {
                                 var record_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
@@ -25075,6 +25147,31 @@ pub const Checker = struct {
         try self.report(target_node, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
     }
 
+    fn checkBindingPatternSourceType(self: *Checker, pattern_node: NodeId, source_t: TypeId, source_node: NodeId) CheckError!bool {
+        if (pattern_node == hir_mod.none_node_id) return false;
+        if (source_t == types.Primitive.any or source_t == types.Primitive.unknown or source_t == types.Primitive.none) return false;
+        switch (self.hir.kindOf(pattern_node)) {
+            .array_pattern => {
+                const has_source_iterator = source_node != hir_mod.none_node_id and self.objectLiteralHasSymbolIteratorMethod(source_node);
+                if (!has_source_iterator and !self.isDestructuringIterableSourceType(source_t)) {
+                    try self.reportIteratorRequiredWithSource(pattern_node, source_t, source_node);
+                    return true;
+                }
+            },
+            .object_pattern => {
+                if (self.strict_flags.strict_null_checks and
+                    (source_t == types.Primitive.void_t or self.typeIncludesUndefined(source_t)) and
+                    !self.typeIsAnyLike(source_t))
+                {
+                    try self.report(pattern_node, TsCodes.object_possibly_undefined, "Object is possibly 'undefined'.");
+                    return true;
+                }
+            },
+            else => {},
+        }
+        return false;
+    }
+
     fn reportTypeNotArrayForTarget(self: *Checker, target_node: NodeId, source_t: TypeId) CheckError!void {
         const name_opt: ?[]const u8 = blk: {
             if (self.allocSimpleTypeName(source_t) catch null) |n| break :blk n;
@@ -25836,6 +25933,16 @@ pub const Checker = struct {
         }
     }
 
+    fn tupleRestMinRequiredCount(self: *Checker, target: TypeId) usize {
+        var count = self.tupleFixedPrefixCount(target);
+        while (count > 0) {
+            const elem_t = self.tupleElementType(target, count - 1);
+            if (elem_t == types.Primitive.none or !self.parameterTypeAllowsVoidOmission(elem_t)) break;
+            count -= 1;
+        }
+        return count;
+    }
+
     fn tupleElementMember(self: *Checker, target: TypeId, name: hir_mod.StringId) ?types.ObjectMember {
         if (target >= self.interner.pool.typeCount()) return null;
         if (!self.interner.pool.flagsOf(target).is_object_type) return null;
@@ -26204,6 +26311,13 @@ pub const Checker = struct {
                 try self.report(v.name, TsCodes.object_possibly_undefined, "Object is possibly 'undefined'.");
             }
         }
+        var binding_pattern_source_diag_fired = false;
+        if (declared_type != types.Primitive.none and
+            v.name != hir_mod.none_node_id and
+            self.hir.kindOf(v.name) == .object_pattern)
+        {
+            binding_pattern_source_diag_fired = try self.checkBindingPatternSourceType(v.name, declared_type, hir_mod.none_node_id);
+        }
 
         // If both are present, check assignability.
         const final_type: TypeId = if (declared_type != types.Primitive.none) declared_type else init_type;
@@ -26258,7 +26372,11 @@ pub const Checker = struct {
                 break :blk self.engine.isAssignableTo(init_type, declared_type) catch return error.OutOfMemory;
             };
             if (!ok) {
-                if (self.diagnostics.items.len > assignability_diag_count) {
+                if (binding_pattern_source_diag_fired) {
+                    // The declared destructuring source itself is invalid
+                    // (for example `{ }: undefined`), so tsc reports the
+                    // pattern diagnostic and skips the outer assignment prose.
+                } else if (self.diagnostics.items.len > assignability_diag_count) {
                     // A more precise element-level tuple diagnostic was emitted.
                 } else if (!self.callExpressionHasAnyArgument(v.init)) {
                     const diag_node = if (v.name != hir_mod.none_node_id) v.name else node;
@@ -31576,6 +31694,15 @@ pub const Checker = struct {
         return null;
     }
 
+    fn signatureHasCallableParameter(self: *Checker, sig: TypeId) bool {
+        if (sig >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(sig).is_signature) return false;
+        for (self.interner.signatureParams(sig)) |param_t| {
+            if (self.firstSignatureType(param_t) != null) return true;
+        }
+        return false;
+    }
+
     fn checkFunctionWithContextualSignature(self: *Checker, fn_node: NodeId, sig: TypeId) CheckError!void {
         const params = hir_mod.fnParams(self.hir, fn_node);
         const param_ts = self.interner.signatureParams(sig);
@@ -32360,10 +32487,9 @@ pub const Checker = struct {
         const params = self.interner.signatureParams(sig);
         const is_variadic = self.rest_signatures.contains(sig) and params.len > 0;
         const fixed_count: usize = if (is_variadic) params.len - 1 else params.len;
-        // Required-arg count = params not including a trailing run
-        // that includes `undefined`.
-        var min_required: usize = self.signatureMinRequiredArgs(sig, params);
-        min_required = @min(min_required, fixed_count);
+        const fixed_min_required: usize = @min(self.signatureMinRequiredArgsForCall(sig, params, call_node), fixed_count);
+        const rest_min_required: usize = if (is_variadic and params.len > 0) self.tupleRestMinRequiredCount(params[params.len - 1]) else 0;
+        const min_required: usize = fixed_min_required + rest_min_required;
         if (arg_types.len < min_required) return false;
         if (!is_variadic and arg_types.len > params.len) return false;
         const n = @min(arg_types.len, fixed_count);
@@ -36894,7 +37020,7 @@ pub const Checker = struct {
 
     /// Conservative gate for TS2367: return true only when both
     /// sides look like concrete primitives (string / number / boolean
-    /// / bigint / symbol) or literals of those. Nullish equality
+    /// / bigint / symbol / void) or literals of those. Nullish equality
     /// probes are intentionally exempt: TS's comparable relation
     /// permits `x === null` / `x === undefined` style checks even
     /// when `x` is currently a non-nullish primitive under
@@ -36905,6 +37031,10 @@ pub const Checker = struct {
     /// reproduce TS's `comparableRelation` exactly.
     fn shouldCheckNoOverlap(self: *Checker, a: TypeId, b: TypeId) bool {
         if (self.isNullishType(a) or self.isNullishType(b)) return false;
+        if (a == types.Primitive.void_t or b == types.Primitive.void_t) {
+            const other = if (a == types.Primitive.void_t) b else a;
+            return self.isConcretePrimitiveLike(other) or self.enumNameFromNominal(other) != null;
+        }
         return self.isConcretePrimitiveLike(a) and self.isConcretePrimitiveLike(b);
     }
 
@@ -36917,6 +37047,7 @@ pub const Checker = struct {
         if (depth > 32) return true;
         if (self.typeIsAnyLike(a) or self.typeIsAnyLike(b)) return true;
         if (self.isNullishType(a) or self.isNullishType(b)) return true;
+        if (a == types.Primitive.void_t or b == types.Primitive.void_t) return false;
         if (self.enumNumberLiteralOverlap(a, b)) |ok| return ok;
         if (self.enumNumberLiteralOverlap(b, a)) |ok| return ok;
         if (a >= self.interner.pool.typeCount() or b >= self.interner.pool.typeCount()) return true;
@@ -39995,6 +40126,10 @@ pub const Checker = struct {
         {
             return true;
         }
+        if (lhs == types.Primitive.void_t or rhs == types.Primitive.void_t) {
+            const other = if (lhs == types.Primitive.void_t) rhs else lhs;
+            if (self.isConcretePrimitiveLike(other) or self.enumNameFromNominal(other) != null) return true;
+        }
         if ((self.objectTypeIsCallOrConstructOnly(lhs) or self.objectTypeIsCallOrConstructOnly(rhs)) and
             !(self.signatureObjectTypesHaveComparableOverlap(lhs, rhs, 0) catch true))
         {
@@ -40017,6 +40152,11 @@ pub const Checker = struct {
         if (lhs_numeric != rhs_numeric) {
             const non_numeric = if (lhs_numeric) rhs_kind else lhs_kind;
             if (non_numeric == .string_only or non_numeric == .boolean_only) return true;
+        }
+        if ((lhs_kind == .boolean_only and rhs_kind == .string_only) or
+            (lhs_kind == .string_only and rhs_kind == .boolean_only))
+        {
+            return true;
         }
         return false;
     }
@@ -41813,7 +41953,7 @@ pub const Checker = struct {
         const param_ts = self.interner.signatureParams(sig);
         const is_variadic = self.rest_signatures.contains(sig) and param_ts.len > 0;
         const fixed_count: usize = if (is_variadic) param_ts.len - 1 else param_ts.len;
-        const rest_min_required: usize = if (is_variadic) self.tupleFixedPrefixCount(param_ts[param_ts.len - 1]) else 0;
+        const rest_min_required: usize = if (is_variadic) self.tupleRestMinRequiredCount(param_ts[param_ts.len - 1]) else 0;
         const fixed_min_required = @min(self.signatureMinRequiredArgsForCall(sig, param_ts, call_node), fixed_count);
         const min_required: usize = fixed_min_required + rest_min_required;
         var effective_min_count: usize = 0;
@@ -41916,6 +42056,30 @@ pub const Checker = struct {
         return false;
     }
 
+    fn directCalleePatternParam(self: *Checker, call_node: NodeId, value_param_index: usize) ?NodeId {
+        if (call_node == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(call_node) != .call_expr) return null;
+        const call = hir_mod.callOf(self.hir, call_node);
+        if (call.callee == hir_mod.none_node_id) return null;
+        const callee_kind = self.hir.kindOf(call.callee);
+        if (callee_kind != .arrow_fn and callee_kind != .fn_expr) return null;
+
+        var seen_value_params: usize = 0;
+        for (hir_mod.fnParams(self.hir, call.callee)) |param_node| {
+            if (self.hir.kindOf(param_node) != .parameter) continue;
+            if (self.isThisParameter(param_node)) continue;
+            if (seen_value_params == value_param_index) {
+                const p = hir_mod.parameterOf(self.hir, param_node);
+                if (p.name == hir_mod.none_node_id) return null;
+                const nk = self.hir.kindOf(p.name);
+                if (nk == .array_pattern or nk == .object_pattern) return p.name;
+                return null;
+            }
+            seen_value_params += 1;
+        }
+        return null;
+    }
+
     /// Shared arg / signature checker used by both `call_expr` and
     /// `new_expr`. Emits TS2554 (count mismatch) and TS2345 (per-arg
     /// type mismatch) against `sig`'s parameter list. Type-parameter
@@ -41936,7 +42100,7 @@ pub const Checker = struct {
         // trailing optional/defaulted params (typed as `T | undefined`
         // by the signature pass, matching tsc's call-site behavior).
         const fixed_count: usize = if (is_variadic) param_ts.len - 1 else param_ts.len;
-        const rest_min_required: usize = if (is_variadic) self.tupleFixedPrefixCount(param_ts[param_ts.len - 1]) else 0;
+        const rest_min_required: usize = if (is_variadic) self.tupleRestMinRequiredCount(param_ts[param_ts.len - 1]) else 0;
         const fixed_min_required = @min(self.signatureMinRequiredArgsForCall(sig, param_ts, call_node), fixed_count);
         const min_required: usize = fixed_min_required + rest_min_required;
         var effective_min_count: usize = 0;
@@ -42112,6 +42276,10 @@ pub const Checker = struct {
                     arg_t = try self.iterableElementType(arg_t);
                 }
             }
+            const pattern_source_diag = if (self.directCalleePatternParam(call_node, i)) |pattern|
+                try self.checkBindingPatternSourceType(pattern, arg_t, args[i])
+            else
+                false;
             const ok = self.isArgumentAssignableToParam(args[i], arg_t, param_t) catch true;
             const contextual_ok = if (!ok)
                 self.unresolvedRestTupleCallbackFromPriorArrayArg(args, param_ts, i, param_t) catch false
@@ -42124,7 +42292,7 @@ pub const Checker = struct {
                     continue;
                 }
             }
-            if (!ok and !contextual_ok and !emitted_2556) {
+            if (!ok and !contextual_ok and !emitted_2556 and !pattern_source_diag) {
                 var emitted = false;
                 if (self.hir.kindOf(args[i]) == .array_literal and self.tupleTypeFromMaybeOptional(param_t) != null) {
                     // Per-element TS2322 prose when the array literal
@@ -43497,7 +43665,14 @@ pub const Checker = struct {
         if (try self.restTupleCallbackAssignableToParam(arg_node, param_t)) return true;
         if (try self.identityObjectSpreadFunctionAssignableToParam(arg_node, param_t)) return true;
         if (try self.functionExpressionAssignableToCallableObject(arg_node, param_t)) return true;
-        if (try self.functionExpressionAssignableToSignatureTarget(arg_node, arg_t, param_t)) return true;
+        if (try self.functionExpressionAssignableToSignatureTarget(arg_node, arg_t, param_t)) {
+            if (self.firstSignatureType(param_t)) |sig| {
+                if (!self.rest_signatures.contains(sig) and self.signatureHasCallableParameter(sig)) {
+                    try self.checkFunctionWithContextualSignature(arg_node, sig);
+                }
+            }
+            return true;
+        }
         if (self.hir.kindOf(arg_node) == .object_literal) {
             if (try self.objectLiteralAssignableToTarget(arg_node, arg_t, param_t)) return true;
             if (self.thisTypeMarkerConstraint(param_t) != null) {
@@ -55311,6 +55486,34 @@ test "checker: `satisfies Record<string, T>` validates property values" {
     try T.expect(found);
 }
 
+test "checker: `satisfies Record<Keys, unknown>` reports alias display and keeps string methods" {
+    const s = try newSetup(
+        \\type Keys = 'a' | 'b' | 'c' | 'd';
+        \\const p = {
+        \\  a: 0,
+        \\  b: "hello",
+        \\  x: 8,
+        \\} satisfies Record<Keys, unknown>;
+        \\let b = p.b.substring(1);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_record = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.object_literal_excess_property and
+            std.mem.indexOf(u8, d.message, "Record<Keys, unknown>") != null)
+        {
+            saw_record = true;
+        }
+        if (d.code == TsCodes.property_does_not_exist and
+            std.mem.indexOf(u8, d.message, "substring") != null)
+        {
+            return error.TestUnexpectedResult;
+        }
+    }
+    try T.expect(saw_record);
+}
+
 test "checker: `satisfies number[]` preserves array type — `.length` resolves" {
     const s = try newSetup(
         \\let arr = [1, 2, 3] satisfies number[];
@@ -57340,6 +57543,45 @@ test "checker: instantiated void parameter can be omitted" {
         if (d.code == TsCodes.expected_n_arguments) count_2554 += 1;
     }
     try T.expectEqual(@as(usize, 2), count_2554);
+}
+
+test "checker: contextual callable parameter preserves void omission after substitution" {
+    const s = try newSetup(
+        \\class MyPromise<T> {
+        \\  constructor(executor: (resolve: (value: T) => void) => void) {}
+        \\}
+        \\new MyPromise<void>(resolve => resolve());
+        \\new MyPromise<void | number>(resolve => resolve());
+        \\new MyPromise<any>(resolve => resolve());
+        \\new MyPromise<unknown>(resolve => resolve());
+        \\new MyPromise<never>(resolve => resolve());
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count_2554: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.expected_n_arguments) count_2554 += 1;
+    }
+    try T.expectEqual(@as(usize, 3), count_2554);
+}
+
+test "checker: variadic tuple rest trims trailing void-omittable elements" {
+    const s = try newSetup(
+        \\declare function call<TS extends unknown[]>(
+        \\  handler: (...args: TS) => unknown,
+        \\  ...args: TS): void;
+        \\call((x: number, y: number) => x + y);
+        \\call((x: number, y: void) => x, 4);
+        \\call((x: void, y: void) => 42);
+        \\call((x: number | void, y: number | void) => 42);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count_2554: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.expected_n_arguments) count_2554 += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count_2554);
 }
 
 test "checker: trailing undefined parameter is still required" {
@@ -62130,6 +62372,25 @@ test "checker: strict nullish equality probes do not emit TS2367" {
     }
 }
 
+test "checker: void equality with non-nullish primitives emits TS2367" {
+    const s = try newSetup(
+        \\declare function f(): void;
+        \\let n = 1;
+        \\let s = "";
+        \\let b = true;
+        \\if (n === f()) {}
+        \\if (f() === s) {}
+        \\if (b !== f()) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count_2367: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.no_overlap_comparison) count_2367 += 1;
+    }
+    try T.expectEqual(@as(usize, 3), count_2367);
+}
+
 test "checker: isolatedModules emits TS1205 for `export const enum`" {
     const s = try newSetup(
         \\export const enum E { A, B }
@@ -65068,6 +65329,29 @@ test "checker: numeric object literal is not iterable for array destructuring" {
     try T.expect(found);
 }
 
+test "checker: binding pattern parameters validate destructuring source type" {
+    const s = try newSetup(
+        \\(([]) => 0)({});
+        \\(({}) => 0)(undefined);
+        \\function foo({}: undefined) { return 0; }
+        \\function bar([]: {}) { return 0; }
+        \\const { }: undefined = 1;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var iter_count: usize = 0;
+    var undefined_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.yield_star_not_iterable) iter_count += 1;
+        if (d.code == TsCodes.object_possibly_undefined) undefined_count += 1;
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+    try T.expectEqual(@as(usize, 2), iter_count);
+    try T.expectEqual(@as(usize, 3), undefined_count);
+}
+
 test "checker: object destructuring reports missing and fresh excess properties" {
     const s = try newSetup(
         \\function f1() {
@@ -65967,6 +66251,29 @@ test "checker: checkjs self-referential JSDoc type on function emits TS8030" {
     var found = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.jsdoc_function_type_mismatch) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: checkjs JSDoc function @type return participates in TS2355" {
+    const source =
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @strict: true
+        \\// @Filename: /a.js
+        \\/** @type {function(): number} */
+        \\function f() {}
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.fn_must_return_value) {
+            found = true;
+            try T.expect(d.pos != null);
+            try T.expectEqual(@as(u8, 'n'), source[d.pos.?]);
+        }
     }
     try T.expect(found);
 }
@@ -69627,6 +69934,56 @@ test "checker: relational op skips TS18050 on equality operators" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.nullish_relational_operand);
     }
+}
+
+test "checker: relational op rejects void operands" {
+    const s = try newSetup(
+        \\declare function f(): void;
+        \\let n = 1;
+        \\n < f();
+        \\f() > n;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count_2365: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.operator_cannot_be_applied) count_2365 += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count_2365);
+}
+
+test "checker: relational op allows void with any and type parameters" {
+    const s = try newSetup(
+        \\declare function f(): void;
+        \\declare let a: any;
+        \\function g<T>(t: T) {
+        \\  a < f();
+        \\  f() > a;
+        \\  t <= f();
+        \\  f() >= t;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.operator_cannot_be_applied);
+    }
+}
+
+test "checker: relational op rejects boolean and string operands" {
+    const s = try newSetup(
+        \\let b = true;
+        \\let s = "";
+        \\b < s;
+        \\s >= b;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count_2365: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.operator_cannot_be_applied) count_2365 += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count_2365);
 }
 
 test "checker: for-of iterator with no value member doesn't double-report TS2322" {

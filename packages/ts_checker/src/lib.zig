@@ -120,6 +120,7 @@ pub fn stringProto(
         .{ .name = try sint.intern("split"), .type = sig_split, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("indexOf"), .type = sig_str_num, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("slice"), .type = sig_slice, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("substring"), .type = sig_slice, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("trim"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
         // `concat` is `(...strs: string[]): string`; modeled as the
         // common single-arg form `(s: string): string` until rest

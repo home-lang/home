@@ -757,6 +757,7 @@ pub const Engine = struct {
             std.mem.eql(u8, name, "split") or
             std.mem.eql(u8, name, "indexOf") or
             std.mem.eql(u8, name, "slice") or
+            std.mem.eql(u8, name, "substring") or
             std.mem.eql(u8, name, "trim") or
             std.mem.eql(u8, name, "concat") or
             std.mem.eql(u8, name, "repeat")))
