@@ -34891,6 +34891,15 @@ pub const Checker = struct {
     fn typeOfIdentifier(self: *Checker, node: NodeId) TypeId {
         const id = hir_mod.identifierOf(self.hir, node);
         const name_str = self.string_interner.get(id.name);
+        // ECMAScript private-name LHS of `in` operator
+        // (`#field in obj`) is a dedicated syntactic form (ES2022
+        // brand check). The identifier is not a regular value
+        // reference, so suppress the normal TS2304 lookup-failure
+        // path. Mirrors upstream `privateNameInInExpression*`
+        // baselines which expect no TS2304 here.
+        if (std.mem.startsWith(u8, name_str, "#") and self.privateIdentifierIsInExpressionLhs(node)) {
+            return types.Primitive.boolean_t;
+        }
         if (std.mem.eql(u8, name_str, "this") and
             self.sourceHasStrictFalseDirective() and
             self.thisInsideNonArrowPlainFunction(node))
@@ -36395,6 +36404,20 @@ pub const Checker = struct {
 
     fn memberNameIsEcmaPrivate(self: *Checker, name: hir_mod.StringId) bool {
         return std.mem.startsWith(u8, self.string_interner.get(name), "#");
+    }
+
+    /// Returns true when `node` is the LHS identifier of an `in`
+    /// binary expression — i.e. the `#field` in `#field in obj`,
+    /// which is the ES2022 brand-check syntactic form. The identifier
+    /// is not a normal value reference and should NOT emit TS2304
+    /// when the private name isn't lexically resolvable.
+    fn privateIdentifierIsInExpressionLhs(self: *Checker, node: NodeId) bool {
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(parent) != .binary_op) return false;
+        const bop = hir_mod.binopOf(self.hir, parent);
+        if (bop.op != .in) return false;
+        return bop.lhs == node;
     }
 
     fn objectLiteralHasDuplicateMethodWithLiteralParam(
