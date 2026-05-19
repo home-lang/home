@@ -27,11 +27,15 @@ pub const Summary = struct {
     todo: usize = 0,
     blocked: bool = false,
     reason: []const u8 = "",
+    first_failure_file: []const u8 = "",
+    first_failure_message: []const u8 = "",
 };
 
 pub const minimal_js_files = [_][]const u8{
     "snippets/segfault-todo.test.js",
     "js/web/util/atob.test.js",
+    "regression/issue/23723.test.js",
+    "regression/issue/12650.test.js",
 };
 
 const prelude =
@@ -80,6 +84,12 @@ const prelude =
     \\        thrown = error;
     \\      }
     \\      if (thrown === null) throw new Error("Expected function to throw");
+    \\      if (expected && expected.__home_expect_any) {
+    \\        if (!(thrown instanceof expected.ctor)) {
+    \\          throw new Error("Expected thrown value to be instance of " + expected.ctor.name);
+    \\        }
+    \\        return;
+    \\      }
     \\      if (expected !== undefined && !String(thrown && thrown.message).includes(String(expected))) {
     \\        throw new Error("Expected thrown message to include " + String(expected));
     \\      }
@@ -132,6 +142,9 @@ const prelude =
     \\  }
     \\  return output;
     \\}
+    \\expect.any = function(ctor) {
+    \\  return { __home_expect_any: true, ctor };
+    \\};
     \\
 ;
 
@@ -149,6 +162,7 @@ pub fn filesForSubset(subset: Subset) []const []const u8 {
 pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     const imports = [_][]const u8{
         "import { expect, it, describe } from \"bun:test\";",
+        "import { describe, expect, it } from \"bun:test\";",
         "import { expect, it } from \"bun:test\";",
         "import { expect, test } from \"bun:test\";",
     };
@@ -196,18 +210,20 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
         defer allocator.free(rewritten);
 
         summary.files += 1;
-        const value = (try home_rt.jsc.evaluate.evaluateUtf8(
+        const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(
             allocator,
             engine.currentContext(),
             rewritten,
             relative,
             1,
-            null,
-        )) orelse {
+        );
+        defer evaluation.deinit(allocator);
+
+        if (evaluation.exception != null or evaluation.value == null) {
             summary.failed += 1;
+            try recordFailure(allocator, &summary, relative, evaluation.exception_message);
             continue;
-        };
-        _ = value;
+        }
 
         summary.passed += try readCounter(allocator, &engine, "__home_bun_tests.passed");
         summary.failed += try readCounter(allocator, &engine, "__home_bun_tests.failed");
@@ -231,6 +247,21 @@ fn readCounter(allocator: std.mem.Allocator, engine: *home_rt.jsc.engine.Engine,
     return @intFromFloat(number);
 }
 
+fn recordFailure(
+    allocator: std.mem.Allocator,
+    summary: *Summary,
+    relative: []const u8,
+    message: ?[]const u8,
+) !void {
+    if (summary.first_failure_file.len != 0) return;
+
+    summary.first_failure_file = relative;
+    summary.first_failure_message = if (message) |text|
+        try allocator.dupe(u8, text)
+    else
+        "JSEvaluateScript returned null without an exception";
+}
+
 test "subset flag parser recognizes the bootstrap subset" {
     try std.testing.expectEqual(Subset.minimal_js, parseSubsetFlagValue("minimal-js").?);
     try std.testing.expect(parseSubsetFlagValue("all") == null);
@@ -239,6 +270,8 @@ test "subset flag parser recognizes the bootstrap subset" {
 test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("snippets/segfault-todo.test.js", filesForSubset(.minimal_js)[0]);
     try std.testing.expectEqualStrings("js/web/util/atob.test.js", filesForSubset(.minimal_js)[1]);
+    try std.testing.expectEqualStrings("regression/issue/23723.test.js", filesForSubset(.minimal_js)[2]);
+    try std.testing.expectEqualStrings("regression/issue/12650.test.js", filesForSubset(.minimal_js)[3]);
 }
 
 test "Bun test import rewrite installs the bootstrap prelude" {
@@ -252,4 +285,13 @@ test "Bun test import rewrite installs the bootstrap prelude" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "function it(name, fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "it(\"works\"") != null);
+}
+
+test "failure recorder keeps the first failing file" {
+    var summary = Summary{};
+    try recordFailure(std.testing.allocator, &summary, "first.test.js", null);
+    try recordFailure(std.testing.allocator, &summary, "second.test.js", null);
+
+    try std.testing.expectEqualStrings("first.test.js", summary.first_failure_file);
+    try std.testing.expectEqualStrings("JSEvaluateScript returned null without an exception", summary.first_failure_message);
 }

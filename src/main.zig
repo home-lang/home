@@ -2951,6 +2951,10 @@ fn runBunCorpusNativeSubset(allocator: std.mem.Allocator, corpus_path: []const u
     std.debug.print("tests passed: {d}\n", .{summary.passed});
     std.debug.print("tests failed: {d}\n", .{summary.failed});
     std.debug.print("tests todo: {d}\n\n", .{summary.todo});
+    if (summary.first_failure_file.len != 0) {
+        std.debug.print("first failure: {s}\n", .{summary.first_failure_file});
+        std.debug.print("message: {s}\n\n", .{summary.first_failure_message});
+    }
 
     if (summary.failed != 0) std.process.exit(1);
 }
