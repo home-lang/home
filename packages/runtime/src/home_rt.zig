@@ -718,6 +718,10 @@ pub const css = struct {
         // Wave-16 Tier-1 grinder (2026-05-18). ContainerType +
         // ContainerNameList + Container — pure-data containment leaves.
         pub const contain = @import("css/properties/contain.zig");
+        // Wave-18 Tier-1 grinder (2026-05-18). Text properties — pure
+        // data shapes over the css_parser stub; `TextShadow.parse/toCss`
+        // bodies dropped per stub policy (see file header).
+        pub const text = @import("css/properties/text.zig");
     };
     pub const PropertyCategory = logical.PropertyCategory;
     pub const LogicalGroup = logical.LogicalGroup;
@@ -973,6 +977,19 @@ pub const sql = struct {
             pub const ReadyForQuery = @import("sql/postgres/protocol/ReadyForQuery.zig");
             pub const ParameterStatus = @import("sql/postgres/protocol/ParameterStatus.zig");
             pub const DataRow = @import("sql/postgres/protocol/DataRow.zig");
+            // Wave-18 Tier-1 grinder (2026-05-18). Additional
+            // Postgres wire-protocol packet leaves over the wave-16
+            // NewReader/NewWriter stubs + shared.Data stub. Decoder /
+            // encoder bodies stay verbatim — they trip `@compileError`
+            // on actual call until the real reader/writer + bun.ByteList
+            // land.
+            pub const Close = @import("sql/postgres/protocol/Close.zig").Close;
+            pub const Describe = @import("sql/postgres/protocol/Describe.zig");
+            pub const Execute = @import("sql/postgres/protocol/Execute.zig");
+            pub const CopyInResponse = @import("sql/postgres/protocol/CopyInResponse.zig");
+            pub const CommandComplete = @import("sql/postgres/protocol/CommandComplete.zig");
+            pub const CopyData = @import("sql/postgres/protocol/CopyData.zig");
+            pub const CopyFail = @import("sql/postgres/protocol/CopyFail.zig");
         };
     };
 };
@@ -1403,6 +1420,16 @@ test {
     _ = @import("sql/postgres/protocol/ReadyForQuery.zig");
     _ = @import("sql/postgres/protocol/ParameterStatus.zig");
     _ = @import("sql/postgres/protocol/DataRow.zig");
+    // Wave-18 Tier-1 grinder (2026-05-18) — additional sql wire-protocol
+    // leaves + css/properties/text.
+    _ = @import("sql/postgres/protocol/Close.zig");
+    _ = @import("sql/postgres/protocol/Describe.zig");
+    _ = @import("sql/postgres/protocol/Execute.zig");
+    _ = @import("sql/postgres/protocol/CopyInResponse.zig");
+    _ = @import("sql/postgres/protocol/CommandComplete.zig");
+    _ = @import("sql/postgres/protocol/CopyData.zig");
+    _ = @import("sql/postgres/protocol/CopyFail.zig");
+    _ = @import("css/properties/text.zig");
 }
 
 test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {
@@ -1466,6 +1493,25 @@ test "home_rt.sql.postgres.protocol.PortalOrPreparedStatement tags correctly" {
     try std.testing.expectEqual(@as(u8, 'S'), ps.tag());
     try std.testing.expectEqualStrings("p1", p.slice());
     try std.testing.expectEqualStrings("s1", ps.slice());
+}
+
+test "home_rt.sql.postgres.protocol.Close composes a portal target" {
+    const c: sql.postgres.protocol.Close = .{ .p = .{ .portal = "x" } };
+    try std.testing.expectEqualStrings("x", c.p.slice());
+    try std.testing.expectEqual(@as(u8, 'P'), c.p.tag());
+}
+
+test "home_rt.sql.postgres.protocol.Execute defaults max_rows to 0" {
+    const e: sql.postgres.protocol.Execute = .{ .p = .{ .portal = "p" } };
+    try std.testing.expectEqual(@as(u32, 0), e.max_rows);
+}
+
+test "home_rt.css.properties.text packs TextDecorationLine into a byte" {
+    const TextDecorationLine = css.properties.text.TextDecorationLine;
+    try std.testing.expectEqual(@as(usize, 1), @sizeOf(TextDecorationLine));
+    const t = TextDecorationLine{ .underline = true };
+    try std.testing.expect(t.underline);
+    try std.testing.expect(!t.overline);
 }
 
 test "home_rt.jsc enums round-trip their tag values" {

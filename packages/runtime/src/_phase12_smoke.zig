@@ -57,4 +57,14 @@ test {
     _ = @import("sql/postgres/protocol/ReadyForQuery.zig");
     _ = @import("sql/postgres/protocol/ParameterStatus.zig");
     _ = @import("sql/postgres/protocol/DataRow.zig");
+    // Wave-18 Tier-1 grinder (2026-05-18) — additional sql wire-protocol
+    // leaves + css/properties/text.
+    _ = @import("sql/postgres/protocol/Close.zig");
+    _ = @import("sql/postgres/protocol/Describe.zig");
+    _ = @import("sql/postgres/protocol/Execute.zig");
+    _ = @import("sql/postgres/protocol/CopyInResponse.zig");
+    _ = @import("sql/postgres/protocol/CommandComplete.zig");
+    _ = @import("sql/postgres/protocol/CopyData.zig");
+    _ = @import("sql/postgres/protocol/CopyFail.zig");
+    _ = @import("css/properties/text.zig");
 }
