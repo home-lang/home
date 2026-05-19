@@ -10422,7 +10422,23 @@ pub const Checker = struct {
             if (self.typeHasNextMethod(t)) return true;
             const iterator_t = self.iteratorMethodReturnType(member.type) orelse return true;
             if (iterator_t == types.Primitive.any or iterator_t == types.Primitive.unknown) return true;
-            return self.typeHasNextMethod(iterator_t);
+            if (self.typeHasNextMethod(iterator_t)) return true;
+            // The builtin `Map<K, V>` / `Set<T>` instance shapes here
+            // model `Symbol.iterator()` as returning `Array<entry>`
+            // rather than a proper `IteratorResult` iterator — a
+            // synthesizer convenience. The Array semantically still
+            // satisfies the destructuring iterable contract (numeric
+            // indexer + length / nested `Symbol.iterator`), so accept
+            // an array-shaped return type as iterable. Mirrors
+            // `iterableArrayPattern30` (empty baseline) where
+            // `new Map(...)` destructures cleanly.
+            if (iterator_t < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(iterator_t).is_object_type)
+            {
+                if (self.interner.objectNumberIndex(iterator_t) != types.Primitive.none) return true;
+                if (self.interner.objectMemberInfo(iterator_t, symbol_iterator) != null) return true;
+            }
+            return false;
         }
         if (self.interner.objectNumberIndex(t) != types.Primitive.none) {
             const length_id = self.string_interner.intern("length") catch return false;
@@ -10662,6 +10678,48 @@ pub const Checker = struct {
             if (ep.flags.is_rest) return true;
         }
         return false;
+    }
+
+    /// Synthesize the parameter type for an object-binding-pattern
+    /// parameter that has a default value:
+    /// `function f({ x, y = 0 } = { x: 0 }) {}` → infers
+    /// `{ x: number, y?: number }`. tsc derives the parameter type from
+    /// the BINDING PATTERN shape (not the widened default), so every
+    /// named element appears in the synthesized type. Member types
+    /// prefer the parent-default property (when present), then fall
+    /// back to the element-level default's widened type, then `any`.
+    /// Mirrors the empty-baseline fixture `destructuringWithLiteralInitializers`.
+    fn objectBindingPatternParameterType(self: *Checker, pattern_node: NodeId) CheckError!TypeId {
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        for (hir_mod.patternElements(self.hir, pattern_node)) |elem| {
+            if (self.hir.kindOf(elem) != .parameter) continue;
+            const p = hir_mod.parameterOf(self.hir, elem);
+            if (p.flags.is_rest or p.name == hir_mod.none_node_id) continue;
+            const key_name = (try self.objectBindingElementKeyName(elem, p.name)) orelse continue;
+            // An element-level `= expr` default makes this slot
+            // optional (callers may omit the property). The
+            // default's widened type also serves as the member type
+            // when no annotation is in scope. Mirrors the
+            // `y?: number` shape on `{ y = 0 }` bindings.
+            const has_own_default = p.default_value != hir_mod.none_node_id;
+            var member_t: TypeId = types.Primitive.any;
+            if (has_own_default) {
+                const default_t = try self.checkExpression(p.default_value);
+                const widened = self.widenForInference(default_t);
+                if (!self.typeIsAnyLike(widened) and widened != types.Primitive.none) {
+                    member_t = widened;
+                }
+            }
+            try members.append(self.gpa, .{
+                .name = key_name,
+                .type = member_t,
+                .is_optional = has_own_default,
+                .is_readonly = false,
+                .is_method = false,
+            });
+        }
+        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
     }
 
     fn objectLiteralHasSymbolIteratorMethod(self: *Checker, node: NodeId) bool {
@@ -10952,6 +11010,20 @@ pub const Checker = struct {
                 self.hir.kindOf(pp.name) == .array_pattern and
                 (pp.flags.is_rest or self.arrayBindingPatternHasRest(pp.name) or pp.default_value == hir_mod.none_node_id))
                 try self.arrayBindingPatternParameterType(pp.name)
+            else if (pp.name != hir_mod.none_node_id and
+                self.hir.kindOf(pp.name) == .object_pattern and
+                pp.default_value != hir_mod.none_node_id and
+                !is_this_param)
+                // `function f({ x, y = 0 } = { x: 0 }) {}` — tsc infers
+                // the parameter type from the BINDING PATTERN's shape
+                // (each named binding becomes an optional `any` member),
+                // NOT from the widened default value alone. Mirrors
+                // `destructuringWithLiteralInitializers` (empty
+                // baseline) where `f5({ x: 1, y: 1 })` is valid even
+                // though the parent default `{ x: 0 }` only declared
+                // `x`. Without this we'd infer `{ x: number }` and
+                // surface spurious TS2353 on `y`.
+                try self.objectBindingPatternParameterType(pp.name)
             else if (pp.default_value != hir_mod.none_node_id and !is_this_param) blk_default: {
                 const default_t = try self.checkExpression(pp.default_value);
                 const widened = self.widenForInference(default_t);
