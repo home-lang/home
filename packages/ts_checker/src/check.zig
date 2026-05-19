@@ -597,6 +597,14 @@ pub const TsCodes = struct {
     /// single TS2654 listing the names; a single missing member
     /// stays as TS2515.
     pub const abstract_members_missing_aggregate: u32 = 2654;
+    /// TS2655 — variant of TS2654 used when there are more than four
+    /// missing abstract members; tsc truncates the list to the first
+    /// four names and appends `and N more.`.
+    pub const abstract_members_missing_truncated: u32 = 2655;
+    /// TS2656 — class-expression variant of TS2654 (full list).
+    pub const abstract_members_missing_class_expr_aggregate: u32 = 2656;
+    /// TS2650 — class-expression variant of TS2655 (truncated list).
+    pub const abstract_members_missing_class_expr_truncated: u32 = 2650;
     /// TS2553 — `enum E { A = "x", B }`. Once an enum member has a
     /// string initializer, every subsequent member must have an
     /// explicit initializer (or be string-valued); plain
@@ -13402,9 +13410,15 @@ pub const Checker = struct {
                                 }
                             }
                             if (missing.items.len > 0) {
+                                // Class-expression detection: anchor
+                                // at the binding identifier when
+                                // assigned (`const C = class extends
+                                // …`) so TS2650 / TS2656 reports at
+                                // `C`, mirroring tsc.
+                                const is_class_expr = self.hir.kindOf(node) == .class_expr;
                                 const child_str = try self.renderClassNameWithTypeParams(cid.name, c.type_params_start, c.type_params_len);
                                 const parent_str = try self.renderExtendsExpression(c.extends, ext_name);
-                                if (missing.items.len == 1) {
+                                if (missing.items.len == 1 and !is_class_expr) {
                                     const member_str = self.string_interner.get(missing.items[0]);
                                     const msg = try std.fmt.allocPrint(
                                         self.diag_arena.allocator(),
@@ -13417,30 +13431,70 @@ pub const Checker = struct {
                                         .message = msg,
                                     });
                                 } else {
-                                    // Aggregate: render as
-                                    // `'foo', 'bar'`. tsc emits the
-                                    // names in declaration order; we
-                                    // mirror that by sorting against
-                                    // the abstract-name pool's
-                                    // insertion order (the StringMap
-                                    // iterator preserves insertion).
+                                    // tsc collapses N>1 missing
+                                    // members into TS2654 / TS2655
+                                    // (class decl) or TS2656 / TS2650
+                                    // (class expression). The
+                                    // truncated forms list the first
+                                    // four names and append `and N
+                                    // more.`.
+                                    const truncate_at: usize = 4;
+                                    const truncated = missing.items.len > truncate_at;
+                                    const list_len = if (truncated) truncate_at else missing.items.len;
                                     var names_buf: std.ArrayListUnmanaged(u8) = .empty;
                                     defer names_buf.deinit(self.diag_arena.allocator());
-                                    for (missing.items, 0..) |mn, i| {
+                                    for (missing.items[0..list_len], 0..) |mn, i| {
                                         if (i != 0) try names_buf.appendSlice(self.diag_arena.allocator(), ", ");
                                         try names_buf.append(self.diag_arena.allocator(), '\'');
                                         try names_buf.appendSlice(self.diag_arena.allocator(), self.string_interner.get(mn));
                                         try names_buf.append(self.diag_arena.allocator(), '\'');
                                     }
                                     const names_str = try names_buf.toOwnedSlice(self.diag_arena.allocator());
-                                    const msg = try std.fmt.allocPrint(
-                                        self.diag_arena.allocator(),
-                                        "Non-abstract class '{s}' is missing implementations for the following members of '{s}': {s}.",
-                                        .{ child_str, parent_str, names_str },
-                                    );
+                                    const more_count = if (truncated) missing.items.len - truncate_at else 0;
+                                    const msg = if (is_class_expr) blk_msg: {
+                                        if (truncated) {
+                                            break :blk_msg try std.fmt.allocPrint(
+                                                self.diag_arena.allocator(),
+                                                "Non-abstract class expression is missing implementations for the following members of '{s}': {s} and {d} more.",
+                                                .{ parent_str, names_str, more_count },
+                                            );
+                                        } else {
+                                            break :blk_msg try std.fmt.allocPrint(
+                                                self.diag_arena.allocator(),
+                                                "Non-abstract class expression is missing implementations for the following members of '{s}': {s}.",
+                                                .{ parent_str, names_str },
+                                            );
+                                        }
+                                    } else blk_msg: {
+                                        if (truncated) {
+                                            break :blk_msg try std.fmt.allocPrint(
+                                                self.diag_arena.allocator(),
+                                                "Non-abstract class '{s}' is missing implementations for the following members of '{s}': {s} and {d} more.",
+                                                .{ child_str, parent_str, names_str, more_count },
+                                            );
+                                        } else {
+                                            break :blk_msg try std.fmt.allocPrint(
+                                                self.diag_arena.allocator(),
+                                                "Non-abstract class '{s}' is missing implementations for the following members of '{s}': {s}.",
+                                                .{ child_str, parent_str, names_str },
+                                            );
+                                        }
+                                    };
+                                    const code: u32 = if (is_class_expr)
+                                        (if (truncated) TsCodes.abstract_members_missing_class_expr_truncated else TsCodes.abstract_members_missing_class_expr_aggregate)
+                                    else
+                                        (if (truncated) TsCodes.abstract_members_missing_truncated else TsCodes.abstract_members_missing_aggregate);
+                                    // For class expressions the anchor
+                                    // is the enclosing binding name
+                                    // (e.g. `const C = class ...`
+                                    // reports at `C`). Fall back to
+                                    // `c.name` (which for class_expr
+                                    // is `none_node_id`) when there's
+                                    // no binding pattern.
+                                    const anchor_node = if (is_class_expr) self.classExpressionBindingAnchor(node) else c.name;
                                     try self.diagnostics.append(self.gpa, .{
-                                        .node = c.name,
-                                        .code = TsCodes.abstract_members_missing_aggregate,
+                                        .node = anchor_node,
+                                        .code = code,
                                         .message = msg,
                                     });
                                 }
@@ -16668,6 +16722,29 @@ pub const Checker = struct {
         }
         try buf.append(self.diag_arena.allocator(), '>');
         return try buf.toOwnedSlice(self.diag_arena.allocator());
+    }
+
+    /// Returns the binding name (variable / property) that a class
+    /// expression is being assigned to so TS2650 / TS2656 can anchor
+    /// at the user-facing name. Walks the parent chain for the
+    /// simplest patterns (`var X = class …`, `const X = class …`).
+    /// Falls back to the class-expression node itself when no
+    /// suitable anchor exists.
+    fn classExpressionBindingAnchor(self: *Checker, class_expr_node: NodeId) NodeId {
+        const parent = self.hir.parentOf(class_expr_node);
+        if (parent == hir_mod.none_node_id) return class_expr_node;
+        switch (self.hir.kindOf(parent)) {
+            .var_decl, .let_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, parent);
+                if (v.init == class_expr_node and v.name != hir_mod.none_node_id) return v.name;
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, parent);
+                if (a.value == class_expr_node) return a.target;
+            },
+            else => {},
+        }
+        return class_expr_node;
     }
 
     /// Renders the parent class reference from an `extends` clause for
