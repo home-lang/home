@@ -1077,6 +1077,13 @@ pub const Engine = struct {
         const source_str_idx = self.interner.objectStringIndex(source);
         const source_num_idx = self.interner.objectNumberIndex(source);
         const source_sym_idx = self.interner.objectSymbolIndex(source);
+        if (source_num_idx != Primitive.none and
+            self.fixedTupleLength(target) != null and
+            self.fixedTupleLength(source) == null and
+            self.targetHasRequiredNumericMembers(target))
+        {
+            return false;
+        }
         if (target_members.len > 0) {
             var target_has_required = false;
             var source_has_named_member = false;
@@ -1177,6 +1184,38 @@ pub const Engine = struct {
 
     fn sourceObjectMembersHaveName(source_members: []const types.ObjectMember, name: types.StringId) bool {
         for (source_members) |sm| if (sm.name == name) return true;
+        return false;
+    }
+
+    fn fixedTupleLength(self: *Engine, t: TypeId) ?u64 {
+        if (t >= self.pool().typeCount()) return null;
+        if (!self.pool().flagsOf(t).is_object_type) return null;
+        const si = self.string_interner orelse return null;
+        for (self.interner.objectMembers(t)) |m| {
+            const name = si.getOptional(m.name) orelse continue;
+            if (!std.mem.eql(u8, name, "length")) continue;
+            if (m.type >= self.pool().typeCount()) return null;
+            const flags = self.pool().flagsOf(m.type);
+            if (!flags.is_literal or !flags.is_number) return null;
+            return switch (self.interner.literalOf(m.type)) {
+                .number_lit => |bits| blk: {
+                    const fv: f64 = @bitCast(bits);
+                    if (fv < 0 or fv != @floor(fv) or fv > 1024) break :blk null;
+                    break :blk @intFromFloat(fv);
+                },
+                else => null,
+            };
+        }
+        return null;
+    }
+
+    fn targetHasRequiredNumericMembers(self: *Engine, target: TypeId) bool {
+        const si = self.string_interner orelse return false;
+        for (self.interner.objectMembers(target)) |tm| {
+            if (tm.is_optional) continue;
+            const name = si.getOptional(tm.name) orelse continue;
+            if (isNumericName(name)) return true;
+        }
         return false;
     }
 
@@ -1637,6 +1676,29 @@ test "Engine: structural object — optional source prop cannot satisfy required
     const tgt = try ti.internObjectType(&.{
         .{ .name = x, .type = Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
     });
+    try T.expect(!try e.isAssignableTo(src, tgt));
+}
+
+test "Engine: plain array is not assignable to fixed tuple target" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    e.setStringInterner(&sint);
+
+    const length_id = try sint.intern("length");
+    const zero_id = try sint.intern("0");
+    const one_id = try sint.intern("1");
+    const len_two = try ti.internNumberLiteral(2);
+    const src = try ti.internArrayType(&sint, Primitive.string_t);
+    const tgt = try ti.internObjectType(&.{
+        .{ .name = length_id, .type = len_two, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = zero_id, .type = Primitive.any, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = one_id, .type = Primitive.any, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+
     try T.expect(!try e.isAssignableTo(src, tgt));
 }
 

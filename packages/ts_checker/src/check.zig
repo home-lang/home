@@ -11396,7 +11396,9 @@ pub const Checker = struct {
     }
 
     /// Synthesize the parameter type for an object-binding-pattern
-    /// parameter that has a default value:
+    /// parameter:
+    /// `function f({ x: [a, b] }) {}` → infers
+    /// `{ x: [any, any] }`.
     /// `function f({ x, y = 0 } = { x: 0 }) {}` → infers
     /// `{ x: number, y?: number }`. tsc derives the parameter type from
     /// the BINDING PATTERN shape (not the widened default), so every
@@ -11418,8 +11420,14 @@ pub const Checker = struct {
             // when no annotation is in scope. Mirrors the
             // `y?: number` shape on `{ y = 0 }` bindings.
             const has_own_default = p.default_value != hir_mod.none_node_id;
-            var member_t: TypeId = types.Primitive.any;
-            if (has_own_default) {
+            const name_kind = self.hir.kindOf(p.name);
+            var member_t: TypeId = if (name_kind == .array_pattern)
+                try self.arrayBindingPatternParameterType(p.name)
+            else if (name_kind == .object_pattern)
+                try self.objectBindingPatternParameterType(p.name)
+            else
+                types.Primitive.any;
+            if (has_own_default and member_t == types.Primitive.any) {
                 const default_t = try self.checkExpression(p.default_value);
                 const widened = self.widenForInference(default_t);
                 if (!self.typeIsAnyLike(widened) and widened != types.Primitive.none) {
@@ -11782,17 +11790,15 @@ pub const Checker = struct {
                 try self.arrayBindingPatternParameterType(pp.name)
             else if (pp.name != hir_mod.none_node_id and
                 self.hir.kindOf(pp.name) == .object_pattern and
-                pp.default_value != hir_mod.none_node_id and
                 !is_this_param)
-                // `function f({ x, y = 0 } = { x: 0 }) {}` — tsc infers
-                // the parameter type from the BINDING PATTERN's shape
-                // (each named binding becomes an optional `any` member),
-                // NOT from the widened default value alone. Mirrors
-                // `destructuringWithLiteralInitializers` (empty
-                // baseline) where `f5({ x: 1, y: 1 })` is valid even
-                // though the parent default `{ x: 0 }` only declared
-                // `x`. Without this we'd infer `{ x: number }` and
-                // surface spurious TS2353 on `y`.
+                // `function f({ x: [a, b] }) {}` — tsc infers the
+                // parameter type from the BINDING PATTERN's shape
+                // (`{ x: [any, any] }`). A parent default can seed
+                // element types, but the pattern itself still controls
+                // which members exist. Mirrors
+                // `destructuringWithLiteralInitializers` and keeps
+                // destructured object parameters from collapsing to
+                // `any` when no annotation/default is present.
                 try self.objectBindingPatternParameterType(pp.name)
             else if (pp.default_value != hir_mod.none_node_id and !is_this_param) blk_default: {
                 const default_t = if (try self.nullishArrayLiteralTypeFromSyntax(pp.default_value)) |nullish_array_t|
@@ -47646,9 +47652,29 @@ pub const Checker = struct {
     fn arrayLiteralTupleDisplayName(self: *Checker, array_node: NodeId, target_t: TypeId) CheckError![]const u8 {
         var buf: std.ArrayListUnmanaged(u8) = .empty;
         const arena = self.diag_arena.allocator();
+        var has_spread = false;
+        for (hir_mod.arrayLiteralElements(self.hir, array_node)) |el| {
+            if (el != hir_mod.none_node_id and self.hir.kindOf(el) == .spread) {
+                has_spread = true;
+                break;
+            }
+        }
         try buf.append(arena, '[');
         for (hir_mod.arrayLiteralElements(self.hir, array_node), 0..) |el, i| {
             if (i > 0) try buf.appendSlice(arena, ", ");
+            if (el != hir_mod.none_node_id and self.hir.kindOf(el) == .spread) {
+                const sp = hir_mod.spreadOf(self.hir, el);
+                const spread_t = if (self.hir.typeOf(sp.expression) != types.Primitive.none)
+                    self.hir.typeOf(sp.expression)
+                else
+                    try self.checkExpression(sp.expression);
+                const spread_name = (try self.simpleDiagnosticTypeName(spread_t)) orelse
+                    (try self.allocSimpleTypeName(spread_t)) orelse
+                    "any[]";
+                try buf.appendSlice(arena, "...");
+                try buf.appendSlice(arena, spread_name);
+                continue;
+            }
             const elem_target_t = self.tupleElementType(target_t, i);
             if (self.hir.kindOf(el) == .array_literal) {
                 if (elem_target_t != types.Primitive.none and !self.isTupleShapedTarget(elem_target_t)) {
@@ -47658,9 +47684,16 @@ pub const Checker = struct {
                 }
                 continue;
             }
-            var t = self.hir.typeOf(el);
-            if (t == types.Primitive.none) t = try self.checkExpression(el);
-            try buf.appendSlice(arena, (try self.allocSimpleTypeName(self.widenLiteralType(t))) orelse "any");
+            const display_t = if (has_spread and self.hir.kindOf(el) == .literal_bool)
+                self.interner.internBooleanLiteral(hir_mod.literalBoolOf(self.hir, el))
+            else blk: {
+                var t = self.hir.typeOf(el);
+                if (t == types.Primitive.none) t = try self.checkExpression(el);
+                break :blk self.widenLiteralType(t);
+            };
+            try buf.appendSlice(arena, (try self.simpleDiagnosticTypeName(display_t)) orelse
+                (try self.allocSimpleTypeName(display_t)) orelse
+                "any");
         }
         try buf.append(arena, ']');
         return buf.items;
