@@ -36581,6 +36581,7 @@ pub const Checker = struct {
     fn windowGlobalType(self: *Checker) CheckError!TypeId {
         const any_t = types.Primitive.any;
         const number_t = types.Primitive.number_t;
+        const string_t = types.Primitive.string_t;
         const sig_any = try self.seedAnySigVariadic(any_t);
         const screen_members = [_]types.ObjectMember{
             .{ .name = self.string_interner.intern("width") catch return error.OutOfMemory, .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
@@ -36590,6 +36591,7 @@ pub const Checker = struct {
         };
         const screen_t = self.interner.internObjectType(&screen_members) catch return error.OutOfMemory;
         const window_members = [_]types.ObjectMember{
+            .{ .name = self.string_interner.intern("name") catch return error.OutOfMemory, .type = string_t, .is_optional = false, .is_readonly = false, .is_method = false },
             .{ .name = self.string_interner.intern("document") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = false, .is_method = false },
             .{ .name = self.string_interner.intern("location") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = false, .is_method = false },
             .{ .name = self.string_interner.intern("navigator") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = false, .is_method = false },
