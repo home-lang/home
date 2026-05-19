@@ -569,6 +569,13 @@ pub const node = struct {
         pub const myers_diff = @import("node/assert/myers_diff.zig");
     };
     pub const path = @import("node/path.zig");
+    // Phase 12.7 port (2026-05-19) — `node:fs` sync Zig substrate.
+    // Exposes the std.Io.Dir-backed sync surface (readFileSync /
+    // writeFileSync / existsSync / mkdirSync / rmSync / statSync /
+    // readdirSync / copyFileSync / chmodSync / realpathSync / ...).
+    // The async `promises` namespace stays parked behind
+    // @panic("TODO(phase-12.2-M3)") until JSC + event-loop land.
+    pub const fs = @import("node/fs.zig");
 };
 
 // ---- src/core/ + src/alloc/ + src/safety/ ----------------------
@@ -1443,6 +1450,7 @@ test {
     // tests fire under `zig build test -Dfilter=home_rt`.
     _ = @import("analytics/Features.zig");
     _ = @import("node/path.zig");
+    _ = @import("node/fs.zig");
     _ = @import("jsc/generated_classes_list.zig");
     _ = @import("runtime/api/bun/Terminal.zig");
     _ = @import("runtime/api/bun/spawn.zig");
