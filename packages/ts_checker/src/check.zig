@@ -19193,10 +19193,24 @@ pub const Checker = struct {
                         // (`Interface 'E1<T>' ...`). Mirrors fixture
                         // `mappedTypesAndObjects.ts(25,11)`.
                         const child_with_params = try self.formatInterfaceDisplayName(node, iface_name_str.?);
+                        // Render the base from its source text when it
+                        // has type arguments (`Base1<number>`) so the
+                        // TS2430 prose preserves the upstream shape
+                        // (`Interface 'D' incorrectly extends interface
+                        // 'Base1<number>'.`). Falls back to the bare
+                        // unqualified name when no source text is
+                        // available or the extends carries no generics.
+                        const ext_src = self.nodeSourceTextOrEmpty(ext_node);
+                        const base_display: []const u8 = blk_base: {
+                            if (ext_src.len > 0 and std.mem.indexOfScalar(u8, ext_src, '<') != null) {
+                                break :blk_base ext_src;
+                            }
+                            break :blk_base base_name_str.?;
+                        };
                         const msg = try std.fmt.allocPrint(
                             self.diag_arena.allocator(),
                             "Interface '{s}' incorrectly extends interface '{s}'.",
-                            .{ child_with_params, base_name_str.? },
+                            .{ child_with_params, base_display },
                         );
                         // Anchor at the interface name identifier so the
                         // column matches upstream tsc.
