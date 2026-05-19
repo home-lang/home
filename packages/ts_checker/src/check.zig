@@ -4803,6 +4803,7 @@ pub const Checker = struct {
         const v = hir_mod.varDeclOf(self.hir, node);
         var declared_type = self.hir.typeOf(node);
         if (v.type_annotation != hir_mod.none_node_id and self.hir.typeOf(node) == types.Primitive.none) {
+            try self.reportUnresolvedBareTypeRefsInAnnotation(v.type_annotation);
             declared_type = if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier)
                 try self.lowerValueTypeAnnotation(hir_mod.identifierOf(self.hir, v.name).name, v.type_annotation)
             else
@@ -14020,6 +14021,7 @@ pub const Checker = struct {
                         !op.is_static and
                         op.type_annotation != hir_mod.none_node_id and
                         op.value == hir_mod.none_node_id and
+                        !self.typeAnnotationContainsUnresolvedRef(op.type_annotation) and
                         !self.typeExplicitlyIncludesUndefined(field_t) and
                         !(self.classFieldTypeIsAnyOrUnknown(field_t) and
                             self.classFieldAnnotationIsLiteralAnyOrUnknown(op.type_annotation)) and
@@ -48271,6 +48273,7 @@ pub const Checker = struct {
             }
             try names.append(self.gpa, tp.name);
             try constraints.append(self.gpa, self.constraintTypeParameterName(tp.constraint));
+            try self.reportUnresolvedBodylessSignatureTypeRefs(tp.constraint, type_params);
         }
 
         for (names.items, 0..) |name, i| {
