@@ -185,6 +185,9 @@ pub const jsc = struct {
     pub const opaques = @import("jsc/opaques.zig");
     pub const extern_fns = @import("jsc/extern_fns.zig");
     pub const c_api_types = @import("jsc/types.zig");
+    // Phase 12.2 M3 prep (2026-05-19) — Engine stub. Bodies panic with
+    // TODO(phase-12.2-M3) until the C++ engine wiring lands.
+    pub const engine = @import("jsc/engine.zig");
 };
 
 // ---- src/io/ -----------------------------------------------------------
