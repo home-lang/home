@@ -71,6 +71,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/nested-describes.test.ts",
     "regression/issue/issue-12276.test.ts",
     "regression/issue/27014.test.ts",
+    "regression/issue/21257.test.ts",
 };
 
 const prelude =
@@ -253,6 +254,23 @@ const prelude =
     \\  return __home_make_expectation(value, false);
     \\}
     \\globalThis.__home_bun_test = { describe, expect, it, test };
+    \\if (typeof Response !== "function") {
+    \\  var Response = function(body, init) {
+    \\    this.body = body;
+    \\    this.init = init || {};
+    \\  };
+    \\}
+    \\Response.json = function(value, init) {
+    \\  const valueType = typeof value;
+    \\  if (value === undefined || valueType === "function" || valueType === "symbol") {
+    \\    throw new TypeError("Value is not JSON serializable");
+    \\  }
+    \\  if (valueType === "bigint") {
+    \\    throw new TypeError("Do not know how to serialize a BigInt");
+    \\  }
+    \\  const text = JSON.stringify(value);
+    \\  return new Response(text, init);
+    \\};
     \\if (typeof Error.prepareStackTrace !== "function") {
     \\  Error.prepareStackTrace = function(error, stack) {
     \\    const name = error && error.name ? String(error.name) : "Error";
@@ -756,6 +774,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/bun/test/nested-describes.test.ts", filesForSubset(.minimal_js)[15]);
     try std.testing.expectEqualStrings("regression/issue/issue-12276.test.ts", filesForSubset(.minimal_js)[16]);
     try std.testing.expectEqualStrings("regression/issue/27014.test.ts", filesForSubset(.minimal_js)[17]);
+    try std.testing.expectEqualStrings("regression/issue/21257.test.ts", filesForSubset(.minimal_js)[18]);
 }
 
 test "Bun test import rewrite installs the bootstrap prelude" {
@@ -773,6 +792,7 @@ test "Bun test import rewrite installs the bootstrap prelude" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeUndefined()") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "toIncludeRepeated(needle, expectedCount)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "globalThis.__home_bun_test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Response.json") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "Error.prepareStackTrace") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "var __dirname = \"js/node\"") != null);
