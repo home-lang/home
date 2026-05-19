@@ -134,6 +134,19 @@ const CorpusRuntime = struct {
             return runner.FileRun.failOwned(allocator, spec.path, evaluation.exception_message);
         }
 
+        const finish_evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(
+            allocator,
+            self.engine.currentContext(),
+            "globalThis.__home_finish_tests();",
+            "home:corpus-finish",
+            1,
+        );
+        defer finish_evaluation.deinit(allocator);
+
+        if (finish_evaluation.exception != null or finish_evaluation.value == null) {
+            return runner.FileRun.failOwned(allocator, spec.path, finish_evaluation.exception_message);
+        }
+
         const counters = self.readCounters(allocator) catch |err| {
             return runner.FileRun.failBorrowed(spec.path, @errorName(err));
         };
@@ -175,12 +188,21 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/11677.test.ts",
     "js/node/buffer-utf16.test.ts",
     "js/bun/test/expect-extend-asymmetric-match-throw.test.ts",
+    "regression/issue/23133.test.ts",
 };
 
 const harness_prelude =
     \\var __home_bun_tests = globalThis.__home_bun_tests || { passed: 0, failed: 0, todo: 0 };
     \\globalThis.__home_reset_tests = function() {
     \\  __home_bun_tests = globalThis.__home_bun_tests = { passed: 0, failed: 0, todo: 0 };
+    \\  globalThis.__home_hooks = {
+    \\    beforeAll: [],
+    \\    beforeEach: [],
+    \\    afterEach: [],
+    \\    afterAll: [],
+    \\    beforeAllDone: false,
+    \\    afterAllDone: false,
+    \\  };
     \\};
     \\globalThis.__home_reset_tests();
     \\var Bun = {
@@ -250,14 +272,29 @@ const harness_prelude =
     \\  error.name = "InvalidCharacterError";
     \\  return error;
     \\}
+    \\function __home_run_hook(fn) {
+    \\  const result = fn();
+    \\  if (__home_is_thenable(result)) __home_unsupported("Async lifecycle hooks are not supported by the Home Bun corpus bootstrap runner yet");
+    \\}
+    \\function __home_run_before_all_hooks() {
+    \\  if (__home_hooks.beforeAllDone) return;
+    \\  __home_hooks.beforeAllDone = true;
+    \\  for (const hook of __home_hooks.beforeAll) __home_run_hook(hook);
+    \\}
+    \\function __home_register_hook(list, fn) {
+    \\  if (typeof fn === "function") list.push(fn);
+    \\}
     \\function __home_run_test(name, fn) {
     \\  if (typeof fn !== "function") {
     \\    __home_bun_tests.todo++;
     \\    return;
     \\  }
     \\  try {
+    \\    __home_run_before_all_hooks();
+    \\    for (const hook of __home_hooks.beforeEach) __home_run_hook(hook);
     \\    const result = fn();
     \\    if (__home_is_thenable(result)) __home_unsupported("Async tests are not supported by the Home Bun corpus bootstrap runner yet");
+    \\    for (const hook of __home_hooks.afterEach) __home_run_hook(hook);
     \\    __home_bun_tests.passed++;
     \\  } catch (error) {
     \\    __home_bun_tests.failed++;
@@ -290,6 +327,15 @@ const harness_prelude =
     \\function describe(name, fn) {
     \\  if (typeof fn === "function") fn();
     \\}
+    \\function beforeAll(fn, options) { __home_register_hook(__home_hooks.beforeAll, fn); }
+    \\function beforeEach(fn, options) { __home_register_hook(__home_hooks.beforeEach, fn); }
+    \\function afterEach(fn, options) { __home_register_hook(__home_hooks.afterEach, fn); }
+    \\function afterAll(fn, options) { __home_register_hook(__home_hooks.afterAll, fn); }
+    \\globalThis.__home_finish_tests = function() {
+    \\  if (__home_hooks.afterAllDone) return;
+    \\  __home_hooks.afterAllDone = true;
+    \\  for (const hook of __home_hooks.afterAll) __home_run_hook(hook);
+    \\};
     \\function __home_make_expectation(value, isNot) {
     \\  const expectation = {
     \\    get not() {
@@ -379,6 +425,22 @@ const harness_prelude =
     \\      }
     \\      __home_assert(count === expectedCount, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to include " + __home_format(needle) + " " + String(expectedCount) + " times");
     \\    },
+    \\    toContain(expected) {
+    \\      let pass = false;
+    \\      if (typeof value === "string") {
+    \\        pass = value.includes(String(expected));
+    \\      } else if (Array.isArray(value)) {
+    \\        for (let i = 0; i < value.length; i++) {
+    \\          if (Object.is(value[i], expected)) {
+    \\            pass = true;
+    \\            break;
+    \\          }
+    \\        }
+    \\      } else {
+    \\        __home_fail("Expected value must be a string or array");
+    \\      }
+    \\      __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to contain " + __home_format(expected));
+    \\    },
     \\    toContainKey(expected) {
     \\      if (arguments.length < 1) __home_fail("toContainKey() takes 1 argument");
     \\      if (value === null || (typeof value !== "object" && typeof value !== "function")) __home_fail("Expected value must be an object");
@@ -447,7 +509,7 @@ const harness_prelude =
     \\    };
     \\  }
     \\};
-    \\globalThis.__home_bun_test = { describe, expect, it, test };
+    \\globalThis.__home_bun_test = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, test };
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_import = function(specifier) {
@@ -821,6 +883,93 @@ fn rewriteImportMeta(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return out.toOwnedSlice(allocator);
 }
 
+fn appendBootstrapTypeScriptReplacement(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    idx: usize,
+) !?usize {
+    const replacements = [_]struct {
+        needle: []const u8,
+        replacement: []const u8,
+    }{
+        .{ .needle = ": string[] =", .replacement = " =" },
+        .{ .needle = " as const", .replacement = "" },
+    };
+
+    for (replacements) |entry| {
+        if (std.mem.startsWith(u8, source[idx..], entry.needle)) {
+            try out.appendSlice(allocator, entry.replacement);
+            return idx + entry.needle.len;
+        }
+    }
+    return null;
+}
+
+fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
+
+    const Mode = enum { code, single_quote, double_quote, template, line_comment, block_comment };
+    var mode: Mode = .code;
+    var i: usize = 0;
+    while (i < source.len) {
+        const byte = source[i];
+        switch (mode) {
+            .code => {
+                if (try appendBootstrapTypeScriptReplacement(&out, allocator, source, i)) |next| {
+                    i = next;
+                    continue;
+                }
+                if (byte == '\'') mode = .single_quote;
+                if (byte == '"') mode = .double_quote;
+                if (byte == '`') mode = .template;
+                if (byte == '/' and i + 1 < source.len and source[i + 1] == '/') mode = .line_comment;
+                if (byte == '/' and i + 1 < source.len and source[i + 1] == '*') mode = .block_comment;
+                try out.append(allocator, byte);
+                i += 1;
+            },
+            .single_quote, .double_quote, .template => {
+                const terminator: u8 = switch (mode) {
+                    .single_quote => '\'',
+                    .double_quote => '"',
+                    .template => '`',
+                    else => unreachable,
+                };
+                try out.append(allocator, byte);
+                if (byte == '\\' and i + 1 < source.len) {
+                    i += 1;
+                    try out.append(allocator, source[i]);
+                } else if (byte == terminator) {
+                    mode = .code;
+                }
+                i += 1;
+            },
+            .line_comment => {
+                try out.append(allocator, byte);
+                if (byte == '\n') mode = .code;
+                i += 1;
+            },
+            .block_comment => {
+                try out.append(allocator, byte);
+                if (byte == '*' and i + 1 < source.len and source[i + 1] == '/') {
+                    i += 1;
+                    try out.append(allocator, source[i]);
+                    mode = .code;
+                }
+                i += 1;
+            },
+        }
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+fn finishModuleRewrite(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const with_import_meta = try rewriteImportMeta(allocator, source);
+    defer allocator.free(with_import_meta);
+    return rewriteBootstrapTypeScript(allocator, with_import_meta);
+}
+
 fn hasBunTestImport(source: []const u8) bool {
     return std.mem.indexOf(u8, source, "from \"bun:test\"") != null or
         std.mem.indexOf(u8, source, "from 'bun:test'") != null;
@@ -886,6 +1035,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         .{ .line = "import { expect, it, describe } from \"bun:test\";", .binding = "const { expect, it, describe } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { describe, expect, it } from \"bun:test\";", .binding = "const { describe, expect, it } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { describe, expect, test } from \"bun:test\";", .binding = "const { describe, expect, test } = globalThis.__home_import(\"bun:test\");\n" },
+        .{ .line = "import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeAll, beforeEach, expect, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, it } from \"bun:test\";", .binding = "const { expect, it } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, test } from \"bun:test\";", .binding = "const { expect, test } = globalThis.__home_import(\"bun:test\");\n" },
     };
@@ -904,7 +1054,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
             try out.appendSlice(allocator, "\n})();\n");
             const with_imports = try out.toOwnedSlice(allocator);
             defer allocator.free(with_imports);
-            return rewriteImportMeta(allocator, with_imports);
+            return finishModuleRewrite(allocator, with_imports);
         }
     }
 
@@ -917,7 +1067,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     try out.appendSlice(allocator, "\n})();\n");
     const with_metadata = try out.toOwnedSlice(allocator);
     defer allocator.free(with_metadata);
-    return rewriteImportMeta(allocator, with_metadata);
+    return finishModuleRewrite(allocator, with_metadata);
 }
 
 pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) !PreparedModule {
@@ -1055,6 +1205,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/11677.test.ts", filesForSubset(.minimal_js)[22]);
     try std.testing.expectEqualStrings("js/node/buffer-utf16.test.ts", filesForSubset(.minimal_js)[23]);
     try std.testing.expectEqualStrings("js/bun/test/expect-extend-asymmetric-match-throw.test.ts", filesForSubset(.minimal_js)[24]);
+    try std.testing.expectEqualStrings("regression/issue/23133.test.ts", filesForSubset(.minimal_js)[25]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -1066,6 +1217,9 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTypeOf() requires a valid type string argument") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeUndefined()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toIncludeRepeated(needle, expectedCount)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function beforeAll(fn, options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_finish_tests") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContain(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toIncludeRepeated() requires the expect(value) to be a string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContainKey(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContainAnyKeys(expected)") != null);
@@ -1097,6 +1251,21 @@ test "Bun test import rewrite lowers to the virtual test module" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "var __dirname = \"js/node\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "it(\"works\"") != null);
+}
+
+test "Bun test import rewrite lowers lifecycle hook imports" {
+    const source =
+        \\import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
+        \\const logs: string[] = [];
+        \\beforeAll(() => logs.push("beforeAll"), { timeout: 10_000 });
+        \\test("works", () => expect(logs).toContain("beforeAll"));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/23133.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { afterAll, afterEach, beforeAll, beforeEach, expect, test } = globalThis.__home_import(\"bun:test\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const logs = []") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, ": string[]") == null);
 }
 
 test "Bun test import rewrite installs globals for no-import tests" {
