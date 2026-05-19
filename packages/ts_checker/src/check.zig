@@ -629,6 +629,8 @@ pub const TsCodes = struct {
     pub const const_enum_non_finite_value: u32 = 2477;
     /// TS2478 — `const enum` member initializer evaluated to NaN.
     pub const const_enum_disallowed_value_nan: u32 = 2478;
+    /// TS2431 — `enum any { }` (and similar with primitive names).
+    pub const enum_name_cannot_be_primitive: u32 = 2431;
     pub const jsdoc_function_type_mismatch: u32 = 8030;
     /// TS2369 — `public`/`private`/`protected`/`readonly` modifier on
     /// a parameter outside of a constructor implementation.
@@ -20450,6 +20452,18 @@ pub const Checker = struct {
             if (self.hir.kindOf(e.name) != .identifier) return;
             break :blk hir_mod.identifierOf(self.hir, e.name).name;
         };
+        // TS2431 — `enum any { }` (and `number`/`string`/`boolean`/
+        // `symbol`/`bigint`) shadow built-in primitive type names and
+        // are rejected outright. Anchored at the enum name identifier.
+        const enum_name_str = self.string_interner.get(enum_name);
+        if (isReservedPrimitiveTypeName(enum_name_str)) {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Enum name cannot be '{s}'.",
+                .{enum_name_str},
+            );
+            try self.report(e.name, TsCodes.enum_name_cannot_be_primitive, msg);
+        }
         if (e.is_const) try self.const_enums.put(self.gpa, enum_name, {});
         const members = hir_mod.enumMembers(self.hir, node);
 
@@ -26954,6 +26968,17 @@ pub const Checker = struct {
             return c == ',';
         }
         return false;
+    }
+
+    /// TS2431 — names of built-in primitive types that may not be
+    /// reused as enum-declaration names. tsc rejects these outright.
+    fn isReservedPrimitiveTypeName(name: []const u8) bool {
+        return std.mem.eql(u8, name, "any") or
+            std.mem.eql(u8, name, "number") or
+            std.mem.eql(u8, name, "string") or
+            std.mem.eql(u8, name, "boolean") or
+            std.mem.eql(u8, name, "symbol") or
+            std.mem.eql(u8, name, "bigint");
     }
 
     fn varDeclIsInsideFunctionLike(self: *Checker, node: NodeId) bool {
@@ -53119,6 +53144,32 @@ test "checker: enum assignment TS2322 renders enum names" {
     try T.expect(saw_e);
     try T.expect(saw_f);
     try T.expect(saw_number);
+}
+
+test "checker: TS2431 — enum name cannot be a primitive (any/number/string/boolean)" {
+    const s = try newSetup(
+        \\enum any { }
+        \\enum number { }
+        \\enum string { }
+        \\enum boolean { }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_any = false;
+    var saw_number_n = false;
+    var saw_string_n = false;
+    var saw_boolean_n = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.enum_name_cannot_be_primitive) continue;
+        if (std.mem.eql(u8, d.message, "Enum name cannot be 'any'.")) saw_any = true;
+        if (std.mem.eql(u8, d.message, "Enum name cannot be 'number'.")) saw_number_n = true;
+        if (std.mem.eql(u8, d.message, "Enum name cannot be 'string'.")) saw_string_n = true;
+        if (std.mem.eql(u8, d.message, "Enum name cannot be 'boolean'.")) saw_boolean_n = true;
+    }
+    try T.expect(saw_any);
+    try T.expect(saw_number_n);
+    try T.expect(saw_string_n);
+    try T.expect(saw_boolean_n);
 }
 
 test "checker: enum var-decl assignment rejects non-number targets" {
