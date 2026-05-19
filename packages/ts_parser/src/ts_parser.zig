@@ -1445,6 +1445,11 @@ pub const Parser = struct {
             .kw_module => blk: {
                 if (self.peekAt(1).flags.preceded_by_newline) break :blk try self.parseExpressionStatement();
                 if (self.peekAt(1).kind == .dot) break :blk try self.parseExpressionStatement();
+                if (self.peekAt(1).kind == .no_substitution_template or self.peekAt(1).kind == .template_head) {
+                    const expr = try self.parseExpression();
+                    if (self.peek().kind != .open_brace) try self.consumeStatementTerminator();
+                    break :blk expr;
+                }
                 if (self.peekAt(1).kind != .identifier and self.peekAt(1).kind != .string_literal) {
                     break :blk try self.parseExpressionStatement();
                 }
@@ -1456,8 +1461,10 @@ pub const Parser = struct {
                     (self.peekAt(2).kind == .no_substitution_template or self.peekAt(2).kind == .template_head))
                 {
                     const name_tok = self.peekAt(2);
+                    const declare_tok = self.advance();
                     try self.reportCodeAt(name_tok.span.start, name_tok.line, 1443, "Module declaration names may only use ' or \" quoted strings.");
-                    break :blk try self.parseExpressionStatement();
+                    const name_id = try self.internToken(declare_tok);
+                    break :blk try self.builder.addIdentifier(tokenSpan(declare_tok), name_id);
                 }
                 // `declare` is a contextual keyword. When the next
                 // token can start a tagged template, function call,
