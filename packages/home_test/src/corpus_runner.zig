@@ -91,6 +91,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue23966.test.ts",
     "js/deno/event/custom-event.test.ts",
     "js/deno/event/event.test.ts",
+    "js/deno/abort/abort-controller.test.ts",
 };
 
 const harness_prelude =
@@ -1099,6 +1100,78 @@ const harness_prelude =
     \\  };
     \\  Event.prototype.toString = function() { return "[object Event]"; };
     \\}
+    \\if (typeof EventTarget !== "function") {
+    \\  var EventTarget = function() {
+    \\    this.__home_listeners = Object.create(null);
+    \\  };
+    \\  EventTarget.prototype.addEventListener = function(type, callback, options) {
+    \\    if (callback == null) return undefined;
+    \\    const key = String(type);
+    \\    const listeners = this.__home_listeners[key] || (this.__home_listeners[key] = []);
+    \\    for (const item of listeners) if (item.callback === callback) return undefined;
+    \\    listeners.push({ callback, once: !!(options && typeof options === "object" && options.once) });
+    \\    return undefined;
+    \\  };
+    \\  EventTarget.prototype.removeEventListener = function(type, callback, options) {
+    \\    if (callback == null) return undefined;
+    \\    const listeners = this.__home_listeners[String(type)];
+    \\    if (!listeners) return undefined;
+    \\    for (let i = 0; i < listeners.length; i++) {
+    \\      if (listeners[i].callback === callback) {
+    \\        listeners.splice(i, 1);
+    \\        break;
+    \\      }
+    \\    }
+    \\    return undefined;
+    \\  };
+    \\  EventTarget.prototype.dispatchEvent = function(event) {
+    \\    if (!(event instanceof Event)) throw new TypeError("dispatchEvent requires an Event");
+    \\    event.target = event.target || this;
+    \\    event.currentTarget = this;
+    \\    const propertyHandler = this["on" + event.type];
+    \\    if (typeof propertyHandler === "function") propertyHandler.call(this, event);
+    \\    const listeners = (this.__home_listeners[String(event.type)] || []).slice();
+    \\    for (const item of listeners) {
+    \\      const callback = item.callback;
+    \\      if (typeof callback === "function") callback.call(this, event);
+    \\      else if (callback && typeof callback.handleEvent === "function") callback.handleEvent(event);
+    \\      if (item.once) this.removeEventListener(event.type, callback);
+    \\    }
+    \\    event.currentTarget = null;
+    \\    return !event.defaultPrevented;
+    \\  };
+    \\  EventTarget.prototype.toString = function() { return "[object EventTarget]"; };
+    \\}
+    \\if (typeof AbortSignal !== "function") {
+    \\  var AbortSignal = function() {
+    \\    EventTarget.call(this);
+    \\    this.aborted = false;
+    \\    this.reason = undefined;
+    \\    this.onabort = null;
+    \\  };
+    \\  AbortSignal.prototype = Object.create(EventTarget.prototype);
+    \\  AbortSignal.prototype.constructor = AbortSignal;
+    \\  AbortSignal.abort = function(reason) {
+    \\    const signal = new AbortSignal();
+    \\    signal.aborted = true;
+    \\    signal.reason = reason;
+    \\    return signal;
+    \\  };
+    \\}
+    \\if (typeof AbortController !== "function") {
+    \\  var AbortController = function() {
+    \\    this.signal = new AbortSignal();
+    \\  };
+    \\  AbortController.prototype.abort = function(reason) {
+    \\    const signal = this.signal;
+    \\    if (signal.aborted) return;
+    \\    signal.aborted = true;
+    \\    signal.reason = reason;
+    \\    signal.dispatchEvent(new Event("abort"));
+    \\  };
+    \\  AbortController.prototype.toString = function() { return "[object AbortController]"; };
+    \\  Object.defineProperty(AbortController.prototype, Symbol.toStringTag, { value: "AbortController" });
+    \\}
     \\if (typeof MessagePort !== "function") {
     \\  var MessagePort = function() {};
     \\}
@@ -1648,6 +1721,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue23966.test.ts", filesForSubset(.minimal_js)[37]);
     try std.testing.expectEqualStrings("js/deno/event/custom-event.test.ts", filesForSubset(.minimal_js)[38]);
     try std.testing.expectEqualStrings("js/deno/event/event.test.ts", filesForSubset(.minimal_js)[39]);
+    try std.testing.expectEqualStrings("js/deno/abort/abort-controller.test.ts", filesForSubset(.minimal_js)[40]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -1710,6 +1784,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var MessageChannel = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var CustomEvent = function(type, init)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Event.prototype.preventDefault") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var AbortController = function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "AbortSignal.abort = function(reason)") != null);
 }
 
 test "Bun test import rewrite lowers to the virtual test module" {
@@ -1966,6 +2042,49 @@ test "bootstrap runner covers Deno Event behavior and ignored tests" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
+}
+
+test "bootstrap runner covers Deno AbortController behavior" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { createDenoTest } from "deno:harness";
+        \\const { test, assert, assertEquals } = createDenoTest(import.meta.path);
+        \\test(function abortBehavior() {
+        \\  const controller = new AbortController();
+        \\  const { signal } = controller;
+        \\  assert(signal);
+        \\  assertEquals(signal.aborted, false);
+        \\  let called = 0;
+        \\  signal.onabort = evt => {
+        \\    assertEquals(evt.type, "abort");
+        \\    called++;
+        \\  };
+        \\  signal.addEventListener("abort", function(evt) {
+        \\    assert(this === signal);
+        \\    assertEquals(evt.type, "abort");
+        \\    called++;
+        \\  });
+        \\  controller.abort();
+        \\  assertEquals(signal.aborted, true);
+        \\  assertEquals(called, 2);
+        \\  controller.abort();
+        \\  assertEquals(called, 2);
+        \\  assertEquals(Object.prototype.toString.call(new AbortController()), "[object AbortController]");
+        \\  assertEquals(AbortSignal.abort("hey!").reason, "hey!");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/abort/abort-controller.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner reports unsupported thrown by harness as unsupported" {
