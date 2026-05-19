@@ -29473,18 +29473,14 @@ pub const Checker = struct {
                 if (try self.lookupObjectMember(obj_t, m.name)) |t| {
                     break :blk try self.optionalChainResult(t, member_is_optional_chain);
                 }
-                if (self.memberNameIsEcmaPrivate(m.name) and self.interner.pool.flagsOf(access_obj_t).is_object_type) {
-                    const name_str = self.string_interner.get(m.name);
-                    const msg = try std.fmt.allocPrint(
-                        self.diag_arena.allocator(),
-                        "Private field '{s}' must be declared in an enclosing class.",
-                        .{name_str},
-                    );
-                    const span = self.hir.spanOf(node);
-                    const name_pos: ?u32 = if (span.end >= name_str.len) span.end - @as(u32, @intCast(name_str.len)) else null;
-                    try self.reportAt(node, name_pos, TsCodes.private_name_not_declared, msg);
-                    break :blk types.Primitive.any;
-                }
+                // Upstream tsc does NOT emit TS1111 here; it falls
+                // through to TS2339 ("Property '#x' does not exist
+                // on type 'C'"). The earlier emission was overly
+                // eager and caused diagnostic mismatches on a wide
+                // set of private-name fixtures (privateNameImplicit-
+                // Declaration, privateNameStaticFieldDerivedClasses,
+                // …). Letting the normal lookup-failure path run
+                // produces TS2339 which matches the baseline.
                 if (try self.functionInterfaceMemberForCallableObject(access_obj_t, m.name)) |t| {
                     break :blk try self.optionalChainResult(t, member_is_optional_chain);
                 }
@@ -66466,7 +66462,12 @@ test "checker: inherited checkjs class accessor is visible from subclass getter"
     }
 }
 
-test "checker: undeclared ECMAScript private field reports TS1111" {
+test "checker: undeclared ECMAScript private field reports TS2339" {
+    // Matches upstream tsc: `this.#b` where `#b` is not declared
+    // in the enclosing class reports TS2339 ("Property '#b' does
+    // not exist on type 'A'"), NOT TS1111. Previously emitted
+    // TS1111 here which caused widespread diagnostic mismatches
+    // on the private-name conformance corpus.
     const s = try newSetup(
         \\class A {
         \\  #a;
@@ -66480,29 +66481,9 @@ test "checker: undeclared ECMAScript private field reports TS1111" {
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.private_name_not_declared) found = true;
+        if (d.code == TsCodes.property_does_not_exist) found = true;
     }
     try T.expect(found);
-}
-
-test "checker: undeclared ECMAScript private field anchors at private name" {
-    const source =
-        \\class A {
-        \\    #a;
-        \\    m() {
-        \\        this.#b;
-        \\    }
-        \\}
-    ;
-    const s = try newSetup(source);
-    defer destroySetup(s);
-    try s.checker.checkSourceFile(s.root);
-    var private_pos: ?u32 = null;
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.private_name_not_declared) private_pos = d.pos;
-    }
-    try T.expect(private_pos != null);
-    try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, source, "#b").?)), private_pos.?);
 }
 
 test "checker: keyof T resolves to the literal union of property names" {
