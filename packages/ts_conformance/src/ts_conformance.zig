@@ -157,6 +157,7 @@ pub const Case = struct {
 pub fn countLeadingDirectiveLines(source: []const u8) u32 {
     var count: u32 = 0;
     var directive_seen = false;
+    var skipped_preamble_comment = false;
     var pending_blanks: u32 = 0;
     // Strip a leading UTF-8 BOM (`\xEF\xBB\xBF`) before scanning —
     // many upstream fixtures start with a BOM that otherwise prevents
@@ -181,7 +182,13 @@ pub fn countLeadingDirectiveLines(source: []const u8) u32 {
         }
         if (!std.mem.startsWith(u8, trimmed, "//")) break;
         const after_slashes = std.mem.trim(u8, trimmed[2..], " \t");
-        if (!std.mem.startsWith(u8, after_slashes, "@")) break;
+        if (!std.mem.startsWith(u8, after_slashes, "@")) {
+            if (!directive_seen) {
+                skipped_preamble_comment = true;
+                continue;
+            }
+            break;
+        }
         const body = after_slashes[1..];
         var name_end: usize = 0;
         while (name_end < body.len and (std.ascii.isAlphanumeric(body[name_end]) or
@@ -200,7 +207,7 @@ pub fn countLeadingDirectiveLines(source: []const u8) u32 {
         directive_seen = true;
     }
     // Trailing blanks immediately after the last directive also strip.
-    count += pending_blanks;
+    if (!skipped_preamble_comment) count += pending_blanks;
     return count;
 }
 
@@ -5047,6 +5054,15 @@ test "conformance: countLeadingDirectiveLines mirrors upstream baseline strip" {
         \\// @useUnknownInCatchVariables: true,false
         \\
         \\try {} catch (e) {}
+    ));
+    // Banner comments before the first directive are preserved as
+    // display text, but upstream still strips the following directive
+    // from diagnostic line counts.
+    try T.expectEqual(@as(u32, 1), countLeadingDirectiveLines(
+        \\// Conformance for emitting ES6
+        \\// @target: es6
+        \\
+        \\function f() {}
     ));
     // No directives at all → no strip (the leading blank is content).
     try T.expectEqual(@as(u32, 0), countLeadingDirectiveLines(
