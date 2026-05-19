@@ -41,6 +41,17 @@ pub const Summary = struct {
     }
 };
 
+pub const PreparedModule = struct {
+    source: []u8,
+    unsupported_reason: ?[]const u8 = null,
+
+    pub fn deinit(self: *PreparedModule, allocator: std.mem.Allocator) void {
+        allocator.free(self.source);
+        self.source = &.{};
+        self.unsupported_reason = null;
+    }
+};
+
 pub const minimal_js_files = [_][]const u8{
     "snippets/segfault-todo.test.js",
     "js/web/util/atob.test.js",
@@ -57,6 +68,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/19107.test.ts",
     "cli/test/expectations.test.ts",
     "regression/issue/prepare-stack-trace-crash.test.ts",
+    "js/bun/test/nested-describes.test.ts",
 };
 
 const prelude =
@@ -219,6 +231,7 @@ const prelude =
     \\function expect(value) {
     \\  return __home_make_expectation(value, false);
     \\}
+    \\globalThis.__home_bun_test = { describe, expect, it, test };
     \\if (typeof Error.prepareStackTrace !== "function") {
     \\  Error.prepareStackTrace = function(error, stack) {
     \\    const name = error && error.name ? String(error.name) : "Error";
@@ -486,11 +499,63 @@ fn hasBunTestImport(source: []const u8) bool {
         std.mem.indexOf(u8, source, "from 'bun:test'") != null;
 }
 
+fn hasUnsupportedModuleSyntax(source: []const u8) bool {
+    const Mode = enum { code, single_quote, double_quote, template, line_comment, block_comment };
+    var mode: Mode = .code;
+    var i: usize = 0;
+    while (i < source.len) {
+        const byte = source[i];
+        switch (mode) {
+            .code => {
+                if (std.mem.startsWith(u8, source[i..], "import ") or
+                    std.mem.startsWith(u8, source[i..], "export "))
+                {
+                    return true;
+                }
+                if (byte == '\'') mode = .single_quote;
+                if (byte == '"') mode = .double_quote;
+                if (byte == '`') mode = .template;
+                if (byte == '/' and i + 1 < source.len and source[i + 1] == '/') mode = .line_comment;
+                if (byte == '/' and i + 1 < source.len and source[i + 1] == '*') mode = .block_comment;
+                i += 1;
+            },
+            .single_quote, .double_quote, .template => {
+                const terminator: u8 = switch (mode) {
+                    .single_quote => '\'',
+                    .double_quote => '"',
+                    .template => '`',
+                    else => unreachable,
+                };
+                if (byte == '\\' and i + 1 < source.len) {
+                    i += 2;
+                    continue;
+                }
+                if (byte == terminator) mode = .code;
+                i += 1;
+            },
+            .line_comment => {
+                if (byte == '\n') mode = .code;
+                i += 1;
+            },
+            .block_comment => {
+                if (byte == '*' and i + 1 < source.len and source[i + 1] == '/') {
+                    i += 2;
+                    mode = .code;
+                    continue;
+                }
+                i += 1;
+            },
+        }
+    }
+    return false;
+}
+
 pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) ![]u8 {
     const shebang_len = sourceShebangLen(source);
     const imports = [_][]const u8{
         "import { expect, it, describe } from \"bun:test\";",
         "import { describe, expect, it } from \"bun:test\";",
+        "import { describe, expect, test } from \"bun:test\";",
         "import { expect, it } from \"bun:test\";",
         "import { expect, test } from \"bun:test\";",
     };
@@ -522,6 +587,23 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     return rewriteImportMeta(allocator, with_prelude);
 }
 
+pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) !PreparedModule {
+    const rewritten = try rewriteBunTestImport(allocator, source, relative_path);
+    if (hasBunTestImport(rewritten)) {
+        return .{
+            .source = rewritten,
+            .unsupported_reason = "unsupported bun:test import shape",
+        };
+    }
+    if (hasUnsupportedModuleSyntax(rewritten)) {
+        return .{
+            .source = rewritten,
+            .unsupported_reason = "unsupported module syntax",
+        };
+    }
+    return .{ .source = rewritten };
+}
+
 pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, subset: Subset) !Summary {
     if (!build_options.enable_jsc) {
         return .{
@@ -542,20 +624,20 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
         const source = try Io.Dir.cwd().readFileAlloc(io, file_path, allocator, std.Io.Limit.limited(1024 * 1024));
         defer allocator.free(source);
 
-        const rewritten = try rewriteBunTestImport(allocator, source, relative);
-        defer allocator.free(rewritten);
+        var prepared = try prepareCorpusModule(allocator, source, relative);
+        defer prepared.deinit(allocator);
 
         summary.files += 1;
-        if (hasBunTestImport(rewritten)) {
+        if (prepared.unsupported_reason) |reason| {
             summary.failed += 1;
-            try recordFailure(allocator, &summary, relative, "unsupported bun:test import shape");
+            try recordFailure(allocator, &summary, relative, reason);
             continue;
         }
 
         const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(
             allocator,
             engine.currentContext(),
-            rewritten,
+            prepared.source,
             relative,
             1,
         );
@@ -650,6 +732,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/19107.test.ts", filesForSubset(.minimal_js)[12]);
     try std.testing.expectEqualStrings("cli/test/expectations.test.ts", filesForSubset(.minimal_js)[13]);
     try std.testing.expectEqualStrings("regression/issue/prepare-stack-trace-crash.test.ts", filesForSubset(.minimal_js)[14]);
+    try std.testing.expectEqualStrings("js/bun/test/nested-describes.test.ts", filesForSubset(.minimal_js)[15]);
 }
 
 test "Bun test import rewrite installs the bootstrap prelude" {
@@ -664,6 +747,7 @@ test "Bun test import rewrite installs the bootstrap prelude" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "function __home_is_thenable(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeInstanceOf(ctor)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeUndefined()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "globalThis.__home_bun_test") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "Error.prepareStackTrace") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "var __dirname = \"js/node\"") != null);
@@ -693,6 +777,17 @@ test "Bun test import rewrite reports unsupported import shapes" {
     defer std.testing.allocator.free(rewritten);
 
     try std.testing.expect(hasBunTestImport(rewritten));
+}
+
+test "corpus module preparation reports unsupported module syntax" {
+    const source =
+        \\import value from "node:fs";
+        \\test("works", () => {});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/import.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("unsupported module syntax", prepared.unsupported_reason.?);
 }
 
 test "Bun test import rewrite lowers import.meta metadata" {
