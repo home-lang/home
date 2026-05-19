@@ -718,7 +718,6 @@ pub fn compileSource(
             .phase = .parse,
             .pos = d.pos,
             .line = d.line,
-            .span_len = d.span_len,
             .code = d.code,
             .message = try gpa.dupe(u8, d.message),
             .span_len = d.span_len,
