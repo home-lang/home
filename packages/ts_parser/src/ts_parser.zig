@@ -2980,6 +2980,13 @@ pub const Parser = struct {
                     break :blk pat;
                 } else id_blk: {
                     const name_tok = try self.expectIdentifierLike();
+                    // TS18009 — ECMAScript `#name` identifiers may
+                    // only appear as class member names; `f(#foo)`
+                    // is invalid. Mirrors upstream fixture
+                    // `privateNamesNotAllowedAsParameters`.
+                    if (name_tok.kind == .private_identifier) {
+                        try self.reportCodeAt(name_tok.span.start, name_tok.line, 18009, "Private identifiers cannot be used as parameters.");
+                    }
                     if (!self.suppress_strict_param_names) try self.reportInvalidStrictName(name_tok);
                     try self.reportInvalidYieldName(name_tok);
                     try self.reportInvalidFutureReservedName(name_tok);
