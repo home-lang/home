@@ -24914,13 +24914,23 @@ pub const Checker = struct {
         if (self.fixedTupleLength(target)) |len| {
             if (elements.len > len) return false;
         }
+        // Collect ALL element mismatches before returning, so tuple
+        // assignability emits one TS2322 per misaligned element rather
+        // than stopping at the first. Mirrors upstream tsc, which on
+        // `var a1: [boolean, string, number] = ["string", 1, true]`
+        // emits three separate TS2322 diagnostics — one per element.
+        var any_mismatch = false;
         for (elements, 0..) |el, i| {
             if (el == hir_mod.none_node_id) continue;
             const tgt_t = self.tupleElementType(target, i);
-            if (tgt_t == types.Primitive.none) return false;
+            if (tgt_t == types.Primitive.none) {
+                any_mismatch = true;
+                continue;
+            }
             if (self.hir.kindOf(el) == .array_literal and self.isTupleShapedTarget(tgt_t)) {
                 if (try self.arrayLiteralAssignableToTupleTarget(el, tgt_t, emit_element_diagnostic)) continue;
-                return false;
+                any_mismatch = true;
+                continue;
             }
             if (try self.literalExpressionAssignableToTarget(el, tgt_t)) continue;
             const el_t = try self.checkExpression(el);
@@ -24929,10 +24939,10 @@ pub const Checker = struct {
                 if (emit_element_diagnostic) {
                     try self.reportTypeNotAssignable(el, el_t, tgt_t, "Type is not assignable to tuple element type.");
                 }
-                return false;
+                any_mismatch = true;
             }
         }
-        return true;
+        return !any_mismatch;
     }
 
     fn tupleAnnotationSourceNode(self: *Checker, type_node: NodeId) ?NodeId {
@@ -26254,7 +26264,9 @@ pub const Checker = struct {
                         // value position with full type prose. Mirrors
                         // upstream `nonPrimitiveAsProperty.ts(7,28)`.
                         if (!try self.tryReportObjectLiteralPropertyMismatch(v.init, declared_type)) {
-                            try self.reportTypeNotAssignable(diag_node, init_type, declared_type, "Type is not assignable to declared type.");
+                            if (!try self.tryReportArrayLiteralTupleAssignmentMismatch(diag_node, v.init, declared_type, "Type is not assignable to declared type.")) {
+                                try self.reportTypeNotAssignable(diag_node, init_type, declared_type, "Type is not assignable to declared type.");
+                            }
                         }
                     }
                 }
@@ -42247,6 +42259,52 @@ pub const Checker = struct {
         }
         try buf.append(arena, ']');
         return buf.items;
+    }
+
+    /// TS2322 — when an `array_literal` init flows into a tuple-shaped
+    /// declared/target type and the structural assignability check has
+    /// already rejected it, render the source as a TUPLE shape
+    /// (`[]`, `[number, number, string, boolean]`, …) rather than the
+    /// widened homogenized array form (`any[]`, `(string | number |
+    /// boolean)[]`). Matches upstream tsc prose for fixtures like
+    /// `arrayLiterals3.ts(10,5)` and `(17,5)` where the empty/over-
+    /// length array literal is contextually-typed by the tuple target.
+    /// Returns true when the diagnostic was emitted; the caller should
+    /// then skip the generic `reportTypeNotAssignable` fallback.
+    fn tryReportArrayLiteralTupleAssignmentMismatch(
+        self: *Checker,
+        diag_node: NodeId,
+        init_node: NodeId,
+        target_t: TypeId,
+        fallback: []const u8,
+    ) CheckError!bool {
+        if (init_node == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(init_node) != .array_literal) return false;
+        if (target_t == types.Primitive.none) return false;
+        if (target_t >= self.interner.pool.typeCount()) return false;
+        if (!self.isTupleShapedTarget(target_t)) return false;
+        // Spread elements widen the array literal back to a homogenized
+        // `T[]` shape upstream (`var c1: [number, number, number] =
+        // [...temp1]` renders source as `number[]`, NOT as a tuple).
+        // Bail out and let the generic `reportTypeNotAssignable` path
+        // render the widened source name.
+        for (hir_mod.arrayLiteralElements(self.hir, init_node)) |el| {
+            if (el != hir_mod.none_node_id and self.hir.kindOf(el) == .spread) return false;
+        }
+        const source_name = try self.arrayLiteralTupleDisplayName(init_node);
+        const maybe_target_name = (try self.tupleDiagnosticDisplayName(target_t)) orelse
+            (try self.allocSimpleTypeName(target_t));
+        if (maybe_target_name) |target_name| {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Type '{s}' is not assignable to type '{s}'.",
+                .{ source_name, target_name },
+            );
+            try self.report(diag_node, TsCodes.type_not_assignable, msg);
+            return true;
+        }
+        try self.report(diag_node, TsCodes.type_not_assignable, fallback);
+        return true;
     }
 
     fn tupleDiagnosticDisplayName(self: *Checker, tuple_t: TypeId) CheckError!?[]const u8 {
