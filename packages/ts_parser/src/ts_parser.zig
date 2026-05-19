@@ -5282,7 +5282,9 @@ pub const Parser = struct {
         }
         var is_type_only = false;
         if (self.peek().kind == .kw_type) {
-            if (!(self.peekAt(1).kind == .kw_from and self.peekAt(2).kind == .string_literal)) {
+            if (self.peekAt(1).kind != .equal and
+                !(self.peekAt(1).kind == .kw_from and self.peekAt(2).kind == .string_literal))
+            {
                 _ = self.advance();
                 is_type_only = true;
             }
@@ -14524,6 +14526,7 @@ test "parser: ambient external module permits default export" {
 test "parser: import equals accepts type/contextual aliases and ASI" {
     var s = try newTestSetup(
         \\import type _foo = require("./foo.ts");
+        \\import type = require("./type");
         \\import await = foo.await;
         \\import foo2 = require("./foo2")
         \\class C extends foo2.x {}
@@ -14532,12 +14535,17 @@ test "parser: import equals accepts type/contextual aliases and ASI" {
 
     const root = try s.parser.parseSourceFile();
     const stmts = hir_mod.blockStmts(&s.hir, root);
-    try T.expectEqual(@as(usize, 4), stmts.len);
+    try T.expectEqual(@as(usize, 5), stmts.len);
     try T.expectEqual(hir_mod.NodeKind.import_decl, s.hir.kindOf(stmts[0]));
     try T.expectEqual(hir_mod.NodeKind.import_decl, s.hir.kindOf(stmts[1]));
     try T.expectEqual(hir_mod.NodeKind.import_decl, s.hir.kindOf(stmts[2]));
-    try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(stmts[3]));
-    const imp = hir_mod.importOf(&s.hir, stmts[1]);
+    try T.expectEqual(hir_mod.NodeKind.import_decl, s.hir.kindOf(stmts[3]));
+    try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(stmts[4]));
+    const type_only_imp = hir_mod.importOf(&s.hir, stmts[0]);
+    try T.expect(type_only_imp.is_type_only);
+    const type_alias_imp = hir_mod.importOf(&s.hir, stmts[1]);
+    try T.expect(!type_alias_imp.is_type_only);
+    const imp = hir_mod.importOf(&s.hir, stmts[2]);
     try T.expect(imp.import_equals != hir_mod.none_node_id);
     try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(imp.import_equals));
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
