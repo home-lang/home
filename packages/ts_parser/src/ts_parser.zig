@@ -667,6 +667,7 @@ pub const Parser = struct {
     /// `NodeId` (currently a synthesized block).
     pub fn parseSourceFile(self: *Parser) ParseError!NodeId {
         try self.reportJSDocTypeArgumentSyntaxDiagnostics();
+        try self.reportJSDocQualifiedParamNameDiagnostics();
         self.top_level_external_module_indicator = self.sourceHasTopLevelExternalModuleIndicator();
         if (self.top_level_external_module_indicator) self.strict_mode = true;
         var stmts: std.ArrayListUnmanaged(NodeId) = .empty;
@@ -694,6 +695,95 @@ pub const Parser = struct {
             const body_end = body_start + close_rel;
             try self.scanJSDocCommentTypeExpressions(body_start, body_end);
             i = body_end + 2;
+        }
+    }
+
+    /// TS8032 — scan `/** ... */` JSDoc blocks in `.js`/`.jsx`/`.mjs`/`.cjs`
+    /// virtual sections for `@param {T} a.b(.c)*` entries with a qualified
+    /// name whose immediate parent is not declared as a parameter (either
+    /// a function parameter or a previously-seen `@param ... a.b`). Mirrors
+    /// upstream `checkUnmatchedJSDocParameters` (jsdoc.go:65). Anchored at
+    /// the start of the qualified name in the source.
+    fn reportJSDocQualifiedParamNameDiagnostics(self: *Parser) ParseError!void {
+        var i: usize = 0;
+        while (i + 2 < self.source.len) {
+            if (!(self.source[i] == '/' and self.source[i + 1] == '*' and self.source[i + 2] == '*')) {
+                i += 1;
+                continue;
+            }
+            // Only fire in JS-mode virtual sections. Without an explicit
+            // `// @filename:` marker the parser sees a unified .ts source
+            // and TS8032 would over-fire on TS sources too.
+            const file_at = self.virtualSectionFilenameAt(@intCast(i));
+            const is_js = blk: {
+                if (file_at) |fname| {
+                    break :blk std.mem.endsWith(u8, fname, ".js") or
+                        std.mem.endsWith(u8, fname, ".jsx") or
+                        std.mem.endsWith(u8, fname, ".mjs") or
+                        std.mem.endsWith(u8, fname, ".cjs");
+                }
+                break :blk false;
+            };
+            const body_start = i + 3;
+            const close_rel = std.mem.indexOf(u8, self.source[body_start..], "*/") orelse return;
+            const body_end = body_start + close_rel;
+            if (is_js) try self.scanJSDocQualifiedParamNames(body_start, body_end);
+            i = body_end + 2;
+        }
+    }
+
+    /// Walk a JSDoc comment body (between `/**` and `*/`) and emit TS8032
+    /// for each qualified `@param {T} a.b(.c)*` whose parent (`a.b...`
+    /// without the last segment) is not declared earlier in the SAME
+    /// JSDoc block. Skips lines whose tag isn't `@param`. Declared
+    /// parents include any prior `@param` tag's name verbatim.
+    fn scanJSDocQualifiedParamNames(self: *Parser, body_start: usize, body_end: usize) ParseError!void {
+        // Two passes: first pass collects all declared names (so order
+        // doesn't matter for "leading"); upstream uses the same flat
+        // set semantics post-binding.
+        var declared = std.StringHashMapUnmanaged(void){};
+        defer declared.deinit(self.gpa);
+        var off = body_start;
+        while (off < body_end) {
+            const line_end = std.mem.indexOfScalarPos(u8, self.source, off, '\n') orelse body_end;
+            const line_lim = @min(line_end, body_end);
+            if (findJSDocParamName(self.source, off, line_lim)) |found| {
+                _ = try declared.getOrPut(self.gpa, found.name);
+            }
+            if (line_end >= body_end) break;
+            off = line_end + 1;
+        }
+        // Second pass: emit TS8032 for each qualified name whose parent
+        // (everything before the final dot) is not in `declared`.
+        off = body_start;
+        while (off < body_end) {
+            const line_end = std.mem.indexOfScalarPos(u8, self.source, off, '\n') orelse body_end;
+            const line_lim = @min(line_end, body_end);
+            if (findJSDocParamName(self.source, off, line_lim)) |found| {
+                if (std.mem.indexOfScalar(u8, found.name, '.')) |last_dot| {
+                    // Compute the parent (everything up to the LAST
+                    // dot, since `xyz.bar.p`'s immediate parent is
+                    // `xyz.bar`, not `xyz`).
+                    const last_dot_pos = std.mem.lastIndexOfScalar(u8, found.name, '.').?;
+                    _ = last_dot;
+                    const parent = found.name[0..last_dot_pos];
+                    if (!declared.contains(parent)) {
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Qualified name '{s}' is not allowed without a leading '@param {{object}} {s}'.",
+                            .{ found.name, parent },
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .pos = @intCast(found.pos),
+                            .line = self.lineAt(@intCast(found.pos)),
+                            .code = 8032,
+                            .message = msg,
+                        });
+                    }
+                }
+            }
+            if (line_end >= body_end) break;
+            off = line_end + 1;
         }
     }
 
@@ -11683,6 +11773,56 @@ pub const Parser = struct {
         return error.UnexpectedToken;
     }
 };
+
+/// Result for `findJSDocParamName` (TS8032 scan support).
+const JSDocParamNameMatch = struct { name: []const u8, pos: usize };
+
+/// Find the `@param {Type} name(.sub)*` name on a single JSDoc line.
+/// Returns the name slice (pointing into `source`) and its byte
+/// position. Handles whitespace between tag, optional type expression,
+/// and name. Returns null if the line has no `@param` tag or no name.
+fn findJSDocParamName(source: []const u8, line_start: usize, line_end: usize) ?JSDocParamNameMatch {
+    if (line_end <= line_start) return null;
+    const line = source[line_start..line_end];
+    const tag_rel = std.mem.indexOf(u8, line, "@param") orelse return null;
+    var i: usize = tag_rel + "@param".len;
+    // Require trailing whitespace or `{` immediately after `@param`
+    // so we don't match `@paramX`.
+    if (i < line.len and !std.ascii.isWhitespace(line[i]) and line[i] != '{') return null;
+    // Skip whitespace.
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
+    // Optional type expression `{ ... }` with nested braces.
+    if (i < line.len and line[i] == '{') {
+        var depth: u32 = 1;
+        i += 1;
+        while (i < line.len and depth > 0) : (i += 1) {
+            if (line[i] == '{') depth += 1;
+            if (line[i] == '}') depth -= 1;
+        }
+        if (depth != 0) return null;
+        // Skip whitespace after type expression.
+        while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
+    }
+    // Optional `[name]` bracket — strip leading `[`.
+    if (i < line.len and line[i] == '[') i += 1;
+    // Identifier-name characters (`A-Za-z0-9_$.`).
+    const name_start = i;
+    while (i < line.len) : (i += 1) {
+        const c = line[i];
+        if (std.ascii.isAlphanumeric(c) or c == '_' or c == '$' or c == '.') continue;
+        break;
+    }
+    if (i == name_start) return null;
+    // Trim any trailing `.` that came from a typo — we only want
+    // names that don't end with a dot.
+    var name_end = i;
+    while (name_end > name_start and source[line_start + name_end - 1] == '.') name_end -= 1;
+    if (name_end == name_start) return null;
+    return .{
+        .name = source[line_start + name_start .. line_start + name_end],
+        .pos = line_start + name_start,
+    };
+}
 
 fn isExpressionIdentifierToken(kind: TokenKind) bool {
     return switch (kind) {
