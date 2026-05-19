@@ -2987,7 +2987,10 @@ pub const Parser = struct {
         if (self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) {
             const name_tok = self.advance();
             try self.reportInvalidStrictName(name_tok);
-            const yield_target_reserved = !(is_generator and require_name and self.generator_depth == 0);
+            const yield_target_reserved = !(is_generator and
+                require_name and
+                self.generator_depth == 0 and
+                self.async_function_depth > 0);
             try self.reportInvalidYieldName(name_tok, yield_target_reserved);
             // `async function await()` as a DECLARATION is legal (the
             // function name binds in the outer scope where `await` is
@@ -17077,6 +17080,19 @@ test "parser: strict-mode top-level reserves yield in function names and params"
         if (d.code == 1212) count_1212 += 1;
     }
     try T.expect(count_1212 >= 2);
+}
+
+test "parser: ES2015 generator declaration reserves yield as name" {
+    var s = try newTestSetup("function * yield() {}");
+    defer destroyTestSetup(s);
+
+    s.parser.setTargetEs2015OrLater(true);
+    _ = try s.parser.parseSourceFile();
+    var saw_1212 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1212) saw_1212 = true;
+    }
+    try T.expect(saw_1212);
 }
 
 test "parser: sloppy top-level async-generator declaration may be named yield" {
