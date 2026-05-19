@@ -24970,7 +24970,14 @@ pub const Checker = struct {
             hir_mod.blockStmts(self.hir, root)
         else
             return null;
-        const ns_node = self.findNamespaceByPath(root_stmts, resolved_path) orelse {
+        var relative_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer relative_path.deinit(self.gpa);
+        const absolute_ns_node = self.findNamespaceByPath(root_stmts, resolved_path);
+        const relative_ns_node = if (absolute_ns_node == null)
+            try self.findRelativeNamespaceByPath(type_node, root_stmts, resolved_path, &relative_path)
+        else
+            null;
+        const ns_node = absolute_ns_node orelse relative_ns_node orelse {
             // Fallback for `JSX.<Type>` qualified refs in fixtures that
             // reference the lib's `react.d.ts` via `/// <reference path
             // ="/.lib/react.d.ts" />` but never declare the JSX
@@ -25579,6 +25586,26 @@ pub const Checker = struct {
             if (self.findNamespaceByPath(hir_mod.namespaceBody(self.hir, node), path[consumed..])) |nested| {
                 return nested;
             }
+        }
+        return null;
+    }
+
+    fn findRelativeNamespaceByPath(
+        self: *Checker,
+        anchor: NodeId,
+        root_stmts: []const NodeId,
+        path: []const hir_mod.StringId,
+        scratch: *std.ArrayListUnmanaged(hir_mod.StringId),
+    ) CheckError!?NodeId {
+        var enclosing: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer enclosing.deinit(self.gpa);
+        self.collectEnclosingNamespacePathNoFail(anchor, &enclosing);
+        var prefix_len = enclosing.items.len;
+        while (prefix_len > 0) : (prefix_len -= 1) {
+            scratch.clearRetainingCapacity();
+            try scratch.appendSlice(self.gpa, enclosing.items[0..prefix_len]);
+            try scratch.appendSlice(self.gpa, path);
+            if (self.findNamespaceByPath(root_stmts, scratch.items)) |ns_node| return ns_node;
         }
         return null;
     }
@@ -74802,6 +74829,24 @@ test "checker: import-equals alias inside namespace satisfies qualified type-ref
         \\namespace B {
         \\  import a = A;
         \\  export function f(p: a.Point): a.Point { return p; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_namespace);
+    }
+}
+
+test "checker: qualified type-ref resolves relative nested namespace" {
+    const s = try newSetup(
+        \\namespace A.B.C {
+        \\  export interface Point { x: number; y: number; }
+        \\}
+        \\namespace A {
+        \\  export namespace B {
+        \\    var point: C.Point = { x: 0, y: 0 };
+        \\  }
         \\}
     );
     defer destroySetup(s);
