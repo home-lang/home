@@ -447,6 +447,7 @@ pub const TsCodes = struct {
     pub const member_implicitly_any: u32 = 7008;
     pub const object_literal_property_implicitly_any: u32 = 7018;
     pub const function_return_implicitly_any: u32 = 7010;
+    pub const function_type_return_implicitly_any: u32 = 7014;
     pub const variable_self_reference_implicitly_any: u32 = 7022;
     pub const function_return_self_reference_implicitly_any: u32 = 7023;
     pub const binding_element_implicitly_any: u32 = 7031;
@@ -10832,6 +10833,7 @@ pub const Checker = struct {
         // TS8010 / TS8009 for any TS-only annotation in a `.js`
         // virtual section opted into `@allowjs`/`@checkjs`.
         try self.checkJsOnlySignatureAnnotations(node);
+        try self.checkJsDocFunctionTypeReturnAnnotations(node);
         const type_params = hir_mod.fnTypeParams(self.hir, node);
         try self.checkTypeParameterDeclList(type_params);
         try self.checkFunctionSignatureLocalTypeVisibility(node, type_params);
@@ -27053,6 +27055,28 @@ pub const Checker = struct {
         return false;
     }
 
+    fn checkJsDocFunctionTypeReturnAnnotations(self: *Checker, fn_node: NodeId) CheckError!void {
+        if (!self.sourceHasCheckJsDirective()) return;
+        const src = self.source orelse return;
+        const span = self.hir.spanOf(fn_node);
+        const jsdoc = self.leadingJsDocBodyWithStart(src, span.start) orelse return;
+        const tags = ts_parser.jsdoc.parse(self.gpa, jsdoc.body) catch return;
+        defer self.gpa.free(tags);
+        for (tags) |tag| {
+            if (tag.type_text.len == 0) continue;
+            const fn_text = jsDocFunctionTypeMissingReturn(tag.type_text) orelse continue;
+            const rel = std.mem.indexOf(u8, jsdoc.body, fn_text) orelse
+                std.mem.indexOf(u8, jsdoc.body, tag.type_text) orelse
+                continue;
+            try self.diagnostics.append(self.gpa, .{
+                .node = fn_node,
+                .pos = @intCast(jsdoc.start + rel),
+                .code = TsCodes.function_type_return_implicitly_any,
+                .message = try self.diag_arena.allocator().dupe(u8, "Function type, which lacks return-type annotation, implicitly has an 'any' return type."),
+            });
+        }
+    }
+
     fn expressionNodeAssignableToTarget(self: *Checker, value_node: NodeId, value_t: TypeId, target_t: TypeId) CheckError!bool {
         if (try self.literalExpressionAssignableToTarget(value_node, target_t)) return true;
         if (try self.templateExpressionAssignableToType(value_node, target_t)) return true;
@@ -27363,6 +27387,18 @@ pub const Checker = struct {
         const trimmed = std.mem.trim(u8, type_text, " \t\r\n");
         return std.mem.startsWith(u8, trimmed, "Object.<") or
             std.mem.startsWith(u8, trimmed, "Object<");
+    }
+
+    fn jsDocFunctionTypeMissingReturn(type_text: []const u8) ?[]const u8 {
+        var t = std.mem.trim(u8, type_text, " \t\r\n");
+        while (t.len > 0 and (t[0] == '!' or t[0] == '?')) {
+            t = std.mem.trim(u8, t[1..], " \t\r\n");
+        }
+        if (!std.mem.startsWith(u8, t, "function(")) return null;
+        const close = jsDocMatchingParen(t, "function".len) orelse return null;
+        const rest = std.mem.trim(u8, t[close + 1 ..], " \t\r\n");
+        if (std.mem.startsWith(u8, rest, ":")) return null;
+        return t;
     }
 
     fn jsDocGenericTypeTextToType(self: *Checker, src: []const u8, type_text: []const u8) CheckError!?TypeId {
