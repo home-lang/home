@@ -3039,6 +3039,30 @@ pub const Checker = struct {
                 if (self.namespaceIsAmbient(node)) continue;
                 const ns_name = self.declarationName(node) orelse continue;
                 const node_section = self.virtualSectionStartForNode(node);
+                var qualified_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+                defer qualified_path.deinit(self.gpa);
+                try self.collectNamespaceQualifiedPath(node, &qualified_path);
+                if (qualified_path.items.len > 1) {
+                    if (self.findClassOrFnAtPathInSection(
+                        stmts[i + 1 ..],
+                        qualified_path.items,
+                        node_section,
+                    ) != null) {
+                        try self.reportAt(
+                            node,
+                            self.namespaceLastSegmentSpanStart(node),
+                            TsCodes.namespace_before_merged_function,
+                            "A namespace declaration cannot be located prior to a class or function with which it is merged.",
+                        );
+                    }
+                    if (self.findNamespaceAtPathInSection(
+                        stmts[i + 1 ..],
+                        qualified_path.items,
+                        node_section,
+                    )) |later_ns| {
+                        try self.reportDuplicateExportedNamespaceValueMembers(node, later_ns);
+                    }
+                }
                 for (stmts[i + 1 ..]) |later_raw| {
                     const later = self.unwrapExportDecl(later_raw);
                     const later_name = self.declarationName(later) orelse continue;
@@ -3067,6 +3091,113 @@ pub const Checker = struct {
                 try self.checkNamespaceFunctionMergeOrder(hir_mod.namespaceBody(self.hir, node));
             }
         }
+    }
+
+    fn findClassOrFnAtPathInSection(
+        self: *Checker,
+        stmts: []const NodeId,
+        path: []const hir_mod.StringId,
+        section: usize,
+    ) ?NodeId {
+        if (path.len == 0) return null;
+        const target_name = path[path.len - 1];
+        if (path.len == 1) {
+            for (stmts) |raw| {
+                const node = self.unwrapExportDecl(raw);
+                if (node == hir_mod.none_node_id) continue;
+                if (self.virtualSectionStartForNode(node) != section) continue;
+                const kind = self.hir.kindOf(node);
+                if (kind != .class_decl and kind != .fn_decl) continue;
+                const decl_name = self.declarationName(node) orelse continue;
+                if (decl_name == target_name) return node;
+            }
+            return null;
+        }
+        for (stmts) |raw| {
+            const node = self.unwrapExportDecl(raw);
+            if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .namespace_decl) continue;
+            if (self.virtualSectionStartForNode(node) != section) continue;
+            const ns = hir_mod.namespaceOf(self.hir, node);
+            if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) continue;
+            const ns_name = self.string_interner.get(hir_mod.identifierOf(self.hir, ns.name).name);
+            const consumed = self.namespaceNameConsumesPath(ns_name, path[0 .. path.len - 1]) orelse continue;
+            if (self.findClassOrFnAtPathInSection(
+                hir_mod.namespaceBody(self.hir, node),
+                path[consumed..],
+                section,
+            )) |found| return found;
+        }
+        return null;
+    }
+
+    fn findNamespaceAtPathInSection(
+        self: *Checker,
+        stmts: []const NodeId,
+        path: []const hir_mod.StringId,
+        section: usize,
+    ) ?NodeId {
+        if (path.len == 0) return null;
+        for (stmts) |raw| {
+            const node = self.unwrapExportDecl(raw);
+            if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .namespace_decl) continue;
+            if (self.virtualSectionStartForNode(node) != section) continue;
+            const ns = hir_mod.namespaceOf(self.hir, node);
+            if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) continue;
+            const ns_name = self.string_interner.get(hir_mod.identifierOf(self.hir, ns.name).name);
+            const consumed = self.namespaceNameConsumesPath(ns_name, path) orelse continue;
+            if (consumed == path.len) return node;
+            if (self.findNamespaceAtPathInSection(
+                hir_mod.namespaceBody(self.hir, node),
+                path[consumed..],
+                section,
+            )) |nested| return nested;
+        }
+        return null;
+    }
+
+    fn reportDuplicateExportedNamespaceValueMembers(
+        self: *Checker,
+        first_ns: NodeId,
+        second_ns: NodeId,
+    ) CheckError!void {
+        for (hir_mod.namespaceBody(self.hir, first_ns)) |first_raw| {
+            if (self.hir.kindOf(first_raw) != .export_decl) continue;
+            const first = self.unwrapExportDecl(first_raw);
+            if (!self.namespaceExportCreatesValue(first)) continue;
+            const first_name = self.declarationName(first) orelse continue;
+            for (hir_mod.namespaceBody(self.hir, second_ns)) |second_raw| {
+                if (self.hir.kindOf(second_raw) != .export_decl) continue;
+                const second = self.unwrapExportDecl(second_raw);
+                if (!self.namespaceExportCreatesValue(second)) continue;
+                const second_name = self.declarationName(second) orelse continue;
+                if (second_name != first_name) continue;
+                if (!self.namespaceExportedValueKindsConflict(first, second)) continue;
+                try self.reportDuplicateIdentifier(first, first_name);
+                try self.reportDuplicateIdentifier(second, second_name);
+            }
+        }
+    }
+
+    fn namespaceExportedValueKindsConflict(self: *Checker, first: NodeId, second: NodeId) bool {
+        const first_kind = self.hir.kindOf(first);
+        const second_kind = self.hir.kindOf(second);
+        const first_is_class = first_kind == .class_decl or first_kind == .class_expr;
+        const second_is_class = second_kind == .class_decl or second_kind == .class_expr;
+        const first_is_var = first_kind == .var_decl or first_kind == .let_decl or first_kind == .const_decl;
+        const second_is_var = second_kind == .var_decl or second_kind == .let_decl or second_kind == .const_decl;
+        return (first_is_class and second_is_var) or (first_is_var and second_is_class);
+    }
+
+    fn namespaceLastSegmentSpanStart(self: *Checker, node: NodeId) ?u32 {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .namespace_decl) return null;
+        const ns = hir_mod.namespaceOf(self.hir, node);
+        if (ns.name == hir_mod.none_node_id) return null;
+        const src = self.source orelse return self.hir.spanOf(ns.name).start;
+        const sp = self.hir.spanOf(ns.name);
+        if (sp.start >= sp.end or sp.end > src.len) return sp.start;
+        const text = src[sp.start..sp.end];
+        const dot = std.mem.lastIndexOfScalar(u8, text, '.') orelse return sp.start;
+        return sp.start + @as(u32, @intCast(dot + 1));
     }
 
     fn checkDeclarationSpaceDiagnostics(self: *Checker, stmts: []const NodeId) CheckError!void {
