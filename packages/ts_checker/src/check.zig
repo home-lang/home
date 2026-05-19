@@ -2299,8 +2299,8 @@ pub const Checker = struct {
         switch (self.hir.kindOf(node)) {
             .var_decl, .let_decl, .const_decl => {
                 const v = hir_mod.varDeclOf(self.hir, node);
-                if (self.bindingPatternDeclaresName(v.name, await_id)) {
-                    try self.report(node, TsCodes.reserved_word_cannot_be_used_here, "Identifier expected. 'await' is a reserved word that cannot be used here.");
+                if (self.findAwaitBindingIdentifier(v.name, await_id)) |id_node| {
+                    try self.report(id_node, TsCodes.reserved_word_cannot_be_used_here, "Identifier expected. 'await' is a reserved word that cannot be used here.");
                 }
             },
             .fn_decl => {
@@ -2320,6 +2320,28 @@ pub const Checker = struct {
                 }
             },
             else => {},
+        }
+    }
+
+    /// Walks a binding pattern (or bare identifier) and returns the
+    /// node id of the binding identifier that matches `name`, if any.
+    /// Used to anchor TS1359 at the `await` token rather than the
+    /// enclosing declaration head — matching upstream tsc which reports
+    /// the column of the offending identifier.
+    fn findAwaitBindingIdentifier(self: *Checker, node: NodeId, name: hir_mod.StringId) ?NodeId {
+        if (node == hir_mod.none_node_id) return null;
+        switch (self.hir.kindOf(node)) {
+            .identifier => return if (hir_mod.identifierOf(self.hir, node).name == name) node else null,
+            .object_pattern, .array_pattern => {
+                const p = hir_mod.patternOf(self.hir, node);
+                for (self.hir.childSlice(p.elements_start, p.elements_len)) |elem| {
+                    if (self.hir.kindOf(elem) != .parameter) continue;
+                    const pp = hir_mod.parameterOf(self.hir, elem);
+                    if (self.findAwaitBindingIdentifier(pp.name, name)) |found| return found;
+                }
+                return null;
+            },
+            else => return null,
         }
     }
 
@@ -26879,7 +26901,8 @@ pub const Checker = struct {
             v.type_annotation == hir_mod.none_node_id and
             v.init == hir_mod.none_node_id and
             !self.varDeclHasMalformedListSyntax(node, v.name) and
-            !self.varDeclIsInsideFunctionLike(node))
+            !self.varDeclIsInsideFunctionLike(node) and
+            !self.varDeclIsReservedAwaitInStaticBlock(node, v.name))
         {
             const var_name: []const u8 = if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier)
                 self.string_interner.get(hir_mod.identifierOf(self.hir, v.name).name)
@@ -26904,6 +26927,15 @@ pub const Checker = struct {
                 .message = msg,
             });
         }
+    }
+
+    /// `let await;` inside a `class C { static { ... } }` block fires
+    /// TS1359 (reserved-word binding) and tsc suppresses the matching
+    /// TS7034 implicit-any since the binding is effectively invalid.
+    fn varDeclIsReservedAwaitInStaticBlock(self: *Checker, node: NodeId, name_node: NodeId) bool {
+        if (!self.nodeIsInClassStaticBlockBeforeFunction(node)) return false;
+        const await_id = self.string_interner.intern("await") catch return false;
+        return self.findAwaitBindingIdentifier(name_node, await_id) != null;
     }
 
     fn varDeclHasMalformedListSyntax(self: *Checker, node: NodeId, name_node: NodeId) bool {
