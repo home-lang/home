@@ -37023,6 +37023,12 @@ pub const Checker = struct {
         }
         if (self.weakObjectPrimitiveMayOverlap(a, b) or self.weakObjectPrimitiveMayOverlap(b, a)) return true;
         if (self.objectPrimitiveHasNoOverlap(a, b) or self.objectPrimitiveHasNoOverlap(b, a)) return false;
+        // `void` has no overlap with any concrete primitive or enum —
+        // tsc fires TS2367 for `number == void`, `string == void`, etc.
+        // (See comparisonOperatorWithNoRelationshipPrimitiveType.ts.)
+        // Only suppressed for any/unknown/null/undefined (handled above).
+        if (af.is_void and (self.isConcretePrimitiveLike(b) or self.enumNameFromNominal(b) != null)) return false;
+        if (bf.is_void and (self.isConcretePrimitiveLike(a) or self.enumNameFromNominal(a) != null)) return false;
         if (self.isConcretePrimitiveLike(a) and self.isConcretePrimitiveLike(b)) {
             return self.engine.isComparableTo(a, b) catch true;
         }
@@ -37033,6 +37039,13 @@ pub const Checker = struct {
                 return try self.signatureObjectTypesHaveComparableOverlap(a, b, depth + 1);
             }
             if (try self.objectTypesHaveIndependentOverlap(a, b, depth + 1)) return true;
+        }
+        // Bare signature types (method-shorthand, function types) need
+        // the same bidirectional comparable-overlap treatment as
+        // call-signature-only object types — params related in either
+        // direction at each position must not generate TS2365.
+        if (af.is_signature and bf.is_signature) {
+            return try self.signaturesHaveComparableOverlap(a, b, depth + 1);
         }
         if (self.isObjectLikeType(a) or self.isObjectLikeType(b)) {
             return self.engine.isComparableTo(a, b) catch true;
@@ -37189,14 +37202,28 @@ pub const Checker = struct {
         }
         if (source_required > tp.len) return false;
         const compare_len = @min(sp.len, tp.len);
+        // For comparable overlap on call signatures we accept positional
+        // params that are related in EITHER direction (looser than
+        // strict assignability used for the assignable relation). This
+        // mirrors tsc's "comparable" relation for relational operators —
+        // contravariance flips don't generate TS2365 between two
+        // call-signature-only objects whose params merely vary by
+        // sub/supertype on a per-position basis. Reference:
+        // checker.go:12178 (`leftAssignableToNumber`) where the
+        // comparable relation gates the diagnostic.
         for (sp[0..compare_len], 0..) |s_param, i| {
             const t_param = tp[i];
-            if (!(self.engine.isAssignableTo(t_param, s_param) catch false)) return false;
+            const s_to_t = self.engine.isAssignableTo(s_param, t_param) catch false;
+            const t_to_s = self.engine.isAssignableTo(t_param, s_param) catch false;
+            if (!s_to_t and !t_to_s) return false;
         }
         const s_ret = self.interner.signatureReturn(source) orelse return true;
         const t_ret = self.interner.signatureReturn(target) orelse return true;
         if (t_ret == types.Primitive.void_t) return true;
-        return self.engine.isAssignableTo(s_ret, t_ret) catch false;
+        if (s_ret == types.Primitive.void_t) return true;
+        const s_to_t = self.engine.isAssignableTo(s_ret, t_ret) catch false;
+        const t_to_s = self.engine.isAssignableTo(t_ret, s_ret) catch false;
+        return s_to_t or t_to_s;
     }
 
     fn objectTypesHaveIndependentOverlap(self: *Checker, a: TypeId, b: TypeId, depth: u8) CheckError!bool {
@@ -40241,12 +40268,22 @@ pub const Checker = struct {
         const rhs_numeric = rhs_kind == .number_only or rhs_kind == .bigint_only;
         if (lhs_numeric != rhs_numeric) {
             const non_numeric = if (lhs_numeric) rhs_kind else lhs_kind;
-            if (non_numeric == .string_only or non_numeric == .boolean_only) return true;
+            if (non_numeric == .string_only or non_numeric == .boolean_only or non_numeric == .void_only) return true;
         }
+        // `void` is incompatible with every other primitive for
+        // relational operators — tsc fires TS2365 for `void < string`,
+        // `void < boolean`, etc. (see
+        // comparisonOperatorWithNoRelationshipPrimitiveType.ts).
+        if (lhs_kind == .void_only and (rhs_kind == .string_only or rhs_kind == .boolean_only or rhs_kind == .number_only or rhs_kind == .bigint_only)) return true;
+        if (rhs_kind == .void_only and (lhs_kind == .string_only or lhs_kind == .boolean_only or lhs_kind == .number_only or lhs_kind == .bigint_only)) return true;
+        // `boolean` ↔ `string` (and `string` ↔ `boolean`) — no
+        // comparable overlap at the relational level.
+        if ((lhs_kind == .boolean_only and rhs_kind == .string_only) or
+            (lhs_kind == .string_only and rhs_kind == .boolean_only)) return true;
         return false;
     }
 
-    const RelPrim = enum { number_only, bigint_only, string_only, boolean_only, other };
+    const RelPrim = enum { number_only, bigint_only, string_only, boolean_only, void_only, other };
 
     fn relationalPrimitiveKind(self: *Checker, t: TypeId) RelPrim {
         if (t >= self.interner.pool.typeCount()) return .other;
@@ -40262,6 +40299,7 @@ pub const Checker = struct {
         if (f.is_bigint) return .bigint_only;
         if (f.is_string) return .string_only;
         if (f.is_boolean) return .boolean_only;
+        if (f.is_void) return .void_only;
         return .other;
     }
 
