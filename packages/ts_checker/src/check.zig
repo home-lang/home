@@ -25282,6 +25282,8 @@ pub const Checker = struct {
         const builtins = [_][]const u8{
             "Object",
             "RegExp",
+            "RegExpMatchArray",
+            "RegExpExecArray",
             "Error",
             "TypeError",
             "RangeError",
