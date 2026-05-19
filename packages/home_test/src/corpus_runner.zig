@@ -89,6 +89,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/util/wrapAnsi.test.ts",
     "js/bun/test/test-retry-repeats-basic.test.ts",
     "regression/issue23966.test.ts",
+    "js/deno/event/custom-event.test.ts",
 };
 
 const harness_prelude =
@@ -714,6 +715,19 @@ const harness_prelude =
     \\globalThis.__home_bun_test = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, test };
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
+    \\globalThis.__home_modules["deno:harness"] = {
+    \\  createDenoTest(path) {
+    \\    return {
+    \\      test(fn) {
+    \\        if (typeof fn !== "function") __home_fail("Deno test requires a function");
+    \\        return test(fn.name || String(path || "deno:harness"), fn);
+    \\      },
+    \\      assertEquals(actual, expected) {
+    \\        __home_assert(__home_deep_equal(actual, expected, false, new Map()), false, "Expected " + __home_format(actual) + " to equal " + __home_format(expected));
+    \\      },
+    \\    };
+    \\  },
+    \\};
     \\globalThis.__home_import = function(specifier) {
     \\  const module = globalThis.__home_modules[String(specifier)];
     \\  if (!module) throw new Error("Cannot find module: " + String(specifier));
@@ -1042,10 +1056,17 @@ const harness_prelude =
     \\  return HomeDOMException;
     \\})();
     \\if (typeof Event !== "function") {
-    \\  var Event = function(type) {
+    \\  var Event = function(type, init) {
     \\    if (arguments.length < 1) throw new TypeError("Not enough arguments");
+    \\    const options = init || {};
     \\    this.type = String(type);
+    \\    this.bubbles = !!options.bubbles;
+    \\    this.cancelable = !!options.cancelable;
+    \\    this.currentTarget = null;
+    \\    this.target = null;
+    \\    this.isTrusted = false;
     \\  };
+    \\  Event.prototype.toString = function() { return "[object Event]"; };
     \\}
     \\if (typeof MessagePort !== "function") {
     \\  var MessagePort = function() {};
@@ -1080,6 +1101,16 @@ const harness_prelude =
     \\  };
     \\  MessageEvent.prototype = Object.create(Event.prototype);
     \\  MessageEvent.prototype.constructor = MessageEvent;
+    \\}
+    \\if (typeof CustomEvent !== "function") {
+    \\  var CustomEvent = function(type, init) {
+    \\    const options = init || {};
+    \\    Event.call(this, type, options);
+    \\    this.detail = Object.prototype.hasOwnProperty.call(options, "detail") ? options.detail : null;
+    \\  };
+    \\  CustomEvent.prototype = Object.create(Event.prototype);
+    \\  CustomEvent.prototype.constructor = CustomEvent;
+    \\  CustomEvent.prototype.toString = function() { return "[object CustomEvent]"; };
     \\}
     \\
 ;
@@ -1224,6 +1255,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "<any, any>", .replacement = "" },
         .{ .needle = " as any", .replacement = "" },
         .{ .needle = " as const", .replacement = "" },
+        .{ .needle = " as CustomEventInit", .replacement = "" },
     };
 
     for (replacements) |entry| {
@@ -1312,6 +1344,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { Buffer } from \"node:buffer\";",
             .replacement = "const { Buffer } = globalThis.__home_import(\"node:buffer\");",
+        },
+        .{
+            .needle = "import { createDenoTest } from \"deno:harness\";",
+            .replacement = "const { createDenoTest } = globalThis.__home_import(\"deno:harness\");",
         },
     };
 
@@ -1573,6 +1609,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/bun/util/wrapAnsi.test.ts", filesForSubset(.minimal_js)[35]);
     try std.testing.expectEqualStrings("js/bun/test/test-retry-repeats-basic.test.ts", filesForSubset(.minimal_js)[36]);
     try std.testing.expectEqualStrings("regression/issue23966.test.ts", filesForSubset(.minimal_js)[37]);
+    try std.testing.expectEqualStrings("js/deno/event/custom-event.test.ts", filesForSubset(.minimal_js)[38]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -1614,6 +1651,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Deep equality for this value type is not supported") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "UnreachableError") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_bun_test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "createDenoTest(path)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_import") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.redirect") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.json") != null);
@@ -1631,6 +1669,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Error.prepareStackTrace") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var MessageEvent = function(type, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var MessageChannel = function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var CustomEvent = function(type, init)") != null);
 }
 
 test "Bun test import rewrite lowers to the virtual test module" {
@@ -1716,6 +1755,24 @@ test "bootstrap rewrite lowers node buffer named Buffer import" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { Buffer } = globalThis.__home_import(\"node:buffer\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"node:buffer\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "test.concurrent.each") != null);
+}
+
+test "bootstrap rewrite lowers deno harness imports" {
+    const source =
+        \\import { createDenoTest } from "deno:harness";
+        \\const { test, assertEquals } = createDenoTest(import.meta.path);
+        \\test(function customEventInitializedWithDetail() {
+        \\  const customEventInit = { bubbles: true } as CustomEventInit;
+        \\  assertEquals(new CustomEvent("x", customEventInit).bubbles, true);
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/deno/event/custom-event.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { createDenoTest } = globalThis.__home_import(\"deno:harness\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"deno:harness\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "as CustomEventInit") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "createDenoTest(__home_import_meta_path)") != null);
 }
 
 test "bootstrap rewrite erases const assertions" {

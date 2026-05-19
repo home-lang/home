@@ -19,7 +19,7 @@ macOS, Linux, and the WASM target.
   `atob`/`btoa` smoke, fourteen regression smokes, one bundler
   constant-fold smoke, six test-runner expectation smokes, one nested-describe
   smoke, `Bun.stripANSI` and `Bun.wrapAnsi` smokes, retry/repeats runner
-  behavior, `test.concurrent.each`, and narrow bootstrap coverage for Node
+  behavior, `test.concurrent.each`, Deno `CustomEvent`, and narrow bootstrap coverage for Node
   `DOMException`, Web `Response.json` / `Response.redirect`, Web `Request`
   cache/mode/clone, JSC `ShadowRealm`, Bun file metadata, Node `Buffer`
   binary/UTF-16LE/compare/inspect-limit/isEncoding behavior, `Map`/`Set` deep-equality,

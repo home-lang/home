@@ -169,13 +169,13 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes thirty-eight allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes thirty-nine allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
 todo-registration smoke, the Web `atob`/`btoa` smoke, fourteen
 regression smokes, one bundler constant-fold smoke, six test-runner
 expectation smokes, one nested-describe smoke, `Bun.stripANSI` and
-`Bun.wrapAnsi` smokes, retry/repeats runner behavior, `test.concurrent.each`, and narrow bootstrap coverage for Node `DOMException`, Web
+`Bun.wrapAnsi` smokes, retry/repeats runner behavior, `test.concurrent.each`, Deno `CustomEvent`, and narrow bootstrap coverage for Node `DOMException`, Web
 `Response.json` / `Response.redirect`, Web `Request` cache/mode/clone,
 JSC `ShadowRealm`, Bun file metadata, Node `Buffer`
 binary/UTF-16LE/compare/inspect-limit/isEncoding behavior, `Map`/`Set`
