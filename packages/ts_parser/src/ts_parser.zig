@@ -4155,16 +4155,24 @@ pub const Parser = struct {
                 var default_value: NodeId = hir_mod.none_node_id;
                 if (self.match(.equal)) {
                     default_value = try self.parseAssignmentExpression();
-                } else if (self.peek().kind == .string_literal or
+                } else if ((self.peek().kind == .string_literal or
                     self.peek().kind == .number_literal or
                     self.peek().kind == .open_brace or
-                    self.peek().kind == .open_bracket)
+                    self.peek().kind == .open_bracket) and
+                    !self.peek().flags.preceded_by_newline)
                 {
                     // tsc emits TS1442 "Expected '=' for property
                     // initializer." when a value-like token directly
                     // follows the type annotation without an `=`. Consume
                     // the would-be initializer so the recovery proceeds.
                     // Matches `parserErrorRecovery_IncompleteMemberVariable2`.
+                    //
+                    // A preceding newline means ASI inserts a member
+                    // boundary — the next token is the start of the next
+                    // member, not a stray initializer. Mirrors fixture
+                    // `numericIndexerConstrainsPropertyDeclarations.ts(15-17)`
+                    // where `c: () => {}` is followed on the next line by
+                    // `"d": string;` (string-literal-keyed member).
                     const bad = self.peek();
                     try self.reportCodeAt(bad.span.start, bad.line, 1442, "Expected '=' for property initializer.");
                     default_value = try self.parseAssignmentExpression();
@@ -5586,17 +5594,15 @@ pub const Parser = struct {
         }
 
         // `export import Foo = ns.Foo;` inside namespaces/global
-        // augmentations is an import-alias declaration, not an ES
-        // module import. The current HIR has no dedicated node yet;
-        // consume it as a harmless empty statement so declaration-emit
-        // conformance fixtures keep parsing.
+        // augmentations is an import-alias declaration. Route it
+        // through `parseImportDeclaration` so the HIR records the
+        // `Foo` binding + `ns.Foo` reference — the checker's
+        // `appendImportEqualsNamespacePathForLocal` walks up to find
+        // this binding when resolving `typeof Foo` / qualified type
+        // references against the alias. Mirrors fixture
+        // `typeofAnExportedType.ts(33,23)` / `(34,23)`.
         if (self.peek().kind == .kw_import) {
-            while (self.peek().kind != .semicolon and self.peek().kind != .close_brace and self.peek().kind != .eof) {
-                _ = self.advance();
-            }
-            _ = self.match(.semicolon);
-            const end_pos = self.tokens[self.cursor - 1].span.end;
-            return try self.builder.addBlock(.{ .start = start.span.start, .end = end_pos }, &.{});
+            return try self.parseImportDeclaration();
         }
 
         // `export as namespace Foo;` is a declaration-file/global UMD
