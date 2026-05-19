@@ -52,6 +52,62 @@ pub const PreparedModule = struct {
     }
 };
 
+const CorpusRuntime = struct {
+    engine: home_rt.jsc.engine.Engine,
+
+    pub fn init(allocator: std.mem.Allocator) !CorpusRuntime {
+        var self = CorpusRuntime{
+            .engine = try home_rt.jsc.engine.Engine.init(allocator),
+        };
+        errdefer self.deinit();
+
+        try self.installHarness(allocator);
+        return self;
+    }
+
+    pub fn deinit(self: *CorpusRuntime) void {
+        self.engine.deinit();
+    }
+
+    fn installHarness(self: *CorpusRuntime, allocator: std.mem.Allocator) !void {
+        const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(
+            allocator,
+            self.engine.currentContext(),
+            harness_prelude,
+            "home:corpus-harness",
+            1,
+        );
+        defer evaluation.deinit(allocator);
+
+        if (evaluation.exception != null or evaluation.value == null) {
+            return error.CorpusHarnessInstallFailed;
+        }
+    }
+
+    fn resetFileState(self: *CorpusRuntime, allocator: std.mem.Allocator) !void {
+        const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(
+            allocator,
+            self.engine.currentContext(),
+            "globalThis.__home_reset_tests();",
+            "home:corpus-reset",
+            1,
+        );
+        defer evaluation.deinit(allocator);
+
+        if (evaluation.exception != null or evaluation.value == null) {
+            return error.CorpusHarnessResetFailed;
+        }
+    }
+
+    fn readCounters(self: *CorpusRuntime, allocator: std.mem.Allocator) !Counters {
+        return .{
+            .passed = try readCounter(allocator, &self.engine, "__home_bun_tests.passed"),
+            .failed = try readCounter(allocator, &self.engine, "__home_bun_tests.failed"),
+            .todo = try readCounter(allocator, &self.engine, "__home_bun_tests.todo"),
+        };
+    }
+};
+
 pub const minimal_js_files = [_][]const u8{
     "snippets/segfault-todo.test.js",
     "js/web/util/atob.test.js",
@@ -76,8 +132,12 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/expect-unreaachable.test.ts",
 };
 
-const prelude =
-    \\var __home_bun_tests = { passed: 0, failed: 0, todo: 0 };
+const harness_prelude =
+    \\var __home_bun_tests = globalThis.__home_bun_tests || { passed: 0, failed: 0, todo: 0 };
+    \\globalThis.__home_reset_tests = function() {
+    \\  __home_bun_tests = globalThis.__home_bun_tests = { passed: 0, failed: 0, todo: 0 };
+    \\};
+    \\globalThis.__home_reset_tests();
     \\var Bun = {
     \\  [Symbol.toStringTag]: "Bun",
     \\  stripANSI(value) {
@@ -275,6 +335,13 @@ const prelude =
     \\  throw reason;
     \\};
     \\globalThis.__home_bun_test = { describe, expect, it, test };
+    \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
+    \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
+    \\globalThis.__home_import = function(specifier) {
+    \\  const module = globalThis.__home_modules[String(specifier)];
+    \\  if (!module) throw new Error("Cannot find module: " + String(specifier));
+    \\  return module;
+    \\};
     \\if (typeof Headers !== "function") {
     \\  var Headers = function(init) {
     \\    this.__home_headers = {};
@@ -645,39 +712,45 @@ fn hasUnsupportedModuleSyntax(source: []const u8) bool {
 
 pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) ![]u8 {
     const shebang_len = sourceShebangLen(source);
-    const imports = [_][]const u8{
-        "import { expect, it, describe } from \"bun:test\";",
-        "import { describe, expect, it } from \"bun:test\";",
-        "import { describe, expect, test } from \"bun:test\";",
-        "import { expect, it } from \"bun:test\";",
-        "import { expect, test } from \"bun:test\";",
+    const imports = [_]struct {
+        line: []const u8,
+        binding: []const u8,
+    }{
+        .{ .line = "import { expect, it, describe } from \"bun:test\";", .binding = "const { expect, it, describe } = globalThis.__home_import(\"bun:test\");\n" },
+        .{ .line = "import { describe, expect, it } from \"bun:test\";", .binding = "const { describe, expect, it } = globalThis.__home_import(\"bun:test\");\n" },
+        .{ .line = "import { describe, expect, test } from \"bun:test\";", .binding = "const { describe, expect, test } = globalThis.__home_import(\"bun:test\");\n" },
+        .{ .line = "import { expect, it } from \"bun:test\";", .binding = "const { expect, it } = globalThis.__home_import(\"bun:test\");\n" },
+        .{ .line = "import { expect, test } from \"bun:test\";", .binding = "const { expect, test } = globalThis.__home_import(\"bun:test\");\n" },
     };
 
-    for (imports) |import_line| {
-        if (std.mem.indexOf(u8, source, import_line)) |idx| {
+    for (imports) |import_shape| {
+        if (std.mem.indexOf(u8, source, import_shape.line)) |idx| {
             var out = std.ArrayList(u8).empty;
             defer out.deinit(allocator);
 
             try out.appendSlice(allocator, source[0..shebang_len]);
+            try out.appendSlice(allocator, "(function() {\n");
             try appendFileMetadataPrelude(&out, allocator, relative_path);
             try out.appendSlice(allocator, source[shebang_len..idx]);
-            try out.appendSlice(allocator, prelude);
-            try out.appendSlice(allocator, source[idx + import_line.len ..]);
-            const with_prelude = try out.toOwnedSlice(allocator);
-            defer allocator.free(with_prelude);
-            return rewriteImportMeta(allocator, with_prelude);
+            try out.appendSlice(allocator, import_shape.binding);
+            try out.appendSlice(allocator, source[idx + import_shape.line.len ..]);
+            try out.appendSlice(allocator, "\n})();\n");
+            const with_imports = try out.toOwnedSlice(allocator);
+            defer allocator.free(with_imports);
+            return rewriteImportMeta(allocator, with_imports);
         }
     }
 
     var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
     try out.appendSlice(allocator, source[0..shebang_len]);
+    try out.appendSlice(allocator, "(function() {\n");
     try appendFileMetadataPrelude(&out, allocator, relative_path);
-    try out.appendSlice(allocator, prelude);
     try out.appendSlice(allocator, source[shebang_len..]);
-    const with_prelude = try out.toOwnedSlice(allocator);
-    defer allocator.free(with_prelude);
-    return rewriteImportMeta(allocator, with_prelude);
+    try out.appendSlice(allocator, "\n})();\n");
+    const with_metadata = try out.toOwnedSlice(allocator);
+    defer allocator.free(with_metadata);
+    return rewriteImportMeta(allocator, with_metadata);
 }
 
 pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) !PreparedModule {
@@ -706,8 +779,8 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
         };
     }
 
-    var engine = try home_rt.jsc.engine.Engine.init(allocator);
-    defer engine.deinit();
+    var runtime = try CorpusRuntime.init(allocator);
+    defer runtime.deinit();
 
     var summary = Summary{};
     for (filesForSubset(subset)) |relative| {
@@ -727,9 +800,15 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
             continue;
         }
 
+        runtime.resetFileState(allocator) catch |err| {
+            summary.failed += 1;
+            try recordFailure(allocator, &summary, relative, @errorName(err));
+            continue;
+        };
+
         const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(
             allocator,
-            engine.currentContext(),
+            runtime.engine.currentContext(),
             prepared.source,
             relative,
             1,
@@ -742,7 +821,7 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
             continue;
         }
 
-        const counters = readCounters(allocator, &engine) catch |err| {
+        const counters = runtime.readCounters(allocator) catch |err| {
             summary.failed += 1;
             try recordFailure(allocator, &summary, relative, @errorName(err));
             continue;
@@ -760,14 +839,6 @@ const Counters = struct {
     failed: usize,
     todo: usize,
 };
-
-fn readCounters(allocator: std.mem.Allocator, engine: *home_rt.jsc.engine.Engine) !Counters {
-    return .{
-        .passed = try readCounter(allocator, engine, "__home_bun_tests.passed"),
-        .failed = try readCounter(allocator, engine, "__home_bun_tests.failed"),
-        .todo = try readCounter(allocator, engine, "__home_bun_tests.todo"),
-    };
-}
 
 fn readCounter(allocator: std.mem.Allocator, engine: *home_rt.jsc.engine.Engine, expr: []const u8) !usize {
     const value = (try home_rt.jsc.evaluate.evaluateUtf8(
@@ -833,7 +904,25 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/bun/test/expect-unreaachable.test.ts", filesForSubset(.minimal_js)[20]);
 }
 
-test "Bun test import rewrite installs the bootstrap prelude" {
+test "harness prelude installs Bun test globals once" {
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function it(name, fn)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_is_thenable(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "stripANSI(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeInstanceOf(ctor)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTypeOf(expected)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTypeOf() requires a valid type string argument") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeUndefined()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toIncludeRepeated(needle, expectedCount)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "expect.unreachable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "UnreachableError") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_bun_test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_import") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.redirect") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Error.prepareStackTrace") != null);
+}
+
+test "Bun test import rewrite lowers to the virtual test module" {
     const source =
         \\import { expect, it, describe } from "bun:test";
         \\it("works", () => {});
@@ -841,20 +930,7 @@ test "Bun test import rewrite installs the bootstrap prelude" {
     const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/node/example.test.js");
     defer std.testing.allocator.free(rewritten);
 
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "function it(name, fn)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "function __home_is_thenable(value)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "stripANSI(value)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeInstanceOf(ctor)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeTypeOf(expected)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeTypeOf() requires a valid type string argument") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeUndefined()") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "toIncludeRepeated(needle, expectedCount)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "expect.unreachable") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "UnreachableError") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "globalThis.__home_bun_test") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Response.redirect") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Response.json") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Error.prepareStackTrace") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { expect, it, describe } = globalThis.__home_import(\"bun:test\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "var __dirname = \"js/node\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "it(\"works\"") != null);
@@ -869,7 +945,6 @@ test "Bun test import rewrite installs globals for no-import tests" {
     const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/example.test.js");
     defer std.testing.allocator.free(rewritten);
 
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "function test(name, fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "var __filename = \"regression/issue/example.test.js\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "test(\"works\"") != null);
 }

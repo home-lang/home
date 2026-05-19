@@ -173,7 +173,11 @@ regression smokes, one bundler constant-fold smoke, four test-runner
 expectation smokes, one nested-describe smoke, one `Bun.stripANSI`
 smoke, and the Node `DOMException`, Web `Response.json` /
 `Response.redirect`, JSC `ShadowRealm`, Bun file-metadata, and
-stack-trace smokes. This is deliberately not the acceptance gate.
+stack-trace smokes. The bootstrap harness is installed once per JSC
+engine, resets counters before each file, and lowers supported
+`bun:test` imports through a virtual
+`globalThis.__home_import("bun:test")` module shim. This is deliberately
+not the acceptance gate.
 
 ## Summary
 

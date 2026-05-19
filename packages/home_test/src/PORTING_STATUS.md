@@ -21,16 +21,20 @@ explicit `--bun-corpus-native-subset=minimal-js` bootstrap path. The
 full runner remains blocked on the native `bun:test` port and JSC
 host-call bridge.
 
-The bootstrap prelude is intentionally narrow but now covers the first
-real smoke slice: basic `describe` / `test` / `it`, `it.todo`,
-`it.failing`, returned-thenable rejection, `.not`, `toBe`,
-`toBeDefined`, `toBeInstanceOf`, small `toEqual` / `toStrictEqual`
-deep equality, `toThrow`, `expect.any`, `atob` / `btoa`, `Bun`
-branding, a DOMException shim, and a narrow `ShadowRealm.evaluate`
-shim. The source rewrite also lowers `import.meta.dir/path` to the
-same per-file metadata used for the directory and filename globals. It
-is a stepping stone for corpus bring-up, not a substitute for the
-vendored Zig runner below.
+The bootstrap harness is intentionally narrow but now installs once per
+JSC engine and resets counters before each allowlisted file. It covers
+the first real smoke slice: basic `describe` / `test` / `it`,
+`it.todo`, `it.failing`, returned-thenable rejection, `.not`, `toBe`,
+`toBeDefined`, `toBeUndefined`, `toBeTypeOf`, `toBeInstanceOf`, small
+`toEqual` / `toStrictEqual` deep equality, `toThrow`, `expect.any`,
+`expect.unreachable`, `toIncludeRepeated`, `atob` / `btoa`, `Bun`
+branding plus `Bun.stripANSI`, a DOMException shim, Web
+`Response.json` / `Response.redirect` shims, and a narrow
+`ShadowRealm.evaluate` shim. The source rewrite lowers supported
+`bun:test` imports to a virtual `globalThis.__home_import("bun:test")`
+module and lowers `import.meta.dir/path` to the same per-file metadata
+used for the directory and filename globals. It is a stepping stone for
+corpus bring-up, not a substitute for the vendored Zig runner below.
 
 > **Why a verbatim copy?** Per direction 2026-05-14: Bun is shifting
 > its core to Rust; we want to continue maintaining the Zig portion
