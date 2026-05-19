@@ -19750,10 +19750,10 @@ pub const Checker = struct {
                 // DANGLING_SLICE_AUDIT_2026-05-19.md): heritageAssignable() below
                 // can recursively intern types and grow object_member_pool,
                 // invalidating the borrowed slices' base pointers mid-loop.
-                var parent_members_buf = std.ArrayListUnmanaged(types.ObjectMember){};
+                var parent_members_buf: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
                 defer parent_members_buf.deinit(self.gpa);
                 try parent_members_buf.appendSlice(self.gpa, self.interner.objectMembers(parent_t));
-                var other_members_buf = std.ArrayListUnmanaged(types.ObjectMember){};
+                var other_members_buf: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
                 defer other_members_buf.deinit(self.gpa);
                 try other_members_buf.appendSlice(self.gpa, self.interner.objectMembers(other_t));
                 for (parent_members_buf.items) |pm| {
@@ -20036,7 +20036,7 @@ pub const Checker = struct {
         // recursive `presentObjectMembersAssignable()` calls can grow
         // object_member_pool and invalidate the borrowed slice (HIGH-RISK
         // dangling-slice fix per DANGLING_SLICE_AUDIT_2026-05-19.md).
-        var target_members_buf = std.ArrayListUnmanaged(types.ObjectMember){};
+        var target_members_buf: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer target_members_buf.deinit(self.gpa);
         try target_members_buf.appendSlice(self.gpa, self.interner.objectMembers(target));
         for (target_members_buf.items) |tm| {
