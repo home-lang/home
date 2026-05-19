@@ -14509,7 +14509,8 @@ pub const Checker = struct {
     /// declared on `Base` but the access occurs outside `Base`'s
     /// body, tsc emits TS18013. Mirrors `checkPrivateMemberAccess`
     /// but keyed on the name's `#` prefix instead of the legacy
-    /// `private` keyword.
+    /// `private` keyword. Walks the class-parent chain so inherited
+    /// `#fields` are attributed to the actually-declaring class.
     fn checkEcmaPrivateMemberAccess(
         self: *Checker,
         node: NodeId,
@@ -14517,20 +14518,35 @@ pub const Checker = struct {
         prop_name: hir_mod.StringId,
     ) CheckError!void {
         if (!self.memberNameIsEcmaPrivate(prop_name)) return;
-        const class_name = self.class_name_by_instance.get(obj_t) orelse
+        const receiver_class = self.class_name_by_instance.get(obj_t) orelse
             self.class_name_by_static.get(obj_t) orelse
             return;
-        // Confirm the class actually declares this `#field` (an
-        // instance OR static member).
-        const declared = blk: {
+        // Walk the parent chain to find the class that actually
+        // declares this `#field`. tsc reports the declaring class,
+        // not the receiver's type, so a `Derived` receiver with a
+        // `#field` declared on `Base` reads as "outside class 'Base'".
+        var class_name = receiver_class;
+        var declared = false;
+        while (true) {
             if (self.class_instance_member_names.getPtr(class_name)) |set| {
-                if (set.contains(prop_name)) break :blk true;
+                if (set.contains(prop_name)) {
+                    declared = true;
+                    break;
+                }
             }
             if (self.class_static_member_names.getPtr(class_name)) |set| {
-                if (set.contains(prop_name)) break :blk true;
+                if (set.contains(prop_name)) {
+                    declared = true;
+                    break;
+                }
             }
-            break :blk false;
-        };
+            // Climb to parent.
+            if (self.class_parent.get(class_name)) |parent_name| {
+                class_name = parent_name;
+                continue;
+            }
+            break;
+        }
         if (!declared) return;
         // Walk parents looking for an enclosing `class_decl` whose
         // name matches `class_name`. Found → access is inside the
