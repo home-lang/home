@@ -6055,15 +6055,16 @@ pub const Parser = struct {
             _ = self.advance(); // `using` token following `await`
         }
         const in_ambient = self.ambient_depth > 0;
-        // TS1495 — `'export'`/`'declare'` modifier cannot appear on an
-        // `await using` declaration. tsc emits this in place of the
-        // generic TS1546 ambient diagnostic (or alongside it for bare
-        // `export await using`). Detect the modifier by scanning the
-        // source bytes immediately preceding `start.span.start` for
-        // `declare` or `export` and anchor the diagnostic there.
-        // Mirrors upstream `awaitUsingDeclarations.11.ts`.
+        // TS1495 (await using) / TS1491 (using) — `'export'` / `'declare'`
+        // modifier cannot appear on a `using` / `await using` declaration.
+        // tsc emits this in place of the generic TS1545/TS1546 ambient
+        // diagnostic (or alongside it for bare `export <kind>`). Detect
+        // the modifier by scanning the source bytes immediately preceding
+        // `start.span.start` for `declare` or `export` and anchor the
+        // diagnostic there. Mirrors upstream `usingDeclarations.13.ts` and
+        // `awaitUsingDeclarations.11.ts`.
         var emitted_modifier_diag = false;
-        if (await_using) blk: {
+        blk: {
             const src = self.source;
             const start_pos = start.span.start;
             if (start_pos == 0) break :blk;
@@ -6088,12 +6089,20 @@ pub const Parser = struct {
             if (modifier) |mod_name| {
                 // Compute line for this position — use start.line as a
                 // proxy since the modifier is on the same logical line.
-                const msg = try std.fmt.allocPrint(
-                    self.diag_arena.allocator(),
-                    "'{s}' modifier cannot appear on an 'await using' declaration.",
-                    .{mod_name},
-                );
-                try self.reportCodeAt(@intCast(i), start.line, 1495, msg);
+                const code: u32 = if (await_using) 1495 else 1491;
+                const msg = if (await_using)
+                    try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "'{s}' modifier cannot appear on an 'await using' declaration.",
+                        .{mod_name},
+                    )
+                else
+                    try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "'{s}' modifier cannot appear on a 'using' declaration.",
+                        .{mod_name},
+                    );
+                try self.reportCodeAt(@intCast(i), start.line, code, msg);
                 emitted_modifier_diag = true;
             }
         }
