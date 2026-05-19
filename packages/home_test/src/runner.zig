@@ -17,6 +17,25 @@ pub const FileSpec = struct {
     source: []const u8,
 };
 
+pub const PreparedFile = struct {
+    path: []const u8,
+    source: []u8,
+    unsupported_reason: ?[]const u8 = null,
+
+    pub fn fileSpec(self: PreparedFile) FileSpec {
+        return .{
+            .path = self.path,
+            .source = self.source,
+        };
+    }
+
+    pub fn deinit(self: *PreparedFile, allocator: std.mem.Allocator) void {
+        allocator.free(self.source);
+        self.source = &.{};
+        self.unsupported_reason = null;
+    }
+};
+
 pub const RunOptions = struct {
     adapter: Adapter = .jsc_bootstrap,
 };
@@ -68,6 +87,19 @@ pub const FileRun = struct {
 
 test "runner adapter labels are stable" {
     try std.testing.expectEqualStrings("jsc-bootstrap", Adapter.jsc_bootstrap.label());
+}
+
+test "prepared file exposes executable file spec" {
+    const source = try std.testing.allocator.dupe(u8, "test(\"x\", () => {});");
+    var prepared = PreparedFile{
+        .path = "sample.test.ts",
+        .source = source,
+    };
+    defer prepared.deinit(std.testing.allocator);
+
+    const spec = prepared.fileSpec();
+    try std.testing.expectEqualStrings("sample.test.ts", spec.path);
+    try std.testing.expectEqualStrings("test(\"x\", () => {});", spec.source);
 }
 
 test "file run owns copied failure messages" {

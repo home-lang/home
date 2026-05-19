@@ -50,17 +50,6 @@ pub const Summary = struct {
     }
 };
 
-pub const PreparedModule = struct {
-    source: []u8,
-    unsupported_reason: ?[]const u8 = null,
-
-    pub fn deinit(self: *PreparedModule, allocator: std.mem.Allocator) void {
-        allocator.free(self.source);
-        self.source = &.{};
-        self.unsupported_reason = null;
-    }
-};
-
 const CorpusRuntime = struct {
     engine: home_rt.jsc.engine.Engine,
 
@@ -1212,21 +1201,26 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     return finishModuleRewrite(allocator, with_metadata);
 }
 
-pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) !PreparedModule {
+pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) !runner.PreparedFile {
     const rewritten = try rewriteBunTestImport(allocator, source, relative_path);
     if (hasBunTestImport(rewritten)) {
         return .{
+            .path = relative_path,
             .source = rewritten,
             .unsupported_reason = "unsupported bun:test import shape",
         };
     }
     if (hasUnsupportedModuleSyntax(rewritten)) {
         return .{
+            .path = relative_path,
             .source = rewritten,
             .unsupported_reason = "unsupported module syntax",
         };
     }
-    return .{ .source = rewritten };
+    return .{
+        .path = relative_path,
+        .source = rewritten,
+    };
 }
 
 pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, subset: Subset) !Summary {
@@ -1260,10 +1254,7 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
             continue;
         }
 
-        var file_run = try runtime.runFile(allocator, .{
-            .path = relative,
-            .source = prepared.source,
-        });
+        var file_run = try runtime.runFile(allocator, prepared.fileSpec());
         defer file_run.deinit(allocator);
 
         summary.addFileResult(file_run.result);
@@ -1507,10 +1498,7 @@ test "bootstrap runner reports zero registered tests as unsupported" {
     var runtime = try CorpusRuntime.init(std.testing.allocator);
     defer runtime.deinit();
 
-    var file_run = try runtime.runFile(std.testing.allocator, .{
-        .path = "regression/issue/empty-describe.test.js",
-        .source = prepared.source,
-    });
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.unsupported, file_run.result.status());
@@ -1529,10 +1517,7 @@ test "bootstrap runner keeps todo-only files as todo" {
     var runtime = try CorpusRuntime.init(std.testing.allocator);
     defer runtime.deinit();
 
-    var file_run = try runtime.runFile(std.testing.allocator, .{
-        .path = "snippets/pending.test.js",
-        .source = prepared.source,
-    });
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.todo, file_run.result.status());
