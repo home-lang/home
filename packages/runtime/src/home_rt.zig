@@ -501,6 +501,12 @@ pub const node = struct {
     // Seventh-wave port batch (2026-05-18):
     pub const time_like = @import("node/time_like.zig");
     pub const os_constants = @import("node/os_constants.zig");
+    // Phase 12.7 round-7 (2026-05-19) — `node:events` EventEmitter
+    // substrate. Generic EventEmitter(EventName, Listener) + 12 methods
+    // (on/off/once/emit/listenerCount/listeners/removeAllListeners/
+    // setMax/getMaxListeners/eventNames/prependListener/prependOnceListener).
+    // EventEmitterDefault alias for the typical string-keyed case.
+    pub const events = @import("node/events.zig");
     // Phase 12.7 port (2026-05-19) — `node:util` Zig substrate. Top-level
     // surface (inspect/format/formatWithOptions/isDeepStrictEqual/
     // deprecate/debuglog/debug/promisify/callbackify + InspectOptions +
@@ -624,6 +630,15 @@ pub const sys = struct {
     pub const Maybe = maybe.Maybe;
     pub const FileKind = maybe.FileKind;
     pub const kindFromMode = maybe.kindFromMode;
+    // Wave-20 Tier-2 substrate (2026-05-19). `SystemErrno` proxies the
+    // per-platform dispatcher in `errno/errno.zig` so copied source can
+    // spell `home_rt.sys.SystemErrno` (mirrors upstream `bun.sys.SystemErrno`).
+    // The strerror tables below are pure-data `EnumMap` instances keyed
+    // off `SystemErrno`; they cover Node.js's `uv_strerror` table and
+    // coreutils' `strerror` table respectively.
+    pub const SystemErrno = @import("errno/errno.zig").SystemErrno;
+    pub const libuv_error_map = @import("sys/libuv_error_map.zig").libuv_error_map;
+    pub const coreutils_error_map = @import("sys/coreutils_error_map.zig").coreutils_error_map;
 };
 
 // ---- src/paths/ --------------------------------------------------------

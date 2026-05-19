@@ -69,4 +69,14 @@ test {
     _ = @import("sql/postgres/protocol/CopyData.zig");
     _ = @import("sql/postgres/protocol/CopyFail.zig");
     _ = @import("css/properties/text.zig");
+    // Wave-20 Tier-2 substrate (2026-05-19) — strerror tables + sql
+    // wire-protocol leaves. Lifts the `sys.SystemErrno → message` maps
+    // off the dispatched `errno/errno.zig` table so future copies of
+    // `sys.zig` (strerror, formatPath, errorToZigString) can compile
+    // without resurrecting JSC-bridge or libuv coupling.
+    _ = @import("sys/libuv_error_map.zig");
+    _ = @import("sys/coreutils_error_map.zig");
+    _ = @import("sql/postgres/protocol/ArrayList.zig");
+    _ = @import("sql/postgres/protocol/StackReader.zig");
+    _ = @import("sql/mysql/protocol/AuthSwitchRequest.zig");
 }

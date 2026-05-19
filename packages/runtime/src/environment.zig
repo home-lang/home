@@ -30,6 +30,24 @@ pub const isDebug = builtin.mode == .Debug;
 pub const isRelease = !isDebug;
 pub const allow_assert = isDebug;
 
+// Wave-20 Tier-2 substrate (2026-05-19). Mirrors upstream
+// `bun.Environment.os`, an `Os` enum used by comptime branches in copied
+// source (e.g. `sys/coreutils_error_map.zig`'s per-platform strerror
+// table). Bun maps every Zig OS tag down to one of `linux | mac | windows
+// | wasm | freebsd`; preserve that bucketing so verbatim copies compile
+// without semantic edits.
+pub const Os = enum { linux, mac, windows, wasm, freebsd };
+pub const os: Os = if (isWindows)
+    .windows
+else if (isMac)
+    .mac
+else if (isWasm)
+    .wasm
+else if (isFreeBSD)
+    .freebsd
+else
+    .linux;
+
 test "environment flags are mutually consistent" {
     const std = @import("std");
     var count: usize = 0;
