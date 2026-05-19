@@ -197,6 +197,16 @@ pub const jsc = struct {
     pub const exception = @import("jsc/exception_helpers.zig");
     pub const coerce = @import("jsc/coerce.zig");
     pub const array = @import("jsc/array.zig");
+    // Phase 12.2 M5 (2026-05-19) — function-call + host-callback
+    // helpers per `JSC_BRIDGE_SCOPE_2026-05-19.md` §M5. `call` covers
+    // "Zig invokes a JS function/method/constructor" (callFunction,
+    // callMethod, constructObject, isCallable, isConstructor); `callback`
+    // covers "Zig publishes a function JS can invoke"
+    // (Callback struct + registerCallback + registerHostFunction).
+    // Bodies panic with TODO(phase-12.2-M3) until the C++ engine
+    // wiring lands.
+    pub const call = @import("jsc/call.zig");
+    pub const callback = @import("jsc/callback.zig");
 };
 
 // ---- src/io/ -----------------------------------------------------------

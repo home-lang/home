@@ -51,6 +51,11 @@ test {
     _ = @import("jsc/exception_helpers.zig");
     _ = @import("jsc/coerce.zig");
     _ = @import("jsc/array.zig");
+    // Phase 12.2 M5 (2026-05-19) — call + callback helper surfaces.
+    // Same shape as M4: bodies panic with TODO(phase-12.2-M3); the
+    // smoke driver compiles and runs the inline signature-shape tests.
+    _ = @import("jsc/call.zig");
+    _ = @import("jsc/callback.zig");
     // Wave-18 Tier-0 grinder (2026-05-18) — sql wire-protocol leaves.
     _ = @import("sql/shared/Data.zig");
     _ = @import("sql/mysql/protocol/NewReader.zig");
