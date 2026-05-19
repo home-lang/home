@@ -3913,6 +3913,27 @@ pub const Checker = struct {
         return std.mem.trim(u8, line[marker + "@filename:".len ..], " \t\r");
     }
 
+    fn virtualSectionEndForNode(self: *Checker, node: NodeId) usize {
+        const src = self.source orelse return 0;
+        if (!self.sourceHasVirtualFilenameSections()) return src.len;
+        const section = self.virtualSectionStartForNode(node);
+        if (section >= src.len) return src.len;
+        var line_start = std.mem.indexOfScalarPos(u8, src, section, '\n') orelse return src.len;
+        line_start += 1;
+        while (line_start < src.len) {
+            const line_end = std.mem.indexOfScalarPos(u8, src, line_start, '\n') orelse src.len;
+            const line = src[line_start..line_end];
+            if (std.mem.indexOf(u8, line, "@filename:") != null or
+                std.mem.indexOf(u8, line, "@Filename:") != null)
+            {
+                return line_start;
+            }
+            if (line_end == src.len) break;
+            line_start = line_end + 1;
+        }
+        return src.len;
+    }
+
     fn virtualSectionIsDeclarationFile(self: *Checker, node: NodeId) bool {
         if (self.whole_file_is_declaration_file) return true;
         const filename = self.virtualSectionFilenameForNode(node) orelse return false;
@@ -29666,6 +29687,41 @@ pub const Checker = struct {
             std.mem.endsWith(u8, path, ".cjs");
     }
 
+    fn pathIsAlwaysEsmJsLike(self: *Checker, path: []const u8) bool {
+        _ = self;
+        return std.mem.endsWith(u8, path, ".mjs");
+    }
+
+    fn jsLikeSectionHasImplicitCommonJsGlobals(self: *Checker, node: NodeId) bool {
+        if (!self.virtualSectionIsJsLike(node)) return false;
+        const filename = self.virtualSectionFilenameForNode(node) orelse self.importer_path;
+        if (self.pathIsAlwaysEsmJsLike(filename)) return false;
+        return !self.jsLikeSectionIsExternalModule(node);
+    }
+
+    fn jsLikeSectionIsExternalModule(self: *Checker, node: NodeId) bool {
+        if (!self.sourceHasVirtualFilenameSections()) return self.rootHasTopLevelExternalModuleMarker(node);
+
+        const src = self.source orelse return false;
+        const section_start = self.virtualSectionStartForNode(node);
+        const section_end = self.virtualSectionEndForNode(node);
+        if (section_start < section_end and section_end <= src.len) {
+            if (std.mem.indexOf(u8, src[section_start..section_end], "import.meta") != null) return true;
+        }
+
+        const root = self.rootBlockFor(node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            const sp = self.hir.spanOf(stmt);
+            if (sp.start < section_start or sp.start >= section_end) continue;
+            switch (self.hir.kindOf(stmt)) {
+                .import_decl, .export_decl => return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
     fn sourceHasSingleJsLikeVirtualCodeSection(self: *Checker) bool {
         const src = self.source orelse return false;
         var saw_code = false;
@@ -39738,13 +39794,13 @@ pub const Checker = struct {
                 if (self.rootHasVarDeclarationNamed(node, id.name) or self.sourceHasVarDeclarationText(id.name)) return types.Primitive.any;
                 if (self.moduleHasRuntimeNamespacePrefix(module, id.name)) return types.Primitive.any;
                 if (self.identifierNamesEnclosingClassExpression(node, id.name)) return types.Primitive.any;
-                // In JS-like source files (`.js` / `.jsx` / `.mjs` /
-                // `.cjs`) `module` / `require` are part of the implicit
-                // CommonJS environment under tsc's `--allowJs` policy
-                // and never surface TS2591. Suppress here to mirror
-                // upstream baselines (`bug27342.js`, `mod1.js`,
-                // `cls.js`, etc. across the 3000-4000 slice).
-                if (self.virtualSectionIsJsLike(node)) return types.Primitive.any;
+                // In JS-like CommonJS script files, `module` /
+                // `require` are part of the implicit environment under
+                // tsc's `--allowJs` policy. Once the same `.js` section
+                // becomes an external module via top-level import/export
+                // (or by `.mjs` extension), upstream no longer injects
+                // those globals and reports TS2591 instead.
+                if (self.jsLikeSectionHasImplicitCommonJsGlobals(node)) return types.Primitive.any;
                 self.reportCannotFindNodeName(node, id.name) catch {};
                 return types.Primitive.any;
             }
@@ -68452,6 +68508,24 @@ test "checker: TS2591 module/require suppressed in JS-like virtual section" {
     for (b.base.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_node_name);
     }
+}
+
+test "checker: TS2591 module global fires in external-module JS virtual section" {
+    const b = try newBoundSetup(
+        \\// @filename: mod.js
+        \\export function abc() {}
+        \\module.exports = { abc };
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_node_name) {
+            found = true;
+            break;
+        }
+    }
+    try T.expect(found);
 }
 
 test "checker: TS2591 module global still fires in `.ts` virtual section" {
