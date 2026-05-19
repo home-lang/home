@@ -27332,7 +27332,15 @@ pub const Checker = struct {
             else
                 "<anonymous>";
             const is_ambient = v.is_ambient;
-            const msg = if (is_ambient)
+            // `const X;` (no init) is a TS1155 syntax error, but tsc
+            // still emits the implicit-any diagnostic — and it uses
+            // TS7005 (not TS7034) because const has no evolving-any
+            // flow (the binding can never be reassigned to widen its
+            // type). Mirrors fixture `for-of2` where `const v;` expects
+            // TS7005 alongside TS1155.
+            const is_const = self.hir.kindOf(node) == .const_decl;
+            const use_ts7005 = is_ambient or is_const;
+            const msg = if (use_ts7005)
                 try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "Variable '{s}' implicitly has an 'any' type.",
@@ -27346,7 +27354,7 @@ pub const Checker = struct {
                 );
             try self.diagnostics.append(self.gpa, .{
                 .node = if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) v.name else node,
-                .code = if (is_ambient) TsCodes.variable_implicitly_any else TsCodes.variable_implicitly_any_declaration,
+                .code = if (use_ts7005) TsCodes.variable_implicitly_any else TsCodes.variable_implicitly_any_declaration,
                 .message = msg,
             });
         }
