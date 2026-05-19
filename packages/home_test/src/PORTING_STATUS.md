@@ -27,8 +27,10 @@ real smoke slice: basic `describe` / `test` / `it`, `it.todo`,
 `toBeDefined`, `toBeInstanceOf`, small `toEqual` / `toStrictEqual`
 deep equality, `toThrow`, `expect.any`, `atob` / `btoa`, `Bun`
 branding, a DOMException shim, and a narrow `ShadowRealm.evaluate`
-shim. It is a stepping stone for corpus bring-up, not a substitute for
-the vendored Zig runner below.
+shim. The source rewrite also lowers `import.meta.dir/path` to the
+same per-file metadata used for the directory and filename globals. It
+is a stepping stone for corpus bring-up, not a substitute for the
+vendored Zig runner below.
 
 > **Why a verbatim copy?** Per direction 2026-05-14: Bun is shifting
 > its core to Rust; we want to continue maintaining the Zig portion

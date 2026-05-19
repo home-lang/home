@@ -46,6 +46,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/12650.test.js",
     "js/node/domexception-node.test.js",
     "js/bun/jsc/shadow.test.js",
+    "js/node/dirname.test.js",
 };
 
 const prelude =
@@ -343,7 +344,50 @@ pub fn filesForSubset(subset: Subset) []const []const u8 {
     };
 }
 
-pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+fn appendJsStringLiteral(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: []const u8) !void {
+    try out.append(allocator, '"');
+    for (value) |byte| {
+        switch (byte) {
+            '\\' => try out.appendSlice(allocator, "\\\\"),
+            '"' => try out.appendSlice(allocator, "\\\""),
+            '\n' => try out.appendSlice(allocator, "\\n"),
+            '\r' => try out.appendSlice(allocator, "\\r"),
+            else => try out.append(allocator, byte),
+        }
+    }
+    try out.append(allocator, '"');
+}
+
+fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator, relative_path: []const u8) !void {
+    const dirname = std.fs.path.dirname(relative_path) orelse ".";
+    try out.appendSlice(allocator, "var __filename = ");
+    try appendJsStringLiteral(out, allocator, relative_path);
+    try out.appendSlice(allocator, ";\nvar __dirname = ");
+    try appendJsStringLiteral(out, allocator, dirname);
+    try out.appendSlice(allocator, ";\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\n");
+}
+
+fn replaceAll(allocator: std.mem.Allocator, source: []const u8, needle: []const u8, replacement: []const u8) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
+
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, source, cursor, needle)) |idx| {
+        try out.appendSlice(allocator, source[cursor..idx]);
+        try out.appendSlice(allocator, replacement);
+        cursor = idx + needle.len;
+    }
+    try out.appendSlice(allocator, source[cursor..]);
+    return out.toOwnedSlice(allocator);
+}
+
+fn rewriteImportMeta(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const with_dir = try replaceAll(allocator, source, "import.meta.dir", "__home_import_meta_dir");
+    defer allocator.free(with_dir);
+    return replaceAll(allocator, with_dir, "import.meta.path", "__home_import_meta_path");
+}
+
+pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) ![]u8 {
     const imports = [_][]const u8{
         "import { expect, it, describe } from \"bun:test\";",
         "import { describe, expect, it } from \"bun:test\";",
@@ -356,18 +400,24 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8) ![
             var out = std.ArrayList(u8).empty;
             defer out.deinit(allocator);
 
+            try appendFileMetadataPrelude(&out, allocator, relative_path);
             try out.appendSlice(allocator, source[0..idx]);
             try out.appendSlice(allocator, prelude);
             try out.appendSlice(allocator, source[idx + import_line.len ..]);
-            return out.toOwnedSlice(allocator);
+            const with_prelude = try out.toOwnedSlice(allocator);
+            defer allocator.free(with_prelude);
+            return rewriteImportMeta(allocator, with_prelude);
         }
     }
 
     var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
+    try appendFileMetadataPrelude(&out, allocator, relative_path);
     try out.appendSlice(allocator, prelude);
     try out.appendSlice(allocator, source);
-    return out.toOwnedSlice(allocator);
+    const with_prelude = try out.toOwnedSlice(allocator);
+    defer allocator.free(with_prelude);
+    return rewriteImportMeta(allocator, with_prelude);
 }
 
 pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, subset: Subset) !Summary {
@@ -390,7 +440,7 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
         const source = try Io.Dir.cwd().readFileAlloc(io, file_path, allocator, std.Io.Limit.limited(1024 * 1024));
         defer allocator.free(source);
 
-        const rewritten = try rewriteBunTestImport(allocator, source);
+        const rewritten = try rewriteBunTestImport(allocator, source, relative);
         defer allocator.free(rewritten);
 
         summary.files += 1;
@@ -461,6 +511,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/12650.test.js", filesForSubset(.minimal_js)[3]);
     try std.testing.expectEqualStrings("js/node/domexception-node.test.js", filesForSubset(.minimal_js)[4]);
     try std.testing.expectEqualStrings("js/bun/jsc/shadow.test.js", filesForSubset(.minimal_js)[5]);
+    try std.testing.expectEqualStrings("js/node/dirname.test.js", filesForSubset(.minimal_js)[6]);
 }
 
 test "Bun test import rewrite installs the bootstrap prelude" {
@@ -468,14 +519,31 @@ test "Bun test import rewrite installs the bootstrap prelude" {
         \\import { expect, it, describe } from "bun:test";
         \\it("works", () => {});
     ;
-    const rewritten = try rewriteBunTestImport(std.testing.allocator, source);
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/node/example.test.js");
     defer std.testing.allocator.free(rewritten);
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "function it(name, fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "function __home_is_thenable(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeInstanceOf(ctor)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "var __dirname = \"js/node\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "it(\"works\"") != null);
+}
+
+test "Bun test import rewrite lowers import.meta metadata" {
+    const source =
+        \\import { expect, it } from "bun:test";
+        \\it("metadata", () => {
+        \\  expect(import.meta.dir).toBe(__dirname);
+        \\  expect(import.meta.path).toBe(__filename);
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/node/dirname.test.js");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "import.meta") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "__home_import_meta_dir").? < std.mem.indexOf(u8, rewritten, "it(\"metadata\"").?);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "__home_import_meta_path").? < std.mem.indexOf(u8, rewritten, "it(\"metadata\"").?);
 }
 
 test "failure recorder keeps the first failing file" {
