@@ -591,6 +591,12 @@ pub const TsCodes = struct {
     /// fails to implement one or more inherited abstract members.
     /// Emitted once per missing member at the child class declaration.
     pub const abstract_member_not_implemented: u32 = 2515;
+    /// TS2654 — a non-abstract class extends an abstract class but
+    /// is missing implementations for *multiple* inherited abstract
+    /// members. tsc collapses N>1 missing-member diagnostics into a
+    /// single TS2654 listing the names; a single missing member
+    /// stays as TS2515.
+    pub const abstract_members_missing_aggregate: u32 = 2654;
     /// TS2553 — `enum E { A = "x", B }`. Once an enum member has a
     /// string initializer, every subsequent member must have an
     /// explicit initializer (or be string-valued); plain
@@ -1004,6 +1010,14 @@ pub const Checker = struct {
         hir_mod.StringId,
         std.AutoHashMapUnmanaged(hir_mod.StringId, void),
     ),
+    /// Parallel to `class_abstract_members` — preserves declaration
+    /// order of abstract member names so TS2654's "missing
+    /// implementations: 'foo', 'bar'" prose lists names in the order
+    /// they were declared in the parent class (matching tsc).
+    class_abstract_members_order: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.ArrayListUnmanaged(hir_mod.StringId),
+    ),
     /// Class-name → names declared as instance data properties.
     /// Used for TS2611 when a subclass replaces a property with an
     /// accessor.
@@ -1336,6 +1350,7 @@ pub const Checker = struct {
             .class_parent = .empty,
             .abstract_classes = .empty,
             .class_abstract_members = .empty,
+            .class_abstract_members_order = .empty,
             .class_property_members = .empty,
             .class_accessor_members = .empty,
             .class_method_members = .empty,
@@ -1498,6 +1513,9 @@ pub const Checker = struct {
         var am_it = self.class_abstract_members.valueIterator();
         while (am_it.next()) |set| set.deinit(self.gpa);
         self.class_abstract_members.deinit(self.gpa);
+        var amo_it = self.class_abstract_members_order.valueIterator();
+        while (amo_it.next()) |lst| lst.deinit(self.gpa);
+        self.class_abstract_members_order.deinit(self.gpa);
         var cpm_it = self.class_property_members.valueIterator();
         while (cpm_it.next()) |set| set.deinit(self.gpa);
         self.class_property_members.deinit(self.gpa);
@@ -12034,6 +12052,11 @@ pub const Checker = struct {
         // `class_abstract_members` once the class name is known.
         var abstract_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
         defer abstract_names.deinit(self.gpa);
+        // Parallel ordered list of abstract member names — preserves
+        // declaration order for TS2654 prose, while `abstract_names`
+        // continues to serve as the fast lookup set.
+        var abstract_names_order: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer abstract_names_order.deinit(self.gpa);
         var property_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
         defer property_names.deinit(self.gpa);
         var parameter_property_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
@@ -12356,6 +12379,9 @@ pub const Checker = struct {
                         }
                         if (!fn_p.flags.is_static) {
                             if (fn_p.flags.is_abstract and fn_p.body == hir_mod.none_node_id) {
+                                if (!abstract_names.contains(member_name)) {
+                                    try abstract_names_order.append(self.gpa, member_name);
+                                }
                                 try abstract_names.put(self.gpa, member_name, {});
                             } else {
                                 try concrete_names.put(self.gpa, member_name, {});
@@ -12474,6 +12500,9 @@ pub const Checker = struct {
                     }
                     if (!fn_p.flags.is_static) {
                         if ((c.is_abstract or fn_p.flags.is_abstract) and fn_p.body == hir_mod.none_node_id) {
+                            if (!abstract_names.contains(member_name)) {
+                                try abstract_names_order.append(self.gpa, member_name);
+                            }
                             try abstract_names.put(self.gpa, member_name, {});
                         } else {
                             try concrete_names.put(self.gpa, member_name, {});
@@ -12826,6 +12855,9 @@ pub const Checker = struct {
                             });
                         }
                         if (is_abstract_property and op.value == hir_mod.none_node_id) {
+                            if (!abstract_names.contains(member_name)) {
+                                try abstract_names_order.append(self.gpa, member_name);
+                            }
                             try abstract_names.put(self.gpa, member_name, {});
                         } else {
                             try concrete_names.put(self.gpa, member_name, {});
@@ -13280,12 +13312,25 @@ pub const Checker = struct {
             if (c.extends != hir_mod.none_node_id) {
                 if (self.classExtendsName(c.extends)) |parent_name| {
                     if (self.class_abstract_members.getPtr(parent_name)) |parent_abs| {
-                        var it = parent_abs.keyIterator();
-                        while (it.next()) |name_ptr| {
-                            const member_name = name_ptr.*;
-                            if (concrete_names.contains(member_name)) continue;
-                            if (abstract_names.contains(member_name)) continue;
-                            try abstract_names.put(self.gpa, member_name, {});
+                        // Walk parent's *ordered* list (preserving
+                        // declaration order) when present; otherwise
+                        // fall back to the hashmap iterator.
+                        if (self.class_abstract_members_order.getPtr(parent_name)) |parent_order| {
+                            for (parent_order.items) |member_name| {
+                                if (concrete_names.contains(member_name)) continue;
+                                if (abstract_names.contains(member_name)) continue;
+                                try abstract_names_order.append(self.gpa, member_name);
+                                try abstract_names.put(self.gpa, member_name, {});
+                            }
+                        } else {
+                            var it = parent_abs.keyIterator();
+                            while (it.next()) |name_ptr| {
+                                const member_name = name_ptr.*;
+                                if (concrete_names.contains(member_name)) continue;
+                                if (abstract_names.contains(member_name)) continue;
+                                try abstract_names_order.append(self.gpa, member_name);
+                                try abstract_names.put(self.gpa, member_name, {});
+                            }
                         }
                     }
                 }
@@ -13296,6 +13341,12 @@ pub const Checker = struct {
             }
             try self.class_abstract_members.put(self.gpa, cid.name, abstract_names);
             abstract_names = .empty;
+            if (self.class_abstract_members_order.fetchRemove(cid.name)) |old| {
+                var owned = old.value;
+                owned.deinit(self.gpa);
+            }
+            try self.class_abstract_members_order.put(self.gpa, cid.name, abstract_names_order);
+            abstract_names_order = .empty;
             if (self.class_property_members.fetchRemove(cid.name)) |old| {
                 var owned = old.value;
                 owned.deinit(self.gpa);
@@ -13319,36 +13370,80 @@ pub const Checker = struct {
                     if (self.class_instance_types.contains(ext_name)) {
                         try self.class_parent.put(self.gpa, cid.name, ext_name);
                     }
-                    // TS2515: a non-abstract class extending an abstract
-                    // parent must implement each inherited abstract
-                    // member. v0 walks one level only and emits one
-                    // diagnostic per missing member.
+                    // TS2515 / TS2654: a non-abstract class extending
+                    // an abstract parent must implement each inherited
+                    // abstract member. tsc collapses N>1 missing
+                    // members into a single TS2654 diagnostic listing
+                    // each name; a single missing member stays as
+                    // TS2515. The class-name displays its own type
+                    // parameters (e.g. `E<T>`) and the parent is
+                    // rendered from its source-text span so
+                    // `extends A<number>` reads as `A<number>`.
                     if (!c.is_abstract) {
                         if (self.class_abstract_members.getPtr(ext_name)) |parent_abs| {
-                            var it = parent_abs.keyIterator();
-                            while (it.next()) |name_ptr| {
-                                const member_name = name_ptr.*;
-                                if (concrete_names.contains(member_name)) continue;
-                                const member_str = self.string_interner.get(member_name);
-                                const child_str = self.string_interner.get(cid.name);
-                                const parent_str = self.string_interner.get(ext_name);
-                                // tsc anchors TS2515 at the class name
-                                // identifier (column 7 for `class CC ...`)
-                                // and quotes only the class names, NOT
-                                // the abstract member name. Match that
-                                // formatting exactly so fixtures like
-                                // `classAbstractExtends` and
-                                // `classAbstractOverrideWithAbstract` pass.
-                                const msg = try std.fmt.allocPrint(
-                                    self.diag_arena.allocator(),
-                                    "Non-abstract class '{s}' does not implement inherited abstract member {s} from class '{s}'.",
-                                    .{ child_str, member_str, parent_str },
-                                );
-                                try self.diagnostics.append(self.gpa, .{
-                                    .node = c.name,
-                                    .code = TsCodes.abstract_member_not_implemented,
-                                    .message = msg,
-                                });
+                            var missing: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+                            defer missing.deinit(self.gpa);
+                            // Prefer the ordered parallel list so the
+                            // emitted prose lists names in declaration
+                            // order (matches tsc baselines like
+                            // `classAbstractGeneric` which expects
+                            // `'foo', 'bar'`, not alphabetic).
+                            if (self.class_abstract_members_order.getPtr(ext_name)) |parent_order| {
+                                for (parent_order.items) |member_name| {
+                                    if (concrete_names.contains(member_name)) continue;
+                                    try missing.append(self.gpa, member_name);
+                                }
+                            } else {
+                                var it = parent_abs.keyIterator();
+                                while (it.next()) |name_ptr| {
+                                    const member_name = name_ptr.*;
+                                    if (concrete_names.contains(member_name)) continue;
+                                    try missing.append(self.gpa, member_name);
+                                }
+                            }
+                            if (missing.items.len > 0) {
+                                const child_str = try self.renderClassNameWithTypeParams(cid.name, c.type_params_start, c.type_params_len);
+                                const parent_str = try self.renderExtendsExpression(c.extends, ext_name);
+                                if (missing.items.len == 1) {
+                                    const member_str = self.string_interner.get(missing.items[0]);
+                                    const msg = try std.fmt.allocPrint(
+                                        self.diag_arena.allocator(),
+                                        "Non-abstract class '{s}' does not implement inherited abstract member {s} from class '{s}'.",
+                                        .{ child_str, member_str, parent_str },
+                                    );
+                                    try self.diagnostics.append(self.gpa, .{
+                                        .node = c.name,
+                                        .code = TsCodes.abstract_member_not_implemented,
+                                        .message = msg,
+                                    });
+                                } else {
+                                    // Aggregate: render as
+                                    // `'foo', 'bar'`. tsc emits the
+                                    // names in declaration order; we
+                                    // mirror that by sorting against
+                                    // the abstract-name pool's
+                                    // insertion order (the StringMap
+                                    // iterator preserves insertion).
+                                    var names_buf: std.ArrayListUnmanaged(u8) = .empty;
+                                    defer names_buf.deinit(self.diag_arena.allocator());
+                                    for (missing.items, 0..) |mn, i| {
+                                        if (i != 0) try names_buf.appendSlice(self.diag_arena.allocator(), ", ");
+                                        try names_buf.append(self.diag_arena.allocator(), '\'');
+                                        try names_buf.appendSlice(self.diag_arena.allocator(), self.string_interner.get(mn));
+                                        try names_buf.append(self.diag_arena.allocator(), '\'');
+                                    }
+                                    const names_str = try names_buf.toOwnedSlice(self.diag_arena.allocator());
+                                    const msg = try std.fmt.allocPrint(
+                                        self.diag_arena.allocator(),
+                                        "Non-abstract class '{s}' is missing implementations for the following members of '{s}': {s}.",
+                                        .{ child_str, parent_str, names_str },
+                                    );
+                                    try self.diagnostics.append(self.gpa, .{
+                                        .node = c.name,
+                                        .code = TsCodes.abstract_members_missing_aggregate,
+                                        .message = msg,
+                                    });
+                                }
                             }
                         }
                     }
@@ -16544,6 +16639,58 @@ pub const Checker = struct {
             },
             else => null,
         };
+    }
+
+    /// Renders a class name with its type-parameter list, e.g.
+    /// `C` (no params), `C<T>`, or `C<T, U>`. Used for TS2515 /
+    /// TS2654 diagnostics so generic-class self-references match
+    /// tsc's prose format (`Non-abstract class 'E<T>' …`).
+    fn renderClassNameWithTypeParams(
+        self: *Checker,
+        class_name: hir_mod.StringId,
+        type_params_start: u32,
+        type_params_len: u32,
+    ) CheckError![]const u8 {
+        const name_str = self.string_interner.get(class_name);
+        if (type_params_len == 0) return name_str;
+        const type_params = self.hir.childSlice(type_params_start, type_params_len);
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(self.diag_arena.allocator());
+        try buf.appendSlice(self.diag_arena.allocator(), name_str);
+        try buf.append(self.diag_arena.allocator(), '<');
+        var emitted: usize = 0;
+        for (type_params) |tp| {
+            if (self.hir.kindOf(tp) != .type_parameter) continue;
+            const tpp = hir_mod.typeParameterOf(self.hir, tp);
+            if (emitted != 0) try buf.appendSlice(self.diag_arena.allocator(), ", ");
+            try buf.appendSlice(self.diag_arena.allocator(), self.string_interner.get(tpp.name));
+            emitted += 1;
+        }
+        try buf.append(self.diag_arena.allocator(), '>');
+        return try buf.toOwnedSlice(self.diag_arena.allocator());
+    }
+
+    /// Renders the parent class reference from an `extends` clause for
+    /// diagnostic prose. Prefers the source-text span when available
+    /// (so `extends A<number>` reads literally as `A<number>` and
+    /// `extends A<T>` as `A<T>`), falling back to the bare class
+    /// name. Used by TS2515 / TS2654.
+    fn renderExtendsExpression(
+        self: *Checker,
+        extends_expr: NodeId,
+        fallback_name: hir_mod.StringId,
+    ) CheckError![]const u8 {
+        if (self.source) |src| {
+            const span = self.hir.spanOf(extends_expr);
+            if (span.end > span.start and span.end <= src.len) {
+                const raw = src[span.start..span.end];
+                // Span text is verbatim from source so we duplicate
+                // into the diag arena to keep ownership safe across
+                // arena resets and to allow safe slicing later.
+                return try self.diag_arena.allocator().dupe(u8, raw);
+            }
+        }
+        return self.string_interner.get(fallback_name);
     }
 
     /// Walk a `Qualifier.Path.Name` member-access chain and return the
