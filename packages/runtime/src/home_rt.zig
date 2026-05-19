@@ -644,6 +644,10 @@ pub const node = struct {
     // Preserves incomplete UTF-8 / UTF-16LE / base64 groups across writes
     // with the same public shape the JS shim will expose as StringDecoder.
     pub const string_decoder = @import("node/string_decoder.zig");
+    // Phase 12.7 round-15 — `node:tty` native terminal facts. Provides
+    // isatty/window-size/raw-mode/color-depth substrate for future
+    // ReadStream/WriteStream JS wrappers.
+    pub const tty = @import("node/tty.zig");
 };
 
 // ---- src/core/ + src/alloc/ + src/safety/ ----------------------
@@ -1614,6 +1618,7 @@ test {
     _ = @import("node/crypto.zig");
     _ = @import("node/process.zig");
     _ = @import("node/string_decoder.zig");
+    _ = @import("node/tty.zig");
     _ = @import("jsc/generated_classes_list.zig");
     _ = @import("runtime/api/bun/Terminal.zig");
     _ = @import("runtime/api/bun/spawn.zig");
