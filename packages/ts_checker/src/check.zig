@@ -2942,13 +2942,20 @@ pub const Checker = struct {
                         "Individual declarations in merged declaration '{s}' must be all exported or all local.",
                         .{self.string_interner.get(name)},
                     );
-                    try self.report(
+                    // Anchor TS2395 at the alias-name identifier so
+                    // `export type A = {}; type A = {};` reports at
+                    // each `A` (the offending name), not at the
+                    // leading `export` / `type` keyword. Matches
+                    // typeAliasesDoNotMerge.ts(1,13) and (2,6).
+                    try self.reportAt(
                         gop.value_ptr.node,
+                        self.declarationNameSpanStart(gop.value_ptr.node),
                         TsCodes.declarations_must_all_be_exported_or_local,
                         msg,
                     );
-                    try self.report(
+                    try self.reportAt(
                         node,
+                        self.declarationNameSpanStart(node),
                         TsCodes.declarations_must_all_be_exported_or_local,
                         msg,
                     );
@@ -2959,7 +2966,13 @@ pub const Checker = struct {
                 // the alias name). Mirrors fixture
                 // `typeAliasesForObjectTypes` which expects
                 // duplicate-identifier diagnostics on lines 10 and 11.
-                if (gop.value_ptr.is_type_alias and is_type_alias) {
+                //
+                // Suppress TS2300 when the two declarations differ in
+                // export status — tsc uses TS2395 alone in that case
+                // (mirrors `typeAliasesDoNotMerge.ts`).
+                if (gop.value_ptr.is_type_alias and is_type_alias and
+                    gop.value_ptr.is_exported == exported)
+                {
                     try self.reportDuplicateIdentifier(gop.value_ptr.node, name);
                     try self.reportDuplicateIdentifier(node, name);
                 }
