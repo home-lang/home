@@ -40446,7 +40446,10 @@ pub const Checker = struct {
             std.mem.eql(u8, name_str, "symbol") or
             std.mem.eql(u8, name_str, "bigint") or
             std.mem.eql(u8, name_str, "object");
-        if (is_primitive_type_name and self.hir.kindOf(node) != .type_ref) {
+        if (is_primitive_type_name and
+            self.hir.kindOf(node) != .type_ref and
+            !self.identifierLooksLikeMalformedComputedIndexerTypeSlot(node))
+        {
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "'{s}' only refers to a type, but is being used as a value here.",
@@ -40699,6 +40702,35 @@ pub const Checker = struct {
         // governs how many spelling-suggestion *attempts* the
         // checker is willing to make per file.
         self.suggestion_count +|= 1;
+    }
+
+    fn identifierLooksLikeMalformedComputedIndexerTypeSlot(self: *const Checker, node: NodeId) bool {
+        const src = self.source orelse return false;
+        const sp = self.hir.spanOf(node);
+        if (sp.start == 0 or sp.end > src.len) return false;
+
+        var before: usize = sp.start;
+        while (before > 0 and isAsciiWhitespace(src[before - 1])) : (before -= 1) {}
+        if (before == 0 or src[before - 1] != ':') return false;
+
+        var after: usize = sp.end;
+        while (after < src.len and isAsciiWhitespace(src[after])) : (after += 1) {}
+        if (after >= src.len or src[after] != ']') return false;
+
+        var scan: usize = before - 1;
+        while (scan > 0) {
+            scan -= 1;
+            switch (src[scan]) {
+                '[' => return true,
+                '\n', '\r', '{', '}', ';' => return false,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn isAsciiWhitespace(c: u8) bool {
+        return c == ' ' or c == '\t' or c == '\n' or c == '\r';
     }
 
     fn lowerAsciiIdentifierEndsWith(value: []const u8, suffix: []const u8) bool {
@@ -75296,6 +75328,24 @@ test "checker: TS2552 case-insensitive suggestion for $ERROR -> Error" {
         saw = true;
     }
     try T.expect(saw);
+}
+
+test "checker: malformed computed object indexer suggests Symbol" {
+    const s = try newSetup(
+        \\var x = {
+        \\  [s: symbol]: ""
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_symbol = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.cannot_find_name_did_you_mean) continue;
+        if (std.mem.indexOf(u8, d.message, "'symbol'") == null) continue;
+        if (std.mem.indexOf(u8, d.message, "'Symbol'") == null) continue;
+        saw_symbol = true;
+    }
+    try T.expect(saw_symbol);
 }
 
 test "checker: TS2552 spelling-suggestion budget caps at 10 occurrences" {
