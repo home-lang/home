@@ -7,6 +7,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const home_rt = @import("home_rt");
+const runner = @import("runner.zig");
 const test_result = @import("result.zig");
 
 const Io = std.Io;
@@ -112,6 +113,38 @@ const CorpusRuntime = struct {
             .passed = try readCounter(allocator, &self.engine, "__home_bun_tests.passed"),
             .failed = try readCounter(allocator, &self.engine, "__home_bun_tests.failed"),
             .todo = try readCounter(allocator, &self.engine, "__home_bun_tests.todo"),
+        };
+    }
+
+    fn runFile(self: *CorpusRuntime, allocator: std.mem.Allocator, spec: runner.FileSpec) !runner.FileRun {
+        self.resetFileState(allocator) catch |err| {
+            return runner.FileRun.failBorrowed(spec.path, @errorName(err));
+        };
+
+        const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(
+            allocator,
+            self.engine.currentContext(),
+            spec.source,
+            spec.path,
+            1,
+        );
+        defer evaluation.deinit(allocator);
+
+        if (evaluation.exception != null or evaluation.value == null) {
+            return runner.FileRun.failOwned(allocator, spec.path, evaluation.exception_message);
+        }
+
+        const counters = self.readCounters(allocator) catch |err| {
+            return runner.FileRun.failBorrowed(spec.path, @errorName(err));
+        };
+
+        return .{
+            .result = .{
+                .path = spec.path,
+                .passed = counters.passed,
+                .failed = counters.failed,
+                .todo = counters.todo,
+            },
         };
     }
 };
@@ -935,39 +968,16 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
             continue;
         }
 
-        runtime.resetFileState(allocator) catch |err| {
-            file_result.failed += 1;
-            summary.addFileResult(file_result);
-            try recordFailure(allocator, &summary, relative, @errorName(err));
-            continue;
-        };
+        var file_run = try runtime.runFile(allocator, .{
+            .path = relative,
+            .source = prepared.source,
+        });
+        defer file_run.deinit(allocator);
 
-        const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(
-            allocator,
-            runtime.engine.currentContext(),
-            prepared.source,
-            relative,
-            1,
-        );
-        defer evaluation.deinit(allocator);
-
-        if (evaluation.exception != null or evaluation.value == null) {
-            file_result.failed += 1;
-            summary.addFileResult(file_result);
-            try recordFailure(allocator, &summary, relative, evaluation.exception_message);
-            continue;
+        summary.addFileResult(file_run.result);
+        if (file_run.result.status() == .failed) {
+            try recordFailure(allocator, &summary, relative, file_run.result.first_failure_message);
         }
-
-        const counters = runtime.readCounters(allocator) catch |err| {
-            file_result.failed += 1;
-            summary.addFileResult(file_result);
-            try recordFailure(allocator, &summary, relative, @errorName(err));
-            continue;
-        };
-        file_result.passed = counters.passed;
-        file_result.failed = counters.failed;
-        file_result.todo = counters.todo;
-        summary.addFileResult(file_result);
     }
 
     return summary;

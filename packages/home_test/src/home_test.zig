@@ -129,6 +129,7 @@ const std = @import("std");
 pub const corpus = @import("corpus.zig");
 pub const corpus_runner = @import("corpus_runner.zig");
 pub const result = @import("result.zig");
+pub const runner = @import("runner.zig");
 
 /// Stub. Once the `compat` shim is in place, this module will
 /// re-export `bun_test`, `jest`, `expect`, and the rest of the surface
@@ -153,4 +154,8 @@ test "home_test result model is linked" {
     var summary = result.RunSummary{};
     summary.addFile(.{ .path = "sample.test.ts", .passed = 1 });
     try std.testing.expectEqual(@as(usize, 1), summary.passed);
+}
+
+test "home_test runner contract is linked" {
+    try std.testing.expectEqualStrings("jsc-bootstrap", runner.Adapter.jsc_bootstrap.label());
 }
