@@ -132,6 +132,8 @@ pub const TsCodes = struct {
     /// of TS2307 when `--moduleResolution classic` is selected and a
     /// bare module specifier fails to resolve.
     pub const cannot_find_module_did_you_mean_nodenext: u32 = 2792;
+    pub const relative_import_needs_extension: u32 = 2834;
+    pub const relative_import_needs_extension_suggestion: u32 = 2835;
     pub const arbitrary_extension_requires_option: u32 = 6263;
     pub const invalid_module_name_augmentation: u32 = 2665;
     pub const untyped_module: u32 = 7016;
@@ -17319,6 +17321,7 @@ pub const Checker = struct {
         }
         if (std.mem.startsWith(u8, spec, ".")) {
             try self.checkNamedImportSpecifiers(node, imp, spec);
+            if (try self.checkNodeEsmRelativeImportExtensionDiagnostic(node, spec)) return;
             if (!imp.is_type_only and self.sourceHasVirtualFilenameSections() and isDeclarationFileSpecifier(spec)) {
                 try self.reportVirtualCannotFindRelativeModule(node, spec);
                 return;
@@ -17458,6 +17461,17 @@ pub const Checker = struct {
             self.sourceDirectiveValueMentions("ModuleResolution", "classic");
     }
 
+    fn moduleResolutionNeedsEsmRelativeExtensions(self: *Checker) bool {
+        if (self.module_resolution.len > 0) {
+            return std.ascii.eqlIgnoreCase(self.module_resolution, "node16") or
+                std.ascii.eqlIgnoreCase(self.module_resolution, "nodenext");
+        }
+        return self.sourceDirectiveValueMentions("moduleResolution", "node16") or
+            self.sourceDirectiveValueMentions("moduleResolution", "nodenext") or
+            self.sourceDirectiveValueMentions("ModuleResolution", "node16") or
+            self.sourceDirectiveValueMentions("ModuleResolution", "nodenext");
+    }
+
     fn sourceContainsImportAttributesForSpecifier(self: *Checker, spec: []const u8) bool {
         const src = self.source orelse return false;
         var search_start: usize = 0;
@@ -17549,6 +17563,91 @@ pub const Checker = struct {
                 return true;
             },
         }
+    }
+
+    fn checkNodeEsmRelativeImportExtensionDiagnostic(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
+        if (!self.moduleResolutionNeedsEsmRelativeExtensions()) return false;
+        if (self.importDeclIsRequireAssignment(node)) return false;
+        if (relativeSpecifierHasExplicitExtension(spec)) return false;
+        if (!self.importerIsEsmForRelativeExtensionDiagnostic(node)) return false;
+
+        const suggestion = try self.nodeEsmRelativeImportSuggestedSpecifier(node, spec);
+        defer if (suggestion) |s| self.gpa.free(s);
+        const msg = if (suggestion) |s|
+            try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Relative import paths need explicit file extensions in ECMAScript imports when '--moduleResolution' is 'node16' or 'nodenext'. Did you mean '{s}'?",
+                .{s},
+            )
+        else
+            try self.diag_arena.allocator().dupe(u8, "Relative import paths need explicit file extensions in ECMAScript imports when '--moduleResolution' is 'node16' or 'nodenext'. Consider adding an extension to the import path.");
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = self.moduleSpecifierQuotePos(node, spec),
+            .code = if (suggestion != null) TsCodes.relative_import_needs_extension_suggestion else TsCodes.relative_import_needs_extension,
+            .message = msg,
+        });
+        return true;
+    }
+
+    fn relativeSpecifierHasExplicitExtension(spec: []const u8) bool {
+        const slash = std.mem.lastIndexOfScalar(u8, spec, '/');
+        const segment = if (slash) |i| spec[i + 1 ..] else spec;
+        return std.mem.indexOfScalar(u8, segment, '.') != null;
+    }
+
+    fn importerIsEsmForRelativeExtensionDiagnostic(self: *Checker, node: NodeId) bool {
+        const importer = if (self.importer_path.len > 0)
+            self.importer_path
+        else
+            self.virtualSectionFilenameForNode(node) orelse return false;
+        return std.mem.endsWith(u8, importer, ".mts") or
+            std.mem.endsWith(u8, importer, ".mjs") or
+            std.mem.endsWith(u8, importer, ".d.mts");
+    }
+
+    fn nodeEsmRelativeImportSuggestedSpecifier(self: *Checker, node: NodeId, spec: []const u8) CheckError!?[]u8 {
+        if (self.external_resolver != null) {
+            if (try self.resolveBareModuleViaExternal(node, spec)) |external| {
+                if (emittedExtensionForResolvedModulePath(self, external.resolved_path)) |ext| {
+                    return try std.fmt.allocPrint(self.gpa, "{s}{s}", .{ spec, ext });
+                }
+            }
+        }
+
+        if (self.sourceHasVirtualFilenameSections()) {
+            const from = self.virtualSectionFilenameForNode(node) orelse return null;
+            const resolved = try self.resolveVirtualRelativePath(from, spec);
+            defer self.gpa.free(resolved);
+            if (try self.virtualRelativeResolvedFileEmittedExtension(resolved)) |ext| {
+                return try std.fmt.allocPrint(self.gpa, "{s}{s}", .{ spec, ext });
+            }
+        }
+        return null;
+    }
+
+    fn virtualRelativeResolvedFileEmittedExtension(self: *Checker, resolved: []const u8) CheckError!?[]const u8 {
+        const candidates = [_][]const u8{ ".d.mts", ".d.cts", ".d.ts", ".mts", ".cts", ".tsx", ".ts", ".mjs", ".cjs", ".jsx", ".js" };
+        for (candidates) |ext| {
+            const path = try std.fmt.allocPrint(self.gpa, "{s}{s}", .{ resolved, ext });
+            defer self.gpa.free(path);
+            if (self.virtualSourceHasFilename(path)) return emittedExtensionForResolvedModulePath(self, path);
+        }
+        return null;
+    }
+
+    fn emittedExtensionForResolvedModulePath(self: *Checker, path: []const u8) ?[]const u8 {
+        if (std.mem.endsWith(u8, path, ".d.mts") or std.mem.endsWith(u8, path, ".mts")) return ".mjs";
+        if (std.mem.endsWith(u8, path, ".d.cts") or std.mem.endsWith(u8, path, ".cts")) return ".cjs";
+        if (std.mem.endsWith(u8, path, ".tsx")) {
+            return if (self.sourceDirectiveValueMentions("jsx", "preserve")) ".jsx" else ".js";
+        }
+        if (std.mem.endsWith(u8, path, ".d.ts") or std.mem.endsWith(u8, path, ".ts")) return ".js";
+        if (std.mem.endsWith(u8, path, ".mjs")) return ".mjs";
+        if (std.mem.endsWith(u8, path, ".cjs")) return ".cjs";
+        if (std.mem.endsWith(u8, path, ".jsx")) return ".jsx";
+        if (std.mem.endsWith(u8, path, ".js")) return ".js";
+        return null;
     }
 
     fn reportArbitraryExtensionDeclarationImport(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
@@ -72327,6 +72426,35 @@ test "checker: external resolver promotes legacy-unresolved to TS7016 implementa
         if (d.code == TsCodes.cannot_find_module) ts2307 = true;
     }
     try T.expect(ts7016);
+    try T.expect(!ts2307);
+}
+
+test "checker: NodeNext ESM relative import requires emitted extension suggestion" {
+    const s = try newSetup(
+        \\import { foo } from "./foo";
+        \\foo;
+    );
+    defer destroySetup(s);
+    var stub = StubExternalResolver{
+        .canned_path = "/src/foo.tsx",
+        .canned_is_declaration = true,
+    };
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+    s.checker.setImporterPath("/src/bar.mts");
+    s.checker.setModuleResolution("nodenext");
+    try s.checker.checkSourceFile(s.root);
+
+    var ts2835 = false;
+    var ts2307 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.relative_import_needs_extension_suggestion and
+            std.mem.indexOf(u8, d.message, "Did you mean './foo.js'?") != null)
+        {
+            ts2835 = true;
+        }
+        if (d.code == TsCodes.cannot_find_module) ts2307 = true;
+    }
+    try T.expect(ts2835);
     try T.expect(!ts2307);
 }
 
