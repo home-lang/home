@@ -26,8 +26,9 @@ real smoke slice: basic `describe` / `test` / `it`, `it.todo`,
 `it.failing`, returned-thenable rejection, `.not`, `toBe`,
 `toBeDefined`, `toBeInstanceOf`, small `toEqual` / `toStrictEqual`
 deep equality, `toThrow`, `expect.any`, `atob` / `btoa`, `Bun`
-branding, and a DOMException shim. It is a stepping stone for corpus
-bring-up, not a substitute for the vendored Zig runner below.
+branding, a DOMException shim, and a narrow `ShadowRealm.evaluate`
+shim. It is a stepping stone for corpus bring-up, not a substitute for
+the vendored Zig runner below.
 
 > **Why a verbatim copy?** Per direction 2026-05-14: Bun is shifting
 > its core to Rust; we want to continue maintaining the Zig portion

@@ -45,6 +45,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/23723.test.js",
     "regression/issue/12650.test.js",
     "js/node/domexception-node.test.js",
+    "js/bun/jsc/shadow.test.js",
 };
 
 const prelude =
@@ -244,6 +245,18 @@ const prelude =
     \\expect.any = function(ctor) {
     \\  return { __home_expect_any: true, ctor };
     \\};
+    \\var ShadowRealm = (function() {
+    \\  class HomeShadowRealm {
+    \\    constructor() {
+    \\      this.globalThis = {};
+    \\      this.globalThis.globalThis = this.globalThis;
+    \\    }
+    \\    evaluate(sourceText) {
+    \\      return Function("globalThis", "sourceText", "return eval(sourceText);")(this.globalThis, String(sourceText));
+    \\    }
+    \\  }
+    \\  return HomeShadowRealm;
+    \\})();
     \\var DOMException = (function() {
     \\  const codes = {
     \\    IndexSizeError: 1,
@@ -447,6 +460,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/23723.test.js", filesForSubset(.minimal_js)[2]);
     try std.testing.expectEqualStrings("regression/issue/12650.test.js", filesForSubset(.minimal_js)[3]);
     try std.testing.expectEqualStrings("js/node/domexception-node.test.js", filesForSubset(.minimal_js)[4]);
+    try std.testing.expectEqualStrings("js/bun/jsc/shadow.test.js", filesForSubset(.minimal_js)[5]);
 }
 
 test "Bun test import rewrite installs the bootstrap prelude" {
