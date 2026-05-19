@@ -187,6 +187,11 @@ pub const Parser = struct {
     /// before `,`/`]` is valid tuple optionality here, not JSDoc
     /// postfix nullable syntax.
     tuple_type_depth: u32,
+    /// Stack-style counter while parsing a binding pattern used as a
+    /// function-type parameter. Object renames in this position are
+    /// parsed as destructuring, but TypeScript reports likely-missing
+    /// type annotations as TS2842.
+    fn_type_binding_pattern_depth: u32,
     /// True for `.tsx` files. Enables JSX parsing in expression
     /// position; the parser disambiguates `<T>x` (generic type
     /// assertion) vs. `<T>x</T>` (JSX) via the `<T,>` and
@@ -257,6 +262,7 @@ pub const Parser = struct {
             .in_top_level_module_binding_decl = false,
             .in_export_declaration = false,
             .tuple_type_depth = 0,
+            .fn_type_binding_pattern_depth = 0,
             .is_tsx = false,
             .is_declaration_file = false,
         };
@@ -3664,6 +3670,7 @@ pub const Parser = struct {
                     if (self.match(.colon)) {
                         const target_tok = self.peek();
                         const target = try self.parseBindingTarget();
+                        try self.reportUnusedRenameInFnTypeBindingPattern(key_tok, target);
                         if (isReservedBindingNameToken(target_tok.kind)) {
                             try self.reportCodeAt(self.peek().span.start, self.peek().line, 1005, "':' expected.");
                         }
@@ -7537,6 +7544,8 @@ pub const Parser = struct {
                 var seen_name: ?hir_mod.StringId = null;
                 var type_ann: NodeId = hir_mod.none_node_id;
                 if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) {
+                    self.fn_type_binding_pattern_depth += 1;
+                    defer self.fn_type_binding_pattern_depth -= 1;
                     name_node = try self.parseBindingPattern();
                     name_span = self.hir.spanOf(name_node);
                     if (self.match(.question)) flags.is_optional = true;
@@ -7622,20 +7631,45 @@ pub const Parser = struct {
                 const from = self.interner.get(im.name);
                 const to = self.interner.get(tr.name);
                 if (to.len == 0 or !std.ascii.isLower(to[0])) continue;
-                const msg = try std.fmt.allocPrint(
-                    self.diag_arena.allocator(),
-                    "'{s}' is an unused renaming of '{s}'. Did you intend to use it as a type annotation?",
-                    .{ to, from },
-                );
-                try self.diagnostics.append(self.gpa, .{
-                    .pos = self.hir.spanOf(im.type_node).start,
-                    .line = self.lineAt(self.hir.spanOf(im.type_node).start),
-                    .code = 2842,
-                    .message = msg,
-                });
+                const type_span = self.hir.spanOf(im.type_node);
+                try self.reportUnusedRenameInFnTypeParamAt(type_span.start, self.lineAt(type_span.start), from, to);
             },
             else => {},
         }
+    }
+
+    fn reportUnusedRenameInFnTypeBindingPattern(self: *Parser, key_tok: Token, target: NodeId) ParseError!void {
+        if (self.fn_type_binding_pattern_depth == 0) return;
+        if (key_tok.kind != .identifier) return;
+        if (target == hir_mod.none_node_id or self.hir.kindOf(target) != .identifier) return;
+        const from_id = try self.internToken(key_tok);
+        const target_ident = hir_mod.identifierOf(self.hir, target);
+        if (from_id == target_ident.name) return;
+        const to = self.interner.get(target_ident.name);
+        if (to.len == 0 or !std.ascii.isLower(to[0])) return;
+        const from = self.interner.get(from_id);
+        const target_span = self.hir.spanOf(target);
+        try self.reportUnusedRenameInFnTypeParamAt(target_span.start, self.lineAt(target_span.start), from, to);
+    }
+
+    fn reportUnusedRenameInFnTypeParamAt(
+        self: *Parser,
+        pos: u32,
+        line: u32,
+        from: []const u8,
+        to: []const u8,
+    ) ParseError!void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}' is an unused renaming of '{s}'. Did you intend to use it as a type annotation?",
+            .{ to, from },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .pos = pos,
+            .line = line,
+            .code = 2842,
+            .message = msg,
+        });
     }
 
     /// Parse a template-literal type: `\`a${T}b${U}c\``. Cursor at
@@ -15313,6 +15347,31 @@ test "parser: type annotation — fn type accepts type-only and this parameters"
     const member = hir_mod.interfaceMemberOf(&s.hir, iface_members[0]);
     try T.expect(member.is_method);
     try T.expectEqual(hir_mod.NodeKind.fn_type, s.hir.kindOf(member.type_node));
+}
+
+test "parser: function type destructuring renames report TS2842" {
+    var s = try newTestSetup(
+        \\type T3 = ([{ a: b }, { b: a }]);
+        \\type F3 = ([{ a: b }, { b: a }]) => void;
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    var saw_b_from_a = false;
+    var saw_a_from_b = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code != 2842) continue;
+        count += 1;
+        if (std.mem.eql(u8, d.message, "'b' is an unused renaming of 'a'. Did you intend to use it as a type annotation?")) {
+            saw_b_from_a = true;
+        }
+        if (std.mem.eql(u8, d.message, "'a' is an unused renaming of 'b'. Did you intend to use it as a type annotation?")) {
+            saw_a_from_b = true;
+        }
+    }
+    try T.expectEqual(@as(usize, 2), count);
+    try T.expect(saw_b_from_a);
+    try T.expect(saw_a_from_b);
 }
 
 test "parser: type annotation — literal types" {
