@@ -601,6 +601,14 @@ pub const node = struct {
     // The async `promises` namespace stays parked behind
     // @panic("TODO(phase-12.2-M3)") until JSC + event-loop land.
     pub const fs = @import("node/fs.zig");
+    // Phase 12.7 port (2026-05-19) — `node:os` Zig substrate. System
+    // info helpers (hostname / platform / arch / release / type /
+    // endianness / cpus / freemem / totalmem / uptime / loadavg /
+    // tmpdir / homedir / userInfo / networkInterfaces / EOL) plus
+    // re-exports of `os_constants`. Used by node:fs + many node:*
+    // tests for cross-platform path handling. The JS shim re-attaches
+    // once the Phase 12.2 JSC bridge is live.
+    pub const os = @import("node/os.zig");
 };
 
 // ---- src/core/ + src/alloc/ + src/safety/ ----------------------
@@ -1436,6 +1444,7 @@ test {
     _ = @import("node/events.zig");
     _ = @import("node/buffer.zig");
     _ = @import("node/stream.zig");
+    _ = @import("node/os.zig");
     _ = @import("s3_signing/acl.zig");
     _ = @import("s3_signing/storage_class.zig");
     _ = @import("s3_signing/error.zig");
