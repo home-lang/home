@@ -592,7 +592,7 @@ pub fn extnameWindowsT(comptime T: type, path: []const T) []const T {
 /// into `buf` and returns the slice that's the formatted path. Exposed
 /// publicly so callers that already have a `PathParsed(T)` can format
 /// without going through JSC.
-pub fn _formatT(comptime T: type, pathObject: PathParsed(T), sep: T, buf: []T) []const T {
+pub fn _formatT(comptime T: type, pathObject: PathParsed(T), separator: T, buf: []T) []const T {
     comptime validatePathT(T, "_formatT");
 
     const root = pathObject.root;
@@ -641,7 +641,7 @@ pub fn _formatT(comptime T: type, pathObject: PathParsed(T), sep: T, buf: []T) [
     bufSize = dirLen + baseLen;
     if (!dirIsRoot) {
         bufSize += 1;
-        buf[dirLen] = sep;
+        buf[dirLen] = separator;
     }
     return buf[0..bufSize];
 }
@@ -1126,6 +1126,432 @@ pub fn parseWindowsT(comptime T: type, path: []const T) PathParsed(T) {
     return .{ .root = root, .dir = dir, .base = base, .ext = ext, .name = _name };
 }
 
+// ---- join ------------------------------------------------------------------
+
+/// Based on Node v21.6.1 path.posix.join. `buf2` holds the pre-normalize
+/// joined string; `buf` receives the normalize result. Both must be sized at
+/// least `PATH_SIZE(T)`.
+pub fn joinPosixT(comptime T: type, paths: []const []const T, buf: []T, buf2: []T) []const T {
+    comptime validatePathT(T, "joinPosixT");
+
+    if (paths.len == 0) return comptime L(T, CHAR_STR_DOT);
+
+    var bufSize: usize = 0;
+    var bufOffset: usize = 0;
+    var joined: []const T = &.{};
+
+    for (paths) |path| {
+        const len = path.len;
+        if (len > 0) {
+            if (bufSize != 0) {
+                bufOffset = bufSize;
+                bufSize += 1;
+                buf2[bufOffset] = CHAR_FORWARD_SLASH;
+            }
+            bufOffset = bufSize;
+            bufSize += len;
+            memmove(T, buf2[bufOffset..bufSize], path);
+            joined = buf2[0..bufSize];
+        }
+    }
+    if (bufSize == 0) return comptime L(T, CHAR_STR_DOT);
+    return normalizePosixT(T, joined, buf);
+}
+
+/// Based on Node v21.6.1 path.win32.join.
+pub fn joinWindowsT(comptime T: type, paths: []const []const T, buf: []T, buf2: []T) []const T {
+    comptime validatePathT(T, "joinWindowsT");
+
+    if (paths.len == 0) return comptime L(T, CHAR_STR_DOT);
+
+    const isSepT = isSepWindowsT;
+
+    var bufSize: usize = 0;
+    var bufOffset: usize = 0;
+    var joined: []const T = &.{};
+    var firstPart: []const T = &.{};
+
+    for (paths) |path| {
+        const len = path.len;
+        if (len > 0) {
+            bufOffset = bufSize;
+            if (bufSize == 0) {
+                bufSize = len;
+                memmove(T, buf2[0..bufSize], path);
+                joined = buf2[0..bufSize];
+                firstPart = joined;
+            } else {
+                bufOffset = bufSize;
+                bufSize += 1;
+                buf2[bufOffset] = CHAR_BACKWARD_SLASH;
+                bufOffset = bufSize;
+                bufSize += len;
+                memmove(T, buf2[bufOffset..bufSize], path);
+                joined = buf2[0..bufSize];
+            }
+        }
+    }
+    if (bufSize == 0) return comptime L(T, CHAR_STR_DOT);
+
+    // Collapse leading slashes — preserve UNC prefix when the first segment
+    // already encoded one. Mirrors Node's join() prefix handling.
+    var needsReplace: bool = true;
+    var slashCount: usize = 0;
+    if (firstPart.len > 0 and isSepT(T, firstPart[0])) {
+        slashCount += 1;
+        const firstLen = firstPart.len;
+        if (firstLen > 1 and isSepT(T, firstPart[1])) {
+            slashCount += 1;
+            if (firstLen > 2) {
+                if (isSepT(T, firstPart[2])) {
+                    slashCount += 1;
+                } else {
+                    needsReplace = false;
+                }
+            }
+        }
+    }
+    if (needsReplace) {
+        while (slashCount < bufSize and isSepT(T, joined[slashCount])) slashCount += 1;
+        if (slashCount >= 2) {
+            bufOffset = 1;
+            const newSize = bufOffset + (bufSize - slashCount);
+            // Overlapping copy — fall through memmove (handles backward).
+            memmove(T, buf2[bufOffset..newSize], joined[slashCount..bufSize]);
+            buf2[0] = CHAR_BACKWARD_SLASH;
+            bufSize = newSize;
+            joined = buf2[0..bufSize];
+        }
+    }
+    return normalizeWindowsT(T, joined, buf);
+}
+
+// ---- resolve / relative ----------------------------------------------------
+
+/// Based on Node v21.6.1 path.posix.resolve. Takes `cwd` explicitly rather
+/// than calling out to a global FileSystem instance, since the JSC-bound
+/// `bun.fs.FileSystem.instance.top_level_dir` is gated on Phase 12.2.
+/// `cwd` is consulted only if no absolute path is encountered.
+pub fn resolvePosixT(
+    comptime T: type,
+    paths: []const []const T,
+    cwd: []const T,
+    buf: []T,
+    buf2: []T,
+) []const T {
+    comptime validatePathT(T, "resolvePosixT");
+
+    var resolvedPath: []const T = &.{};
+    var resolvedPathLen: usize = 0;
+    var resolvedAbsolute: bool = false;
+
+    var bufOffset: usize = 0;
+    var bufSize: usize = 0;
+
+    var i_i64: i64 = if (paths.len == 0) -1 else @as(i64, @intCast(paths.len - 1));
+    while (i_i64 > -2 and !resolvedAbsolute) : (i_i64 -= 1) {
+        var path: []const T = &.{};
+        if (i_i64 >= 0) {
+            path = paths[@as(usize, @intCast(i_i64))];
+        } else {
+            path = cwd;
+        }
+        const len = path.len;
+        if (len == 0) continue;
+
+        if (resolvedPathLen > 0) {
+            bufOffset = len + 1;
+            bufSize = bufOffset + resolvedPathLen;
+            memmove(T, buf2[bufOffset..bufSize], resolvedPath);
+        }
+        bufSize = len;
+        memmove(T, buf2[0..bufSize], path);
+        bufSize += 1;
+        buf2[len] = CHAR_FORWARD_SLASH;
+        bufSize += resolvedPathLen;
+
+        resolvedPath = buf2[0..bufSize];
+        resolvedPathLen = bufSize;
+        resolvedAbsolute = path[0] == CHAR_FORWARD_SLASH;
+    }
+
+    if (resolvedPathLen == 0) {
+        return comptime L(T, CHAR_STR_DOT);
+    }
+
+    const normalized = normalizeStringT(T, resolvedPath, !resolvedAbsolute, CHAR_FORWARD_SLASH, .posix, buf);
+    resolvedPathLen = normalized.len;
+
+    if (resolvedAbsolute) {
+        bufSize = resolvedPathLen + 1;
+        // overlap-safe: dest is shifted forward by 1 inside `buf`.
+        memmove(T, buf[1..bufSize], normalized);
+        buf[0] = CHAR_FORWARD_SLASH;
+        return buf[0..bufSize];
+    }
+    return if (resolvedPathLen > 0) normalized else comptime L(T, CHAR_STR_DOT);
+}
+
+/// Based on Node v21.6.1 path.posix.relative.
+pub fn relativePosixT(
+    comptime T: type,
+    from: []const T,
+    to: []const T,
+    cwd: []const T,
+    buf: []T,
+    buf2: []T,
+    buf3: []T,
+) []const T {
+    comptime validatePathT(T, "relativePosixT");
+
+    if (std.mem.eql(T, from, to)) return &.{};
+
+    const fromOrig = resolvePosixT(T, &.{from}, cwd, buf2, buf3);
+    const fromOrigLen = fromOrig.len;
+    const toOrig = resolvePosixT(T, &.{to}, cwd, buf, buf3);
+
+    if (std.mem.eql(T, fromOrig, toOrig)) return &.{};
+
+    const fromStart: usize = 1;
+    const fromEnd: usize = fromOrigLen;
+    const fromLen: usize = fromEnd - fromStart;
+    const toOrigLen = toOrig.len;
+    var toStart: usize = 1;
+    const toLen = toOrigLen - toStart;
+
+    const smallestLength = @min(fromLen, toLen);
+    var lastCommonSep: ?usize = null;
+    var matchesAllOfSmallest = false;
+    {
+        var i: usize = 0;
+        while (i < smallestLength) : (i += 1) {
+            const fromByte = fromOrig[fromStart + i];
+            if (fromByte != toOrig[toStart + i]) break;
+            if (fromByte == CHAR_FORWARD_SLASH) lastCommonSep = i;
+        }
+        matchesAllOfSmallest = i == smallestLength;
+    }
+    if (matchesAllOfSmallest) {
+        if (toLen > smallestLength) {
+            if (toOrig[toStart + smallestLength] == CHAR_FORWARD_SLASH) {
+                const start = toStart + smallestLength + 1;
+                const slice = toOrig[start..toOrigLen];
+                memmove(T, buf3[0..slice.len], slice);
+                return buf3[0..slice.len];
+            }
+            if (smallestLength == 0) {
+                const slice = toOrig[toStart..toOrigLen];
+                memmove(T, buf3[0..slice.len], slice);
+                return buf3[0..slice.len];
+            }
+        } else if (fromLen > smallestLength) {
+            if (fromOrig[fromStart + smallestLength] == CHAR_FORWARD_SLASH) {
+                lastCommonSep = smallestLength;
+            } else if (smallestLength == 0) {
+                lastCommonSep = 0;
+            }
+        }
+    }
+
+    var bufOffset: usize = 0;
+    var bufSize: usize = 0;
+    var out: []const T = &.{};
+    {
+        var i: usize = fromStart + (if (lastCommonSep != null) lastCommonSep.? + 1 else 0);
+        while (i <= fromEnd) : (i += 1) {
+            if (i == fromEnd or fromOrig[i] == CHAR_FORWARD_SLASH) {
+                if (out.len > 0) {
+                    bufOffset = bufSize;
+                    bufSize += 3;
+                    buf3[bufOffset] = CHAR_FORWARD_SLASH;
+                    buf3[bufOffset + 1] = CHAR_DOT;
+                    buf3[bufOffset + 2] = CHAR_DOT;
+                } else {
+                    bufSize = 2;
+                    buf3[0] = CHAR_DOT;
+                    buf3[1] = CHAR_DOT;
+                }
+                out = buf3[0..bufSize];
+            }
+        }
+    }
+
+    toStart = if (lastCommonSep != null) toStart + lastCommonSep.? else 0;
+    const sliceSize = toOrigLen - toStart;
+    const outLen = out.len;
+    bufSize = outLen;
+    if (sliceSize > 0) {
+        bufOffset = bufSize;
+        bufSize += sliceSize;
+        memmove(T, buf[bufOffset..bufSize], toOrig[toStart..toOrigLen]);
+    }
+    if (outLen > 0) {
+        memmove(T, buf[0..outLen], out);
+    }
+    return buf[0..bufSize];
+}
+
+// ---- Node-shape API (sub-namespaces) --------------------------------------
+
+/// Node's `path.posix` surface, callable from native Zig today. The JS-visible
+/// wrappers re-land in Phase 12.2 when JSC string conversion is online.
+///
+/// Methods that need scratch space accept caller-provided buffers. The
+/// `*Alloc` variants take a `std.mem.Allocator` and return owned slices.
+pub const posix = struct {
+    pub const sep: []const u8 = "/";
+    pub const delimiter: []const u8 = ":";
+
+    pub inline fn isAbsolute(path: []const u8) bool {
+        return isAbsolutePosixT(u8, path);
+    }
+
+    pub inline fn dirname(path: []const u8) []const u8 {
+        return dirnamePosixT(u8, path);
+    }
+
+    pub inline fn basename(path: []const u8, suffix: ?[]const u8) []const u8 {
+        return basenamePosixT(u8, path, suffix);
+    }
+
+    pub inline fn extname(path: []const u8) []const u8 {
+        return extnamePosixT(u8, path);
+    }
+
+    pub inline fn parse(path: []const u8) PathParsed(u8) {
+        return parsePosixT(u8, path);
+    }
+
+    pub inline fn normalizeBuf(path: []const u8, buf: []u8) []const u8 {
+        return normalizePosixT(u8, path, buf);
+    }
+
+    pub inline fn formatBuf(p: PathParsed(u8), buf: []u8) []const u8 {
+        return _formatT(u8, p, '/', buf);
+    }
+
+    pub inline fn joinBuf(paths: []const []const u8, buf: []u8, buf2: []u8) []const u8 {
+        return joinPosixT(u8, paths, buf, buf2);
+    }
+
+    pub inline fn resolveBuf(paths: []const []const u8, cwd: []const u8, buf: []u8, buf2: []u8) []const u8 {
+        return resolvePosixT(u8, paths, cwd, buf, buf2);
+    }
+
+    pub inline fn relativeBuf(
+        from: []const u8,
+        to: []const u8,
+        cwd: []const u8,
+        buf: []u8,
+        buf2: []u8,
+        buf3: []u8,
+    ) []const u8 {
+        return relativePosixT(u8, from, to, cwd, buf, buf2, buf3);
+    }
+
+    /// Allocator-flavored convenience wrapper around `joinBuf`. Returned
+    /// slice is owned by the caller.
+    pub fn joinAlloc(allocator: std.mem.Allocator, paths: []const []const u8) ![]u8 {
+        const buf = try allocator.alloc(u8, home_rt.paths.MAX_PATH_BYTES);
+        defer allocator.free(buf);
+        const buf2 = try allocator.alloc(u8, home_rt.paths.MAX_PATH_BYTES);
+        defer allocator.free(buf2);
+        const out = joinPosixT(u8, paths, buf, buf2);
+        return allocator.dupe(u8, out);
+    }
+
+    /// Allocator-flavored convenience wrapper around `resolveBuf` that
+    /// auto-supplies `process.cwd()`.
+    pub fn resolveAlloc(allocator: std.mem.Allocator, paths: []const []const u8) ![]u8 {
+        var cwd_buf: [home_rt.paths.MAX_PATH_BYTES]u8 = undefined;
+        const cwd = std.process.getCwd(&cwd_buf) catch comptime L(u8, "/");
+        const buf = try allocator.alloc(u8, home_rt.paths.MAX_PATH_BYTES);
+        defer allocator.free(buf);
+        const buf2 = try allocator.alloc(u8, home_rt.paths.MAX_PATH_BYTES);
+        defer allocator.free(buf2);
+        const out = resolvePosixT(u8, paths, cwd, buf, buf2);
+        return allocator.dupe(u8, out);
+    }
+};
+
+/// Node's `path.win32` surface. Same buffer-discipline as `posix`.
+pub const win32 = struct {
+    pub const sep: []const u8 = "\\";
+    pub const delimiter: []const u8 = ";";
+
+    pub inline fn isAbsolute(path: []const u8) bool {
+        return isAbsoluteWindowsT(u8, path);
+    }
+
+    pub inline fn dirname(path: []const u8) []const u8 {
+        return dirnameWindowsT(u8, path);
+    }
+
+    pub inline fn basename(path: []const u8, suffix: ?[]const u8) []const u8 {
+        return basenameWindowsT(u8, path, suffix);
+    }
+
+    pub inline fn extname(path: []const u8) []const u8 {
+        return extnameWindowsT(u8, path);
+    }
+
+    pub inline fn parse(path: []const u8) PathParsed(u8) {
+        return parseWindowsT(u8, path);
+    }
+
+    pub inline fn normalizeBuf(path: []const u8, buf: []u8) []const u8 {
+        return normalizeWindowsT(u8, path, buf);
+    }
+
+    pub inline fn formatBuf(p: PathParsed(u8), buf: []u8) []const u8 {
+        return _formatT(u8, p, '\\', buf);
+    }
+
+    pub inline fn joinBuf(paths: []const []const u8, buf: []u8, buf2: []u8) []const u8 {
+        return joinWindowsT(u8, paths, buf, buf2);
+    }
+};
+
+// ---- Top-level dispatch (matches host platform) ----------------------------
+
+/// Native separator for the host OS.
+pub const sep: []const u8 = if (builtin.os.tag == .windows) "\\" else "/";
+
+/// Native PATH-list delimiter for the host OS.
+pub const delimiter: []const u8 = if (builtin.os.tag == .windows) ";" else ":";
+
+pub inline fn isAbsolute(path: []const u8) bool {
+    return if (builtin.os.tag == .windows) win32.isAbsolute(path) else posix.isAbsolute(path);
+}
+
+pub inline fn dirname(path: []const u8) []const u8 {
+    return if (builtin.os.tag == .windows) win32.dirname(path) else posix.dirname(path);
+}
+
+pub inline fn basename(path: []const u8, suffix: ?[]const u8) []const u8 {
+    return if (builtin.os.tag == .windows) win32.basename(path, suffix) else posix.basename(path, suffix);
+}
+
+pub inline fn extname(path: []const u8) []const u8 {
+    return if (builtin.os.tag == .windows) win32.extname(path) else posix.extname(path);
+}
+
+pub inline fn parse(path: []const u8) PathParsed(u8) {
+    return if (builtin.os.tag == .windows) win32.parse(path) else posix.parse(path);
+}
+
+pub inline fn normalizeBuf(path: []const u8, buf: []u8) []const u8 {
+    return if (builtin.os.tag == .windows) win32.normalizeBuf(path, buf) else posix.normalizeBuf(path, buf);
+}
+
+pub inline fn formatBuf(p: PathParsed(u8), buf: []u8) []const u8 {
+    return if (builtin.os.tag == .windows) win32.formatBuf(p, buf) else posix.formatBuf(p, buf);
+}
+
+pub inline fn joinBuf(paths: []const []const u8, buf: []u8, buf2: []u8) []const u8 {
+    return if (builtin.os.tag == .windows) win32.joinBuf(paths, buf, buf2) else posix.joinBuf(paths, buf, buf2);
+}
+
 // ---- tests -----------------------------------------------------------------
 
 test "path: separators and constants" {
@@ -1165,8 +1591,9 @@ test "path: dirnamePosixT matches Node semantics" {
 
 test "path: extnamePosixT matches Node semantics" {
     try std.testing.expectEqualSlices(u8, ".html", extnamePosixT(u8, "index.html"));
-    try std.testing.expectEqualSlices(u8, ".coffee", extnamePosixT(u8, "index.coffee.md"));
-    try std.testing.expectEqualSlices(u8, "", extnamePosixT(u8, "index."));
+    // Node's extname returns the slice from the *last* dot; "coffee.md" → ".md".
+    try std.testing.expectEqualSlices(u8, ".md", extnamePosixT(u8, "index.coffee.md"));
+    try std.testing.expectEqualSlices(u8, ".", extnamePosixT(u8, "index."));
     try std.testing.expectEqualSlices(u8, "", extnamePosixT(u8, ".hidden"));
     try std.testing.expectEqualSlices(u8, "", extnamePosixT(u8, ""));
 }
@@ -1232,6 +1659,104 @@ test "path: isWindowsDeviceRootT accepts ASCII letters only" {
     try std.testing.expect(!isWindowsDeviceRootT(u8, '/'));
 }
 
+// ---- Phase 12.7 Node-shape API tests ---------------------------------------
+
+test "path.posix.join: basic concatenation" {
+    var buf: [256]u8 = undefined;
+    var buf2: [256]u8 = undefined;
+    try std.testing.expectEqualSlices(u8, "/a/b", posix.joinBuf(&.{ "/a", "b" }, &buf, &buf2));
+    try std.testing.expectEqualSlices(u8, "/a/b/c", posix.joinBuf(&.{ "/a", "b", "c" }, &buf, &buf2));
+    try std.testing.expectEqualSlices(u8, "foo/bar/baz", posix.joinBuf(&.{ "foo", "bar", "baz" }, &buf, &buf2));
+    try std.testing.expectEqualSlices(u8, ".", posix.joinBuf(&.{}, &buf, &buf2));
+    try std.testing.expectEqualSlices(u8, "foo/baz", posix.joinBuf(&.{ "foo", "bar", "..", "baz" }, &buf, &buf2));
+}
+
+test "path.posix.resolve: against explicit cwd" {
+    var buf: [256]u8 = undefined;
+    var buf2: [256]u8 = undefined;
+    try std.testing.expectEqualSlices(u8, "/work/foo", posix.resolveBuf(&.{"foo"}, "/work", &buf, &buf2));
+    try std.testing.expectEqualSlices(u8, "/abs", posix.resolveBuf(&.{"/abs"}, "/work", &buf, &buf2));
+    try std.testing.expectEqualSlices(u8, "/work/a/b", posix.resolveBuf(&.{ "a", "b" }, "/work", &buf, &buf2));
+    try std.testing.expectEqualSlices(u8, "/a/c", posix.resolveBuf(&.{ "/a/b", "../c" }, "/cwd", &buf, &buf2));
+}
+
+test "path.posix.normalize: dot collapse" {
+    var buf: [256]u8 = undefined;
+    try std.testing.expectEqualSlices(u8, "/a/c", posix.normalizeBuf("/a/./b/../c", &buf));
+}
+
+test "path.posix.isAbsolute / dirname / basename / extname round-trip" {
+    try std.testing.expect(posix.isAbsolute("/x"));
+    try std.testing.expect(!posix.isAbsolute("x"));
+
+    try std.testing.expectEqualSlices(u8, "/a/b", posix.dirname("/a/b/c.txt"));
+    try std.testing.expectEqualSlices(u8, "c.txt", posix.basename("/a/b/c.txt", null));
+    try std.testing.expectEqualSlices(u8, "c", posix.basename("/a/b/c.txt", ".txt"));
+    try std.testing.expectEqualSlices(u8, ".txt", posix.extname("/a/b/c.txt"));
+}
+
+test "path.posix.parse / format: round-trip" {
+    var buf: [256]u8 = undefined;
+    const parsed = posix.parse("/home/user/file.txt");
+    try std.testing.expectEqualSlices(u8, "/", parsed.root);
+    try std.testing.expectEqualSlices(u8, "/home/user", parsed.dir);
+    try std.testing.expectEqualSlices(u8, "file.txt", parsed.base);
+    try std.testing.expectEqualSlices(u8, ".txt", parsed.ext);
+    try std.testing.expectEqualSlices(u8, "file", parsed.name);
+
+    const formatted = posix.formatBuf(parsed, &buf);
+    try std.testing.expectEqualSlices(u8, "/home/user/file.txt", formatted);
+}
+
+test "path.posix.relative: produces .. segments" {
+    var buf: [256]u8 = undefined;
+    var buf2: [256]u8 = undefined;
+    var buf3: [256]u8 = undefined;
+    // From /data/orandea/test/aaa we walk up out of `aaa` and `test` to the
+    // common ancestor /data/orandea, then descend into impl/bbb.
+    try std.testing.expectEqualSlices(u8, "../../impl/bbb", posix.relativeBuf("/data/orandea/test/aaa", "/data/orandea/impl/bbb", "/", &buf, &buf2, &buf3));
+    try std.testing.expectEqualSlices(u8, "", posix.relativeBuf("/same/x", "/same/x", "/", &buf, &buf2, &buf3));
+}
+
+test "path.posix constants" {
+    try std.testing.expectEqualSlices(u8, "/", posix.sep);
+    try std.testing.expectEqualSlices(u8, ":", posix.delimiter);
+}
+
+test "path.win32 constants and isAbsolute" {
+    try std.testing.expectEqualSlices(u8, "\\", win32.sep);
+    try std.testing.expectEqualSlices(u8, ";", win32.delimiter);
+    try std.testing.expect(win32.isAbsolute("C:\\foo"));
+    try std.testing.expect(!win32.isAbsolute("foo"));
+}
+
+test "path.win32.join: backslash joiner" {
+    var buf: [256]u8 = undefined;
+    var buf2: [256]u8 = undefined;
+    try std.testing.expectEqualSlices(u8, "C:\\foo\\bar", win32.joinBuf(&.{ "C:\\foo", "bar" }, &buf, &buf2));
+}
+
+test "path: top-level dispatch matches host platform" {
+    // On POSIX hosts the top-level sep is '/', and on Windows it's '\\'.
+    if (builtin.os.tag == .windows) {
+        try std.testing.expectEqualSlices(u8, "\\", sep);
+        try std.testing.expectEqualSlices(u8, ";", delimiter);
+    } else {
+        try std.testing.expectEqualSlices(u8, "/", sep);
+        try std.testing.expectEqualSlices(u8, ":", delimiter);
+        try std.testing.expect(isAbsolute("/x"));
+        try std.testing.expect(!isAbsolute("x"));
+        try std.testing.expectEqualSlices(u8, ".txt", extname("file.txt"));
+    }
+}
+
+test "path.posix.joinAlloc: allocator wrapper" {
+    const allocator = std.testing.allocator;
+    const out = try posix.joinAlloc(allocator, &.{ "/a", "b", "c" });
+    defer allocator.free(out);
+    try std.testing.expectEqualSlices(u8, "/a/b/c", out);
+}
+
 // Reference unused symbols to keep them live for downstream consumers and
 // the dead-code linter.
 comptime {
@@ -1245,4 +1770,8 @@ comptime {
     _ = normalizeT;
     _ = normalizeWindowsT;
     _ = Environment;
+    _ = posix;
+    _ = win32;
+    _ = sep;
+    _ = delimiter;
 }
