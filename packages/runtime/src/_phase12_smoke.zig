@@ -25,6 +25,9 @@ test {
     _ = @import("node/buffer.zig");
     // Phase 12.7 (2026-05-19) — `node:os` Zig substrate (system info).
     _ = @import("node/os.zig");
+    // Phase 12.7 (2026-05-19) — `node:url` Zig substrate (WHATWG URL +
+    // legacy url.parse/format/resolve + pathToFileURL/fileURLToPath).
+    _ = @import("node/url.zig");
     _ = @import("jsc/generated_classes_list.zig");
     _ = @import("runtime/api/bun/Terminal.zig");
     _ = @import("runtime/api/bun/spawn.zig");

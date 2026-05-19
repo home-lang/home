@@ -609,6 +609,14 @@ pub const node = struct {
     // tests for cross-platform path handling. The JS shim re-attaches
     // once the Phase 12.2 JSC bridge is live.
     pub const os = @import("node/os.zig");
+    // Phase 12.7 port (2026-05-19) — `node:url` Zig substrate. WHATWG
+    // `URL` + `URLSearchParams` (with full get/set/has/append/delete/
+    // keys/values) plus the legacy `url.parse` / `url.format` /
+    // `url.resolve` / `pathToFileURL` / `fileURLToPath` /
+    // `domainToASCII` / `domainToUnicode` surface. Self-contained
+    // RFC-3986-leaning parser; the JS shim re-attaches once the
+    // Phase 12.2 JSC bridge is live.
+    pub const url = @import("node/url.zig");
 };
 
 // ---- src/core/ + src/alloc/ + src/safety/ ----------------------
