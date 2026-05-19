@@ -1,8 +1,8 @@
-// Copied verbatim from bun/src/ptr/weak_ptr.zig at upstream
-// SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
+// Ported from bun/src/ptr/weak_ptr.zig at pinned SHA
+// fd0b6f1a271fca0b8124b69f230b100f4d636af6.
 //
-// Wave-13 (2026-05-18) port. `@import("bun")` rewritten to `@import("home_rt")`;
-// no JSC-bridge symbols present.
+// Wave-15 Tier-1 grinder copy. `bun.debugAssert` + `bun.destroy` resolve
+// via the matching helpers added to `home_rt.zig` alongside this port.
 
 pub const WeakPtrData = packed struct(u32) {
     reference_count: u31,
@@ -14,7 +14,7 @@ pub const WeakPtrData = packed struct(u32) {
     };
 
     pub fn onFinalize(this: *WeakPtrData) bool {
-        bun.debugAssert(!this.finalized);
+        home_rt.debugAssert(!this.finalized);
         this.finalized = true;
         return this.reference_count == 0;
     }
@@ -34,7 +34,7 @@ pub fn WeakPtr(comptime T: type, data_field: []const u8) type {
         pub const empty: @This() = .{ .raw_ptr = null };
 
         pub fn initRef(req: *T) @This() {
-            bun.debugAssert(!data(req).finalized);
+            home_rt.debugAssert(!data(req).finalized);
             data(req).reference_count += 1;
             return .{ .raw_ptr = req };
         }
@@ -62,7 +62,7 @@ pub fn WeakPtr(comptime T: type, data_field: []const u8) type {
             const count = weak_data.reference_count - 1;
             weak_data.reference_count = count;
             if (weak_data.finalized and count == 0) {
-                bun.destroy(value);
+                home_rt.destroy(value);
             }
         }
 
@@ -72,22 +72,35 @@ pub fn WeakPtr(comptime T: type, data_field: []const u8) type {
     };
 }
 
-pub const bun = @import("home_rt");
+const home_rt = @import("home_rt");
 
-test "weak_ptr: WeakPtrData defaults to empty + finalized=false" {
-    const std = @import("std");
-    const d = WeakPtrData.empty;
-    try std.testing.expectEqual(@as(u31, 0), d.reference_count);
-    try std.testing.expect(!d.finalized);
+test "WeakPtrData: onFinalize sets finalized + reports zero-ref state" {
+    var d = WeakPtrData.empty;
+    try std.testing.expect(d.onFinalize());
+    try std.testing.expect(d.finalized);
+
+    var d2: WeakPtrData = .{ .reference_count = 2, .finalized = false };
+    try std.testing.expect(!d2.onFinalize());
+    try std.testing.expect(d2.finalized);
 }
 
-test "weak_ptr: WeakPtr(T).empty is a null raw_ptr" {
-    const std = @import("std");
-    const Holder = struct {
-        weak_data: WeakPtrData = .empty,
-        value: u32 = 0,
+test "WeakPtr: initRef increments and deref clears" {
+    const Target = struct {
+        weak: WeakPtrData = .empty,
+        value: u32 = 42,
     };
-    const W = WeakPtr(Holder, "weak_data");
-    const e: W = .empty;
-    try std.testing.expect(e.raw_ptr == null);
+
+    const target = try home_rt.default_allocator.create(Target);
+    defer home_rt.default_allocator.destroy(target);
+    target.* = .{};
+
+    var weak = WeakPtr(Target, "weak").initRef(target);
+    try std.testing.expectEqual(@as(u31, 1), target.weak.reference_count);
+    try std.testing.expectEqual(@as(?*Target, target), weak.get());
+
+    weak.deref();
+    try std.testing.expectEqual(@as(u31, 0), target.weak.reference_count);
+    try std.testing.expectEqual(@as(?*Target, null), weak.raw_ptr);
 }
+
+const std = @import("std");

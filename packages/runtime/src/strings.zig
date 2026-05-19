@@ -15,6 +15,13 @@ pub fn indexOf(haystack: []const u8, needle: []const u8) ?usize {
     return std.mem.indexOf(u8, haystack, needle);
 }
 
+/// Find the first index in `slice` containing any byte from `needles`.
+/// Mirrors `bun.strings.indexOfAny`. Used by `escapeRegExp` + assorted
+/// scanner helpers.
+pub fn indexOfAny(slice: []const u8, comptime needles: []const u8) ?usize {
+    return std.mem.indexOfAny(u8, slice, needles);
+}
+
 pub fn startsWith(slice: []const u8, prefix: []const u8) bool {
     return std.mem.startsWith(u8, slice, prefix);
 }

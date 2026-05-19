@@ -1,9 +1,10 @@
-// Copied from bun/src/css/properties/shape.zig at upstream
-// SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../../cli/LICENSE.bun.md.
+// Ported from bun/src/css/properties/shape.zig at pinned SHA
+// fd0b6f1a271fca0b8124b69f230b100f4d636af6.
+//
+// Wave-15 Tier-1 grinder copy. Pure-data leaf with `DefineEnumProperty`
+// + `todo_stuff.depth` reaching into the css_parser stub.
+//
 // Imports rewritten: @import("../css_parser.zig") → @import("../css_parser_stub.zig").
-// `FillRule` resolves through the stub's `DefineEnumProperty` (the generated
-// `parse`/`toCss` paths trip `@compileError` if reached; the type-name itself
-// resolves so downstream files referencing `FillRule` continue to compile).
 
 pub const css = @import("../css_parser_stub.zig");
 
@@ -21,8 +22,16 @@ pub const AlphaValue = struct {
     v: f32,
 };
 
-test "shape.AlphaValue: stores a single f32" {
-    const std = @import("std");
+const std = @import("std");
+
+test "AlphaValue: stores opacity as a single float" {
     const a = AlphaValue{ .v = 0.5 };
     try std.testing.expectEqual(@as(f32, 0.5), a.v);
+}
+
+test "AlphaValue: zero / one are valid endpoints" {
+    const transparent = AlphaValue{ .v = 0.0 };
+    const opaque_v = AlphaValue{ .v = 1.0 };
+    try std.testing.expectEqual(@as(f32, 0.0), transparent.v);
+    try std.testing.expectEqual(@as(f32, 1.0), opaque_v.v);
 }
