@@ -769,6 +769,17 @@ pub const libarchive_sys = struct {
     pub const bindings = @import("libarchive_sys/bindings.zig");
 };
 
+// ---- src/zlib_sys/ -----------------------------------------------------
+// Wave-14 port batch (2026-05-18). Vendored zlib FFI shape: the shared
+// `Z_OK` / `Z_BINARY` / `Z_NO_FLUSH` enum mirrors + the POSIX
+// `z_stream_s` extern struct + `inflate`/`deflate` init wrappers.
+// Pure declarations — link-time contract against the shared zlib in
+// `packages/bun-usockets`.
+pub const zlib_sys = struct {
+    pub const shared = @import("zlib_sys/shared.zig");
+    pub const posix = @import("zlib_sys/posix.zig");
+};
+
 // ---- src/s3_signing/ ---------------------------------------------------
 // Eighth-wave port batch (2026-05-18). Pure-Zig S3 helpers: canned-ACL
 // + storage-class enums + error code/message lookup. Credentials +
@@ -851,6 +862,10 @@ pub const sql = struct {
         pub const protocol = struct {
             pub const PacketType = @import("sql/mysql/protocol/PacketType.zig").PacketType;
             pub const PacketHeader = @import("sql/mysql/protocol/PacketHeader.zig");
+            // Wave-14 port batch (2026-05-18). Length-encoded integer
+            // codec (MySQL wire-protocol primitive). Depends only on
+            // `home_rt.BoundedArray`.
+            pub const EncodeInt = @import("sql/mysql/protocol/EncodeInt.zig");
         };
     };
     pub const postgres = struct {
@@ -1262,6 +1277,11 @@ test {
     _ = @import("js_parser/lexer/identifier.zig");
     _ = @import("css/properties/svg.zig");
     _ = @import("ptr/weak_ptr.zig");
+    // Wave-14 port batch (2026-05-18) — zlib enum mirrors + POSIX FFI
+    // surface; MySQL length-encoded integer codec.
+    _ = @import("zlib_sys/shared.zig");
+    _ = @import("zlib_sys/posix.zig");
+    _ = @import("sql/mysql/protocol/EncodeInt.zig");
 }
 
 test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {
