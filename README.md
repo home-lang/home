@@ -88,9 +88,10 @@ view; these are the drill-down pages — modeled after Bun's
 | **TypeScript — named-category survey** | **86 / 86 — 100%** | `assignmentCompatibility` + `comparable` + `inOperator` + `stringLiteral` |
 | **TypeScript — diagnostic codes** | **~2,000 entries** | mirrors the full upstream `diag(code, …)` table |
 | **LSP wire methods** | **53 / ~70 — ~76%** | `SUPPORTED_METHODS` in `packages/ts_lsp_server/` |
-| **Bun runtime — source files ported** | **380 / 1,193 — ~31.9%** | substrate only (functional after JSC bring-up) |
+| **Bun runtime — source files ported** | **471 / 1,193 — ~39.5%** | substrate + JSC M6 milestone landed |
 | **Bun compat shim — `bun.*` symbols** | **7 / ~103 — ~6.8%** | Tier-0 lets vendored Bun source compile against Home's stdlib |
-| **Node.js — `node:*` binding files** | **15 files** | blocked on Phase 12.2 JSC |
+| **Node.js — `node:*` binding files** | **21 files** | Zig substrate landing module-by-module (buffer / stream / fs / events / util / assert) |
+| **JSC bring-up (Phase 12.2)** | **95 files** | M6 milestone — JSON + Promise + Iterator + Global helpers landed |
 | **Language features (capability matrix)** | **9 stable / 33 partial / 1 not-yet — 43 total** | ~21% stable, ~77% in progress, ~2% not yet |
 | **Total test count** | **3,300+ / 3,300+ — ~100%** | `zig build test --summary all` (pre-existing `d_ts_fast` + `home_rt` env aside) |
 
@@ -135,19 +136,23 @@ zig build test -Dfilter=ts_conformance
 ### Bun runtime port (`packages/runtime/`)
 
 Phase 12 vendors Bun's Zig source under MIT and rewrites it to compile
-against Home's stdlib. **Substrate only today** — the runtime won't `run`
-JS / TS until JSC bring-up (sub-phase 12.2) lands.
+against Home's stdlib. **JSC bring-up is mid-flight** (M6 milestone
+landed); end-to-end `home run app.ts` waits on the JS-callable bridge
+to wire up.
 
 | Measurement | Coverage | % |
 |---|---|---|
-| **Bun source files ported** | **380 / 1,193** | **~31.9%** |
-| Subsystems scaffolded | 54 directories under `packages/runtime/src/` | — |
-| Functional runtime | 🚧 Substrate only | — |
+| **Bun source files ported** | **471 / 1,193** | **~39.5%** |
+| Subsystems scaffolded | 59 directories under `packages/runtime/src/` | — |
+| Functional runtime | 🚧 JSC M6 landed; JS-callable bridge pending | — |
+| JSC bring-up (Phase 12.2) | 95 files | M1-M6 landed (Engine stub, exception + coerce + array helpers, call + callback helpers, JSON + Promise + Iterator + Global helpers) |
+| `node:*` substrate (Phase 12.7) | 21 files | round-10 landed (buffer, stream, fs, events, util, assert + 15 binding files) |
 
 Upstream pinned at `fd0b6f1a` (see
 [`packages/runtime/UPSTREAM_SHA.txt`](./packages/runtime/UPSTREAM_SHA.txt));
 full audit at
-[`packages/runtime/PORT_AUDIT_2026-05-18.md`](./packages/runtime/PORT_AUDIT_2026-05-18.md).
+[`packages/runtime/PORT_AUDIT_2026-05-18.md`](./packages/runtime/PORT_AUDIT_2026-05-18.md)
+(file counts in the audit are pre-Phase-12.2-M6 and pre-Phase-12.7-round-10).
 The release gate per [`packages/runtime/README.md`](./packages/runtime/README.md):
 Bun's `test/` corpus must pass **100% with no skips** once feature-complete.
 
@@ -156,12 +161,12 @@ Bun's `test/` corpus must pass **100% with no skips** once feature-complete.
 | Sub-phase | Source under `~/Code/bun/src/` | Status |
 |---|---|---|
 | 12.1 — CLI | `cli/` | 🚧 scaffold landed |
-| 12.2 — JSC bring-up | `jsc/`, `bun.js.zig` | ❌ blocked on JSC C++ engine |
-| 12.3 — Event loop / IO / async | `event_loop/`, `io/`, `async/` | 🚧 not started |
+| 12.2 — JSC bring-up | `jsc/`, `bun.js.zig` | 🟡 M6 milestone landed (95 files: JSON + Promise + Iterator + Global helpers); JS-callable bridge pending |
+| 12.3 — Event loop / IO / async | `event_loop/`, `io/`, `async/` | 🟡 substrate landing (~30+ leaves ported via wave-19+ grinders) |
 | 12.4 — Module loader | `resolver/`, `module_loader.zig` | 🚧 blocked on 12.2 |
 | 12.5 — Web / HTTP / DNS | `web/`, `http/`, `csrf/`, `dns/` | 🚧 blocked on 12.3 |
 | 12.6 — Home.* JS surface | `bun.zig` (renamed to `Home.*`) | 🚧 blocked on 12.2 |
-| 12.7 — `node:*` shims | `node/` | 🚧 blocked on 12.2 (15 binding files copied) |
+| 12.7 — `node:*` shims | `node/` | 🟡 substrate landing module-by-module (21 files: buffer, stream, fs, events, util, assert) |
 | 12.8 — `home test` runner | `test/` | 🚧 blocked on 12.2 |
 | 12.9 — Pantry integration | `install/` | 🚧 scaffold in progress |
 | 12.10 — CLI surface | `cli/` | 🚧 scaffold landed |
@@ -206,12 +211,13 @@ for the per-symbol drill-down, planned tier categories
 Node's `node:*` namespace lands as part of the Bun runtime port (Bun
 ships `node:*` shims natively, which we vendor verbatim). Numbers
 below are Zig-side only; the JS-visible `node:*` surface attaches once
-JSC is up.
+JSC's JS-callable bridge ships (Phase 12.2 has reached M6 — JSON +
+Promise + Iterator + Global helpers — across 95 files).
 
 | Measurement | Coverage | Notes |
 |---|---|---|
-| Node binding files ported | 15 files | `path`, `Stat`, `StatFS`, `dir_iterator`, `time_like`, `fs_events`, `os_constants`, `nodejs_error_code`, `node_fs_constant`, `node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`, `types`, `util/parse_args_utils`, `assert/myers_diff`. |
-| Functional `node:*` modules | 🚧 Blocked on Phase 12.2 (JSC) | Pantry CLI replaces `npm install` / `bun install`; everything else routes through the Bun runtime port once JSC is live. |
+| Node binding files ported | 21 files | `path`, `Stat`, `StatFS`, `dir_iterator`, `time_like`, `fs_events`, `os_constants`, `nodejs_error_code`, `node_fs_constant`, `node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`, `types`, `util/parse_args_utils`, `assert/myers_diff`, plus top-level `buffer.zig`, `stream.zig`, `fs.zig`, `events.zig`, `util.zig`, `assert.zig` (Phase 12.7 round-10). |
+| Functional `node:*` modules | 🚧 Awaiting JSC JS-callable bridge | Pantry CLI replaces `npm install` / `bun install`; everything else routes through the Bun runtime port once JSC ships its JS bridge (Phase 12.2 milestones M3-M6 are in; the JS-callable wire-up is the remaining piece). |
 
 ### LSP / IDE coverage — `home-lsp` vs `tsserver`
 

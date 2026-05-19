@@ -5,12 +5,15 @@ drill-down view; the at-a-glance row is in the
 [README parity status](../README.md#nodejs-compatibility-packagesruntimesrcnode)
 section.
 
-> **Status:** Substrate only. The `node:*` surface attaches once Phase
-> 12.2 (JSC bring-up) lands. Today we have **15 Zig binding files
-> ported** plus the design scaffolding; no `node:*` module is
-> JavaScript-callable yet. Once JSC ships, each module flips from 🔴
-> (not implemented) to 🟡 (partial) or 🟢 (fully implemented) based on
-> Bun's existing port, which we vendor under MIT.
+> **Status:** Substrate landing module-by-module. JSC bring-up
+> (Phase 12.2) is at the M6 milestone — JSON + Promise + Iterator
+> + Global helpers across 95 files. Phase 12.7 round-10 dropped
+> six new top-level `node:*` substrate modules (`buffer`, `stream`,
+> `fs`, `events`, `util`, `assert`) alongside the original 15
+> binding files. Total **21 Zig substrate files** ported; no
+> `node:*` module is JavaScript-callable yet, but the runway is
+> shortening. Once JSC reaches the JS-callable milestone, each
+> module flips from 🔴 to 🟡 or 🟢 based on Bun's existing port.
 
 Legend:
 
@@ -26,7 +29,8 @@ Legend:
 
 ### [`node:assert`](https://nodejs.org/api/assert.html)
 
-🔴 Not implemented (blocked on Phase 12.2). Zig substrate landed:
+🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
+landed: `packages/runtime/src/node/assert.zig` (top-level shim) +
 `packages/runtime/src/node/assert/myers_diff.zig` — the diff helper
 used by `assert.deepStrictEqual` error formatting.
 
@@ -36,7 +40,9 @@ used by `assert.deepStrictEqual` error formatting.
 
 ### [`node:buffer`](https://nodejs.org/api/buffer.html)
 
-🔴 Not implemented.
+🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
+landed: `packages/runtime/src/node/buffer.zig` (Phase 12.7 round-10
+port of Bun's `node:buffer`).
 
 ### [`node:child_process`](https://nodejs.org/api/child_process.html)
 
@@ -74,11 +80,14 @@ signal numbers, fs constants).
 
 ### [`node:events`](https://nodejs.org/api/events.html)
 
-🔴 Not implemented.
+🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
+landed: `packages/runtime/src/node/events.zig`.
 
 ### [`node:fs`](https://nodejs.org/api/fs.html)
 
-🔴 Not implemented. Zig substrate landed:
+🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
+landed:
+- `packages/runtime/src/node/fs.zig` — top-level `node:fs` shim (Phase 12.7 round-10).
 - `packages/runtime/src/node/Stat.zig` — `fs.Stats` shape.
 - `packages/runtime/src/node/StatFS.zig` — `fs.StatFs` shape.
 - `packages/runtime/src/node/dir_iterator.zig` — `fs.Dir` iterator.
@@ -112,21 +121,22 @@ signal numbers, fs constants).
 
 ### [`node:net`](https://nodejs.org/api/net.html)
 
-🔴 Not implemented. Zig substrate landed:
-`packages/runtime/src/node/node_net_binding.zig` — `net.Socket` /
-`net.Server` C-callable layer.
+🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
+landed: `packages/runtime/src/node/node_net_binding.zig` —
+`net.Socket` / `net.Server` C-callable layer.
 
 ### [`node:os`](https://nodejs.org/api/os.html)
 
-🔴 Not implemented. Zig substrate landed:
-`packages/runtime/src/node/os_constants.zig` (constants table).
+🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
+landed: `packages/runtime/src/node/os_constants.zig` (constants
+table).
 
 ### [`node:path`](https://nodejs.org/api/path.html)
 
-🔴 Not implemented (JS surface). Zig port: **fully ported** at
-`packages/runtime/src/node/path.zig` — POSIX + Win32 path resolution
-algorithms vendored verbatim from Bun. Will flip 🟢 the moment the JS
-bridge is wired.
+🔴 Not JS-callable yet (blocked on Phase 12.2). Zig port: **fully
+ported** at `packages/runtime/src/node/path.zig` — POSIX + Win32
+path resolution algorithms vendored verbatim from Bun. Will flip
+🟢 the moment the JS bridge is wired.
 
 ### [`node:perf_hooks`](https://nodejs.org/api/perf_hooks.html)
 
@@ -158,7 +168,9 @@ bridge is wired.
 
 ### [`node:stream`](https://nodejs.org/api/stream.html)
 
-🔴 Not implemented.
+🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
+landed: `packages/runtime/src/node/stream.zig` (Phase 12.7 round-10
+port of Bun's `node:stream`).
 
 ### [`node:stream/consumers`](https://nodejs.org/api/stream.html#streamconsumers)
 
@@ -208,7 +220,9 @@ the runner is a port of Bun's test runner, not Node's, but the
 
 ### [`node:util`](https://nodejs.org/api/util.html)
 
-🔴 Not implemented. Zig substrate landed:
+🔴 Not JS-callable yet (blocked on Phase 12.2). Zig substrate
+landed:
+- `packages/runtime/src/node/util.zig` — top-level `node:util` shim (Phase 12.7).
 - `packages/runtime/src/node/util/parse_args_utils.zig` — `util.parseArgs` parser.
 - `packages/runtime/src/node/types.zig` — `util.types.*` type-predicate exports.
 
@@ -249,16 +263,21 @@ equivalent in JSC.
 |---|---|---|
 | 🟢 Fully implemented | 0 | 0% |
 | 🟡 Partially implemented | 0 | 0% |
-| 🔴 Not implemented | 47 | ~98% |
+| 🔴 Not implemented (JS-callable) | 47 | ~98% |
 | ❌ Won't implement | 1 | ~2% |
 
-**Zig substrate ported:** 15 binding files (`path`, `Stat`, `StatFS`,
-`dir_iterator`, `fs_events`, `os_constants`, `nodejs_error_code`,
-`node_fs_constant`, `node_net_binding`, `node_error_binding`,
-`uv_signal_handle_windows`, `types`, `time_like`,
-`util/parse_args_utils`, `assert/myers_diff`) — about 3% of Bun's
-`node/` source tree.
+**Zig substrate ported:** 21 files (Phase 12.7 round-10 just dropped
+six top-level module shims — `buffer.zig`, `stream.zig`, `fs.zig`,
+`events.zig`, `util.zig`, `assert.zig` — on top of the 15 binding
+files already present: `path`, `Stat`, `StatFS`, `dir_iterator`,
+`fs_events`, `os_constants`, `nodejs_error_code`, `node_fs_constant`,
+`node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`,
+`types`, `time_like`, `util/parse_args_utils`, `assert/myers_diff`).
 
-Once Phase 12.2 (JSC) lands the entire JS-callable surface flips from
-🔴 to its Bun-equivalent status in one wave; the substrate then earns
-percentages from Node's own test suite (the same yardstick Bun uses).
+JSC bring-up (Phase 12.2) has reached the M6 milestone — JSON +
+Promise + Iterator + Global helpers across 95 files. Once the
+JS-callable bridge wires up, the substrate-backed modules
+(`assert`, `buffer`, `events`, `fs`, `path`, `stream`, `util`,
+`os`, `net`) flip from 🔴 to 🟡 / 🟢 based on Bun's existing port,
+and the remaining modules grow substrate per their own Phase 12.7
+rounds.

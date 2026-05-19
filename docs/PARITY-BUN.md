@@ -6,9 +6,11 @@ row is in the
 [README parity status](../README.md#bun-runtime-port-packagesruntime)
 section.
 
-> **Status:** Substrate only. **380 / 1,193 Bun source files
-> ported** (~31.9%); the runtime is not yet JavaScript-callable —
-> JSC bring-up (Phase 12.2) is the gate. Full audit:
+> **Status:** Substrate + JSC M6 landed. **471 / 1,193 Bun source
+> files ported** (~39.5%); the runtime is not yet JavaScript-callable
+> end-to-end, but Phase 12.2 (JSC bring-up) has reached the M6
+> milestone — JSON + Promise + Iterator + Global helpers — across
+> 95 files in `packages/runtime/src/jsc/`. Full audit:
 > [`packages/runtime/PORT_AUDIT_2026-05-18.md`](../packages/runtime/PORT_AUDIT_2026-05-18.md).
 
 Legend:
@@ -22,12 +24,12 @@ Legend:
 | Sub-phase | Source under `~/Code/bun/src/` | Destination | Status |
 |---|---|---|---|
 | 12.1 | `cli/` | `src/cli/` | 🟡 scaffold landed (CLI flag parsing partial) |
-| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🔴 blocked on JSC C++ engine availability |
-| 12.3 | `event_loop/`, `io/`, `async/` | `src/event_loop/` | 🔴 not started (~30 leaves ported as substrate) |
+| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone landed (95 files: JSON + Promise + Iterator + Global helpers) |
+| 12.3 | `event_loop/`, `io/`, `async/` | `src/event_loop/` | 🟡 substrate landing (~30+ leaves ported) |
 | 12.4 | `resolver/`, `module_loader.zig` | `src/module_loader/` | 🔴 blocked on 12.2 |
 | 12.5 | `web/`, `http/`, `csrf/`, `dns/` | `src/web/` | 🔴 blocked on 12.3 |
 | 12.6 | `bun.zig` (Home.* surface) | `src/home/` | 🔴 blocked on 12.2 |
-| 12.7 | `node/` namespace shims | `src/node/` | 🔴 blocked on 12.2 (15 binding files ported) |
+| 12.7 | `node/` namespace shims | `src/node/` | 🟡 round-10 landed (21 files: path / Stat / buffer / stream / fs / events / util / assert + bindings) |
 | 12.8 | `test/` runner | `src/test/` | 🔴 blocked on 12.2 |
 | 12.9 | Pantry CLI integration | `src/install/pantry.zig` | 🟡 scaffold in progress |
 | 12.10 | CLI surface | `src/cli/` | 🟡 scaffold landed |
@@ -168,8 +170,10 @@ Substrate file-count progress (the only objective number today):
 | Metric | Count | Notes |
 |---|---|---|
 | Bun upstream files (excluding test/codegen/jsc/macros) | 1,193 | pinned at `fd0b6f1a` |
-| Files ported to `packages/runtime/src/` | 380 | ~31.9% |
-| Files remaining to port | 813 | ~68.1% |
+| Files ported to `packages/runtime/src/` | 471 | ~39.5% |
+| Files remaining to port | 722 | ~60.5% |
+| JSC bring-up (`packages/runtime/src/jsc/`) | 95 files | Phase 12.2 M6 milestone |
+| Node namespace (`packages/runtime/src/node/`) | 21 files | Phase 12.7 round-10 |
 | Tier-0 leaves (≤100 LOC, zero subsystem coupling) | 30 catalogued | next-to-port pool |
 | Tier-1 leaves (≤300 LOC, light coupling) | 30 catalogued | follow-on pool |
 

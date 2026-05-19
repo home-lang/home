@@ -23,6 +23,35 @@ once a stable release is cut.
 
   lived at the top level of `docs/` and inside individual packages.
 
+- **Parity status section in README.md.** At-a-glance headline-numbers table
+
+  followed by per-area sub-tables (TypeScript, Bun runtime port, Bun
+  compatibility shim, Node.js, LSP, language features, codegen, tooling,
+  stdlib). Every percentage is a byte-for-byte or file-count measurement
+  against an external baseline — no aspirational targets.
+
+- **Per-feature parity drill-down pages** under `docs/`, modelled after Bun's
+
+  nodejs-apis doc (per-module heading + 🟢/🟡/🔴 badge + inline list of
+  missing APIs):
+  - `docs/PARITY-TYPESCRIPT.md` — every TypeScript feature with status
+    (types, control flow, classes, modules, JSX, emit, diagnostics, LSP).
+  - `docs/PARITY-NODE.md` — every `node:*` module.
+  - `docs/PARITY-BUN.md` — every `Bun.*` API + the Phase 12.1-12.11
+    sub-phase status table.
+  - `docs/PARITY-BUN-COMPAT.md` — the seven Tier-0 symbols of
+    `packages/compat/` with per-symbol drill-down and Tier-1+ roadmap.
+
+- **`packages/compat/README.md`** — landing page for the `bun` compatibility
+
+  shim, with the Tier-1-symbol workflow documented end-to-end.
+
+- **`scripts/measure-parity.sh`** — regenerates the README headline-numbers
+
+  table from live file counts (`--markdown`), exports raw values for
+  scripting (`--values`), or diffs the README against live counts and
+  exits non-zero if it has drifted (`--diff`).
+
 ### Changed
 
 - Dropped the "88% complete (43/49 tasks)" framing from `docs/ARCHITECTURE.md`
