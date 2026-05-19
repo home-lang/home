@@ -17,7 +17,7 @@ macOS, Linux, and the WASM target.
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
   That subset currently executes the todo-registration smoke, the Web
   `atob`/`btoa` smoke, eight regression smokes, one bundler
-  constant-fold smoke, four test-runner expectation smokes, one nested-describe
+  constant-fold smoke, five test-runner expectation smokes, one nested-describe
   smoke, one `Bun.stripANSI` smoke, and the Node `DOMException`, Web
   `Response.json` / `Response.redirect`, JSC `ShadowRealm`, Bun
   file-metadata, Node `Buffer` binary/UTF-16LE, own-key matcher, and stack-trace

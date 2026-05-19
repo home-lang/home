@@ -133,6 +133,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/06467.test.ts",
     "regression/issue/11677.test.ts",
     "js/node/buffer-utf16.test.ts",
+    "js/bun/test/expect-extend-asymmetric-match-throw.test.ts",
 };
 
 const harness_prelude =
@@ -385,6 +386,25 @@ const harness_prelude =
     \\    throw error;
     \\  }
     \\  throw reason;
+    \\};
+    \\expect.extend = function(matchers) {
+    \\  if (matchers === null || typeof matchers !== "object") __home_fail("expect.extend() expected an object containing matchers");
+    \\  for (const name of Object.keys(matchers)) {
+    \\    const matcher = matchers[name];
+    \\    if (typeof matcher !== "function") __home_fail("expect.extend: `" + name + "` is not a valid matcher");
+    \\    expect[name] = function() {
+    \\      const captured = Array.prototype.slice.call(arguments);
+    \\      return {
+    \\        asymmetricMatch(received) {
+    \\          const result = matcher.apply({ isNot: false, promise: "", equals: __home_deep_equal }, [received].concat(captured));
+    \\          return result && typeof result === "object" && Object.prototype.hasOwnProperty.call(result, "pass") ? !!result.pass : !!result;
+    \\        },
+    \\        toString() {
+    \\          return name;
+    \\        },
+    \\      };
+    \\    };
+    \\  }
     \\};
     \\globalThis.__home_bun_test = { describe, expect, it, test };
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
@@ -1011,6 +1031,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/06467.test.ts", filesForSubset(.minimal_js)[21]);
     try std.testing.expectEqualStrings("regression/issue/11677.test.ts", filesForSubset(.minimal_js)[22]);
     try std.testing.expectEqualStrings("js/node/buffer-utf16.test.ts", filesForSubset(.minimal_js)[23]);
+    try std.testing.expectEqualStrings("js/bun/test/expect-extend-asymmetric-match-throw.test.ts", filesForSubset(.minimal_js)[24]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -1026,6 +1047,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContainKey(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContainAnyKeys(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "expect.unreachable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "expect.extend") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "asymmetricMatch(received)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Expected value must be string or Error") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Deep equality for this value type is not supported") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "UnreachableError") != null);

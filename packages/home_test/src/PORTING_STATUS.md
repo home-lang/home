@@ -27,9 +27,10 @@ the first real smoke slice: basic `describe` / `test` / `it`,
 `it.todo`, `it.failing`, returned-thenable rejection, `.not`, `toBe`,
 `toBeDefined`, `toBeUndefined`, `toBeTypeOf`, `toBeInstanceOf`, small
 `toEqual` / `toStrictEqual` deep equality, `toThrow`, `expect.any`,
-`expect.unreachable`, `toIncludeRepeated`, `toContainKey`,
-`toContainKeys`, `toContainAnyKeys`, `atob` / `btoa`, `Bun` branding
-plus `Bun.stripANSI`, a DOMException shim, a tiny Node `Buffer.alloc` /
+`expect.unreachable`, a small `expect.extend` asymmetric matcher path,
+`toIncludeRepeated`, `toContainKey`, `toContainKeys`,
+`toContainAnyKeys`, `atob` / `btoa`, `Bun` branding plus
+`Bun.stripANSI`, a DOMException shim, a tiny Node `Buffer.alloc` /
 `Buffer.write(..., "binary")` / `Buffer.from(..., "utf-16le")` shim, Web
 `Response.json` / `Response.redirect` shims, and a narrow
 `ShadowRealm.evaluate` shim. The source rewrite lowers supported
