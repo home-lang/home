@@ -45,7 +45,7 @@ pub const IR = struct {
     };
 
     // Common operation types
-    pub const BinOp = struct { dest: Value, lhs: Value, rhs: Value };
+    pub const BinOp = struct { dest: Value, lhs: Value, rhs: Value, is_unsigned: bool = false };
     pub const MemOp = struct { dest: Value, addr: Value, offset: i32 };
     pub const StoreOp = struct { addr: Value, offset: i32, value: Value };
     pub const MoveOp = struct { dest: Value, src: Value };
