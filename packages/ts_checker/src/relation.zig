@@ -646,7 +646,11 @@ pub const Engine = struct {
             self.interner.objectNumberIndex(target) == Primitive.none and
             self.interner.objectSymbolIndex(target) == Primitive.none)
         {
-            if (sf.is_type_parameter) return false;
+            if (sf.is_type_parameter) {
+                const constraint = self.typeParameterConstraint(source) orelse return false;
+                if (constraint == source) return false;
+                return self.isAssignableTo(constraint, target) catch false;
+            }
             return source != Primitive.null_t and
                 source != Primitive.undefined_t and
                 source != Primitive.void_t and

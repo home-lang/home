@@ -29228,6 +29228,14 @@ pub const Checker = struct {
         return self.engine.isAssignableTo(value_t, target_t) catch return error.OutOfMemory;
     }
 
+    fn constrainedTypeParameterAssignableToTarget(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
+        if (source_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(source_t).is_type_parameter) return false;
+        const constraint = self.typeParameterConstraint(source_t) orelse return false;
+        if (constraint == source_t) return false;
+        return self.engine.isAssignableTo(constraint, target_t) catch return error.OutOfMemory;
+    }
+
     fn conditionalExpressionAssignableToTarget(self: *Checker, value_node: NodeId, target_t: TypeId) CheckError!bool {
         if (value_node == hir_mod.none_node_id or self.hir.kindOf(value_node) != .conditional) return false;
         const c = hir_mod.conditionalOf(self.hir, value_node);
@@ -29272,6 +29280,7 @@ pub const Checker = struct {
         else
             try self.checkExpression(l.rhs);
         if (try self.expressionNodeAssignableToTarget(l.rhs, rhs_t, target_t)) return true;
+        if (try self.constrainedTypeParameterAssignableToTarget(rhs_t, target_t)) return true;
         if ((self.hir.kindOf(l.rhs) == .arrow_fn or self.hir.kindOf(l.rhs) == .fn_expr) and
             try self.functionExpressionAssignableToTarget(l.rhs, target_t))
         {
@@ -45152,7 +45161,10 @@ pub const Checker = struct {
                 try self.report(l.lhs, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
             }
         }
-        const lhs_result = try self.expressionLiteralType(l.lhs, lhs);
+        const lhs_result = if (l.op == .@"or")
+            try self.logicalOrTruthyType(try self.expressionLiteralType(l.lhs, lhs))
+        else
+            try self.expressionLiteralType(l.lhs, lhs);
         const rhs_result = try self.expressionLiteralType(l.rhs, rhs);
         return self.interner.internUnion(&.{ lhs_result, rhs_result }) catch error.OutOfMemory;
     }
@@ -51889,7 +51901,7 @@ pub const Checker = struct {
                         // and `intersectionAndUnionTypes.ts(23,1)`.
                         const member_flags = self.interner.pool.flagsOf(member);
                         const needs_parens = std.mem.indexOf(u8, member_name, "=>") != null or
-                            member_flags.is_intersection;
+                            (member_flags.is_intersection and self.alias_display_names.get(member) == null);
                         if (needs_parens) try union_buf.append(arena_u, '(');
                         try union_buf.appendSlice(arena_u, member_name);
                         if (needs_parens) try union_buf.append(arena_u, ')');
@@ -53975,6 +53987,19 @@ pub const Checker = struct {
         if (kept.items.len == 0) return types.Primitive.never;
         if (kept.items.len == 1) return kept.items[0];
         return self.interner.internUnion(kept.items) catch return error.OutOfMemory;
+    }
+
+    fn logicalOrTruthyType(self: *Checker, t: TypeId) !TypeId {
+        if (t >= self.interner.pool.typeCount()) return t;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_type_parameter) {
+            const empty_obj = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+            const nonnullable = self.interner.internIntersection(&.{ t, empty_obj }) catch return error.OutOfMemory;
+            const alias_name = self.string_interner.intern("NonNullable") catch return error.OutOfMemory;
+            try self.registerAliasDisplayName(nonnullable, alias_name, &.{t});
+            return nonnullable;
+        }
+        return self.subtractNullUndefined(t);
     }
 
     /// Widen `t` with `undefined` when `noUncheckedIndexedAccess`
@@ -61880,6 +61905,35 @@ test "checker: TS7006 not emitted on arrow RHS of `||` with typed LHS" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.parameter_implicitly_any);
     }
+}
+
+test "checker: logical-or over type parameters uses NonNullable LHS" {
+    const s = try newSetup(
+        \\function fn1<T, U>(t: T, u: U) {
+        \\    var r3 = t || u;
+        \\    var r4: {} = t || u;
+        \\}
+        \\function fn2<T, U, V>(t: T, u: U, v: V) {
+        \\    var r5 = u || v;
+        \\    var r6: {} = u || v;
+        \\}
+        \\function fn3<T extends { a: string; b: string }, U extends { a: string; b: number }>(t: T, u: U) {
+        \\    var r1 = t || u;
+        \\    var r2: {} = t || u;
+        \\    var r3 = t || { a: '' };
+        \\    var r4: { a: string } = t || u;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    var ts2322_count: u32 = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.type_not_assignable) continue;
+        ts2322_count += 1;
+    }
+    try T.expectEqual(@as(u32, 2), ts2322_count);
 }
 
 test "checker: JSX child against empty `props: {}` target does not emit children TS2353" {
