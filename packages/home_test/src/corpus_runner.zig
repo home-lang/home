@@ -29,6 +29,14 @@ pub const Summary = struct {
     reason: []const u8 = "",
     first_failure_file: []const u8 = "",
     first_failure_message: []const u8 = "",
+    first_failure_message_owned: bool = false,
+
+    pub fn deinit(self: *Summary, allocator: std.mem.Allocator) void {
+        if (self.first_failure_message_owned) {
+            allocator.free(self.first_failure_message);
+            self.first_failure_message_owned = false;
+        }
+    }
 };
 
 pub const minimal_js_files = [_][]const u8{
@@ -36,11 +44,56 @@ pub const minimal_js_files = [_][]const u8{
     "js/web/util/atob.test.js",
     "regression/issue/23723.test.js",
     "regression/issue/12650.test.js",
+    "js/node/domexception-node.test.js",
 };
 
 const prelude =
     \\var __home_bun_tests = { passed: 0, failed: 0, todo: 0 };
     \\var Bun = { [Symbol.toStringTag]: "Bun" };
+    \\function __home_fail(message) {
+    \\  throw new Error(message);
+    \\}
+    \\function __home_format(value) {
+    \\  try {
+    \\    if (typeof value === "string") return value;
+    \\    return JSON.stringify(value);
+    \\  } catch (error) {
+    \\    return String(value);
+    \\  }
+    \\}
+    \\function __home_is_thenable(value) {
+    \\  return value !== null && (typeof value === "object" || typeof value === "function") && typeof value.then === "function";
+    \\}
+    \\function __home_assert(pass, isNot, message) {
+    \\  if (isNot ? pass : !pass) __home_fail(message);
+    \\}
+    \\function __home_deep_equal(a, b, strict, seen) {
+    \\  if (Object.is(a, b)) return true;
+    \\  if (a === null || b === null) return false;
+    \\  if (typeof a !== "object" || typeof b !== "object") return false;
+    \\  if (strict && Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false;
+    \\  if (a instanceof Date || b instanceof Date) return a instanceof Date && b instanceof Date && Object.is(a.getTime(), b.getTime());
+    \\  if (a instanceof RegExp || b instanceof RegExp) return a instanceof RegExp && b instanceof RegExp && a.source === b.source && a.flags === b.flags;
+    \\  if (Array.isArray(a) || Array.isArray(b)) {
+    \\    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    \\    for (let i = 0; i < a.length; i++) {
+    \\      if (strict && ((i in a) !== (i in b))) return false;
+    \\      if (!__home_deep_equal(a[i], b[i], strict, seen)) return false;
+    \\    }
+    \\    return true;
+    \\  }
+    \\  const previous = seen.get(a);
+    \\  if (previous === b) return true;
+    \\  seen.set(a, b);
+    \\  const aKeys = Object.keys(a);
+    \\  const bKeys = Object.keys(b);
+    \\  if (aKeys.length !== bKeys.length) return false;
+    \\  for (const key of aKeys) {
+    \\    if (!Object.prototype.hasOwnProperty.call(b, key)) return false;
+    \\    if (!__home_deep_equal(a[key], b[key], strict, seen)) return false;
+    \\  }
+    \\  return true;
+    \\}
     \\function __home_invalid_character(message) {
     \\  const error = new Error(message || "The string contains invalid characters.");
     \\  error.name = "InvalidCharacterError";
@@ -52,7 +105,8 @@ const prelude =
     \\    return;
     \\  }
     \\  try {
-    \\    fn();
+    \\    const result = fn();
+    \\    if (__home_is_thenable(result)) __home_fail("Async tests are not supported by the Home Bun corpus bootstrap runner yet");
     \\    __home_bun_tests.passed++;
     \\  } catch (error) {
     \\    __home_bun_tests.failed++;
@@ -60,20 +114,51 @@ const prelude =
     \\  }
     \\}
     \\function it(name, fn) { __home_run_test(name, fn); }
+    \\it.failing = function(name, fn) {
+    \\  if (typeof fn !== "function") {
+    \\    __home_bun_tests.todo++;
+    \\    return;
+    \\  }
+    \\  try {
+    \\    const result = fn();
+    \\    if (__home_is_thenable(result)) __home_fail("Async tests are not supported by the Home Bun corpus bootstrap runner yet");
+    \\  } catch (error) {
+    \\    __home_bun_tests.passed++;
+    \\    return;
+    \\  }
+    \\  __home_bun_tests.failed++;
+    \\  __home_fail("Expected failing test to fail");
+    \\};
     \\it.todo = function(name, fn) {
     \\  __home_bun_tests.todo++;
     \\};
     \\function test(name, fn) { return it(name, fn); }
     \\test.todo = it.todo;
+    \\test.failing = it.failing;
     \\function describe(name, fn) {
     \\  if (typeof fn === "function") fn();
     \\}
-    \\function expect(value) {
-    \\  return {
+    \\function __home_make_expectation(value, isNot) {
+    \\  const expectation = {
+    \\    get not() {
+    \\      return __home_make_expectation(value, !isNot);
+    \\    },
     \\    toBe(expected) {
-    \\      if (!Object.is(value, expected)) {
-    \\        throw new Error("Expected " + String(value) + " to be " + String(expected));
-    \\      }
+    \\      __home_assert(Object.is(value, expected), isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be " + __home_format(expected));
+    \\    },
+    \\    toBeDefined() {
+    \\      __home_assert(value !== undefined, isNot, "Expected value" + (isNot ? " not" : "") + " to be defined");
+    \\    },
+    \\    toBeInstanceOf(ctor) {
+    \\      __home_assert(value instanceof ctor, isNot, "Expected value" + (isNot ? " not" : "") + " to be instance of " + (ctor && ctor.name || "<anonymous>"));
+    \\    },
+    \\    toEqual(expected) {
+    \\      if (arguments.length < 1) __home_fail("toEqual() requires 1 argument");
+    \\      __home_assert(__home_deep_equal(value, expected, false, new Map()), isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to equal " + __home_format(expected));
+    \\    },
+    \\    toStrictEqual(expected) {
+    \\      if (arguments.length < 1) __home_fail("toStrictEqual() requires 1 argument");
+    \\      __home_assert(__home_deep_equal(value, expected, true, new Map()), isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to strictly equal " + __home_format(expected));
     \\    },
     \\    toThrow(expected) {
     \\      if (typeof value !== "function") throw new Error("Expected value to be a function");
@@ -83,21 +168,35 @@ const prelude =
     \\      } catch (error) {
     \\        thrown = error;
     \\      }
-    \\      if (thrown === null) throw new Error("Expected function to throw");
-    \\      if (expected && expected.__home_expect_any) {
-    \\        if (!(thrown instanceof expected.ctor)) {
-    \\          throw new Error("Expected thrown value to be instance of " + expected.ctor.name);
-    \\        }
+    \\      if (thrown === null) {
+    \\        __home_assert(false, isNot, "Expected function" + (isNot ? " not" : "") + " to throw");
     \\        return;
     \\      }
-    \\      if (expected !== undefined && !String(thrown && thrown.message).includes(String(expected))) {
-    \\        throw new Error("Expected thrown message to include " + String(expected));
+    \\      if (isNot && expected === undefined) __home_fail("Expected function not to throw");
+    \\      if (expected && expected.__home_expect_any) {
+    \\        __home_assert(thrown instanceof expected.ctor, isNot, "Expected thrown value" + (isNot ? " not" : "") + " to be instance of " + expected.ctor.name);
+    \\        return;
+    \\      }
+    \\      if (typeof expected === "function") {
+    \\        __home_assert(thrown instanceof expected, isNot, "Expected thrown value" + (isNot ? " not" : "") + " to be instance of " + expected.name);
+    \\        return;
+    \\      }
+    \\      if (expected instanceof RegExp) {
+    \\        __home_assert(expected.test(String(thrown && thrown.message)), isNot, "Expected thrown message" + (isNot ? " not" : "") + " to match " + String(expected));
+    \\        return;
+    \\      }
+    \\      if (expected !== undefined) {
+    \\        __home_assert(String(thrown && thrown.message).includes(String(expected)), isNot, "Expected thrown message" + (isNot ? " not" : "") + " to include " + String(expected));
     \\      }
     \\    },
     \\    toThrowError(expected) {
     \\      return this.toThrow(expected);
     \\    }
     \\  };
+    \\  return expectation;
+    \\}
+    \\function expect(value) {
+    \\  return __home_make_expectation(value, false);
     \\}
     \\function btoa(value) {
     \\  if (arguments.length < 1) throw new TypeError("btoa requires 1 argument (a string)");
@@ -145,6 +244,78 @@ const prelude =
     \\expect.any = function(ctor) {
     \\  return { __home_expect_any: true, ctor };
     \\};
+    \\var DOMException = (function() {
+    \\  const codes = {
+    \\    IndexSizeError: 1,
+    \\    DOMStringSizeError: 2,
+    \\    HierarchyRequestError: 3,
+    \\    WrongDocumentError: 4,
+    \\    InvalidCharacterError: 5,
+    \\    NoDataAllowedError: 6,
+    \\    NoModificationAllowedError: 7,
+    \\    NotFoundError: 8,
+    \\    NotSupportedError: 9,
+    \\    InUseAttributeError: 10,
+    \\    InvalidStateError: 11,
+    \\    SyntaxError: 12,
+    \\    InvalidModificationError: 13,
+    \\    NamespaceError: 14,
+    \\    InvalidAccessError: 15,
+    \\    ValidationError: 16,
+    \\    TypeMismatchError: 17,
+    \\    SecurityError: 18,
+    \\    NetworkError: 19,
+    \\    AbortError: 20,
+    \\    URLMismatchError: 21,
+    \\    QuotaExceededError: 22,
+    \\    TimeoutError: 23,
+    \\    InvalidNodeTypeError: 24,
+    \\    DataCloneError: 25,
+    \\  };
+    \\  class HomeDOMException extends Error {
+    \\    constructor(message, nameOrOptions) {
+    \\      const options = typeof nameOrOptions === "object" && nameOrOptions !== null ? nameOrOptions : null;
+    \\      const name = options ? (options.name || "Error") : (nameOrOptions || "Error");
+    \\      super(message === undefined ? "" : String(message));
+    \\      this.name = String(name);
+    \\      this.code = codes[this.name] || 0;
+    \\      if (options && "cause" in options) this.cause = options.cause;
+    \\      delete this.stack;
+    \\    }
+    \\  }
+    \\  const constants = {
+    \\    INDEX_SIZE_ERR: 1,
+    \\    DOMSTRING_SIZE_ERR: 2,
+    \\    HIERARCHY_REQUEST_ERR: 3,
+    \\    WRONG_DOCUMENT_ERR: 4,
+    \\    INVALID_CHARACTER_ERR: 5,
+    \\    NO_DATA_ALLOWED_ERR: 6,
+    \\    NO_MODIFICATION_ALLOWED_ERR: 7,
+    \\    NOT_FOUND_ERR: 8,
+    \\    NOT_SUPPORTED_ERR: 9,
+    \\    INUSE_ATTRIBUTE_ERR: 10,
+    \\    INVALID_STATE_ERR: 11,
+    \\    SYNTAX_ERR: 12,
+    \\    INVALID_MODIFICATION_ERR: 13,
+    \\    NAMESPACE_ERR: 14,
+    \\    INVALID_ACCESS_ERR: 15,
+    \\    VALIDATION_ERR: 16,
+    \\    TYPE_MISMATCH_ERR: 17,
+    \\    SECURITY_ERR: 18,
+    \\    NETWORK_ERR: 19,
+    \\    ABORT_ERR: 20,
+    \\    URL_MISMATCH_ERR: 21,
+    \\    QUOTA_EXCEEDED_ERR: 22,
+    \\    TIMEOUT_ERR: 23,
+    \\    INVALID_NODE_TYPE_ERR: 24,
+    \\    DATA_CLONE_ERR: 25,
+    \\  };
+    \\  for (const key of Object.keys(constants)) {
+    \\    HomeDOMException[key] = constants[key];
+    \\    HomeDOMException.prototype[key] = constants[key];
+    \\  }
+    \\  return HomeDOMException;
+    \\})();
     \\
 ;
 
@@ -256,10 +427,13 @@ fn recordFailure(
     if (summary.first_failure_file.len != 0) return;
 
     summary.first_failure_file = relative;
-    summary.first_failure_message = if (message) |text|
-        try allocator.dupe(u8, text)
-    else
-        "JSEvaluateScript returned null without an exception";
+    if (message) |text| {
+        summary.first_failure_message = try allocator.dupe(u8, text);
+        summary.first_failure_message_owned = true;
+    } else {
+        summary.first_failure_message_owned = false;
+        summary.first_failure_message = "JSEvaluateScript returned null without an exception";
+    }
 }
 
 test "subset flag parser recognizes the bootstrap subset" {
@@ -272,6 +446,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/web/util/atob.test.js", filesForSubset(.minimal_js)[1]);
     try std.testing.expectEqualStrings("regression/issue/23723.test.js", filesForSubset(.minimal_js)[2]);
     try std.testing.expectEqualStrings("regression/issue/12650.test.js", filesForSubset(.minimal_js)[3]);
+    try std.testing.expectEqualStrings("js/node/domexception-node.test.js", filesForSubset(.minimal_js)[4]);
 }
 
 test "Bun test import rewrite installs the bootstrap prelude" {
@@ -283,6 +458,8 @@ test "Bun test import rewrite installs the bootstrap prelude" {
     defer std.testing.allocator.free(rewritten);
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "function it(name, fn)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "function __home_is_thenable(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeInstanceOf(ctor)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "it(\"works\"") != null);
 }
@@ -294,4 +471,14 @@ test "failure recorder keeps the first failing file" {
 
     try std.testing.expectEqualStrings("first.test.js", summary.first_failure_file);
     try std.testing.expectEqualStrings("JSEvaluateScript returned null without an exception", summary.first_failure_message);
+}
+
+test "failure recorder owns duplicated exception messages" {
+    var summary = Summary{};
+    defer summary.deinit(std.testing.allocator);
+
+    try recordFailure(std.testing.allocator, &summary, "first.test.js", "boom");
+
+    try std.testing.expect(summary.first_failure_message_owned);
+    try std.testing.expectEqualStrings("boom", summary.first_failure_message);
 }

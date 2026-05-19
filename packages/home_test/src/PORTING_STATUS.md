@@ -21,6 +21,14 @@ explicit `--bun-corpus-native-subset=minimal-js` bootstrap path. The
 full runner remains blocked on the native `bun:test` port and JSC
 host-call bridge.
 
+The bootstrap prelude is intentionally narrow but now covers the first
+real smoke slice: basic `describe` / `test` / `it`, `it.todo`,
+`it.failing`, returned-thenable rejection, `.not`, `toBe`,
+`toBeDefined`, `toBeInstanceOf`, small `toEqual` / `toStrictEqual`
+deep equality, `toThrow`, `expect.any`, `atob` / `btoa`, `Bun`
+branding, and a DOMException shim. It is a stepping stone for corpus
+bring-up, not a substitute for the vendored Zig runner below.
+
 > **Why a verbatim copy?** Per direction 2026-05-14: Bun is shifting
 > its core to Rust; we want to continue maintaining the Zig portion
 > ourselves. Vendoring lets us adapt the test runner to Home's HIR /

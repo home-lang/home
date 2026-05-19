@@ -2924,7 +2924,7 @@ fn argBunCorpusSubset(args: []const [:0]const u8) ?home_test.corpus_runner.Subse
 }
 
 fn runBunCorpusNativeSubset(allocator: std.mem.Allocator, corpus_path: []const u8, subset: home_test.corpus_runner.Subset) !void {
-    const summary = try home_test.corpus_runner.runSubset(g_io, allocator, corpus_path, subset);
+    var summary = try home_test.corpus_runner.runSubset(g_io, allocator, corpus_path, subset);
 
     if (summary.blocked) {
         std.debug.print("\n{s}Bun Corpus Native Subset: BLOCKED{s}\n", .{ Color.Yellow.code(), Color.Reset.code() });
@@ -2939,9 +2939,11 @@ fn runBunCorpusNativeSubset(allocator: std.mem.Allocator, corpus_path: []const u
         std.process.exit(1);
     }
 
+    const tests_observed = summary.passed + summary.failed + summary.todo;
+    const failed = summary.failed != 0 or summary.files == 0 or tests_observed == 0;
     std.debug.print("\n{s}Bun Corpus Native Subset: {s}{s}\n", .{
-        if (summary.failed == 0) Color.Green.code() else Color.Red.code(),
-        if (summary.failed == 0) "PASS" else "FAIL",
+        if (!failed) Color.Green.code() else Color.Red.code(),
+        if (!failed) "PASS" else "FAIL",
         Color.Reset.code(),
     });
     std.debug.print("{s}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
@@ -2955,8 +2957,15 @@ fn runBunCorpusNativeSubset(allocator: std.mem.Allocator, corpus_path: []const u
         std.debug.print("first failure: {s}\n", .{summary.first_failure_file});
         std.debug.print("message: {s}\n\n", .{summary.first_failure_message});
     }
+    if (tests_observed == 0) {
+        std.debug.print("reason: no-tests-observed\n\n", .{});
+    }
 
-    if (summary.failed != 0) std.process.exit(1);
+    if (failed) {
+        summary.deinit(allocator);
+        std.process.exit(1);
+    }
+    summary.deinit(allocator);
 }
 
 fn runBunCorpusNativeGate(allocator: std.mem.Allocator, corpus_path: []const u8) !void {
