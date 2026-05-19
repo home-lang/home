@@ -501,7 +501,31 @@ pub const node = struct {
     // Seventh-wave port batch (2026-05-18):
     pub const time_like = @import("node/time_like.zig");
     pub const os_constants = @import("node/os_constants.zig");
+    // Phase 12.7 port (2026-05-19) — `node:util` Zig substrate. Top-level
+    // surface (inspect/format/formatWithOptions/isDeepStrictEqual/
+    // deprecate/debuglog/debug/promisify/callbackify + InspectOptions +
+    // Logger + types.*) re-exports from `node/util.zig`. Zig 0.17 removed
+    // `usingnamespace`, so each public symbol is aliased explicitly.
+    // `parse_args_utils` is the pre-existing parse-args helper. The JS
+    // shim re-attaches once the Phase 12.2 JSC bridge is live.
     pub const util = struct {
+        const util_substrate = @import("node/util.zig");
+        pub const InspectOptions = util_substrate.InspectOptions;
+        pub const Logger = util_substrate.Logger;
+        pub const max_inspect_depth = util_substrate.max_inspect_depth;
+        pub const max_inspect_bytes = util_substrate.max_inspect_bytes;
+        pub const inspect = util_substrate.inspect;
+        pub const format = util_substrate.format;
+        pub const formatWithOptions = util_substrate.formatWithOptions;
+        pub const isDeepStrictEqual = util_substrate.isDeepStrictEqual;
+        pub const deprecate = util_substrate.deprecate;
+        pub const debuglog = util_substrate.debuglog;
+        pub const debug = util_substrate.debug;
+        pub const promisify = util_substrate.promisify;
+        pub const callbackify = util_substrate.callbackify;
+        pub const lastOutput = util_substrate.lastOutput;
+        pub const clearLastOutput = util_substrate.clearLastOutput;
+        pub const types = util_substrate.types;
         pub const parse_args_utils = @import("node/util/parse_args_utils.zig");
     };
     // Eighth-wave port batch (2026-05-18). myers_diff unparked (Zig 0.17
@@ -1277,6 +1301,7 @@ test {
     _ = @import("node/node_fs_constant.zig");
     _ = @import("node/assert/myers_diff.zig");
     _ = @import("node/assert.zig");
+    _ = @import("node/util.zig");
     _ = @import("s3_signing/acl.zig");
     _ = @import("s3_signing/storage_class.zig");
     _ = @import("s3_signing/error.zig");
