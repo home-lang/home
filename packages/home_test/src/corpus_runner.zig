@@ -132,6 +132,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/expect-unreaachable.test.ts",
     "regression/issue/06467.test.ts",
     "regression/issue/11677.test.ts",
+    "js/node/buffer-utf16.test.ts",
 };
 
 const harness_prelude =
@@ -454,6 +455,28 @@ const harness_prelude =
     \\  Buffer.alloc = function(size) {
     \\    if (!Number.isFinite(size) || size < 0) throw new RangeError("Invalid Buffer size");
     \\    return new Buffer(size >>> 0);
+    \\  };
+    \\  Buffer.from = function(value, encoding) {
+    \\    const normalized = encoding === undefined ? "utf8" : String(encoding).toLowerCase();
+    \\    if (typeof value === "string" && (normalized === "utf-16le" || normalized === "utf16le" || normalized === "ucs2" || normalized === "ucs-2")) {
+    \\      const buffer = new Buffer(value.length * 2);
+    \\      for (let i = 0; i < value.length; i++) {
+    \\        const code = value.charCodeAt(i);
+    \\        buffer[i * 2] = code & 0xff;
+    \\        buffer[i * 2 + 1] = (code >> 8) & 0xff;
+    \\      }
+    \\      return buffer;
+    \\    }
+    \\    __home_unsupported("Only Buffer.from(string, 'utf-16le') is supported by the Home Bun corpus bootstrap runner");
+    \\  };
+    \\  Buffer.prototype.toString = function(encoding) {
+    \\    const normalized = encoding === undefined ? "utf8" : String(encoding).toLowerCase();
+    \\    if (normalized === "hex") {
+    \\      let output = "";
+    \\      for (let i = 0; i < this.length; i++) output += this[i].toString(16).padStart(2, "0");
+    \\      return output;
+    \\    }
+    \\    __home_unsupported("Only Buffer.toString('hex') is supported by the Home Bun corpus bootstrap runner");
     \\  };
     \\  Buffer.prototype.write = function(value, offsetOrEncoding, lengthOrEncoding, encodingMaybe) {
     \\    let offset = 0;
@@ -987,6 +1010,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/bun/test/expect-unreaachable.test.ts", filesForSubset(.minimal_js)[20]);
     try std.testing.expectEqualStrings("regression/issue/06467.test.ts", filesForSubset(.minimal_js)[21]);
     try std.testing.expectEqualStrings("regression/issue/11677.test.ts", filesForSubset(.minimal_js)[22]);
+    try std.testing.expectEqualStrings("js/node/buffer-utf16.test.ts", filesForSubset(.minimal_js)[23]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -1010,6 +1034,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.redirect") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.json") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.alloc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.from") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toString(16).padStart") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Error.prepareStackTrace") != null);
 }
 

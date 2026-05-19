@@ -30,7 +30,7 @@ the first real smoke slice: basic `describe` / `test` / `it`,
 `expect.unreachable`, `toIncludeRepeated`, `toContainKey`,
 `toContainKeys`, `toContainAnyKeys`, `atob` / `btoa`, `Bun` branding
 plus `Bun.stripANSI`, a DOMException shim, a tiny Node `Buffer.alloc` /
-`Buffer.write(..., "binary")` shim, Web
+`Buffer.write(..., "binary")` / `Buffer.from(..., "utf-16le")` shim, Web
 `Response.json` / `Response.redirect` shims, and a narrow
 `ShadowRealm.evaluate` shim. The source rewrite lowers supported
 `bun:test` imports to a virtual `globalThis.__home_import("bun:test")`
