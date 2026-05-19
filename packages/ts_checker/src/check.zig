@@ -2334,10 +2334,51 @@ pub const Checker = struct {
         return false;
     }
 
+    /// TS2433 — `A namespace declaration cannot be in a different
+    /// file from a class or function with which it is merged.` Fires
+    /// when a top-level `namespace X { … }` shares its name with a
+    /// `class X { … }` / `function X(){}` declared in a sibling
+    /// `@filename:` virtual section of the same compilation. The
+    /// detection runs on the concatenated source so it sees both
+    /// declarations; cross-virtual-section comparison via
+    /// `virtualSectionFilenameForNode`. Skipped when the source has
+    /// no virtual-section markers (single-file fixtures can't trigger
+    /// the cross-file shape).
+    fn checkNamespaceCrossFileMergeMismatch(self: *Checker, node: NodeId) CheckError!void {
+        if (!self.sourceHasVirtualFilenameSections()) return;
+        if (self.namespaceIsAmbient(node)) return;
+        const ns = hir_mod.namespaceOf(self.hir, node);
+        if (ns.name == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(ns.name) != .identifier) return;
+        const ns_name = hir_mod.identifierOf(self.hir, ns.name).name;
+        const ns_section = self.virtualSectionFilenameForNode(node) orelse return;
+        const root = self.rootBlockFor(node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            const k = self.hir.kindOf(stmt);
+            if (k != .class_decl and k != .fn_decl) continue;
+            const sibling_name: hir_mod.NodeId = switch (k) {
+                .class_decl => hir_mod.classOf(self.hir, stmt).name,
+                .fn_decl => hir_mod.fnDeclOf(self.hir, stmt).name,
+                else => continue,
+            };
+            if (sibling_name == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(sibling_name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, sibling_name).name != ns_name) continue;
+            const sibling_section = self.virtualSectionFilenameForNode(stmt) orelse continue;
+            if (std.mem.eql(u8, sibling_section, ns_section)) continue;
+            // Cross-file merge mismatch — emit TS2433 anchored at the
+            // namespace's name identifier.
+            try self.report(ns.name, TsCodes.namespace_in_different_file, "A namespace declaration cannot be in a different file from a class or function with which it is merged.");
+            return;
+        }
+    }
+
     fn checkNamespaceTypeStatements(self: *Checker, node: NodeId) CheckError!void {
         try self.checkUntypedModuleAugmentation(node);
         try self.checkAmbientModulePatternAsterisks(node);
         try self.checkGlobalAugmentationDiagnostics(node);
+        try self.checkNamespaceCrossFileMergeMismatch(node);
         const ns = hir_mod.namespaceOf(self.hir, node);
         // Skip TS8006 for ambient `declare module "fs" { ... }` forms —
         // upstream tsc only fires on plain `namespace` declarations.
