@@ -32474,7 +32474,32 @@ pub const Checker = struct {
         }
 
         if (!self.jsxTagIsIntrinsic(el.tag) and try self.jsxComponentTypeInvalid(el.tag)) {
-            try self.report(el.tag, TsCodes.jsx_element_no_construct_or_call, "JSX element type does not have any construct or call signatures.");
+            // tsc embeds the tag's source text in the TS2604 message
+            // when the tag is a reference (`<this/>` -> `'this'`).
+            // Mirrors tsxDynamicTagName7's `JSX element type 'this'`
+            // anchored at the opening tag's `this` keyword.
+            const tag_kind = self.hir.kindOf(el.tag);
+            if (tag_kind == .this_expr or tag_kind == .identifier) {
+                const src = self.source orelse "";
+                const span = self.hir.spanOf(el.tag);
+                if (span.start < span.end and span.end <= src.len) {
+                    const tag_text = src[span.start..span.end];
+                    const msg = std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "JSX element type '{s}' does not have any construct or call signatures.",
+                        .{tag_text},
+                    ) catch return error.OutOfMemory;
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = el.tag,
+                        .code = TsCodes.jsx_element_no_construct_or_call,
+                        .message = msg,
+                    });
+                } else {
+                    try self.report(el.tag, TsCodes.jsx_element_no_construct_or_call, "JSX element type does not have any construct or call signatures.");
+                }
+            } else {
+                try self.report(el.tag, TsCodes.jsx_element_no_construct_or_call, "JSX element type does not have any construct or call signatures.");
+            }
         }
 
         var has_any_spread = false;
