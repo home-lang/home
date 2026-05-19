@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Sync Bun's test/ corpus into packages/runtime/test/bun-corpus/ at the pinned
+# upstream SHA. This is the substrate for the Phase 12 acceptance gate; the
+# runtime must eventually pass 100% of these tests (see
+# packages/runtime/README.md "Acceptance gate" section).
+#
+# Renaming Bun.* -> Home.* happens at test-runtime, NOT at copy time, so the
+# corpus stays verbatim and re-syncs cleanly.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BUN_REPO="${BUN_REPO:-${HOME}/Code/bun}"
+DEST="${REPO_ROOT}/packages/runtime/test/bun-corpus"
+PIN_FILE="${REPO_ROOT}/packages/runtime/UPSTREAM_SHA.txt"
+
+if [[ ! -d "${BUN_REPO}/.git" ]]; then
+  echo "error: Bun checkout not found at ${BUN_REPO}" >&2
+  echo "       set BUN_REPO=/path/to/bun and re-run" >&2
+  exit 2
+fi
+
+EXPECTED_SHA="$(tr -d '[:space:]' < "${PIN_FILE}")"
+ACTUAL_SHA="$(git -C "${BUN_REPO}" rev-parse HEAD)"
+
+echo "pinned SHA   : ${EXPECTED_SHA}"
+echo "upstream HEAD: ${ACTUAL_SHA}"
+
+if [[ "${EXPECTED_SHA}" != "${ACTUAL_SHA}" ]]; then
+  echo "error: ${BUN_REPO} HEAD does not match pinned SHA." >&2
+  echo "       checkout ${EXPECTED_SHA} in ${BUN_REPO} (or update ${PIN_FILE}) and re-run." >&2
+  exit 1
+fi
+
+mkdir -p "${DEST}"
+
+# Filter rules:
+#   - whitelist fixtures/ and _util/ trees first so binary test inputs survive
+#   - then drop caches, build output, logs, and stray binaries elsewhere
+rsync -a --delete \
+  --filter='P UPSTREAM_SHA.txt' \
+  --filter='P README.md' \
+  --filter='+ fixtures/***' \
+  --filter='+ _util/***' \
+  --filter='+ **/fixtures/***' \
+  --filter='+ **/_util/***' \
+  --filter='- node_modules/' \
+  --filter='- .zig-cache/' \
+  --filter='- .bun-cache/' \
+  --filter='- coverage/' \
+  --filter='- dist/' \
+  --filter='- *.log' \
+  --filter='- .DS_Store' \
+  --filter='- *.exe' \
+  --filter='- *.dylib' \
+  --filter='- *.so' \
+  --filter='- *.wasm' \
+  --filter='- *.png' \
+  --filter='- *.gif' \
+  --filter='- *.mp4' \
+  --filter='- *.zip' \
+  "${BUN_REPO}/test/" "${DEST}/"
+
+printf '%s\n' "${EXPECTED_SHA}" > "${DEST}/UPSTREAM_SHA.txt"
+
+COUNT="$(find "${DEST}" -type f | wc -l | tr -d ' ')"
+SIZE="$(du -sh "${DEST}" | awk '{print $1}')"
+echo "synced ${COUNT} files (${SIZE}) into ${DEST}"
