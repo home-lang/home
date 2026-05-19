@@ -4173,9 +4173,31 @@ pub const Checker = struct {
                 }
             }
         }
-        for (overload_list.items[0 .. overload_list.items.len - 1]) |overload_sig| {
+        // Walk overload signatures in parallel with their declaration
+        // nodes so the diagnostic anchors at the offending OVERLOAD's
+        // name identifier, matching tsc's anchor (e.g.
+        // `specializedSignatureIsNotSubtypeOfNonSpecializedSignature.ts(1,10)`).
+        // `overload_decls` is parallel to `overload_list` modulo the
+        // trailing impl entry that this loop already excludes.
+        const ovl_decls_slice: []const NodeId = if (overload_nodes) |list|
+            list.items
+        else
+            &[_]NodeId{};
+        const last_idx = overload_list.items.len - 1;
+        for (overload_list.items[0..last_idx], 0..) |overload_sig, idx| {
             if (try self.overloadSignatureCompatibleWithImplementation(overload_sig, impl_sig)) continue;
-            try self.report(node, TsCodes.overload_signature_not_compatible, "This overload signature is not compatible with its implementation signature.");
+            const anchor: NodeId = blk: {
+                if (idx < ovl_decls_slice.len) {
+                    const ovl_node = ovl_decls_slice[idx];
+                    if (ovl_node != node) {
+                        const ovl_decl = hir_mod.fnDeclOf(self.hir, ovl_node);
+                        if (ovl_decl.name != hir_mod.none_node_id) break :blk ovl_decl.name;
+                        break :blk ovl_node;
+                    }
+                }
+                break :blk node;
+            };
+            try self.report(anchor, TsCodes.overload_signature_not_compatible, "This overload signature is not compatible with its implementation signature.");
             return;
         }
     }
