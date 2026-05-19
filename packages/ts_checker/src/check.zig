@@ -19443,7 +19443,7 @@ pub const Checker = struct {
             if (parent_string_idx != types.Primitive.none and child_string_idx != types.Primitive.none) {
                 const type_ok = try self.heritageAssignableDeep(child_string_idx, parent_string_idx);
                 if (!type_ok) {
-                    try self.reportInterfaceExtendsIndexMismatch(node);
+                    try self.reportInterfaceExtendsIndexMismatchAt(node, ext_node);
                     continue;
                 }
             }
@@ -19451,7 +19451,7 @@ pub const Checker = struct {
             if (parent_number_idx != types.Primitive.none and child_number_idx != types.Primitive.none) {
                 const type_ok = try self.heritageAssignableDeep(child_number_idx, parent_number_idx);
                 if (!type_ok) {
-                    try self.reportInterfaceExtendsIndexMismatch(node);
+                    try self.reportInterfaceExtendsIndexMismatchAt(node, ext_node);
                     continue;
                 }
             }
@@ -19469,7 +19469,7 @@ pub const Checker = struct {
             if (parent_symbol_idx != types.Primitive.none and child_symbol_idx != types.Primitive.none) {
                 const type_ok = try self.heritageAssignableDeep(child_symbol_idx, parent_symbol_idx);
                 if (!type_ok) {
-                    try self.reportInterfaceExtendsIndexMismatch(node);
+                    try self.reportInterfaceExtendsIndexMismatchAt(node, ext_node);
                     continue;
                 }
             }
@@ -19775,6 +19775,55 @@ pub const Checker = struct {
     }
 
     fn reportInterfaceExtendsIndexMismatch(self: *Checker, node: NodeId) CheckError!void {
+        try self.reportInterfaceExtendsIndexMismatchAt(node, hir_mod.none_node_id);
+    }
+
+    /// Emit the canonical `Interface 'X' incorrectly extends interface
+    /// 'Y'.` shape upstream tsc renders for index-signature mismatches
+    /// when both names resolve. Anchors at the child interface name
+    /// identifier so the column matches upstream
+    /// (`subtypingWithNumericIndexer2.ts(11,11)`). Falls back to the
+    /// legacy terse wording for anonymous / synthetic extends targets.
+    fn reportInterfaceExtendsIndexMismatchAt(
+        self: *Checker,
+        node: NodeId,
+        ext_node: NodeId,
+    ) CheckError!void {
+        if (self.hir.kindOf(node) == .interface_decl and ext_node != hir_mod.none_node_id) {
+            const iface_name_node = hir_mod.interfaceOf(self.hir, node).name;
+            const iface_name_id: ?hir_mod.StringId = blk: {
+                if (iface_name_node != hir_mod.none_node_id and
+                    self.hir.kindOf(iface_name_node) == .identifier)
+                {
+                    break :blk hir_mod.identifierOf(self.hir, iface_name_node).name;
+                }
+                break :blk null;
+            };
+            const base_name_id = self.unqualifiedTypeRefName(ext_node);
+            if (iface_name_id != null and base_name_id != null) {
+                const iface_name_str = self.string_interner.get(iface_name_id.?);
+                const base_name_str = self.string_interner.get(base_name_id.?);
+                const child_with_params = try self.formatInterfaceDisplayName(node, iface_name_str);
+                const ext_src = self.nodeSourceTextOrEmpty(ext_node);
+                const base_display: []const u8 = blk_base: {
+                    if (ext_src.len > 0 and std.mem.indexOfScalar(u8, ext_src, '<') != null) {
+                        break :blk_base ext_src;
+                    }
+                    break :blk_base base_name_str;
+                };
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Interface '{s}' incorrectly extends interface '{s}'.",
+                    .{ child_with_params, base_display },
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = iface_name_node,
+                    .code = TsCodes.interface_incorrectly_extends,
+                    .message = msg,
+                });
+                return;
+            }
+        }
         try self.diagnostics.append(self.gpa, .{
             .node = node,
             .code = TsCodes.interface_incorrectly_extends,
