@@ -31148,8 +31148,19 @@ pub const Checker = struct {
                 if (!member_is_optional_chain and self.strict_flags.strict_null_checks and self.typeIsPossiblyNullishStrict(obj_t)) {
                     if (!self.identifierIsPendingJsDocTypedVar(m.object)) {
                         try self.reportPossiblyNullishMember(m.object, obj_t);
+                        // After TS18047/TS18048/TS18049 fires, treat
+                        // the receiver as `any` for the property
+                        // resolution that follows so we don't cascade
+                        // a TS2339 on the narrowed-non-nullish type
+                        // (`f11.toFixed()` on `1 | 0 | ''` would fire
+                        // a spurious "Property 'toFixed' does not
+                        // exist on type '1 | 0 | \"\"'"). Mirrors
+                        // upstream tsc's nullish-then-stop behavior
+                        // on `nullishCoalescingOperator11.ts`.
+                        obj_t = types.Primitive.any;
+                    } else {
+                        obj_t = self.subtractNullUndefined(obj_t) catch obj_t;
                     }
-                    obj_t = self.subtractNullUndefined(obj_t) catch obj_t;
                 } else if (member_is_optional_chain) {
                     obj_t = self.subtractNullUndefined(obj_t) catch obj_t;
                 }
