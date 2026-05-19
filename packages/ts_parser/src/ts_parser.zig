@@ -5774,6 +5774,14 @@ pub const Parser = struct {
             break :blk try self.parseBindingPattern();
         } else id_blk: {
             const name_tok = try self.expectIdentifierLike();
+            // TS18029: ECMAScript `#name` identifiers may only
+            // appear as class members; `const #foo = 3` is invalid
+            // and tsc emits this dedicated diagnostic. Mirrors
+            // upstream `privateNameNotAllowedOutsideClass` and
+            // `privateNamesNotAllowedInVariableDeclarations`.
+            if (name_tok.kind == .private_identifier) {
+                try self.reportCodeAt(name_tok.span.start, name_tok.line, 18029, "Private identifiers are not allowed in variable declarations.");
+            }
             try self.reportInvalidVariableDeclarationName(name_tok);
             try self.reportInvalidStrictName(name_tok);
             try self.reportInvalidFutureReservedName(name_tok);
