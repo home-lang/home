@@ -16516,9 +16516,9 @@ pub const Checker = struct {
         // non-ambient, double-firing TS2391 on overloadless ambient
         // async signatures.
         const modifiers = [_][]const u8{
-            "async",   "export",   "default", "public",
-            "private", "protected", "readonly", "static",
-            "abstract", "override", "accessor",
+            "async",    "export",    "default",  "public",
+            "private",  "protected", "readonly", "static",
+            "abstract", "override",  "accessor",
         };
         outer: while (true) {
             while (i > 0 and std.ascii.isWhitespace(src[i - 1])) : (i -= 1) {}
@@ -43549,27 +43549,27 @@ pub const Checker = struct {
         // with `#` (the lexical-scoping rules for private names make
         // it unreachable through the static side).
         if (!self.memberNameIsEcmaPrivate(name)) {
-        if (self.class_name_by_instance.get(target_t)) |class_name| {
-            if (self.class_static_member_names.getPtr(class_name)) |statics| {
-                if (statics.contains(name)) {
-                    if (try self.allocPropertyMissingTargetTypeName(target_t)) |target_text| {
-                        const class_str = self.string_interner.get(class_name);
-                        const msg = try std.fmt.allocPrint(
-                            self.diag_arena.allocator(),
-                            "Property '{s}' does not exist on type '{s}'. Did you mean to access the static member '{s}.{s}' instead?",
-                            .{ name_str, target_text, class_str, name_str },
-                        );
-                        try self.diagnostics.append(self.gpa, .{
-                            .node = node,
-                            .pos = self.memberAccessNamePos(node),
-                            .code = TsCodes.property_does_not_exist_static_member,
-                            .message = msg,
-                        });
-                        return;
+            if (self.class_name_by_instance.get(target_t)) |class_name| {
+                if (self.class_static_member_names.getPtr(class_name)) |statics| {
+                    if (statics.contains(name)) {
+                        if (try self.allocPropertyMissingTargetTypeName(target_t)) |target_text| {
+                            const class_str = self.string_interner.get(class_name);
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Property '{s}' does not exist on type '{s}'. Did you mean to access the static member '{s}.{s}' instead?",
+                                .{ name_str, target_text, class_str, name_str },
+                            );
+                            try self.diagnostics.append(self.gpa, .{
+                                .node = node,
+                                .pos = self.memberAccessNamePos(node),
+                                .code = TsCodes.property_does_not_exist_static_member,
+                                .message = msg,
+                            });
+                            return;
+                        }
                     }
                 }
             }
-        }
         }
         if (try self.allocPropertyMissingTargetTypeName(target_t)) |target_text| {
             const msg = try std.fmt.allocPrint(
@@ -50760,6 +50760,7 @@ pub const Checker = struct {
     fn assignmentDiagnosticAnchor(self: *Checker, node: NodeId) ?u32 {
         if (self.hir.kindOf(node) != .assignment) return null;
         const a = hir_mod.assignmentOf(self.hir, node);
+        if (self.hir.kindOf(self.hir.parentOf(node)) == .for_stmt) return self.hir.spanOf(a.target).start;
         const src = self.source orelse return null;
         var pos: u32 = self.hir.spanOf(a.target).start;
         var found = false;
@@ -61748,21 +61749,29 @@ test "checker: JSX child against empty `props: {}` target does not emit children
 }
 
 test "checker: classic for header assignments are checked" {
-    const s = try newSetup(
+    const source =
         \\function f(x: string | number) {
         \\  for (x = undefined; typeof x !== "number"; x = undefined) {
         \\    x;
         \\  }
         \\}
-    );
+    ;
+    const s = try newSetup(source);
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     var count: usize = 0;
+    const first_target_pos: u32 = @intCast(std.mem.indexOf(u8, source, "x = undefined") orelse return error.TestUnexpectedResult);
+    var saw_first_target_anchor = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.type_not_assignable) count += 1;
+        if (d.code == TsCodes.type_not_assignable) {
+            count += 1;
+            const pos = d.pos orelse s.hir.spanOf(d.node).start;
+            if (pos == first_target_pos) saw_first_target_anchor = true;
+        }
     }
     try T.expect(count >= 2);
+    try T.expect(saw_first_target_anchor);
 }
 
 test "checker: interface extends inherits parent members" {
