@@ -28073,19 +28073,34 @@ pub const Checker = struct {
             .member_access => blk: {
                 const m = hir_mod.memberOf(self.hir, operand);
                 const obj_t = self.hir.typeOf(m.object);
+                // Enum members are read-only (`enum E { A }; delete E.A`
+                // → TS2704). Mirrors deleteOperatorWithEnumType.ts.
+                if (self.identifierReferencesEnum(m.object)) break :blk true;
                 if (obj_t == types.Primitive.none) break :blk false;
+                if (self.enumNameFromNominal(obj_t) != null) break :blk true;
                 break :blk self.propertyIsReadOnly(obj_t, m.name);
             },
             .element_access => blk: {
                 const e = hir_mod.elementOf(self.hir, operand);
                 if (self.hir.kindOf(e.index) != .literal_string) break :blk false;
+                if (self.identifierReferencesEnum(e.object)) break :blk true;
                 const obj_t = self.hir.typeOf(e.object);
                 if (obj_t == types.Primitive.none) break :blk false;
+                if (self.enumNameFromNominal(obj_t) != null) break :blk true;
                 const key = hir_mod.literalStringOf(self.hir, e.index).value;
                 break :blk self.propertyIsReadOnly(obj_t, key);
             },
             else => false,
         };
+    }
+
+    /// True when `node` is an identifier whose name binds to an enum
+    /// declaration in the current scope. Used by delete-operand
+    /// read-only detection for `delete E.A` / `delete E["A"]`.
+    fn identifierReferencesEnum(self: *Checker, node: NodeId) bool {
+        if (self.hir.kindOf(node) != .identifier) return false;
+        const name = hir_mod.identifierOf(self.hir, node).name;
+        return self.enumDeclForName(name) != null;
     }
 
     fn deleteOperandOptionalityAnchorPos(self: *Checker, operand: NodeId) ?u32 {
