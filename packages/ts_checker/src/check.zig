@@ -37266,11 +37266,10 @@ pub const Checker = struct {
     /// the lowered shape `target = target <op> value` produced by
     /// the parser for `??=`, `||=`, and `&&=`. After `x ??= "default"`
     /// narrows `x` to its non-nullish type unioned with the rhs's
-    /// type. For `||=` and `&&=` we use a v0 approximation: subtract
-    /// `null | undefined` from the lhs and union with rhs's type.
-    /// This handles the common `string | null | undefined` cases
-    /// that motivate the operators; richer truthy/falsy partitioning
-    /// is deferred until the relation engine models truthiness.
+    /// type. For `||=` we use a v0 approximation: subtract `null |
+    /// undefined` from the lhs and union with rhs's type. `&&=` does
+    /// not narrow on its own: when the lhs is nullish/falsy, the
+    /// assignment is skipped and the original value remains possible.
     fn applyLogicalAssignmentFlow(self: *Checker, stmt: NodeId) !void {
         if (self.hir.kindOf(stmt) != .assignment) return;
         const a = hir_mod.assignmentOf(self.hir, stmt);
@@ -37294,8 +37293,8 @@ pub const Checker = struct {
                 if (value_t == types.Primitive.none) return;
                 try self.recordNarrow(target_id.name, value_t);
             },
-            .@"or", .@"and" => {
-                // checkLogical produces `lhs | rhs` for `||`/`&&`,
+            .@"or" => {
+                // checkLogical produces `lhs | rhs` for `||`,
                 // which doesn't actually narrow. Compute a v0
                 // approximation: drop null/undefined from the lhs
                 // and union with the rhs. That covers the common
@@ -37308,6 +37307,7 @@ pub const Checker = struct {
                 const narrowed = self.interner.internUnion(&.{ lhs_non_null, rhs_t }) catch return;
                 try self.recordNarrow(target_id.name, narrowed);
             },
+            .@"and" => {},
         }
     }
 
@@ -62949,15 +62949,21 @@ test "checker: ||= narrows the assignment target by dropping nullish" {
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
-test "checker: &&= narrows the assignment target by dropping nullish" {
-    // After `x &&= ""`, `x: string | undefined` becomes `string`
-    // for subsequent statements (v0 approximation).
+test "checker: &&= preserves nullish target possibility" {
+    // `x &&= ""` only writes when `x` is truthy. If `x` starts as
+    // `undefined`, the write is skipped and `x` remains possibly
+    // undefined for subsequent statements.
     const s = try newSetup(
         \\function f(x: string | undefined) { x &&= ""; const r: string = x; }
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+    var saw_assignability = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) saw_assignability = true;
+    }
+    try T.expect(saw_assignability);
 }
 
 test "checker: optional chaining widens the result with undefined" {
