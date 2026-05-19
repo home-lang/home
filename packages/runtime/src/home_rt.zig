@@ -617,6 +617,12 @@ pub const node = struct {
     // RFC-3986-leaning parser; the JS shim re-attaches once the
     // Phase 12.2 JSC bridge is live.
     pub const url = @import("node/url.zig");
+    // Phase 12.7 round-12 (2026-05-19) — `node:crypto` minimal substrate
+    // built on std.crypto (CSPRNG + Hash family Md5/Sha1/Sha2/Sha3 +
+    // HMAC). OpenSSL-backed surfaces (pbkdf2, scrypt, cipher streams,
+    // sign/verify, ECDH, X509, KeyObject) stub-panic with TODO until
+    // the BoringSSL bindings port.
+    pub const crypto = @import("node/crypto.zig");
 };
 
 // ---- src/core/ + src/alloc/ + src/safety/ ----------------------
@@ -1561,6 +1567,8 @@ test {
     _ = @import("node/path.zig");
     _ = @import("node/buffer.zig");
     _ = @import("node/fs.zig");
+    _ = @import("node/url.zig");
+    _ = @import("node/crypto.zig");
     _ = @import("jsc/generated_classes_list.zig");
     _ = @import("runtime/api/bun/Terminal.zig");
     _ = @import("runtime/api/bun/spawn.zig");
