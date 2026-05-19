@@ -70,6 +70,23 @@ pub const HYPERFINE_RANDOMIZED_ENVIRONMENT_OFFSET = struct {
     }
 };
 
+/// Bun's `DebugSocketMonitorReader` / `DebugSocketMonitorWriter` use these
+/// to mirror inbound/outbound Postgres TLS reads/writes into a local file
+/// (debug builds only). Added in wave-15 alongside the monitor leaf ports.
+/// TODO(phase-12-N): generalise — Bun has a hand-rolled
+/// `bun.env_var.BUN_<name>` namespace; we only expose the two callers need.
+pub const BUN_POSTGRES_SOCKET_MONITOR_READER = struct {
+    pub fn get() ?[]const u8 {
+        return rawGet("BUN_POSTGRES_SOCKET_MONITOR_READER");
+    }
+};
+
+pub const BUN_POSTGRES_SOCKET_MONITOR_WRITER = struct {
+    pub fn get() ?[]const u8 {
+        return rawGet("BUN_POSTGRES_SOCKET_MONITOR_WRITER");
+    }
+};
+
 test "CI.get reads from the environment" {
     // We can't assume any specific env value is set, so just check
     // the call doesn't crash and the result is a valid optional bool.

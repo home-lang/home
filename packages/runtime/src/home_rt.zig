@@ -380,6 +380,12 @@ pub const uws_sys = struct {
         pub const Stream = @import("uws_sys/quic/Stream.zig").Stream;
         pub const Header = @import("uws_sys/quic/Header.zig").Header;
         pub const Qpack = @import("uws_sys/quic/Header.zig").Qpack;
+        // Fifteenth-wave port batch (2026-05-18). lsquic engine + event-loop
+        // wiring. Loop is a local forward-decl until uws_sys/Loop.zig lands.
+        pub const Context = @import("uws_sys/quic/Context.zig").Context;
+        // Fifteenth-wave port batch (2026-05-18). Sibling aggregator that
+        // re-exports all five quic opaques + the `globalInit` entrypoint.
+        pub const aggregator = @import("uws_sys/quic.zig");
     };
     // Twelfth-wave port batch (2026-05-18). Tier-0 uws_sys leaves whose
     // upstream deps collapse to opaques: Timer (Loop forward-decl),
@@ -657,6 +663,34 @@ pub const sourcemap = struct {
     pub const SourceContent = @import("sourcemap/types.zig").SourceContent;
 };
 
+// ---- src/bundler/ ------------------------------------------------------
+// Fifteenth-wave port batch (2026-05-18). The bundler-tree lives mostly
+// under `packages/bundler/`; only a handful of pure-data leaves that
+// other subsystems still need are mirrored here.
+pub const bundler = struct {
+    pub const IndexStringMap = @import("bundler/IndexStringMap.zig");
+};
+
+// ---- src/http_jsc/ -----------------------------------------------------
+// Fifteenth-wave port batch (2026-05-18). JSC bridges for the pure-data
+// types in `http_types/`. Each file is an `extern fn` declaration whose
+// definition resolves at link time once the JSC C++ host fns land in
+// Phase 12.2; the Zig surface stays minimal so callers can spell the
+// `toJS` entry-points today.
+pub const http_jsc = struct {
+    pub const method_jsc = @import("http_jsc/method_jsc.zig");
+    pub const fetch_enums_jsc = @import("http_jsc/fetch_enums_jsc.zig");
+};
+
+// ---- src/platform/ -----------------------------------------------------
+// Fifteenth-wave port batch (2026-05-18). Platform-specific syscall + log
+// surfaces. Darwin is fully self-contained (`$NOCANCEL` libc variants +
+// `os_log_create` / signpost externs); Linux/Windows are parked on
+// `bun.allocators.LinuxMemFdAllocator` / `bun.windows.*`.
+pub const platform = struct {
+    pub const darwin = @import("platform/darwin.zig");
+};
+
 // ---- src/ast/ ----------------------------------------------------------
 // Sixth-wave port batch (2026-05-18). Pure-data AST leaves only;
 // Ref/Index, the `use client`/`use server` directive parser, and the
@@ -703,6 +737,8 @@ pub const css = struct {
         // so the enum-property `DefineEnumProperty(todo_stuff.depth)`
         // lines compile cleanly while the real parser is parked.
         pub const svg = @import("css/properties/svg.zig");
+        // Fifteenth-wave port batch (2026-05-18):
+        pub const shape = @import("css/properties/shape.zig");
     };
     pub const PropertyCategory = logical.PropertyCategory;
     pub const LogicalGroup = logical.LogicalGroup;
@@ -874,6 +910,12 @@ pub const sql = struct {
         pub const TLSStatus = @import("sql/postgres/TLSStatus.zig").TLSStatus;
         pub const AnyPostgresError = @import("sql/postgres/AnyPostgresError.zig").AnyPostgresError;
         pub const PostgresErrorOptions = @import("sql/postgres/AnyPostgresError.zig").PostgresErrorOptions;
+        // Fifteenth-wave port batch (2026-05-18). Debug-only socket-monitor
+        // mirrors that copy inbound/outbound Postgres bytes to a file when
+        // `BUN_POSTGRES_SOCKET_MONITOR_{READER,WRITER}` are set. Both lean
+        // on the wave-15 `home_rt.Output.scoped` no-op stub.
+        pub const DebugSocketMonitorReader = @import("sql/postgres/DebugSocketMonitorReader.zig");
+        pub const DebugSocketMonitorWriter = @import("sql/postgres/DebugSocketMonitorWriter.zig");
         pub const types = struct {
             pub const int_types = @import("sql/postgres/types/int_types.zig");
         };
@@ -1282,6 +1324,16 @@ test {
     _ = @import("zlib_sys/shared.zig");
     _ = @import("zlib_sys/posix.zig");
     _ = @import("sql/mysql/protocol/EncodeInt.zig");
+    // Fifteenth-wave port batch (2026-05-18) — Tier-0 round-2 leaves.
+    _ = @import("bundler/IndexStringMap.zig");
+    _ = @import("http_jsc/method_jsc.zig");
+    _ = @import("http_jsc/fetch_enums_jsc.zig");
+    _ = @import("uws_sys/quic/Context.zig");
+    _ = @import("css/properties/shape.zig");
+    _ = @import("uws_sys/quic.zig");
+    _ = @import("platform/darwin.zig");
+    _ = @import("sql/postgres/DebugSocketMonitorReader.zig");
+    _ = @import("sql/postgres/DebugSocketMonitorWriter.zig");
 }
 
 test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {
