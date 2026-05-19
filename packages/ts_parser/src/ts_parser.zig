@@ -6703,7 +6703,7 @@ pub const Parser = struct {
                 // so the unresolved-type path can surface that name.
                 const bad = self.advance();
                 const carries_lexeme = switch (bad.kind) {
-                    .kw_break, .kw_continue, .kw_case, .kw_class, .kw_const, .kw_debugger, .kw_default, .kw_delete, .kw_do, .kw_else, .kw_enum, .kw_export, .kw_extends, .kw_finally, .kw_for, .kw_function, .kw_if, .kw_import, .kw_in, .kw_instanceof, .kw_let, .kw_return, .kw_super, .kw_switch, .kw_throw, .kw_try, .kw_typeof, .kw_var, .kw_while, .kw_with, .kw_yield => true,
+                    .kw_break, .kw_continue, .kw_case, .kw_class, .kw_const, .kw_debugger, .kw_default, .kw_delete, .kw_do, .kw_else, .kw_enum, .kw_export, .kw_extends, .kw_finally, .kw_for, .kw_function, .kw_if, .kw_import, .kw_in, .kw_instanceof, .kw_let, .kw_return, .kw_super, .kw_switch, .kw_throw, .kw_try, .kw_typeof, .kw_var, .kw_while, .kw_with, .kw_yield, .kw_await => true,
                     else => false,
                 };
                 const id = if (carries_lexeme)

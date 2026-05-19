@@ -20917,12 +20917,18 @@ pub const Checker = struct {
         // name") on the original identifier — in strict mode (ES2015+
         // target, or explicit `"use strict"`) `yield` is a reserved
         // word in any non-generator position. Mirrors upstream tsc on
-        // `FunctionDeclaration13_es6` (`var v: yield;`).
+        // `FunctionDeclaration13_es6` (`var v: yield;`). `await` falls
+        // into the same bucket inside an async function body — `var
+        // v: await;` triggers the type-position resolution with the
+        // upstream `Awaited` spelling suggestion path; mirrors
+        // `asyncFunctionDeclaration13_es{5,6,2017}` and
+        // `asyncArrowFunction10_es{5,6,2017}` baselines.
         return std.mem.eql(u8, raw, "public") or
             std.mem.eql(u8, raw, "private") or
             std.mem.eql(u8, raw, "protected") or
             std.mem.eql(u8, raw, "static") or
-            std.mem.eql(u8, raw, "yield");
+            std.mem.eql(u8, raw, "yield") or
+            std.mem.eql(u8, raw, "await");
     }
 
     fn genericAliasHasMissingRequiredArgs(self: *Checker, info: GenericAliasInfo, supplied: usize) bool {
@@ -36216,6 +36222,30 @@ pub const Checker = struct {
         const name_str = self.string_interner.get(name);
         if (std.mem.eql(u8, name_str, "$")) {
             try self.reportCannotFindJQueryName(node, name);
+            return;
+        }
+        // tsc's spelling-suggestion pass DOES surface `await` →
+        // `Awaited` in type position (TS 4.5 added the lib type and
+        // the suggestion mirrors that): `var v: await;` produces
+        // `Cannot find name 'await'. Did you mean 'Awaited'?`. Pre-
+        // empt the broader reserved-keyword skip below — those exist
+        // for value-position misses where there's nothing meaningful
+        // to suggest. Mirrors `asyncFunctionDeclaration13_es{5,6,2017}`
+        // and `asyncArrowFunction10_es{5,6,2017}` baselines. Restrict
+        // to actual type_ref nodes so value-position `[await]` keeps
+        // the plain TS2304 (e.g. `asyncFunctionDeclaration8_es5`).
+        if (std.mem.eql(u8, name_str, "await") and self.hir.kindOf(node) == .type_ref) {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Cannot find name 'await'. Did you mean 'Awaited'?",
+                .{},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .code = TsCodes.cannot_find_name_did_you_mean,
+                .message = msg,
+            });
+            self.suggestion_count += 1;
             return;
         }
 
