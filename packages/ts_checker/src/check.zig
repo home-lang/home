@@ -42406,6 +42406,15 @@ pub const Checker = struct {
         return false;
     }
 
+    fn instanceofRhsIsSeededConstructorGlobal(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, node);
+        const raw = self.string_interner.get(id.name);
+        return std.mem.eql(u8, raw, "Array") or
+            std.mem.eql(u8, raw, "Object") or
+            std.mem.eql(u8, raw, "Function");
+    }
+
     fn instanceofHasInstanceSignature(self: *Checker, t: TypeId) CheckError!?TypeId {
         const has_instance_name = self.string_interner.intern("Symbol.hasInstance") catch return error.OutOfMemory;
         var sigs: std.ArrayListUnmanaged(TypeId) = .empty;
@@ -42763,7 +42772,8 @@ pub const Checker = struct {
                 if (!self.isInstanceofLeftAllowed(lhs)) {
                     try self.report(b.lhs, TsCodes.instanceof_left_type, "The left-hand side of an 'instanceof' expression must be of type 'any', an object type or a type parameter.");
                 }
-                if (!self.isInstanceofRightAllowed(rhs)) {
+                const rhs_allowed = self.isInstanceofRightAllowed(rhs) or self.instanceofRhsIsSeededConstructorGlobal(b.rhs);
+                if (!rhs_allowed) {
                     try self.report(b.rhs, TsCodes.instanceof_right_type, "The right-hand side of an 'instanceof' expression must be either of type 'any', a class, function, or other type assignable to the 'Function' interface type, or an object type with a 'Symbol.hasInstance' method.");
                 } else {
                     try self.checkInstanceofHasInstanceOperand(b.lhs, lhs, b.rhs, rhs);
@@ -53752,6 +53762,26 @@ test "checker: instanceof rejects non-callable object RHS operands" {
     }
     try T.expectEqual(@as(usize, 4), right_count);
     try T.expectEqual(@as(usize, 1), left_count);
+}
+
+test "checker: instanceof accepts seeded Array and Object constructor globals" {
+    const s = try newSetup(
+        \\class Message { value: string = ""; }
+        \\declare var message: Message | Message[];
+        \\if (message instanceof Array) {
+        \\  message.length;
+        \\}
+        \\declare var value: string | {};
+        \\if (value instanceof Object) {
+        \\  value.toString();
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.instanceof_right_type);
+    }
 }
 
 test "checker: instanceof validates Symbol.hasInstance operand contract" {
