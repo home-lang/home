@@ -30505,6 +30505,8 @@ pub const Checker = struct {
                 break :blk (self.engine.isAssignableTo(prior, final_type) catch true) and
                     (self.engine.isAssignableTo(final_type, prior) catch true);
             };
+            const namespace_fn_static_name = self.varInitNamespaceMergedFunctionName(node);
+            const forced_namespace_fn_static_mismatch = namespace_fn_static_name != null and prior_explicit;
             if (!compatible) {
                 const name = self.string_interner.get(id.name);
                 // Suppress TS2403 when this variable already has a
@@ -30521,6 +30523,20 @@ pub const Checker = struct {
                     .code = TsCodes.subsequent_var_type_mismatch,
                     .message = msg,
                 });
+            } else if (forced_namespace_fn_static_mismatch) {
+                const name = self.string_interner.get(id.name);
+                const static_name = namespace_fn_static_name.?;
+                const current_text = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "typeof {s}",
+                    .{self.string_interner.get(static_name)},
+                );
+                const msg = try self.formatSubsequentVarTypeMismatchWithCurrentText(name, prior, current_text);
+                try self.diagnostics.append(self.gpa, .{
+                    .node = v.name,
+                    .code = TsCodes.subsequent_var_type_mismatch,
+                    .message = msg,
+                });
             }
             return;
         }
@@ -30531,6 +30547,41 @@ pub const Checker = struct {
             !self.typeIsEnumNominal(final_type)) return;
         try self.var_decl_types.put(self.gpa, key, final_type);
         try self.var_decl_explicit.put(self.gpa, key, has_annotation);
+    }
+
+    fn varInitNamespaceMergedFunctionName(self: *Checker, node: NodeId) ?hir_mod.StringId {
+        if (self.hir.kindOf(node) != .var_decl) return null;
+        const v = hir_mod.varDeclOf(self.hir, node);
+        if (v.init == hir_mod.none_node_id or self.hir.kindOf(v.init) != .member_access) return null;
+        const m = hir_mod.memberOf(self.hir, v.init);
+        if (m.object == hir_mod.none_node_id or self.hir.kindOf(m.object) != .identifier) return null;
+        const ns_name = hir_mod.identifierOf(self.hir, m.object).name;
+        const member_name = m.name;
+        var has_fn = false;
+        var has_runtime_namespace = false;
+        const root = self.rootBlockFor(node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            const ns_node = self.unwrapExportDecl(raw);
+            if (self.hir.kindOf(ns_node) != .namespace_decl) continue;
+            const ns = hir_mod.namespaceOf(self.hir, ns_node);
+            if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, ns.name).name != ns_name) continue;
+            for (hir_mod.namespaceBody(self.hir, ns_node)) |member_raw| {
+                if (self.hir.kindOf(member_raw) != .export_decl) continue;
+                const member_node = self.unwrapExportDecl(member_raw);
+                const decl_name = self.declarationName(member_node) orelse continue;
+                if (decl_name != member_name) continue;
+                switch (self.hir.kindOf(member_node)) {
+                    .fn_decl, .fn_expr => has_fn = true,
+                    .namespace_decl => {
+                        if (self.namespaceHasRuntimeValue(member_node)) has_runtime_namespace = true;
+                    },
+                    else => {},
+                }
+            }
+        }
+        return if (has_fn and has_runtime_namespace) member_name else null;
     }
 
     /// Walk up the parent chain past control-flow statements
@@ -30624,6 +30675,24 @@ pub const Checker = struct {
                     .{ name, prior_text, current_text },
                 );
             }
+        }
+        return try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Subsequent variable declarations must have the same type. Variable '{s}' has a conflicting type.",
+            .{name},
+        );
+    }
+
+    fn formatSubsequentVarTypeMismatchWithCurrentText(self: *Checker, name: []const u8, prior: TypeId, current_text: []const u8) ![]const u8 {
+        const prior_text_opt = (try self.simpleDiagnosticTypeName(prior)) orelse
+            (try self.allocSimpleTypeName(prior)) orelse
+            (try self.allocObjectTypeShape(prior));
+        if (prior_text_opt) |prior_text| {
+            return try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Subsequent variable declarations must have the same type.  Variable '{s}' must be of type '{s}', but here has type '{s}'.",
+                .{ name, prior_text, current_text },
+            );
         }
         return try std.fmt.allocPrint(
             self.diag_arena.allocator(),
