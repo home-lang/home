@@ -129,17 +129,12 @@ fn parseLine(line: []const u8) ?Tag {
     var optional = false;
     var optional_from_type_suffix = false;
     if (rest.len > 0 and rest[0] == '{') {
-        const end = matchBalancedBrace(rest);
-        if (end == 0) return null;
-        type_text = rest[1 .. end - 1];
-        rest = std.mem.trimStart(u8, rest[end..], " \t");
-        // JSDoc `{T=}` form: trailing `=` inside the braces marks the
-        // parameter as optional. Strip the marker so downstream type
-        // resolution sees the plain `T`.
-        if (type_text.len > 0 and type_text[type_text.len - 1] == '=') {
+        const parsed = parseTypeExpression(rest) orelse return null;
+        type_text = parsed.type_text;
+        rest = std.mem.trimStart(u8, rest[parsed.len..], " \t");
+        if (parsed.optional_from_type_suffix) {
             optional = true;
             optional_from_type_suffix = true;
-            type_text = std.mem.trimEnd(u8, type_text[0 .. type_text.len - 1], " \t");
         }
     }
     // Optional name token. `@param`, `@template`, `@typedef` all
@@ -160,11 +155,24 @@ fn parseLine(line: []const u8) ?Tag {
                 name_text = std.mem.trim(u8, inner, " \t");
             }
             rest = std.mem.trimStart(u8, rest[close + 1 ..], " \t");
+        } else if (kind == .param_tag and rest.len > 0 and rest[0] == '`') {
+            const close = std.mem.indexOfScalarPos(u8, rest, 1, '`') orelse return null;
+            name_text = rest[1..close];
+            rest = std.mem.trimStart(u8, rest[close + 1 ..], " \t");
         } else {
             var m: usize = 0;
             while (m < rest.len and isIdentChar(rest[m])) m += 1;
             name_text = rest[0..m];
             rest = std.mem.trimStart(u8, rest[m..], " \t");
+        }
+        if (kind == .param_tag and type_text.len == 0 and rest.len > 0 and rest[0] == '{') {
+            const parsed = parseTypeExpression(rest) orelse return null;
+            type_text = parsed.type_text;
+            rest = std.mem.trimStart(u8, rest[parsed.len..], " \t");
+            if (parsed.optional_from_type_suffix) {
+                optional = true;
+                optional_from_type_suffix = true;
+            }
         }
     }
     return .{
@@ -185,6 +193,31 @@ fn isTagNameChar(c: u8) bool {
 fn isIdentChar(c: u8) bool {
     return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
         (c >= '0' and c <= '9') or c == '_' or c == '$';
+}
+
+const ParsedTypeExpression = struct {
+    type_text: []const u8,
+    len: usize,
+    optional_from_type_suffix: bool,
+};
+
+fn parseTypeExpression(rest: []const u8) ?ParsedTypeExpression {
+    const end = matchBalancedBrace(rest);
+    if (end == 0) return null;
+    var type_text = rest[1 .. end - 1];
+    var optional_from_type_suffix = false;
+    // JSDoc `{T=}` form: trailing `=` inside the braces marks the
+    // parameter as optional. Strip the marker so downstream type
+    // resolution sees the plain `T`.
+    if (type_text.len > 0 and type_text[type_text.len - 1] == '=') {
+        optional_from_type_suffix = true;
+        type_text = std.mem.trimEnd(u8, type_text[0 .. type_text.len - 1], " \t");
+    }
+    return .{
+        .type_text = type_text,
+        .len = end,
+        .optional_from_type_suffix = optional_from_type_suffix,
+    };
 }
 
 /// Returns the index *after* the matching `}` for a brace at offset 0.
@@ -341,6 +374,25 @@ test "jsdoc: @param plain name is not optional" {
     try T.expectEqual(@as(usize, 1), tags.len);
     try T.expectEqualStrings("a", tags[0].name);
     try T.expect(!tags[0].optional);
+}
+
+test "jsdoc: backquoted param names support type before and after name" {
+    const body =
+        \\ * @param {string=} `args`
+        \\ * @param `bwarg` {?number?}
+    ;
+    const tags = try parse(T.allocator, body);
+    defer T.allocator.free(tags);
+    try T.expectEqual(@as(usize, 2), tags.len);
+    try T.expectEqual(TagKind.param_tag, tags[0].kind);
+    try T.expectEqualStrings("string", tags[0].type_text);
+    try T.expectEqualStrings("args", tags[0].name);
+    try T.expect(tags[0].optional);
+    try T.expect(tags[0].optional_from_type_suffix);
+    try T.expectEqual(TagKind.param_tag, tags[1].kind);
+    try T.expectEqualStrings("?number?", tags[1].type_text);
+    try T.expectEqualStrings("bwarg", tags[1].name);
+    try T.expect(!tags[1].optional);
 }
 
 test "jsdoc: bracket-optional mixed with required parameters keeps each tag distinct" {

@@ -434,6 +434,7 @@ pub const TsCodes = struct {
     pub const not_callable: u32 = 2349;
     pub const value_only_constructable: u32 = 2348;
     pub const this_implicitly_any: u32 = 2683;
+    pub const required_parameter_after_optional: u32 = 1016;
     pub const parameter_implicitly_any: u32 = 7006;
     pub const variable_implicitly_any: u32 = 7005;
     /// TS7034 — `Variable 'X' implicitly has type 'any' in some
@@ -10888,6 +10889,7 @@ pub const Checker = struct {
         var has_rest_param = false;
         var explicit_this_t: TypeId = types.Primitive.none;
         var value_param_index: u16 = 0;
+        var previous_jsdoc_optional_param = false;
         if (params.len == 0 and self.sourceHasCheckJsDirective()) {
             try self.applyArgumentsJsDocParamTags(node, &param_types, &param_omittable, &has_rest_param);
         }
@@ -10940,15 +10942,27 @@ pub const Checker = struct {
             if (has_anno) {
                 try self.reportUnresolvedBodylessSignatureTypeRefs(pp.type_annotation, type_params);
             }
-            const jsdoc_param_t: ?TypeId = if (!has_anno and !is_this_param and self.sourceHasCheckJsDirective() and
+            const jsdoc_param_info: ?JsDocParamInfo = if (!has_anno and !is_this_param and self.sourceHasCheckJsDirective() and
                 pp.name != hir_mod.none_node_id and self.hir.kindOf(pp.name) == .identifier)
-                try self.jsDocParamTypeForFunctionParam(
+                try self.jsDocParamInfoForFunctionParam(
                     node,
                     self.string_interner.get(hir_mod.identifierOf(self.hir, pp.name).name),
                 )
             else
                 null;
+            const jsdoc_param_t: ?TypeId = if (jsdoc_param_info) |info| info.typ else null;
+            const jsdoc_marks_optional = if (jsdoc_param_info) |info| info.optional else false;
             const has_jsdoc_param_type = jsdoc_param_t != null;
+            if (!is_this_param and self.sourceHasCheckJsDirective()) {
+                const is_required_now = !pp.flags.is_optional and
+                    !pp.flags.is_rest and
+                    pp.default_value == hir_mod.none_node_id;
+                if (is_required_now and previous_jsdoc_optional_param) {
+                    const anchor = if (pp.name != hir_mod.none_node_id) pp.name else p;
+                    try self.report(anchor, TsCodes.required_parameter_after_optional, "A required parameter cannot follow an optional parameter.");
+                }
+                previous_jsdoc_optional_param = jsdoc_marks_optional;
+            }
             // `f(x = literal)` — when no annotation is present, the
             // default value's widened type seeds the parameter (tsc
             // does the same). Used by both the parameter typing pass
@@ -11062,10 +11076,10 @@ pub const Checker = struct {
             // before the body runs. Mirrors tsc's control-flow
             // narrowing for defaulted params.
             var signature_t: TypeId = t;
-            if (pp.flags.is_optional or pp.default_value != hir_mod.none_node_id) {
+            if (pp.flags.is_optional or jsdoc_marks_optional or pp.default_value != hir_mod.none_node_id) {
                 signature_t = self.unionWithUndefined(t) catch t;
             }
-            const body_t: TypeId = if (pp.flags.is_optional and pp.default_value == hir_mod.none_node_id)
+            const body_t: TypeId = if ((pp.flags.is_optional or jsdoc_marks_optional) and pp.default_value == hir_mod.none_node_id)
                 signature_t
             else
                 t;
@@ -11076,7 +11090,7 @@ pub const Checker = struct {
                 continue;
             }
             try param_types.append(self.gpa, signature_t);
-            try param_omittable.append(self.gpa, pp.flags.is_rest or !has_anno or pp.flags.is_optional or pp.default_value != hir_mod.none_node_id or self.parameterTypeAllowsVoidOmission(t));
+            try param_omittable.append(self.gpa, pp.flags.is_rest or !has_anno or pp.flags.is_optional or jsdoc_marks_optional or pp.default_value != hir_mod.none_node_id or self.parameterTypeAllowsVoidOmission(t));
             if (self.signature_predicates.get(t)) |param_pred| {
                 try param_predicates.append(self.gpa, .{ .param_index = value_param_index, .pred = param_pred });
             }
@@ -26947,7 +26961,12 @@ pub const Checker = struct {
         return false;
     }
 
-    fn jsDocParamTypeForFunctionParam(self: *Checker, fn_node: NodeId, param_name: []const u8) CheckError!?TypeId {
+    const JsDocParamInfo = struct {
+        typ: ?TypeId,
+        optional: bool,
+    };
+
+    fn jsDocParamInfoForFunctionParam(self: *Checker, fn_node: NodeId, param_name: []const u8) CheckError!?JsDocParamInfo {
         if (param_name.len == 0) return null;
         const src = self.source orelse return null;
         const span = self.hir.spanOf(fn_node);
@@ -26955,16 +26974,27 @@ pub const Checker = struct {
         if (std.mem.indexOf(u8, body, "@overload") != null) return null;
         const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
         defer self.gpa.free(tags);
-        var found: ?TypeId = null;
+        var found: ?JsDocParamInfo = null;
         for (tags) |tag| {
             if (tag.kind != .param_tag) continue;
             if (!std.mem.eql(u8, tag.name, param_name)) continue;
-            if (!tag.optional_from_type_suffix) continue;
-            var t = (try self.jsDocTypeTextToType(src, tag.type_text)) orelse return null;
-            t = try self.unionWithUndefined(t);
-            found = t;
+            var t: ?TypeId = null;
+            if (tag.optional_from_type_suffix) {
+                if (try self.jsDocTypeTextToType(src, tag.type_text)) |param_t| {
+                    t = try self.unionWithUndefined(param_t);
+                }
+            }
+            found = .{
+                .typ = t,
+                .optional = tag.optional,
+            };
         }
         return found;
+    }
+
+    fn jsDocParamTypeForFunctionParam(self: *Checker, fn_node: NodeId, param_name: []const u8) CheckError!?TypeId {
+        const info = (try self.jsDocParamInfoForFunctionParam(fn_node, param_name)) orelse return null;
+        return info.typ;
     }
 
     fn applyArgumentsJsDocParamTags(
@@ -27260,6 +27290,27 @@ pub const Checker = struct {
     fn jsDocTypeTextToType(self: *Checker, src: []const u8, type_text: []const u8) CheckError!?TypeId {
         const trimmed = jsDocTrimOuterParens(std.mem.trim(u8, type_text, " \t\r\n"));
         if (trimmed.len == 0) return null;
+        if (trimmed[0] == '?' and trimmed.len > 1) {
+            var inner_text = std.mem.trim(u8, trimmed[1..], " \t\r\n");
+            if (inner_text.len > 0 and inner_text[inner_text.len - 1] == '?') {
+                inner_text = std.mem.trim(u8, inner_text[0 .. inner_text.len - 1], " \t\r\n");
+            }
+            if (inner_text.len > 0) {
+                const inner_t = (try self.jsDocTypeTextToType(src, inner_text)) orelse return null;
+                return try self.unionWithNull(inner_t);
+            }
+        }
+        if (trimmed.len > 1 and trimmed[trimmed.len - 1] == '?') {
+            const inner_text = std.mem.trim(u8, trimmed[0 .. trimmed.len - 1], " \t\r\n");
+            if (inner_text.len > 0) {
+                const inner_t = (try self.jsDocTypeTextToType(src, inner_text)) orelse return null;
+                return try self.unionWithNull(inner_t);
+            }
+        }
+        if (trimmed[0] == '!' and trimmed.len > 1) {
+            const inner_text = std.mem.trim(u8, trimmed[1..], " \t\r\n");
+            if (inner_text.len > 0) return try self.jsDocTypeTextToType(src, inner_text);
+        }
         if (std.mem.endsWith(u8, trimmed, "[]")) {
             const elem_text = std.mem.trim(u8, trimmed[0 .. trimmed.len - 2], " \t\r\n");
             if (try self.jsDocTypeTextToType(src, elem_text)) |elem_t| {
@@ -50667,6 +50718,17 @@ pub const Checker = struct {
             }
         }
         return self.interner.internUnion(&.{ t, types.Primitive.undefined_t }) catch return error.OutOfMemory;
+    }
+
+    fn unionWithNull(self: *Checker, t: TypeId) !TypeId {
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_null or flags.is_any or flags.is_unknown) return t;
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |m| {
+                if (self.interner.pool.flagsOf(m).is_null) return t;
+            }
+        }
+        return self.interner.internUnion(&.{ t, types.Primitive.null_t }) catch return error.OutOfMemory;
     }
 
     /// Remove `null` and `undefined` from `t` if it's a union; for
