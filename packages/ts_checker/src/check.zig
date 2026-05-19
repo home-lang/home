@@ -15118,6 +15118,33 @@ pub const Checker = struct {
         return "(Anonymous class)";
     }
 
+    /// Anchor an override-modifier diagnostic (TS4112/4113/4114/4115/
+    /// 4117/4123) at the member NAME rather than the member's span
+    /// start. Upstream tsc underlines the method/field identifier,
+    /// not the leading modifier keyword run (`static override foo()`
+    /// underlines `foo`, not `static`). Mirrors `override1.ts(11,14)`
+    /// / `override5.ts(20,21)` / `override20.ts(25,5)` baselines.
+    fn overrideAnchorPos(self: *Checker, node: NodeId) ?u32 {
+        const kind = self.hir.kindOf(node);
+        const name_node: NodeId = switch (kind) {
+            .fn_decl, .fn_expr, .arrow_fn => blk: {
+                const fp = hir_mod.fnDeclOf(self.hir, node);
+                break :blk fp.name;
+            },
+            .object_property => blk: {
+                const op = hir_mod.objectPropertyOf(self.hir, node);
+                break :blk op.key;
+            },
+            .parameter => blk: {
+                const pp = hir_mod.parameterOf(self.hir, node);
+                break :blk pp.name;
+            },
+            else => return null,
+        };
+        if (name_node == hir_mod.none_node_id) return null;
+        return self.hir.spanOf(name_node).start;
+    }
+
     fn checkOverrideModifierWithContext(
         self: *Checker,
         node: NodeId,
@@ -15138,6 +15165,7 @@ pub const Checker = struct {
             const pt = parent_t orelse break :blk base_class_name_from_extends;
             break :blk (self.simpleDiagnosticTypeName(pt) catch null) orelse base_class_name_from_extends;
         };
+        const anchor_pos = self.overrideAnchorPos(node);
         if ((has_override or has_jsdoc_override) and !has_base) {
             if (containing_class_name_when_no_extends) |cls_name| {
                 if (!has_jsdoc_override) {
@@ -15148,6 +15176,7 @@ pub const Checker = struct {
                     );
                     try self.diagnostics.append(self.gpa, .{
                         .node = node,
+                        .pos = anchor_pos,
                         .code = TsCodes.override_without_base,
                         .message = msg,
                     });
@@ -15166,6 +15195,7 @@ pub const Checker = struct {
                         );
                         try self.diagnostics.append(self.gpa, .{
                             .node = node,
+                            .pos = anchor_pos,
                             .code = TsCodes.jsdoc_override_not_in_base_did_you_mean,
                             .message = msg,
                         });
@@ -15177,6 +15207,7 @@ pub const Checker = struct {
                         );
                         try self.diagnostics.append(self.gpa, .{
                             .node = node,
+                            .pos = anchor_pos,
                             .code = TsCodes.override_not_in_base_did_you_mean,
                             .message = msg,
                         });
@@ -15189,12 +15220,13 @@ pub const Checker = struct {
                     );
                     try self.diagnostics.append(self.gpa, .{
                         .node = node,
+                        .pos = anchor_pos,
                         .code = TsCodes.override_not_in_base,
                         .message = msg,
                     });
                 }
             } else {
-                try self.report(node, TsCodes.override_not_in_base, "This member cannot have an 'override' modifier because it is not declared in the base class.");
+                try self.reportAt(node, anchor_pos, TsCodes.override_not_in_base, "This member cannot have an 'override' modifier because it is not declared in the base class.");
             }
             return;
         }
@@ -15260,6 +15292,7 @@ pub const Checker = struct {
                 );
                 try self.diagnostics.append(self.gpa, .{
                     .node = node,
+                    .pos = anchor_pos,
                     .code = code,
                     .message = msg,
                 });
@@ -15271,6 +15304,7 @@ pub const Checker = struct {
                 );
                 try self.diagnostics.append(self.gpa, .{
                     .node = node,
+                    .pos = anchor_pos,
                     .code = code,
                     .message = msg,
                 });
