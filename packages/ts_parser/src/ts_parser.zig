@@ -3238,7 +3238,12 @@ pub const Parser = struct {
         const close_kind: TokenKind = if (is_object) .close_brace else .close_bracket;
         var elements: std.ArrayListUnmanaged(NodeId) = .empty;
         defer elements.deinit(self.gpa);
-        var seen_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        const BindingNameSeen = struct {
+            start: u32,
+            line: u32,
+            reported_first: bool = false,
+        };
+        var seen_names: std.AutoHashMapUnmanaged(hir_mod.StringId, BindingNameSeen) = .empty;
         defer seen_names.deinit(self.gpa);
         if (self.peek().kind != close_kind) {
             while (true) {
@@ -3324,10 +3329,17 @@ pub const Parser = struct {
                 }
                 if (self.hir.kindOf(name_node) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, name_node);
-                    if (seen_names.contains(id.name)) {
+                    if (seen_names.getPtr(id.name)) |first| {
+                        if (!first.reported_first) {
+                            try self.reportDuplicateIdentifierNamed(first.start, first.line, id.name);
+                            first.reported_first = true;
+                        }
                         try self.reportDuplicateIdentifierNamed(self.hir.spanOf(name_node).start, elem_start.line, id.name);
                     } else {
-                        try seen_names.put(self.gpa, id.name, {});
+                        try seen_names.put(self.gpa, id.name, .{
+                            .start = self.hir.spanOf(name_node).start,
+                            .line = elem_start.line,
+                        });
                     }
                 }
                 const elem = try self.builder.addParameter(
@@ -13468,7 +13480,7 @@ test "parser: duplicate names in binding pattern report TS2300" {
     for (s.parser.diagnostics.items) |d| {
         if (d.code == 2300) count += 1;
     }
-    try T.expectEqual(@as(usize, 2), count);
+    try T.expectEqual(@as(usize, 4), count);
 }
 
 test "parser: duplicate parameter names report TS2300" {
@@ -13512,7 +13524,7 @@ test "parser: TS2300 duplicate identifier emits include the name" {
     }
     try T.expectEqual(@as(usize, 0), bare);
     try T.expectEqual(@as(usize, 2), x_named);
-    try T.expectEqual(@as(usize, 1), foo_named);
+    try T.expectEqual(@as(usize, 2), foo_named);
     try T.expectEqual(@as(usize, 2), a_named);
     try T.expectEqual(@as(usize, 2), p_named);
 }

@@ -212,6 +212,8 @@ pub fn arrayProto(
     const sig_map = try ti.internSignature(&[_]TypeId{cb_t_any}, any_arr, false);
     const sig_filter = try ti.internSignature(&[_]TypeId{cb_t_bool}, arr_t, false);
     const sig_forEach = try ti.internSignature(&[_]TypeId{cb_t_void}, void_t, false);
+    const sig_every = try ti.internSignature(&[_]TypeId{cb_t_bool}, boolean_t, false);
+    const sig_some = try ti.internSignature(&[_]TypeId{cb_t_bool}, boolean_t, false);
     const sig_includes = try ti.internSignature(&[_]TypeId{elem}, boolean_t, false);
     const sig_indexOf = try ti.internSignature(&[_]TypeId{elem}, number_t, false);
     const sig_slice = try ti.internSignature(&[_]TypeId{ optional_number_t, optional_number_t }, arr_t, false);
@@ -236,6 +238,8 @@ pub fn arrayProto(
         .{ .name = try sint.intern("map"), .type = sig_map, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("filter"), .type = sig_filter, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("forEach"), .type = sig_forEach, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("every"), .type = sig_every, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("some"), .type = sig_some, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("includes"), .type = sig_includes, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("indexOf"), .type = sig_indexOf, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("slice"), .type = sig_slice, .is_optional = false, .is_readonly = false, .is_method = true },
