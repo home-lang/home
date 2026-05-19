@@ -116,4 +116,14 @@ test {
     _ = @import("sql/mysql/protocol/AuthSwitchResponse.zig");
     _ = @import("sql/mysql/protocol/ErrorPacket.zig");
     _ = @import("sql/postgres/protocol/StartupMessage.zig");
+    // Wave-23 grinder (2026-05-19) — MySQL wire-protocol leaves from
+    // less-mined corners (handshake/TLS-upgrade, column metadata,
+    // request helpers). Each compiles over the wave-21 NewReader/
+    // NewWriter stubs; method bodies trip a natural compile error
+    // only if exercised at the call site.
+    _ = @import("sql/mysql/protocol/SSLRequest.zig");
+    _ = @import("sql/mysql/protocol/HandshakeV10.zig");
+    _ = @import("sql/mysql/protocol/ColumnDefinition41.zig");
+    _ = @import("sql/mysql/MySQLRequest.zig");
+    _ = @import("sql/postgres/protocol/Authentication.zig");
 }

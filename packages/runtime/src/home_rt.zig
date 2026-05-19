@@ -535,14 +535,13 @@ pub const node = struct {
     // setMax/getMaxListeners/eventNames/prependListener/prependOnceListener).
     // EventEmitterDefault alias for the typical string-keyed case.
     pub const events = @import("node/events.zig");
-    // Phase 12.7 round-10 (2026-05-19) — `node:buffer` Zig substrate.
-    // Buffer struct + alloc/from/concat + UTF-8/base64/hex encoding
-    // round-trip + numeric LE readers/writers. Foundational for
-    // node:fs binary mode + node:stream chunk handling.
-    pub const buffer = @import("node/buffer.zig");
     // Phase 12.7 round-10 (2026-05-19) — `node:stream` Zig substrate.
     // Readable/Writable/Duplex/Transform/PassThrough on top of
-    // node:events. Pull-mode + push-mode + pipe trampolines.
+    // node:events. Pull-mode + push-mode + pipe trampolines. The
+    // round-10 `pub const buffer = …` entry that landed alongside
+    // this one was a duplicate of the round-9 declaration further
+    // below; wave-23 dropped the duplicate to restore home_rt smoke
+    // green (the canonical entry lives next to fs/util).
     pub const stream = @import("node/stream.zig");
     // Phase 12.7 port (2026-05-19) — `node:util` Zig substrate. Top-level
     // surface (inspect/format/formatWithOptions/isDeepStrictEqual/
@@ -1153,6 +1152,15 @@ pub const sql = struct {
             // version 196608). Writer body reaches into the wave-16
             // NewWriter stub method surface.
             pub const StartupMessage = @import("sql/postgres/protocol/StartupMessage.zig");
+            // Wave-23 grinder (2026-05-19). Postgres `R` Authentication
+            // packet — tagged-union over the 10+ auth-code subtypes
+            // (Ok / ClearTextPassword / MD5Password / SASL family /
+            // SASLContinue / SASLFinal / ...). Decoder body lives
+            // inside a comptime-generic `decodeInternal` so the
+            // `home_rt.strings.split` + `reader.bytes(...)` calls
+            // only get analyzed at instantiation; the file is
+            // compile-clean today.
+            pub const Authentication = @import("sql/postgres/protocol/Authentication.zig").Authentication;
         };
     };
 };
