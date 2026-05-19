@@ -30729,7 +30729,9 @@ pub const Checker = struct {
                 try self.checkBareRequireCallImport(c.callee, args);
                 if (self.isDynamicImportCallee(c.callee) and args.len > 0 and self.hir.kindOf(args[0]) == .literal_string) {
                     const lit = hir_mod.literalStringOf(self.hir, args[0]);
-                    try self.checkImportingTsExtensionSpecifier(args[0], self.string_interner.get(lit.value), false);
+                    const spec = self.string_interner.get(lit.value);
+                    _ = try self.checkNodeEsmRelativeImportExtensionDiagnostic(args[0], spec);
+                    try self.checkImportingTsExtensionSpecifier(args[0], spec, false);
                 }
                 if (self.hir.kindOf(c.callee) == .member_access) {
                     try self.checkMethodThisCompatibility(node, c.callee, callee_t);
@@ -72654,6 +72656,26 @@ test "checker: NodeNext ESM relative import requires emitted extension suggestio
         if (d.code == TsCodes.cannot_find_module) ts2307 = true;
     }
     try T.expect(ts2835);
+    try T.expect(!ts2307);
+}
+
+test "checker: Node16 ESM dynamic import requires explicit extension" {
+    const s = try newSetup(
+        \\const p = import("./foo");
+        \\p;
+    );
+    defer destroySetup(s);
+    s.checker.setImporterPath("/src/buzz.mts");
+    s.checker.setModuleResolution("node16");
+    try s.checker.checkSourceFile(s.root);
+
+    var ts2834 = false;
+    var ts2307 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.relative_import_needs_extension) ts2834 = true;
+        if (d.code == TsCodes.cannot_find_module) ts2307 = true;
+    }
+    try T.expect(ts2834);
     try T.expect(!ts2307);
 }
 
