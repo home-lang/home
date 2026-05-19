@@ -10343,7 +10343,9 @@ pub const Parser = struct {
             },
             .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set, .kw_global, .kw_from, .kw_require, .kw_module, .kw_namespace, .kw_interface, .kw_declare, .kw_of, .kw_type, .kw_using, .kw_await, .kw_static, .kw_let => {
                 _ = self.advance();
-                if (!(t.kind == .kw_let and self.namespace_depth > 0 and !self.strict_mode)) {
+                if (!(t.kind == .kw_let and self.namespace_depth > 0 and !self.strict_mode) and
+                    !(t.kind == .kw_static and self.accessibilityKeywordIsMemberRoot(t)))
+                {
                     try self.reportInvalidFutureReservedName(t);
                 }
                 const id = try self.internToken(t);
@@ -10359,8 +10361,10 @@ pub const Parser = struct {
                 // reports TS2304 instead of TS1109. Mirrors fixtures
                 // `parserComputedPropertyName36`-`39`.
                 _ = self.advance();
-                try self.reportInvalidClassStrictIdentifier(t);
-                try self.reportInvalidFutureReservedName(t);
+                if (!self.accessibilityKeywordIsMemberRoot(t)) {
+                    try self.reportInvalidClassStrictIdentifier(t);
+                    try self.reportInvalidFutureReservedName(t);
+                }
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
             },
@@ -11771,6 +11775,14 @@ pub const Parser = struct {
         }
         try self.reportCodeAt(t.span.start, t.line, 1003, "Identifier expected.");
         return error.UnexpectedToken;
+    }
+
+    fn accessibilityKeywordIsMemberRoot(self: *Parser, tok: Token) bool {
+        if (self.strict_mode) return false;
+        return switch (tok.kind) {
+            .kw_public, .kw_private, .kw_protected, .kw_static => self.peek().kind == .dot or self.peek().kind == .open_bracket,
+            else => false,
+        };
     }
 };
 

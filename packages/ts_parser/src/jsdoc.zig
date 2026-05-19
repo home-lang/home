@@ -60,6 +60,10 @@ pub const Tag = struct {
     /// `{T=}` type-suffix or `[name]` / `[name=default]` bracket
     /// forms. Mirrors the JSDoc spec used by upstream tsc.
     optional: bool = false,
+    /// True only for the `{T=}` type-suffix form. The checker uses
+    /// this to model postfix optionality without conflating it with
+    /// bracket-name optionality.
+    optional_from_type_suffix: bool = false,
     /// Captured default-value expression when the source used the
     /// `@param {T} [name=DEFAULT]` form. Empty otherwise.
     default_text: []const u8 = "",
@@ -123,6 +127,7 @@ fn parseLine(line: []const u8) ?Tag {
     // Optional `{T}` type expression.
     var type_text: []const u8 = "";
     var optional = false;
+    var optional_from_type_suffix = false;
     if (rest.len > 0 and rest[0] == '{') {
         const end = matchBalancedBrace(rest);
         if (end == 0) return null;
@@ -133,6 +138,7 @@ fn parseLine(line: []const u8) ?Tag {
         // resolution sees the plain `T`.
         if (type_text.len > 0 and type_text[type_text.len - 1] == '=') {
             optional = true;
+            optional_from_type_suffix = true;
             type_text = std.mem.trimEnd(u8, type_text[0 .. type_text.len - 1], " \t");
         }
     }
@@ -167,6 +173,7 @@ fn parseLine(line: []const u8) ?Tag {
         .name = name_text,
         .description = rest,
         .optional = optional,
+        .optional_from_type_suffix = optional_from_type_suffix,
         .default_text = default_text,
     };
 }
@@ -322,6 +329,7 @@ test "jsdoc: @param with type-suffix `=` optional marker" {
     try T.expectEqualStrings("number", tags[0].type_text);
     try T.expectEqualStrings("q", tags[0].name);
     try T.expect(tags[0].optional);
+    try T.expect(tags[0].optional_from_type_suffix);
 }
 
 test "jsdoc: @param plain name is not optional" {
