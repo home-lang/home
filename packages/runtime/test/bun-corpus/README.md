@@ -20,10 +20,10 @@ macOS, Linux, and the WASM target.
   constant-fold smoke, six test-runner expectation smokes, one nested-describe
   smoke, one `Bun.stripANSI` smoke, and the Node `DOMException`, Web
   `Response.json` / `Response.redirect`, Web `Request` cache/mode/clone, JSC
-  `ShadowRealm`, Bun file-metadata, Node `Buffer` binary/UTF-16LE, lifecycle
-  hook, own-key matcher, and stack-trace smokes. It is only a smoke path for
-  JSC + `home_test`; it is not the release gate. The bootstrap harness is
-  installed once per JSC engine, resets counters before each file, and lowers
+  `ShadowRealm`, Bun file-metadata, Node `Buffer` binary/UTF-16LE/compare,
+  lifecycle hook, own-key matcher, and stack-trace smokes. It is only a smoke
+  path for JSC + `home_test`; it is not the release gate. The bootstrap harness
+  is installed once per JSC engine, resets counters before each file, and lowers
   supported `bun:test` imports through a virtual
   `globalThis.__home_import("bun:test")` module shim.
 - No source renames. `Bun.serve`, `Bun.write`, `Bun.spawn`, etc. appear

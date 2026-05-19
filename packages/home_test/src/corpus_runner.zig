@@ -191,6 +191,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/23133.test.ts",
     "regression/issue/2993.test.ts",
     "regression/issue/04947.test.js",
+    "js/node/buffer-compare-bounds.test.ts",
 };
 
 const harness_prelude =
@@ -597,11 +598,21 @@ const harness_prelude =
     \\  };
     \\  Buffer.prototype = Object.create(Uint8Array.prototype);
     \\  Buffer.prototype.constructor = Buffer;
-    \\  Buffer.alloc = function(size) {
+    \\  Buffer.alloc = function(size, fill) {
     \\    if (!Number.isFinite(size) || size < 0) throw new RangeError("Invalid Buffer size");
-    \\    return new Buffer(size >>> 0);
+    \\    const buffer = new Buffer(size >>> 0);
+    \\    if (fill !== undefined) {
+    \\      const byte = typeof fill === "number" ? fill & 0xff : String(fill).charCodeAt(0) & 0xff;
+    \\      for (let i = 0; i < buffer.length; i++) buffer[i] = byte;
+    \\    }
+    \\    return buffer;
     \\  };
     \\  Buffer.from = function(value, encoding) {
+    \\    if (Array.isArray(value)) {
+    \\      const buffer = new Buffer(value.length);
+    \\      for (let i = 0; i < value.length; i++) buffer[i] = Number(value[i]) & 0xff;
+    \\      return buffer;
+    \\    }
     \\    const normalized = encoding === undefined ? "utf8" : String(encoding).toLowerCase();
     \\    if (typeof value === "string" && (normalized === "utf-16le" || normalized === "utf16le" || normalized === "ucs2" || normalized === "ucs-2")) {
     \\      const buffer = new Buffer(value.length * 2);
@@ -613,6 +624,34 @@ const harness_prelude =
     \\      return buffer;
     \\    }
     \\    __home_unsupported("Only Buffer.from(string, 'utf-16le') is supported by the Home Bun corpus bootstrap runner");
+    \\  };
+    \\  Buffer.prototype.compare = function(target, targetStart, targetEnd, sourceStart, sourceEnd) {
+    \\    if (!target || typeof target.length !== "number") throw new TypeError("The target argument must be an instance of Buffer or Uint8Array");
+    \\    const targetStartValue = targetStart === undefined ? 0 : Math.trunc(Number(targetStart));
+    \\    const targetEndValue = targetEnd === undefined ? target.length : Math.trunc(Number(targetEnd));
+    \\    const sourceStartValue = sourceStart === undefined ? 0 : Math.trunc(Number(sourceStart));
+    \\    const sourceEndValue = sourceEnd === undefined ? this.length : Math.trunc(Number(sourceEnd));
+    \\    if (targetEndValue < 0 || targetEndValue > target.length) throw new RangeError("targetEnd is out of range");
+    \\    if (sourceEndValue < 0 || sourceEndValue > this.length) throw new RangeError("sourceEnd is out of range");
+    \\    if (targetStartValue < 0) throw new RangeError("targetStart is out of range");
+    \\    if (sourceStartValue < 0) throw new RangeError("sourceStart is out of range");
+    \\    const sourceEmpty = sourceStartValue >= sourceEndValue;
+    \\    const targetEmpty = targetStartValue >= targetEndValue;
+    \\    if (sourceEmpty && targetEmpty) return 0;
+    \\    if (sourceEmpty) return -1;
+    \\    if (targetEmpty) return 1;
+    \\    let sourceIndex = sourceStartValue;
+    \\    let targetIndex = targetStartValue;
+    \\    while (sourceIndex < sourceEndValue && targetIndex < targetEndValue) {
+    \\      const sourceByte = this[sourceIndex];
+    \\      const targetByte = target[targetIndex];
+    \\      if (sourceByte < targetByte) return -1;
+    \\      if (sourceByte > targetByte) return 1;
+    \\      sourceIndex++;
+    \\      targetIndex++;
+    \\    }
+    \\    if (sourceIndex === sourceEndValue && targetIndex === targetEndValue) return 0;
+    \\    return sourceIndex === sourceEndValue ? -1 : 1;
     \\  };
     \\  Buffer.prototype.toString = function(encoding) {
     \\    const normalized = encoding === undefined ? "utf8" : String(encoding).toLowerCase();
@@ -1267,6 +1306,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/23133.test.ts", filesForSubset(.minimal_js)[25]);
     try std.testing.expectEqualStrings("regression/issue/2993.test.ts", filesForSubset(.minimal_js)[26]);
     try std.testing.expectEqualStrings("regression/issue/04947.test.js", filesForSubset(.minimal_js)[27]);
+    try std.testing.expectEqualStrings("js/node/buffer-compare-bounds.test.ts", filesForSubset(.minimal_js)[28]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -1297,8 +1337,9 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var Request = function(input, init)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Request.prototype.clone") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node-fetch\"]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.alloc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.alloc = function(size, fill)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.from") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.prototype.compare") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toString(16).padStart") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Error.prepareStackTrace") != null);
 }
