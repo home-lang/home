@@ -22027,7 +22027,11 @@ pub const Checker = struct {
     ) CheckError!void {
         if (params.len == 0) return;
         try buf.append(self.gpa, '<');
-        const node_count: NodeId = @intCast(self.hir.kinds.items.len);
+        // NodeId is `u32`; saturate at maxInt(u32) if a pathological HIR
+        // ever exceeds 2^32 nodes. The bound is only used for `< node_count`
+        // sanity checks below — saturating is safe (just keeps the gate
+        // permissive) and never corrupts a real NodeId comparison.
+        const node_count: NodeId = std.math.cast(NodeId, self.hir.kinds.items.len) orelse std.math.maxInt(NodeId);
         for (params, 0..) |p, i| {
             if (i != 0) try buf.appendSlice(self.gpa, ", ");
             var wrote = false;
@@ -26966,8 +26970,13 @@ pub const Checker = struct {
         const length = self.fixedTupleLength(target) orelse return false;
         const arena = self.diag_arena.allocator();
         try buf.append(arena, '[');
+        // Cap render width at 10_000 elements: protects against u64→usize
+        // narrowing on 32-bit hosts and bounds diagnostic-string growth on
+        // pathological tuple types (tsc itself truncates around the same
+        // scale in practice).
+        const render_cap: u64 = @min(length, 10_000);
         var i: u64 = 0;
-        while (i < length) : (i += 1) {
+        while (i < render_cap) : (i += 1) {
             if (i > 0) try buf.appendSlice(arena, ", ");
             const elem_t = self.tupleElementType(target, @intCast(i));
             if (try self.allocSimpleTypeName(elem_t)) |name| {
@@ -43037,8 +43046,13 @@ pub const Checker = struct {
                     try self.recordGenericSignatureParams(new_sig, preserved_params.items);
                 }
             }
+            // SignatureParamKey.param_index is `u16`; cap iteration at
+            // 65535 to avoid silent narrowing on adversarial signatures
+            // with more parameters than the key can address. Predicates
+            // beyond that index would alias keys and corrupt lookups.
+            const param_cap = @min(params_snapshot.len, @as(usize, std.math.maxInt(u16)) + 1);
             var param_ix: usize = 0;
-            while (param_ix < params_snapshot.len) : (param_ix += 1) {
+            while (param_ix < param_cap) : (param_ix += 1) {
                 const key: SignatureParamKey = .{ .signature = t, .param_index = @intCast(param_ix) };
                 if (self.signature_param_predicates.get(key)) |pred| {
                     var next_pred = pred;
@@ -50764,12 +50778,20 @@ fn byteOffsetOfLine(source: []const u8, target_line: u32) u32 {
     if (target_line == 0) return 0;
     var line: u32 = 0;
     var i: usize = 0;
-    while (i < source.len) : (i += 1) {
+    // Cap scan at u32::MAX bytes: result type is `u32`, so any source
+    // file ≥4GB would silently wrap the returned offset and corrupt
+    // diagnostic line numbers. Saturate instead.
+    const u32_max: usize = std.math.maxInt(u32);
+    const scan_limit = @min(source.len, u32_max);
+    while (i < scan_limit) : (i += 1) {
         if (source[i] != '\n') continue;
         line += 1;
-        if (line == target_line) return @intCast(@min(i + 1, source.len));
+        if (line == target_line) {
+            const off = @min(i + 1, scan_limit);
+            return @intCast(off);
+        }
     }
-    return @intCast(source.len);
+    return @intCast(scan_limit);
 }
 
 fn typeOfTypeofString(s: []const u8) ?TypeId {
