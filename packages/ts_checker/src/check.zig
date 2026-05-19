@@ -20563,14 +20563,20 @@ pub const Checker = struct {
                 if (self.enum_member_values.get(.{ .obj_name = enum_name, .prop_name = id.name })) |v| break :blk v;
                 // Recognise the `NaN` and `Infinity` global identifiers
                 // so `const enum E { x = NaN }` evaluates and triggers
-                // the matching TS2477 / TS2478 diagnostic. Lookups for
-                // shadowed `let NaN = …` cases use the non-const enum
-                // path which doesn't consult these values for type
-                // membership, so it is safe to recognise the names
-                // unconditionally here.
+                // the matching TS2477 / TS2478 diagnostic. Skip when a
+                // local binding of the same name shadows the global —
+                // `let Infinity = {}; enum En { X = Infinity }` keeps
+                // the non-numeric resolution so the structural
+                // assignability check fires TS18033 instead.
                 const name_str = self.string_interner.get(id.name);
-                if (name_str.len == 3 and std.mem.eql(u8, name_str, "NaN")) break :blk std.math.nan(f64);
-                if (name_str.len == 8 and std.mem.eql(u8, name_str, "Infinity")) break :blk std.math.inf(f64);
+                const is_nan = name_str.len == 3 and std.mem.eql(u8, name_str, "NaN");
+                const is_inf = name_str.len == 8 and std.mem.eql(u8, name_str, "Infinity");
+                if (is_nan or is_inf) {
+                    if (self.module) |module| {
+                        if (module.root.lookup(id.name) != null) break :blk null;
+                    }
+                    break :blk if (is_nan) std.math.nan(f64) else std.math.inf(f64);
+                }
                 break :blk null;
             },
             .member_access => blk: {
