@@ -29849,7 +29849,7 @@ pub const Checker = struct {
             if (tag.kind != .param_tag) continue;
             if (!std.mem.eql(u8, tag.name, param_name)) continue;
             var t: ?TypeId = null;
-            if (tag.optional_from_type_suffix or jsDocTypeTextIsObjectIndexSignature(tag.type_text)) {
+            if (tag.type_text.len > 0) {
                 if (try self.jsDocTypeTextToType(src, tag.type_text)) |param_t| {
                     t = if (tag.optional) try self.unionWithUndefined(param_t) else param_t;
                 }
@@ -29873,7 +29873,7 @@ pub const Checker = struct {
             if (tag.kind != .param_tag) continue;
             if (current == param_index) {
                 var t: ?TypeId = null;
-                if (tag.optional_from_type_suffix or jsDocTypeTextIsObjectIndexSignature(tag.type_text)) {
+                if (tag.type_text.len > 0) {
                     if (try self.jsDocTypeTextToType(src, tag.type_text)) |param_t| {
                         t = if (tag.optional) try self.unionWithUndefined(param_t) else param_t;
                     }
@@ -32967,7 +32967,7 @@ pub const Checker = struct {
                         suppressed_ts2350_via_ts7009 = true;
                         if (self.hir.kindOf(c.callee) == .identifier) {
                             const ctor_id = hir_mod.identifierOf(self.hir, c.callee);
-                            break :blk try self.jsConstructorInstanceType(ctor_id.name);
+                            break :blk try self.jsConstructorInstanceType(ctor_id.name, c.callee);
                         }
                     }
                 }
@@ -49821,13 +49821,128 @@ pub const Checker = struct {
         }
     }
 
-    fn jsConstructorInstanceType(self: *Checker, name: hir_mod.StringId) CheckError!TypeId {
+    fn jsConstructorInstanceType(self: *Checker, name: hir_mod.StringId, callee_node: NodeId) CheckError!TypeId {
         if (self.class_instance_types.get(name)) |existing| return existing;
-        const instance_t = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        if (self.jsConstructorFunctionDeclForCallee(callee_node, name)) |fn_node| {
+            try self.collectJsConstructorThisMembers(fn_node, &members);
+        }
+        const instance_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
         try self.class_instance_types.put(self.gpa, name, instance_t);
         try self.class_name_by_instance.put(self.gpa, instance_t, name);
         try self.type_names.put(self.gpa, name, instance_t);
         return instance_t;
+    }
+
+    fn jsConstructorFunctionDeclForCallee(
+        self: *Checker,
+        callee_node: NodeId,
+        name: hir_mod.StringId,
+    ) ?NodeId {
+        if (self.module) |module| {
+            if (module.root.lookup(name)) |sym| {
+                if (sym.flags.is_function) {
+                    for (sym.decls.items) |d| {
+                        if (self.hir.kindOf(d) == .fn_decl) return d;
+                    }
+                }
+            }
+        }
+        return self.findSiblingFunctionDecl(callee_node);
+    }
+
+    fn collectJsConstructorThisMembers(
+        self: *Checker,
+        fn_node: NodeId,
+        members: *std.ArrayListUnmanaged(types.ObjectMember),
+    ) CheckError!void {
+        const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (f.body == hir_mod.none_node_id or self.hir.kindOf(f.body) != .block_stmt) return;
+        const sig = self.hir.typeOf(fn_node);
+        const sig_params = if (sig < self.interner.pool.typeCount() and self.interner.pool.flagsOf(sig).is_signature)
+            self.interner.signatureParams(sig)
+        else
+            &[_]TypeId{};
+        const fn_params = hir_mod.fnParams(self.hir, fn_node);
+        for (hir_mod.blockStmts(self.hir, f.body)) |stmt| {
+            try self.collectJsConstructorThisMembersFromNode(fn_node, stmt, fn_params, sig_params, members);
+        }
+    }
+
+    fn collectJsConstructorThisMembersFromNode(
+        self: *Checker,
+        fn_node: NodeId,
+        node: NodeId,
+        fn_params: []const NodeId,
+        sig_params: []const TypeId,
+        members: *std.ArrayListUnmanaged(types.ObjectMember),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .block_stmt => for (hir_mod.blockStmts(self.hir, node)) |stmt| {
+                try self.collectJsConstructorThisMembersFromNode(fn_node, stmt, fn_params, sig_params, members);
+            },
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                try self.collectJsConstructorThisMembersFromNode(fn_node, i.then_branch, fn_params, sig_params, members);
+                try self.collectJsConstructorThisMembersFromNode(fn_node, i.else_branch, fn_params, sig_params, members);
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                if (a.op != null) return;
+                const prop_name = self.directThisPropertyName(a.target) orelse return;
+                if (objectMemberListContains(members.items, prop_name)) return;
+                const prop_t = (try self.jsConstructorAssignedMemberType(fn_node, a.value, fn_params, sig_params)) orelse types.Primitive.any;
+                try members.append(self.gpa, .{
+                    .name = prop_name,
+                    .type = prop_t,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = false,
+                });
+            },
+            else => {},
+        }
+    }
+
+    fn directThisPropertyName(self: *Checker, target: NodeId) ?hir_mod.StringId {
+        if (target == hir_mod.none_node_id or self.hir.kindOf(target) != .member_access) return null;
+        const m = hir_mod.memberOf(self.hir, target);
+        if (!self.nodeIsThisReference(m.object)) return null;
+        return m.name;
+    }
+
+    fn jsConstructorAssignedMemberType(
+        self: *Checker,
+        fn_node: NodeId,
+        value: NodeId,
+        fn_params: []const NodeId,
+        sig_params: []const TypeId,
+    ) CheckError!?TypeId {
+        if (value == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(value) == .identifier) {
+            const id = hir_mod.identifierOf(self.hir, value);
+            var value_param_index: usize = 0;
+            for (fn_params) |param_node| {
+                if (self.hir.kindOf(param_node) != .parameter) continue;
+                const p = hir_mod.parameterOf(self.hir, param_node);
+                if (!self.isThisParameter(param_node)) {
+                    defer value_param_index += 1;
+                }
+                if (p.name == hir_mod.none_node_id or self.hir.kindOf(p.name) != .identifier) continue;
+                if (hir_mod.identifierOf(self.hir, p.name).name != id.name) continue;
+                if (self.isThisParameter(param_node)) return null;
+                if (try self.jsDocParamTypeForFunctionParam(fn_node, self.string_interner.get(id.name))) |jsdoc_t| {
+                    return jsdoc_t;
+                }
+                if (value_param_index < sig_params.len) return sig_params[value_param_index];
+                return null;
+            }
+        }
+        const value_t = self.hir.typeOf(value);
+        if (value_t != types.Primitive.none) return value_t;
+        return null;
     }
 
     fn findSiblingFunctionDecl(self: *Checker, callee_node: NodeId) ?NodeId {
