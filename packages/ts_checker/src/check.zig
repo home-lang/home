@@ -9665,10 +9665,19 @@ pub const Checker = struct {
                 .jsx_attribute => {
                     return self.jsxAttributeHasContextualType(cur);
                 },
+                .decorator => {
+                    return self.decoratorExpressionHasContextualType(cur, prev);
+                },
                 else => return false,
             }
         }
         return false;
+    }
+
+    fn decoratorExpressionHasContextualType(self: *Checker, decorator_node: NodeId, expr_node: NodeId) bool {
+        if (decorator_node == hir_mod.none_node_id or self.hir.kindOf(decorator_node) != .decorator) return false;
+        const d = hir_mod.decoratorOf(self.hir, decorator_node);
+        return d.expression == expr_node;
     }
 
     fn callHasDirectFunctionCallee(self: *Checker, call_node: NodeId) bool {
@@ -58294,6 +58303,30 @@ test "checker: stage 3 decorator initializer callback supplies contextual this" 
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.this_implicitly_any);
     }
+}
+
+test "checker: direct method decorator arrow contextually types parameters" {
+    const s = try newSetup(
+        \\// @experimentaldecorators: true
+        \\function func(s: string): void {}
+        \\class A {
+        \\  @((x, p, d) => {
+        \\    var a = 3;
+        \\    func(a);
+        \\    return d;
+        \\  })
+        \\  m() {}
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var saw_type_error = false;
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.parameter_implicitly_any);
+        if (d.code == TsCodes.argument_type_mismatch) saw_type_error = true;
+    }
+    try T.expect(saw_type_error);
 }
 
 test "checker: typed var used in conditional emits TS2454" {
