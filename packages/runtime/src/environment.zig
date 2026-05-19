@@ -13,12 +13,18 @@ pub const isMac = switch (builtin.os.tag) {
     else => false,
 };
 pub const isLinux = builtin.os.tag == .linux;
+pub const isFreeBSD = builtin.os.tag == .freebsd;
 pub const isPosix = !isWindows;
 pub const isWasi = builtin.os.tag == .wasi;
 pub const isWasm = switch (builtin.cpu.arch) {
     .wasm32, .wasm64 => true,
     else => false,
 };
+// Wave-19 unmined-corner port (2026-05-19). CPU-arch flags pulled in to
+// satisfy `bun/src/perf/hw_timer.zig`'s `Environment.isAarch64` /
+// `Environment.isX64` predicates. Mirrors upstream `Environment.isAarch64`.
+pub const isAarch64 = builtin.cpu.arch == .aarch64;
+pub const isX64 = builtin.cpu.arch == .x86_64;
 pub const isAndroid = false; // Home does not currently target Android.
 pub const isDebug = builtin.mode == .Debug;
 pub const isRelease = !isDebug;

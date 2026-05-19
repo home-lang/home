@@ -544,6 +544,11 @@ pub const perf = struct {
     // which 0.17.0-dev.263 removed. Parked until a thin `std.Io.Clock`
     // adapter lands.
     pub const generated_perf_trace_events = @import("perf/generated_perf_trace_events.zig");
+    // Wave-19 unmined-corner port (2026-05-19). Unbarriered TSC reader from
+    // `bun/src/perf/hw_timer.zig`. Adds `Environment.isAarch64` /
+    // `Environment.isX64` to the substrate so the asm-volatile paths gate
+    // correctly.
+    pub const hw_timer = @import("perf/hw_timer.zig");
 };
 pub const safety = struct {
     pub const thread_id = @import("safety/thread_id.zig");
@@ -1442,6 +1447,9 @@ test {
     _ = @import("sql/postgres/protocol/CopyData.zig");
     _ = @import("sql/postgres/protocol/CopyFail.zig");
     _ = @import("css/properties/text.zig");
+    // Wave-19 unmined-corner port (2026-05-19). Adds bun/src/perf/hw_timer.zig
+    // (TSC reader) — the perf/ directory is otherwise lightly mined here.
+    _ = @import("perf/hw_timer.zig");
 }
 
 test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {
@@ -1572,6 +1580,11 @@ test "home_rt.http types compose" {
     var iter = http.HeaderValueIterator.init("a, b");
     try std.testing.expectEqualStrings("a", iter.next().?);
     try std.testing.expectEqualStrings("b", iter.next().?);
+}
+
+test "home_rt.perf.hw_timer.is_supported tracks aarch64/x64" {
+    const expected = Environment.isAarch64 or Environment.isX64;
+    try std.testing.expectEqual(expected, perf.hw_timer.is_supported);
 }
 
 test "home_rt.safety.thread_id.invalid is the max thread id" {
