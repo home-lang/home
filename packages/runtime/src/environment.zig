@@ -26,6 +26,7 @@ pub const isWasm = switch (builtin.cpu.arch) {
 pub const isAarch64 = builtin.cpu.arch == .aarch64;
 pub const isX64 = builtin.cpu.arch == .x86_64;
 pub const isAndroid = false; // Home does not currently target Android.
+pub const enable_fuzzilli = false; // Fuzzilli REPRL — re-attaches in a future phase.
 pub const isDebug = builtin.mode == .Debug;
 pub const isRelease = !isDebug;
 pub const allow_assert = isDebug;

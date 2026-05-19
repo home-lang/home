@@ -28,7 +28,11 @@ pub fn decoderWrap(comptime Container: type, comptime decodeFn: anytype) type {
     return struct {
         pub fn decode(this: *Container, context: anytype) AnyMySQLError.Error!void {
             const Context = @TypeOf(context);
-            if (@hasDecl(Context, "is_wrapped")) {
+            // @hasDecl only works on struct/enum/union/opaque, so guard
+            // the lookup for scalar contexts (Zig 0.17 strictness).
+            const ctx_info = @typeInfo(Context);
+            const is_wrapped_decl = (ctx_info == .@"struct" or ctx_info == .@"enum" or ctx_info == .@"union" or ctx_info == .@"opaque") and @hasDecl(Context, "is_wrapped");
+            if (is_wrapped_decl) {
                 try decodeFn(this, Context, context);
             } else {
                 try decodeFn(this, Context, .{ .wrapped = context });
