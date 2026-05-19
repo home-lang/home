@@ -189,6 +189,8 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/buffer-utf16.test.ts",
     "js/bun/test/expect-extend-asymmetric-match-throw.test.ts",
     "regression/issue/23133.test.ts",
+    "regression/issue/2993.test.ts",
+    "regression/issue/04947.test.js",
 };
 
 const harness_prelude =
@@ -567,6 +569,26 @@ const harness_prelude =
     \\  const text = JSON.stringify(value);
     \\  return new Response(text, init);
     \\};
+    \\if (typeof Request !== "function") {
+    \\  var Request = function(input, init) {
+    \\    const options = init || {};
+    \\    if (input instanceof Request) {
+    \\      this.url = input.url;
+    \\      this.cache = input.cache;
+    \\      this.mode = input.mode;
+    \\    } else {
+    \\      this.url = String(input);
+    \\      this.cache = "default";
+    \\      this.mode = "cors";
+    \\    }
+    \\    if (Object.prototype.hasOwnProperty.call(options, "cache")) this.cache = String(options.cache);
+    \\    if (Object.prototype.hasOwnProperty.call(options, "mode")) this.mode = String(options.mode);
+    \\  };
+    \\  Request.prototype.clone = function() {
+    \\    return new Request(this);
+    \\  };
+    \\}
+    \\globalThis.__home_modules["node-fetch"] = { Request };
     \\if (typeof Buffer !== "function") {
     \\  var Buffer = function(size) {
     \\    const bytes = new Uint8Array(size);
@@ -964,8 +986,45 @@ fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) 
     return out.toOwnedSlice(allocator);
 }
 
+fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
+
+    const replacements = [_]struct {
+        needle: []const u8,
+        replacement: []const u8,
+    }{
+        .{
+            .needle = "import { Request } from \"node-fetch\";",
+            .replacement = "const { Request } = globalThis.__home_import(\"node-fetch\");",
+        },
+    };
+
+    var cursor: usize = 0;
+    while (cursor < source.len) {
+        var replaced = false;
+        for (replacements) |entry| {
+            if (std.mem.startsWith(u8, source[cursor..], entry.needle)) {
+                try out.appendSlice(allocator, entry.replacement);
+                cursor += entry.needle.len;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            try out.append(allocator, source[cursor]);
+            cursor += 1;
+        }
+    }
+
+    return out.toOwnedSlice(allocator);
+}
+
 fn finishModuleRewrite(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const with_import_meta = try rewriteImportMeta(allocator, source);
+    const with_module_imports = try rewriteBootstrapModuleImports(allocator, source);
+    defer allocator.free(with_module_imports);
+
+    const with_import_meta = try rewriteImportMeta(allocator, with_module_imports);
     defer allocator.free(with_import_meta);
     return rewriteBootstrapTypeScript(allocator, with_import_meta);
 }
@@ -1206,6 +1265,8 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/node/buffer-utf16.test.ts", filesForSubset(.minimal_js)[23]);
     try std.testing.expectEqualStrings("js/bun/test/expect-extend-asymmetric-match-throw.test.ts", filesForSubset(.minimal_js)[24]);
     try std.testing.expectEqualStrings("regression/issue/23133.test.ts", filesForSubset(.minimal_js)[25]);
+    try std.testing.expectEqualStrings("regression/issue/2993.test.ts", filesForSubset(.minimal_js)[26]);
+    try std.testing.expectEqualStrings("regression/issue/04947.test.js", filesForSubset(.minimal_js)[27]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -1233,6 +1294,9 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_import") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.redirect") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var Request = function(input, init)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Request.prototype.clone") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node-fetch\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.alloc") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.from") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toString(16).padStart") != null);
@@ -1266,6 +1330,34 @@ test "Bun test import rewrite lowers lifecycle hook imports" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { afterAll, afterEach, beforeAll, beforeEach, expect, test } = globalThis.__home_import(\"bun:test\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const logs = []") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, ": string[]") == null);
+}
+
+test "bootstrap rewrite lowers node-fetch Request imports" {
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { Request } from "node-fetch";
+        \\test("works", () => expect(new Request("/").url).toBe("/"));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/04947.test.js");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { Request } = globalThis.__home_import(\"node-fetch\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"node-fetch\"") == null);
+}
+
+test "bootstrap rewrite erases const assertions" {
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("works", () => {
+        \\  const values = ["default"] as const;
+        \\  expect(values[0]).toBe("default");
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/2993.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, " as const") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const values = [\"default\"];") != null);
 }
 
 test "Bun test import rewrite installs globals for no-import tests" {
