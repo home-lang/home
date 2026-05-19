@@ -307,6 +307,9 @@ const harness_prelude =
     \\    toBeUndefined() {
     \\      __home_assert(value === undefined, isNot, "Expected value" + (isNot ? " not" : "") + " to be undefined");
     \\    },
+    \\    toBeTruthy() {
+    \\      __home_assert(!!value, isNot, "Expected value" + (isNot ? " not" : "") + " to be truthy");
+    \\    },
     \\    toBeNumber() {
     \\      __home_assert(typeof value === "number", isNot, "Expected value" + (isNot ? " not" : "") + " to be a number");
     \\    },
@@ -874,7 +877,7 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     try appendJsStringLiteral(out, allocator, relative_path);
     try out.appendSlice(allocator, ";\nvar __dirname = ");
     try appendJsStringLiteral(out, allocator, dirname);
-    try out.appendSlice(allocator, ";\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\n");
+    try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\n");
 }
 
 fn sourceShebangLen(source: []const u8) usize {
@@ -976,6 +979,7 @@ fn appendBootstrapTypeScriptReplacement(
         replacement: []const u8,
     }{
         .{ .needle = ": string[] =", .replacement = " =" },
+        .{ .needle = ": any[] =", .replacement = " =" },
         .{ .needle = ": number =", .replacement = " =" },
         .{ .needle = ": any)", .replacement = ")" },
         .{ .needle = ": any;", .replacement = ";" },
@@ -1339,6 +1343,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTypeOf(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTypeOf() requires a valid type string argument") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeUndefined()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTruthy()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_expect_any_matches(value, ctor)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeNumber()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "a instanceof Map || b instanceof Map") != null);
@@ -1387,6 +1392,7 @@ test "Bun test import rewrite lowers to the virtual test module" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { expect, it, describe } = globalThis.__home_import(\"bun:test\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "var __dirname = \"js/node\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "globalThis.__home_current_filename = __filename") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "it(\"works\"") != null);
 }
 
@@ -1465,6 +1471,7 @@ test "bootstrap rewrite erases as any assertions" {
 test "bootstrap rewrite erases admitted type-only syntax" {
     const source =
         \\import { describe, expect, test } from "bun:test";
+        \\let capturedStack: any[] = [];
         \\class CustomMap extends Map {
         \\  abc: number = 123;
         \\  constructor(iterable: any) { super(iterable); }
@@ -1481,6 +1488,7 @@ test "bootstrap rewrite erases admitted type-only syntax" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "abc = 123") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "constructor(iterable)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "new CustomMap([])") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "let capturedStack = []") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, ": any") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "<any, any>") == null);
 }
