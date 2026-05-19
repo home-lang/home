@@ -34,8 +34,10 @@ pub const Summary = struct {
     pub fn deinit(self: *Summary, allocator: std.mem.Allocator) void {
         if (self.first_failure_message_owned) {
             allocator.free(self.first_failure_message);
-            self.first_failure_message_owned = false;
         }
+        self.first_failure_file = "";
+        self.first_failure_message = "";
+        self.first_failure_message_owned = false;
     }
 };
 
@@ -58,6 +60,11 @@ const prelude =
     \\var Bun = { [Symbol.toStringTag]: "Bun" };
     \\function __home_fail(message) {
     \\  throw new Error(message);
+    \\}
+    \\function __home_unsupported(message) {
+    \\  const error = new Error(message);
+    \\  error.__home_unsupported = true;
+    \\  throw error;
     \\}
     \\function __home_format(value) {
     \\  try {
@@ -107,12 +114,12 @@ const prelude =
     \\}
     \\function __home_run_test(name, fn) {
     \\  if (typeof fn !== "function") {
-    \\    __home_bun_tests.passed++;
+    \\    __home_bun_tests.todo++;
     \\    return;
     \\  }
     \\  try {
     \\    const result = fn();
-    \\    if (__home_is_thenable(result)) __home_fail("Async tests are not supported by the Home Bun corpus bootstrap runner yet");
+    \\    if (__home_is_thenable(result)) __home_unsupported("Async tests are not supported by the Home Bun corpus bootstrap runner yet");
     \\    __home_bun_tests.passed++;
     \\  } catch (error) {
     \\    __home_bun_tests.failed++;
@@ -127,8 +134,9 @@ const prelude =
     \\  }
     \\  try {
     \\    const result = fn();
-    \\    if (__home_is_thenable(result)) __home_fail("Async tests are not supported by the Home Bun corpus bootstrap runner yet");
+    \\    if (__home_is_thenable(result)) __home_unsupported("Async tests are not supported by the Home Bun corpus bootstrap runner yet");
     \\  } catch (error) {
+    \\    if (error && error.__home_unsupported) throw error;
     \\    __home_bun_tests.passed++;
     \\    return;
     \\  }
@@ -391,6 +399,11 @@ fn rewriteImportMeta(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return replaceAll(allocator, with_dir, "import.meta.path", "__home_import_meta_path");
 }
 
+fn hasBunTestImport(source: []const u8) bool {
+    return std.mem.indexOf(u8, source, "from \"bun:test\"") != null or
+        std.mem.indexOf(u8, source, "from 'bun:test'") != null;
+}
+
 pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) ![]u8 {
     const imports = [_][]const u8{
         "import { expect, it, describe } from \"bun:test\";",
@@ -448,6 +461,12 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
         defer allocator.free(rewritten);
 
         summary.files += 1;
+        if (hasBunTestImport(rewritten)) {
+            summary.failed += 1;
+            try recordFailure(allocator, &summary, relative, "unsupported bun:test import shape");
+            continue;
+        }
+
         const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(
             allocator,
             engine.currentContext(),
@@ -463,12 +482,31 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
             continue;
         }
 
-        summary.passed += try readCounter(allocator, &engine, "__home_bun_tests.passed");
-        summary.failed += try readCounter(allocator, &engine, "__home_bun_tests.failed");
-        summary.todo += try readCounter(allocator, &engine, "__home_bun_tests.todo");
+        const counters = readCounters(allocator, &engine) catch |err| {
+            summary.failed += 1;
+            try recordFailure(allocator, &summary, relative, @errorName(err));
+            continue;
+        };
+        summary.passed += counters.passed;
+        summary.failed += counters.failed;
+        summary.todo += counters.todo;
     }
 
     return summary;
+}
+
+const Counters = struct {
+    passed: usize,
+    failed: usize,
+    todo: usize,
+};
+
+fn readCounters(allocator: std.mem.Allocator, engine: *home_rt.jsc.engine.Engine) !Counters {
+    return .{
+        .passed = try readCounter(allocator, engine, "__home_bun_tests.passed"),
+        .failed = try readCounter(allocator, engine, "__home_bun_tests.failed"),
+        .todo = try readCounter(allocator, engine, "__home_bun_tests.todo"),
+    };
 }
 
 fn readCounter(allocator: std.mem.Allocator, engine: *home_rt.jsc.engine.Engine, expr: []const u8) !usize {
@@ -482,6 +520,9 @@ fn readCounter(allocator: std.mem.Allocator, engine: *home_rt.jsc.engine.Engine,
     )) orelse return error.CounterEvaluateFailed;
 
     const number = home_rt.jsc.extern_fns.JSValueToNumber(engine.currentContext(), value, null);
+    if (!std.math.isFinite(number) or number < 0 or @floor(number) != number) {
+        return error.InvalidCorpusCounter;
+    }
     return @intFromFloat(number);
 }
 
@@ -538,6 +579,31 @@ test "Bun test import rewrite installs the bootstrap prelude" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "it(\"works\"") != null);
 }
 
+test "Bun test import rewrite installs globals for no-import tests" {
+    const source =
+        \\test("works", () => {
+        \\  expect(1).toBe(1);
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/example.test.js");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "function test(name, fn)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "var __filename = \"regression/issue/example.test.js\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "test(\"works\"") != null);
+}
+
+test "Bun test import rewrite reports unsupported import shapes" {
+    const source =
+        \\import { expect as want, test } from "bun:test";
+        \\test("works", () => want(1).toBe(1));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/alias.test.js");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(hasBunTestImport(rewritten));
+}
+
 test "Bun test import rewrite lowers import.meta metadata" {
     const source =
         \\import { expect, it } from "bun:test";
@@ -571,4 +637,15 @@ test "failure recorder owns duplicated exception messages" {
 
     try std.testing.expect(summary.first_failure_message_owned);
     try std.testing.expectEqualStrings("boom", summary.first_failure_message);
+}
+
+test "summary deinit resets owned failure state" {
+    var summary = Summary{};
+    try recordFailure(std.testing.allocator, &summary, "first.test.js", "boom");
+
+    summary.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("", summary.first_failure_file);
+    try std.testing.expectEqualStrings("", summary.first_failure_message);
+    try std.testing.expect(!summary.first_failure_message_owned);
 }
