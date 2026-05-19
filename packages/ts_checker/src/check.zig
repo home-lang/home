@@ -1084,6 +1084,13 @@ pub const Checker = struct {
     /// `lowererLowerWithTypeParams` so `b: Box`, `b: SomeInterface`,
     /// or `b: SomeAlias` all resolve at the annotation site.
     type_names: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId),
+    /// Tracks the last interface declaration node seen for a given
+    /// type name. Used by `checkInterfaceDecl` to detect same-scope
+    /// declaration merging (interface A {} interface A {}) without
+    /// fusing genuinely-distinct interfaces that happen to share a
+    /// name across sibling namespaces (those merge through the
+    /// namespace augmentation path, not the global type table).
+    interface_last_decl_by_name: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
     /// Generic alias name → (params, body) mapping. Populated by
     /// `checkTypeAliasDecl` when an alias declares type parameters.
     /// Consulted by `lowererLowerWithTypeParams` to instantiate
@@ -1396,6 +1403,7 @@ pub const Checker = struct {
             .class_accessor_members = .empty,
             .class_method_members = .empty,
             .type_names = .empty,
+            .interface_last_decl_by_name = .empty,
             .generic_aliases = .empty,
             .active_generic_aliases = .empty,
             .resolving_value_types = .empty,
@@ -1567,6 +1575,7 @@ pub const Checker = struct {
         while (cmm_it.next()) |set| set.deinit(self.gpa);
         self.class_method_members.deinit(self.gpa);
         self.type_names.deinit(self.gpa);
+        self.interface_last_decl_by_name.deinit(self.gpa);
         var ga_it = self.generic_aliases.valueIterator();
         while (ga_it.next()) |info| self.gpa.free(info.params);
         self.generic_aliases.deinit(self.gpa);
@@ -19571,7 +19580,74 @@ pub const Checker = struct {
                     try self.signature_this_params.put(self.gpa, member.type, iface_t);
                 }
             }
-            try self.type_names.put(self.gpa, id.name, iface_t);
+            // Same-name interface declaration merging. When a prior
+            // interface with this name was already lowered into an
+            // object type AND shares the same immediate parent block
+            // as the current declaration, fuse its members (and
+            // indexers) into the new declaration's object type so
+            // subsequent `b.<merged-member>` lookups succeed without
+            // spurious TS2339. Mirrors tsc's declaration-merging rule
+            // for sibling interface decls in the same scope.
+            //
+            // The parent-equality gate is critical: two interfaces
+            // with the same name in DIFFERENT namespaces (e.g.,
+            // `namespace M { interface A {} } namespace M2 { interface
+            // A {} }`) must NOT fuse — those are distinct types and
+            // their cross-block conflict is surfaced separately by
+            // `checkSiblingNamespaceInterfaceMerges`. The TS2428 /
+            // TS2717 same-scope conflict diagnostics still fire from
+            // `checkInterfaceMembersMerge`.
+            const merged_iface_t = blk: {
+                const prev_t = self.type_names.get(id.name) orelse break :blk iface_t;
+                if (prev_t == types.Primitive.unknown or prev_t == types.Primitive.none) break :blk iface_t;
+                if (!self.interner.pool.flagsOf(prev_t).is_object_type) break :blk iface_t;
+                if (prev_t == iface_t) break :blk iface_t;
+                const prev_decl = self.interface_last_decl_by_name.get(id.name) orelse break :blk iface_t;
+                if (self.hir.parentOf(prev_decl) != self.hir.parentOf(node)) break :blk iface_t;
+                // Generic interfaces have decl-local fresh type-param
+                // ids per declaration; merging members across decls
+                // would mix incompatible param ids and break
+                // `Generic<X>` substitution. Skip the fuse for now;
+                // `generic_aliases` keeps the latest decl's body. The
+                // non-generic same-name merge case still benefits.
+                if (param_ids.items.len > 0) break :blk iface_t;
+                var combined: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+                defer combined.deinit(self.gpa);
+                const prev_members = self.interner.objectMembers(prev_t);
+                try combined.appendSlice(self.gpa, prev_members);
+                for (iface_members.items) |new_m| {
+                    var replaced = false;
+                    for (combined.items, 0..) |old_m, mi| {
+                        if (old_m.name != new_m.name) continue;
+                        // Method overload stacks accept duplicate names
+                        // (kept as separate entries); for properties,
+                        // the new decl wins on rebind. Conflicts (other
+                        // than method overload sets) are already
+                        // reported by checkInterfaceMembersMerge.
+                        if (old_m.is_method and new_m.is_method) continue;
+                        combined.items[mi] = new_m;
+                        replaced = true;
+                        break;
+                    }
+                    if (!replaced) try combined.append(self.gpa, new_m);
+                }
+                const merged_string_idx = if (string_idx != types.Primitive.none) string_idx else self.interner.objectStringIndex(prev_t);
+                const merged_number_idx = if (number_idx != types.Primitive.none) number_idx else self.interner.objectNumberIndex(prev_t);
+                const merged_symbol_idx = if (symbol_idx != types.Primitive.none) symbol_idx else self.interner.objectSymbolIndex(prev_t);
+                const fused = self.interner.internObjectTypeWithIndexAndSymbol(
+                    combined.items,
+                    merged_string_idx,
+                    merged_number_idx,
+                    merged_symbol_idx,
+                ) catch return error.OutOfMemory;
+                if (self.readonly_index_types.contains(prev_t) and merged_string_idx != types.Primitive.none) {
+                    try self.readonly_index_types.put(self.gpa, fused, {});
+                }
+                try self.recordMemberPredicatesForReceiver(fused, &iface_member_predicates);
+                break :blk fused;
+            };
+            try self.type_names.put(self.gpa, id.name, merged_iface_t);
+            try self.interface_last_decl_by_name.put(self.gpa, id.name, node);
             if (param_ids.items.len > 0) {
                 const owned_params = try self.gpa.dupe(TypeId, param_ids.items);
                 if (self.generic_aliases.get(id.name)) |old| {
@@ -19579,11 +19655,11 @@ pub const Checker = struct {
                 }
                 try self.generic_aliases.put(self.gpa, id.name, .{
                     .params = owned_params,
-                    .body = iface_t,
+                    .body = merged_iface_t,
                     .body_node = hir_mod.none_node_id,
                 });
             }
-            self.hir.setType(it.name, iface_t);
+            self.hir.setType(it.name, merged_iface_t);
         }
     }
 
@@ -22345,6 +22421,36 @@ pub const Checker = struct {
         if (std.mem.eql(u8, raw, "Promise") or
             std.mem.eql(u8, raw, "PromiseLike") or
             std.mem.eql(u8, raw, "Awaited"))
+        {
+            return true;
+        }
+        // Built-in utility generics. `interface I20 extends Partial<T>
+        // {}` is legal heritage even though `Partial` isn't declared
+        // locally as an interface. Mirrors fixture
+        // `interfaceExtendsObjectIntersection` lines 49-50 where
+        // `extends Partial<T1>` / `extends Readonly<T1>` must not
+        // surface TS2304.
+        if (std.mem.eql(u8, raw, "Partial") or
+            std.mem.eql(u8, raw, "Required") or
+            std.mem.eql(u8, raw, "Readonly") or
+            std.mem.eql(u8, raw, "Pick") or
+            std.mem.eql(u8, raw, "Omit") or
+            std.mem.eql(u8, raw, "Record") or
+            std.mem.eql(u8, raw, "Exclude") or
+            std.mem.eql(u8, raw, "Extract") or
+            std.mem.eql(u8, raw, "NonNullable") or
+            std.mem.eql(u8, raw, "Parameters") or
+            std.mem.eql(u8, raw, "ConstructorParameters") or
+            std.mem.eql(u8, raw, "ReturnType") or
+            std.mem.eql(u8, raw, "InstanceType") or
+            std.mem.eql(u8, raw, "ThisParameterType") or
+            std.mem.eql(u8, raw, "OmitThisParameter") or
+            std.mem.eql(u8, raw, "Capitalize") or
+            std.mem.eql(u8, raw, "Uncapitalize") or
+            std.mem.eql(u8, raw, "Uppercase") or
+            std.mem.eql(u8, raw, "Lowercase") or
+            std.mem.eql(u8, raw, "NoInfer") or
+            std.mem.eql(u8, raw, "ThisType"))
         {
             return true;
         }
@@ -55271,6 +55377,25 @@ test "checker: merged interfaces reject conflicting property declarations" {
         if (d.code == TsCodes.subsequent_property_declaration_same_type) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: same-name interface decls merge member lookups at top level" {
+    // `interface A { foo: string }` then `interface A { bar: number }`
+    // — `a.bar` access on a variable typed `A` must NOT raise TS2339:
+    // both members participate via declaration merging. Mirrors fixture
+    // `mergeTwoInterfaces.ts` top-level slot.
+    const s = try newSetup(
+        \\interface A { foo: string; }
+        \\interface A { bar: number; }
+        \\declare var a: A;
+        \\var r1 = a.foo;
+        \\var r2 = a.bar;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
 }
 
 test "checker: merged interfaces allow call signature overload sets" {
