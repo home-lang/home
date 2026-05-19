@@ -8109,9 +8109,14 @@ pub const Parser = struct {
         defer qualifier.deinit(self.gpa);
         var name_id = final_name;
 
-        // `A.B.C` — every `.B` extends the qualifier.
-        while (self.peek().kind == .dot) {
+        // `A.B.C` — every `.B` extends the qualifier. Also tolerate
+        // `A?.B` for error-recovery; the interface heritage parser
+        // notices the `saw_question_dot` flag and surfaces a checker-
+        // shape TS2499 anchored at the qualified-name start.
+        var saw_question_dot = false;
+        while (self.peek().kind == .dot or self.peek().kind == .question_dot) {
             const dot = self.advance();
+            if (dot.kind == .question_dot) saw_question_dot = true;
             if (self.peek().flags.preceded_by_newline or self.peek().kind == .eof) {
                 try self.reportCodeAt(dot.span.end, dot.line, 1003, "Identifier expected.");
                 const prev_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
@@ -8159,6 +8164,9 @@ pub const Parser = struct {
         }
 
         const end_pos = self.tokens[self.cursor - 1].span.end;
+        if (saw_question_dot) {
+            try self.reportCodeAt(start.span.start, start.line, 2499, "An interface can only extend an identifier/qualified-name with optional type arguments.");
+        }
         return try self.builder.addTypeRef(
             .{ .start = start.span.start, .end = end_pos },
             name_id,
