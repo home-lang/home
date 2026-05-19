@@ -33130,6 +33130,9 @@ pub const Checker = struct {
                 if (try self.signaturePrototypeMember(access_obj_t, m.name)) |t| {
                     break :blk try self.optionalChainResult(t, member_is_optional_chain);
                 }
+                if (try self.reportNonStrictGlobalArrowThisNameAccess(node, m.object, m.name)) {
+                    break :blk types.Primitive.any;
+                }
                 if (try self.lookupObjectMember(obj_t, m.name)) |t| {
                     break :blk try self.optionalChainResult(t, member_is_optional_chain);
                 }
@@ -43000,6 +43003,50 @@ pub const Checker = struct {
             },
             else => return false,
         }
+    }
+
+    fn reportNonStrictGlobalArrowThisNameAccess(
+        self: *Checker,
+        node: NodeId,
+        object_node: NodeId,
+        prop_name: hir_mod.StringId,
+    ) CheckError!bool {
+        if (!self.sourceHasStrictFalseDirective()) return false;
+        if (!std.mem.eql(u8, self.string_interner.get(prop_name), "name")) return false;
+        switch (self.hir.kindOf(object_node)) {
+            .this_expr => {},
+            .identifier => {
+                const id = hir_mod.identifierOf(self.hir, object_node);
+                if (!std.mem.eql(u8, self.string_interner.get(id.name), "this")) return false;
+            },
+            else => return false,
+        }
+        if (!self.thisInsideTopLevelArrow(object_node)) return false;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Property '{s}' does not exist on type 'typeof globalThis'.",
+            .{self.string_interner.get(prop_name)},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = self.memberAccessNamePos(node),
+            .code = TsCodes.property_does_not_exist,
+            .message = msg,
+        });
+        return true;
+    }
+
+    fn thisInsideTopLevelArrow(self: *Checker, node: NodeId) bool {
+        var saw_arrow = false;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            switch (self.hir.kindOf(cur)) {
+                .arrow_fn => saw_arrow = true,
+                .fn_decl, .fn_expr, .class_decl, .class_expr, .object_literal => return false,
+                else => {},
+            }
+        }
+        return saw_arrow;
     }
 
     fn reportGlobalThisNoIndexSignature(self: *Checker, node: NodeId) CheckError!void {
@@ -59489,6 +59536,29 @@ test "checker: global script this computed index reports TS7053 under noImplicit
         }
     }
     try T.expect(saw_7053);
+}
+
+test "checker: non-strict top-level arrow this.name reports globalThis property" {
+    const s = try newSetup(
+        \\// @strict: false
+        \\var f = (x: string) => {
+        \\  this.name = x;
+        \\  this.age = 1;
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_name = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_does_not_exist and
+            std.mem.indexOf(u8, d.message, "Property 'name' does not exist on type 'typeof globalThis'.") != null)
+        {
+            saw_name = true;
+        }
+        try T.expect(std.mem.indexOf(u8, d.message, "Property 'age'") == null);
+    }
+    try T.expect(saw_name);
 }
 
 test "checker: class method with non-void return type must return value" {
