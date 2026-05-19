@@ -39324,6 +39324,19 @@ pub const Checker = struct {
         return @intCast(i);
     }
 
+    /// True when `node` is the direct cond of an `if`/`while`/`do-while`
+    /// statement — in which case any leading `(` is part of the
+    /// statement syntax, not the operand, and shouldn't be back-walked
+    /// for diagnostic anchoring.
+    fn nodeIsStatementCondOperand(self: *Checker, node: NodeId) bool {
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(parent)) {
+            .if_stmt, .while_stmt, .do_while_stmt => true,
+            else => false,
+        };
+    }
+
     fn reportArithmeticOperand(
         self: *Checker,
         node: NodeId,
@@ -41035,7 +41048,12 @@ pub const Checker = struct {
         // operands (e.g. `({}) ? a : b` reports column 1 on `(`, not
         // column 2 on `{`). Mirrors fixture
         // `conditionalOperatorConditionIsObjectType.ts(28,1)`.
-        const anchor = self.symbolOperandAnchorPos(node);
+        // EXCEPT: when the operand sits in the required `(cond)` slot
+        // of an `if`/`while`/`do-while` statement (e.g. `else if (2)`),
+        // those parens belong to the statement syntax and shouldn't be
+        // back-walked — tsc anchors at the literal column itself.
+        // See constEnum4.ts(3,10).
+        const anchor = if (self.nodeIsStatementCondOperand(node)) null else self.symbolOperandAnchorPos(node);
         switch (self.hir.kindOf(node)) {
             .object_literal, .array_literal, .fn_decl, .fn_expr, .arrow_fn, .literal_regex => {
                 try self.reportAt(node, anchor, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
