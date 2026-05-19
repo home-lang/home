@@ -174,6 +174,17 @@ pub const jsc = struct {
     // placeholders until each downstream subsystem (api/webcore/jsc)
     // lands its real type.
     pub const generated_classes_list = @import("jsc/generated_classes_list.zig");
+    // Phase 12.2 M1 (2026-05-19) — stub-runnable bridge scaffold per
+    // `JSC_BRIDGE_SCOPE_2026-05-19.md` §M1. The `opaques` aggregator
+    // names the ~10 core JSC opaque types (JSValue, JSGlobalObject,
+    // JSCell, …); `extern_fns` declares ~30 core C-API entrypoints with
+    // signatures only (bodies link-resolved, fail until M3); `types`
+    // exposes the C-API `JSType` + `JSTypedArrayType` enums for the
+    // "new code" pathway. Existing per-file leaves (JSGlobalObject.zig,
+    // JSCell.zig, VM.zig, etc.) keep their richer per-type stubs.
+    pub const opaques = @import("jsc/opaques.zig");
+    pub const extern_fns = @import("jsc/extern_fns.zig");
+    pub const c_api_types = @import("jsc/types.zig");
 };
 
 // ---- src/io/ -----------------------------------------------------------
@@ -1341,6 +1352,10 @@ test {
     _ = @import("sql/postgres/protocol/NewReader.zig");
     _ = @import("sql/postgres/protocol/NewWriter.zig");
     _ = @import("sql/postgres/protocol/BackendKeyData.zig");
+    // Phase 12.2 M1 (2026-05-19) — JSC bridge scaffold smoke imports.
+    _ = @import("jsc/opaques.zig");
+    _ = @import("jsc/extern_fns.zig");
+    _ = @import("jsc/types.zig");
 }
 
 test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {

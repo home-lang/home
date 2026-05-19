@@ -35,4 +35,11 @@ test {
     _ = @import("js_parser/lexer/identifier.zig");
     _ = @import("css/properties/svg.zig");
     _ = @import("ptr/weak_ptr.zig");
+    // Phase 12.2 M1 (2026-05-19) — JSC bridge scaffold (opaques +
+    // extern fn shapes + C-API enums). Bodies are link-resolved and
+    // will fail under `home_rt_tests`; the smoke driver only compiles
+    // so these are safe to pull in here.
+    _ = @import("jsc/opaques.zig");
+    _ = @import("jsc/extern_fns.zig");
+    _ = @import("jsc/types.zig");
 }
