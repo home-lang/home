@@ -1302,6 +1302,7 @@ test {
     _ = @import("node/assert/myers_diff.zig");
     _ = @import("node/assert.zig");
     _ = @import("node/util.zig");
+    _ = @import("node/events.zig");
     _ = @import("s3_signing/acl.zig");
     _ = @import("s3_signing/storage_class.zig");
     _ = @import("s3_signing/error.zig");
