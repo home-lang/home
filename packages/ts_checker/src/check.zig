@@ -1895,6 +1895,13 @@ pub const Checker = struct {
                 if (self.string_interner.get(ex.module).len != 0 and self.nodeSourceContainsImportAttributes(node)) {
                     try self.report(node, TsCodes.type_not_assignable, "Import attributes are not valid on this export declaration.");
                 }
+                // Re-export forms (`export * from "m"`,
+                // `export * as ns from "m"`, `export { x } from "m"`)
+                // should emit TS2307 when the module specifier doesn't
+                // resolve — same as a regular `import`. Mirrors
+                // `exportAsNamespace_nonExistent.ts` where
+                // `export * as ns from './nonexistent'` errors.
+                try self.checkExportFromModuleResolution(node, ex);
                 try self.checkNamedExportLocals(node, ex);
                 try self.checkDefaultExportIdentifierUseBeforeDeclaration(node, ex);
                 if (ex.decl != hir_mod.none_node_id) {
@@ -17671,6 +17678,40 @@ pub const Checker = struct {
             .message = msg,
         });
         return true;
+    }
+
+    /// TS2307 for re-export forms (`export * from`, `export * as ns
+    /// from`, `export { x } from`). Mirrors the relative-resolution
+    /// path inside `checkImportDecl` — same diagnostic, same message,
+    /// at the module-specifier quote column.
+    fn checkExportFromModuleResolution(self: *Checker, node: NodeId, ex: hir_mod.ExportPayload) CheckError!void {
+        const spec = self.string_interner.get(ex.module);
+        if (spec.len == 0) return;
+        if (!std.mem.startsWith(u8, spec, ".")) return;
+        if (try self.checkVirtualRelativeModuleImport(node, spec)) return;
+        if (try self.isKnownAmbientModuleName(node, spec)) return;
+        if (self.sourceHasVirtualFilenameSections()) {
+            try self.reportVirtualCannotFindRelativeModule(node, spec);
+            return;
+        }
+        if (self.external_resolver != null) {
+            try self.reportVirtualCannotFindRelativeModule(node, spec);
+            return;
+        }
+        // Single-file fixture (no `@filename:` markers, no resolver
+        // wired): mirror the `import` path's behavior — emit TS2307
+        // at the quote position.
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot find module '{s}' or its corresponding type declarations.",
+            .{spec},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = self.moduleSpecifierQuotePos(node, spec),
+            .code = TsCodes.cannot_find_module,
+            .message = msg,
+        });
     }
 
     fn reportVirtualCannotFindRelativeModule(self: *Checker, node: NodeId, spec: []const u8) CheckError!void {
