@@ -157,6 +157,11 @@ pub const CompileOptions = struct {
     /// the right point in the virtual filesystem. Empty means the
     /// checker should fall back to its `@filename:` scan.
     importer_path: []const u8 = "",
+    /// Program-level namespace roots introduced by `declare global`
+    /// blocks in sibling files. Per-file program compilation uses
+    /// this to make qualified type refs like `X.Y` see global
+    /// namespace augmentations declared elsewhere.
+    ambient_global_namespace_roots: []const []const u8 = &.{},
     /// Effective `--moduleResolution` value as a normalized
     /// lower-case label (`"classic"`, `"node10"`, `"node16"`,
     /// `"nodenext"`, `"bundler"`). The conformance harness derives
@@ -804,6 +809,9 @@ pub fn compileSource(
         (virtualFilenameIsJs(source) or pathIsJsLike(options.importer_path)));
     checker.setTargetEs5Baseline(options.report_deprecated_target_es5);
     if (options.external_resolver) |er| checker.setExternalResolver(er);
+    if (options.ambient_global_namespace_roots.len > 0) {
+        checker.setAmbientGlobalNamespaceRoots(options.ambient_global_namespace_roots);
+    }
     if (options.importer_path.len > 0) checker.setImporterPath(options.importer_path);
     if (options.module_resolution.len > 0) checker.setModuleResolution(options.module_resolution);
     // Translate strictness flags. `strict: true` implies every

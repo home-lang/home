@@ -177,10 +177,13 @@ pub const Program = struct {
     ///   2. Walk imports and resolve specifiers — populating the
     ///      `imports` adjacency list.
     pub fn compileAll(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
+        const ambient_global_namespace_roots = try self.collectAmbientGlobalNamespaceRoots();
+        defer freeStringSlice(self.gpa, ambient_global_namespace_roots);
         for (self.files.items) |f| {
             if (f.compilation != null) continue;
             var per_file = options;
             per_file.is_tsx = options.is_tsx or f.is_tsx;
+            per_file.ambient_global_namespace_roots = ambient_global_namespace_roots;
             // Per-file declaration-file flag. Multi-file fixtures
             // (e.g. `react.d.ts` + `app.tsx` in one conformance case)
             // share a global `options.is_declaration_file` that the
@@ -226,6 +229,8 @@ pub const Program = struct {
         ctx: anytype,
         comptime callback: fn (ctx_t: @TypeOf(ctx), file_path: []const u8, diags: []const ts_driver.Diagnostic) void,
     ) ProgramError!void {
+        const ambient_global_namespace_roots = try self.collectAmbientGlobalNamespaceRoots();
+        defer freeStringSlice(self.gpa, ambient_global_namespace_roots);
         for (self.files.items) |f| {
             if (f.compilation != null) {
                 // Already compiled — replay its diagnostics anyway so
@@ -237,6 +242,7 @@ pub const Program = struct {
             var per_file = options;
             per_file.is_tsx = options.is_tsx or f.is_tsx;
             per_file.is_declaration_file = f.is_declaration;
+            per_file.ambient_global_namespace_roots = ambient_global_namespace_roots;
             if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
             const c = ts_driver.compileSource(self.gpa, f.source, per_file) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
@@ -250,6 +256,93 @@ pub const Program = struct {
         }
 
         try self.resolveImports();
+    }
+
+    fn collectAmbientGlobalNamespaceRoots(self: *const Program) ProgramError![]const []const u8 {
+        var out: std.ArrayListUnmanaged([]const u8) = .empty;
+        errdefer freeStringSlice(self.gpa, out.items);
+        for (self.files.items) |f| {
+            try appendAmbientGlobalNamespaceRootsFromSource(self.gpa, f.source, &out);
+        }
+        return try out.toOwnedSlice(self.gpa);
+    }
+
+    fn appendAmbientGlobalNamespaceRootsFromSource(
+        gpa: std.mem.Allocator,
+        source: []const u8,
+        out: *std.ArrayListUnmanaged([]const u8),
+    ) ProgramError!void {
+        const needle = "declare global";
+        var search_from: usize = 0;
+        while (std.mem.indexOfPos(u8, source, search_from, needle)) |decl_pos| {
+            search_from = decl_pos + needle.len;
+            const open_rel = std.mem.indexOfScalarPos(u8, source, search_from, '{') orelse continue;
+            var i = open_rel + 1;
+            var depth: usize = 1;
+            while (i < source.len and depth > 0) {
+                const ch = source[i];
+                if (ch == '{') {
+                    depth += 1;
+                    i += 1;
+                    continue;
+                }
+                if (ch == '}') {
+                    depth -= 1;
+                    i += 1;
+                    continue;
+                }
+                if (depth == 1) {
+                    if (identifierKeywordAt(source, i, "namespace")) {
+                        try appendAmbientGlobalNamespaceRoot(gpa, source, i + "namespace".len, out);
+                    } else if (identifierKeywordAt(source, i, "module")) {
+                        try appendAmbientGlobalNamespaceRoot(gpa, source, i + "module".len, out);
+                    }
+                }
+                i += 1;
+            }
+        }
+    }
+
+    fn appendAmbientGlobalNamespaceRoot(
+        gpa: std.mem.Allocator,
+        source: []const u8,
+        after_keyword: usize,
+        out: *std.ArrayListUnmanaged([]const u8),
+    ) ProgramError!void {
+        var i = after_keyword;
+        while (i < source.len and std.ascii.isWhitespace(source[i])) i += 1;
+        if (i >= source.len or !asciiIdentifierStart(source[i])) return;
+        const start = i;
+        i += 1;
+        while (i < source.len and asciiIdentifierContinue(source[i])) i += 1;
+        const name = source[start..i];
+        for (out.items) |existing| {
+            if (std.mem.eql(u8, existing, name)) return;
+        }
+        const owned = try gpa.dupe(u8, name);
+        errdefer gpa.free(owned);
+        try out.append(gpa, owned);
+    }
+
+    fn identifierKeywordAt(source: []const u8, pos: usize, keyword: []const u8) bool {
+        if (pos + keyword.len > source.len) return false;
+        if (!std.mem.eql(u8, source[pos .. pos + keyword.len], keyword)) return false;
+        if (pos > 0 and asciiIdentifierContinue(source[pos - 1])) return false;
+        const end = pos + keyword.len;
+        return end >= source.len or !asciiIdentifierContinue(source[end]);
+    }
+
+    fn asciiIdentifierStart(c: u8) bool {
+        return (c >= 'A' and c <= 'Z') or (c >= 'a' and c <= 'z') or c == '_' or c == '$';
+    }
+
+    fn asciiIdentifierContinue(c: u8) bool {
+        return asciiIdentifierStart(c) or (c >= '0' and c <= '9');
+    }
+
+    fn freeStringSlice(gpa: std.mem.Allocator, items: []const []const u8) void {
+        for (items) |item| gpa.free(item);
+        gpa.free(items);
     }
 
     /// One `declare global { … }` block discovered at a file's top
@@ -1115,4 +1208,31 @@ test "Program: collectGlobalAugmentations finds declare global block" {
     defer T.allocator.free(augments);
     try T.expectEqual(@as(usize, 1), augments.len);
     try T.expectEqual(id, augments[0].file_id);
+}
+
+test "Program: declare global namespace roots are visible across files" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    _ = try p.add("/a.ts", "export interface Foo {}");
+    _ = try p.add("/b.ts",
+        \\import * as a from "./a";
+        \\declare global {
+        \\  namespace teams {
+        \\    export namespace calling {
+        \\      export import Foo = a.Foo;
+        \\    }
+        \\  }
+        \\}
+    );
+    const c_id = try p.add("/c.ts", "type Foo = teams.calling.Foo; export const bar = (p?: Foo) => {}");
+    try p.compileAll(.{ .no_emit = true });
+    const c = p.fileById(c_id).compilation.?;
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 2503);
+    }
 }

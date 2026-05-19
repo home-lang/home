@@ -1374,6 +1374,10 @@ pub const Checker = struct {
     /// the virtual filesystem. Empty means "fall back to the
     /// `@filename:` virtual-section scan".
     importer_path: []const u8 = "",
+    /// Program-level namespace roots contributed by `declare global {
+    /// namespace X { ... } }` blocks in sibling files. Borrowed from
+    /// the driver/program while checking this file.
+    ambient_global_namespace_roots: []const []const u8 = &.{},
     /// Effective `--moduleResolution` value as a normalized lower-case
     /// label (`"classic"`, `"node10"`, `"node16"`, `"nodenext"`,
     /// `"bundler"`). Populated by the driver/program path; empty
@@ -1525,6 +1529,10 @@ pub const Checker = struct {
     /// 'any' type.` shape.
     pub fn setExternalResolver(self: *Checker, resolver: ?ExternalResolver) void {
         self.external_resolver = resolver;
+    }
+
+    pub fn setAmbientGlobalNamespaceRoots(self: *Checker, roots: []const []const u8) void {
+        self.ambient_global_namespace_roots = roots;
     }
 
     /// Anchor module-resolution requests to a specific file path.
@@ -25587,7 +25595,8 @@ pub const Checker = struct {
             return null;
         var relative_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
         defer relative_path.deinit(self.gpa);
-        const absolute_ns_node = self.findNamespaceByPath(root_stmts, resolved_path);
+        const absolute_ns_node = self.findNamespaceByPath(root_stmts, resolved_path) orelse
+            self.findGlobalAugmentedNamespaceByPath(root_stmts, resolved_path);
         const relative_ns_node = if (absolute_ns_node == null)
             try self.findRelativeNamespaceByPath(type_node, root_stmts, resolved_path, &relative_path)
         else
@@ -25890,6 +25899,7 @@ pub const Checker = struct {
         if (self.module) |module| {
             if (module.root.namespaces.get(root_name) != null) return true;
         }
+        if (self.ambientGlobalNamespaceRootExists(root_name)) return true;
         var import_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
         defer import_path.deinit(self.gpa);
         if (try self.appendImportEqualsNamespacePathForLocal(&import_path, root_name, type_node)) return true;
@@ -25923,11 +25933,20 @@ pub const Checker = struct {
         if (root_block != hir_mod.none_node_id and self.hir.kindOf(root_block) == .block_stmt) {
             const has_sections = self.sourceHasVirtualFilenameSections();
             const anchor_section = if (has_sections) self.virtualSectionStartForNode(type_node) else 0;
+            if (self.findGlobalAugmentedNamespaceByPath(hir_mod.blockStmts(self.hir, root_block), &one) != null) return true;
             for (hir_mod.blockStmts(self.hir, root_block)) |stmt| {
                 if (self.hir.kindOf(stmt) != .import_decl) continue;
                 if (has_sections and self.virtualSectionStartForNode(stmt) != anchor_section) continue;
                 if (self.importDeclBindsLocal(stmt, root_name)) return true;
             }
+        }
+        return false;
+    }
+
+    fn ambientGlobalNamespaceRootExists(self: *Checker, root_name: hir_mod.StringId) bool {
+        const root_text = self.string_interner.get(root_name);
+        for (self.ambient_global_namespace_roots) |candidate| {
+            if (std.mem.eql(u8, candidate, root_text)) return true;
         }
         return false;
     }
@@ -26344,6 +26363,38 @@ pub const Checker = struct {
             }
         }
         return null;
+    }
+
+    fn findGlobalAugmentedNamespaceByPath(
+        self: *Checker,
+        root_stmts: []const NodeId,
+        path: []const hir_mod.StringId,
+    ) ?NodeId {
+        if (path.len == 0) return null;
+        for (root_stmts) |raw| {
+            const node = self.unwrapExportDecl(raw);
+            if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .namespace_decl) continue;
+            const ns = hir_mod.namespaceOf(self.hir, node);
+            if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) continue;
+            const ns_name = hir_mod.identifierOf(self.hir, ns.name).name;
+            if (!std.mem.eql(u8, self.string_interner.get(ns_name), "global")) continue;
+            if (!self.namespaceDeclIsAmbient(node) and !self.namespaceNameHasDeclarePrefix(ns.name)) continue;
+            if (self.findNamespaceByPath(hir_mod.namespaceBody(self.hir, node), path)) |found| return found;
+        }
+        return null;
+    }
+
+    fn namespaceNameHasDeclarePrefix(self: *Checker, name_node: NodeId) bool {
+        const src = self.source orelse return false;
+        if (name_node == hir_mod.none_node_id) return false;
+        const span = self.hir.spanOf(name_node);
+        if (span.start > src.len) return false;
+        var i: usize = span.start;
+        while (i > 0 and (src[i - 1] == ' ' or src[i - 1] == '\t')) i -= 1;
+        if (i < "declare".len) return false;
+        if (!std.mem.eql(u8, src[i - "declare".len .. i], "declare")) return false;
+        if (i > "declare".len and isAsciiWordChar(src[i - "declare".len - 1])) return false;
+        return true;
     }
 
     fn findRelativeNamespaceByPath(
@@ -73592,6 +73643,30 @@ test "checker: declare global value is visible from later virtual sections" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
+test "checker: declare global namespace is visible to qualified type refs" {
+    const s = try newSetup(
+        \\// @filename: a.ts
+        \\export interface Foo {}
+        \\// @filename: b.ts
+        \\import * as a from "./a";
+        \\declare global {
+        \\  namespace teams {
+        \\    export namespace calling {
+        \\      export import Foo = a.Foo;
+        \\    }
+        \\  }
+        \\}
+        \\// @filename: c.ts
+        \\type Foo = teams.calling.Foo;
+        \\export const bar = (p?: Foo) => {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_namespace);
     }
 }
 
