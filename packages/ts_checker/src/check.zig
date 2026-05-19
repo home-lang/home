@@ -18408,7 +18408,12 @@ pub const Checker = struct {
                     }
                     return true;
                 },
-                .declaration => return true,
+                .declaration => {
+                    if (isDeclarationFileSpecifier(spec) and
+                        !resolvedPathEndsWithRelativeSpecifier(external.resolved_path, spec))
+                        return false;
+                    return true;
+                },
             }
         }
         const resolution = try self.resolveVirtualRelativeModule(node, spec);
@@ -18701,6 +18706,42 @@ pub const Checker = struct {
         return std.mem.indexOf(u8, text, " = require") != null;
     }
 
+    fn tsExtensionSpecifierResolves(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
+        if (!std.mem.startsWith(u8, spec, ".")) return false;
+        if (self.sourceHasVirtualFilenameSections()) {
+            return (try self.resolveVirtualRelativeModule(node, spec)) != .none;
+        }
+        if (self.external_resolver != null) {
+            return (try self.resolveBareModuleViaExternal(node, spec)) != null;
+        }
+        return true;
+    }
+
+    fn declarationFileSpecifierResolvesDirectly(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
+        if (!std.mem.startsWith(u8, spec, ".")) return false;
+        if (self.sourceHasVirtualFilenameSections()) {
+            const from = self.virtualSectionFilenameForNode(node) orelse return false;
+            const resolved = try self.resolveVirtualRelativePath(from, spec);
+            defer self.gpa.free(resolved);
+            return self.virtualSourceHasFilename(resolved);
+        }
+        if (self.external_resolver != null) {
+            const external = (try self.resolveBareModuleViaExternal(node, spec)) orelse return false;
+            return external.kind == .declaration and resolvedPathEndsWithRelativeSpecifier(external.resolved_path, spec);
+        }
+        return true;
+    }
+
+    fn resolvedPathEndsWithRelativeSpecifier(path: []const u8, spec: []const u8) bool {
+        var rel = spec;
+        while (std.mem.startsWith(u8, rel, "./")) rel = rel[2..];
+        while (std.mem.startsWith(u8, rel, "/")) rel = rel[1..];
+        if (rel.len == 0) return false;
+        if (!std.mem.endsWith(u8, path, rel)) return false;
+        const prefix_len = path.len - rel.len;
+        return prefix_len == 0 or path[prefix_len - 1] == '/';
+    }
+
     fn checkImportingTsExtensionSpecifier(self: *Checker, node: NodeId, spec: []const u8, is_type_only_context: bool) CheckError!void {
         if (is_type_only_context) return;
         // Default for `allowImportingTsExtensions` is FALSE — TS5097
@@ -18710,7 +18751,9 @@ pub const Checker = struct {
         if (self.sourceDirectiveValueMentions("allowImportingTsExtensions", "true")) return;
         if (!std.mem.startsWith(u8, spec, ".")) return;
         const code = tsExtensionImportDiagnosticCode(spec) orelse return;
+        if (!try self.tsExtensionSpecifierResolves(node, spec)) return;
         if (code == TsCodes.declaration_file_import_requires_import_type) {
+            if (!try self.declarationFileSpecifierResolvesDirectly(node, spec)) return;
             // Suggest the implementation-file specifier in the prose —
             // upstream emits `Did you mean to import an implementation
             // file '<spec_with_.js_extension>' instead?` so users can
@@ -73135,6 +73178,29 @@ test "checker: allowImportingTsExtensions false rejects value imports only" {
         if (d.code == TsCodes.import_path_ts_extension) count += 1;
     }
     try T.expectEqual(@as(usize, 2), count);
+}
+
+test "checker: unresolved TS extension imports report only module resolution failure" {
+    const s = try newSetup(
+        \\// @allowImportingTsExtensions: false
+        \\// @filename: b.ts
+        \\import value from "./missing.ts";
+        \\import decl from "./missing.d.ts";
+        \\import arbitraryDecl from "./file.d.ts";
+        \\// @filename: file.d.d.ts.ts
+        \\declare var bad: "bad";
+        \\export default bad;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var cannot_find: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.import_path_ts_extension or
+            d.code == TsCodes.declaration_file_import_requires_import_type)
+            return error.UnexpectedDiagnostic;
+        if (d.code == TsCodes.cannot_find_module) cannot_find += 1;
+    }
+    try T.expectEqual(@as(usize, 3), cannot_find);
 }
 
 test "checker: import equals namespaces resolve virtual module types" {
