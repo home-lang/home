@@ -694,8 +694,57 @@ pub const Parser = struct {
             const body_end = body_start + close_rel;
             try self.scanJSDocCommentTypeExpressions(body_start, body_end);
             try self.scanJSDocTypedefDuplicateTypeTags(body_start, body_end);
+            try self.scanJSDocTemplateModifierDiagnostics(body_start, body_end);
             i = body_end + 2;
         }
+    }
+
+    fn scanJSDocTemplateModifierDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
+        const has_typedef = self.jsDocBlockHasTag(start, end, "typedef");
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            const tag_name = self.source[tag_name_start..tag_name_end];
+            i = tag_name_end;
+            if (!std.mem.eql(u8, tag_name, "template")) continue;
+            const modifier_start = firstNonWhitespace(self.source, tag_name_end, end);
+            const modifier_end = jsDocIdentifierEnd(self.source, modifier_start, end);
+            if (modifier_start == modifier_end) continue;
+            const modifier = self.source[modifier_start..modifier_end];
+            if (std.mem.eql(u8, modifier, "private")) {
+                try self.reportCodeAt(
+                    @intCast(modifier_start),
+                    self.lineAt(@intCast(modifier_start)),
+                    1273,
+                    "'private' modifier cannot appear on a type parameter",
+                );
+                continue;
+            }
+            if (has_typedef and std.mem.eql(u8, modifier, "const")) {
+                try self.reportCodeAt(
+                    @intCast(modifier_start),
+                    self.lineAt(@intCast(modifier_start)),
+                    1277,
+                    "'const' modifier can only appear on a type parameter of a function, method or class",
+                );
+            }
+        }
+    }
+
+    fn jsDocBlockHasTag(self: *const Parser, start: usize, end: usize, wanted: []const u8) bool {
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse return false;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            if (std.mem.eql(u8, self.source[tag_name_start..tag_name_end], wanted)) return true;
+            i = tag_name_end;
+        }
+        return false;
     }
 
     fn scanJSDocTypedefDuplicateTypeTags(self: *Parser, start: usize, end: usize) ParseError!void {
@@ -841,6 +890,17 @@ pub const Parser = struct {
         var i = start;
         while (i < end and (source[i] == ' ' or source[i] == '\t' or source[i] == '\r' or source[i] == '\n')) : (i += 1) {}
         return i;
+    }
+
+    fn jsDocIdentifierEnd(source: []const u8, start: usize, end: usize) usize {
+        var i = start;
+        while (i < end and isJSDocIdentifierChar(source[i])) : (i += 1) {}
+        return i;
+    }
+
+    fn isJSDocIdentifierChar(c: u8) bool {
+        return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+            (c >= '0' and c <= '9') or c == '_' or c == '$';
     }
 
     fn lastNonWhitespaceBefore(source: []const u8, start: usize, end: usize) ?usize {
