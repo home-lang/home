@@ -535,6 +535,15 @@ pub const node = struct {
     // setMax/getMaxListeners/eventNames/prependListener/prependOnceListener).
     // EventEmitterDefault alias for the typical string-keyed case.
     pub const events = @import("node/events.zig");
+    // Phase 12.7 round-10 (2026-05-19) — `node:buffer` Zig substrate.
+    // Buffer struct + alloc/from/concat + UTF-8/base64/hex encoding
+    // round-trip + numeric LE readers/writers. Foundational for
+    // node:fs binary mode + node:stream chunk handling.
+    pub const buffer = @import("node/buffer.zig");
+    // Phase 12.7 round-10 (2026-05-19) — `node:stream` Zig substrate.
+    // Readable/Writable/Duplex/Transform/PassThrough on top of
+    // node:events. Pull-mode + push-mode + pipe trampolines.
+    pub const stream = @import("node/stream.zig");
     // Phase 12.7 port (2026-05-19) — `node:util` Zig substrate. Top-level
     // surface (inspect/format/formatWithOptions/isDeepStrictEqual/
     // deprecate/debuglog/debug/promisify/callbackify + InspectOptions +
@@ -1417,6 +1426,8 @@ test {
     _ = @import("node/assert.zig");
     _ = @import("node/util.zig");
     _ = @import("node/events.zig");
+    _ = @import("node/buffer.zig");
+    _ = @import("node/stream.zig");
     _ = @import("s3_signing/acl.zig");
     _ = @import("s3_signing/storage_class.zig");
     _ = @import("s3_signing/error.zig");
