@@ -72,6 +72,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/issue-12276.test.ts",
     "regression/issue/27014.test.ts",
     "regression/issue/21257.test.ts",
+    "regression/issue/07397.test.ts",
 };
 
 const prelude =
@@ -254,12 +255,45 @@ const prelude =
     \\  return __home_make_expectation(value, false);
     \\}
     \\globalThis.__home_bun_test = { describe, expect, it, test };
+    \\if (typeof Headers !== "function") {
+    \\  var Headers = function(init) {
+    \\    this.__home_headers = {};
+    \\    if (init) {
+    \\      for (const key of Object.keys(init)) this.set(key, init[key]);
+    \\    }
+    \\  };
+    \\  Headers.prototype.set = function(name, value) {
+    \\    this.__home_headers[String(name).toLowerCase()] = String(value);
+    \\  };
+    \\  Headers.prototype.get = function(name) {
+    \\    const key = String(name).toLowerCase();
+    \\    return Object.prototype.hasOwnProperty.call(this.__home_headers, key) ? this.__home_headers[key] : null;
+    \\  };
+    \\}
+    \\if (typeof URL !== "function") {
+    \\  var URL = function(input) {
+    \\    const match = String(input).match(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^\/?#]*)(.*)$/);
+    \\    if (!match) throw new TypeError("Invalid URL");
+    \\    this.protocolPrefix = match[1];
+    \\    this.hostname = match[2];
+    \\    this.suffix = match[3] || "/";
+    \\  };
+    \\  Object.defineProperty(URL.prototype, "href", {
+    \\    get() {
+    \\      return this.protocolPrefix + this.hostname + this.suffix;
+    \\    },
+    \\  });
+    \\}
     \\if (typeof Response !== "function") {
     \\  var Response = function(body, init) {
     \\    this.body = body;
     \\    this.init = init || {};
+    \\    this.headers = new Headers(this.init.headers);
     \\  };
     \\}
+    \\Response.redirect = function(url, status) {
+    \\  return new Response(null, { status: status || 302, headers: { Location: String(url) } });
+    \\};
     \\Response.json = function(value, init) {
     \\  const valueType = typeof value;
     \\  if (value === undefined || valueType === "function" || valueType === "symbol") {
@@ -775,6 +809,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/issue-12276.test.ts", filesForSubset(.minimal_js)[16]);
     try std.testing.expectEqualStrings("regression/issue/27014.test.ts", filesForSubset(.minimal_js)[17]);
     try std.testing.expectEqualStrings("regression/issue/21257.test.ts", filesForSubset(.minimal_js)[18]);
+    try std.testing.expectEqualStrings("regression/issue/07397.test.ts", filesForSubset(.minimal_js)[19]);
 }
 
 test "Bun test import rewrite installs the bootstrap prelude" {
@@ -792,6 +827,7 @@ test "Bun test import rewrite installs the bootstrap prelude" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeUndefined()") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "toIncludeRepeated(needle, expectedCount)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "globalThis.__home_bun_test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Response.redirect") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "Response.json") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "Error.prepareStackTrace") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);

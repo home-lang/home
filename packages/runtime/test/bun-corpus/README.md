@@ -19,9 +19,9 @@ macOS, Linux, and the WASM target.
   `atob`/`btoa` smoke, six pure-JS regression smokes, one bundler
   constant-fold smoke, three test-runner expectation smokes, one nested-describe
   smoke, one `Bun.stripANSI` smoke, and the Node `DOMException`, Web
-  `Response.json`, JSC `ShadowRealm`, Bun file-metadata, and stack-trace
-  smokes. It is only a smoke path for JSC + `home_test`; it is not the release
-  gate.
+  `Response.json` / `Response.redirect`, JSC `ShadowRealm`, Bun
+  file-metadata, and stack-trace smokes. It is only a smoke path for JSC +
+  `home_test`; it is not the release gate.
 - No source renames. `Bun.serve`, `Bun.write`, `Bun.spawn`, etc. appear
   verbatim. The `Bun.* -> Home.*` rename happens at **test-runtime** (via the
   host runtime's surface aliasing), not at copy time, so the corpus stays a
