@@ -30036,6 +30036,10 @@ pub const Checker = struct {
                         // Also suppress TS2350 in the JS-constructor path
                         // — tsc treats the call as void-returning.
                         suppressed_ts2350_via_ts7009 = true;
+                        if (self.hir.kindOf(c.callee) == .identifier) {
+                            const ctor_id = hir_mod.identifierOf(self.hir, c.callee);
+                            break :blk try self.jsConstructorInstanceType(ctor_id.name);
+                        }
                     }
                 }
                 if (self.hir.kindOf(c.callee) == .template_literal and
@@ -31021,6 +31025,27 @@ pub const Checker = struct {
                             self.diag_arena.allocator(),
                             "Element implicitly has an 'any' type because expression of type '{s}' can't be used to index type 'typeof globalThis'.",
                             .{idx_name},
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = node,
+                            .code = TsCodes.element_implicitly_any,
+                            .message = msg,
+                        });
+                        break :blk types.Primitive.any;
+                    }
+                    if (self.strict_flags.no_implicit_any and
+                        self.class_name_by_instance.get(obj_t) != null and
+                        self.interner.objectStringIndex(obj_t) == types.Primitive.none and
+                        self.interner.objectNumberIndex(obj_t) == types.Primitive.none and
+                        self.interner.objectSymbolIndex(obj_t) == types.Primitive.none and
+                        (self.typeMaybeStringLike(idx_t) or self.typeMaybeNumericLike(idx_t) or idx_flags.is_symbol))
+                    {
+                        const idx_name = try self.elementAccessIndexTypeName(e.index, idx_t, literal_string_key);
+                        const obj_name = (try self.allocSimpleTypeName(obj_t)) orelse "object";
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Element implicitly has an 'any' type because expression of type '{s}' can't be used to index type '{s}'.",
+                            .{ idx_name, obj_name },
                         );
                         try self.diagnostics.append(self.gpa, .{
                             .node = node,
@@ -41192,6 +41217,26 @@ pub const Checker = struct {
         return std.mem.indexOf(u8, slice, "declare") != null;
     }
 
+    fn elementAccessIndexTypeName(self: *Checker, index_node: NodeId, index_t: TypeId, literal_string_key: ?hir_mod.StringId) CheckError![]const u8 {
+        if (literal_string_key) |key| return try self.allocStringLiteralDisplay(key);
+        const src_text = self.nodeSourceTextOrEmpty(index_node);
+        const flags = self.interner.pool.flagsOf(index_t);
+        if (flags.is_symbol or std.mem.indexOf(u8, src_text, "_sym") != null or std.mem.endsWith(u8, src_text, ".S")) {
+            return "unique symbol";
+        }
+        return (try self.allocSimpleTypeName(index_t)) orelse "any";
+    }
+
+    fn elementAccessMissingPropertyName(self: *Checker, index_node: NodeId, index_t: TypeId) CheckError![]const u8 {
+        if (try self.propertyNameFromLiteralType(index_t)) |name| return self.string_interner.get(name);
+        if (self.interner.pool.flagsOf(index_t).is_symbol) {
+            const src_text = self.nodeSourceTextOrEmpty(index_node);
+            if (src_text.len > 0) return try std.fmt.allocPrint(self.diag_arena.allocator(), "[{s}]", .{src_text});
+            return "[symbol]";
+        }
+        return self.nodeSourceTextOrEmpty(index_node);
+    }
+
     fn typeIsDefinitelyNonConstructable(self: *Checker, t: TypeId) bool {
         if (t == types.Primitive.none or self.typeIsAnyLike(t)) return false;
         const f = self.interner.pool.flagsOf(t);
@@ -45932,6 +45977,8 @@ pub const Checker = struct {
                     saw_prototype = true;
                 }
                 cur = m.object;
+            } else if (k == .element_access) {
+                cur = hir_mod.elementOf(self.hir, cur).object;
             } else if (k == .identifier) {
                 const idn = hir_mod.identifierOf(self.hir, cur);
                 return saw_prototype and idn.name == name;
@@ -45939,6 +45986,15 @@ pub const Checker = struct {
                 return false;
             }
         }
+    }
+
+    fn jsConstructorInstanceType(self: *Checker, name: hir_mod.StringId) CheckError!TypeId {
+        if (self.class_instance_types.get(name)) |existing| return existing;
+        const instance_t = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+        try self.class_instance_types.put(self.gpa, name, instance_t);
+        try self.class_name_by_instance.put(self.gpa, instance_t, name);
+        try self.type_names.put(self.gpa, name, instance_t);
+        return instance_t;
     }
 
     fn findSiblingFunctionDecl(self: *Checker, callee_node: NodeId) ?NodeId {
@@ -72095,6 +72151,31 @@ test "checker: Ctor.prototype assignment without JSDoc keeps structural shape" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: checkjs computed prototype assignment makes function constructable but not indexed" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @strict: true
+        \\// @filename: /a.js
+        \\const _sym = Symbol();
+        \\const _str = "my-fake-sym";
+        \\function F() {}
+        \\F.prototype[_sym] = "ok";
+        \\F.prototype[_str] = "ok";
+        \\const inst = new F();
+        \\const y = inst[_str];
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_index = false;
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.new_expression_implicitly_any);
+        if (d.code == TsCodes.element_implicitly_any) saw_index = true;
+    }
+    try T.expect(saw_index);
 }
 
 test "checker: TS2496 suppressed when `arguments` resolves to a parameter binding" {
