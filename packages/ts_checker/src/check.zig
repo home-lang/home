@@ -44140,6 +44140,19 @@ pub const Checker = struct {
                         break :blk "{}";
                     }
                 }
+                // `typeof C` for class statics. The class case is also
+                // handled by `allocSimpleTypeName`; replicate the same
+                // lookup here so the additionOperator / arithmeticOperator
+                // family ties render the class name explicitly rather
+                // than collapsing to "these operand types".
+                {
+                    var sit = self.class_static_types.iterator();
+                    while (sit.next()) |entry| {
+                        if (entry.value_ptr.* != t) continue;
+                        const class_name_str = self.string_interner.get(entry.key_ptr.*);
+                        break :blk try std.fmt.allocPrint(self.diag_arena.allocator(), "typeof {s}", .{class_name_str});
+                    }
+                }
                 if (!flags.is_literal) break :blk null;
                 const payload_idx = self.interner.pool.payloadOf(t);
                 if (payload_idx >= self.interner.pool.literal_payloads.items.len) break :blk null;
