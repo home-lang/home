@@ -88,6 +88,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/16007.test.ts",
     "js/bun/util/wrapAnsi.test.ts",
     "js/bun/test/test-retry-repeats-basic.test.ts",
+    "regression/issue23966.test.ts",
 };
 
 const harness_prelude =
@@ -463,6 +464,17 @@ const harness_prelude =
     \\function test(name, first, second) { return it(name, first, second); }
     \\test.todo = it.todo;
     \\test.failing = it.failing;
+    \\test.concurrent = test;
+    \\function __home_each(rows) {
+    \\  return function(name, fn) {
+    \\    for (const row of rows) {
+    \\      const args = Array.isArray(row) ? row : [row];
+    \\      test(name, () => fn.apply(null, args));
+    \\    }
+    \\  };
+    \\}
+    \\test.each = __home_each;
+    \\test.concurrent.each = __home_each;
     \\function describe(name, fn) {
     \\  if (typeof fn !== "function") return;
     \\  const parent = globalThis.__home_current_scope;
@@ -870,7 +882,27 @@ const harness_prelude =
     \\  };
     \\}
     \\Buffer.INSPECT_MAX_BYTES = 50;
+    \\Buffer.Buffer = Buffer;
     \\Buffer.default = Buffer;
+    \\Buffer.isEncoding = function(encoding) {
+    \\  if (typeof encoding !== "string") return false;
+    \\  switch (encoding.toLowerCase()) {
+    \\    case "utf8":
+    \\    case "utf-8":
+    \\    case "hex":
+    \\    case "base64":
+    \\    case "ascii":
+    \\    case "latin1":
+    \\    case "binary":
+    \\    case "ucs2":
+    \\    case "ucs-2":
+    \\    case "utf16le":
+    \\    case "utf-16le":
+    \\      return true;
+    \\    default:
+    \\      return false;
+    \\  }
+    \\};
     \\globalThis.__home_modules["node:buffer"] = Buffer;
     \\if (typeof Error.prepareStackTrace !== "function") {
     \\  Error.prepareStackTrace = function(error, stack) {
@@ -1277,6 +1309,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .needle = "import buffer, { INSPECT_MAX_BYTES } from \"node:buffer\";",
             .replacement = "const __home_node_buffer = globalThis.__home_import(\"node:buffer\");\nconst buffer = __home_node_buffer.default;\nconst { INSPECT_MAX_BYTES } = __home_node_buffer;",
         },
+        .{
+            .needle = "import { Buffer } from \"node:buffer\";",
+            .replacement = "const { Buffer } = globalThis.__home_import(\"node:buffer\");",
+        },
     };
 
     var cursor: usize = 0;
@@ -1536,6 +1572,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/16007.test.ts", filesForSubset(.minimal_js)[34]);
     try std.testing.expectEqualStrings("js/bun/util/wrapAnsi.test.ts", filesForSubset(.minimal_js)[35]);
     try std.testing.expectEqualStrings("js/bun/test/test-retry-repeats-basic.test.ts", filesForSubset(.minimal_js)[36]);
+    try std.testing.expectEqualStrings("regression/issue23966.test.ts", filesForSubset(.minimal_js)[37]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -1563,6 +1600,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function beforeAll(fn, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function onTestFinished(fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Cannot set both retry and repeats") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.concurrent.each") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_finish_tests") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContain(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toMatchObject(expected)") != null);
@@ -1587,6 +1625,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.from") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.prototype.compare") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.INSPECT_MAX_BYTES") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.isEncoding") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:buffer\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toString(16).padStart") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Error.prepareStackTrace") != null);
@@ -1663,6 +1702,20 @@ test "bootstrap rewrite lowers node buffer default and named imports" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const buffer = __home_node_buffer.default;") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { INSPECT_MAX_BYTES } = __home_node_buffer;") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"node:buffer\"") == null);
+}
+
+test "bootstrap rewrite lowers node buffer named Buffer import" {
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { Buffer } from "node:buffer";
+        \\test.concurrent.each(["utf8"])("works", encoding => expect(Buffer.isEncoding(encoding)).toBe(true));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue23966.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { Buffer } = globalThis.__home_import(\"node:buffer\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"node:buffer\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "test.concurrent.each") != null);
 }
 
 test "bootstrap rewrite erases const assertions" {

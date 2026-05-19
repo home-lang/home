@@ -19,10 +19,10 @@ macOS, Linux, and the WASM target.
   `atob`/`btoa` smoke, fourteen regression smokes, one bundler
   constant-fold smoke, six test-runner expectation smokes, one nested-describe
   smoke, `Bun.stripANSI` and `Bun.wrapAnsi` smokes, retry/repeats runner
-  behavior, and narrow bootstrap coverage for Node
+  behavior, `test.concurrent.each`, and narrow bootstrap coverage for Node
   `DOMException`, Web `Response.json` / `Response.redirect`, Web `Request`
   cache/mode/clone, JSC `ShadowRealm`, Bun file metadata, Node `Buffer`
-  binary/UTF-16LE/compare/inspect-limit behavior, `Map`/`Set` deep-equality,
+  binary/UTF-16LE/compare/inspect-limit/isEncoding behavior, `Map`/`Set` deep-equality,
   lifecycle hooks, `Bun.inspect` Set formatting, `MessageEvent` constructor
   behavior, Bun version aliases, own-key matchers, and a `prepareStackTrace`
   crash smoke. It is only a smoke path for JSC + `home_test`; it is not the

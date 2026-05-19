@@ -32,7 +32,7 @@ explicit harness unsupported errors across the
 assertion failures. It covers the first real smoke slice: basic
 `describe` / `test` / `it`, `it.todo`, `it.failing`, lifecycle hooks,
 retry/repeats runner options, `onTestFinished`, returned-thenable
-rejection, `.not`, `toBe`, `toBeDefined`,
+rejection, `test.concurrent`, `test.each`, `.not`, `toBe`, `toBeDefined`,
 `toBeUndefined`, `toBeTruthy`, `toBeNumber`, `toBeTypeOf`,
 `toBeInstanceOf`, `toMatchObject`, object-form error matching in
 `toThrow`, small `toEqual` / `toStrictEqual` deep equality including
@@ -44,7 +44,7 @@ rejection, `.not`, `toBe`, `toBeDefined`,
 `process.versions.bun`, `process.revision`, DOMException,
 Request/Response/Headers/URL, `node-fetch`, `node:buffer`, Node
 `Buffer.alloc` / fill / `Buffer.from(..., "utf-16le")` / compare /
-write / toString / inspect-limit subsets, Event / MessageChannel /
+write / toString / inspect-limit / isEncoding subsets, Event / MessageChannel /
 MessagePort / MessageEvent constructor shims, `Bun.inspect({ key:
 Set<string> })`, and a narrow `ShadowRealm.evaluate` shim. The source
 rewrite lowers supported `bun:test` imports to a virtual
