@@ -150,6 +150,9 @@ const CorpusRuntime = struct {
         const counters = self.readCounters(allocator) catch |err| {
             return runner.FileRun.failBorrowed(spec.path, @errorName(err));
         };
+        if (counters.passed + counters.failed + counters.todo == 0) {
+            return runner.FileRun.unsupportedBorrowed(spec.path, "no bun:test tests registered by corpus file");
+        }
 
         return .{
             .result = .{
@@ -1264,8 +1267,9 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
         defer file_run.deinit(allocator);
 
         summary.addFileResult(file_run.result);
-        if (file_run.result.status() == .failed) {
-            try recordFailure(allocator, &summary, relative, file_run.result.first_failure_message);
+        switch (file_run.result.status()) {
+            .failed, .unsupported => try recordFailure(allocator, &summary, relative, file_run.result.first_failure_message),
+            .passed, .todo => {},
         }
     }
 
@@ -1489,6 +1493,50 @@ test "bootstrap rewrite erases admitted type-only syntax" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "new CustomMap([])") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, ": any") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "<any, any>") == null);
+}
+
+test "bootstrap runner reports zero registered tests as unsupported" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\describe("empty suite", () => {});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/empty-describe.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try CorpusRuntime.init(std.testing.allocator);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, .{
+        .path = "regression/issue/empty-describe.test.js",
+        .source = prepared.source,
+    });
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.unsupported, file_run.result.status());
+    try std.testing.expectEqualStrings("no bun:test tests registered by corpus file", file_run.result.first_failure_message);
+}
+
+test "bootstrap runner keeps todo-only files as todo" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\test.todo("pending");
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "snippets/pending.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try CorpusRuntime.init(std.testing.allocator);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, .{
+        .path = "snippets/pending.test.js",
+        .source = prepared.source,
+    });
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.todo, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
 }
 
 test "Bun test import rewrite installs globals for no-import tests" {

@@ -43,6 +43,16 @@ pub const FileRun = struct {
         };
     }
 
+    pub fn unsupportedBorrowed(path: []const u8, message: []const u8) FileRun {
+        return .{
+            .result = .{
+                .path = path,
+                .unsupported = 1,
+                .first_failure_message = message,
+            },
+        };
+    }
+
     pub fn failOwned(allocator: std.mem.Allocator, path: []const u8, message: ?[]const u8) !FileRun {
         const copied = try allocator.dupe(u8, message orelse "JSEvaluateScript returned null without an exception");
         return .{
@@ -67,4 +77,13 @@ test "file run owns copied failure messages" {
     try std.testing.expectEqual(result.TestStatus.failed, file_run.result.status());
     try std.testing.expectEqualStrings("boom", file_run.result.first_failure_message);
     try std.testing.expect(file_run.first_failure_message_owned);
+}
+
+test "file run can report borrowed unsupported reasons" {
+    var file_run = FileRun.unsupportedBorrowed("sample.test.ts", "no tests");
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(result.TestStatus.unsupported, file_run.result.status());
+    try std.testing.expectEqualStrings("no tests", file_run.result.first_failure_message);
+    try std.testing.expect(!file_run.first_failure_message_owned);
 }

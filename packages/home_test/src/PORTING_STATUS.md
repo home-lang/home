@@ -24,7 +24,8 @@ through that contract. The full runner remains blocked on the native
 `bun:test` port and JSC host-call bridge.
 
 The bootstrap harness is intentionally narrow but now installs once per
-JSC engine and resets counters before each allowlisted file. It covers
+JSC engine, resets counters before each allowlisted file, and reports a
+file as unsupported if it registers zero `bun:test` tests. It covers
 the first real smoke slice: basic `describe` / `test` / `it`,
 `it.todo`, `it.failing`, returned-thenable rejection, `.not`, `toBe`,
 `toBeDefined`, `toBeUndefined`, `toBeTypeOf`, `toBeInstanceOf`, small
