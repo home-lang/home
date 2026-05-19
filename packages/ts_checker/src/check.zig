@@ -319,6 +319,7 @@ pub const TsCodes = struct {
     pub const method_decorator_signature_unresolved: u32 = 1241;
     pub const decorator_on_method_overload: u32 = 1249;
     pub const decorator_or_modifier_on_this_parameter: u32 = 1433;
+    pub const arrow_function_cannot_have_this_parameter: u32 = 2730;
     pub const this_parameter_must_be_first: u32 = 2680;
     pub const no_exported_member_suggestion: u32 = 2724;
     /// TS2694 — `Namespace '<ns>' has no exported member '<leaf>'.`
@@ -4779,6 +4780,28 @@ pub const Checker = struct {
                 return;
             }
         }
+    }
+
+    fn checkJsDocThisTagOnArrowFunction(self: *Checker, node: NodeId) CheckError!void {
+        if (!self.sourceHasCheckJsDirective()) return;
+        if (self.hir.kindOf(node) != .arrow_fn) return;
+        const src = self.source orelse return;
+        const jsdoc = self.leadingJsDocBodyForFunctionOrOwnerWithStart(src, node) orelse return;
+        const this_rel = std.mem.indexOf(u8, jsdoc.body, "@this") orelse return;
+        try self.reportAt(
+            node,
+            @intCast(jsdoc.start + this_rel + 1),
+            TsCodes.arrow_function_cannot_have_this_parameter,
+            "An arrow function cannot have a 'this' parameter.",
+        );
+    }
+
+    fn arrowFunctionHasLeadingJsDocThis(self: *Checker, node: NodeId) bool {
+        if (!self.sourceHasCheckJsDirective()) return false;
+        if (self.hir.kindOf(node) != .arrow_fn) return false;
+        const src = self.source orelse return false;
+        const jsdoc = self.leadingJsDocBodyForFunctionOrOwner(src, node) orelse return false;
+        return std.mem.indexOf(u8, jsdoc, "@this") != null;
     }
 
     fn checkFnDeclWithFlowBoundary(self: *Checker, node: NodeId) CheckError!void {
@@ -10833,6 +10856,7 @@ pub const Checker = struct {
         // TS8010 / TS8009 for any TS-only annotation in a `.js`
         // virtual section opted into `@allowjs`/`@checkjs`.
         try self.checkJsOnlySignatureAnnotations(node);
+        try self.checkJsDocThisTagOnArrowFunction(node);
         try self.checkJsDocFunctionTypeReturnAnnotations(node);
         const type_params = hir_mod.fnTypeParams(self.hir, node);
         try self.checkTypeParameterDeclList(type_params);
@@ -13112,7 +13136,7 @@ pub const Checker = struct {
                         }
                         if (op.value != hir_mod.none_node_id) {
                             const value_kind = self.hir.kindOf(op.value);
-                            if (value_kind == .fn_expr) {
+                            if (value_kind == .fn_expr or (value_kind == .arrow_fn and self.arrowFunctionHasLeadingJsDocThis(op.value))) {
                                 const sig = try self.checkFnSignatureOnly(op.value);
                                 if (hir_mod.fnTypeParams(self.hir, op.value).len > 0) self.popNarrowScope();
                                 break :blk sig;
@@ -26935,8 +26959,7 @@ pub const Checker = struct {
     fn fnHasLeadingJsDocParam(self: *Checker, fn_node: NodeId, param_name: []const u8) bool {
         if (param_name.len == 0) return false;
         const src = self.source orelse return false;
-        const span = self.hir.spanOf(fn_node);
-        const body = self.leadingJsDocBody(src, span.start) orelse return false;
+        const body = self.leadingJsDocBodyForFunctionOrOwner(src, fn_node) orelse return false;
         const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return false;
         defer self.gpa.free(tags);
         for (tags) |tag| {
@@ -26971,8 +26994,7 @@ pub const Checker = struct {
     fn jsDocParamInfoForFunctionParam(self: *Checker, fn_node: NodeId, param_name: []const u8) CheckError!?JsDocParamInfo {
         if (param_name.len == 0) return null;
         const src = self.source orelse return null;
-        const span = self.hir.spanOf(fn_node);
-        const body = self.leadingJsDocBody(src, span.start) orelse return null;
+        const body = self.leadingJsDocBodyForFunctionOrOwner(src, fn_node) orelse return null;
         if (std.mem.indexOf(u8, body, "@overload") != null) return null;
         const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
         defer self.gpa.free(tags);
@@ -27602,10 +27624,35 @@ pub const Checker = struct {
         return jsdoc.body;
     }
 
+    fn leadingJsDocBodyForFunctionOrOwner(self: *Checker, src: []const u8, fn_node: NodeId) ?[]const u8 {
+        const jsdoc = self.leadingJsDocBodyForFunctionOrOwnerWithStart(src, fn_node) orelse return null;
+        return jsdoc.body;
+    }
+
     const JsDocBody = struct {
         body: []const u8,
         start: usize,
     };
+
+    fn leadingJsDocBodyForFunctionOrOwnerWithStart(self: *Checker, src: []const u8, fn_node: NodeId) ?JsDocBody {
+        const span = self.hir.spanOf(fn_node);
+        if (self.leadingJsDocBodyWithStart(src, span.start)) |jsdoc| return jsdoc;
+
+        const parent = self.hir.parentOf(fn_node);
+        if (parent == hir_mod.none_node_id) return null;
+        const parent_kind = self.hir.kindOf(parent);
+        if (parent_kind == .object_property) {
+            const prop = hir_mod.objectPropertyOf(self.hir, parent);
+            if (prop.value != fn_node) return null;
+            return self.leadingJsDocBodyWithStart(src, self.hir.spanOf(parent).start);
+        }
+        if (parent_kind == .var_decl or parent_kind == .let_decl or parent_kind == .const_decl) {
+            const decl = hir_mod.varDeclOf(self.hir, parent);
+            if (decl.init != fn_node) return null;
+            return self.leadingJsDocBodyWithStart(src, self.hir.spanOf(parent).start);
+        }
+        return null;
+    }
 
     fn leadingJsDocBodyWithStart(self: *Checker, src: []const u8, decl_start: u32) ?JsDocBody {
         _ = self;
@@ -68182,6 +68229,24 @@ test "checker: checkjs function JSDoc @this tag suppresses implicit this" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.this_implicitly_any);
     }
+}
+
+test "checker: checkjs arrow JSDoc @this tag is rejected" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @strict: true
+        \\/**
+        \\ * @this {{ value: number }}
+        \\ */
+        \\const f = () => this.value;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.arrow_function_cannot_have_this_parameter) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: checkjs prototype compound assignment function suppresses implicit this" {
