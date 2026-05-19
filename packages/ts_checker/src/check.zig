@@ -25584,8 +25584,10 @@ pub const Checker = struct {
                 .class_decl,
                 .class_expr,
                 .enum_decl,
+                .namespace_decl,
                 => {
                     const decl_name = self.declarationName(node) orelse continue;
+                    if (self.hir.kindOf(node) == .namespace_decl and !self.namespaceHasRuntimeValue(node)) continue;
                     if (decl_name == name) return node;
                 },
                 else => {},
@@ -25712,11 +25714,53 @@ pub const Checker = struct {
             .var_decl, .let_decl, .const_decl => try self.checkNamespaceValueDecl(decl),
             .fn_decl, .fn_expr, .arrow_fn => try self.checkFnSignatureOnlyNoBody(decl),
             .class_decl, .class_expr, .enum_decl => try self.checkStatement(decl),
+            .namespace_decl => return try self.namespaceValueObjectType(decl),
             else => {},
         }
         t = self.hir.typeOf(decl);
         if (t != types.Primitive.none and t != types.Primitive.unknown) return t;
         return types.Primitive.any;
+    }
+
+    fn namespaceValueObjectType(self: *Checker, ns_node: NodeId) CheckError!TypeId {
+        if (self.hir.kindOf(ns_node) != .namespace_decl) return types.Primitive.any;
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        for (hir_mod.namespaceBody(self.hir, ns_node)) |raw| {
+            if (self.hir.kindOf(raw) != .export_decl) continue;
+            const decl = self.unwrapExportDecl(raw);
+            if (!self.namespaceExportCreatesValue(decl)) continue;
+            const name = self.declarationName(decl) orelse continue;
+            const member_t = switch (self.hir.kindOf(decl)) {
+                .var_decl, .let_decl, .const_decl => blk: {
+                    try self.checkNamespaceValueDecl(decl);
+                    const t = self.hir.typeOf(decl);
+                    break :blk if (t != types.Primitive.none) t else types.Primitive.any;
+                },
+                .fn_decl, .fn_expr, .arrow_fn => blk: {
+                    try self.checkFnSignatureOnlyNoBody(decl);
+                    const t = self.hir.typeOf(decl);
+                    break :blk if (t != types.Primitive.none) t else types.Primitive.any;
+                },
+                .class_decl, .class_expr => blk: {
+                    try self.checkStatement(decl);
+                    if (self.class_static_types.get(name)) |static_t| break :blk static_t;
+                    const t = self.hir.typeOf(decl);
+                    break :blk if (t != types.Primitive.none) t else types.Primitive.any;
+                },
+                .enum_decl => try self.enumNamespaceValueType(decl, name),
+                .namespace_decl => try self.namespaceValueObjectType(decl),
+                else => types.Primitive.any,
+            };
+            try members.append(self.gpa, .{
+                .name = name,
+                .type = member_t,
+                .is_optional = false,
+                .is_readonly = true,
+                .is_method = self.hir.kindOf(decl) == .fn_decl or self.hir.kindOf(decl) == .fn_expr,
+            });
+        }
+        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
     }
 
     fn lowerTupleWithTypeParams(self: *Checker, type_node: NodeId) CheckError!TypeId {
@@ -72222,6 +72266,30 @@ test "checker: qualified namespace interface refs satisfy repeated var declarati
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.subsequent_var_type_mismatch);
+    }
+}
+
+test "checker: typeof nested namespace value satisfies repeated var declaration" {
+    const s = try newSetup(
+        \\namespace M2 {
+        \\  export namespace Point {
+        \\    export function Origin(): { x: number; y: number; } {
+        \\      return { x: 0, y: 0 };
+        \\    }
+        \\  }
+        \\  export interface Point {
+        \\    x: number;
+        \\    y: number;
+        \\  }
+        \\}
+        \\var p2: { Origin(): { x: number; y: number; } };
+        \\var p2: typeof M2.Point;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
         try T.expect(d.code != TsCodes.subsequent_var_type_mismatch);
     }
 }
