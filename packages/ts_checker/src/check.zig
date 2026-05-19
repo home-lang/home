@@ -624,6 +624,11 @@ pub const TsCodes = struct {
     /// auto-increment is only valid after a numeric predecessor.
     pub const enum_computed_after_string: u32 = 2553;
     pub const const_enum_initializer_must_be_constant: u32 = 2474;
+    /// TS2477 — `const enum` member initializer evaluated to a
+    /// non-finite value (Infinity, -Infinity).
+    pub const const_enum_non_finite_value: u32 = 2477;
+    /// TS2478 — `const enum` member initializer evaluated to NaN.
+    pub const const_enum_disallowed_value_nan: u32 = 2478;
     pub const jsdoc_function_type_mismatch: u32 = 8030;
     /// TS2369 — `public`/`private`/`protected`/`readonly` modifier on
     /// a parameter outside of a constructor implementation.
@@ -20483,6 +20488,13 @@ pub const Checker = struct {
                         continue;
                     }
                     if (self.evalEnumConstExpression(enum_name, prop.value)) |v| {
+                        if (e.is_const) {
+                            if (std.math.isNan(v)) {
+                                try self.report(prop.value, TsCodes.const_enum_disallowed_value_nan, "'const' enum member initializer was evaluated to disallowed value 'NaN'.");
+                            } else if (!std.math.isFinite(v)) {
+                                try self.report(prop.value, TsCodes.const_enum_non_finite_value, "'const' enum member initializer was evaluated to a non-finite value.");
+                            }
+                        }
                         try self.enum_member_values.put(self.gpa, key, v);
                         try member_literal_types.append(self.gpa, self.interner.internNumberLiteral(v) catch return error.OutOfMemory);
                         next_numeric = v + 1;
@@ -20512,7 +20524,18 @@ pub const Checker = struct {
             .literal_number => hir_mod.literalNumberOf(self.hir, node),
             .identifier => blk: {
                 const id = hir_mod.identifierOf(self.hir, node);
-                break :blk self.enum_member_values.get(.{ .obj_name = enum_name, .prop_name = id.name });
+                if (self.enum_member_values.get(.{ .obj_name = enum_name, .prop_name = id.name })) |v| break :blk v;
+                // Recognise the `NaN` and `Infinity` global identifiers
+                // so `const enum E { x = NaN }` evaluates and triggers
+                // the matching TS2477 / TS2478 diagnostic. Lookups for
+                // shadowed `let NaN = …` cases use the non-const enum
+                // path which doesn't consult these values for type
+                // membership, so it is safe to recognise the names
+                // unconditionally here.
+                const name_str = self.string_interner.get(id.name);
+                if (name_str.len == 3 and std.mem.eql(u8, name_str, "NaN")) break :blk std.math.nan(f64);
+                if (name_str.len == 8 and std.mem.eql(u8, name_str, "Infinity")) break :blk std.math.inf(f64);
+                break :blk null;
             },
             .member_access => blk: {
                 const m = hir_mod.memberOf(self.hir, node);
