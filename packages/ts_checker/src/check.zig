@@ -26979,9 +26979,9 @@ pub const Checker = struct {
             if (tag.kind != .param_tag) continue;
             if (!std.mem.eql(u8, tag.name, param_name)) continue;
             var t: ?TypeId = null;
-            if (tag.optional_from_type_suffix) {
+            if (tag.optional_from_type_suffix or jsDocTypeTextIsObjectIndexSignature(tag.type_text)) {
                 if (try self.jsDocTypeTextToType(src, tag.type_text)) |param_t| {
-                    t = try self.unionWithUndefined(param_t);
+                    t = if (tag.optional) try self.unionWithUndefined(param_t) else param_t;
                 }
             }
             found = .{
@@ -27359,6 +27359,12 @@ pub const Checker = struct {
         return null;
     }
 
+    fn jsDocTypeTextIsObjectIndexSignature(type_text: []const u8) bool {
+        const trimmed = std.mem.trim(u8, type_text, " \t\r\n");
+        return std.mem.startsWith(u8, trimmed, "Object.<") or
+            std.mem.startsWith(u8, trimmed, "Object<");
+    }
+
     fn jsDocGenericTypeTextToType(self: *Checker, src: []const u8, type_text: []const u8) CheckError!?TypeId {
         const open = jsDocTopLevelOpenAngle(type_text) orelse return null;
         if (!std.mem.endsWith(u8, type_text, ">")) return null;
@@ -27370,6 +27376,20 @@ pub const Checker = struct {
             const elem_text = args.next() orelse return null;
             const elem_t = (try self.jsDocTypeTextToType(src, elem_text)) orelse types.Primitive.any;
             return self.interner.internArrayType(self.string_interner, elem_t) catch return error.OutOfMemory;
+        }
+
+        if (std.mem.eql(u8, name, "Object") or std.mem.eql(u8, name, "Object.")) {
+            const key_text = args.next() orelse return null;
+            const value_text = args.next() orelse return null;
+            const key_t = (try self.jsDocTypeTextToType(src, key_text)) orelse return types.Primitive.any;
+            const value_t = (try self.jsDocTypeTextToType(src, value_text)) orelse types.Primitive.any;
+            if (key_t == types.Primitive.string_t) {
+                return self.interner.internObjectTypeWithIndexAndSymbol(&.{}, value_t, types.Primitive.none, types.Primitive.none) catch return error.OutOfMemory;
+            }
+            if (key_t == types.Primitive.number_t) {
+                return self.interner.internObjectTypeWithIndexAndSymbol(&.{}, types.Primitive.none, value_t, types.Primitive.none) catch return error.OutOfMemory;
+            }
+            return types.Primitive.any;
         }
 
         if (std.mem.eql(u8, name, "Record")) {
