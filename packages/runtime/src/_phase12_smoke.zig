@@ -17,6 +17,7 @@ test {
     // exercises each file even before the test-step runs.
     _ = @import("analytics/Features.zig");
     _ = @import("node/path.zig");
+    _ = @import("node/assert.zig");
     _ = @import("jsc/generated_classes_list.zig");
     _ = @import("runtime/api/bun/Terminal.zig");
     _ = @import("runtime/api/bun/spawn.zig");

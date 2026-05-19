@@ -505,7 +505,15 @@ pub const node = struct {
     // compat fixes applied); node_fs_constant adds the POSIX file-flag
     // surface used by `node:fs.constants`.
     pub const node_fs_constant = @import("node/node_fs_constant.zig");
-    pub const assert = struct {
+    // Phase 12.7 port (2026-05-19) — `node:assert` Zig substrate. The JS
+    // wrapper re-attaches once the Phase 12.2 JSC bridge is live; this
+    // file exposes the Zig-callable surface that the JS layer will
+    // delegate to (ok/equal/deepEqual/throws/match/...). The legacy
+    // `assert.myers_diff` leaf is re-namespaced under `assert_utils` so
+    // the top-level `assert` namespace can be the substrate module
+    // itself.
+    pub const assert = @import("node/assert.zig");
+    pub const assert_utils = struct {
         pub const myers_diff = @import("node/assert/myers_diff.zig");
     };
     pub const path = @import("node/path.zig");
@@ -1260,6 +1268,7 @@ test {
     _ = @import("runtime/api/bun/x509.zig");
     _ = @import("node/node_fs_constant.zig");
     _ = @import("node/assert/myers_diff.zig");
+    _ = @import("node/assert.zig");
     _ = @import("s3_signing/acl.zig");
     _ = @import("s3_signing/storage_class.zig");
     _ = @import("s3_signing/error.zig");
