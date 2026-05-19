@@ -31450,8 +31450,19 @@ pub const Checker = struct {
                     }
                     const value_t = try self.checkJsxAttributeValue(a.value);
                     const attr_bag_t = try self.jsxAttributeBagValueType(a.value, value_t);
-                    if (!std.mem.eql(u8, attr_name, "key") and !std.mem.startsWith(u8, attr_name, "data-")) {
-                        explicit_value_attr_count += 1;
+                    if (!std.mem.startsWith(u8, attr_name, "data-")) {
+                        // Include `key` in the attrs bag when the
+                        // target carries no `IntrinsicAttributes`
+                        // intersection (e.g. plain `function Tag(x: {})`).
+                        // tsc renders `key` as part of the source
+                        // attrs for these targets (mirrors
+                        // `checkJsxChildrenProperty15` lines 13-14).
+                        // For component targets whose effective shape
+                        // composes `IntrinsicAttributes`, `key` is
+                        // always allowed and we still filter it from
+                        // explicit_value_attr_count to keep the
+                        // attribute-count gates honest.
+                        if (!std.mem.eql(u8, attr_name, "key")) explicit_value_attr_count += 1;
                         try self.appendOrReplaceObjectMember(&attr_members, .{
                             .name = a.name,
                             .type = attr_bag_t,
