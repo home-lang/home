@@ -2352,49 +2352,149 @@ pub const Checker = struct {
 
     /// TS2433 — `A namespace declaration cannot be in a different
     /// file from a class or function with which it is merged.` Fires
-    /// when a top-level `namespace X { … }` shares its name with a
-    /// `class X { … }` / `function X(){}` declared in a sibling
-    /// `@filename:` virtual section of the same compilation. The
-    /// detection runs on the concatenated source so it sees both
-    /// declarations; cross-virtual-section comparison via
+    /// when a `namespace X.Y.Z { … }` (possibly nested inside other
+    /// namespaces) shares its qualified path with a `class Z { … }`
+    /// / `function Z(){}` declared in a sibling `@filename:` virtual
+    /// section of the same compilation. The detection runs on the
+    /// concatenated source so it sees both declarations;
+    /// cross-virtual-section comparison via
     /// `virtualSectionFilenameForNode`. Skipped when the source has
     /// no virtual-section markers (single-file fixtures can't trigger
     /// the cross-file shape).
+    ///
+    /// Top-level: `namespace X {}` matches `class X {}` in another
+    /// file (path = ["X"]). Nested: `namespace X.Y { namespace Point
+    /// {} }` matches `namespace X.Y { class Point {} }` in another
+    /// file (path = ["X", "Y", "Point"]) — covers the
+    /// `ClassAndModuleWithSameNameAndCommonRoot` /
+    /// `FunctionAndModuleWithSameNameAndCommonRoot` /
+    /// `ModuleAnd*` cluster.
     fn checkNamespaceCrossFileMergeMismatch(self: *Checker, node: NodeId) CheckError!void {
         if (!self.sourceHasVirtualFilenameSections()) return;
         if (self.namespaceIsAmbient(node)) return;
         const ns = hir_mod.namespaceOf(self.hir, node);
         if (ns.name == hir_mod.none_node_id) return;
         if (self.hir.kindOf(ns.name) != .identifier) return;
-        const ns_name = hir_mod.identifierOf(self.hir, ns.name).name;
         const ns_section = self.virtualSectionFilenameForNode(node) orelse return;
+
+        // Build the full qualified path of this namespace, splitting
+        // any dotted forms (`namespace X.Y { namespace Point {} }`
+        // produces ["X", "Y", "Point"]).
+        var path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer path.deinit(self.gpa);
+        try self.collectNamespaceQualifiedPath(node, &path);
+        if (path.items.len == 0) return;
+
         const root = self.rootBlockFor(node);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
-        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
-            const k = self.hir.kindOf(stmt);
-            if (k != .class_decl and k != .fn_decl) continue;
-            const sibling_name: hir_mod.NodeId = switch (k) {
-                .class_decl => hir_mod.classOf(self.hir, stmt).name,
-                .fn_decl => hir_mod.fnDeclOf(self.hir, stmt).name,
-                else => continue,
-            };
-            if (sibling_name == hir_mod.none_node_id) continue;
-            if (self.hir.kindOf(sibling_name) != .identifier) continue;
-            if (hir_mod.identifierOf(self.hir, sibling_name).name != ns_name) continue;
-            const sibling_section = self.virtualSectionFilenameForNode(stmt) orelse continue;
-            if (std.mem.eql(u8, sibling_section, ns_section)) continue;
-            // Cross-file merge mismatch — emit TS2433 anchored at the
-            // namespace's name identifier.
+
+        if (self.findCrossSectionClassOrFnAtPath(
+            hir_mod.blockStmts(self.hir, root),
+            path.items,
+            ns_section,
+        ) != null) {
             try self.report(ns.name, TsCodes.namespace_in_different_file, "A namespace declaration cannot be in a different file from a class or function with which it is merged.");
-            return;
         }
+    }
+
+    /// Walk `node` plus every nested namespace_decl inside its body
+    /// and run the cross-file merge mismatch check on each. We can't
+    /// rely on the normal `checkStatement` recursion because
+    /// `checkNamespaceTypeStatements` doesn't recurse into nested
+    /// namespaces (doing so exposes an unrelated TS2503 namespace-
+    /// resolution gap on `nestedModules.ts`). This walker only fires
+    /// the TS2433 check, keeping the blast radius tiny.
+    fn walkNamespaceForCrossFileMergeMismatch(self: *Checker, node: NodeId) CheckError!void {
+        try self.checkNamespaceCrossFileMergeMismatch(node);
+        for (hir_mod.namespaceBody(self.hir, node)) |raw| {
+            const inner = self.unwrapExportDecl(raw);
+            if (inner == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(inner) != .namespace_decl and self.hir.kindOf(inner) != .module_decl) continue;
+            try self.walkNamespaceForCrossFileMergeMismatch(inner);
+        }
+    }
+
+    fn collectNamespaceQualifiedPath(
+        self: *Checker,
+        node: NodeId,
+        path: *std.ArrayListUnmanaged(hir_mod.StringId),
+    ) CheckError!void {
+        // Walk up the parent chain collecting every enclosing
+        // namespace_decl (innermost-first), then append in
+        // outermost-first order so the resulting path reads top-down.
+        var stack: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer stack.deinit(self.gpa);
+        var cur = node;
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            if (self.hir.kindOf(cur) == .namespace_decl) {
+                try stack.append(self.gpa, cur);
+            }
+        }
+        var i = stack.items.len;
+        while (i > 0) {
+            i -= 1;
+            const ns_node = stack.items[i];
+            const ns = hir_mod.namespaceOf(self.hir, ns_node);
+            if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) continue;
+            const name_str = self.string_interner.get(hir_mod.identifierOf(self.hir, ns.name).name);
+            var it = std.mem.splitScalar(u8, name_str, '.');
+            while (it.next()) |segment| {
+                const seg_id = self.string_interner.intern(segment) catch return error.OutOfMemory;
+                try path.append(self.gpa, seg_id);
+            }
+        }
+    }
+
+    fn findCrossSectionClassOrFnAtPath(
+        self: *Checker,
+        stmts: []const NodeId,
+        path: []const hir_mod.StringId,
+        skip_section: []const u8,
+    ) ?NodeId {
+        if (path.len == 0) return null;
+        const target_name = path[path.len - 1];
+        if (path.len == 1) {
+            // Leaf scan: look for class_decl/fn_decl matching
+            // target_name inside `stmts` (which is the body of the
+            // matching outer namespace, or the root block for the
+            // top-level case).
+            for (stmts) |raw| {
+                const inner = self.unwrapExportDecl(raw);
+                if (inner == hir_mod.none_node_id) continue;
+                const k = self.hir.kindOf(inner);
+                if (k != .class_decl and k != .fn_decl) continue;
+                const dn = self.declarationName(inner) orelse continue;
+                if (dn != target_name) continue;
+                const sec = self.virtualSectionFilenameForNode(inner) orelse continue;
+                if (std.mem.eql(u8, sec, skip_section)) continue;
+                return inner;
+            }
+            return null;
+        }
+        // Nested case: find namespace_decls consuming a prefix of
+        // `path`, then recurse into their bodies with the remaining
+        // segments.
+        for (stmts) |raw| {
+            const inner = self.unwrapExportDecl(raw);
+            if (inner == hir_mod.none_node_id or self.hir.kindOf(inner) != .namespace_decl) continue;
+            const ns = hir_mod.namespaceOf(self.hir, inner);
+            if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) continue;
+            const ns_name_str = self.string_interner.get(hir_mod.identifierOf(self.hir, ns.name).name);
+            const consumed = self.namespaceNameConsumesPath(ns_name_str, path[0 .. path.len - 1]) orelse continue;
+            if (self.findCrossSectionClassOrFnAtPath(
+                hir_mod.namespaceBody(self.hir, inner),
+                path[consumed..],
+                skip_section,
+            )) |found| return found;
+        }
+        return null;
     }
 
     fn checkNamespaceTypeStatements(self: *Checker, node: NodeId) CheckError!void {
         try self.checkUntypedModuleAugmentation(node);
         try self.checkAmbientModulePatternAsterisks(node);
         try self.checkGlobalAugmentationDiagnostics(node);
-        try self.checkNamespaceCrossFileMergeMismatch(node);
+        try self.walkNamespaceForCrossFileMergeMismatch(node);
         const ns = hir_mod.namespaceOf(self.hir, node);
         // Skip TS8006 for ambient `declare module "fs" { ... }` forms —
         // upstream tsc only fires on plain `namespace` declarations.
