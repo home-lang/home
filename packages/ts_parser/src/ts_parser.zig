@@ -8980,8 +8980,11 @@ pub const Parser = struct {
             // TS2365 / TS2304 that motivated the `left`-only recovery
             // above for `+`/`-` chains
             // (`plusOperatorInvalidOperations`).
-            const peek_is_chained_comparison = (t.kind == .greater_than or t.kind == .less_than or
-                t.kind == .greater_than_equal or t.kind == .less_than_equal) and
+            const peek_is_type_assertion_rhs = self.peek().kind == .less_than and
+                self.lessThanStartsTypeAssertionExpression(self.cursor);
+            const peek_is_chained_comparison = !peek_is_type_assertion_rhs and
+                (t.kind == .greater_than or t.kind == .less_than or
+                    t.kind == .greater_than_equal or t.kind == .less_than_equal) and
                 (self.peek().kind == .greater_than or self.peek().kind == .less_than or
                     self.peek().kind == .greater_than_equal or self.peek().kind == .less_than_equal);
             if (peek_is_chained_comparison) {
@@ -9006,6 +9009,56 @@ pub const Parser = struct {
             }
         }
         return left;
+    }
+
+    fn tokenCanStartTypeAssertionType(kind: TokenKind) bool {
+        return kind == .identifier or
+            kind.isPrimitiveTypeKeyword() or
+            kind.isContextualKeyword() or
+            kind == .open_brace or
+            kind == .open_paren or
+            kind == .open_bracket or
+            kind == .kw_this or
+            kind == .kw_typeof or
+            kind == .kw_new;
+    }
+
+    fn tokenCanStartTypeAssertionOperand(kind: TokenKind) bool {
+        return kind.canStartExpression() or kind == .less_than;
+    }
+
+    fn lessThanStartsTypeAssertionExpression(self: *Parser, start: u32) bool {
+        if (self.is_tsx) return false;
+        if (start >= self.tokens.len or self.tokens[start].kind != .less_than) return false;
+        if (start + 1 >= self.tokens.len or !tokenCanStartTypeAssertionType(self.tokens[start + 1].kind)) return false;
+
+        var depth: i32 = 1;
+        var i: u32 = start + 1;
+        while (i < self.tokens.len) : (i += 1) {
+            const kind = self.tokens[i].kind;
+            switch (kind) {
+                .eof, .semicolon => return false,
+                .less_than => depth += 1,
+                .greater_than, .greater_greater, .greater_greater_greater => {
+                    const count: u8 = switch (kind) {
+                        .greater_than => 1,
+                        .greater_greater => 2,
+                        .greater_greater_greater => 3,
+                        else => unreachable,
+                    };
+                    var n: u8 = 0;
+                    while (n < count) : (n += 1) {
+                        depth -= 1;
+                        if (depth == 0) {
+                            const next = i + 1;
+                            return next < self.tokens.len and tokenCanStartTypeAssertionOperand(self.tokens[next].kind);
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+        return false;
     }
 
     fn reportUnaryExponentiationLeft(self: *Parser, left: NodeId, line: u32) ParseError!void {
@@ -13324,6 +13377,25 @@ test "parser: angle-bracket type assertion accepts array type" {
     try T.expectEqual(hir_mod.NodeKind.type_assertion, s.hir.kindOf(vd.init));
     const assertion = hir_mod.asExpressionOf(&s.hir, vd.init);
     try T.expectEqual(hir_mod.NodeKind.array_type, s.hir.kindOf(assertion.type_node));
+}
+
+test "parser: relational RHS can be angle-bracket type assertion" {
+    var s = try newTestSetup(
+        \\x > <number>0;
+        \\x < <BrandedNum>0;
+        \\x >= <number>0;
+        \\x <= <BrandedNum>0;
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 4), stmts.len);
+    for (stmts) |stmt| {
+        try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(stmt));
+        const bin = hir_mod.binopOf(&s.hir, stmt);
+        try T.expectEqual(hir_mod.NodeKind.type_assertion, s.hir.kindOf(bin.rhs));
+    }
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: generic arrow accepts nested type parameter constraint" {

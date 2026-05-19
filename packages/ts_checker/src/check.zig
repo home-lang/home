@@ -497,6 +497,10 @@ pub const TsCodes = struct {
     /// property `foo`). Use `obj["foo"]` to make the unsafe access
     /// explicit.
     pub const index_signature_property_access: u32 = 4111;
+    /// `override` was used but the containing class has no `extends`
+    /// clause at all. Distinct from TS4113 (member missing in base
+    /// class).
+    pub const override_without_base: u32 = 4112;
     /// `override` was used but the base class has no matching member.
     pub const override_not_in_base: u32 = 4113;
     /// Spelling-suggestion variant of TS4113: an `override` member is
@@ -7049,7 +7053,7 @@ pub const Checker = struct {
             }
             if (nk == .object_pattern and pp.type_annotation != hir_mod.none_node_id) {
                 const param_t = self.hir.typeOf(p);
-                if (param_t != types.Primitive.none) try self.checkObjectBindingPatternAgainstType(pp.name, param_t);
+                if (param_t != types.Primitive.none) try self.checkObjectBindingPatternAgainstType(pp.name, param_t, true);
             }
         }
     }
@@ -7496,7 +7500,7 @@ pub const Checker = struct {
         try self.report(node, code, msg);
     }
 
-    fn checkObjectBindingPatternAgainstType(self: *Checker, pattern_node: NodeId, container_t: TypeId) CheckError!void {
+    fn checkObjectBindingPatternAgainstType(self: *Checker, pattern_node: NodeId, container_t: TypeId, check_defaults: bool) CheckError!void {
         if (container_t == types.Primitive.any or container_t == types.Primitive.unknown) return;
         // Destructuring against `null` / `undefined` — tsc emits
         // TS2339 ("Property 'x' does not exist on type 'null'.") per
@@ -7536,7 +7540,7 @@ pub const Checker = struct {
                 // `optionalBindingParameters2` and
                 // `optionalBindingParametersInOverloads2`.
                 if (member == types.Primitive.undefined_t or member == types.Primitive.null_t) continue;
-                try self.checkObjectBindingPatternAgainstType(pattern_node, member);
+                try self.checkObjectBindingPatternAgainstType(pattern_node, member, check_defaults);
             }
             return;
         }
@@ -7556,9 +7560,11 @@ pub const Checker = struct {
             }
             const key_name = (try self.objectBindingElementKeyName(e, ep.name)) orelse continue;
             if (self.interner.objectMemberInfo(container_t, key_name)) |member| {
-                _ = member;
-                if (ep.default_value != hir_mod.none_node_id) {
-                    _ = try self.checkExpression(ep.default_value);
+                const default_value = if (ep.flags.is_computed_binding_key) hir_mod.none_node_id else ep.default_value;
+                if (check_defaults) {
+                    try self.checkBindingTargetAgainstElementType(ep.name, default_value, member.type);
+                } else if (default_value != hir_mod.none_node_id) {
+                    _ = try self.checkExpression(default_value);
                 }
                 continue;
             }
@@ -7591,6 +7597,74 @@ pub const Checker = struct {
                 .message = msg,
             });
         }
+    }
+
+    fn checkBindingTargetAgainstElementType(
+        self: *Checker,
+        target_node: NodeId,
+        default_node: NodeId,
+        target_t: TypeId,
+    ) CheckError!void {
+        if (target_t == types.Primitive.none or
+            target_t == types.Primitive.any or
+            target_t == types.Primitive.unknown)
+        {
+            return;
+        }
+
+        var target = target_node;
+        var default_value = default_node;
+        if (target != hir_mod.none_node_id and self.hir.kindOf(target) == .assignment) {
+            const a = hir_mod.assignmentOf(self.hir, target);
+            target = a.target;
+            if (default_value == hir_mod.none_node_id) default_value = a.value;
+        }
+
+        if (default_value != hir_mod.none_node_id) {
+            try self.checkBindingDefaultAssignableToType(default_value, target_t);
+        }
+
+        if (target == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(target)) {
+            .object_pattern => try self.checkObjectBindingPatternAgainstType(target, target_t, true),
+            .array_pattern => try self.checkArrayBindingPatternAgainstType(target, target_t),
+            else => {},
+        }
+    }
+
+    fn checkBindingDefaultAssignableToType(self: *Checker, default_node: NodeId, target_t: TypeId) CheckError!void {
+        if (target_t == types.Primitive.none or
+            target_t == types.Primitive.any or
+            target_t == types.Primitive.unknown)
+        {
+            _ = try self.checkExpression(default_node);
+            return;
+        }
+
+        if (self.hir.kindOf(default_node) == .array_literal) {
+            const elem_t = try self.contextualArrayElementType(target_t);
+            if (elem_t != types.Primitive.none and
+                elem_t != types.Primitive.any and
+                elem_t != types.Primitive.unknown)
+            {
+                for (hir_mod.arrayLiteralElements(self.hir, default_node)) |el| {
+                    if (el == hir_mod.none_node_id or self.hir.kindOf(el) == .spread) continue;
+                    if (try self.literalExpressionAssignableToTarget(el, elem_t)) continue;
+                    const el_t = if (self.hir.typeOf(el) != types.Primitive.none)
+                        self.hir.typeOf(el)
+                    else
+                        try self.checkExpression(el);
+                    if (self.engine.isAssignableTo(el_t, elem_t) catch false) continue;
+                    try self.reportTypeNotAssignable(el, el_t, elem_t, "Type is not assignable to array element type.");
+                }
+                return;
+            }
+        }
+
+        const default_t = try self.checkExpression(default_node);
+        if (try self.literalExpressionAssignableToTarget(default_node, target_t)) return;
+        if (self.engine.isAssignableTo(default_t, target_t) catch false) return;
+        try self.reportTypeNotAssignable(default_node, default_t, target_t, "Type is not assignable to binding element type.");
     }
 
     /// Walk an object binding pattern's declared properties and
@@ -7774,7 +7848,7 @@ pub const Checker = struct {
             const ep = hir_mod.parameterOf(self.hir, e);
             if (!ep.flags.is_rest or ep.name == hir_mod.none_node_id) continue;
             if (self.hir.kindOf(ep.name) == .object_pattern) {
-                try self.checkObjectBindingPatternAgainstType(ep.name, rest_array_t);
+                try self.checkObjectBindingPatternAgainstType(ep.name, rest_array_t, false);
             }
         }
     }
@@ -11695,6 +11769,14 @@ pub const Checker = struct {
             (self.classExtendsStaticType(c.extends) catch null) orelse types.Primitive.any
         else
             null;
+        const no_extends_class_name: ?[]const u8 = if (c.extends == hir_mod.none_node_id)
+            if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier)
+                self.string_interner.get(hir_mod.identifierOf(self.hir, c.name).name)
+            else
+                "(Anonymous class)"
+        else
+            null;
+        const override_base_class_name = self.overrideBaseClassDiagnosticNameFromExtends(c.extends);
         var instance_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer instance_members.deinit(self.gpa);
         var static_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
@@ -11952,7 +12034,7 @@ pub const Checker = struct {
                                 // Mirrors `propertyOverridesAccessors5`.
                                 try self.checkPropertyOverridesAccessor(pp.name, parent_class_name, pid.name);
                             }
-                            try self.checkOverrideModifier(param_node, parent_instance_t, pid.name, pp.flags.is_override, true);
+                            try self.checkOverrideModifierWithContext(param_node, parent_instance_t, pid.name, pp.flags.is_override, true, no_extends_class_name, override_base_class_name);
                         }
                         if (!self.constructorHasBindingPatternParameterProperty(m)) {
                             try self.collectConstructorThisAssignments(m, parent_instance_t, &instance_members);
@@ -12050,7 +12132,7 @@ pub const Checker = struct {
                     // to concrete implementations, not declaration-only
                     // shapes. Mirrors `override3.ts(7,5)` baseline.
                     if (!self.declarationLineHasDeclare(node)) {
-                        try self.checkOverrideModifier(m, if (fn_p.flags.is_static) parent_static_t else parent_instance_t, member_name, fn_p.flags.is_override, false);
+                        try self.checkOverrideModifierWithContext(m, if (fn_p.flags.is_static) parent_static_t else parent_instance_t, member_name, fn_p.flags.is_override, false, no_extends_class_name, override_base_class_name);
                     }
                     if (fn_p.flags.is_private) try private_names.put(self.gpa, member_name, {});
                     if (fn_p.flags.is_protected) try protected_names.put(self.gpa, member_name, {});
@@ -12404,7 +12486,7 @@ pub const Checker = struct {
                     if (op.is_static) {
                         try static_names.put(self.gpa, member_name, m);
                     }
-                    try self.checkOverrideModifier(m, if (op.is_static) parent_static_t else parent_instance_t, member_name, op.is_override, false);
+                    try self.checkOverrideModifierWithContext(m, if (op.is_static) parent_static_t else parent_instance_t, member_name, op.is_override, false, no_extends_class_name, override_base_class_name);
                     if (op.visibility == .private) try private_names.put(self.gpa, member_name, {});
                     if (op.visibility == .protected) try protected_names.put(self.gpa, member_name, {});
                     if (op.is_static) {
@@ -14458,6 +14540,30 @@ pub const Checker = struct {
         has_override: bool,
         is_parameter_property: bool,
     ) CheckError!void {
+        try self.checkOverrideModifierWithContext(node, parent_t, name, has_override, is_parameter_property, null, null);
+    }
+
+    fn overrideBaseClassDiagnosticNameFromExtends(self: *Checker, extends_node: NodeId) ?[]const u8 {
+        if (extends_node == hir_mod.none_node_id) return null;
+        const k = self.hir.kindOf(extends_node);
+        if (k != .class_decl and k != .class_expr) return null;
+        const c = hir_mod.classOf(self.hir, extends_node);
+        if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
+            return self.string_interner.get(hir_mod.identifierOf(self.hir, c.name).name);
+        }
+        return "(Anonymous class)";
+    }
+
+    fn checkOverrideModifierWithContext(
+        self: *Checker,
+        node: NodeId,
+        parent_t: ?TypeId,
+        name: hir_mod.StringId,
+        has_override: bool,
+        is_parameter_property: bool,
+        containing_class_name_when_no_extends: ?[]const u8,
+        base_class_name_from_extends: ?[]const u8,
+    ) CheckError!void {
         const has_base = self.baseClassHasMember(parent_t, name);
         const has_jsdoc_override = !has_override and !is_parameter_property and
             self.sourceHasCheckJsDirective() and self.leadingJsDocHasOverride(node);
@@ -14466,9 +14572,24 @@ pub const Checker = struct {
         // / `override5.ts` baselines.
         const base_name_opt: ?[]const u8 = blk: {
             const pt = parent_t orelse break :blk null;
-            break :blk (self.simpleDiagnosticTypeName(pt) catch null) orelse null;
+            break :blk (self.simpleDiagnosticTypeName(pt) catch null) orelse base_class_name_from_extends;
         };
         if ((has_override or has_jsdoc_override) and !has_base) {
+            if (containing_class_name_when_no_extends) |cls_name| {
+                if (!has_jsdoc_override) {
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "This member cannot have an 'override' modifier because its containing class '{s}' does not extend another class.",
+                        .{cls_name},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = node,
+                        .code = TsCodes.override_without_base,
+                        .message = msg,
+                    });
+                    return;
+                }
+            }
             const member_name = self.string_interner.get(name);
             const suggestion = self.closestBaseClassMemberName(parent_t, member_name);
             if (base_name_opt) |bn| {
@@ -25833,7 +25954,7 @@ pub const Checker = struct {
                 try self.checkBindingPatternDefaultReferences(v.name, .variable);
             }
             if (nk == .object_pattern and v.init != hir_mod.none_node_id) {
-                try self.checkObjectBindingPatternAgainstType(v.name, final_type);
+                try self.checkObjectBindingPatternAgainstType(v.name, final_type, declared_type != types.Primitive.none);
                 if (self.hir.kindOf(v.init) == .object_literal) {
                     const expected_t = try self.objectBindingPatternExpectedType(v.name, false, true);
                     if (expected_t != types.Primitive.none) try self.checkExcessProperties(v.init, expected_t);
@@ -52781,6 +52902,46 @@ test "checker: override modifier rejects members absent from base class" {
     try T.expect(found);
 }
 
+test "checker: override modifier without extends emits TS4112" {
+    const s = try newSetup(
+        \\class C { override m(): void {} }
+        \\const D = class { override p: number = 1; };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var named = false;
+    var anonymous = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.override_without_base) continue;
+        if (std.mem.indexOf(u8, d.message, "containing class 'C'") != null) named = true;
+        if (std.mem.indexOf(u8, d.message, "containing class '(Anonymous class)'") != null) anonymous = true;
+    }
+    try T.expect(named);
+    try T.expect(anonymous);
+}
+
+test "checker: anonymous base class override diagnostics render anonymous base name" {
+    const s = try newSetup(
+        \\class B extends class { m(): void {} } {
+        \\  m(): void {}
+        \\  override n(): void {}
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_override = true });
+    try s.checker.checkSourceFile(s.root);
+    var missing = false;
+    var absent = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.missing_override and d.code != TsCodes.override_not_in_base) continue;
+        try T.expect(std.mem.indexOf(u8, d.message, "(Anonymous class)") != null);
+        if (std.mem.indexOf(u8, d.message, "overrides a member in the base class '(Anonymous class)'.") != null) missing = true;
+        if (std.mem.indexOf(u8, d.message, "not declared in the base class '(Anonymous class)'.") != null) absent = true;
+    }
+    try T.expect(missing);
+    try T.expect(absent);
+}
+
 test "checker: override typo emits TS4117 with spelling suggestion" {
     const s = try newSetup(
         \\class A { doSomething() {} }
@@ -60573,6 +60734,20 @@ test "checker: object binding defaults are not checked against existing literal 
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: object binding defaults are checked against declared member type" {
+    const s = try newSetup(
+        \\var { h: { h1 = [undefined, null] } }: { h: { h1: number[] } } = { h: { h1: [1, 2] } };
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var found: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found += 1;
+    }
+    try T.expectEqual(@as(usize, 2), found);
 }
 
 test "checker: object literal property expression can satisfy literal property target" {
