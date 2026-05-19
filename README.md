@@ -65,14 +65,17 @@ upstream source that produces it.
 > are regression-gated on every PR; Bun port % is file-count progress
 > and grows with each `packages/runtime/src/**` landing.
 
-**Detailed breakdowns** (the README is the at-a-glance view; these
-pages have the per-feature / per-category drill-down):
+**Detailed per-feature breakdowns** (the README is the at-a-glance
+view; these are the drill-down pages — modeled after Bun's
+[Node.js compatibility doc](https://bun.com/docs/runtime/nodejs-apis)):
 
-- [`docs/TS_PARITY_PLAN.md`](./docs/TS_PARITY_PLAN.md) — TypeScript parity plan + dated journal entries
-- [`docs/CONFORMANCE_CATEGORIES.md`](./docs/CONFORMANCE_CATEGORIES.md) — per-category TS conformance breakdown
+- [`docs/PARITY-TYPESCRIPT.md`](./docs/PARITY-TYPESCRIPT.md) — every TypeScript feature with 🟢 / 🟡 / 🔴 status
+- [`docs/PARITY-NODE.md`](./docs/PARITY-NODE.md) — every `node:*` module with 🟢 / 🟡 / 🔴 / ❌ status
+- [`docs/PARITY-BUN.md`](./docs/PARITY-BUN.md) — every Bun API + phase-by-phase port status
 - [`docs/CAPABILITY_MATRIX.md`](./docs/CAPABILITY_MATRIX.md) — full language / codegen / tooling / stdlib matrix
+- [`docs/TS_PARITY_PLAN.md`](./docs/TS_PARITY_PLAN.md) — parity plan + dated journal entries
+- [`docs/CONFORMANCE_CATEGORIES.md`](./docs/CONFORMANCE_CATEGORIES.md) — per-category TS conformance breakdown
 - [`packages/runtime/PORT_AUDIT_2026-05-18.md`](./packages/runtime/PORT_AUDIT_2026-05-18.md) — Bun runtime port audit (1,193 upstream files, tier-classified)
-- [`packages/ts_lsp_server/src/ts_lsp_server.zig`](./packages/ts_lsp_server/src/ts_lsp_server.zig) — canonical `SUPPORTED_METHODS` list (LSP wire surface)
 
 ### Headline numbers
 
