@@ -4670,8 +4670,9 @@ pub const Checker = struct {
 
     fn checkNamespaceValueDecl(self: *Checker, node: NodeId) CheckError!void {
         const v = hir_mod.varDeclOf(self.hir, node);
+        var declared_type = self.hir.typeOf(node);
         if (v.type_annotation != hir_mod.none_node_id and self.hir.typeOf(node) == types.Primitive.none) {
-            const declared_type = if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier)
+            declared_type = if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier)
                 try self.lowerValueTypeAnnotation(hir_mod.identifierOf(self.hir, v.name).name, v.type_annotation)
             else
                 try self.lowererLowerWithTypeParams(v.type_annotation);
@@ -4696,7 +4697,13 @@ pub const Checker = struct {
             return;
         }
         const init_t = try self.checkExpression(v.init);
-        if (self.hir.typeOf(node) == types.Primitive.none) {
+        if (declared_type != types.Primitive.none) {
+            const ok = self.engine.isAssignableTo(init_t, declared_type) catch return error.OutOfMemory;
+            if (!ok) {
+                const diag_node = if (v.name != hir_mod.none_node_id) v.name else node;
+                try self.reportTypeNotAssignable(diag_node, init_t, declared_type, "Type is not assignable to declared type.");
+            }
+        } else if (self.hir.typeOf(node) == types.Primitive.none) {
             self.hir.setType(node, init_t);
             if (v.name != hir_mod.none_node_id) self.hir.setType(v.name, init_t);
         }
@@ -58654,6 +58661,27 @@ test "checker: namespace var in control-flow condition does not emit TS2454" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.used_before_assignment);
     }
+}
+
+test "checker: namespace var initializer is checked against annotation" {
+    const s = try newSetup(
+        \\namespace N {
+        \\  interface I { id: number }
+        \\  var xs: I[] = null;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable and
+            std.mem.indexOf(u8, d.message, "Type 'null' is not assignable to type 'I[]'.") != null)
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
 }
 
 test "checker: typed var plain read is not eagerly marked unassigned" {
