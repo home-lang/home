@@ -720,7 +720,6 @@ pub fn compileSource(
             .line = d.line,
             .code = d.code,
             .message = try gpa.dupe(u8, d.message),
-            .span_len = d.span_len,
         });
         c.has_errors = true;
     }
@@ -841,7 +840,7 @@ pub fn compileSource(
     }
     const suppress_js_check_diagnostics = options.suppress_js_check_diagnostics or sourceIsUncheckedJs(source);
     for (checker.diagnostics.items) |d| {
-        if (suppress_js_check_diagnostics and !checkerDiagnosticSurfacesInUncheckedJs(d.code, source)) continue;
+        if (suppress_js_check_diagnostics and !checkerDiagnosticSurfacesInUncheckedJs(d.code, d.message, source)) continue;
         const diag_pos = d.pos orelse c.hir.spanOf(d.node).start;
         const diag_span_len = diagnosticSpanLen(&c.hir, d.node, diag_pos);
 
@@ -1134,8 +1133,9 @@ fn sourceExplicitlyDisablesCheckJs(source: []const u8) bool {
     return !v;
 }
 
-fn checkerDiagnosticSurfacesInUncheckedJs(code: u32, source: []const u8) bool {
+fn checkerDiagnosticSurfacesInUncheckedJs(code: u32, message: []const u8, source: []const u8) bool {
     if (code == ts_checker.check.TsCodes.private_name_not_declared) return true;
+    if (code == ts_checker.check.TsCodes.property_does_not_exist and std.mem.indexOf(u8, message, "'#") != null) return true;
     if (code == ts_checker.check.TsCodes.await_only_in_async) return true;
     // TS8037 — "Type satisfaction expressions can only be used in
     // TypeScript files." ALWAYS surfaces in JS files (with or without
@@ -1409,7 +1409,7 @@ test "driver: unchecked allowJs still surfaces JS grammar diagnostics" {
     var found_private = false;
     for (c.diagnostics.items) |d| {
         if (d.code == 1308) found_await = true;
-        if (d.code == 1111) found_private = true;
+        if (d.code == ts_checker.check.TsCodes.property_does_not_exist) found_private = true;
     }
     try T.expect(found_await);
     try T.expect(found_private);
