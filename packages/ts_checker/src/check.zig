@@ -27306,7 +27306,24 @@ pub const Checker = struct {
                 if (self.hir.kindOf(sp.expression) == .array_literal) {
                     try self.checkArrayDestructuringAssignment(sp.expression, source_t, source_node, source_offset + i);
                 } else if (self.hir.kindOf(sp.expression) == .object_literal) {
-                    try self.checkObjectDestructuringAssignment(sp.expression, rest_source_t, hir_mod.none_node_id);
+                    // When the rest-target is an object pattern over a
+                    // tuple source (e.g. `[...{ 0: a, b }] = tuple`),
+                    // tsc indexes the source object directly so any
+                    // TS2339 it raises reports the tuple type, not its
+                    // array widening. Skip the widening only when the
+                    // rest starts at offset 0 — for a non-zero offset
+                    // we'd need a tuple-slice helper to preserve shape.
+                    // Mirrors `restElementWithAssignmentPattern4`.
+                    const object_rest_t = blk: {
+                        if (source_offset + i != 0) break :blk rest_source_t;
+                        if (source_t == types.Primitive.none) break :blk rest_source_t;
+                        if (source_t >= self.interner.pool.typeCount()) break :blk rest_source_t;
+                        const flags = self.interner.pool.flagsOf(source_t);
+                        if (flags.is_tuple) break :blk source_t;
+                        if (flags.is_object_type and self.fixedTupleLength(source_t) != null) break :blk source_t;
+                        break :blk rest_source_t;
+                    };
+                    try self.checkObjectDestructuringAssignment(sp.expression, object_rest_t, hir_mod.none_node_id);
                 } else {
                     try self.checkDestructuringAssignmentTarget(sp.expression, rest_source_t);
                 }
