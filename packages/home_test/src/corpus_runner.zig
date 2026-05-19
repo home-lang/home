@@ -69,6 +69,7 @@ pub const minimal_js_files = [_][]const u8{
     "cli/test/expectations.test.ts",
     "regression/issue/prepare-stack-trace-crash.test.ts",
     "js/bun/test/nested-describes.test.ts",
+    "regression/issue/issue-12276.test.ts",
 };
 
 const prelude =
@@ -224,6 +225,20 @@ const prelude =
     \\    },
     \\    toThrowError(expected) {
     \\      return this.toThrow(expected);
+    \\    },
+    \\    toIncludeRepeated(needle, expectedCount) {
+    \\      const haystack = String(value);
+    \\      const search = String(needle);
+    \\      if (search.length === 0) __home_fail("toIncludeRepeated() requires a non-empty search string");
+    \\      let count = 0;
+    \\      let index = 0;
+    \\      while (true) {
+    \\        const found = haystack.indexOf(search, index);
+    \\        if (found === -1) break;
+    \\        count++;
+    \\        index = found + search.length;
+    \\      }
+    \\      __home_assert(count === expectedCount, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to include " + __home_format(needle) + " " + String(expectedCount) + " times");
     \\    }
     \\  };
     \\  return expectation;
@@ -733,6 +748,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("cli/test/expectations.test.ts", filesForSubset(.minimal_js)[13]);
     try std.testing.expectEqualStrings("regression/issue/prepare-stack-trace-crash.test.ts", filesForSubset(.minimal_js)[14]);
     try std.testing.expectEqualStrings("js/bun/test/nested-describes.test.ts", filesForSubset(.minimal_js)[15]);
+    try std.testing.expectEqualStrings("regression/issue/issue-12276.test.ts", filesForSubset(.minimal_js)[16]);
 }
 
 test "Bun test import rewrite installs the bootstrap prelude" {
@@ -747,6 +763,7 @@ test "Bun test import rewrite installs the bootstrap prelude" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "function __home_is_thenable(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeInstanceOf(ctor)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeUndefined()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "toIncludeRepeated(needle, expectedCount)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "globalThis.__home_bun_test") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "Error.prepareStackTrace") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
