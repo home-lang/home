@@ -19244,17 +19244,71 @@ pub const Checker = struct {
                 if (private_name == null) continue;
                 for (child_members) |child| {
                     if (child.name != private_name.?) continue;
-                    try self.report(iface_node, TsCodes.interface_incorrectly_extends, "Interface incorrectly extends class with private or protected member.");
+                    try self.reportInterfaceIncorrectlyExtendsInterface(iface_node, extends_node);
                     return;
                 }
             }
             for (child_members) |child| {
                 if (self.classSourceHasPrivateOrProtectedMember(decl, child.name)) {
-                    try self.report(iface_node, TsCodes.interface_incorrectly_extends, "Interface incorrectly extends class with private or protected member.");
+                    try self.reportInterfaceIncorrectlyExtendsInterface(iface_node, extends_node);
                     return;
                 }
             }
         }
+    }
+
+    /// Emit canonical TS2430 `Interface 'X' incorrectly extends
+    /// interface 'Y'.` anchored at the *child* interface name. The
+    /// inherited prose (`Interface incorrectly extends class with
+    /// private or protected member.`) is dropped in favour of the
+    /// shape upstream tsc renders for these fixtures.
+    fn reportInterfaceIncorrectlyExtendsInterface(
+        self: *Checker,
+        iface_node: NodeId,
+        extends_node: NodeId,
+    ) CheckError!void {
+        const iface_name_id = self.declarationName(iface_node) orelse {
+            try self.report(iface_node, TsCodes.interface_incorrectly_extends, "Interface incorrectly extends class with private or protected member.");
+            return;
+        };
+        const base_name_id = self.unqualifiedTypeRefName(extends_node) orelse {
+            try self.report(iface_node, TsCodes.interface_incorrectly_extends, "Interface incorrectly extends class with private or protected member.");
+            return;
+        };
+        // Format `<Name>[<Type, Params>]` for the child interface using
+        // its declared type-parameter names.
+        const it = hir_mod.interfaceOf(self.hir, iface_node);
+        const tp_nodes = self.hir.childSlice(it.type_params_start, it.type_params_len);
+        var child_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer child_buf.deinit(self.diag_arena.allocator());
+        try child_buf.appendSlice(self.diag_arena.allocator(), self.string_interner.get(iface_name_id));
+        if (tp_nodes.len > 0) {
+            try child_buf.append(self.diag_arena.allocator(), '<');
+            var first_tp = true;
+            for (tp_nodes) |tp_node| {
+                if (self.hir.kindOf(tp_node) != .type_parameter) continue;
+                const tp = hir_mod.typeParameterOf(self.hir, tp_node);
+                if (!first_tp) try child_buf.appendSlice(self.diag_arena.allocator(), ", ");
+                try child_buf.appendSlice(self.diag_arena.allocator(), self.string_interner.get(tp.name));
+                first_tp = false;
+            }
+            try child_buf.append(self.diag_arena.allocator(), '>');
+        }
+        // Base name: render the full source-text of the extends clause
+        // when available (so generic argument lists like `Base<T>` come
+        // through verbatim); fall back to the unqualified name.
+        const base_src = self.nodeSourceTextOrEmpty(extends_node);
+        const base_str: []const u8 = if (base_src.len > 0)
+            base_src
+        else
+            self.string_interner.get(base_name_id);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Interface '{s}' incorrectly extends interface '{s}'.",
+            .{ child_buf.items, base_str },
+        );
+        const name_pos = self.declarationNameSpanStart(iface_node);
+        try self.reportAt(iface_node, name_pos, TsCodes.interface_incorrectly_extends, msg);
     }
 
     fn privateOrProtectedClassMemberName(self: *Checker, member: NodeId) CheckError!?hir_mod.StringId {
