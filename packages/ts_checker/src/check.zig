@@ -22943,6 +22943,13 @@ pub const Checker = struct {
         });
     }
 
+    fn reportTypeAliasCircularOnce(self: *Checker, name_node: NodeId, name_id: hir_mod.StringId) CheckError!void {
+        for (self.diagnostics.items) |d| {
+            if (d.node == name_node and d.code == TsCodes.type_alias_circular) return;
+        }
+        try self.reportTypeAliasCircular(name_node, name_id);
+    }
+
     /// True when an earlier `var/let/const <name>` declaration exists
     /// in the same enclosing block as `node` (and same virtual section
     /// when multi-file fixtures are in play). Used to suppress TS2502
@@ -25628,8 +25635,12 @@ pub const Checker = struct {
         }
         for (qualifiers[1..]) |q| try full_path.append(self.gpa, q);
         if (full_path.items.len == 0) return null;
-        const specifier = self.localImportModuleSpecifier(full_path.items[0], type_node) orelse return null;
-        return try self.virtualRelativeModuleExportType(type_node, specifier, full_path.items[1..], leaf_name);
+        const import_info = self.localImportModuleInfo(full_path.items[0], type_node) orelse return null;
+        const namespace_path = if (import_info.exported_root) |exported_root| blk: {
+            full_path.items[0] = exported_root;
+            break :blk full_path.items;
+        } else full_path.items[1..];
+        return try self.virtualRelativeModuleExportType(type_node, import_info.specifier, namespace_path, leaf_name);
     }
 
     fn appendImportEqualsNamespacePathForLocal(
@@ -25673,22 +25684,44 @@ pub const Checker = struct {
         return false;
     }
 
-    fn localImportModuleSpecifier(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) ?hir_mod.StringId {
+    const LocalImportModuleInfo = struct {
+        specifier: hir_mod.StringId,
+        /// `import { exported as local } from "./m"` binds an exported
+        /// member of the target module, so `local.X` must resolve
+        /// through the target's exported root. `import * as ns` binds
+        /// the module namespace object itself, so the local name is not
+        /// part of the exported path.
+        exported_root: ?hir_mod.StringId = null,
+    };
+
+    fn localImportModuleInfo(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) ?LocalImportModuleInfo {
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const has_sections = self.sourceHasVirtualFilenameSections();
+        const anchor_section = if (has_sections) self.virtualSectionStartForNode(anchor) else 0;
         for (hir_mod.blockStmts(self.hir, root)) |stmt| {
             if (self.hir.kindOf(stmt) != .import_decl) continue;
+            if (has_sections and self.virtualSectionStartForNode(stmt) != anchor_section) continue;
             const imp = hir_mod.importOf(self.hir, stmt);
             const spec = self.string_interner.get(imp.module);
             if (spec.len == 0) continue;
-            const binding = if (imp.namespace_binding != hir_mod.none_node_id)
-                imp.namespace_binding
-            else if (imp.default_binding != hir_mod.none_node_id and std.mem.startsWith(u8, spec, ".") and self.importDeclIsRequireAssignment(stmt))
-                imp.default_binding
-            else
-                hir_mod.none_node_id;
-            if (binding == hir_mod.none_node_id or self.hir.kindOf(binding) != .identifier) continue;
-            if (hir_mod.identifierOf(self.hir, binding).name == local_name) return imp.module;
+            if (imp.namespace_binding != hir_mod.none_node_id and self.hir.kindOf(imp.namespace_binding) == .identifier and
+                hir_mod.identifierOf(self.hir, imp.namespace_binding).name == local_name)
+            {
+                return .{ .specifier = imp.module };
+            }
+            if (imp.default_binding != hir_mod.none_node_id and std.mem.startsWith(u8, spec, ".") and self.importDeclIsRequireAssignment(stmt) and
+                self.hir.kindOf(imp.default_binding) == .identifier and
+                hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name)
+            {
+                return .{ .specifier = imp.module };
+            }
+            for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
+                if (self.hir.kindOf(spec_node) != .import_specifier) continue;
+                const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
+                if (sp.local != local_name) continue;
+                return .{ .specifier = imp.module, .exported_root = sp.imported };
+            }
         }
         return null;
     }
@@ -25750,6 +25783,20 @@ pub const Checker = struct {
         const t = self.hir.typeOf(decl);
         if (t != types.Primitive.none and t != types.Primitive.unknown) return t;
         if (self.resolving_exported_type_decls.contains(decl)) {
+            var resolving_it = self.resolving_exported_type_decls.keyIterator();
+            while (resolving_it.next()) |active_decl| {
+                if (self.hir.kindOf(active_decl.*) != .type_alias_decl) continue;
+                const active_ta = hir_mod.typeAliasOf(self.hir, active_decl.*);
+                if (active_ta.name != hir_mod.none_node_id and self.hir.kindOf(active_ta.name) == .identifier) {
+                    try self.reportTypeAliasCircularOnce(active_ta.name, hir_mod.identifierOf(self.hir, active_ta.name).name);
+                }
+            }
+            if (self.hir.kindOf(decl) == .type_alias_decl) {
+                const ta = hir_mod.typeAliasOf(self.hir, decl);
+                if (ta.name != hir_mod.none_node_id and self.hir.kindOf(ta.name) == .identifier) {
+                    try self.reportTypeAliasCircularOnce(ta.name, hir_mod.identifierOf(self.hir, ta.name).name);
+                }
+            }
             if (self.class_instance_types.get(name)) |ct| return ct;
             return types.Primitive.any;
         }
@@ -76876,6 +76923,38 @@ test "checker: 'import type X' makes X valid as qualified type-ref root" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_namespace);
     }
+}
+
+test "checker: named import type namespace cycles report TS2456 on both aliases" {
+    // Mirrors conformance `externalModules/typeOnly/circular4`: named
+    // `import type { ns }` binds an exported namespace, not the module
+    // namespace object. The qualified path must keep that imported
+    // namespace segment so the cross-file `ns1.nested.T` /
+    // `ns2.nested.T` cycle is diagnosed instead of recursing through
+    // virtual module resolution.
+    const b = try newBoundSetup(
+        \\// @Filename: /a.ts
+        \\import type { ns2 } from './b';
+        \\export namespace ns1 {
+        \\  export namespace nested {
+        \\    export type T = ns2.nested.T;
+        \\  }
+        \\}
+        \\// @Filename: /b.ts
+        \\import type { ns1 } from './a';
+        \\export namespace ns2 {
+        \\  export namespace nested {
+        \\    export type T = ns1.nested.T;
+        \\  }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var circular_count: u32 = 0;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_alias_circular) circular_count += 1;
+    }
+    try T.expectEqual(@as(u32, 2), circular_count);
 }
 
 test "checker: relative import with external resolver and no virtual sections still emits TS2307" {
