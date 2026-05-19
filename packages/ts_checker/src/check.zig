@@ -207,6 +207,14 @@ pub const TsCodes = struct {
     /// `superCallBeforeThisAccessing4`.
     pub const super_call_when_extends_null: u32 = 17005;
     pub const super_before_super_call: u32 = 17011;
+    /// TS17009 — `'super' must be called before accessing 'this' in the
+    /// constructor of a derived class.` Fires when `this` or `this.foo`
+    /// appears textually before the first `super(...)` call in a derived
+    /// class's constructor body. Walked syntactically — `this` references
+    /// nested inside arrow/function/object-literal expressions in
+    /// argument position of `super(...)` itself still fire, mirroring
+    /// upstream's pre-super-flow-node rule.
+    pub const this_before_super_in_derived_ctor: u32 = 17009;
     /// TS2340 — `Only public and protected methods of the base class
     /// are accessible via the 'super' keyword.` Fires for `super.X`
     /// where X is a data property (not a method) on the base class,
@@ -13382,6 +13390,25 @@ pub const Checker = struct {
                     self.hir.kindOf(c.extends) != .literal_null)
                 {
                     try self.report(m, TsCodes.derived_constructor_missing_super, "Constructors for derived classes must contain a 'super' call.");
+                }
+                // TS17009 — `this` accessed before super in a derived
+                // class constructor. Only emit when the class has a real
+                // `extends` clause AND the body actually contains a
+                // super call (so we don't double-fire with TS2377), and
+                // skip `extends null` (upstream skips via
+                // `classDeclarationExtendsNull`, which suppresses the
+                // pre-super flow check entirely — fixture
+                // `superCallBeforeThisAccessing4`).
+                if (c.extends != hir_mod.none_node_id and fn_p.flags.is_constructor and
+                    fn_p.body != hir_mod.none_node_id and
+                    self.hir.kindOf(c.extends) != .literal_null and
+                    self.expressionContainsSuperCall(fn_p.body))
+                {
+                    var found_super = false;
+                    const bad_this = self.findThisBeforeSuperInCtor(fn_p.body, &found_super);
+                    if (bad_this != hir_mod.none_node_id) {
+                        try self.report(bad_this, TsCodes.this_before_super_in_derived_ctor, "'super' must be called before accessing 'this' in the constructor of a derived class.");
+                    }
                 }
                 self.popNarrowScope();
                 self.narrow_lookup_floor = old_floor;
@@ -37998,6 +38025,241 @@ pub const Checker = struct {
                 return false;
             },
             else => return false,
+        }
+    }
+
+    /// TS17009 helper — walk a derived-class constructor body looking
+    /// for the first `this`-access (`this` or `this.x` / `this[x]`) that
+    /// appears textually before the first `super(...)` call. Skips into
+    /// nested function/arrow/method bodies because they may run after
+    /// the super call returns. Returns the offending `this_expr` node
+    /// when found, `none_node_id` otherwise. The first super call short-
+    /// circuits the walk: callers receive `none_node_id` and avoid
+    /// emitting TS17009 for any `this` ref appearing AFTER that point.
+    ///
+    /// Note on argument lists: upstream considers `this` referenced in
+    /// the super call's own argument list (e.g. `super(this)`) to also
+    /// fire, because the argument is evaluated BEFORE control "enters"
+    /// the super constructor. The walker handles that by inspecting
+    /// each call argument before recognizing the call as a super call.
+    fn findThisBeforeSuperInCtor(self: *Checker, node: NodeId, found_super: *bool) NodeId {
+        if (node == hir_mod.none_node_id) return hir_mod.none_node_id;
+        if (found_super.*) return hir_mod.none_node_id;
+        switch (self.hir.kindOf(node)) {
+            .this_expr => return node,
+            .super_expr => return hir_mod.none_node_id,
+            // The parser lowers both `this` and `super` keywords to
+            // `.identifier` nodes (see `kw_this`/`kw_super` branches in
+            // `parsePrimaryExpression`). Recognize the textual name to
+            // match upstream's pre-super `this` rule.
+            .identifier => {
+                const id = hir_mod.identifierOf(self.hir, node);
+                const name = self.string_interner.get(id.name);
+                if (std.mem.eql(u8, name, "this")) return node;
+                if (std.mem.eql(u8, name, "super")) return hir_mod.none_node_id;
+                return hir_mod.none_node_id;
+            },
+            .fn_decl, .fn_expr, .arrow_fn => return hir_mod.none_node_id,
+            .class_decl, .class_expr => return hir_mod.none_node_id,
+            .block_stmt => {
+                for (hir_mod.blockStmts(self.hir, node)) |stmt| {
+                    const r = self.findThisBeforeSuperInCtor(stmt, found_super);
+                    if (r != hir_mod.none_node_id) return r;
+                    if (found_super.*) return hir_mod.none_node_id;
+                }
+                return hir_mod.none_node_id;
+            },
+            .var_decl, .let_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, node);
+                return self.findThisBeforeSuperInCtor(v.init, found_super);
+            },
+            .return_stmt => return self.findThisBeforeSuperInCtor(hir_mod.returnOf(self.hir, node).value, found_super),
+            .throw_stmt => return self.findThisBeforeSuperInCtor(hir_mod.throwOf(self.hir, node).value, found_super),
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                const r1 = self.findThisBeforeSuperInCtor(i.cond, found_super);
+                if (r1 != hir_mod.none_node_id) return r1;
+                if (found_super.*) return hir_mod.none_node_id;
+                const r2 = self.findThisBeforeSuperInCtor(i.then_branch, found_super);
+                if (r2 != hir_mod.none_node_id) return r2;
+                if (found_super.*) return hir_mod.none_node_id;
+                return self.findThisBeforeSuperInCtor(i.else_branch, found_super);
+            },
+            .while_stmt => {
+                const w = hir_mod.whileOf(self.hir, node);
+                const r1 = self.findThisBeforeSuperInCtor(w.cond, found_super);
+                if (r1 != hir_mod.none_node_id) return r1;
+                if (found_super.*) return hir_mod.none_node_id;
+                return self.findThisBeforeSuperInCtor(w.body, found_super);
+            },
+            .do_while_stmt => {
+                const d = hir_mod.doWhileOf(self.hir, node);
+                const r1 = self.findThisBeforeSuperInCtor(d.body, found_super);
+                if (r1 != hir_mod.none_node_id) return r1;
+                if (found_super.*) return hir_mod.none_node_id;
+                return self.findThisBeforeSuperInCtor(d.cond, found_super);
+            },
+            .for_stmt => {
+                const f = hir_mod.forStmtOf(self.hir, node);
+                const r1 = self.findThisBeforeSuperInCtor(f.init, found_super);
+                if (r1 != hir_mod.none_node_id) return r1;
+                if (found_super.*) return hir_mod.none_node_id;
+                const r2 = self.findThisBeforeSuperInCtor(f.cond, found_super);
+                if (r2 != hir_mod.none_node_id) return r2;
+                if (found_super.*) return hir_mod.none_node_id;
+                const r3 = self.findThisBeforeSuperInCtor(f.update, found_super);
+                if (r3 != hir_mod.none_node_id) return r3;
+                if (found_super.*) return hir_mod.none_node_id;
+                return self.findThisBeforeSuperInCtor(f.body, found_super);
+            },
+            .for_in_stmt, .for_of_stmt => {
+                const f = hir_mod.forInOf(self.hir, node);
+                const r1 = self.findThisBeforeSuperInCtor(f.source, found_super);
+                if (r1 != hir_mod.none_node_id) return r1;
+                if (found_super.*) return hir_mod.none_node_id;
+                return self.findThisBeforeSuperInCtor(f.body, found_super);
+            },
+            .try_stmt => {
+                const t = hir_mod.tryOf(self.hir, node);
+                const r1 = self.findThisBeforeSuperInCtor(t.block, found_super);
+                if (r1 != hir_mod.none_node_id) return r1;
+                if (found_super.*) return hir_mod.none_node_id;
+                const r2 = self.findThisBeforeSuperInCtor(t.catch_block, found_super);
+                if (r2 != hir_mod.none_node_id) return r2;
+                if (found_super.*) return hir_mod.none_node_id;
+                return self.findThisBeforeSuperInCtor(t.finally_block, found_super);
+            },
+            .switch_stmt => {
+                const s = hir_mod.switchOf(self.hir, node);
+                const r1 = self.findThisBeforeSuperInCtor(s.discriminant, found_super);
+                if (r1 != hir_mod.none_node_id) return r1;
+                if (found_super.*) return hir_mod.none_node_id;
+                for (hir_mod.switchCases(self.hir, node)) |case| {
+                    const r = self.findThisBeforeSuperInCtor(case, found_super);
+                    if (r != hir_mod.none_node_id) return r;
+                    if (found_super.*) return hir_mod.none_node_id;
+                }
+                return hir_mod.none_node_id;
+            },
+            .switch_case => {
+                const sc = hir_mod.switchCaseOf(self.hir, node);
+                const r1 = self.findThisBeforeSuperInCtor(sc.value, found_super);
+                if (r1 != hir_mod.none_node_id) return r1;
+                if (found_super.*) return hir_mod.none_node_id;
+                for (hir_mod.switchCaseStmts(self.hir, node)) |stmt| {
+                    const r = self.findThisBeforeSuperInCtor(stmt, found_super);
+                    if (r != hir_mod.none_node_id) return r;
+                    if (found_super.*) return hir_mod.none_node_id;
+                }
+                return hir_mod.none_node_id;
+            },
+            .call_expr => {
+                const c = hir_mod.callOf(self.hir, node);
+                // Inspect arguments FIRST (they evaluate before the call):
+                // `super(this)` should report TS17009 at the `this` arg.
+                for (hir_mod.callArgs(self.hir, node)) |arg| {
+                    const r = self.findThisBeforeSuperInCtor(arg, found_super);
+                    if (r != hir_mod.none_node_id) return r;
+                    if (found_super.*) return hir_mod.none_node_id;
+                }
+                // Then check whether the callee is `super` — if so,
+                // toggle `found_super` so subsequent walks short-circuit.
+                const callee_kind = self.hir.kindOf(c.callee);
+                if (callee_kind == .super_expr) {
+                    found_super.* = true;
+                    return hir_mod.none_node_id;
+                }
+                if (callee_kind == .identifier) {
+                    const id = hir_mod.identifierOf(self.hir, c.callee);
+                    if (std.mem.eql(u8, self.string_interner.get(id.name), "super")) {
+                        found_super.* = true;
+                        return hir_mod.none_node_id;
+                    }
+                }
+                // Otherwise the callee itself might contain a `this`
+                // ref (e.g. `this.foo()` BEFORE super) — walk it.
+                return self.findThisBeforeSuperInCtor(c.callee, found_super);
+            },
+            .new_expr => {
+                const c = hir_mod.callOf(self.hir, node);
+                const r0 = self.findThisBeforeSuperInCtor(c.callee, found_super);
+                if (r0 != hir_mod.none_node_id) return r0;
+                if (found_super.*) return hir_mod.none_node_id;
+                for (hir_mod.callArgs(self.hir, node)) |arg| {
+                    const r = self.findThisBeforeSuperInCtor(arg, found_super);
+                    if (r != hir_mod.none_node_id) return r;
+                    if (found_super.*) return hir_mod.none_node_id;
+                }
+                return hir_mod.none_node_id;
+            },
+            .member_access => return self.findThisBeforeSuperInCtor(hir_mod.memberOf(self.hir, node).object, found_super),
+            .element_access => {
+                const e = hir_mod.elementOf(self.hir, node);
+                const r1 = self.findThisBeforeSuperInCtor(e.object, found_super);
+                if (r1 != hir_mod.none_node_id) return r1;
+                if (found_super.*) return hir_mod.none_node_id;
+                return self.findThisBeforeSuperInCtor(e.index, found_super);
+            },
+            .binary_op => {
+                const b = hir_mod.binopOf(self.hir, node);
+                const r1 = self.findThisBeforeSuperInCtor(b.lhs, found_super);
+                if (r1 != hir_mod.none_node_id) return r1;
+                if (found_super.*) return hir_mod.none_node_id;
+                return self.findThisBeforeSuperInCtor(b.rhs, found_super);
+            },
+            .logical_op => {
+                const l = hir_mod.logicalOf(self.hir, node);
+                const r1 = self.findThisBeforeSuperInCtor(l.lhs, found_super);
+                if (r1 != hir_mod.none_node_id) return r1;
+                if (found_super.*) return hir_mod.none_node_id;
+                return self.findThisBeforeSuperInCtor(l.rhs, found_super);
+            },
+            .conditional => {
+                const c = hir_mod.conditionalOf(self.hir, node);
+                const r1 = self.findThisBeforeSuperInCtor(c.cond, found_super);
+                if (r1 != hir_mod.none_node_id) return r1;
+                if (found_super.*) return hir_mod.none_node_id;
+                const r2 = self.findThisBeforeSuperInCtor(c.then_branch, found_super);
+                if (r2 != hir_mod.none_node_id) return r2;
+                if (found_super.*) return hir_mod.none_node_id;
+                return self.findThisBeforeSuperInCtor(c.else_branch, found_super);
+            },
+            .unary_op => return self.findThisBeforeSuperInCtor(hir_mod.unaryOf(self.hir, node).operand, found_super),
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                const r1 = self.findThisBeforeSuperInCtor(a.target, found_super);
+                if (r1 != hir_mod.none_node_id) return r1;
+                if (found_super.*) return hir_mod.none_node_id;
+                return self.findThisBeforeSuperInCtor(a.value, found_super);
+            },
+            .array_literal => {
+                for (hir_mod.arrayLiteralElements(self.hir, node)) |el| {
+                    const r = self.findThisBeforeSuperInCtor(el, found_super);
+                    if (r != hir_mod.none_node_id) return r;
+                    if (found_super.*) return hir_mod.none_node_id;
+                }
+                return hir_mod.none_node_id;
+            },
+            .object_literal => {
+                for (hir_mod.objectLiteralProps(self.hir, node)) |p| {
+                    if (self.hir.kindOf(p) == .object_property) {
+                        const op = hir_mod.objectPropertyOf(self.hir, p);
+                        const r1 = self.findThisBeforeSuperInCtor(op.key, found_super);
+                        if (r1 != hir_mod.none_node_id) return r1;
+                        if (found_super.*) return hir_mod.none_node_id;
+                        const r2 = self.findThisBeforeSuperInCtor(op.value, found_super);
+                        if (r2 != hir_mod.none_node_id) return r2;
+                        if (found_super.*) return hir_mod.none_node_id;
+                    } else {
+                        const r = self.findThisBeforeSuperInCtor(p, found_super);
+                        if (r != hir_mod.none_node_id) return r;
+                        if (found_super.*) return hir_mod.none_node_id;
+                    }
+                }
+                return hir_mod.none_node_id;
+            },
+            .spread => return self.findThisBeforeSuperInCtor(hir_mod.spreadOf(self.hir, node).expression, found_super),
+            else => return hir_mod.none_node_id,
         }
     }
 
