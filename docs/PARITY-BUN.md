@@ -139,9 +139,10 @@ ported as Tier-0 leaves).
 
 🟡 **Substantial.** Home's bundler IS Bun's bundler — vendored under
 MIT to `packages/bundler/` with the Tier-0 compatibility shim at
-`packages/bun_compat/`. The Zig-side surface compiles; what's missing
-is the JS API for `Bun.build`. CLI entrypoint (`home bundle`) is in
-progress.
+[`packages/compat/`](../packages/compat/) (see
+[PARITY-BUN-COMPAT.md](./PARITY-BUN-COMPAT.md) for the per-symbol
+status). The Zig-side surface compiles; what's missing is the JS
+API for `Bun.build`. CLI entrypoint (`home bundle`) is in progress.
 
 ## Pantry (package management)
 

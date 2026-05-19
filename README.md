@@ -72,6 +72,7 @@ view; these are the drill-down pages — modeled after Bun's
 - [`docs/PARITY-TYPESCRIPT.md`](./docs/PARITY-TYPESCRIPT.md) — every TypeScript feature with 🟢 / 🟡 / 🔴 status
 - [`docs/PARITY-NODE.md`](./docs/PARITY-NODE.md) — every `node:*` module with 🟢 / 🟡 / 🔴 / ❌ status
 - [`docs/PARITY-BUN.md`](./docs/PARITY-BUN.md) — every Bun API + phase-by-phase port status
+- [`docs/PARITY-BUN-COMPAT.md`](./docs/PARITY-BUN-COMPAT.md) — `packages/compat/` shim symbol-by-symbol status
 - [`docs/CAPABILITY_MATRIX.md`](./docs/CAPABILITY_MATRIX.md) — full language / codegen / tooling / stdlib matrix
 - [`docs/TS_PARITY_PLAN.md`](./docs/TS_PARITY_PLAN.md) — parity plan + dated journal entries
 - [`docs/CONFORMANCE_CATEGORIES.md`](./docs/CONFORMANCE_CATEGORIES.md) — per-category TS conformance breakdown
@@ -88,6 +89,7 @@ view; these are the drill-down pages — modeled after Bun's
 | **TypeScript — diagnostic codes** | **~2,000 entries** | mirrors the full upstream `diag(code, …)` table |
 | **LSP wire methods** | **53 / ~70 — ~76%** | `SUPPORTED_METHODS` in `packages/ts_lsp_server/` |
 | **Bun runtime — source files ported** | **380 / 1,193 — ~31.9%** | substrate only (functional after JSC bring-up) |
+| **Bun compat shim — `bun.*` symbols** | **7 / ~103 — ~6.8%** | Tier-0 lets vendored Bun source compile against Home's stdlib |
 | **Node.js — `node:*` binding files** | **15 files** | blocked on Phase 12.2 JSC |
 | **Language features (capability matrix)** | **9 stable / 33 partial / 1 not-yet — 43 total** | ~21% stable, ~77% in progress, ~2% not yet |
 | **Total test count** | **3,300+ / 3,300+ — ~100%** | `zig build test --summary all` (pre-existing `d_ts_fast` + `home_rt` env aside) |
@@ -164,6 +166,40 @@ Bun's `test/` corpus must pass **100% with no skips** once feature-complete.
 | 12.9 — Pantry integration | `install/` | 🚧 scaffold in progress |
 | 12.10 — CLI surface | `cli/` | 🚧 scaffold landed |
 | 12.11 — Cross-compile + bundles | `build/` | 🚧 not started |
+
+### Bun compatibility shim (`packages/compat/`)
+
+Top-level package that re-exports the minimal Bun surface against
+Home's stdlib so vendored Bun source compiles without modification.
+The build wires `@import("bun")` to this shim (see
+[`build.zig:349-350`](./build.zig)), letting the
+[Bun bundler vendor files](./packages/bundler/src/) and the
+[Bun runtime port](./packages/runtime/src/) keep their upstream
+imports diff-clean and re-syncable.
+
+| Measurement | Coverage | % |
+|---|---|---|
+| **Tier-0 symbols implemented** | **7 / ~103** | **~6.8%** |
+| Test surfaces | inline (3 tests) + bundler-side integration (7 tests) | regression-gated |
+
+**Tier-0 surface (landed today, 7 symbols):**
+
+| Symbol | Status | Purpose |
+|---|---|---|
+| `bun.OOM` | 🟢 | `error{OutOfMemory}` alias for explicit error-return signatures (`bun.OOM!void`) |
+| `bun.handleOom` | 🟢 | Convert OOM to panic for call sites that can't propagate |
+| `bun.default_allocator` | 🟢 | Process-wide allocator (re-exports `std.heap.smp_allocator`) |
+| `bun.assert` | 🟢 | Alias for `std.debug.assert` |
+| `bun.ast.Index` | 🟢 | Strongly-typed source-file / module index with `.Int = u32` companion |
+| `bun.StringHashMapUnmanaged` | 🟢 | Alias for the std-lib generic |
+| `bun.fs.Path` | 🟡 | Path record; Tier-0 callers read only `.text` (struct will grow per tier) |
+
+Each subsequent tier opens the door for more vendored Bun files to
+compile. See [`docs/PARITY-BUN-COMPAT.md`](./docs/PARITY-BUN-COMPAT.md)
+for the per-symbol drill-down, planned tier categories
+(`bun.Output`, `bun.JSC.*`, `bun.strings`, `bun.path`,
+`bun.options`, `bun.resolver`, `bun.MutableString`, `bun.bake`,
+`bun.css`, `bun.transpiler`, `bun.SourceMap`), and the test wiring.
 
 ### Node.js compatibility (`packages/runtime/src/node/`)
 
