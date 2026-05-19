@@ -8801,6 +8801,46 @@ pub const Checker = struct {
         }
     }
 
+    fn isEmptyArrayLiteral(self: *Checker, node: NodeId) bool {
+        return node != hir_mod.none_node_id and
+            self.hir.kindOf(node) == .array_literal and
+            hir_mod.arrayLiteralElements(self.hir, node).len == 0;
+    }
+
+    fn reportImplicitAnyArrayBindingElement(self: *Checker, node: NodeId) CheckError!void {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return;
+        const id = hir_mod.identifierOf(self.hir, node);
+        const raw = self.string_interner.get(id.name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Binding element '{s}' implicitly has an 'any[]' type.",
+            .{raw},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.binding_element_implicitly_any,
+            .message = msg,
+        });
+    }
+
+    fn reportImplicitAnyEmptyArrayBindingDefaults(self: *Checker, pattern_node: NodeId) CheckError!void {
+        const pk = self.hir.kindOf(pattern_node);
+        if (pk != .object_pattern and pk != .array_pattern) return;
+        for (hir_mod.patternElements(self.hir, pattern_node)) |e| {
+            if (self.hir.kindOf(e) != .parameter) continue;
+            const ep = hir_mod.parameterOf(self.hir, e);
+            if (ep.flags.is_computed_binding_key or ep.name == hir_mod.none_node_id) continue;
+            const nk = self.hir.kindOf(ep.name);
+            if (nk == .identifier) {
+                if (self.isEmptyArrayLiteral(ep.default_value)) {
+                    try self.reportImplicitAnyArrayBindingElement(ep.name);
+                }
+            } else if (nk == .object_pattern or nk == .array_pattern) {
+                try self.reportImplicitAnyEmptyArrayBindingDefaults(ep.name);
+            }
+        }
+    }
+
     /// Walk a parameter's binding pattern (array/object) and emit
     /// TS7031 (`Binding element 'X' implicitly has an 'any' type.`)
     /// for each named slot whose type would otherwise be implicit
@@ -8854,7 +8894,9 @@ pub const Checker = struct {
             }
             const nk = self.hir.kindOf(ep.name);
             if (nk == .identifier) {
-                if (!has_own_default and !parent_default_supplies) {
+                if (self.isEmptyArrayLiteral(ep.default_value)) {
+                    try self.reportImplicitAnyArrayBindingElement(ep.name);
+                } else if (!has_own_default and !parent_default_supplies) {
                     const id = hir_mod.identifierOf(self.hir, ep.name);
                     const raw = self.string_interner.get(id.name);
                     const msg = try std.fmt.allocPrint(
@@ -11759,6 +11801,7 @@ pub const Checker = struct {
                 !default_is_await_error_placeholder and
                 !default_is_yield_in_param_initializer and
                 !accessor_has_invalid_this and
+                !self.functionOrOwnerHasLeadingJsDocParamOrTypeTag(node) and
                 !self.parameterHasContextualType(node, p))
             {
                 // Binding-pattern parameters (`function f([a, b]) {}` /
@@ -11787,6 +11830,8 @@ pub const Checker = struct {
                         // `destructuringWithLiteralInitializers2` lines 2/3/7/8.
                         const init_values = hir_mod.arrayLiteralElements(self.hir, pp.default_value);
                         try self.reportImplicitAnyBindingPatternElements(pp.name, init_values);
+                    } else if (name_kind == .object_pattern) {
+                        try self.reportImplicitAnyEmptyArrayBindingDefaults(pp.name);
                     }
                 } else {
                     const raw_param_name: []const u8 = if (pp.name != hir_mod.none_node_id and name_kind == .identifier)
@@ -29068,6 +29113,22 @@ pub const Checker = struct {
         return false;
     }
 
+    fn functionOrOwnerHasLeadingJsDocParamOrTypeTag(self: *Checker, fn_node: NodeId) bool {
+        const src = self.source orelse return false;
+        const body = self.leadingJsDocBodyForFunctionOrOwner(src, fn_node) orelse return false;
+        if (std.mem.indexOf(u8, body, "@param") != null or
+            std.mem.indexOf(u8, body, "@type") != null)
+        {
+            return true;
+        }
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return false;
+        defer self.gpa.free(tags);
+        for (tags) |tag| {
+            if (tag.kind == .param_tag or tag.kind == .type_tag) return true;
+        }
+        return false;
+    }
+
     /// True when the var/let/const decl `node` has a leading
     /// `/** @type {T} */` JSDoc tag. Used to extend
     /// `parameterHasContextualType` so an arrow/fn initializer of a
@@ -29833,7 +29894,15 @@ pub const Checker = struct {
 
     fn leadingJsDocBodyWithStart(self: *Checker, src: []const u8, decl_start: u32) ?JsDocBody {
         _ = self;
-        const limit = @min(@as(usize, decl_start), src.len);
+        var limit = @min(@as(usize, decl_start), src.len);
+        var trimmed_end = limit;
+        while (trimmed_end > 0 and std.ascii.isWhitespace(src[trimmed_end - 1])) : (trimmed_end -= 1) {}
+        if (trimmed_end >= "export".len and
+            std.mem.eql(u8, src[trimmed_end - "export".len .. trimmed_end], "export") and
+            (trimmed_end == "export".len or !isJsDocIdentChar(src[trimmed_end - "export".len - 1])))
+        {
+            limit = trimmed_end - "export".len;
+        }
         const before = src[0..limit];
         const end = std.mem.lastIndexOf(u8, before, "*/") orelse return null;
         const between = std.mem.trim(u8, before[end + 2 ..], " \t\r\n");
