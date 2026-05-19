@@ -11657,12 +11657,16 @@ pub const Checker = struct {
                     (self.parameterDefaultInvalid(default_t, declared_param_t) or
                         !(self.engine.isAssignableTo(default_t, declared_param_t) catch true)))
                 {
-                    // Anchor at the parameter NAME with the full
-                    // `Type 'X' is not assignable to type 'Y'.` prose
-                    // so the column matches upstream — `(3,17)`
-                    // points at the `x` in `x: T = null`. Mirrors
-                    // `genericCallWithObjectTypeArgsAndInitializers.ts`.
-                    const anchor = if (pp.name != hir_mod.none_node_id) pp.name else p;
+                    // Plain parameters anchor at the parameter name,
+                    // while constructor parameter properties anchor at
+                    // the first property modifier (`public`, `readonly`,
+                    // etc.) and underline the whole parameter property.
+                    const anchor = if (pp.flags.is_parameter_property)
+                        p
+                    else if (pp.name != hir_mod.none_node_id)
+                        pp.name
+                    else
+                        p;
                     try self.reportTypeNotAssignable(
                         anchor,
                         default_t,
@@ -61783,6 +61787,22 @@ test "checker: generic parameter defaults must satisfy type parameters safely" {
         if (d.code == TsCodes.type_not_assignable) count += 1;
     }
     try T.expectEqual(@as(usize, 1), count);
+}
+
+test "checker: parameter property default assignability anchors at modifier" {
+    const src = "class C { constructor(public x: string = 1) {} }";
+    const s = try newSetup(src);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    const public_offset: u32 = @intCast(std.mem.indexOf(u8, src, "public").?);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.type_not_assignable) continue;
+        const anchor_pos: u32 = if (d.pos) |p| p else s.hir.spanOf(d.node).start;
+        if (anchor_pos == public_offset) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: class field arrow bodies recheck with typed this" {
