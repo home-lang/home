@@ -123,6 +123,7 @@ const ErrorEmitter = events.EventEmitter([]const u8, ErrorListener);
 pub const Readable = struct {
     allocator: std.mem.Allocator,
     buffer: std.ArrayList(u8),
+    read_scratch: std.ArrayList(u8),
     data_listeners: DataEmitter,
     void_listeners: VoidEmitter,
     error_listeners: ErrorEmitter,
@@ -136,6 +137,7 @@ pub const Readable = struct {
         return .{
             .allocator = allocator,
             .buffer = .empty,
+            .read_scratch = .empty,
             .data_listeners = DataEmitter.init(allocator),
             .void_listeners = VoidEmitter.init(allocator),
             .error_listeners = ErrorEmitter.init(allocator),
@@ -147,6 +149,7 @@ pub const Readable = struct {
 
     pub fn deinit(self: *Readable) void {
         self.buffer.deinit(self.allocator);
+        self.read_scratch.deinit(self.allocator);
         self.data_listeners.deinit();
         self.void_listeners.deinit();
         self.error_listeners.deinit();
@@ -193,7 +196,8 @@ pub const Readable = struct {
             return if (self.ended) null else &[_]u8{};
         }
         const n = @min(size, self.buffer.items.len);
-        const out = self.buffer.items[0..n];
+        self.read_scratch.clearRetainingCapacity();
+        self.read_scratch.appendSlice(self.allocator, self.buffer.items[0..n]) catch @panic("stream.Readable.read: out of memory");
         // Shift remaining bytes to the front so subsequent reads see a
         // contiguous slice. This is O(n) per read — Node's reference
         // impl uses a chunk queue + concat; the substrate keeps it
@@ -201,7 +205,7 @@ pub const Readable = struct {
         // structure once the bridge lands.
         std.mem.copyForwards(u8, self.buffer.items[0 .. self.buffer.items.len - n], self.buffer.items[n..]);
         self.buffer.shrinkRetainingCapacity(self.buffer.items.len - n);
-        return out;
+        return self.read_scratch.items;
     }
 
     /// `'data'` listener registration. Accepts the typed

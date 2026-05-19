@@ -92,7 +92,7 @@ pub const URLSearchParams = struct {
     pub fn init(allocator: std.mem.Allocator) URLSearchParams {
         return .{
             .allocator = allocator,
-            .entries = std.ArrayList(SearchEntry){},
+            .entries = std.ArrayList(SearchEntry).empty,
         };
     }
 
@@ -132,7 +132,7 @@ pub const URLSearchParams = struct {
     /// Returns a freshly-allocated `application/x-www-form-urlencoded`
     /// serialization of every entry.
     pub fn toString(self: *const URLSearchParams, allocator: std.mem.Allocator) ![]u8 {
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
 
         var first = true;
@@ -158,7 +158,7 @@ pub const URLSearchParams = struct {
     /// returned slice (but not its elements, which alias the
     /// `URLSearchParams`-owned entries).
     pub fn getAll(self: *const URLSearchParams, allocator: std.mem.Allocator, key: []const u8) ![][]const u8 {
-        var out = std.ArrayList([]const u8){};
+        var out = std.ArrayList([]const u8).empty;
         errdefer out.deinit(allocator);
         for (self.entries.items) |e| {
             if (std.mem.eql(u8, e.key, key)) try out.append(allocator, e.value);
@@ -422,7 +422,7 @@ pub fn parse(allocator: std.mem.Allocator, input: []const u8) !URL {
 /// Legacy `url.format(parsed)` — joins the parsed components back into
 /// a normalized string. Returns a freshly-allocated owned slice.
 pub fn format(parsed: *const URL, allocator: std.mem.Allocator) ![]u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
 
     try buf.appendSlice(allocator, parsed.protocol);
@@ -482,7 +482,7 @@ pub fn resolve(allocator: std.mem.Allocator, base: []const u8, ref: []const u8) 
         b_path = after_slashes[auth_end..];
     }
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
     try buf.appendSlice(allocator, b_scheme);
     try buf.appendSlice(allocator, b_authority);
@@ -516,7 +516,7 @@ pub fn resolve(allocator: std.mem.Allocator, base: []const u8, ref: []const u8) 
 /// `deinit`. On Unix `path` must be absolute; on Windows we preserve
 /// the drive letter.
 pub fn pathToFileURL(allocator: std.mem.Allocator, path: []const u8) !URL {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
     try buf.appendSlice(allocator, "file://");
 
@@ -635,7 +635,7 @@ fn percentEncodeByte(allocator: std.mem.Allocator, out: *std.ArrayList(u8), c: u
 /// followed by invalid hex is passed through verbatim (Node's
 /// behavior).
 fn percentDecode(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    var out = std.ArrayList(u8){};
+    var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
     var i: usize = 0;
     while (i < input.len) {
@@ -674,7 +674,7 @@ fn encodeFormComponent(allocator: std.mem.Allocator, out: *std.ArrayList(u8), in
 /// space, `%xx` to the corresponding byte; everything else is passed
 /// through.
 fn decodeFormComponent(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    var out = std.ArrayList(u8){};
+    var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
     var i: usize = 0;
     while (i < input.len) {

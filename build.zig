@@ -3,8 +3,14 @@ const std = @import("std");
 /// Resolve the active Xcode macOS SDK path. Panics if it can't be found —
 /// only called from macOS-only branches.
 fn macosSdkPath(b: *std.Build, target: std.Build.ResolvedTarget) []const u8 {
-    return std.zig.system.darwin.getSdk(b.allocator, b.graph.io, &target.result) orelse
-        std.debug.panic("could not locate macOS SDK via xcrun; is Xcode installed?", .{});
+    const get_sdk = std.zig.system.darwin.getSdk;
+    const get_sdk_info = @typeInfo(@TypeOf(get_sdk)).@"fn";
+    return if (comptime get_sdk_info.params.len == 2)
+        get_sdk(b.allocator, &target.result) orelse
+            std.debug.panic("could not locate macOS SDK via xcrun; is Xcode installed?", .{})
+    else
+        get_sdk(b.allocator, b.graph.io, &target.result) orelse
+            std.debug.panic("could not locate macOS SDK via xcrun; is Xcode installed?", .{});
 }
 
 /// Helper function to create a package module with optional zig-test-framework

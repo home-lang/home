@@ -305,8 +305,10 @@ pub fn uptime() f64 {
         var tv: extern struct { sec: i64, usec: i64 } = .{ .sec = 0, .usec = 0 };
         var sz: usize = @sizeOf(@TypeOf(tv));
         if (sysctlbyname("kern.boottime", &tv, &sz, null, 0) == 0 and tv.sec > 0) {
-            // Wall-clock now via clock_gettime(CLOCK_REALTIME).
-            const now_ts = std.posix.clock_gettime(.REALTIME) catch return 0.0;
+            // Wall-clock now via clock_gettime(CLOCK_REALTIME). Zig 0.17-dev
+            // exposes this through std.c, not std.posix.
+            var now_ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
+            if (std.c.clock_gettime(std.c.CLOCK.REALTIME, &now_ts) != 0) return 0.0;
             const elapsed: i64 = @as(i64, @intCast(now_ts.sec)) - tv.sec;
             if (elapsed <= 0) return 0.0;
             return @floatFromInt(elapsed);

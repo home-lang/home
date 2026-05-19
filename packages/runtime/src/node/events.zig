@@ -107,7 +107,7 @@ pub fn EventEmitter(comptime EventName: type, comptime Listener: type) type {
             once: bool,
         };
 
-        entries: std.ArrayListUnmanaged(Entry) = .{},
+        entries: std.ArrayListUnmanaged(Entry) = .empty,
         allocator: std.mem.Allocator,
         max_listeners: usize = default_max_listeners,
 
@@ -327,7 +327,7 @@ pub fn EventEmitter(comptime EventName: type, comptime Listener: type) type {
         /// `emitter.eventNames()` — returns each distinct event name
         /// that has at least one registered listener. Caller frees.
         pub fn eventNames(self: *const Self, allocator: std.mem.Allocator) std.mem.Allocator.Error![]EventName {
-            var out = std.ArrayListUnmanaged(EventName){};
+            var out = std.ArrayListUnmanaged(EventName).empty;
             errdefer out.deinit(allocator);
             for (self.entries.items) |e| {
                 var seen = false;

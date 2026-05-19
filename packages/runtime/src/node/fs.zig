@@ -469,7 +469,9 @@ pub const promises = struct {
 // `realPathFileAlloc`.
 
 fn tmpAbsPath(tmp: *std.testing.TmpDir, sub: []const u8) ![]u8 {
-    return tmp.dir.realPathFileAlloc(testing.io, sub, testing.allocator);
+    const real = try tmp.dir.realPathFileAlloc(testing.io, sub, testing.allocator);
+    defer testing.allocator.free(real);
+    return testing.allocator.dupe(u8, real);
 }
 
 test "fs.writeFileSync + readFileSync round-trip" {
