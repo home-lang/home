@@ -5808,7 +5808,9 @@ pub const Parser = struct {
             try self.reportInvalidVariableDeclarationName(name_tok);
             try self.reportInvalidStrictName(name_tok);
             try self.reportInvalidFutureReservedName(name_tok);
+            try self.reportInvalidYieldName(name_tok);
             try self.reportAwaitBindingIfReserved(name_tok);
+            try self.reportAwaitReservedInAsyncContext(name_tok);
             const name_id = try self.internToken(name_tok);
             break :id_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
         };
