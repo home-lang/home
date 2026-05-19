@@ -454,6 +454,7 @@ pub const TsCodes = struct {
     pub const function_return_self_reference_implicitly_any: u32 = 7023;
     pub const binding_element_implicitly_any: u32 = 7031;
     pub const rest_parameter_implicitly_any: u32 = 7019;
+    pub const jsdoc_extends_not_attached: u32 = 8022;
     pub const jsdoc_param_name_matches_arguments_if_array: u32 = 8029;
     pub const setter_property_implicitly_any: u32 = 7032;
     pub const new_expression_implicitly_any: u32 = 7009;
@@ -1599,6 +1600,7 @@ pub const Checker = struct {
         if (!self.sourceHasModuleDirective("umd")) {
             try self.checkMultipleDefaultExports(stmts);
         }
+        try self.checkUnattachedJsDocExtendsTags(root);
         try self.checkDefaultExportMerges(stmts);
         try self.checkImportLocalConflicts(stmts);
         try self.checkExportStarDiagnostics(stmts);
@@ -1631,6 +1633,60 @@ pub const Checker = struct {
         // doesn't trip on ordering alone.
         self.sortDiagnosticsByPosition();
         if (self.source != null) try self.applyDirectives(root);
+    }
+
+    fn checkUnattachedJsDocExtendsTags(self: *Checker, root: NodeId) CheckError!void {
+        if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return;
+        const src = self.source orelse return;
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "/**")) |comment_start| {
+            const body_start = comment_start + 3;
+            const close_rel = std.mem.indexOf(u8, src[body_start..], "*/") orelse return;
+            const comment_end = body_start + close_rel;
+            search_start = comment_end + 2;
+
+            const tag_name = jsDocExtendsTagName(src[body_start..comment_end]) orelse continue;
+            const next = skipAsciiWhitespace(src, search_start);
+            if (next < src.len) continue;
+            const report_pos = jsDocUnattachedCommentReportPos(src, search_start);
+
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "JSDoc '@{s}' is not attached to a class.",
+                .{tag_name},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = root,
+                .pos = report_pos,
+                .code = TsCodes.jsdoc_extends_not_attached,
+                .message = msg,
+            });
+        }
+    }
+
+    fn jsDocExtendsTagName(body: []const u8) ?[]const u8 {
+        var search_start: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, body, search_start, '@')) |at| {
+            search_start = at + 1;
+            if (at > 0 and isJsDocIdentChar(body[at - 1])) continue;
+            var end = at + 1;
+            while (end < body.len and std.ascii.isAlphabetic(body[end])) : (end += 1) {}
+            const tag = body[at + 1 .. end];
+            if (std.mem.eql(u8, tag, "extends") or std.mem.eql(u8, tag, "augments")) return tag;
+        }
+        return null;
+    }
+
+    fn jsDocUnattachedCommentReportPos(src: []const u8, after_comment: usize) u32 {
+        if (after_comment >= src.len) return @intCast(src.len);
+        if (src[after_comment] == '\r') {
+            if (after_comment + 1 < src.len and src[after_comment + 1] == '\n') {
+                return @intCast(after_comment + 2);
+            }
+            return @intCast(after_comment + 1);
+        }
+        if (src[after_comment] == '\n') return @intCast(after_comment + 1);
+        return @intCast(after_comment);
     }
 
     fn checkRemovedCompilerOptionDirectives(self: *Checker, root: NodeId) CheckError!void {
@@ -68504,6 +68560,29 @@ test "checker: checkjs JSDoc @extends on a constructor function" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
+}
+
+test "checker: checkjs unattached JSDoc @extends reports TS8022 after comment" {
+    const source =
+        \\// @checkjs: true
+        \\/** @constructor */
+        \\class A {}
+        \\
+        \\/** @extends {A} */
+        \\
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.jsdoc_extends_not_attached) {
+            found = true;
+            const after_comment = (std.mem.indexOf(u8, source, "/** @extends {A} */") orelse unreachable) + "/** @extends {A} */".len;
+            try T.expectEqual(Checker.jsDocUnattachedCommentReportPos(source, after_comment), d.pos.?);
+        }
+    }
+    try T.expect(found);
 }
 
 test "checker: checkjs JSDoc @typedef with template parameters" {
