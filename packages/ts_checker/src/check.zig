@@ -9096,11 +9096,15 @@ pub const Checker = struct {
                 continue;
             }
             if (ex.decl == hir_mod.none_node_id and ex.named_len > 0 and !ex.is_type_only) {
+                const is_local_named_export = self.string_interner.get(ex.module).len == 0;
                 for (hir_mod.exportNamed(self.hir, raw)) |spec_node| {
                     if (self.hir.kindOf(spec_node) != .import_specifier) continue;
                     const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
                     if (sp.is_type_only) continue;
-                    const member_t = (try self.localValueTypeInVirtualSection(raw, sp.imported)) orelse types.Primitive.any;
+                    const member_t = (try self.localValueTypeInVirtualSection(raw, sp.imported)) orelse blk: {
+                        if (is_local_named_export) continue;
+                        break :blk types.Primitive.any;
+                    };
                     const exported_name = self.exportSpecifierExportedName(spec_node, sp);
                     try members.append(self.gpa, .{
                         .name = exported_name,
@@ -9126,7 +9130,19 @@ pub const Checker = struct {
             });
         }
         if (!found_module) return null;
-        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+        const namespace_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+        try self.registerModuleNamespaceDisplayName(namespace_t, resolved);
+        return namespace_t;
+    }
+
+    fn registerModuleNamespaceDisplayName(self: *Checker, t: TypeId, resolved: []const u8) CheckError!void {
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return;
+        if (self.alias_display_names.contains(t)) return;
+        const display = if (std.mem.startsWith(u8, resolved, "/"))
+            try std.fmt.allocPrint(self.diag_arena.allocator(), "typeof import(\"{s}\")", .{resolved})
+        else
+            try std.fmt.allocPrint(self.diag_arena.allocator(), "typeof import(\"/{s}\")", .{resolved});
+        try self.alias_display_names.put(self.gpa, t, display);
     }
 
     fn localValueTypeInVirtualSection(self: *Checker, anchor: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
@@ -70732,6 +70748,29 @@ test "checker: namespace import typeof includes named exported values" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.object_literal_excess_property);
     }
+}
+
+test "checker: namespace import typeof excludes local type-only named exports" {
+    const s = try newSetup(
+        \\// @filename: /a.ts
+        \\import type { A } from "./z";
+        \\type A = 0;
+        \\export { A };
+        \\export class B {}
+        \\// @filename: /b.ts
+        \\import * as types from "./a";
+        \\let t: typeof types = { A: undefined as any, B: undefined as any };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_excess = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.object_literal_excess_property) {
+            saw_excess = true;
+            try T.expect(std.mem.indexOf(u8, d.message, "typeof import(\"/a\")") != null);
+        }
+    }
+    try T.expect(saw_excess);
 }
 
 test "checker: top-level await respects low target directives" {
