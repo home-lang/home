@@ -6022,7 +6022,49 @@ pub const Parser = struct {
             _ = self.advance(); // `using` token following `await`
         }
         const in_ambient = self.ambient_depth > 0;
-        if (in_ambient) {
+        // TS1495 — `'export'`/`'declare'` modifier cannot appear on an
+        // `await using` declaration. tsc emits this in place of the
+        // generic TS1546 ambient diagnostic (or alongside it for bare
+        // `export await using`). Detect the modifier by scanning the
+        // source bytes immediately preceding `start.span.start` for
+        // `declare` or `export` and anchor the diagnostic there.
+        // Mirrors upstream `awaitUsingDeclarations.11.ts`.
+        var emitted_modifier_diag = false;
+        if (await_using) blk: {
+            const src = self.source;
+            const start_pos = start.span.start;
+            if (start_pos == 0) break :blk;
+            // Walk backwards skipping whitespace, find the preceding
+            // identifier-like token text.
+            var i: usize = start_pos;
+            while (i > 0 and (src[i - 1] == ' ' or src[i - 1] == '\t')) : (i -= 1) {}
+            const word_end = i;
+            while (i > 0) : (i -= 1) {
+                const c = src[i - 1];
+                if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_' or c == '$' or (c >= '0' and c <= '9')) continue;
+                break;
+            }
+            if (i >= word_end) break :blk;
+            const word = src[i..word_end];
+            const modifier = if (std.mem.eql(u8, word, "export"))
+                @as(?[]const u8, "export")
+            else if (std.mem.eql(u8, word, "declare"))
+                @as(?[]const u8, "declare")
+            else
+                null;
+            if (modifier) |mod_name| {
+                // Compute line for this position — use start.line as a
+                // proxy since the modifier is on the same logical line.
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "'{s}' modifier cannot appear on an 'await using' declaration.",
+                    .{mod_name},
+                );
+                try self.reportCodeAt(@intCast(i), start.line, 1495, msg);
+                emitted_modifier_diag = true;
+            }
+        }
+        if (in_ambient and !emitted_modifier_diag) {
             // `using` / `await using` declarations are not legal in
             // ambient contexts (TS1545 / TS1546). Emit the specific
             // diagnostic and short-circuit the function/top-level
@@ -6034,7 +6076,7 @@ pub const Parser = struct {
             else
                 "'using' declarations are not allowed in ambient contexts.";
             try self.reportCodeAt(start.span.start, start.line, code, message);
-        } else if (await_using) {
+        } else if (await_using and !emitted_modifier_diag) {
             // `await using` requires either an async function context
             // OR top-level of a module. "Top-level" here means any
             // position that isn't enclosed by a function — `{}` blocks,
