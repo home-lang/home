@@ -31980,7 +31980,8 @@ pub const Checker = struct {
 
     fn constructorPrototypeAccess(self: *Checker, obj_name: hir_mod.StringId, prop_name: hir_mod.StringId) CheckError!?TypeId {
         if (!std.mem.eql(u8, self.string_interner.get(prop_name), "prototype")) return null;
-        var has_runtime_prototype = self.class_instance_types.contains(obj_name);
+        if (self.class_instance_types.get(obj_name)) |instance_t| return instance_t;
+        var has_runtime_prototype = false;
         if (!has_runtime_prototype) {
             if (self.module) |module| {
                 if (module.root.lookup(obj_name)) |sym| {
@@ -32322,6 +32323,15 @@ pub const Checker = struct {
                     if (self.unrelatedTypeParameterAssignment(assignment_check_value_t, target_t)) {
                         try self.reportTypeNotAssignable(node, assignment_check_value_t, target_t, "Type is not assignable to target type.");
                     } else {
+                        var excess_property_diag_fired = false;
+                        if (self.hir.kindOf(a.value) == .object_literal or
+                            self.hir.kindOf(a.value) == .logical_op or
+                            self.hir.kindOf(a.value) == .conditional)
+                        {
+                            const before_excess = self.diagnostics.items.len;
+                            try self.checkExcessProperties(a.value, target_t);
+                            excess_property_diag_fired = self.diagnostics.items.len > before_excess;
+                        }
                         const ok = if (try self.jsDocArrayAssignmentDefinitelyMismatches(a.target, a.value, assignment_check_value_t, target_t))
                             false
                         else if (self.enumNameFromNominal(target_t) != null and self.expressionIsNumericLiteral(a.value))
@@ -32379,7 +32389,9 @@ pub const Checker = struct {
                                 // `'number'`, in the diagnostic.
                                 source_for_report = self.widenLiteralType(source_for_report);
                             }
-                            try self.reportAssignmentTypeNotAssignable(node, a.value, source_for_report, target_t, "Type is not assignable to target type.");
+                            if (!excess_property_diag_fired) {
+                                try self.reportAssignmentTypeNotAssignable(node, a.value, source_for_report, target_t, "Type is not assignable to target type.");
+                            }
                         }
                     }
                 }
@@ -76165,6 +76177,29 @@ test "checker: Ctor.prototype assignment without JSDoc keeps structural shape" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: class prototype object assignment checks instance shape" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @strict: false
+        \\// @filename: /a.js
+        \\class C { constructor() { this.p = 1; } }
+        \\C.prototype = { q: 2 };
+        \\const c = new C();
+        \\c.q;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_excess = false;
+    var saw_missing = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.object_literal_excess_property) saw_excess = true;
+        if (d.code == TsCodes.property_does_not_exist) saw_missing = true;
+    }
+    try T.expect(saw_excess);
+    try T.expect(saw_missing);
 }
 
 test "checker: checkjs computed prototype assignment makes function constructable but not indexed" {
