@@ -52176,7 +52176,7 @@ pub const Checker = struct {
                 // landed.
                 if (t < self.interner.pool.typeCount()) {
                     const tp_flags = self.interner.pool.flagsOf(t);
-                    if (tp_flags.is_type_parameter) {
+                    if (tp_flags.is_type_parameter and !tp_flags.is_union and !tp_flags.is_intersection) {
                         const tp_payload_idx = self.interner.pool.payloadOf(t);
                         if (tp_payload_idx < self.interner.pool.type_parameter_payloads.items.len) {
                             if (self.interner.typeParameterName(t)) |tp_name| {
@@ -73801,6 +73801,26 @@ test "checker: same type parameter is self-assignable" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: type parameter is not assignable through unrelated union type parameter" {
+    const s = try newSetup(
+        \\function foo<T, U>(x: T) {
+        \\  let b: U | object = x;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable and
+            std.mem.indexOf(u8, d.message, "Type 'T' is not assignable to type 'object | U'.") != null)
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
 }
 
 test "checker: unrelated type parameters — three-param case fires per mismatch" {

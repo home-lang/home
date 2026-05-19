@@ -533,6 +533,14 @@ pub const Engine = struct {
             const snapshot = try self.interner.gpa.dupe(TypeId, members);
             defer self.interner.gpa.free(snapshot);
             for (snapshot) |m| {
+                if (sf.is_type_parameter and
+                    m < self.pool().typeCount() and
+                    self.pool().flagsOf(m).is_type_parameter and
+                    source != m and
+                    !self.typeParameterConstraintReaches(source, m))
+                {
+                    continue;
+                }
                 if (try self.isAssignableTo(source, m)) return true;
             }
             return false;
@@ -905,6 +913,20 @@ pub const Engine = struct {
         const tp = self.interner.pool.type_parameter_payloads.items[payload_idx];
         if (tp.constraint == Primitive.none or tp.constraint == Primitive.unknown) return null;
         return tp.constraint;
+    }
+
+    fn typeParameterConstraintReaches(self: *Engine, source: TypeId, target: TypeId) bool {
+        var cur = source;
+        var hops: u32 = 0;
+        while (hops < 16) : (hops += 1) {
+            const constraint = self.typeParameterConstraint(cur) orelse return false;
+            if (constraint == target) return true;
+            if (constraint == cur) return false;
+            if (constraint >= self.pool().typeCount()) return false;
+            if (!self.pool().flagsOf(constraint).is_type_parameter) return false;
+            cur = constraint;
+        }
+        return false;
     }
 
     fn mappedTp(t: TypeId, map: []const TpPair) ?TypeId {
