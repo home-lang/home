@@ -13279,7 +13279,13 @@ pub const Checker = struct {
                 if (self.objectHasNoOverlapWithWeakTarget(instance_t, target_t) or
                     !(self.heritageAssignable(instance_t, target_t) catch true))
                 {
-                    const child_str = self.string_interner.get(cid.name);
+                    // Render the child name with its own type-parameter
+                    // list so `class B3<T> implements A<T>` prints as
+                    // `Class 'B3<T>' incorrectly implements interface 'A<T>'`
+                    // (matches subtypingWithNumericIndexer5 baseline).
+                    const child_disp_owned = (try self.classDisplayNameFromNode(node));
+                    defer if (child_disp_owned) |cd| self.gpa.free(cd);
+                    const child_str: []const u8 = child_disp_owned orelse self.string_interner.get(cid.name);
                     const target_name = try self.allocImplementsTargetName(impl_node, target_t);
                     const msg = if (target_name) |tn|
                         try std.fmt.allocPrint(
@@ -13752,7 +13758,12 @@ pub const Checker = struct {
                     if (self.objectHasNoOverlapWithWeakTarget(instance_t, target_t) or
                         !(self.heritageAssignable(instance_t, target_t) catch true))
                     {
-                        const child_str = self.string_interner.get(cid.name);
+                        // Render the child name with type parameters so
+                        // generic classes display as `B3<T>` rather than
+                        // collapsing to `B3`.
+                        const child_disp_owned = (try self.classDisplayNameFromNode(node));
+                        defer if (child_disp_owned) |cd| self.gpa.free(cd);
+                        const child_str: []const u8 = child_disp_owned orelse self.string_interner.get(cid.name);
                         const target_name = try self.allocImplementsTargetName(impl_node, target_t);
                         const msg = if (target_name) |tn|
                             try std.fmt.allocPrint(
