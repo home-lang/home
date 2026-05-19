@@ -10857,10 +10857,54 @@ pub const Parser = struct {
             defer children.deinit(self.gpa);
             const content_start = self.tokens[self.cursor - 1].span.end;
             try self.parseJsxChildren(&children, content_start);
-            // Closing `</>`.
-            _ = try self.expect(.less_than, "'<' to start fragment close");
+            // Closing `</>`. Recover when the user wrote a NAMED
+            // closing tag (`</div>`) instead of the empty `</>` —
+            // emit tsc's TS17015 (`Expected corresponding closing tag
+            // for JSX fragment.`) at the offending tag identifier and
+            // continue parsing as if it were a fragment close. Mirrors
+            // upstream `tsxFragmentErrors` line 13 (`<>hi</div>`).
+            const lt_tok = try self.expect(.less_than, "'<' to start fragment close");
             _ = try self.expect(.slash, "'/' in fragment close");
-            const close = try self.expect(.greater_than, "'>' to close fragment");
+            const after_slash = self.peek();
+            var named_close_recovered = false;
+            var named_close_end: u32 = after_slash.span.end;
+            if (after_slash.kind != .greater_than and isJsxNamePart(after_slash.kind)) {
+                try self.reportCodeAt(after_slash.span.start, after_slash.line, 17015, "Expected corresponding closing tag for JSX fragment.");
+                // Consume the bogus name (and any hyphenation /
+                // namespacing) so the trailing `>` is reachable.
+                named_close_recovered = true;
+                const first = self.advance();
+                named_close_end = first.span.end;
+                while (true) {
+                    const k = self.peek().kind;
+                    if ((k == .minus or k == .colon) and isJsxNamePart(self.peekAt(1).kind)) {
+                        _ = self.advance();
+                        const part = self.advance();
+                        named_close_end = part.span.end;
+                        continue;
+                    }
+                    break;
+                }
+            }
+            // tsc additionally emits TS17014 (`JSX fragment has no
+            // corresponding closing tag.`) at the `>` that closes
+            // the bogus `</name>` (or at the position immediately
+            // after the consumed name when no `>` is present). The
+            // fragment was never closed by a matching `</>`.
+            if (named_close_recovered) {
+                const anchor = if (self.peek().kind == .greater_than)
+                    self.peek().span.end
+                else
+                    named_close_end;
+                try self.reportCodeAt(anchor, lt_tok.line, 17014, "JSX fragment has no corresponding closing tag.");
+            }
+            if (self.peek().kind != .greater_than) {
+                if (!named_close_recovered) {
+                    try self.reportCodeAt(lt_tok.span.start, lt_tok.line, 17014, "JSX fragment has no corresponding closing tag.");
+                }
+                return try self.builder.addJsxFragment(.{ .start = open.span.start, .end = lt_tok.span.end }, children.items);
+            }
+            const close = self.advance();
             return try self.builder.addJsxFragment(.{ .start = open.span.start, .end = close.span.end }, children.items);
         }
 
