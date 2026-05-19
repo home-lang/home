@@ -21,7 +21,7 @@ This package is Home's JavaScript / TypeScript runtime, equivalent to Bun in sur
 3. Rewrite `@import("bun")` → `@import("home_rt")` and every `bun.X` → `home_rt.X` at copy time. **No semantic edits in the same commit.**
 4. Drop JSC-bridge re-exports (`.toJS`, `.fromJS`, `Bun__X` externs) with a `// JSC-bridge X omitted — re-lands in Phase 12.2` note.
 5. Every copied file must add **at least one** inline `test "..."` that exercises a method or invariant.
-6. After integrating: run `zig build test --summary all` AND `home test` in `~/Code/Apps/settlers-iii`. Both must stay green; commit only if so.
+6. After integrating: run `./pantry/.bin/zig build test --summary all` AND `home test` in `~/Code/Apps/settlers-iii`. Both must stay green; commit only if so.
 
 ## Upstream pin
 
@@ -86,8 +86,8 @@ While the JS-callable JSC bridge isn't wired up yet, the Home CLI surface (`home
 The runtime package is wired into the Home build. Substrate + JSC milestones M1-M6 currently compile and pass their inline tests; the runtime won't actually run JS / TS until the JS-callable JSC bridge is wired up. Verification today:
 
 ```sh
-zig build --summary all   # under pantry-managed Zig 0.17.0-dev.263+0add2dfc4
-zig build test --summary all   # substrate + JSC inline tests
+./pantry/.bin/zig build --summary all        # Pantry Zig 0.17.0-dev.263+0add2dfc4
+./pantry/.bin/zig build test --summary all   # substrate + JSC inline tests
 ```
 
 To recount the port progress in one shot:

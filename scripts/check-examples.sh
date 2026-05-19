@@ -15,7 +15,7 @@ HOME_BIN="${HOME_BIN:-${ROOT}/zig-out/bin/home}"
 
 if [[ ! -x "${HOME_BIN}" ]]; then
     echo "compiler binary not found at ${HOME_BIN}" >&2
-    echo "build it first with: zig build" >&2
+    echo "build it first with: ./pantry/.bin/zig build" >&2
     exit 2
 fi
 

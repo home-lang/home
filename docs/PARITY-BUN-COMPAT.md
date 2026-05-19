@@ -169,11 +169,11 @@ Two test surfaces exercise the shim:
 Run them with:
 
 ```sh
-zig build test -Dfilter=compat
-zig build test -Dfilter=bundler
+./pantry/.bin/zig build test -Dfilter=compat
+./pantry/.bin/zig build test -Dfilter=bundler
 ```
 
-Both are part of the regular `zig build test` umbrella; the
+Both are part of the regular Pantry Zig `build test` umbrella; the
 bundler test suite would not link without the shim.
 
 ## Build wiring
@@ -205,6 +205,6 @@ two test modules, exercises real vendored Bun code without
 modification. Each subsequent tier follows the same pattern: a
 vendor file lands, the shim grows just enough to make it compile,
 inline + integration tests pin the surface, then the file becomes
-buildable from `zig build`. See
+buildable from `./pantry/.bin/zig build`. See
 [`packages/runtime/PORT_AUDIT_2026-05-20.md`](../packages/runtime/PORT_AUDIT_2026-05-20.md)
 for the next-to-port queue.

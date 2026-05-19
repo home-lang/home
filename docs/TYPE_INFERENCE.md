@@ -336,4 +336,4 @@ The type inference system has comprehensive tests in `packages/types/tests/type_
 - Comparison operators
 - Type suffix handling
 
-Run tests with: `zig build test`
+Run tests with: `./pantry/.bin/zig build test`

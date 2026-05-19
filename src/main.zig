@@ -39,7 +39,7 @@ const package_cmd = @import("package_command.zig");
 const Io = std.Io;
 var g_io: Io = undefined;
 
-/// Get monotonic timestamp in nanoseconds (Zig 0.16 compatible)
+/// Get monotonic timestamp in nanoseconds (Zig 0.17 compatible)
 fn getMonotonicNs() u64 {
     if (comptime native_os == .windows) {
         const ntdll = std.os.windows.ntdll;
@@ -3646,7 +3646,7 @@ fn initCommand(allocator: std.mem.Allocator, project_name: ?[]const u8) !void {
         \\# Project toolchain managed by pantry.
         \\# Run: home pkg tools
         \\dependencies:
-        \\  - zig@0.16
+        \\  - ziglang.org@0.17.0-dev.263+0add2dfc4
         \\  - bun
         \\
     ;
@@ -3856,7 +3856,7 @@ fn pkgInit(allocator: std.mem.Allocator) !void {
         \\# Project toolchain managed by pantry.
         \\# Run: home pkg tools
         \\dependencies:
-        \\  - zig@0.16
+        \\  - ziglang.org@0.17.0-dev.263+0add2dfc4
         \\  - bun
         \\
     ;

@@ -345,7 +345,7 @@ When adding new features:
 
 1. **Add Tests First**: Write failing tests, then implement
 2. **Update Documentation**: Keep architecture docs current
-3. **Run Full Test Suite**: `zig build test`
+3. **Run Full Test Suite**: `./pantry/.bin/zig build test`
 4. **Check Memory**: Ensure zero leaks with arena allocator
 5. **Update TODO.md**: Track progress on roadmap
 

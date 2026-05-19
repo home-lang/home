@@ -11,22 +11,22 @@ packages = [
 
 [scripts]
 # Build all packages
-build = "zig build"
+build = "./pantry/.bin/zig build"
 
 # Run all tests
-test = "zig build test"
+test = "./pantry/.bin/zig build test"
 
 # Run benchmarks
-bench = "zig build bench"
+bench = "./pantry/.bin/zig build bench"
 
 # Format all code
-format = "find src packages -name '*.zig' -exec zig fmt {} +"
+format = "find src packages -name '*.zig' -exec ./pantry/.bin/zig fmt {} +"
 
 # Run the compiler
-run = "zig build run"
+run = "./pantry/.bin/zig build run"
 
 # Development mode with watch
-dev = "zig build run -- run examples/hello.ion"
+dev = "./pantry/.bin/zig build run -- run examples/hello.ion"
 
 [linter]
 max_line_length = 120

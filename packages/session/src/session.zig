@@ -1,7 +1,7 @@
 const std = @import("std");
 const posix = std.posix;
 
-/// Helper to get current timestamp (Zig 0.16 compatible)
+/// Helper to get current timestamp (Zig 0.17 compatible)
 fn getTimestamp() i64 {
     const ts = posix.clock_gettime(.REALTIME) catch return 0;
     return ts.sec;

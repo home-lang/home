@@ -36,7 +36,7 @@ Declares your project's dependencies:
   "version": "0.1.0",
   "dependencies": {
     "bun": "^1.3.0",
-    "ziglang.org": "^0.16.0-dev.3144+ac6fb0b59",
+    "ziglang.org": "0.17.0-dev.263+0add2dfc4",
     "craft": "^0.1.0"
   }
 }
@@ -60,9 +60,9 @@ Lockfile with resolved package information:
       "source": "path",
       "installedAt": "2025-10-31T00:00:00.000Z"
     },
-    "ziglang.org@0.16.0-dev.3144+ac6fb0b59": {
+    "ziglang.org@0.17.0-dev.263+0add2dfc4": {
       "name": "ziglang.org",
-      "version": "0.16.0-dev.3144+ac6fb0b59",
+      "version": "0.17.0-dev.263+0add2dfc4",
       "resolved": "https://ziglang.org/builds/",
       "integrity": "sha512-...",
       "source": "registry",
@@ -177,8 +177,7 @@ fn tryGlobalOrFallback(allocator: std.mem.Allocator, home: []const u8) ![]const 
         }
     } else |_| {}
 
-    // Fall back to ~/Code/craft/packages/zig for development
-    return try std.fs.path.join(allocator, &.{ home, "Code", "craft", "packages", "zig" });
+    return error.PantryPackageNotFound;
 }
 
 // Use it:
@@ -251,9 +250,7 @@ Pantry uses the following resolution strategy:
    - `registry` or `git`:
      - First check: `./pantry_modules/{name}/{version}/` (local install)
      - Then check: `~/.local/share/pantry/global/packages/{name}/{version}/` (global install)
-3. **Fallback to common locations** if pantry not available:
-   - `~/Code/{package-name}/`
-   - Environment variables (e.g., `CRAFT_HOME`)
+3. **Fail fast** if the Pantry package is not installed; run `pantry install` rather than falling back to system paths.
 
 ## Build.zig Integration
 

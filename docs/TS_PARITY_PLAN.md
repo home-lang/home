@@ -3921,7 +3921,7 @@ Per-file MIT attribution header is prepended at copy time:
 
 | Bun action | Purpose | Disposition | Home target |
 |---|---|---|---|
-| `.github/actions/setup-bun/` | Composite "setup Bun + cache" action used by Bun's own workflows | **port-with-rename** | new `.github/actions/setup-home/` | Becomes "setup Home + cache." Wraps `mlugg/setup-zig@v2` + `pantry install` + an optional `home build` step. Mirrors how Home's existing CI jobs configure Zig today; centralising it removes the duplicated `Setup Zig` blocks in `ci.yml`. |
+| `.github/actions/setup-bun/` | Composite "setup Bun + cache" action used by Bun's own workflows | **port-with-rename** | new `.github/actions/setup-home/` | Becomes "setup Home + cache." Runs `pantry install` for the pinned Zig 0.17 dev toolchain plus an optional `home build` step. Mirrors how Home's existing CI jobs configure Zig today; centralising it removes duplicated setup blocks in `ci.yml`. |
 | `.github/actions/bump/` | Composite action for the bump-version script | **port-with-rename** | new `.github/actions/bump/` | Reuse pattern with Home's `bumpx`. |
 
 #### 12.18.c · Bun-specific GHA conventions worth preserving

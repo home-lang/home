@@ -810,12 +810,12 @@ All kernel primitives are **zero-cost abstractions**:
 All modules include comprehensive tests:
 
 ```bash
-zig test packages/kernel/src/asm.zig
-zig test packages/kernel/src/memory.zig
-zig test packages/kernel/src/interrupts.zig
-zig test packages/kernel/src/paging.zig
-zig test packages/kernel/src/atomic.zig
-zig test packages/kernel/src/sync.zig
+./pantry/.bin/zig test packages/kernel/src/asm.zig
+./pantry/.bin/zig test packages/kernel/src/memory.zig
+./pantry/.bin/zig test packages/kernel/src/interrupts.zig
+./pantry/.bin/zig test packages/kernel/src/paging.zig
+./pantry/.bin/zig test packages/kernel/src/atomic.zig
+./pantry/.bin/zig test packages/kernel/src/sync.zig
 ```
 
 ---

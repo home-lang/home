@@ -38,14 +38,9 @@ RUN curl -sSL "https://github.com/microsoft/typescript-go/releases/latest/downlo
     | tar -xJ -C /usr/local/bin \
   || echo "WARN: tsgo binary not available; install manually for benches"
 
-# Zig — pinned to match the project's pantry-bundled version.
-RUN curl -sSL "https://ziglang.org/builds/zig-x86_64-linux-0.16.0-dev.3144+ac6fb0b59.tar.xz" \
-    | tar -xJ -C /opt \
-  && ln -s /opt/zig-x86_64-linux-0.16.0-dev.3144+ac6fb0b59/zig /usr/local/bin/zig \
-  || echo "WARN: matching Zig dev build not pinned; bench will use system zig"
-
 WORKDIR /work
 COPY . /work
+RUN pantry install
 WORKDIR /work/bench/vs_tsgo
 
 ENTRYPOINT ["./run.sh"]

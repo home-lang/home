@@ -9,12 +9,19 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-if [[ -z "${ZIG:-}" ]]; then
-    ZIG="$(command -v zig 2>/dev/null || true)"
-fi
+EXPECTED_ZIG_VERSION="0.17.0-dev.263+0add2dfc4"
+ZIG="$ROOT/pantry/.bin/zig"
 
 if [[ -z "$ZIG" || ! -x "$ZIG" ]]; then
-    echo "zig not found in PATH" >&2
+    echo "Pantry Zig not found at $ZIG" >&2
+    echo "run 'pantry install' first" >&2
+    exit 2
+fi
+
+actual_zig_version="$("$ZIG" version 2>/dev/null || true)"
+if [[ "$actual_zig_version" != "$EXPECTED_ZIG_VERSION" ]]; then
+    echo "unsupported Zig version: $actual_zig_version" >&2
+    echo "expected Pantry Zig $EXPECTED_ZIG_VERSION at $ZIG" >&2
     exit 2
 fi
 

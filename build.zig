@@ -1,16 +1,10 @@
 const std = @import("std");
 
-/// Resolve the active Xcode macOS SDK path. Panics if it can't be found —
+/// Resolve the active Xcode macOS SDK path. Panics if it can't be found -
 /// only called from macOS-only branches.
 fn macosSdkPath(b: *std.Build, target: std.Build.ResolvedTarget) []const u8 {
-    const get_sdk = std.zig.system.darwin.getSdk;
-    const get_sdk_info = @typeInfo(@TypeOf(get_sdk)).@"fn";
-    return if (comptime get_sdk_info.params.len == 2)
-        get_sdk(b.allocator, &target.result) orelse
-            std.debug.panic("could not locate macOS SDK via xcrun; is Xcode installed?", .{})
-    else
-        get_sdk(b.allocator, b.graph.io, &target.result) orelse
-            std.debug.panic("could not locate macOS SDK via xcrun; is Xcode installed?", .{});
+    return std.zig.system.darwin.getSdk(b.allocator, b.graph.io, &target.result) orelse
+        std.debug.panic("could not locate macOS SDK via xcrun; is Xcode installed?", .{});
 }
 
 /// Helper function to create a package module with optional zig-test-framework
@@ -1502,7 +1496,7 @@ pub fn build(b: *std.Build) void {
         generals_example.root_module.addImport("w3d_loader", w3d_loader_pkg);
 
         // Resolve Xcode SDK so frameworks like Cocoa/OpenGL/OpenAL/AudioToolbox
-        // are findable. zig 0.16-dev no longer auto-imports the SDK from xcrun.
+        // are findable under the Pantry-pinned Zig 0.17 dev toolchain.
         const sdk_path = macosSdkPath(b, target);
         const fw_path = b.fmt("{s}/System/Library/Frameworks", .{sdk_path});
         const lib_path = b.fmt("{s}/usr/lib", .{sdk_path});

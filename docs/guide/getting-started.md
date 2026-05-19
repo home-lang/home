@@ -4,41 +4,19 @@ This guide will walk you through installing the Home compiler and writing your f
 
 ## Prerequisites
 
-Home is written in Zig, so you will need the Zig compiler to build it.
+Home is written in Zig and is built with the Pantry-pinned Zig 0.17 dev toolchain.
 
-### Installing Zig
+### Installing the Toolchain
 
-::: code-group
-
-```bash [macOS]
-# Using Homebrew
-brew install zig
-
-# Or using Pantry
-pantry install zig
+```bash
+pantry install
 ```
-
-```bash [Linux]
-# Download from ziglang.org
-wget https://ziglang.org/download/0.16.0/zig-linux-x86_64-0.16.0.tar.xz
-tar -xf zig-linux-x86_64-0.16.0.tar.xz
-export PATH=$PATH:$(pwd)/zig-linux-x86_64-0.16.0
-```
-
-```powershell [Windows]
-# Using Scoop
-scoop install zig
-
-# Or download from ziglang.org
-```
-
-:::
 
 Verify your installation:
 
 ```bash
-zig version
-# Should output: 0.16.0 or higher
+./pantry/ziglang.org/v0.17.0-dev.263+0add2dfc4/zig version
+# Should output: 0.17.0-dev.263+0add2dfc4
 ```
 
 ## Building the Compiler
@@ -48,7 +26,8 @@ Clone the Home repository and build the compiler:
 ```bash
 git clone https://github.com/home-lang/home.git
 cd home
-zig build
+pantry install
+./pantry/ziglang.org/v0.17.0-dev.263+0add2dfc4/zig build
 ```
 
 This will create the Home compiler at `./zig-out/bin/home`.
@@ -212,13 +191,13 @@ Now that you have Home installed, explore these topics:
 
 ### Common Issues
 
-#### Zig not found
+#### Pantry Zig not found
 
-Make sure Zig is in your PATH:
+Install the pinned toolchain through Pantry:
 
 ```bash
-which zig
-# Should output the path to zig
+pantry install
+./pantry/.bin/zig version
 ```
 
 #### Build fails with memory error

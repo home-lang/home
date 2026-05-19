@@ -53,7 +53,7 @@ view; these are the drill-down pages — modeled after Bun's
 | **Node.js — `node:*` binding files** | **28 files** | Zig substrate landing module-by-module (buffer / stream / fs / events / util / assert / os / url / querystring / crypto / process / string_decoder / tty) |
 | **JSC bring-up (Phase 12.2)** | **96 files** | M6 milestone — JSON + Promise + Iterator + Global helpers landed |
 | **Language features (capability matrix)** | **18 stable / 43 partial / 2 not-yet — 63 total** | ~28.6% stable, ~68.3% in progress, ~3.2% not yet (includes TS frontend + Runtime/Bun rows) |
-| **Total test count** | **3,300+ / 3,300+ — ~100%** | `zig build test --summary all` (pre-existing `d_ts_fast` + `home_rt` env aside) |
+| **Total test count** | **3,300+ / 3,300+ — ~100%** | `./pantry/.bin/zig build test --summary all` (pre-existing `d_ts_fast` + `home_rt` env aside) |
 
 ### TypeScript parity — `home tsc` vs `tsc` / `tsgo`
 
@@ -90,7 +90,7 @@ HOME_TS_CONFORMANCE_FULL=1 \
 HOME_TS_CONFORMANCE_EXACT=1 \
 HOME_TS_CONFORMANCE_START=2000 \
 HOME_TS_CONFORMANCE_LIMIT=1000 \
-zig build test -Dfilter=ts_conformance
+./pantry/.bin/zig build test -Dfilter=ts_conformance
 ```
 
 ### Bun runtime port (`packages/runtime/`)
@@ -356,7 +356,7 @@ Top-level shape (each link is a Zig package with its own tests):
 - [`pantry/zig-dtsx`](https://github.com/stacksjs/dtsx/tree/main/packages/zig-dtsx) — vendored as a pantry dep; powers the `.d.ts` fast path (15-19× faster than tsgo per published benchmarks)
 
 `home-tsc` and `home-lsp` ship as standalone binaries — see the
-[`zig build` invocation](#build-commands) to compile them; they
+[`./pantry/.bin/zig build` invocation](#build-commands) to compile them; they
 install into `zig-out/bin/`.
 
 ## Install
@@ -379,11 +379,10 @@ Useful environment variables:
 ## Build from Source
 
 ```bash
-# Clone and build
 git clone https://github.com/home-lang/home.git
 cd home
-pantry install        # pulls zig 0.16-dev from pantry
-zig build             # build the compiler
+pantry install        # installs the pinned Zig 0.17 dev toolchain
+./pantry/ziglang.org/v0.17.0-dev.263+0add2dfc4/zig build
 
 # Run an example
 ./zig-out/bin/home build examples/fibonacci.home
@@ -392,12 +391,12 @@ zig build             # build the compiler
 
 Useful commands:
 
-- `zig build` &mdash; build the compiler
-- `zig build test` &mdash; run the unit-test suite
-- `zig build examples` &mdash; run the native example executables (http_router, craft, fullstack, queue)
-- `zig build run -- examples/fibonacci.home` &mdash; build, then run a file
+- `./pantry/.bin/zig build` &mdash; build the compiler
+- `./pantry/.bin/zig build test` &mdash; run the unit-test suite
+- `./pantry/.bin/zig build examples` &mdash; run the native example executables (http_router, craft, fullstack, queue)
+- `./pantry/.bin/zig build run -- examples/fibonacci.home` &mdash; build, then run a file
 - `scripts/check-examples.sh` &mdash; `home check` every `.home` example
-- `zig build -Dgenerals=true generals` &mdash; opt in to the C&C Generals example (needs Xcode frameworks)
+- `./pantry/.bin/zig build -Dgenerals=true generals` &mdash; opt in to the C&C Generals example (needs Xcode frameworks)
 
 ## Hello World
 
@@ -806,10 +805,10 @@ home/
 
 ### Prerequisites
 
-- Zig 0.16-dev (for building the compiler)
+- Pantry-installed Zig 0.17 dev (for building the compiler)
 
 ```bash
-# Pulls the pinned zig dev build from pantry into ./pantry/zig/
+# Pulls the pinned Zig 0.17 dev build from Pantry.
 pantry install
 ```
 
@@ -817,16 +816,16 @@ pantry install
 
 ```bash
 # Build the compiler
-zig build
+./pantry/.bin/zig build
 
 # Run tests
-zig build test
+./pantry/.bin/zig build test
 
 # Check all .home examples through `home check`
 scripts/check-examples.sh
 
 # Build and run an example
-zig build run -- examples/fibonacci.home
+./pantry/.bin/zig build run -- examples/fibonacci.home
 ```
 
 ## File Extensions
