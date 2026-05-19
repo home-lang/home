@@ -126,6 +126,8 @@
 
 const std = @import("std");
 
+pub const corpus = @import("corpus.zig");
+
 /// Stub. Once the `compat` shim is in place, this module will
 /// re-export `bun_test`, `jest`, `expect`, and the rest of the surface
 /// listed above. For now it's intentionally empty so the build-system
@@ -135,4 +137,8 @@ pub const version = "0.0.0";
 
 test "home_test facade compiles" {
     try std.testing.expectEqualStrings("0.0.0", version);
+}
+
+test "home_test corpus discovery is linked" {
+    try std.testing.expect(corpus.isTestFile("sample.test.ts"));
 }

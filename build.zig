@@ -536,6 +536,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("network", network_pkg);
     exe.root_module.addImport("http", http_pkg);
     exe.root_module.addImport("cloud", cloud_pkg);
+    exe.root_module.addImport("home_test", home_test_pkg);
 
     // Create build options module for conditional compilation
     const build_options = b.addOptions();

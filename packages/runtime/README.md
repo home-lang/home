@@ -53,6 +53,9 @@ This is the hard release gate for Phase 12. Substrate is in place today; the
 gate becomes enforceable after Phase 12.2 (JSC bring-up) and Phase 12.8 (test
 runner copy). Until then, `home test packages/runtime/test/bun-corpus/` must
 fail as a native Home gate, not silently delegate to system Bun.
+The gate's corpus discovery and test-file classification live in
+`packages/home_test/src/corpus.zig`, which keeps this path inside Home's Zig
+packages while the execution engine is still blocked.
 
 ## What's here today
 

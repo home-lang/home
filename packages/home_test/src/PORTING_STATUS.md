@@ -13,6 +13,12 @@ imports `bun` (Bun's stdlib aggregator), which doesn't exist here.
 Each file is annotated with a header pointing back to its upstream
 source. The plan below tracks adaptation status file-by-file.
 
+The Home-side `corpus.zig` module is active and compiled into the
+`home` executable. It owns Bun-corpus discovery and test-file
+classification for `home test packages/runtime/test/bun-corpus/`,
+while the full runner remains blocked on the native JS runtime and
+JSC host-call bridge.
+
 > **Why a verbatim copy?** Per direction 2026-05-14: Bun is shifting
 > its core to Rust; we want to continue maintaining the Zig portion
 > ourselves. Vendoring lets us adapt the test runner to Home's HIR /
@@ -61,6 +67,7 @@ shape (each ~30-100 LOC, 7-10 `bun.X` references — almost all
 | **expect/*.zig** (70 matchers) | ~2 800 total | 7-10 each | 0 | 0-1 | blocked | `bun.jsc`, `bun.md`, `bun.JSError` |
 
 Legend:
+
 - **blocked**: doesn't compile yet because `@import("bun")` cannot be
   resolved.
 - **partial**: compiles with stubs, missing functionality is
@@ -155,6 +162,7 @@ like `bun.allocators`, `bun.bit_set`, `bun.collections`,
 ## Build order (lowest dep depth first)
 
 ### Tier 0 — pure helpers that need only stdlib + a tiny shim
+
 These need only `compat` for `OOM`/`handleOom`/`assert`/`md`:
 
 1. `harness/recover.zig` (132 LOC) — single `bun.md` reference
@@ -164,6 +172,7 @@ These need only `compat` for `OOM`/`handleOom`/`assert`/`md`:
    will compile early once the shim is up.
 
 ### Tier 1 — diagnostics & formatters (depend on `bun.Output` shim)
+
 4. `diff_format.zig` (85 LOC) — `bun.Output`, `bun.AllocationScope`
 5. `debug.zig` (109 LOC) — env-var debug switches
 6. `pretty_format.zig` (2 145 LOC) — Jest's value pretty-printer;
@@ -171,6 +180,7 @@ These need only `compat` for `OOM`/`handleOom`/`assert`/`md`:
 7. `diff/printDiff.zig` (586 LOC) — colored Jest-style diff
 
 ### Tier 2 — test scaffolding (need `bun.timespec` + `bun.assert`)
+
 8. `Collection.zig` (171 LOC) — test collection; minimal externs
 9. `Order.zig` (187 LOC) — deterministic ordering
 10. `DoneCallback.zig` (47 LOC) — async test done callback
@@ -180,6 +190,7 @@ These need only `compat` for `OOM`/`handleOom`/`assert`/`md`:
     `bun.sys`/`bun.logger`)
 
 ### Tier 3 — JSC-bound surface (gate behind `enable_jsc`)
+
 These cannot meaningfully run until Home's JS runtime is wired up;
 they are the entire `expect`/`describe` surface.
 
@@ -191,8 +202,10 @@ they are the entire `expect`/`describe` surface.
 19. `cli/test_command.zig` (2 277 LOC) — `bun test` CLI driver
 
 ### Out-of-scope (do not port, replace with Home's own equivalents)
+
 - Anything under `bun.bake` / `bun.bundle_v2` references in
   `cli/test_command.zig` — Home's bundler lives in `bundler`.
+
 - The `mod.rs` / `*.rs` files in upstream — Bun's Rust port is
   explicitly out of scope per direction 2026-05-14.
 
@@ -208,26 +221,33 @@ throughput. Any port must keep them.
    per-test arena that is dropped wholesale on test exit. Massively
    reduces individual `free` calls on hot paths and avoids the global
    allocator's contention.
+
 2. **Lazy snapshot file IO** (`snapshot.zig`). Snapshot file is read
    once per test file, mutated in-memory, and flushed once on suite
    exit. Avoids hammering `read()`/`write()` per matcher.
+
 3. **`HiveArray` for free-list of `Expect` instances**
    (`expect.zig`). Bun's HiveArray is a free-list-backed pool; lets
    matchers `alloc`/`free` `Expect` instances cheaply across the
    thousands of `expect(...)` calls a typical suite makes.
+
 4. **Diff via `diff_match_patch.zig`** (Google's algorithm). Hand-port
    verbatim — the upstream is well-tested and the Zig port is already
    tuned (~3 kLOC).
+
 5. **JIT-emitted matcher dispatch** (`expect.zig`). Each matcher is
    exposed to JS as a `JSC::HostFunction` registered through
    `jest.classes.ts`. We will need to mirror the dispatch table once
    Home's runtime exposes a host-function surface.
+
 6. **`std.MultiArrayList` for test scope tree** (`Collection.zig`).
    Stores each scope field in its own contiguous slice — same ECS
    pattern the bundler uses. Already in stdlib.
+
 7. **`bun.timespec` monotonic clock** for test duration. Use
    `std.posix.clock_gettime(.MONOTONIC, ...)` — same monotonic
    guarantees, no JSC required.
+
 8. **Single-pass tokenization in inline-snapshot writeback**
    (`snapshot.zig`). Avoids re-parsing the entire test file when
    updating an inline snapshot. Port the algorithm verbatim.
@@ -236,22 +256,32 @@ throughput. Any port must keep them.
 
 ## Next steps (suggested order)
 
-1. **Land this copy** with build wiring that does **not** add
+1. Keep the active corpus discovery in `corpus.zig` green under
+   Pantry Zig 0.17 dev, and keep the full corpus command failing as a
+   native Home gate until execution is real.
+
+2. Land this copy with build wiring that does **not** add
    `src/bun/` to any test step (so `zig build test` stays green).
-2. Share the `compat/` shim with the bundler port
+
+3. Share the `compat/` shim with the bundler port
    (`packages/bundler/src/bun/PORTING_STATUS.md` Tier 0). The
    minimal surface needed for Tier 0/1 here:
+
    - `OOM`, `handleOom`, `default_allocator`, `assert`, `debugAssert`,
      `md` (self-import marker), `Environment.{isDebug,isWindows,isMac}`,
      `timespec`, `O`, `copy`, `cast`, `hash.Wyhash`,
      `StringHashMapUnmanaged`.
-3. Make `harness/recover.zig` + `harness/fixtures.zig` +
+
+4. Make `harness/recover.zig` + `harness/fixtures.zig` +
    `diff/diff_match_patch.zig` compile against the shim. Add a tiny
    test artifact to keep them green going forward.
-4. Iterate Tier 1 → Tier 2, adapting `Output`/`logger`/`sys`/`fmt`
+
+5. Iterate Tier 1 → Tier 2, adapting `Output`/`logger`/`sys`/`fmt`
    as we go.
-5. Defer Tier 3 (the JSC-bound surface) until Home's runtime exposes
+
+6. Defer Tier 3 (the JSC-bound surface) until Home's runtime exposes
    a `home_test_runtime` shim with a `JSValue` placeholder that maps
    onto Home's interpreter's value representation.
-6. Once Tier 3 is in, expose the public API listed in
+
+7. Once Tier 3 is in, expose the public API listed in
    `home_test.zig`'s doc-comment via a `home:test` runtime module.

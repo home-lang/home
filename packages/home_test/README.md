@@ -39,7 +39,14 @@ APIs, `expect.extend`, asymmetric matchers like
 
 ## Status
 
-**Not yet activated.** The vendored sources under `src/bun/` import
+**Partially activated.** The package is now imported by the `home`
+executable for Bun-corpus discovery, so `home test
+packages/runtime/test/bun-corpus/` counts the corpus through
+`packages/home_test/src/corpus.zig` before failing the native gate.
+That keeps the parity check inside Home-owned Zig code instead of
+delegating to system Bun.
+
+The actual vendored runner sources under `src/bun/` still import
 Bun's stdlib aggregator (`@import("bun")`) and so do not compile
 against Home's stdlib today. The file-by-file porting plan, top
 external dependency list, and tier-ordered build plan live in
@@ -73,6 +80,7 @@ packages/home_test/
       timers/FakeTimers.zig  #   Jest-style fake timers
       cli/test_command.zig   #   `bun test` CLI driver
       jest.classes.ts        #   TypeScript bridge (class registry)
+    corpus.zig               # Bun corpus discovery for the native gate
     home_test.zig            # Public Home-side facade module
     PORTING_STATUS.md        # File-by-file adaptation status + plan
     LICENSE.bun.md           # Bun MIT license + linked-library notices

@@ -35,6 +35,7 @@ const AllocationProfiler = profiler_mod.AllocationProfiler;
 const repl = @import("repl.zig");
 const lint_cmd = @import("lint_command.zig");
 const package_cmd = @import("package_command.zig");
+const home_test = @import("home_test");
 
 const Io = std.Io;
 var g_io: Io = undefined;
@@ -2892,55 +2893,11 @@ fn argTargetsBunCorpus(args: []const [:0]const u8) ?[]const u8 {
     return null;
 }
 
-const BunCorpusCounts = struct {
-    files: usize = 0,
-    tests: usize = 0,
-};
-
-fn isBunCorpusTestFile(name: []const u8) bool {
-    const test_exts = [_][]const u8{
-        ".test.ts",
-        ".test.tsx",
-        ".test.js",
-        ".test.jsx",
-        ".test.mjs",
-        ".test.cjs",
-    };
-    for (test_exts) |ext| {
-        if (std.mem.endsWith(u8, name, ext)) return true;
-    }
-
-    return (std.mem.startsWith(u8, name, "test-") or std.mem.startsWith(u8, name, "node-test-")) and
-        (std.mem.endsWith(u8, name, ".js") or std.mem.endsWith(u8, name, ".mjs") or std.mem.endsWith(u8, name, ".cjs"));
-}
-
-fn countBunCorpusFiles(allocator: std.mem.Allocator, dir_path: []const u8, counts: *BunCorpusCounts) !void {
-    var dir = Io.Dir.cwd().openDir(g_io, dir_path, .{ .iterate = true }) catch |err| {
-        if (err == error.FileNotFound) return;
-        return err;
-    };
-    defer dir.close(g_io);
-
-    var iter = dir.iterate();
-    while (try iter.next(g_io)) |entry| {
-        switch (entry.kind) {
-            .file => {
-                counts.files += 1;
-                if (isBunCorpusTestFile(entry.name)) counts.tests += 1;
-            },
-            .directory => {
-                const subdir_path = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
-                defer allocator.free(subdir_path);
-                try countBunCorpusFiles(allocator, subdir_path, counts);
-            },
-            else => {},
-        }
-    }
-}
-
 fn runBunCorpusNativeGate(allocator: std.mem.Allocator, corpus_path: []const u8) !void {
-    var counts = BunCorpusCounts{};
-    try countBunCorpusFiles(allocator, corpus_path, &counts);
+    const counts = home_test.corpus.countPath(g_io, corpus_path) catch |err| switch (err) {
+        error.FileNotFound => home_test.corpus.Counts{},
+        else => return err,
+    };
 
     const sha_path = try std.fs.path.join(allocator, &.{ corpus_path, "UPSTREAM_SHA.txt" });
     defer allocator.free(sha_path);
@@ -2953,6 +2910,7 @@ fn runBunCorpusNativeGate(allocator: std.mem.Allocator, corpus_path: []const u8)
     std.debug.print("upstream: {s}\n", .{std.mem.trim(u8, sha, " \t\r\n")});
     std.debug.print("corpus files discovered: {d}\n", .{counts.files});
     std.debug.print("test files discovered: {d}\n", .{counts.tests});
+    std.debug.print("runner package: packages/home_test\n", .{});
     std.debug.print("reason: native-js-test-runner-missing\n\n", .{});
     std.debug.print("This gate intentionally fails until Phase 12.2 (JSC JS-callable bridge)\n", .{});
     std.debug.print("and Phase 12.8 (Bun test runner port) replace system-Bun delegation.\n", .{});
