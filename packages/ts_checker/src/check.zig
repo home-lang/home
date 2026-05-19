@@ -17587,6 +17587,17 @@ pub const Checker = struct {
         });
     }
 
+    fn checkBareRequireCallImport(self: *Checker, callee: NodeId, args: []const NodeId) CheckError!void {
+        if (args.len == 0 or self.hir.kindOf(args[0]) != .literal_string) return;
+        if (self.hir.kindOf(callee) != .identifier) return;
+        const id = hir_mod.identifierOf(self.hir, callee);
+        if (!std.mem.eql(u8, self.string_interner.get(id.name), "require")) return;
+        const lit = hir_mod.literalStringOf(self.hir, args[0]);
+        const spec = self.string_interner.get(lit.value);
+        if (std.mem.startsWith(u8, spec, ".") or std.mem.startsWith(u8, spec, "/")) return;
+        _ = try self.checkVirtualBareModuleImport(args[0], spec);
+    }
+
     fn checkVirtualBareModuleImport(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
         // The external-resolver hook augments the legacy heuristic
         // virtual-section scan with a real `ts_resolver` outcome:
@@ -17745,6 +17756,9 @@ pub const Checker = struct {
         spec: []const u8,
         resolved_path: ?[]const u8,
     ) CheckError!void {
+        for (self.diagnostics.items) |d| {
+            if (d.node == node and d.code == TsCodes.untyped_module) return;
+        }
         const msg = if (resolved_path) |p| blk: {
             // Upstream baseline shape, e.g.
             //   Could not find a declaration file for module 'foo'.
@@ -17752,8 +17766,10 @@ pub const Checker = struct {
             //   type.
             const slashed = if (p.len > 0 and p[0] == '/')
                 try self.diag_arena.allocator().dupe(u8, p)
+            else if (self.importerPathIsAbsoluteForNode(node))
+                try std.fmt.allocPrint(self.diag_arena.allocator(), "/{s}", .{p})
             else
-                try std.fmt.allocPrint(self.diag_arena.allocator(), "/{s}", .{p});
+                try self.diag_arena.allocator().dupe(u8, p);
             break :blk try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "Could not find a declaration file for module '{s}'. '{s}' implicitly has an 'any' type.",
@@ -17769,6 +17785,12 @@ pub const Checker = struct {
             .code = TsCodes.untyped_module,
             .message = msg,
         });
+    }
+
+    fn importerPathIsAbsoluteForNode(self: *Checker, node: NodeId) bool {
+        if (self.importer_path.len > 0) return self.importer_path[0] == '/';
+        if (self.virtualSectionFilenameForNode(node)) |path| return path.len > 0 and path[0] == '/';
+        return true;
     }
 
     fn isResolverDeclarationExtension(path: []const u8) bool {
@@ -30108,6 +30130,7 @@ pub const Checker = struct {
                     break :blk callee_t;
                 }
                 try self.checkRewriteRelativeImportCall(node, c.callee, args);
+                try self.checkBareRequireCallImport(c.callee, args);
                 if (self.isDynamicImportCallee(c.callee) and args.len > 0 and self.hir.kindOf(args[0]) == .literal_string) {
                     const lit = hir_mod.literalStringOf(self.hir, args[0]);
                     try self.checkImportingTsExtensionSpecifier(args[0], self.string_interner.get(lit.value), false);
@@ -71724,6 +71747,36 @@ test "checker: external resolver promotes legacy-unresolved to TS7016 implementa
         if (d.code == TsCodes.cannot_find_module) ts2307 = true;
     }
     try T.expect(ts7016);
+    try T.expect(!ts2307);
+}
+
+test "checker: bare require call emits TS7016 for untyped resolved module" {
+    const s = try newSetup(
+        \\const u = require("foo");
+        \\u.assignment.nested = true;
+    );
+    defer destroySetup(s);
+    var stub = StubExternalResolver{
+        .canned_path = "node_modules/foo/index.js",
+        .canned_is_declaration = false,
+    };
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+    s.checker.setImporterPath("main.js");
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    var ts7016_count: usize = 0;
+    var ts2307 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.untyped_module and
+            std.mem.indexOf(u8, d.message, "Could not find a declaration file for module 'foo'") != null and
+            std.mem.indexOf(u8, d.message, "'node_modules/foo/index.js' implicitly has an 'any' type.") != null)
+        {
+            ts7016_count += 1;
+        }
+        if (d.code == TsCodes.cannot_find_module) ts2307 = true;
+    }
+    try T.expectEqual(@as(usize, 1), ts7016_count);
     try T.expect(!ts2307);
 }
 

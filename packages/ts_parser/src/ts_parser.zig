@@ -695,7 +695,30 @@ pub const Parser = struct {
             try self.scanJSDocCommentTypeExpressions(body_start, body_end);
             try self.scanJSDocTypedefDuplicateTypeTags(body_start, body_end);
             try self.scanJSDocTemplateModifierDiagnostics(body_start, body_end);
+            try self.scanJSDocPropertyNameDiagnostics(body_start, body_end);
             i = body_end + 2;
+        }
+    }
+
+    fn scanJSDocPropertyNameDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            const tag_name = self.source[tag_name_start..tag_name_end];
+            i = tag_name_end;
+            if (!(std.mem.eql(u8, tag_name, "property") or std.mem.eql(u8, tag_name, "prop"))) continue;
+            const after_type = self.jsDocTagTypeAnnotationEnd(tag_name_end, end) orelse tag_name_end;
+            const name_start = firstNonWhitespace(self.source, after_type, end);
+            if (name_start >= end or self.source[name_start] != '#') continue;
+            try self.reportCodeAt(
+                @intCast(name_start),
+                self.lineAt(@intCast(name_start)),
+                1003,
+                "Identifier expected.",
+            );
         }
     }
 
@@ -17384,6 +17407,25 @@ test "parser: JSDoc typedef with multiple type tags reports TS8033" {
     try T.expectEqual(@as(u32, 4), d.line);
     const line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..d.pos], '\n').? + 1;
     try T.expectEqual(@as(u32, 16), d.pos - @as(u32, @intCast(line_start)) + 1);
+}
+
+test "parser: JSDoc property private-name spelling reports TS1003" {
+    var s = try newTestSetup(
+        \\/**
+        \\ * @typedef Foo
+        \\ * @property {string} #id
+        \\ */
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    const d = s.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 1003), d.code);
+    try T.expectEqualStrings("Identifier expected.", d.message);
+    try T.expectEqual(@as(u32, 3), d.line);
+    const line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..d.pos], '\n').? + 1;
+    try T.expectEqual(@as(u32, 23), d.pos - @as(u32, @intCast(line_start)) + 1);
 }
 
 test "parser: top-level public before break reports declaration expected" {
