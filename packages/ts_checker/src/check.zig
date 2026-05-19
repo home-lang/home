@@ -176,6 +176,16 @@ pub const TsCodes = struct {
     /// one (and only one) required member is absent from the source.
     pub const property_missing_required: u32 = 2741;
     pub const super_not_derived: u32 = 2335;
+    /// TS2337 — `Super calls are not permitted outside constructors or
+    /// in nested functions inside constructors.` Emitted for `super()`
+    /// calls inside methods, accessors, field initializers, static
+    /// blocks, or nested functions of a class (whether the class
+    /// itself has a base or not). Takes precedence over TS2335 for
+    /// these positions. Mirrors `errorSuperCalls.ts`.
+    pub const super_call_not_permitted: u32 = 2337;
+    /// TS2754 — `'super' may not use type arguments.` Emitted for
+    /// `super<T>()` invocations. Mirrors `errorSuperCalls.ts(46,14)`.
+    pub const super_type_arguments_not_allowed: u32 = 2754;
     /// TS2660 — `'super' can only be referenced in members of derived
     /// classes or object literal expressions.` Fires when a `super`
     /// reference appears inside a derived class but outside any of
@@ -183,6 +193,14 @@ pub const TsCodes = struct {
     /// runs at class-definition time).
     pub const super_not_in_derived_member: u32 = 2660;
     pub const derived_constructor_missing_super: u32 = 2377;
+    /// TS17009 — `'super' must be called before accessing 'this' in
+    /// the constructor of a derived class.` Lexical approximation:
+    /// `this.start < first super-call.end`.
+    pub const this_before_super_call: u32 = 17009;
+    /// TS17005 — `A constructor cannot contain a 'super' call when
+    /// its class extends 'null'.` Mirrors
+    /// `superCallBeforeThisAccessing4`.
+    pub const super_call_when_extends_null: u32 = 17005;
     pub const super_before_super_call: u32 = 17011;
     /// TS2340 — `Only public and protected methods of the base class
     /// are accessible via the 'super' keyword.` Fires for `super.X`
@@ -13247,7 +13265,12 @@ pub const Checker = struct {
                 try self.checkFnDecl(m);
                 if (c.extends != hir_mod.none_node_id and fn_p.flags.is_constructor and
                     fn_p.body != hir_mod.none_node_id and
-                    !self.expressionContainsSuperCall(fn_p.body))
+                    !self.expressionContainsSuperCall(fn_p.body) and
+                    // `class D extends null { constructor(){} }` is
+                    // valid: extends-null is a no-super-required
+                    // derived class form. Mirrors
+                    // `superCallBeforeThisAccessing5`.
+                    self.hir.kindOf(c.extends) != .literal_null)
                 {
                     try self.report(m, TsCodes.derived_constructor_missing_super, "Constructors for derived classes must contain a 'super' call.");
                 }
@@ -14097,6 +14120,16 @@ pub const Checker = struct {
             return;
         const private_set = self.class_private_members.getPtr(class_name) orelse return;
         if (!private_set.contains(prop_name)) return;
+        // Suppress TS2341 for `super.<priv>` accesses — TS2340 (super
+        // can only reach methods of the base class) already covers
+        // this case and tsc never doubles up. Mirrors fixture
+        // `errorSuperPropertyAccess.ts(87,15)` / `(91,23)` where the
+        // upstream baseline only emits TS2340 for a private base-class
+        // member accessed via `super.`.
+        if (self.hir.kindOf(node) == .member_access) {
+            const m = hir_mod.memberOf(self.hir, node);
+            if (self.hir.kindOf(m.object) == .super_expr) return;
+        }
         // Walk parents looking for an enclosing `class_decl` whose
         // name matches `class_name`. Found → access is inside the
         // declaring body; allow it.
@@ -28470,11 +28503,38 @@ pub const Checker = struct {
                 if (self.hir.kindOf(c.callee) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, c.callee);
                     if (std.mem.eql(u8, self.string_interner.get(id.name), "super")) {
+                        // `super()` invoked from a class member that is
+                        // NOT directly the constructor (method, getter,
+                        // setter, field initializer, static block, or a
+                        // nested function inside the constructor) resolves
+                        // to TS2337 even when the class has no base, and
+                        // takes precedence over TS2335. Mirrors
+                        // `errorSuperCalls.ts` rows 9, 14, 18, 22, 26, 30,
+                        // 34, 38, 58, 62, 67, 71.
+                        if (!self.in_computed_property_name and
+                            self.superCallOutsideConstructorInClassMember(c.callee))
+                        {
+                            const ka_args = hir_mod.callArgs(self.hir, node);
+                            for (ka_args) |arg| _ = try self.checkExpression(arg);
+                            try self.report(c.callee, TsCodes.super_call_not_permitted, "Super calls are not permitted outside constructors or in nested functions inside constructors.");
+                            break :blk types.Primitive.any;
+                        }
                         if (self.lookupNarrow(id.name) == null) {
                             // Skip TS2335 when the super reference lives inside a
                             // class computed property name — TS2466 already
                             // covers it and tsc does not double-report.
                             if (!self.in_computed_property_name) {
+                                // TS17005 — `class X extends null { ctor()
+                                // { super(); } }` is a syntactic mistake;
+                                // emit TS17005 at the call-site instead of
+                                // the generic TS2335. Mirrors
+                                // `superCallBeforeThisAccessing4`.
+                                if (self.superCallInsideExtendsNullCtor(c.callee)) {
+                                    const args2 = hir_mod.callArgs(self.hir, node);
+                                    for (args2) |arg| _ = try self.checkExpression(arg);
+                                    try self.report(node, TsCodes.super_call_when_extends_null, "A constructor cannot contain a 'super' call when its class extends 'null'.");
+                                    break :blk types.Primitive.any;
+                                }
                                 if (self.nodeInsideDecoratorOnDerivedClassMember(c.callee)) {
                                     try self.report(c.callee, TsCodes.super_not_in_derived_member, "'super' can only be referenced in members of derived classes or object literal expressions.");
                                 } else {
@@ -28484,6 +28544,18 @@ pub const Checker = struct {
                         } else {
                             const args = hir_mod.callArgs(self.hir, node);
                             for (args) |arg| _ = try self.checkExpression(arg);
+                            // TS2754 — `super<T>()` is illegal regardless of
+                            // whether the base class is generic. Anchored at
+                            // the `<` token (immediately after the `super`
+                            // callee), matching `errorSuperCalls.ts(46,14)`.
+                            // The parser already emits TS2754 for the
+                            // tagged-template form `super<T>` `` `…` ``, so
+                            // we only emit when there are no template args.
+                            const super_type_args = hir_mod.callTypeArgs(self.hir, node);
+                            if (super_type_args.len > 0 and !self.callExprIsTaggedTemplate(node)) {
+                                const callee_span = self.hir.spanOf(c.callee);
+                                try self.reportAt(c.callee, callee_span.end, TsCodes.super_type_arguments_not_allowed, "'super' may not use type arguments.");
+                            }
                             if (self.callExprIsTaggedTemplate(node) and self.nodeIsDirectlyInsideConstructor(node)) {
                                 try self.report(c.callee, TsCodes.super_before_super_call, "'super' must be called before accessing a property of 'super' in the constructor of a derived class.");
                             }
@@ -34205,6 +34277,14 @@ pub const Checker = struct {
         {
             return types.Primitive.any;
         }
+        // TS17009 — `this` referenced inside a derived class
+        // constructor BEFORE the first `super(...)` call. Has to
+        // run BEFORE the narrow-lookup early return below so it
+        // fires even when `this` resolves to the class instance
+        // type. Mirrors `superCallBeforeThisAccessing{3,6,7}`.
+        if (std.mem.eql(u8, name_str, "this")) {
+            self.checkThisBeforeSuperInConstructor(node) catch {};
+        }
 
         // Narrowed binding from an enclosing type-guard takes
         // precedence over the static type.
@@ -37604,6 +37684,217 @@ pub const Checker = struct {
             if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
             const f = hir_mod.fnDeclOf(self.hir, cur);
             return f.flags.is_constructor;
+        }
+        return false;
+    }
+
+    /// Returns the enclosing constructor node for `node`, or
+    /// `none_node_id` if not directly inside one. Used by TS17009.
+    fn enclosingConstructorNode(self: *Checker, node: NodeId) NodeId {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
+            const f = hir_mod.fnDeclOf(self.hir, cur);
+            if (f.flags.is_constructor) return cur;
+            return hir_mod.none_node_id;
+        }
+        return hir_mod.none_node_id;
+    }
+
+    /// Returns the enclosing class (class_decl or class_expr) for a
+    /// node, or `none_node_id` if not inside one.
+    fn enclosingClassNode(self: *Checker, node: NodeId) NodeId {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .class_decl or k == .class_expr) return cur;
+        }
+        return hir_mod.none_node_id;
+    }
+
+    /// Recursively walks `node` looking for the first `super(...)`
+    /// call expression. Returns its span END offset, or null if
+    /// none. Stops descending into nested function-like / class
+    /// nodes (their super calls don't count for the outer
+    /// constructor's flow).
+    fn firstSuperCallEndPos(self: *Checker, node: NodeId) ?u32 {
+        if (node == hir_mod.none_node_id) return null;
+        const k = self.hir.kindOf(node);
+        switch (k) {
+            .fn_decl, .fn_expr, .arrow_fn, .class_decl, .class_expr => return null,
+            .call_expr => {
+                const c = hir_mod.callOf(self.hir, node);
+                if (self.hir.kindOf(c.callee) == .identifier) {
+                    const id = hir_mod.identifierOf(self.hir, c.callee);
+                    if (std.mem.eql(u8, self.string_interner.get(id.name), "super")) {
+                        return self.hir.spanOf(node).end;
+                    }
+                }
+                if (self.firstSuperCallEndPos(c.callee)) |p| return p;
+                for (hir_mod.callArgs(self.hir, node)) |arg| {
+                    if (self.firstSuperCallEndPos(arg)) |p| return p;
+                }
+                return null;
+            },
+            .block_stmt => {
+                for (hir_mod.blockStmts(self.hir, node)) |stmt| {
+                    if (self.firstSuperCallEndPos(stmt)) |p| return p;
+                }
+                return null;
+            },
+            .var_decl, .let_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, node);
+                return self.firstSuperCallEndPos(v.init);
+            },
+            .return_stmt => return self.firstSuperCallEndPos(hir_mod.returnOf(self.hir, node).value),
+            .throw_stmt => return self.firstSuperCallEndPos(hir_mod.throwOf(self.hir, node).value),
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                if (self.firstSuperCallEndPos(i.cond)) |p| return p;
+                if (self.firstSuperCallEndPos(i.then_branch)) |p| return p;
+                return self.firstSuperCallEndPos(i.else_branch);
+            },
+            .while_stmt => {
+                const w = hir_mod.whileOf(self.hir, node);
+                if (self.firstSuperCallEndPos(w.cond)) |p| return p;
+                return self.firstSuperCallEndPos(w.body);
+            },
+            .do_while_stmt => {
+                const d = hir_mod.doWhileOf(self.hir, node);
+                if (self.firstSuperCallEndPos(d.body)) |p| return p;
+                return self.firstSuperCallEndPos(d.cond);
+            },
+            .for_stmt => {
+                const fr = hir_mod.forStmtOf(self.hir, node);
+                if (self.firstSuperCallEndPos(fr.init)) |p| return p;
+                if (self.firstSuperCallEndPos(fr.cond)) |p| return p;
+                if (self.firstSuperCallEndPos(fr.update)) |p| return p;
+                return self.firstSuperCallEndPos(fr.body);
+            },
+            .try_stmt => {
+                const t = hir_mod.tryOf(self.hir, node);
+                if (self.firstSuperCallEndPos(t.block)) |p| return p;
+                if (self.firstSuperCallEndPos(t.catch_block)) |p| return p;
+                return self.firstSuperCallEndPos(t.finally_block);
+            },
+            .switch_stmt => {
+                const s = hir_mod.switchOf(self.hir, node);
+                if (self.firstSuperCallEndPos(s.discriminant)) |p| return p;
+                for (hir_mod.switchCases(self.hir, node)) |case| {
+                    if (self.firstSuperCallEndPos(case)) |p| return p;
+                }
+                return null;
+            },
+            .new_expr => {
+                const c = hir_mod.callOf(self.hir, node);
+                if (self.firstSuperCallEndPos(c.callee)) |p| return p;
+                for (hir_mod.callArgs(self.hir, node)) |arg| {
+                    if (self.firstSuperCallEndPos(arg)) |p| return p;
+                }
+                return null;
+            },
+            .member_access => return self.firstSuperCallEndPos(hir_mod.memberOf(self.hir, node).object),
+            .object_literal => {
+                for (hir_mod.objectLiteralProps(self.hir, node)) |p| {
+                    if (self.firstSuperCallEndPos(p)) |q| return q;
+                }
+                return null;
+            },
+            .object_property => {
+                const op = hir_mod.objectPropertyOf(self.hir, node);
+                return self.firstSuperCallEndPos(op.value);
+            },
+            .array_literal => {
+                for (hir_mod.arrayLiteralElements(self.hir, node)) |elem| {
+                    if (self.firstSuperCallEndPos(elem)) |p| return p;
+                }
+                return null;
+            },
+            else => return null,
+        }
+    }
+
+    /// Emits TS17009 when a `this` reference appears inside a
+    /// derived class constructor BEFORE the first `super(...)` call
+    /// completes. Lexical approximation: this.start < first
+    /// super-call.end. Skips classes that `extends null` and
+    /// constructors with no super call (TS2377 covers that case).
+    fn checkThisBeforeSuperInConstructor(self: *Checker, this_node: NodeId) CheckError!void {
+        const ctor = self.enclosingConstructorNode(this_node);
+        if (ctor == hir_mod.none_node_id) return;
+        const class_node = self.enclosingClassNode(ctor);
+        if (class_node == hir_mod.none_node_id) return;
+        const c = hir_mod.classOf(self.hir, class_node);
+        if (c.extends == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(c.extends) == .literal_null) return;
+        const fn_p = hir_mod.fnDeclOf(self.hir, ctor);
+        if (fn_p.body == hir_mod.none_node_id) return;
+        const super_end = self.firstSuperCallEndPos(fn_p.body) orelse return;
+        const this_start = self.hir.spanOf(this_node).start;
+        if (this_start < super_end) {
+            try self.report(this_node, TsCodes.this_before_super_call, "'super' must be called before accessing 'this' in the constructor of a derived class.");
+        }
+    }
+
+    /// True when `super_callee` is a `super` identifier directly
+    /// inside a constructor of a class whose `extends` clause is the
+    /// literal `null`. Mirrors `superCallBeforeThisAccessing4`.
+    fn superCallInsideExtendsNullCtor(self: *Checker, super_callee: NodeId) bool {
+        const ctor = self.enclosingConstructorNode(super_callee);
+        if (ctor == hir_mod.none_node_id) return false;
+        const class_node = self.enclosingClassNode(ctor);
+        if (class_node == hir_mod.none_node_id) return false;
+        const c = hir_mod.classOf(self.hir, class_node);
+        if (c.extends == hir_mod.none_node_id) return false;
+        return self.hir.kindOf(c.extends) == .literal_null;
+    }
+
+    /// True when `node` (a `super(…)` callee identifier) lives inside a
+    /// class body but NOT directly inside the constructor itself.
+    /// Captures methods, getters/setters, field initializers, static
+    /// blocks, AND nested functions inside the constructor. Returns
+    /// false when `node` is outside any class lexically, in which case
+    /// the regular TS2335 diagnostic still applies. Mirrors tsc's
+    /// choice of TS2337 over TS2335 for these positions
+    /// (`errorSuperCalls.ts` rows 9, 14, 18, 22, 26, 30, 34, 38, 58,
+    /// 62, 67, 71).
+    fn superCallOutsideConstructorInClassMember(self: *Checker, node: NodeId) bool {
+        var prev: NodeId = node;
+        var cur = self.hir.parentOf(node);
+        var crossed_non_ctor_fn = false;
+        var crossed_ctor = false;
+        while (cur != hir_mod.none_node_id) : ({
+            prev = cur;
+            cur = self.hir.parentOf(cur);
+        }) {
+            const k = self.hir.kindOf(cur);
+            switch (k) {
+                .fn_decl, .fn_expr => {
+                    const f = hir_mod.fnDeclOf(self.hir, cur);
+                    if (f.flags.is_constructor) {
+                        crossed_ctor = true;
+                    } else {
+                        crossed_non_ctor_fn = true;
+                    }
+                },
+                .arrow_fn => {},
+                .class_decl, .class_expr => {
+                    if (crossed_ctor and !crossed_non_ctor_fn) return false;
+                    if (crossed_non_ctor_fn) return true;
+                    // No function frame between super and the class:
+                    // we're in a field initializer (`p = super();`) or
+                    // a static `{ … }` block. tsc treats both as TS2337.
+                    if (self.hir.kindOf(prev) == .object_property) return true;
+                    if (self.hir.kindOf(prev) == .block_stmt) {
+                        for (hir_mod.classMembers(self.hir, cur)) |m| {
+                            if (m == prev) return true;
+                        }
+                    }
+                    return false;
+                },
+                else => {},
+            }
         }
         return false;
     }
