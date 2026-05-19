@@ -5585,7 +5585,28 @@ pub const Parser = struct {
 
         var type_annotation: NodeId = hir_mod.none_node_id;
         if (self.match(.colon)) {
-            type_annotation = try self.parseTypeAnnotation();
+            // Detect a stray type predicate in variable declaration
+            // type position: `var x: <id-or-this> is T`. Upstream tsc
+            // emits TS1228 ("A type predicate is only allowed in
+            // return type position for functions and methods.")
+            // anchored on the predicate's `arg` token. Mirrors fixture
+            // `typePredicateOnVariableDeclaration01` (`var x: this is
+            // string;`). The `<ident> is T` variant is left to the
+            // generic type-annotation parser because the upstream
+            // baseline reshapes it as a TS2304 + TS1005-pair recovery.
+            const ann_first = self.peek();
+            const ann_second = self.peekAt(1);
+            if (ann_first.kind == .kw_this and
+                ann_second.kind == .kw_is and
+                !ann_second.flags.preceded_by_newline)
+            {
+                try self.reportCodeAt(ann_first.span.start, ann_first.line, 1228, "A type predicate is only allowed in return type position for functions and methods.");
+                _ = self.advance(); // this
+                _ = self.advance(); // is
+                type_annotation = try self.parseTypeAnnotation();
+            } else {
+                type_annotation = try self.parseTypeAnnotation();
+            }
         }
 
         var init_node: NodeId = hir_mod.none_node_id;
