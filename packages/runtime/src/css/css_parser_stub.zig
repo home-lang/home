@@ -500,6 +500,28 @@ pub const css_properties = struct {
 /// Mirror of the `css.css_rules.*` sub-namespace touched by wave-7 leaves.
 pub const css_rules = struct {
     pub const Location = @import("./css_parser_stub.zig").Location;
+    /// Wave-16 Tier-1 grinder extension. `contain.zig` reaches for
+    /// `css_rules.container.ContainerName` — a `{ v: []const u8 }`
+    /// newtype. Methods that would touch a real Parser trip
+    /// `@compileError`.
+    pub const container = struct {
+        pub const ContainerName = struct {
+            v: []const u8 = "",
+
+            pub fn parse(_: *Parser) Result(ContainerName) {
+                @compileError("css_parser not yet ported — ContainerName.parse");
+            }
+            pub fn toCss(_: *const ContainerName, _: *Printer) PrintErr!void {
+                @compileError("css_parser not yet ported — ContainerName.toCss");
+            }
+            pub fn eql(_: *const ContainerName, _: *const ContainerName) bool {
+                return false;
+            }
+            pub fn deepClone(this: *const ContainerName, _: std.mem.Allocator) ContainerName {
+                return this.*;
+            }
+        };
+    };
     pub const style = struct {
         /// Generic placeholder for `style.StyleRule(R)`. Real upstream
         /// carries `selectors`, `vendor_prefixes`, `declarations`, `rules`,

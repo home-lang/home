@@ -63,6 +63,19 @@ pub const ComptimeStringMap = comptime_string_map.ComptimeStringMap;
 pub const ComptimeStringMap16 = comptime_string_map.ComptimeStringMap16;
 pub const ComptimeStringMapWithKeyType = comptime_string_map.ComptimeStringMapWithKeyType;
 
+/// Wave-16 Tier-1 grinder stub — Bun's `bun.ComptimeEnumMap(T)` is a
+/// thin wrapper that maps `@tagName(v)` → `v` for every variant of `T`.
+/// Used by sql/mysql/AuthMethod.zig and other small enum dispatchers.
+pub fn ComptimeEnumMap(comptime T: type) type {
+    @setEvalBranchQuota(50_000);
+    const values = std.enums.values(T);
+    var entries: [values.len]struct { [:0]const u8, T } = undefined;
+    for (values, &entries) |value, *entry| {
+        entry.* = .{ @tagName(value), value };
+    }
+    return ComptimeStringMap(T, entries);
+}
+
 const identity_context = @import("collections/identity_context.zig");
 pub const IdentityContext = identity_context.IdentityContext;
 pub const ArrayIdentityContext = identity_context.ArrayIdentityContext;
@@ -253,6 +266,8 @@ pub const meta = struct {
 // signal handlers) re-lands in a later sub-phase.
 pub const crash_handler = struct {
     pub const handle_oom = @import("crash_handler/handle_oom.zig");
+    // Wave-16 Tier-1 grinder (2026-05-18):
+    pub const CPUFeatures = @import("crash_handler/CPUFeatures.zig");
 };
 
 // ---- src/core/ -----------------------------------------------------
@@ -410,6 +425,11 @@ pub const runtime = struct {
     pub const cli = struct {
         pub const ci_info = @import("runtime/cli/ci_info.zig");
         pub const discord_command = @import("runtime/cli/discord_command.zig");
+        // Wave-16 Tier-1 grinder (2026-05-18):
+        pub const colon_list_type = @import("runtime/cli/colon_list_type.zig");
+        pub const ColonListType = colon_list_type.ColonListType;
+        pub const shell_completions = @import("runtime/cli/shell_completions.zig");
+        pub const fuzzilli_command = @import("runtime/cli/fuzzilli_command.zig");
         // `test_` rather than `test` because `test` is a Zig keyword.
         pub const test_ = struct {
             pub const ParallelRunner = @import("runtime/cli/test/ParallelRunner.zig");
@@ -684,6 +704,9 @@ pub const css = struct {
         // Wave-15 Tier-1 grinder (2026-05-18). FillRule + AlphaValue
         // — pure-data shape leaves over the css_parser_stub.
         pub const shape = @import("css/properties/shape.zig");
+        // Wave-16 Tier-1 grinder (2026-05-18). ContainerType +
+        // ContainerNameList + Container — pure-data containment leaves.
+        pub const contain = @import("css/properties/contain.zig");
     };
     pub const PropertyCategory = logical.PropertyCategory;
     pub const LogicalGroup = logical.LogicalGroup;
@@ -840,6 +863,8 @@ pub const sql = struct {
         pub const QueryStatus = @import("sql/mysql/QueryStatus.zig").Status;
         pub const MySQLQueryResult = @import("sql/mysql/MySQLQueryResult.zig");
         pub const MySQLTypes = @import("sql/mysql/MySQLTypes.zig");
+        // Wave-16 Tier-1 grinder (2026-05-18):
+        pub const AuthMethod = @import("sql/mysql/AuthMethod.zig").AuthMethod;
         pub const protocol = struct {
             pub const PacketType = @import("sql/mysql/protocol/PacketType.zig").PacketType;
             pub const PacketHeader = @import("sql/mysql/protocol/PacketHeader.zig");
@@ -1261,6 +1286,13 @@ test {
     _ = @import("ptr/weak_ptr.zig");
     _ = @import("ptr/external_shared.zig");
     _ = @import("css/properties/shape.zig");
+    // Wave-16 Tier-1 grinder (2026-05-18):
+    _ = @import("crash_handler/CPUFeatures.zig");
+    _ = @import("runtime/cli/colon_list_type.zig");
+    _ = @import("runtime/cli/shell_completions.zig");
+    _ = @import("runtime/cli/fuzzilli_command.zig");
+    _ = @import("sql/mysql/AuthMethod.zig");
+    _ = @import("css/properties/contain.zig");
 }
 
 test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {
