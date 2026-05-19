@@ -484,9 +484,13 @@ const harness_prelude =
     \\    toMatchObject(expected) {
     \\      if (expected === null || typeof expected !== "object") __home_fail("toMatchObject() requires an object");
     \\      if (value === null || typeof value !== "object") __home_fail("Expected value must be an object");
+    \\      if (Array.isArray(expected) && (!Array.isArray(value) || value.length !== expected.length)) {
+    \\        __home_assert(false, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to match object " + __home_format(expected));
+    \\        return;
+    \\      }
     \\      let pass = true;
     \\      for (const key of Object.keys(expected)) {
-    \\        if (!__home_deep_equal(value[key], expected[key], false, new Map())) {
+    \\        if (!(key in value) || !__home_deep_equal(value[key], expected[key], false, new Map())) {
     \\          pass = false;
     \\          break;
     \\        }
@@ -1617,6 +1621,30 @@ test "bootstrap runner keeps todo-only files as todo" {
 
     try std.testing.expectEqual(test_result.TestStatus.todo, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
+}
+
+test "bootstrap toMatchObject rejects missing keys and array length mismatches" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\test("match object fidelity", () => {
+        \\  expect({ a: 1, b: 2 }).toMatchObject({ a: 1 });
+        \\  expect({}).not.toMatchObject({ missing: undefined });
+        \\  expect([1, 2]).not.toMatchObject([1]);
+        \\  expect([1]).not.toMatchObject([1, 2]);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/to-match-object-fidelity.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try CorpusRuntime.init(std.testing.allocator);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "Bun test import rewrite installs globals for no-import tests" {
