@@ -10,6 +10,13 @@ macOS, Linux, and the WASM target.
 
 - **Not wired into `zig build test`.** Staged only; wiring lands alongside the
   Phase 12.8 test-runner copy.
+- `home test packages/runtime/test/bun-corpus/` is the full acceptance gate and
+  must keep failing until Home can execute 100 % of this corpus natively. A
+  separate bootstrap path exists for the current allowlist:
+  `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
+  after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
+  That subset is only a smoke path for JSC + `home_test`; it is not the
+  release gate.
 - No source renames. `Bun.serve`, `Bun.write`, `Bun.spawn`, etc. appear
   verbatim. The `Bun.* -> Home.*` rename happens at **test-runtime** (via the
   host runtime's surface aliasing), not at copy time, so the corpus stays a

@@ -435,6 +435,7 @@ pub fn build(b: *std.Build) void {
     // resolve `home_rt` symbolically rather than via relative paths.
     const home_rt_pkg = createPackage(b, "packages/runtime/src/home_rt.zig", target, optimize, zig_test_framework);
     home_rt_pkg.addImport("home_rt", home_rt_pkg);
+    home_test_pkg.addImport("home_rt", home_rt_pkg);
 
     // Game development packages (order matters for dependencies)
     const game_assets_pkg = createPackage(b, "packages/game/src/assets.zig", target, optimize, zig_test_framework);
@@ -552,10 +553,16 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "enable_sanitize_undefined", enable_sanitize_undefined);
     build_options.addOption(bool, "enable_sanitize_thread", enable_sanitize_thread);
     build_options.addOption(bool, "enable_jsc", enable_jsc);
+    const build_options_module = build_options.createModule();
 
     // Add build options to executable
-    exe.root_module.addImport("build_options", build_options.createModule());
-    home_rt_pkg.addImport("build_options", build_options.createModule());
+    exe.root_module.addImport("build_options", build_options_module);
+    home_rt_pkg.addImport("build_options", build_options_module);
+    home_test_pkg.addImport("build_options", build_options_module);
+    if (enable_jsc) {
+        exe.root_module.linkSystemLibrary("c++", .{});
+        if (target.result.os.tag == .macos) exe.root_module.linkFramework("JavaScriptCore", .{});
+    }
 
     // Link Craft if enabled
     if (enable_craft) {
@@ -1154,6 +1161,10 @@ pub fn build(b: *std.Build) void {
 
     // home_test: only the public facade is wired in.
     const home_test_tests = b.addTest(.{ .root_module = home_test_pkg });
+    if (enable_jsc) {
+        home_test_tests.root_module.linkSystemLibrary("c++", .{});
+        if (target.result.os.tag == .macos) home_test_tests.root_module.linkFramework("JavaScriptCore", .{});
+    }
     const run_home_test_tests = b.addRunArtifact(home_test_tests);
     dependOnTest(test_step, &run_home_test_tests.step, test_filter, "home_test");
 

@@ -6,11 +6,12 @@ row is in the
 [README parity status](../README.md#bun-runtime-port-packagesruntime)
 section.
 
-> **Status:** Substrate + JSC M6 landed. **485 / 1,193 Bun source
-> files ported** (~40.7%); the runtime is not yet JavaScript-callable
+> **Status:** Substrate + JSC M6 landed. 485 / 1,193 Bun source
+> files ported (~40.7%); the runtime is not yet JavaScript-callable
 > end-to-end, but Phase 12.2 (JSC bring-up) has reached the M6
 > milestone — JSON + Promise + Iterator + Global helpers — across
-> 96 files in `packages/runtime/src/jsc/`. Full audit:
+> 97 files in `packages/runtime/src/jsc/`, including a live
+> `JSEvaluateScript` smoke. Full audit:
 > [`packages/runtime/PORT_AUDIT_2026-05-20.md`](../packages/runtime/PORT_AUDIT_2026-05-20.md).
 
 Legend:
@@ -24,7 +25,7 @@ Legend:
 | Sub-phase | Source under `~/Code/bun/src/` | Destination | Status |
 |---|---|---|---|
 | 12.1 | `cli/` | `src/cli/` | 🟡 scaffold landed (CLI flag parsing partial) |
-| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone landed (96 files: JSON + Promise + Iterator + Global helpers) |
+| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone + native eval smoke landed (97 files: JSON + Promise + Iterator + Global helpers + `JSEvaluateScript`) |
 | 12.3 | `event_loop/`, `io/`, `async/` | `src/event_loop/` | 🟡 substrate landing (~30+ leaves ported) |
 | 12.4 | `resolver/`, `module_loader.zig` | `src/module_loader/` | 🔴 blocked on 12.2 |
 | 12.5 | `web/`, `http/`, `csrf/`, `dns/` | `src/web/` | 🔴 blocked on 12.3 |
@@ -163,6 +164,12 @@ manager.
 feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
+Bootstrap smoke: `home test packages/runtime/test/bun-corpus
+--bun-corpus-native-subset=minimal-js` executes one allowlisted JS
+corpus file through Home's JSC evaluator when `home` is built with
+`./pantry/.bin/zig build -Denable_jsc=true`. This is deliberately not
+the acceptance gate.
+
 ## Summary
 
 Substrate file-count progress (the only objective number today):
@@ -172,7 +179,7 @@ Substrate file-count progress (the only objective number today):
 | Bun upstream files (excluding test/codegen/jsc/macros) | 1,193 | pinned at `fd0b6f1a` |
 | Files ported to `packages/runtime/src/` | 485 | ~40.7% |
 | Files remaining to port | 708 | ~59.3% |
-| JSC bring-up (`packages/runtime/src/jsc/`) | 96 files | Phase 12.2 M6 milestone |
+| JSC bring-up (`packages/runtime/src/jsc/`) | 97 files | Phase 12.2 M6 milestone + native eval smoke |
 | Node namespace (`packages/runtime/src/node/`) | 28 files | Phase 12.7 round-15 |
 | Tier-0 leaves (≤100 LOC, zero subsystem coupling) | 30 catalogued | next-to-port pool |
 | Tier-1 leaves (≤300 LOC, light coupling) | 30 catalogued | follow-on pool |

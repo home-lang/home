@@ -2074,6 +2074,8 @@ fn printTestUsage() void {
         \\  -p, --package <name>    Run tests only for a specific package
         \\  --zig                   Run only Zig unit tests
         \\  --home                  Run only Home integration tests
+        \\  --bun-corpus-native-subset <name>
+        \\                          Run an explicit native Bun-corpus bootstrap subset
         \\  -h, --help              Show this help message
         \\
         \\{s}Examples:{s}
@@ -2096,8 +2098,16 @@ fn printTestUsage() void {
         \\  *.test.hm                       Home test files (short ext)
         \\  *_test.zig                      Zig unit test files
         \\
+        \\{s}Bun Corpus Bootstrap:{s}
+        \\  home test packages/runtime/test/bun-corpus
+        \\                                  Full corpus gate; intentionally blocked until 100% native parity
+        \\  home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js
+        \\                                  Run the current allowlisted native JSC smoke subset
+        \\
     , .{
         Color.Blue.code(),
+        Color.Reset.code(),
+        Color.Green.code(),
         Color.Reset.code(),
         Color.Green.code(),
         Color.Reset.code(),
@@ -2893,6 +2903,58 @@ fn argTargetsBunCorpus(args: []const [:0]const u8) ?[]const u8 {
     return null;
 }
 
+fn argBunCorpusSubset(args: []const [:0]const u8) ?home_test.corpus_runner.Subset {
+    for (args, 0..) |arg, i| {
+        if ((std.mem.eql(u8, arg, "--bun-corpus-native-subset") or
+            std.mem.eql(u8, arg, "--bun-corpus-subset")) and i + 1 < args.len)
+        {
+            return home_test.corpus_runner.parseSubsetFlagValue(args[i + 1]);
+        }
+        const prefixes = [_][]const u8{
+            "--bun-corpus-native-subset=",
+            "--bun-corpus-subset=",
+        };
+        for (prefixes) |prefix| {
+            if (std.mem.startsWith(u8, arg, prefix)) {
+                return home_test.corpus_runner.parseSubsetFlagValue(arg[prefix.len..]);
+            }
+        }
+    }
+    return null;
+}
+
+fn runBunCorpusNativeSubset(allocator: std.mem.Allocator, corpus_path: []const u8, subset: home_test.corpus_runner.Subset) !void {
+    const summary = try home_test.corpus_runner.runSubset(g_io, allocator, corpus_path, subset);
+
+    if (summary.blocked) {
+        std.debug.print("\n{s}Bun Corpus Native Subset: BLOCKED{s}\n", .{ Color.Yellow.code(), Color.Reset.code() });
+        std.debug.print("{s}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
+        std.debug.print("path: {s}\n", .{corpus_path});
+        std.debug.print("subset: {s}\n", .{subset.label()});
+        std.debug.print("files selected: {d}\n", .{summary.files});
+        std.debug.print("runner package: packages/home_test\n", .{});
+        std.debug.print("reason: {s}\n\n", .{summary.reason});
+        std.debug.print("Build `home` with `./pantry/.bin/zig build -Denable_jsc=true` to execute this native subset.\n", .{});
+        std.debug.print("This bootstrap subset is not the full Bun corpus acceptance gate.\n\n", .{});
+        std.process.exit(1);
+    }
+
+    std.debug.print("\n{s}Bun Corpus Native Subset: {s}{s}\n", .{
+        if (summary.failed == 0) Color.Green.code() else Color.Red.code(),
+        if (summary.failed == 0) "PASS" else "FAIL",
+        Color.Reset.code(),
+    });
+    std.debug.print("{s}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
+    std.debug.print("path: {s}\n", .{corpus_path});
+    std.debug.print("subset: {s}\n", .{subset.label()});
+    std.debug.print("files executed: {d}\n", .{summary.files});
+    std.debug.print("tests passed: {d}\n", .{summary.passed});
+    std.debug.print("tests failed: {d}\n", .{summary.failed});
+    std.debug.print("tests todo: {d}\n\n", .{summary.todo});
+
+    if (summary.failed != 0) std.process.exit(1);
+}
+
 fn runBunCorpusNativeGate(allocator: std.mem.Allocator, corpus_path: []const u8) !void {
     const counts = home_test.corpus.countPath(g_io, corpus_path) catch |err| switch (err) {
         error.FileNotFound => home_test.corpus.Counts{},
@@ -2920,6 +2982,9 @@ fn runBunCorpusNativeGate(allocator: std.mem.Allocator, corpus_path: []const u8)
 
 fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
     if (argTargetsBunCorpus(args)) |corpus_path| {
+        if (argBunCorpusSubset(args)) |subset| {
+            return runBunCorpusNativeSubset(allocator, corpus_path, subset);
+        }
         return runBunCorpusNativeGate(allocator, corpus_path);
     }
 
