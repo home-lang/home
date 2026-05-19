@@ -136,21 +136,21 @@ test {
     _ = @import("sql/mysql/protocol/ColumnDefinition41.zig");
     _ = @import("sql/mysql/MySQLRequest.zig");
     _ = @import("sql/postgres/protocol/Authentication.zig");
-    // Wave-25 grinder (2026-05-19) — fresh leaves from less-mined
-    // corners.  Each carries the standard home_rt rewrite + inline tests;
+    // Wave-26 grinder (2026-05-19) — fresh leaves from less-mined
+    // corners. Each carries the standard home_rt rewrite + inline tests;
     // method-bodies that reach into wave-16/18 NewReader stubs trip a
     // normal Zig "no method named X" compile error only if exercised.
-    //   - sql/mysql/MySQLParam: pure `Param` descriptor used by Query +
-    //     PreparedStatement writers (FieldType + ColumnFlags only).
-    //   - sql/postgres/protocol/NotificationResponse: `A` backend packet
-    //     (pid + channel + payload) from a LISTEN/NOTIFY publication.
-    //     Uses shared.Data.ByteList stub for the two byte-list fields.
-    _ = @import("sql/mysql/MySQLParam.zig");
-    _ = @import("sql/postgres/protocol/NotificationResponse.zig");
-    //   - bun_core/result: pure Result(T, E) generic.
-    //   - bun_core/tty: TTY mode enum + extern Bun__ttySetMode wrapper.
     //   - runtime/cli/which_npm_client: NPMClient pure descriptor.
-    _ = @import("bun_core/result.zig");
-    _ = @import("bun_core/tty.zig");
+    //   - sql/postgres/protocol/FieldMessage: tagged-union over the
+    //     FieldType enum carrying each `T<value>` pair in an
+    //     ErrorResponse / NoticeResponse body. `bun.String` substituted
+    //     with a heap-owned `[]u8` slice + matching cloneUTF8/deref.
+    //   - sql/postgres/protocol/ErrorResponse: `E` backend packet (stream
+    //     of FieldMessage records) — fatal-or-info from the server.
+    //   - sql/postgres/protocol/NoticeResponse: `N` backend packet,
+    //     same shape as ErrorResponse but non-fatal.
     _ = @import("runtime/cli/which_npm_client.zig");
+    _ = @import("sql/postgres/protocol/FieldMessage.zig");
+    _ = @import("sql/postgres/protocol/ErrorResponse.zig");
+    _ = @import("sql/postgres/protocol/NoticeResponse.zig");
 }

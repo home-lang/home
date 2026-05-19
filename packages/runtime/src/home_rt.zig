@@ -472,6 +472,11 @@ pub const runtime = struct {
         pub const ColonListType = colon_list_type.ColonListType;
         pub const shell_completions = @import("runtime/cli/shell_completions.zig");
         pub const fuzzilli_command = @import("runtime/cli/fuzzilli_command.zig");
+        // Wave-26 grinder (2026-05-19) — `which-npm-client` result
+        // descriptor (npm client `bin` path + `Tag` enum). Pure data
+        // — upstream `@import("bun")` was unused.
+        pub const which_npm_client = @import("runtime/cli/which_npm_client.zig");
+        pub const NPMClient = which_npm_client.NPMClient;
         // `test_` rather than `test` because `test` is a Zig keyword.
         pub const test_ = struct {
             pub const ParallelRunner = @import("runtime/cli/test/ParallelRunner.zig");
@@ -617,6 +622,13 @@ pub const node = struct {
     // RFC-3986-leaning parser; the JS shim re-attaches once the
     // Phase 12.2 JSC bridge is live.
     pub const url = @import("node/url.zig");
+    // Phase 12.7 (2026-05-19) — `node:querystring` Zig substrate. Legacy
+    // `application/x-www-form-urlencoded` parser kept around for the
+    // legacy `url.parse` flow + many `node:*` tests. Pure-Zig, no JSC
+    // dependency. Surface: `parse` / `stringify` / `escape` /
+    // `unescape` + `encode` / `decode` aliases + `ParseOptions` /
+    // `StringifyOptions`.
+    pub const querystring = @import("node/querystring.zig");
     // Phase 12.7 round-12 (2026-05-19) — `node:crypto` minimal substrate
     // built on std.crypto (CSPRNG + Hash family Md5/Sha1/Sha2/Sha3 +
     // HMAC). OpenSSL-backed surfaces (pbkdf2, scrypt, cipher streams,
@@ -1195,6 +1207,15 @@ pub const sql = struct {
             // `payload`; decoder body reaches into the wave-16 NewReader
             // stub method surface (length/int4/readZ).
             pub const NotificationResponse = @import("sql/postgres/protocol/NotificationResponse.zig");
+            // Wave-26 grinder (2026-05-19). FieldMessage tagged-union
+            // (one per `T<value>` record inside an ErrorResponse /
+            // NoticeResponse body) + the two backend packets that
+            // hold a stream of them. Upstream `bun.String` is
+            // substituted with a heap-owned `[]u8` slice (`cloneUTF8`
+            // / `deref` / `slice` / `format` — same public shape).
+            pub const FieldMessage = @import("sql/postgres/protocol/FieldMessage.zig").FieldMessage;
+            pub const ErrorResponse = @import("sql/postgres/protocol/ErrorResponse.zig");
+            pub const NoticeResponse = @import("sql/postgres/protocol/NoticeResponse.zig");
         };
     };
 };
