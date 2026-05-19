@@ -385,6 +385,8 @@ const harness_prelude =
     \\      __home_assert(typeof value === expected, isNot, "Expected value" + (isNot ? " not" : "") + " to be typeof " + String(expected));
     \\    },
     \\    toBeInstanceOf(ctor) {
+    \\      if (arguments.length < 1) __home_fail("toBeInstanceOf() requires 1 argument");
+    \\      if (typeof ctor !== "function") __home_fail("Expected value must be a function: " + __home_format(ctor));
     \\      __home_assert(value instanceof ctor, isNot, "Expected value" + (isNot ? " not" : "") + " to be instance of " + (ctor && ctor.name || "<anonymous>"));
     \\    },
     \\    toEqual(expected) {
@@ -1344,6 +1346,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_is_thenable(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "stripANSI(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeInstanceOf(ctor)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeInstanceOf() requires 1 argument") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Expected value must be a function:") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTypeOf(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTypeOf() requires a valid type string argument") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeUndefined()") != null);
