@@ -42,4 +42,19 @@ test {
     _ = @import("jsc/opaques.zig");
     _ = @import("jsc/extern_fns.zig");
     _ = @import("jsc/types.zig");
+    // Wave-18 Tier-0 grinder (2026-05-18) — sql wire-protocol leaves.
+    _ = @import("sql/shared/Data.zig");
+    _ = @import("sql/mysql/protocol/NewReader.zig");
+    _ = @import("sql/mysql/protocol/EOFPacket.zig");
+    _ = @import("sql/mysql/protocol/StmtPrepareOKPacket.zig");
+    _ = @import("sql/mysql/protocol/LocalInfileRequest.zig");
+    _ = @import("sql/mysql/protocol/OKPacket.zig");
+    _ = @import("sql/postgres/protocol/PasswordMessage.zig");
+    _ = @import("sql/postgres/protocol/SASLResponse.zig");
+    _ = @import("sql/postgres/protocol/SASLInitialResponse.zig");
+    _ = @import("sql/postgres/protocol/CopyOutResponse.zig");
+    _ = @import("sql/postgres/protocol/Parse.zig");
+    _ = @import("sql/postgres/protocol/ReadyForQuery.zig");
+    _ = @import("sql/postgres/protocol/ParameterStatus.zig");
+    _ = @import("sql/postgres/protocol/DataRow.zig");
 }

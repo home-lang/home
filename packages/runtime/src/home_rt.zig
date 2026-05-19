@@ -896,6 +896,11 @@ pub const sql = struct {
     pub const shared = struct {
         pub const ConnectionFlags = @import("sql/shared/ConnectionFlags.zig").ConnectionFlags;
         pub const SQLQueryResultMode = @import("sql/shared/SQLQueryResultMode.zig").SQLQueryResultMode;
+        // Wave-18 Tier-0 grinder (2026-05-18). Stub union with
+        // `.owned`/`.temporary`/`.inline_storage`/`.empty` variants —
+        // packet decoders/encoders that field-store `Data` compile;
+        // `toOwned`/`zdeinit`/`create` defer to Phase 12.2.
+        pub const Data = @import("sql/shared/Data.zig").Data;
     };
     pub const mysql = struct {
         pub const SSLMode = @import("sql/mysql/SSLMode.zig").SSLMode;
@@ -913,6 +918,17 @@ pub const sql = struct {
             // codec (MySQL wire-protocol primitive). Depends only on
             // `home_rt.BoundedArray`.
             pub const EncodeInt = @import("sql/mysql/protocol/EncodeInt.zig");
+            // Wave-18 Tier-0 grinder (2026-05-18). MySQL wire-protocol
+            // packet leaves. `NewReader` is a sibling stub mirroring
+            // the postgres pattern — method bodies are absent so any
+            // caller that exercises decode() trips a natural compile
+            // error pointing back at the stub.
+            pub const NewReader = @import("sql/mysql/protocol/NewReader.zig").NewReader;
+            pub const decoderWrap = @import("sql/mysql/protocol/NewReader.zig").decoderWrap;
+            pub const EOFPacket = @import("sql/mysql/protocol/EOFPacket.zig");
+            pub const StmtPrepareOKPacket = @import("sql/mysql/protocol/StmtPrepareOKPacket.zig");
+            pub const LocalInfileRequest = @import("sql/mysql/protocol/LocalInfileRequest.zig");
+            pub const OKPacket = @import("sql/mysql/protocol/OKPacket.zig");
         };
     };
     pub const postgres = struct {
@@ -943,6 +959,20 @@ pub const sql = struct {
             pub const DecoderWrap = @import("sql/postgres/protocol/DecoderWrap.zig").DecoderWrap;
             pub const WriteWrap = @import("sql/postgres/protocol/WriteWrap.zig").WriteWrap;
             pub const BackendKeyData = @import("sql/postgres/protocol/BackendKeyData.zig");
+            // Wave-18 Tier-0 grinder (2026-05-18). Postgres
+            // wire-protocol writer/reader packet leaves. All reach
+            // into the wave-16 NewReader/NewWriter stub method
+            // surface — exercising the runtime decode/write path
+            // trips a natural compile error until Data.zig is fully
+            // wired (Phase 12.2).
+            pub const PasswordMessage = @import("sql/postgres/protocol/PasswordMessage.zig");
+            pub const SASLResponse = @import("sql/postgres/protocol/SASLResponse.zig");
+            pub const SASLInitialResponse = @import("sql/postgres/protocol/SASLInitialResponse.zig");
+            pub const CopyOutResponse = @import("sql/postgres/protocol/CopyOutResponse.zig");
+            pub const Parse = @import("sql/postgres/protocol/Parse.zig");
+            pub const ReadyForQuery = @import("sql/postgres/protocol/ReadyForQuery.zig");
+            pub const ParameterStatus = @import("sql/postgres/protocol/ParameterStatus.zig");
+            pub const DataRow = @import("sql/postgres/protocol/DataRow.zig");
         };
     };
 };
@@ -1358,6 +1388,21 @@ test {
     _ = @import("jsc/opaques.zig");
     _ = @import("jsc/extern_fns.zig");
     _ = @import("jsc/types.zig");
+    // Wave-18 Tier-0 grinder (2026-05-18) — sql wire-protocol leaves.
+    _ = @import("sql/shared/Data.zig");
+    _ = @import("sql/mysql/protocol/NewReader.zig");
+    _ = @import("sql/mysql/protocol/EOFPacket.zig");
+    _ = @import("sql/mysql/protocol/StmtPrepareOKPacket.zig");
+    _ = @import("sql/mysql/protocol/LocalInfileRequest.zig");
+    _ = @import("sql/mysql/protocol/OKPacket.zig");
+    _ = @import("sql/postgres/protocol/PasswordMessage.zig");
+    _ = @import("sql/postgres/protocol/SASLResponse.zig");
+    _ = @import("sql/postgres/protocol/SASLInitialResponse.zig");
+    _ = @import("sql/postgres/protocol/CopyOutResponse.zig");
+    _ = @import("sql/postgres/protocol/Parse.zig");
+    _ = @import("sql/postgres/protocol/ReadyForQuery.zig");
+    _ = @import("sql/postgres/protocol/ParameterStatus.zig");
+    _ = @import("sql/postgres/protocol/DataRow.zig");
 }
 
 test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {
