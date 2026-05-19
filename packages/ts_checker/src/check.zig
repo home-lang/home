@@ -15787,10 +15787,24 @@ pub const Checker = struct {
             obj_t = self.typeOfIdentifierDeclared(e.object);
         }
         if (!self.typeHasReadonlyIndexSignature(obj_t)) return;
+        // tsc renders the message as "Index signature in type 'X' only
+        // permits reading." when a type name is available — typically
+        // the static side of a class (`typeof C`). Falls back to the
+        // short form for anonymous types. Mirrors `staticIndexSignature2`.
+        const msg: []const u8 = blk: {
+            if (try self.allocPropertyMissingTargetTypeName(obj_t)) |target_text| {
+                break :blk try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Index signature in type '{s}' only permits reading.",
+                    .{target_text},
+                );
+            }
+            break :blk "Index signature only permits reading.";
+        };
         try self.diagnostics.append(self.gpa, .{
             .node = target,
             .code = TsCodes.readonly_index_signature,
-            .message = "Index signature only permits reading.",
+            .message = msg,
         });
     }
 
