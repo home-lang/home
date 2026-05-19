@@ -189,6 +189,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/buffer-inspectmaxbytes.test.ts",
     "js/web/workers/message-event.test.ts",
     "js/bun/jsc/native-constructor-identity.test.ts",
+    "js/bun/test/bun-test.test.ts",
 };
 
 const harness_prelude =
@@ -207,10 +208,19 @@ const harness_prelude =
     \\globalThis.__home_reset_tests();
     \\var Bun = {
     \\  [Symbol.toStringTag]: "Bun",
+    \\  version: "0.0.0-home",
+    \\  revision: "home",
     \\  stripANSI(value) {
     \\    return String(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
     \\  },
     \\};
+    \\if (typeof process !== "object") {
+    \\  var process = {};
+    \\}
+    \\if (!process.versions) process.versions = {};
+    \\process.versions.bun = Bun.version;
+    \\process.revision = Bun.revision;
+    \\globalThis.process = process;
     \\function __home_fail(message) {
     \\  throw new Error(message);
     \\}
@@ -1426,12 +1436,15 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/node/buffer-inspectmaxbytes.test.ts", filesForSubset(.minimal_js)[31]);
     try std.testing.expectEqualStrings("js/web/workers/message-event.test.ts", filesForSubset(.minimal_js)[32]);
     try std.testing.expectEqualStrings("js/bun/jsc/native-constructor-identity.test.ts", filesForSubset(.minimal_js)[33]);
+    try std.testing.expectEqualStrings("js/bun/test/bun-test.test.ts", filesForSubset(.minimal_js)[34]);
 }
 
 test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function it(name, fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_is_thenable(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "stripANSI(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "version: \"0.0.0-home\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.versions.bun = Bun.version") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeInstanceOf(ctor)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeInstanceOf() requires 1 argument") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Expected value must be a function:") != null);
