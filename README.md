@@ -54,6 +54,101 @@ for the full list. Legend: ✅ Stable · 🚧 In progress / partial · ❌ Not y
 
 For release notes see [`CHANGELOG.md`](./CHANGELOG.md).
 
+## Parity status
+
+A snapshot of measurable progress against the three runtime/tool ecosystems
+Home aims to be a drop-in replacement for. Percentages below are **byte-for-byte
+or file-count measurements**, not aspirational targets — every number cites the
+package or harness that produces it.
+
+> Refreshed 2026-05-19. Coarse-mode TS corpus and per-slice exact mode are
+> regression-gated on every PR; Bun port % is file-count progress and grows
+> with each `packages/runtime/src/**` landing.
+
+### TypeScript parity — `home tsc` vs `tsc` / `tsgo`
+
+Measured by running the upstream TypeScript conformance corpus through
+`packages/ts_conformance/`. The harness compares **byte-for-byte against
+upstream `.errors.txt` baselines** in exact mode (`HOME_TS_CONFORMANCE_EXACT=1`);
+coarse mode (`HOME_TS_CONFORMANCE_FULL=1` alone) only asserts that we emit
+the same *families* of diagnostics.
+
+| Measurement | Pass rate | Notes |
+|---|---|---|
+| **Coarse mode (5,907 cases)** | **5,907 / 5,907 — 100%** | Saturated; remains the per-PR merge gate. |
+| **Exact mode (byte-for-byte, full corpus)** | **~4,060 / 5,907 — ~68.7%** | Ratcheting weekly. |
+| Baseline-aware exact categories (19 folders, 586 cases) | 586 / 586 — 100% | `apparentType`, `bestCommonType`, `recursiveTypes`, `typeInference`, `keyof`, `conditional`, `instanceOf`, `widenedTypes`, `specifyingTypes`, `primitives`, `any`, `import`, `uniqueSymbol`, `namedTypes`, `localTypes`, `forAwait`, `unknown`, `witness`, `typeAliases`, `asyncGenerators`. |
+| Named-category exact survey (4 folders, 86 cases) | 86 / 86 — 100% | `assignmentCompatibility` 70/70, `comparable` 13/13, `inOperator` 2/2, `stringLiteral` 1/1. |
+| Smoke (3 folders, 16 cases) | 16 / 16 — 100% | Per-PR fast path. |
+| TS diagnostic-code catalogue | ~2,000 entries | Mirrors the full upstream code → message table; powers `home-lsp` hover-on-`TS1234`. |
+
+**Exact mode by 1,000-case slice (latest):**
+
+| Slice | Pass rate | % |
+|---|---|---|
+| `START=0   LIMIT=1000` | 604 / 1,000 | 60.4% |
+| `START=1000 LIMIT=1000` | 611 / 1,000 | 61.1% |
+| `START=2000 LIMIT=1000` | **907 / 1,000** | **90.7%** |
+| `START=3000 LIMIT=1000` | 646 / 1,000 | 64.6% |
+| `START=4000 LIMIT=1000` | **864 / 1,000** | **86.4%** |
+| `START=5000 LIMIT=907`  | 545 / 907   | 60.1% |
+
+Reproduce locally:
+
+```bash
+HOME_TS_CONFORMANCE_FULL=1 \
+HOME_TS_CONFORMANCE_EXACT=1 \
+HOME_TS_CONFORMANCE_START=2000 \
+HOME_TS_CONFORMANCE_LIMIT=1000 \
+zig build test -Dfilter=ts_conformance
+```
+
+### LSP coverage — `home-lsp` vs `tsserver`
+
+| Measurement | Coverage | Notes |
+|---|---|---|
+| Wire methods routed | **53 / ~70 — ~76%** | `SUPPORTED_METHODS` in [`packages/ts_lsp_server/src/ts_lsp_server.zig`](./packages/ts_lsp_server/src/ts_lsp_server.zig). Includes hover, definition, references (cross-file), completion, signatureHelp, semanticTokens (full + delta + range), inlayHint, codeAction, rename + prepareRename, documentSymbol + workspaceSymbol, codeLens, callHierarchy (incoming + outgoing), typeHierarchy (supertypes + subtypes), foldingRange, selectionRange, linkedEditingRange, willRenameFiles, executeCommand, moniker (LSIF), inlineValue, inlineCompletion, declaration, pull-based diagnostic, onTypeFormatting, willSaveWaitUntil, and the lifecycle handlers. |
+| Remaining surface | quick-fix breadth, FS-event push diagnostics, document-color, full formatter pass | Each is a punch-list item, not a structural gap. |
+
+### Bun runtime port (`packages/runtime/`)
+
+Phase 12 vendors Bun's Zig source under MIT and rewrites it to compile
+against Home's stdlib. **Substrate only today** — the runtime won't `run`
+JS / TS until JSC bring-up (sub-phase 12.2) lands.
+
+| Measurement | Coverage | Notes |
+|---|---|---|
+| Bun source files ported | **380 / 1,193 — ~31.9%** | Upstream pinned at `fd0b6f1a` (see [`packages/runtime/UPSTREAM_SHA.txt`](./packages/runtime/UPSTREAM_SHA.txt)). Audit: [`packages/runtime/PORT_AUDIT_2026-05-18.md`](./packages/runtime/PORT_AUDIT_2026-05-18.md). |
+| Subsystems scaffolded | 54 directories under `packages/runtime/src/` | `ast/`, `bun_alloc/`, `cli/`, `core/`, `css/`, `event_loop/`, `install/`, `io/`, `jsc/` (stubbed), `paths/`, `runtime/`, `safety/`, `sourcemap/`, `unicode/`, `uws_sys/`, `*_sys/` binding layers, … |
+| Functional runtime | 🚧 Substrate only | Today, `home run app.ts` / `home test` delegate to Pantry + system tooling via the [`src/main.zig`](./src/main.zig) shim with `TODO(phase-12-N)` markers. |
+| Acceptance gate | Bun's `test/` corpus must pass **100% with no skips** | Becomes enforceable after sub-phase 12.2 (JSC) + 12.8 (test runner). See [`packages/runtime/README.md`](./packages/runtime/README.md). |
+| TS bundler shim | `packages/bun_compat/` Tier-0 surface | Re-exports the 7 Bun symbols (`OOM`, `handleOom`, `default_allocator`, `assert`, `ast.Index`, `StringHashMapUnmanaged`, `fs.Path`) needed by the vendored Bun bundler in [`packages/bundler/`](./packages/bundler/). |
+
+### Node.js compatibility (`packages/runtime/src/node/`)
+
+Node's namespace lands as part of the Bun runtime port (Bun ships
+`node:*` shims natively). Numbers below are Zig-side only; the
+JS-visible `node:*` surface attaches once JSC is up.
+
+| Measurement | Coverage | Notes |
+|---|---|---|
+| Node binding files ported | 15 files | `path`, `Stat`, `StatFS`, `dir_iterator`, `time_like`, `fs_events`, `os_constants`, `nodejs_error_code`, `node_fs_constant`, `node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`, `types`, `util/parse_args_utils`, `assert/myers_diff`. |
+| Functional `node:*` modules | 🚧 Blocked on Phase 12.2 (JSC) | Pantry CLI replaces `npm install` / `bun install`; everything else routes through the Bun runtime port once JSC is live. |
+
+### Language + tooling (Home)
+
+43 features tracked across the language, codegen, tooling, and stdlib in
+[`docs/CAPABILITY_MATRIX.md`](./docs/CAPABILITY_MATRIX.md):
+
+| Status | Count | % |
+|---|---|---|
+| ✅ Stable | 9 | ~21% |
+| 🚧 In progress / partial | 33 | ~77% |
+| ❌ Not yet | 1 | ~2% |
+
+The conservative bias is intentional: anything not exercised by an example or
+test stays 🚧 even when the underlying code is largely there.
+
 ## TypeScript parity
 
 Home is being extended with a drop-in `tsc` / `tsgo` compatible
@@ -79,7 +174,7 @@ Top-level shape (each link is a Zig package with its own tests):
 - [`packages/ts_cli`](./packages/ts_cli/) — `home tsc` CLI flag surface
 - [`packages/ts_conformance`](./packages/ts_conformance/) — tsc-baseline conformance harness
 - [`packages/ts_lsp`](./packages/ts_lsp/) — Language Server query surface (hover, definition, references, completion, codeActions, semantic tokens, inlay hints, folding, document symbols, …)
-- [`packages/ts_lsp_server`](./packages/ts_lsp_server/) — JSON-RPC framing + method dispatch (~50 LSP-spec methods routed)
+- [`packages/ts_lsp_server`](./packages/ts_lsp_server/) — JSON-RPC framing + method dispatch (53 LSP-spec methods routed; see [parity status](#lsp-coverage--home-lsp-vs-tsserver))
 - [`packages/ts_cache`](./packages/ts_cache/) — content-addressed compilation cache with sharded disk persistence
 - [`packages/ts_watch`](./packages/ts_watch/) — pluggable `StatFs` + watcher driving incremental recompiles in `home-tsc --watch`
 - [`packages/d_hm`](./packages/d_hm/) — Home declaration files (the `.d.ts` analogue for `.home`)
