@@ -530,8 +530,15 @@ fn shouldRouteThroughProgram(c: Case) bool {
     // `tsxAttributeResolution10/11/12` and similar fixtures fall back
     // to `any`-typed JSX targets, suppressing the structural TS2322
     // tsc expects at the failing attribute.
-    if (!rawSourceHasNonCodeMarker(c.raw_source)) return false;
+    if (!rawSourceHasNonCodeMarker(c.raw_source)) {
+        if (parserSuiteNeedsVirtualFileBoundaries(c)) return true;
+        return false;
+    }
     return true;
+}
+
+fn parserSuiteNeedsVirtualFileBoundaries(c: Case) bool {
+    return std.mem.startsWith(u8, c.name, "parser.") and rawSourceHasMultipleCodeMarkers(c.raw_source);
 }
 
 fn rawSourceHasNonCodeMarker(raw: []const u8) bool {
@@ -551,6 +558,19 @@ fn rawSourceHasJsLikeCodeMarker(raw: []const u8) bool {
         const line = std.mem.trim(u8, line_with_cr, "\r");
         const path = virtualFilename(line) orelse continue;
         if (isCodeVirtualFile(path) and isJsLikeVirtualFile(path)) return true;
+    }
+    return false;
+}
+
+fn rawSourceHasMultipleCodeMarkers(raw: []const u8) bool {
+    var count: u32 = 0;
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    while (lines.next()) |line_with_cr| {
+        const line = std.mem.trim(u8, line_with_cr, "\r");
+        const path = virtualFilename(line) orelse continue;
+        if (!isCodeVirtualFile(path)) continue;
+        count += 1;
+        if (count >= 2) return true;
     }
     return false;
 }

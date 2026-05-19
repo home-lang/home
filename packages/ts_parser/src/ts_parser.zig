@@ -4803,7 +4803,10 @@ pub const Parser = struct {
                 _ = self.match(.bang);
             }
             if (self.match(.equal)) value = try self.parseAssignmentExpression();
-            try self.consumeStatementTerminator();
+            self.consumeStatementTerminator() catch |err| switch (err) {
+                error.UnexpectedToken => self.skipMalformedClassFieldTail(),
+                else => return err,
+            };
         }
 
         return try self.builder.addObjectPropertyFull(
@@ -4818,6 +4821,14 @@ pub const Parser = struct {
             mods.visibility,
             mods.is_override,
         );
+    }
+
+    fn skipMalformedClassFieldTail(self: *Parser) void {
+        while (self.peek().kind != .eof and self.peek().kind != .close_brace) {
+            if (self.match(.semicolon)) return;
+            if (self.peek().flags.preceded_by_newline) return;
+            _ = self.advance();
+        }
     }
 
     fn parseClassMemberDecoratorExpression(self: *Parser) ParseError!NodeId {
