@@ -17803,7 +17803,11 @@ pub const Checker = struct {
 
     fn checkImportingTsExtensionSpecifier(self: *Checker, node: NodeId, spec: []const u8, is_type_only_context: bool) CheckError!void {
         if (is_type_only_context) return;
-        if (!self.sourceDirectiveValueMentions("allowImportingTsExtensions", "false")) return;
+        // Default for `allowImportingTsExtensions` is FALSE — TS5097
+        // fires unless explicitly enabled. Mirrors upstream tsc
+        // (`decoratorOnClassConstructor2` has no directive and still
+        // emits TS5097 on `import {base} from "./0.ts"`).
+        if (self.sourceDirectiveValueMentions("allowImportingTsExtensions", "true")) return;
         if (!std.mem.startsWith(u8, spec, ".")) return;
         const code = tsExtensionImportDiagnosticCode(spec) orelse return;
         if (code == TsCodes.declaration_file_import_requires_import_type) {
