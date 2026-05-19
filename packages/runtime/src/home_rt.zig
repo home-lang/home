@@ -133,6 +133,11 @@ pub const jsc = struct {
     pub const uuid = @import("jsc/uuid.zig");
     pub const resolve_path_jsc = @import("jsc/resolve_path_jsc.zig");
     pub const resolver_jsc = @import("jsc/resolver_jsc.zig");
+    // Thirteenth-wave port batch (2026-05-18). Registry of every Zig
+    // type the C++ Codegen reflects to JS. Entries are opaque
+    // placeholders until each downstream subsystem (api/webcore/jsc)
+    // lands its real type.
+    pub const generated_classes_list = @import("jsc/generated_classes_list.zig");
 };
 
 // ---- src/io/ -----------------------------------------------------------
@@ -355,6 +360,13 @@ pub const runtime = struct {
         };
         // Sixth-wave port batch (2026-05-18):
         pub const EncodingLabel = @import("runtime/webcore/EncodingLabel.zig").EncodingLabel;
+        // Thirteenth-wave port batch (2026-05-18). Pure-data webcore
+        // leaves — the JSC-bridged `Body`/`PendingValue`/`Mixin` /
+        // `AsyncFormData` / registry are parked until JSC lands.
+        pub const Body = @import("runtime/webcore/Body.zig");
+        pub const FormData = @import("runtime/webcore/FormData.zig").FormData;
+        pub const ObjectURLRegistry = @import("runtime/webcore/ObjectURLRegistry.zig");
+        pub const Sink = @import("runtime/webcore/Sink.zig");
     };
     pub const valkey = struct {
         // Per-VM Valkey state. JSC-bridge dispatch omitted — re-lands in Phase 12.2.
@@ -385,6 +397,19 @@ pub const runtime = struct {
     };
 };
 
+// ---- Home.* — JS-facing globals (formerly Bun.*) ----------------------
+// Thirteenth-wave port batch (2026-05-18). Bun's `Bun.*` JavaScript
+// surface lands here as Home's `Home.*` so callers can spell upstream's
+// `bun.api.*` / `bun.api.bun.*` shape via `home_rt.Home.*`. Each leaf
+// is the pure-Zig substrate of the corresponding JS class — the JSC
+// bindings (constructor / call frames / argument coercion) are parked
+// until the matching `home_rt.jsc` substrate lands.
+pub const Home = struct {
+    pub const Terminal = @import("runtime/api/bun/Terminal.zig");
+    pub const spawn = @import("runtime/api/bun/spawn.zig");
+    pub const Glob = @import("runtime/api/glob.zig");
+};
+
 // ---- src/node/ ---------------------------------------------------------
 // Node.js compatibility shims. Sourced from bun/src/runtime/node/ — bun
 // never grew a top-level src/node/, so this Home subtree is the namespace
@@ -404,6 +429,11 @@ pub const node = struct {
     pub const assert = struct {
         pub const myers_diff = @import("node/assert/myers_diff.zig");
     };
+    // TODO(phase-12-13): wire node/path.zig — file currently fails three
+    // Zig 0.17 `pointless discard of function parameter` checks in
+    // `isSepPosixT` / `isSepWindowsT` / `isWindowsDeviceRootT` (each
+    // discards `comptime T` while still naming it for trait inference);
+    // the fix is a body edit and skipped per orphan-wave wiring rules.
 };
 
 // ---- src/core/ + src/alloc/ + src/safety/ ----------------------
@@ -435,6 +465,12 @@ pub const safety = struct {
     pub const asan = @import("safety/asan.zig");
     pub const CriticalSection = @import("safety/CriticalSection.zig");
     pub const ThreadLock = @import("safety/ThreadLock.zig");
+    // Thirteenth-wave port batch (2026-05-18). Upstream's `safety/safety.zig`
+    // aggregator — re-exports `alloc`, `CheckedAllocator`, `CriticalSection`,
+    // `ThreadLock` exactly the way Bun does. Wired as a sibling namespace so
+    // callers can spell `home_rt.safety.aggregator.CheckedAllocator` when
+    // they want the upstream-style flat surface.
+    pub const aggregator = @import("safety/safety.zig");
 };
 
 // ---- src/threading/ ----------------------------------------------------
@@ -601,6 +637,10 @@ pub const css = struct {
 pub const analytics = struct {
     pub const schema = @import("analytics/schema.zig");
     pub const gate = @import("analytics/analytics.zig");
+    // TODO(phase-12-13): wire analytics/Features.zig — file currently
+    // trips Zig 0.17 `binary operator '*' has whitespace on one side` lint
+    // at line 110 of the copied source; whitespace-only fix is a file edit
+    // and skipped per orphan-wave wiring rules.
 };
 
 // ---- src/*_sys/ --------------------------------------------------------
@@ -1106,6 +1146,23 @@ test {
     _ = @import("zlib/zlib.zig");
     _ = @import("http/Decompressor.zig");
     _ = @import("http/zlib.zig");
+    // Thirteenth-wave port batch (2026-05-18) — orphan-wave wiring.
+    // Pull each newly-aggregated leaf into the test runner so inline
+    // tests fire under `zig build test -Dfilter=home_rt`.
+    // TODO(phase-12-13): wire analytics/Features.zig once the Zig-0.17
+    // whitespace-around-`*` lint at line 110 is fixed in the source.
+    // TODO(phase-12-13): wire node/path.zig once the Zig-0.17
+    // pointless-discard lint on `_ = T` in `isSepPosixT` / `isSepWindowsT`
+    // / `isWindowsDeviceRootT` is resolved in the source.
+    _ = @import("jsc/generated_classes_list.zig");
+    _ = @import("runtime/api/bun/Terminal.zig");
+    _ = @import("runtime/api/bun/spawn.zig");
+    _ = @import("runtime/api/glob.zig");
+    _ = @import("runtime/webcore/Body.zig");
+    _ = @import("runtime/webcore/FormData.zig");
+    _ = @import("runtime/webcore/ObjectURLRegistry.zig");
+    _ = @import("runtime/webcore/Sink.zig");
+    _ = @import("safety/safety.zig");
 }
 
 test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {
