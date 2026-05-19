@@ -7,6 +7,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const home_rt = @import("home_rt");
+const test_result = @import("result.zig");
 
 const Io = std.Io;
 
@@ -38,6 +39,13 @@ pub const Summary = struct {
         self.first_failure_file = "";
         self.first_failure_message = "";
         self.first_failure_message_owned = false;
+    }
+
+    pub fn addFileResult(self: *Summary, file: test_result.FileResult) void {
+        self.files += 1;
+        self.passed += file.passed;
+        self.failed += file.failed + file.unsupported;
+        self.todo += file.todo;
     }
 };
 
@@ -910,6 +918,7 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
 
     var summary = Summary{};
     for (filesForSubset(subset)) |relative| {
+        var file_result = test_result.FileResult{ .path = relative };
         const file_path = try std.fs.path.join(allocator, &.{ corpus_path, relative });
         defer allocator.free(file_path);
 
@@ -919,15 +928,16 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
         var prepared = try prepareCorpusModule(allocator, source, relative);
         defer prepared.deinit(allocator);
 
-        summary.files += 1;
         if (prepared.unsupported_reason) |reason| {
-            summary.failed += 1;
+            file_result.unsupported += 1;
+            summary.addFileResult(file_result);
             try recordFailure(allocator, &summary, relative, reason);
             continue;
         }
 
         runtime.resetFileState(allocator) catch |err| {
-            summary.failed += 1;
+            file_result.failed += 1;
+            summary.addFileResult(file_result);
             try recordFailure(allocator, &summary, relative, @errorName(err));
             continue;
         };
@@ -942,19 +952,22 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
         defer evaluation.deinit(allocator);
 
         if (evaluation.exception != null or evaluation.value == null) {
-            summary.failed += 1;
+            file_result.failed += 1;
+            summary.addFileResult(file_result);
             try recordFailure(allocator, &summary, relative, evaluation.exception_message);
             continue;
         }
 
         const counters = runtime.readCounters(allocator) catch |err| {
-            summary.failed += 1;
+            file_result.failed += 1;
+            summary.addFileResult(file_result);
             try recordFailure(allocator, &summary, relative, @errorName(err));
             continue;
         };
-        summary.passed += counters.passed;
-        summary.failed += counters.failed;
-        summary.todo += counters.todo;
+        file_result.passed = counters.passed;
+        file_result.failed = counters.failed;
+        file_result.todo = counters.todo;
+        summary.addFileResult(file_result);
     }
 
     return summary;

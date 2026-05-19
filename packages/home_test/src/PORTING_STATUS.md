@@ -16,10 +16,11 @@ source. The plan below tracks adaptation status file-by-file.
 The Home-side `corpus.zig` and `corpus_runner.zig` modules are active
 and compiled into the `home` executable. `corpus.zig` owns discovery
 and test-file classification for `home test
-packages/runtime/test/bun-corpus/`; `corpus_runner.zig` owns the
-explicit `--bun-corpus-native-subset=minimal-js` bootstrap path. The
-full runner remains blocked on the native `bun:test` port and JSC
-host-call bridge.
+packages/runtime/test/bun-corpus/`; `result.zig` owns the native
+file/run result model; `corpus_runner.zig` owns the explicit
+`--bun-corpus-native-subset=minimal-js` bootstrap path and now feeds
+that result model. The full runner remains blocked on the native
+`bun:test` port and JSC host-call bridge.
 
 The bootstrap harness is intentionally narrow but now installs once per
 JSC engine and resets counters before each allowlisted file. It covers

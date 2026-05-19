@@ -128,6 +128,7 @@ const std = @import("std");
 
 pub const corpus = @import("corpus.zig");
 pub const corpus_runner = @import("corpus_runner.zig");
+pub const result = @import("result.zig");
 
 /// Stub. Once the `compat` shim is in place, this module will
 /// re-export `bun_test`, `jest`, `expect`, and the rest of the surface
@@ -146,4 +147,10 @@ test "home_test corpus discovery is linked" {
 
 test "home_test corpus runner is linked" {
     try std.testing.expectEqual(corpus_runner.Subset.minimal_js, corpus_runner.parseSubsetFlagValue("minimal-js").?);
+}
+
+test "home_test result model is linked" {
+    var summary = result.RunSummary{};
+    summary.addFile(.{ .path = "sample.test.ts", .passed = 1 });
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
 }
