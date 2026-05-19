@@ -87,13 +87,15 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/bun-test.test.ts",
     "regression/issue/16007.test.ts",
     "js/bun/util/wrapAnsi.test.ts",
+    "js/bun/test/test-retry-repeats-basic.test.ts",
 };
 
 const harness_prelude =
     \\var __home_bun_tests = globalThis.__home_bun_tests || { passed: 0, failed: 0, todo: 0 };
     \\globalThis.__home_reset_tests = function() {
     \\  __home_bun_tests = globalThis.__home_bun_tests = { passed: 0, failed: 0, todo: 0 };
-    \\  globalThis.__home_hooks = {
+    \\  globalThis.__home_root_scope = {
+    \\    parent: null,
     \\    beforeAll: [],
     \\    beforeEach: [],
     \\    afterEach: [],
@@ -101,6 +103,8 @@ const harness_prelude =
     \\    beforeAllDone: false,
     \\    afterAllDone: false,
     \\  };
+    \\  globalThis.__home_current_scope = globalThis.__home_root_scope;
+    \\  globalThis.__home_current_finished_callbacks = null;
     \\};
     \\globalThis.__home_reset_tests();
     \\var Bun = {
@@ -339,32 +343,104 @@ const harness_prelude =
     \\  const result = fn();
     \\  if (__home_is_thenable(result)) __home_unsupported("Async lifecycle hooks are not supported by the Home Bun corpus bootstrap runner yet");
     \\}
-    \\function __home_run_before_all_hooks() {
-    \\  if (__home_hooks.beforeAllDone) return;
-    \\  __home_hooks.beforeAllDone = true;
-    \\  for (const hook of __home_hooks.beforeAll) __home_run_hook(hook);
+    \\function __home_scope_chain(scope) {
+    \\  const chain = [];
+    \\  for (let current = scope; current; current = current.parent) chain.unshift(current);
+    \\  return chain;
+    \\}
+    \\function __home_run_before_all_hooks(scope) {
+    \\  for (const item of __home_scope_chain(scope)) {
+    \\    if (item.beforeAllDone) continue;
+    \\    item.beforeAllDone = true;
+    \\    for (const hook of item.beforeAll) __home_run_hook(hook);
+    \\  }
+    \\}
+    \\function __home_run_scoped_after_all(scope) {
+    \\  if (scope.afterAllDone) return;
+    \\  scope.afterAllDone = true;
+    \\  for (const hook of scope.afterAll) __home_run_hook(hook);
+    \\}
+    \\function __home_run_all_after_all(scope) {
+    \\  if (!scope) return;
+    \\  __home_run_all_after_all(scope.parent);
+    \\  __home_run_scoped_after_all(scope);
     \\}
     \\function __home_register_hook(list, fn) {
     \\  if (typeof fn === "function") list.push(fn);
     \\}
-    \\function __home_run_test(name, fn) {
+    \\function __home_parse_test_args(name, first, second) {
+    \\  let fn = first;
+    \\  let options = second || {};
+    \\  if (first && typeof first === "object" && typeof second === "function") {
+    \\    options = first;
+    \\    fn = second;
+    \\  }
+    \\  if (!options || typeof options !== "object") options = {};
+    \\  if (Object.prototype.hasOwnProperty.call(options, "retry") && Object.prototype.hasOwnProperty.call(options, "repeats")) __home_fail("Cannot set both retry and repeats");
+    \\  return { fn, options };
+    \\}
+    \\function __home_run_finished_callbacks(callbacks) {
+    \\  for (let i = callbacks.length - 1; i >= 0; i--) __home_run_hook(callbacks[i]);
+    \\}
+    \\function __home_run_test_attempt(scope, fn) {
+    \\  const chain = __home_scope_chain(scope);
+    \\  const afterAllLengths = chain.map(item => item.afterAll.length);
+    \\  const previousCallbacks = globalThis.__home_current_finished_callbacks;
+    \\  globalThis.__home_current_finished_callbacks = [];
+    \\  try {
+    \\    __home_run_before_all_hooks(scope);
+    \\    for (const item of chain) for (const hook of item.beforeEach) __home_run_hook(hook);
+    \\    const result = fn();
+    \\    if (__home_is_thenable(result)) __home_unsupported("Async tests are not supported by the Home Bun corpus bootstrap runner yet");
+    \\  } finally {
+    \\    const callbacks = globalThis.__home_current_finished_callbacks;
+    \\    globalThis.__home_current_finished_callbacks = previousCallbacks;
+    \\    __home_run_finished_callbacks(callbacks);
+    \\    for (let i = chain.length - 1; i >= 0; i--) for (const hook of chain[i].afterEach) __home_run_hook(hook);
+    \\    for (let i = 0; i < chain.length; i++) {
+    \\      const item = chain[i];
+    \\      const start = afterAllLengths[i];
+    \\      const added = item.afterAll.slice(start);
+    \\      item.afterAll.length = start;
+    \\      for (const hook of added) __home_run_hook(hook);
+    \\    }
+    \\  }
+    \\}
+    \\function __home_run_test(name, first, second) {
+    \\  const parsed = __home_parse_test_args(name, first, second);
+    \\  const fn = parsed.fn;
+    \\  const options = parsed.options;
     \\  if (typeof fn !== "function") {
     \\    __home_bun_tests.todo++;
     \\    return;
     \\  }
+    \\  const scope = globalThis.__home_current_scope;
+    \\  const repeats = options.repeats === undefined ? 0 : Math.max(0, Math.trunc(Number(options.repeats)));
+    \\  const retry = options.retry === undefined ? 0 : Math.max(0, Math.trunc(Number(options.retry)));
     \\  try {
-    \\    __home_run_before_all_hooks();
-    \\    for (const hook of __home_hooks.beforeEach) __home_run_hook(hook);
-    \\    const result = fn();
-    \\    if (__home_is_thenable(result)) __home_unsupported("Async tests are not supported by the Home Bun corpus bootstrap runner yet");
-    \\    for (const hook of __home_hooks.afterEach) __home_run_hook(hook);
+    \\    if (repeats > 0) {
+    \\      for (let i = 0; i <= repeats; i++) __home_run_test_attempt(scope, fn);
+    \\    } else {
+    \\      let lastError = null;
+    \\      for (let i = 0; i <= retry; i++) {
+    \\        try {
+    \\          __home_run_test_attempt(scope, fn);
+    \\          lastError = null;
+    \\          break;
+    \\        } catch (error) {
+    \\          lastError = error;
+    \\          if (error && error.__home_unsupported) throw error;
+    \\        }
+    \\      }
+    \\      if (lastError) throw lastError;
+    \\    }
     \\    __home_bun_tests.passed++;
     \\  } catch (error) {
     \\    __home_bun_tests.failed++;
     \\    throw error;
     \\  }
     \\}
-    \\function it(name, fn) { __home_run_test(name, fn); }
+    \\function it(name, first, second) { __home_run_test(name, first, second); }
     \\it.failing = function(name, fn) {
     \\  if (typeof fn !== "function") {
     \\    __home_bun_tests.todo++;
@@ -384,20 +460,40 @@ const harness_prelude =
     \\it.todo = function(name, fn) {
     \\  __home_bun_tests.todo++;
     \\};
-    \\function test(name, fn) { return it(name, fn); }
+    \\function test(name, first, second) { return it(name, first, second); }
     \\test.todo = it.todo;
     \\test.failing = it.failing;
     \\function describe(name, fn) {
-    \\  if (typeof fn === "function") fn();
+    \\  if (typeof fn !== "function") return;
+    \\  const parent = globalThis.__home_current_scope;
+    \\  const scope = {
+    \\    parent,
+    \\    beforeAll: [],
+    \\    beforeEach: [],
+    \\    afterEach: [],
+    \\    afterAll: [],
+    \\    beforeAllDone: false,
+    \\    afterAllDone: false,
+    \\  };
+    \\  globalThis.__home_current_scope = scope;
+    \\  try {
+    \\    fn();
+    \\  } finally {
+    \\    __home_run_scoped_after_all(scope);
+    \\    globalThis.__home_current_scope = parent;
+    \\  }
     \\}
-    \\function beforeAll(fn, options) { __home_register_hook(__home_hooks.beforeAll, fn); }
-    \\function beforeEach(fn, options) { __home_register_hook(__home_hooks.beforeEach, fn); }
-    \\function afterEach(fn, options) { __home_register_hook(__home_hooks.afterEach, fn); }
-    \\function afterAll(fn, options) { __home_register_hook(__home_hooks.afterAll, fn); }
+    \\function beforeAll(fn, options) { __home_register_hook(globalThis.__home_current_scope.beforeAll, fn); }
+    \\function beforeEach(fn, options) { __home_register_hook(globalThis.__home_current_scope.beforeEach, fn); }
+    \\function afterEach(fn, options) { __home_register_hook(globalThis.__home_current_scope.afterEach, fn); }
+    \\function afterAll(fn, options) { __home_register_hook(globalThis.__home_current_scope.afterAll, fn); }
+    \\function onTestFinished(fn) {
+    \\  if (typeof fn !== "function") return;
+    \\  if (!globalThis.__home_current_finished_callbacks) __home_fail("onTestFinished() must be called while a test is running");
+    \\  globalThis.__home_current_finished_callbacks.push(fn);
+    \\}
     \\globalThis.__home_finish_tests = function() {
-    \\  if (__home_hooks.afterAllDone) return;
-    \\  __home_hooks.afterAllDone = true;
-    \\  for (const hook of __home_hooks.afterAll) __home_run_hook(hook);
+    \\  __home_run_all_after_all(globalThis.__home_root_scope);
     \\};
     \\function __home_make_expectation(value, isNot) {
     \\  const expectation = {
@@ -603,7 +699,7 @@ const harness_prelude =
     \\    };
     \\  }
     \\};
-    \\globalThis.__home_bun_test = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, test };
+    \\globalThis.__home_bun_test = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, test };
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_import = function(specifier) {
@@ -1278,6 +1374,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         .{ .line = "import { describe, expect, it } from \"bun:test\";", .binding = "const { describe, expect, it } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { describe, expect, test } from \"bun:test\";", .binding = "const { describe, expect, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeAll, beforeEach, expect, test } = globalThis.__home_import(\"bun:test\");\n" },
+        .{ .line = "import { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, it } from \"bun:test\";", .binding = "const { expect, it } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, test } from \"bun:test\";", .binding = "const { expect, test } = globalThis.__home_import(\"bun:test\");\n" },
     };
@@ -1438,10 +1535,11 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/bun/test/bun-test.test.ts", filesForSubset(.minimal_js)[33]);
     try std.testing.expectEqualStrings("regression/issue/16007.test.ts", filesForSubset(.minimal_js)[34]);
     try std.testing.expectEqualStrings("js/bun/util/wrapAnsi.test.ts", filesForSubset(.minimal_js)[35]);
+    try std.testing.expectEqualStrings("js/bun/test/test-retry-repeats-basic.test.ts", filesForSubset(.minimal_js)[36]);
 }
 
 test "harness prelude installs Bun test globals once" {
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function it(name, fn)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function it(name, first, second)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_is_thenable(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "stripANSI(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapAnsi(value, columns, options)") != null);
@@ -1463,6 +1561,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "a instanceof Set || b instanceof Set") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toIncludeRepeated(needle, expectedCount)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function beforeAll(fn, options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function onTestFinished(fn)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Cannot set both retry and repeats") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_finish_tests") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContain(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toMatchObject(expected)") != null);
@@ -1522,6 +1622,19 @@ test "Bun test import rewrite lowers lifecycle hook imports" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { afterAll, afterEach, beforeAll, beforeEach, expect, test } = globalThis.__home_import(\"bun:test\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const logs = []") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, ": string[]") == null);
+}
+
+test "Bun test import rewrite lowers retry and cleanup imports" {
+    const source =
+        \\import { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } from "bun:test";
+        \\test("works", () => onTestFinished(() => {}), { retry: 1 });
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/bun/test/test-retry-repeats-basic.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } = globalThis.__home_import(\"bun:test\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "onTestFinished(() => {})") != null);
 }
 
 test "bootstrap rewrite lowers node-fetch Request imports" {

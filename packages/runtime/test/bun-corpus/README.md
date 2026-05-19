@@ -18,7 +18,8 @@ macOS, Linux, and the WASM target.
   That subset currently executes the todo-registration smoke, the Web
   `atob`/`btoa` smoke, fourteen regression smokes, one bundler
   constant-fold smoke, six test-runner expectation smokes, one nested-describe
-  smoke, `Bun.stripANSI` and `Bun.wrapAnsi` smokes, and narrow bootstrap coverage for Node
+  smoke, `Bun.stripANSI` and `Bun.wrapAnsi` smokes, retry/repeats runner
+  behavior, and narrow bootstrap coverage for Node
   `DOMException`, Web `Response.json` / `Response.redirect`, Web `Request`
   cache/mode/clone, JSC `ShadowRealm`, Bun file metadata, Node `Buffer`
   binary/UTF-16LE/compare/inspect-limit behavior, `Map`/`Set` deep-equality,

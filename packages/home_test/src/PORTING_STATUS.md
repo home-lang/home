@@ -31,7 +31,8 @@ explicit harness unsupported errors across the
 `adapters/jsc_bootstrap.zig` boundary instead of counting them as
 assertion failures. It covers the first real smoke slice: basic
 `describe` / `test` / `it`, `it.todo`, `it.failing`, lifecycle hooks,
-returned-thenable rejection, `.not`, `toBe`, `toBeDefined`,
+retry/repeats runner options, `onTestFinished`, returned-thenable
+rejection, `.not`, `toBe`, `toBeDefined`,
 `toBeUndefined`, `toBeTruthy`, `toBeNumber`, `toBeTypeOf`,
 `toBeInstanceOf`, `toMatchObject`, object-form error matching in
 `toThrow`, small `toEqual` / `toStrictEqual` deep equality including
