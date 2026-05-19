@@ -9144,13 +9144,26 @@ pub const Parser = struct {
             // TS2365 / TS2304 that motivated the `left`-only recovery
             // above for `+`/`-` chains
             // (`plusOperatorInvalidOperations`).
+<<<<<<< HEAD
             const peek_is_type_assertion_rhs = self.peek().kind == .less_than and
                 self.lessThanStartsTypeAssertionExpression(self.cursor);
             const peek_is_chained_comparison = !peek_is_type_assertion_rhs and
                 (t.kind == .greater_than or t.kind == .less_than or
                     t.kind == .greater_than_equal or t.kind == .less_than_equal) and
+=======
+            //
+            // Exception: in non-TSX `.ts` sources, `<T>expr` is a
+            // type-assertion (parsed by `parsePrimaryExpression`).
+            // So `x > <number>0` must NOT trip the chained-comparison
+            // recovery — the `<` after `>` is the start of a valid
+            // type-assertion RHS, not a second comparison operator.
+            // Mirrors `comparisonOperatorWithNumericLiteral.ts(7,1)`.
+            const peek_is_chained_comparison = (t.kind == .greater_than or t.kind == .less_than or
+                t.kind == .greater_than_equal or t.kind == .less_than_equal) and
+>>>>>>> 72216234 (fix(ts-parity): allow <T>expr type-assertion as binary RHS in .ts)
                 (self.peek().kind == .greater_than or self.peek().kind == .less_than or
-                    self.peek().kind == .greater_than_equal or self.peek().kind == .less_than_equal);
+                    self.peek().kind == .greater_than_equal or self.peek().kind == .less_than_equal) and
+                !(!self.is_tsx and self.peek().kind == .less_than);
             if (peek_is_chained_comparison) {
                 const at = self.peek();
                 try self.reportCodeAt(at.span.start, at.line, 1109, "Expression expected.");
