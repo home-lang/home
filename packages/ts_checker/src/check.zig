@@ -437,6 +437,10 @@ pub const TsCodes = struct {
     pub const namespace_in_different_file: u32 = 2433;
     pub const import_conflicts_with_local: u32 = 2440;
     pub const generic_type_requires_args: u32 = 2314;
+    /// TS2689 — `class D extends I` where I resolves to an interface
+    /// declaration. tsc prefers this diagnostic over TS2314 even when
+    /// the interface is also generic.
+    pub const cannot_extend_interface: u32 = 2689;
     pub const type_does_not_satisfy_constraint: u32 = 2344;
     pub const circular_constraint: u32 = 2313;
     pub const type_alias_circular: u32 = 2456;
@@ -21731,6 +21735,31 @@ pub const Checker = struct {
             }
             return;
         };
+        // TS2689: `class D extends I` where I is an interface — tsc
+        // prefers this "Cannot extend an interface" diagnostic over the
+        // generic-arity TS2314 it would otherwise emit. Mirrors
+        // `genericTypeReferenceWithoutTypeArgument2.ts(20,17)`.
+        if (self.hir.kindOf(decl) == .interface_decl) {
+            const iface_name_id = hir_mod.interfaceOf(self.hir, decl).name;
+            if (iface_name_id != hir_mod.none_node_id and
+                self.hir.kindOf(iface_name_id) == .identifier)
+            {
+                const iname = self.string_interner.get(
+                    hir_mod.identifierOf(self.hir, iface_name_id).name,
+                );
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Cannot extend an interface '{s}'. Did you mean 'implements'?",
+                    .{iname},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = extends_expr,
+                    .code = TsCodes.cannot_extend_interface,
+                    .message = msg,
+                });
+                return;
+            }
+        }
         const params = self.typeParamNodesOfDecl(decl);
         if (params.len == 0) return;
         // If any required (no-default) param is present, fire the
