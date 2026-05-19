@@ -186,6 +186,11 @@ pub const TsCodes = struct {
     /// TS2754 — `'super' may not use type arguments.` Emitted for
     /// `super<T>()` invocations. Mirrors `errorSuperCalls.ts(46,14)`.
     pub const super_type_arguments_not_allowed: u32 = 2754;
+    /// TS2702 — `'X' only refers to a type, but is being used as a
+    /// namespace here.` Emitted for `import alias = X` where the
+    /// root `X` resolves to a class/interface/type-alias declaration
+    /// rather than a namespace value. Mirrors `invalidImportAliasIdentifiers`.
+    pub const type_used_as_namespace: u32 = 2702;
     /// TS2660 — `'super' can only be referenced in members of derived
     /// classes or object literal expressions.` Fires when a `super`
     /// reference appears inside a derived class but outside any of
