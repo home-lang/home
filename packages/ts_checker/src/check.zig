@@ -44778,7 +44778,11 @@ pub const Checker = struct {
                 }
                 const rhs_allowed = self.isInstanceofRightAllowed(rhs) or self.instanceofRhsIsSeededConstructorGlobal(b.rhs);
                 if (!rhs_allowed) {
-                    try self.report(b.rhs, TsCodes.instanceof_right_type, "The right-hand side of an 'instanceof' expression must be either of type 'any', a class, function, or other type assignable to the 'Function' interface type, or an object type with a 'Symbol.hasInstance' method.");
+                    // tsc anchors at the opening `(` for parenthesized
+                    // RHS forms like `x instanceof (Symbol() || {})`.
+                    // Mirrors fixture `symbolType1.ts(4,19)`.
+                    const rhs_pos = self.symbolOperandAnchorPos(b.rhs);
+                    try self.reportAt(b.rhs, rhs_pos, TsCodes.instanceof_right_type, "The right-hand side of an 'instanceof' expression must be either of type 'any', a class, function, or other type assignable to the 'Function' interface type, or an object type with a 'Symbol.hasInstance' method.");
                 } else {
                     try self.checkInstanceofHasInstanceOperand(b.lhs, lhs, b.rhs, rhs);
                 }
