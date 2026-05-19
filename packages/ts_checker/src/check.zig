@@ -202,12 +202,6 @@ pub const TsCodes = struct {
     /// `superCallBeforeThisAccessing4`.
     pub const super_call_when_extends_null: u32 = 17005;
     pub const super_before_super_call: u32 = 17011;
-    /// TS2337 — `Super calls are not permitted outside constructors
-    /// or in nested functions inside constructors.` Fires for
-    /// `super(...)` calls inside arrow/function/method bodies that
-    /// live inside a constructor (or outside any constructor in a
-    /// derived class member). Mirrors tsc grammar check.
-    pub const super_call_not_permitted: u32 = 2337;
     /// TS2340 — `Only public and protected methods of the base class
     /// are accessible via the 'super' keyword.` Fires for `super.X`
     /// where X is a data property (not a method) on the base class,
@@ -14126,15 +14120,38 @@ pub const Checker = struct {
             return;
         const private_set = self.class_private_members.getPtr(class_name) orelse return;
         if (!private_set.contains(prop_name)) return;
-        // Suppress TS2341 for `super.<priv>` accesses — TS2340 (super
-        // can only reach methods of the base class) already covers
-        // this case and tsc never doubles up. Mirrors fixture
-        // `errorSuperPropertyAccess.ts(87,15)` / `(91,23)` where the
-        // upstream baseline only emits TS2340 for a private base-class
-        // member accessed via `super.`.
+        // Suppress TS2341 for `super.<data-property>` accesses on a
+        // base class data property — TS2340 ("Only public and
+        // protected methods of the base class are accessible via the
+        // 'super' keyword") already covers this case when the target
+        // is target=ES5, and tsc never doubles up. We keep TS2341 for
+        // `super.<private-method>()` since TS2340 doesn't fire for
+        // methods. Mirrors fixture `errorSuperPropertyAccess.ts(87,15)`
+        // / `(91,23)` (data prop, suppressed) vs `(111,15)` /
+        // `(116,15)` (method, kept). Our parser lowers `super` to an
+        // identifier named `super`, not a dedicated super-expr node,
+        // so the test must check the identifier name.
         if (self.hir.kindOf(node) == .member_access) {
             const m = hir_mod.memberOf(self.hir, node);
-            if (self.hir.kindOf(m.object) == .super_expr) return;
+            if (self.hir.kindOf(m.object) == .identifier) {
+                const ident = hir_mod.identifierOf(self.hir, m.object);
+                if (std.mem.eql(u8, self.string_interner.get(ident.name), "super") and
+                    self.sourceTargetMentionsEs5())
+                {
+                    // Check member kind: data property is suppressed,
+                    // method falls through. Use obj_t's structural
+                    // members to classify.
+                    const members = self.interner.objectMembers(obj_t);
+                    var is_data_property = false;
+                    for (members) |om| {
+                        if (om.name == prop_name) {
+                            is_data_property = !om.is_method;
+                            break;
+                        }
+                    }
+                    if (is_data_property) return;
+                }
+            }
         }
         // Walk parents looking for an enclosing `class_decl` whose
         // name matches `class_name`. Found → access is inside the
@@ -28641,7 +28658,14 @@ pub const Checker = struct {
                             if (self.callExprIsTaggedTemplate(node) and self.nodeIsDirectlyInsideConstructor(node)) {
                                 try self.report(c.callee, TsCodes.super_before_super_call, "'super' must be called before accessing a property of 'super' in the constructor of a derived class.");
                             }
-                            if (self.superCallIsInNestedFunctionInsideConstructor(c.callee)) {
+                            if (self.superCallIsInNestedFunctionInsideConstructor(c.callee) and
+                                !self.in_computed_property_name and
+                                !self.nodeInsideComputedPropertyKey(c.callee))
+                            {
+                                // TS2466 already covers `super(...)` inside
+                                // a computed property key — suppress the
+                                // grammar-level TS2337 there. Mirrors
+                                // `computedPropertyNames30_ES{5,6}.ts(11,19)`.
                                 try self.report(c.callee, TsCodes.super_call_not_permitted, "Super calls are not permitted outside constructors or in nested functions inside constructors.");
                             }
                             break :blk types.Primitive.any;
