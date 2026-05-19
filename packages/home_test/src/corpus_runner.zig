@@ -131,6 +131,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/07397.test.ts",
     "js/bun/test/expect-unreaachable.test.ts",
     "regression/issue/06467.test.ts",
+    "regression/issue/11677.test.ts",
 };
 
 const harness_prelude =
@@ -166,6 +167,9 @@ const harness_prelude =
     \\}
     \\function __home_assert(pass, isNot, message) {
     \\  if (isNot ? pass : !pass) __home_fail(message);
+    \\}
+    \\function __home_has_own_property(value, key) {
+    \\  return Object.prototype.hasOwnProperty.call(value, key);
     \\}
     \\function __home_deep_equal(a, b, strict, seen) {
     \\  if (Object.is(a, b)) return true;
@@ -320,6 +324,41 @@ const harness_prelude =
     \\        index = found + search.length;
     \\      }
     \\      __home_assert(count === expectedCount, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to include " + __home_format(needle) + " " + String(expectedCount) + " times");
+    \\    },
+    \\    toContainKey(expected) {
+    \\      if (arguments.length < 1) __home_fail("toContainKey() takes 1 argument");
+    \\      if (value === null || (typeof value !== "object" && typeof value !== "function")) __home_fail("Expected value must be an object");
+    \\      __home_assert(__home_has_own_property(value, expected), isNot, "Expected value" + (isNot ? " not" : "") + " to contain key " + __home_format(expected));
+    \\    },
+    \\    toContainKeys(expected) {
+    \\      if (arguments.length < 1) __home_fail("toContainKeys() takes 1 argument");
+    \\      if (!Array.isArray(expected)) __home_fail("toContainKeys expected must be an array");
+    \\      if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+    \\        __home_assert(expected.length === 0, isNot, "Expected value" + (isNot ? " not" : "") + " to contain keys " + __home_format(expected));
+    \\        return;
+    \\      }
+    \\      let pass = true;
+    \\      for (let i = 0; i < expected.length; i++) {
+    \\        if (!__home_has_own_property(value, expected[i])) {
+    \\          pass = false;
+    \\          break;
+    \\        }
+    \\      }
+    \\      __home_assert(pass, isNot, "Expected value" + (isNot ? " not" : "") + " to contain keys " + __home_format(expected));
+    \\    },
+    \\    toContainAnyKeys(expected) {
+    \\      if (arguments.length < 1) __home_fail("toContainAnyKeys() takes 1 argument");
+    \\      if (!Array.isArray(expected)) __home_fail("toContainAnyKeys expected must be an array");
+    \\      let pass = false;
+    \\      if (value !== null && (typeof value === "object" || typeof value === "function")) {
+    \\        for (let i = 0; i < expected.length; i++) {
+    \\          if (__home_has_own_property(value, expected[i])) {
+    \\            pass = true;
+    \\            break;
+    \\          }
+    \\        }
+    \\      }
+    \\      __home_assert(pass, isNot, "Expected value" + (isNot ? " not" : "") + " to contain any keys " + __home_format(expected));
     \\    }
     \\  };
     \\  return expectation;
@@ -936,6 +975,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/07397.test.ts", filesForSubset(.minimal_js)[19]);
     try std.testing.expectEqualStrings("js/bun/test/expect-unreaachable.test.ts", filesForSubset(.minimal_js)[20]);
     try std.testing.expectEqualStrings("regression/issue/06467.test.ts", filesForSubset(.minimal_js)[21]);
+    try std.testing.expectEqualStrings("regression/issue/11677.test.ts", filesForSubset(.minimal_js)[22]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -947,6 +987,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTypeOf() requires a valid type string argument") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeUndefined()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toIncludeRepeated(needle, expectedCount)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContainKey(expected)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContainAnyKeys(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "expect.unreachable") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "UnreachableError") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_bun_test") != null);
