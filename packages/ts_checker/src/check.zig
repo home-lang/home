@@ -4953,6 +4953,24 @@ pub const Checker = struct {
                     self.current_generator_info = self.generator_type_info.get(ret_t);
                 }
             }
+            // Fallback: when the declared return type is a bare
+            // `IterableIterator<T>` / `Iterable<T>` (or async variants)
+            // type-ref, the lowerer produces an opaque empty-object
+            // shape rather than a registered generator type, so
+            // `generator_type_info.get(ret_t)` misses. Pull T directly
+            // off the annotation so bare `yield;` / `yield expr` still
+            // gets checked against the declared element type. Mirrors
+            // the synthesized generator path used for `Generator<T,…>`
+            // annotations. Closes `generatorTypeCheck17/19/21`.
+            if (self.current_generator_info == null) {
+                if (self.generatorYieldTypeFromAnnotation(f.return_type)) |yt| {
+                    self.current_generator_info = .{
+                        .yield_type = yt,
+                        .return_type = types.Primitive.any,
+                        .next_type = types.Primitive.any,
+                    };
+                }
+            }
         } else if (!f.flags.is_generator and !f.flags.is_async and
             f.return_type != hir_mod.none_node_id and
             self.hir.kindOf(f.return_type) != .type_predicate_type)
@@ -10271,6 +10289,35 @@ pub const Checker = struct {
             .next_type = next_t,
         });
         return gen_t;
+    }
+
+    /// When `annotation` is a bare type-ref to one of the iterable /
+    /// generator builtin forms (`IterableIterator<T>`, `Iterable<T>`,
+    /// `AsyncIterableIterator<T>`, `AsyncIterable<T>`, `Generator<T,…>`,
+    /// `AsyncGenerator<T,…>`, `Iterator<T,…>`, `AsyncIterator<T,…>`),
+    /// returns the lowered yield element type T. Used as a fallback
+    /// when `generator_type_info.get(ret_t)` misses because the
+    /// lowerer materialized the annotation into an opaque empty-object
+    /// shape rather than a registered generator type.
+    fn generatorYieldTypeFromAnnotation(self: *Checker, annotation: NodeId) ?TypeId {
+        if (annotation == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(annotation) != .type_ref) return null;
+        const r = hir_mod.typeRefOf(self.hir, annotation);
+        if (r.qualifier_len != 0 or r.args_len == 0) return null;
+        const name = self.string_interner.get(r.name);
+        const matches =
+            std.mem.eql(u8, name, "IterableIterator") or
+            std.mem.eql(u8, name, "Iterable") or
+            std.mem.eql(u8, name, "AsyncIterableIterator") or
+            std.mem.eql(u8, name, "AsyncIterable") or
+            std.mem.eql(u8, name, "Iterator") or
+            std.mem.eql(u8, name, "AsyncIterator") or
+            std.mem.eql(u8, name, "Generator") or
+            std.mem.eql(u8, name, "AsyncGenerator");
+        if (!matches) return null;
+        const args = hir_mod.typeRefArgs(self.hir, annotation);
+        if (args.len == 0) return null;
+        return self.lowererLowerWithTypeParams(args[0]) catch null;
     }
 
     fn generatorReturnAnnotationDefinitelyInvalid(self: *Checker, ret_t: TypeId) bool {
@@ -31487,7 +31534,22 @@ pub const Checker = struct {
                 if (y.expr == hir_mod.none_node_id) {
                     if (gen) |info| {
                         if (!(self.engine.isAssignableTo(types.Primitive.undefined_t, info.yield_type) catch true)) {
-                            try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to generator yield type.");
+                            // Mirror upstream prose:
+                            //   `Type 'undefined' is not assignable to type 'Foo'.`
+                            // Falls back to the generic generator-yield
+                            // message when we can't render the element
+                            // type as a simple name.
+                            const yield_name = self.simpleDiagnosticTypeName(info.yield_type) catch null;
+                            if (yield_name) |yn| {
+                                const msg = try std.fmt.allocPrint(
+                                    self.diag_arena.allocator(),
+                                    "Type 'undefined' is not assignable to type '{s}'.",
+                                    .{yn},
+                                );
+                                try self.report(node, TsCodes.type_not_assignable, msg);
+                            } else {
+                                try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to generator yield type.");
+                            }
                         }
                         break :blk info.next_type;
                     }
@@ -31524,15 +31586,66 @@ pub const Checker = struct {
                             delegated.yield_type
                         else
                             try self.iterableElementType(inner_t);
-                        if (!(self.engine.isAssignableTo(delegated_yield, info.yield_type) catch true)) {
-                            try self.report(y.expr, TsCodes.type_not_assignable, "Type is not assignable to generator yield type.");
+                        // Skip the assignability check when the
+                        // delegated yield element type can't be pinned
+                        // down — typically object-literal iterators
+                        // (`yield * { *[Symbol.iterator]() {…} }`)
+                        // where `iterableElementType` returns `any`.
+                        // Without this guard the check fires false
+                        // positives when `current_generator_info` is
+                        // populated via the `IterableIterator<T>` /
+                        // `Iterable<T>` annotation fallback. Mirrors
+                        // upstream tsc which never raises TS2322 for
+                        // these untyped delegated iterables.
+                        const skip_delegated = delegated_yield == types.Primitive.any or
+                            delegated_yield == types.Primitive.unknown or
+                            delegated_yield == types.Primitive.none;
+                        if (!skip_delegated and
+                            !(self.engine.isAssignableTo(delegated_yield, info.yield_type) catch true))
+                        {
+                            // Prefer the more-specific TS2741 wording
+                            // when delegating into an iterable whose
+                            // element type is missing exactly one
+                            // required property from the target yield
+                            // type. Mirrors upstream tsc which fires
+                            // `Property 'x' is missing in type 'Baz'
+                            // but required in type 'Foo'.` for
+                            // `yield * [new Baz]` against
+                            // `IterableIterator<Foo>`. Closes
+                            // `generatorTypeCheck20`.
+                            const reported = self.tryReportSinglePropertyMissing(
+                                y.expr,
+                                y.expr,
+                                delegated_yield,
+                                info.yield_type,
+                            ) catch false;
+                            if (!reported) {
+                                try self.report(y.expr, TsCodes.type_not_assignable, "Type is not assignable to generator yield type.");
+                            }
                         }
                     }
                     break :blk delegated_return;
                 }
                 if (gen) |info| {
                     if (!(self.engine.isAssignableTo(inner_t, info.yield_type) catch true)) {
-                        try self.report(y.expr, TsCodes.type_not_assignable, "Type is not assignable to generator yield type.");
+                        // Prefer the more-specific TS2741 wording when
+                        // the yield operand is a class instance type
+                        // (or object literal) and the target generator
+                        // yield type is missing exactly one required
+                        // property. Mirrors upstream tsc's preference
+                        // for `Property 'x' is missing in type 'Baz'
+                        // but required in type 'Foo'.` over the
+                        // generic TS2322 prose. Closes
+                        // `generatorTypeCheck18/20`.
+                        const reported = self.tryReportSinglePropertyMissing(
+                            y.expr,
+                            y.expr,
+                            inner_t,
+                            info.yield_type,
+                        ) catch false;
+                        if (!reported) {
+                            try self.report(y.expr, TsCodes.type_not_assignable, "Type is not assignable to generator yield type.");
+                        }
                     }
                     break :blk info.next_type;
                 }
