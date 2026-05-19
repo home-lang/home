@@ -16,15 +16,16 @@ macOS, Linux, and the WASM target.
   `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
   That subset currently executes the todo-registration smoke, the Web
-  `atob`/`btoa` smoke, thirteen regression smokes, one bundler
+  `atob`/`btoa` smoke, fourteen regression smokes, one bundler
   constant-fold smoke, six test-runner expectation smokes, one nested-describe
   smoke, one `Bun.stripANSI` smoke, and the Node `DOMException`, Web
   `Response.json` / `Response.redirect`, Web `Request` cache/mode/clone, JSC
   `ShadowRealm`, Bun file-metadata, Node `Buffer`
   binary/UTF-16LE/compare/inspect limit, `Map`/`Set` deep-equality, lifecycle
-  hook, `expect.any` constructor matching, `MessageEvent` constructor behavior,
-  Bun version aliases, own-key matcher, and stack-trace smokes. It is only a
-  smoke path for JSC + `home_test`; it is not the release gate. The bootstrap harness is
+  hook, `Bun.inspect` Set formatting, `expect.any` constructor matching,
+  `MessageEvent` constructor behavior, Bun version aliases, own-key matcher,
+  and stack-trace smokes. It is only a smoke path for JSC + `home_test`; it is
+  not the release gate. The bootstrap harness is
   installed once per JSC engine, resets counters before each file, and lowers
   supported `bun:test` imports through a virtual
   `globalThis.__home_import("bun:test")` module shim.

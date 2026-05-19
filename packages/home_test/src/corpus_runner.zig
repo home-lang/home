@@ -86,6 +86,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/web/workers/message-event.test.ts",
     "js/bun/jsc/native-constructor-identity.test.ts",
     "js/bun/test/bun-test.test.ts",
+    "regression/issue/16007.test.ts",
 };
 
 const harness_prelude =
@@ -108,6 +109,25 @@ const harness_prelude =
     \\  revision: "home",
     \\  stripANSI(value) {
     \\    return String(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+    \\  },
+    \\  inspect(value) {
+    \\    if (value === null || typeof value !== "object" || Array.isArray(value)) __home_unsupported("Only Bun.inspect({ key: Set<string> }) is supported by the Home Bun corpus bootstrap runner");
+    \\    const keys = Object.keys(value);
+    \\    const lines = ["{"];
+    \\    for (let keyIndex = 0; keyIndex < keys.length; keyIndex++) {
+    \\      const key = keys[keyIndex];
+    \\      const entry = value[key];
+    \\      if (!(entry instanceof Set)) __home_unsupported("Only Set properties are supported by this Bun.inspect bootstrap path");
+    \\      lines.push("  " + key + ": Set(" + entry.size + ") {");
+    \\      const values = Array.from(entry);
+    \\      for (let i = 0; i < values.length; i++) {
+    \\        if (typeof values[i] !== "string") __home_unsupported("Only string Set values are supported by this Bun.inspect bootstrap path");
+    \\        lines.push("    " + JSON.stringify(values[i]) + ",");
+    \\      }
+    \\      lines.push("  },");
+    \\    }
+    \\    lines.push("}");
+    \\    return lines.join("\n");
     \\  },
     \\};
     \\if (typeof process !== "object") {
@@ -1310,12 +1330,15 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/web/workers/message-event.test.ts", filesForSubset(.minimal_js)[32]);
     try std.testing.expectEqualStrings("js/bun/jsc/native-constructor-identity.test.ts", filesForSubset(.minimal_js)[33]);
     try std.testing.expectEqualStrings("js/bun/test/bun-test.test.ts", filesForSubset(.minimal_js)[34]);
+    try std.testing.expectEqualStrings("regression/issue/16007.test.ts", filesForSubset(.minimal_js)[35]);
 }
 
 test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function it(name, fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_is_thenable(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "stripANSI(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "inspect(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Set(\" + entry.size + \")") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "version: \"0.0.0-home\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.versions.bun = Bun.version") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeInstanceOf(ctor)") != null);
