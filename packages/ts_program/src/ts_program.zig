@@ -210,6 +210,8 @@ pub const Program = struct {
             f.compilation = c;
         }
 
+        try self.appendMissingImportedHelperDiagnostics(options);
+
         try self.resolveImports();
     }
 
@@ -494,11 +496,182 @@ pub const Program = struct {
                 else => return error.ParseError,
             };
             f.compilation = c;
+            try self.appendMissingImportedHelperDiagnosticsForFile(f, options);
             count += 1;
         }
         // Cross-file imports may now resolve to different ids.
         try self.resolveImports();
         return count;
+    }
+
+    fn appendMissingImportedHelperDiagnostics(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
+        if (!options.emit.import_helpers) return;
+        for (self.files.items) |f| {
+            try self.appendMissingImportedHelperDiagnosticsForFile(f, options);
+        }
+    }
+
+    fn appendMissingImportedHelperDiagnosticsForFile(self: *Program, f: *File, options: ts_driver.CompileOptions) ProgramError!void {
+        if (!options.emit.import_helpers) return;
+        if (f.is_declaration) return;
+        if (legacyDecoratorsEnabled(f.source, options)) return;
+        const c = f.compilation orelse return;
+        const tslib = self.findTslibDeclaration() orelse return;
+
+        var search_from: usize = 0;
+        while (findStage3DecoratedClassExpression(f.source, search_from)) |decorated| {
+            const helpers = [_][]const u8{ "__esDecorate", "__runInitializers", "__setFunctionName" };
+            for (helpers) |helper| {
+                if (std.mem.eql(u8, helper, "__setFunctionName") and decorated.has_class_name) continue;
+                if (std.mem.indexOf(u8, tslib.source, helper) != null) continue;
+                const msg = try std.fmt.allocPrint(
+                    self.gpa,
+                    "This syntax requires an imported helper named '{s}' which does not exist in 'tslib'. Consider upgrading your version of 'tslib'.",
+                    .{helper},
+                );
+                try c.diagnostics.append(self.gpa, .{
+                    .phase = .bind,
+                    .pos = @intCast(decorated.at_pos),
+                    .line = 0,
+                    .span_len = @intCast(decorated.span_len),
+                    .code = 2343,
+                    .message = msg,
+                });
+                c.has_errors = true;
+            }
+            search_from = decorated.at_pos + 1;
+        }
+        sortDiagnosticsBySourceOrder(c.diagnostics.items);
+    }
+
+    fn findTslibDeclaration(self: *Program) ?*File {
+        for (self.files.items) |f| {
+            const base = std.fs.path.basename(f.path);
+            if (std.mem.eql(u8, base, "tslib.d.ts")) return f;
+        }
+        return null;
+    }
+
+    const DecoratedClass = struct {
+        at_pos: usize,
+        span_len: usize,
+        has_class_name: bool,
+    };
+
+    fn findStage3DecoratedClassExpression(source: []const u8, start: usize) ?DecoratedClass {
+        var i = start;
+        while (std.mem.indexOfScalarPos(u8, source, i, '@')) |at| {
+            if (positionInLineComment(source, at) or positionInBlockComment(source, at)) {
+                i = at + 1;
+                continue;
+            }
+            const class_pos = findKeywordNearby(source, at + 1, "class") orelse {
+                i = at + 1;
+                continue;
+            };
+            const after_class = skipTrivia(source, class_pos + "class".len);
+            const has_name = after_class < source.len and isIdentifierStart(source[after_class]);
+            return .{
+                .at_pos = at,
+                .span_len = class_pos + "class".len - at,
+                .has_class_name = has_name,
+            };
+        }
+        return null;
+    }
+
+    fn findKeywordNearby(source: []const u8, start: usize, keyword: []const u8) ?usize {
+        const max = @min(source.len, start + 256);
+        var i = start;
+        var paren_depth: u32 = 0;
+        while (i < max) : (i += 1) {
+            switch (source[i]) {
+                '(' => paren_depth += 1,
+                ')' => {
+                    if (paren_depth > 0) paren_depth -= 1;
+                },
+                ';' => if (paren_depth == 0) return null,
+                else => {},
+            }
+            if (i + keyword.len <= source.len and
+                std.mem.eql(u8, source[i .. i + keyword.len], keyword) and
+                (i == 0 or !isIdentifierContinue(source[i - 1])) and
+                (i + keyword.len == source.len or !isIdentifierContinue(source[i + keyword.len])))
+            {
+                return i;
+            }
+        }
+        return null;
+    }
+
+    fn skipTrivia(source: []const u8, start: usize) usize {
+        var i = start;
+        while (i < source.len) : (i += 1) {
+            switch (source[i]) {
+                ' ', '\t', '\r', '\n' => continue,
+                else => return i,
+            }
+        }
+        return i;
+    }
+
+    fn positionInLineComment(source: []const u8, pos: usize) bool {
+        var line_start = pos;
+        while (line_start > 0 and source[line_start - 1] != '\n') : (line_start -= 1) {}
+        if (std.mem.indexOf(u8, source[line_start..pos], "//")) |_| return true;
+        return false;
+    }
+
+    fn positionInBlockComment(source: []const u8, pos: usize) bool {
+        const open = std.mem.lastIndexOf(u8, source[0..pos], "/*") orelse return false;
+        const close = std.mem.lastIndexOf(u8, source[0..pos], "*/") orelse return true;
+        return open > close;
+    }
+
+    fn sourceDirectiveBool(source: []const u8, name: []const u8) ?bool {
+        var lines = std.mem.splitScalar(u8, source, '\n');
+        while (lines.next()) |raw| {
+            const line = std.mem.trim(u8, raw, " \t\r");
+            if (!std.mem.startsWith(u8, line, "//")) continue;
+            const marker = std.mem.indexOf(u8, line, "@") orelse continue;
+            const body = line[marker + 1 ..];
+            const colon = std.mem.indexOfScalar(u8, body, ':') orelse continue;
+            const key = std.mem.trim(u8, body[0..colon], " \t");
+            if (!std.ascii.eqlIgnoreCase(key, name)) continue;
+            const value = std.mem.trim(u8, body[colon + 1 ..], " \t\r");
+            if (std.ascii.startsWithIgnoreCase(value, "true")) return true;
+            if (std.ascii.startsWithIgnoreCase(value, "false")) return false;
+        }
+        return null;
+    }
+
+    fn legacyDecoratorsEnabled(source: []const u8, options: ts_driver.CompileOptions) bool {
+        if (sourceDirectiveBool(source, "experimentalDecorators")) |on| return on;
+        if (options.pub_tsconfig) |cfg| {
+            if (cfg.compiler_options.experimental_decorators) |on| return on;
+        }
+        return false;
+    }
+
+    fn isIdentifierStart(c: u8) bool {
+        return std.ascii.isAlphabetic(c) or c == '_' or c == '$';
+    }
+
+    fn isIdentifierContinue(c: u8) bool {
+        return isIdentifierStart(c) or std.ascii.isDigit(c);
+    }
+
+    fn sortDiagnosticsBySourceOrder(diags: []ts_driver.Diagnostic) void {
+        const lessThan = struct {
+            fn lt(_: void, a: ts_driver.Diagnostic, b: ts_driver.Diagnostic) bool {
+                if (a.pos != b.pos) return a.pos < b.pos;
+                if (a.span_len != 0 and b.span_len != 0 and a.span_len != b.span_len) {
+                    return a.span_len < b.span_len;
+                }
+                return a.code < b.code;
+            }
+        }.lt;
+        std.mem.sort(ts_driver.Diagnostic, diags, {}, lessThan);
     }
 
     /// Return true if `from` reaches `to` through the import graph
@@ -877,6 +1050,37 @@ test "Program: cycle does not infinite loop" {
     const order = try p.topologicalOrder();
     defer T.allocator.free(order);
     try T.expectEqual(@as(usize, 2), order.len);
+}
+
+test "Program: importHelpers reports missing Stage 3 decorator helpers from tslib" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/main.ts",
+        \\export {};
+        \\declare var dec: any;
+        \\var C;
+        \\C = @dec class {};
+    );
+    _ = try p.add("/tslib.d.ts", "export {}\n");
+    try p.compileAll(.{ .emit = .{ .import_helpers = true } });
+
+    const c = p.fileById(0).compilation.?;
+    var seen_es_decorate = false;
+    var seen_run_initializers = false;
+    var seen_set_function_name = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code != 2343) continue;
+        if (std.mem.indexOf(u8, d.message, "'__esDecorate'") != null) seen_es_decorate = true;
+        if (std.mem.indexOf(u8, d.message, "'__runInitializers'") != null) seen_run_initializers = true;
+        if (std.mem.indexOf(u8, d.message, "'__setFunctionName'") != null) seen_set_function_name = true;
+    }
+    try T.expect(seen_es_decorate);
+    try T.expect(seen_run_initializers);
+    try T.expect(seen_set_function_name);
 }
 
 test "Program: collectGlobalAugmentations finds none for plain files" {

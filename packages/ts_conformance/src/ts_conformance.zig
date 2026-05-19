@@ -833,7 +833,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .nodenext => "nodenext",
         .bundler => "bundler",
     };
-    program.compileAll(.{
+    var compile_options = ts_driver.CompileOptions{
         .is_tsx = c.is_tsx,
         .is_declaration_file = c.is_declaration_file,
         .strict_flags = c.strict_flags,
@@ -845,7 +845,9 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .no_emit = true,
         .external_resolver = external,
         .module_resolution = module_resolution_label,
-    }) catch |err| switch (err) {
+    };
+    compile_options.emit.import_helpers = directiveBool(if (c.raw_source.len > 0) c.raw_source else c.source, "importHelpers") orelse false;
+    program.compileAll(compile_options) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return null,
     };
