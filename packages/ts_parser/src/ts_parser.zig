@@ -11007,6 +11007,28 @@ pub const Parser = struct {
             var named_close_recovered = false;
             var named_close_end: u32 = after_slash.span.end;
             if (after_slash.kind != .greater_than and isJsxNamePart(after_slash.kind)) {
+                // tsc treats the bogus close-tag name as a regular
+                // identifier reference (not a JSX tag) and runs it
+                // through normal name resolution, so an unresolved
+                // `</div>` inside a fragment emits BOTH TS2304 and
+                // TS17015 at the name. Mirrors tsxFragmentErrors line 9
+                // `<>hi</div>` — `Cannot find name 'div'.` precedes
+                // `Expected corresponding closing tag for JSX fragment.`
+                // The close-tag name never participates in real value
+                // resolution from this recovery, so emitting from the
+                // parser keeps the path self-contained.
+                const name_text = self.source[after_slash.span.start..after_slash.span.end];
+                const ts2304_msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Cannot find name '{s}'.",
+                    .{name_text},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .pos = after_slash.span.start,
+                    .line = after_slash.line,
+                    .code = 2304,
+                    .message = ts2304_msg,
+                });
                 try self.reportCodeAt(after_slash.span.start, after_slash.line, 17015, "Expected corresponding closing tag for JSX fragment.");
                 // Consume the bogus name (and any hyphenation /
                 // namespacing) so the trailing `>` is reachable.
