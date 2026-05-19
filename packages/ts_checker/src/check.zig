@@ -151,6 +151,10 @@ pub const TsCodes = struct {
     /// `constructor` (string-literal or identifier key). Computed
     /// keys (`["constructor"]`) are exempt.
     pub const class_field_named_constructor: u32 = 18006;
+    /// TS18013 — ECMAScript private name `#field` declared on class
+    /// `C` accessed from outside `C`'s body. Mirrors the legacy
+    /// TS2341 for `private` keyword but for hashed names.
+    pub const ecma_private_not_accessible_outside_class: u32 = 18013;
     pub const cannot_find_namespace: u32 = 2503;
     pub const cannot_find_namespace_did_you_mean: u32 = 2833;
     pub const type_only_used_as_value: u32 = 2693;
@@ -14496,6 +14500,63 @@ pub const Checker = struct {
             .node = node,
             .pos = property_name_pos,
             .code = TsCodes.private_member_access,
+            .message = msg,
+        });
+    }
+
+    /// TS18013 sibling to `checkPrivateMemberAccess` for ECMAScript
+    /// `#field` names. When `x.#prop` references a private name
+    /// declared on `Base` but the access occurs outside `Base`'s
+    /// body, tsc emits TS18013. Mirrors `checkPrivateMemberAccess`
+    /// but keyed on the name's `#` prefix instead of the legacy
+    /// `private` keyword.
+    fn checkEcmaPrivateMemberAccess(
+        self: *Checker,
+        node: NodeId,
+        obj_t: TypeId,
+        prop_name: hir_mod.StringId,
+    ) CheckError!void {
+        if (!self.memberNameIsEcmaPrivate(prop_name)) return;
+        const class_name = self.class_name_by_instance.get(obj_t) orelse
+            self.class_name_by_static.get(obj_t) orelse
+            return;
+        // Confirm the class actually declares this `#field` (an
+        // instance OR static member).
+        const declared = blk: {
+            if (self.class_instance_member_names.getPtr(class_name)) |set| {
+                if (set.contains(prop_name)) break :blk true;
+            }
+            if (self.class_static_member_names.getPtr(class_name)) |set| {
+                if (set.contains(prop_name)) break :blk true;
+            }
+            break :blk false;
+        };
+        if (!declared) return;
+        // Walk parents looking for an enclosing `class_decl` whose
+        // name matches `class_name`. Found → access is inside the
+        // declaring body; allow it.
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k != .class_decl and k != .class_expr) continue;
+            const c = hir_mod.classOf(self.hir, cur);
+            if (c.name == hir_mod.none_node_id or self.hir.kindOf(c.name) != .identifier) continue;
+            const enclosing = hir_mod.identifierOf(self.hir, c.name).name;
+            if (enclosing == class_name) return;
+        }
+        const prop_str = self.string_interner.get(prop_name);
+        const class_display = try self.classDisplayName(node, class_name);
+        defer self.gpa.free(class_display);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Property '{s}' is not accessible outside class '{s}' because it has a private identifier.",
+            .{ prop_str, class_display },
+        );
+        const property_name_pos = self.memberAccessPropertyNamePos(node);
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = property_name_pos,
+            .code = TsCodes.ecma_private_not_accessible_outside_class,
             .message = msg,
         });
     }
@@ -29661,6 +29722,7 @@ pub const Checker = struct {
                     }
                 }
                 try self.checkPrivateMemberAccess(node, access_obj_t, m.name);
+                try self.checkEcmaPrivateMemberAccess(node, access_obj_t, m.name);
                 try self.checkProtectedMemberAccess(node, access_obj_t, m.name);
                 if (try self.commonJsExportMemberKey(node)) |key| {
                     if (self.lookupCommonJsExportNarrow(key)) |nt| {
