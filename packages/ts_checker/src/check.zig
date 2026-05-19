@@ -230,6 +230,11 @@ pub const TsCodes = struct {
     pub const instanceof_right_type: u32 = 2359;
     pub const instanceof_has_instance_lhs: u32 = 2860;
     pub const instanceof_has_instance_return: u32 = 2861;
+    /// TS2863 — `class C extends number {}` and friends. Classes
+    /// may not extend primitive types (number/string/boolean/etc.);
+    /// tsc emits a dedicated diagnostic for the case rather than
+    /// the generic TS2304 / TS2507 path.
+    pub const class_extends_primitive: u32 = 2863;
     pub const arithmetic_operand_type: u32 = 2356;
     pub const update_operand_not_variable: u32 = 2357;
     pub const arithmetic_left_operand_type: u32 = 2362;
@@ -21470,6 +21475,26 @@ pub const Checker = struct {
         const name = self.classExtendsName(extends_expr) orelse return;
         if (self.bareTypeNodeIsTypeParam(extends_expr, type_params)) return;
         if (try self.classExtendsHeritageNameResolves(extends_expr, name)) return;
+        const raw = self.string_interner.get(name);
+        // TS2863: extending a *primitive type name* (`number`,
+        // `string`, `boolean`, …) is a dedicated upstream diagnostic.
+        // The names alias to non-value primitive types, so the
+        // generic TS2304 / TS2507 path was firing the wrong code.
+        // Mirrors `classExtendingPrimitive` / `classExtendingPrimitive2`.
+        if (std.mem.eql(u8, raw, "number") or
+            std.mem.eql(u8, raw, "string") or
+            std.mem.eql(u8, raw, "boolean") or
+            std.mem.eql(u8, raw, "bigint") or
+            std.mem.eql(u8, raw, "symbol"))
+        {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "A class cannot extend a primitive type like '{s}'. Classes can only extend constructable values.",
+                .{raw},
+            );
+            try self.report(extends_expr, TsCodes.class_extends_primitive, msg);
+            return;
+        }
         try self.reportCannotFindNamePlainOnce(extends_expr, name);
     }
 
