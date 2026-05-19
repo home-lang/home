@@ -44085,6 +44085,14 @@ pub const Checker = struct {
         try self.report(lhs_node, TsCodes.instanceof_has_instance_lhs, "The left-hand side of an 'instanceof' expression must be assignable to the first argument of the right-hand side's '[Symbol.hasInstance]' method.");
     }
 
+    fn binaryLhsIsPrivateIdentifier(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(node) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, node);
+        const name = self.string_interner.get(id.name);
+        return name.len > 0 and name[0] == '#';
+    }
+
     fn isInLeftOperandAllowed(self: *Checker, t: TypeId) bool {
         if (self.typeIsAnyLike(t)) return true;
         const f = self.interner.pool.flagsOf(t);
@@ -44442,7 +44450,14 @@ pub const Checker = struct {
                 const rhs_nullish = self.nullishLiteralOperandName(b.rhs);
                 if (lhs_nullish) |name| try self.reportNullishLiteralBinaryOperand(b.lhs, name);
                 if (rhs_nullish) |name| try self.reportNullishLiteralBinaryOperand(b.rhs, name);
-                if (lhs_nullish == null and !self.isInLeftOperandAllowed(lhs)) {
+                // `#field in obj` is the ECMAScript brand-check form
+                // (ES2022). The LHS is a private identifier, not a
+                // value with an assignable type, so suppress the
+                // `string | number | symbol` operand-kind check on
+                // the LHS. The RHS is still validated normally.
+                // Fixtures: `privateNameInInExpression*`.
+                const lhs_is_private_id = self.binaryLhsIsPrivateIdentifier(b.lhs);
+                if (lhs_nullish == null and !lhs_is_private_id and !self.isInLeftOperandAllowed(lhs)) {
                     try self.reportInOperandLeft(b.lhs, lhs);
                 }
                 if (rhs_nullish == null and !self.isInRightOperandAllowed(rhs)) {
