@@ -31750,6 +31750,14 @@ pub const Checker = struct {
                 }
             }
         }
+        // `<div>...</div>` (or any other JSX element) evaluates to
+        // JSX.Element when the program declares the lib's
+        // `react.d.ts` triple-slash reference — we don't actually
+        // load the lib, so synthesise an empty named type registered
+        // as `Element` so diagnostic prose renders the correct shape
+        // (`{ children: Element; }` rather than `{ children: any; }`).
+        // Falls through to `any` for fixtures with no lib reference.
+        if (try self.jsxLibElementSyntheticType()) |t| return t;
         return types.Primitive.any;
     }
 
@@ -47869,6 +47877,20 @@ pub const Checker = struct {
     /// don't actually compose the intersection in the type system, so
     /// this is rendering-only: when the prefix applies, prepend it
     /// before the regular structural render of the underlying target.
+    /// Synthetic JSX.Element type for `/.lib/react.d.ts`-anchored
+    /// fixtures. Returns a named empty-object type registered under
+    /// the leaf name "Element" so `simpleDiagnosticTypeName` renders
+    /// it correctly. Reuses the same memoised lookup as the
+    /// `resolveQualifiedTypeRef` lib fallback.
+    fn jsxLibElementSyntheticType(self: *Checker) CheckError!?TypeId {
+        if (!self.sourceHasReactJsxReference()) return null;
+        const name = self.string_interner.intern("Element") catch return error.OutOfMemory;
+        if (self.type_names.get(name)) |existing| return existing;
+        const t = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+        try self.type_names.put(self.gpa, name, t);
+        return t;
+    }
+
     fn allocJsxAttrsTargetName(self: *Checker, anchor: NodeId, target: TypeId) CheckError!?[]const u8 {
         const tgt_text = (try self.allocSimpleTypeName(target)) orelse
             (try self.allocAnonymousObjectName(target)) orelse return null;
@@ -47888,12 +47910,24 @@ pub const Checker = struct {
     }
 
     fn jsxHasIntrinsicAttributesDecl(self: *Checker, anchor: NodeId) bool {
+        // Inline `declare namespace JSX { interface IntrinsicAttributes
+        // { … } }` — direct lookup.
         const jsx_name = self.string_interner.intern("JSX") catch return false;
         const ia_name = self.string_interner.intern("IntrinsicAttributes") catch return false;
         const root = self.rootBlockFor(anchor);
-        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
-        const ns_node = self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), &[_]hir_mod.StringId{jsx_name}) orelse return false;
-        return self.findNamedTypeDeclInNamespace(ns_node, ia_name) != null;
+        if (root != hir_mod.none_node_id and self.hir.kindOf(root) == .block_stmt) {
+            const ns_node = self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), &[_]hir_mod.StringId{jsx_name});
+            if (ns_node) |n| {
+                if (self.findNamedTypeDeclInNamespace(n, ia_name) != null) return true;
+            }
+        }
+        // `/// <reference path="/.lib/react.d.ts" />` — the lib
+        // declares `interface IntrinsicAttributes extends
+        // React.Attributes {}` so treat it as present even though
+        // we don't actually load the lib. Mirrors the existing
+        // synthetic `JSX.<Type>` fallback in
+        // `resolveQualifiedTypeRef`.
+        return self.sourceHasReactJsxReference();
     }
 
     /// Best-effort anonymous object-type rendering for diagnostics.
