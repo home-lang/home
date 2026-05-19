@@ -53,6 +53,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/15326.test.ts",
     "regression/issue/15314.test.ts",
     "regression/issue/02005.test.ts",
+    "bundler/transpiler_constant_fold_eqeq.test.ts",
 };
 
 const prelude =
@@ -561,6 +562,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/15326.test.ts", filesForSubset(.minimal_js)[8]);
     try std.testing.expectEqualStrings("regression/issue/15314.test.ts", filesForSubset(.minimal_js)[9]);
     try std.testing.expectEqualStrings("regression/issue/02005.test.ts", filesForSubset(.minimal_js)[10]);
+    try std.testing.expectEqualStrings("bundler/transpiler_constant_fold_eqeq.test.ts", filesForSubset(.minimal_js)[11]);
 }
 
 test "Bun test import rewrite installs the bootstrap prelude" {
