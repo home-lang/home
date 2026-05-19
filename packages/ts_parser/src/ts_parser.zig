@@ -52,6 +52,7 @@ pub const ParseError = error{
 pub const Diagnostic = struct {
     pos: u32,
     line: u32,
+    span_len: u32 = 0,
     /// TypeScript-compatible diagnostic code. 0 means callers should
     /// fall back to their phase-level parse code.
     code: u32 = 0,
@@ -182,6 +183,10 @@ pub const Parser = struct {
     /// TS1169 vs. TS1170 when a computed key isn't a literal-resolved
     /// name. Mirrors `computedPropertyNamesDeclarationEmit3/4_ES{5,6}`.
     parsing_interface_body: bool = false,
+    /// Stack-style counter for tuple type elements. A trailing `?`
+    /// before `,`/`]` is valid tuple optionality here, not JSDoc
+    /// postfix nullable syntax.
+    tuple_type_depth: u32,
     /// True for `.tsx` files. Enables JSX parsing in expression
     /// position; the parser disambiguates `<T>x` (generic type
     /// assertion) vs. `<T>x</T>` (JSX) via the `<T,>` and
@@ -251,6 +256,7 @@ pub const Parser = struct {
             .top_level_export_indicator = false,
             .in_top_level_module_binding_decl = false,
             .in_export_declaration = false,
+            .tuple_type_depth = 0,
             .is_tsx = false,
             .is_declaration_file = false,
         };
@@ -523,10 +529,15 @@ pub const Parser = struct {
     }
 
     fn reportCodeAt(self: *Parser, pos: u32, line: u32, code: u32, message: []const u8) ParseError!void {
+        try self.reportCodeAtWithSpan(pos, line, 0, code, message);
+    }
+
+    fn reportCodeAtWithSpan(self: *Parser, pos: u32, line: u32, span_len: u32, code: u32, message: []const u8) ParseError!void {
         const msg = try self.diag_arena.allocator().dupe(u8, message);
         try self.diagnostics.append(self.gpa, .{
             .pos = pos,
             .line = line,
+            .span_len = span_len,
             .code = code,
             .message = msg,
         });
@@ -692,12 +703,61 @@ pub const Parser = struct {
             const body_start = i + 3;
             const close_rel = std.mem.indexOf(u8, self.source[body_start..], "*/") orelse return;
             const body_end = body_start + close_rel;
+            try self.scanJSDocParamTypeDiagnostics(body_start, body_end);
             try self.scanJSDocCommentTypeExpressions(body_start, body_end);
             try self.scanJSDocTypedefDuplicateTypeTags(body_start, body_end);
             try self.scanJSDocTemplateModifierDiagnostics(body_start, body_end);
             try self.scanJSDocPropertyNameDiagnostics(body_start, body_end);
             i = body_end + 2;
         }
+    }
+
+    fn scanJSDocParamTypeDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            const tag_name = self.source[tag_name_start..tag_name_end];
+            i = tag_name_end;
+            if (!std.mem.eql(u8, tag_name, "param")) continue;
+
+            const open = firstNonWhitespace(self.source, tag_name_end, end);
+            if (open >= end or self.source[open] != '{') continue;
+            const close_after = self.jsDocTagTypeAnnotationEnd(tag_name_end, end) orelse continue;
+            const close = close_after - 1;
+            const type_text = self.source[open + 1 .. close];
+            if (jsdoc.firstInvalidPostfixNullableOffset(type_text)) |invalid| {
+                const pos: u32 = @intCast(open + 1 + invalid);
+                try self.reportCodeAtWithSpan(
+                    pos,
+                    self.lineAt(pos),
+                    1,
+                    8024,
+                    "JSDoc '@param' tag has name '', but there is no parameter with that name.",
+                );
+                try self.reportCodeAtWithSpan(pos, self.lineAt(pos), 2, 1005, "'}' expected.");
+                continue;
+            }
+            if (jsdoc.isValidRestType(type_text) and self.hasFollowingJSDocParamTag(close_after, end)) {
+                const pos: u32 = @intCast(open + 1);
+                try self.reportCodeAt(pos, self.lineAt(pos), 1014, "A rest parameter must be last in a parameter list.");
+            }
+        }
+    }
+
+    fn hasFollowingJSDocParamTag(self: *const Parser, start: usize, end: usize) bool {
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse return false;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            if (std.mem.eql(u8, self.source[tag_name_start..tag_name_end], "param")) return true;
+            i = tag_name_end;
+        }
+        return false;
     }
 
     fn scanJSDocPropertyNameDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
@@ -1671,7 +1731,7 @@ pub const Parser = struct {
         return self.strict_mode or self.target_es2015_or_later or self.generator_depth > 0;
     }
 
-    fn reportInvalidYieldName(self: *Parser, tok: Token) ParseError!void {
+    fn reportInvalidYieldName(self: *Parser, tok: Token, target_reserved: bool) ParseError!void {
         if (!self.tokenTextEquals(tok, "yield")) return;
         // Inside a class body, strict mode is implicit and tsc emits
         // the class-strict TS1213 variant ("…Class definitions are
@@ -1698,11 +1758,13 @@ pub const Parser = struct {
             try self.reportCodeAt(tok.span.start, tok.line, 1359, "Identifier expected. 'yield' is a reserved word that cannot be used here.");
             return;
         }
-        // Outside any [Yield] grammar context, the binder is reserved
-        // when the source is strict mode OR ES2015+ (where `yield` is
-        // a future-reserved word). Mirrors `FunctionDeclaration4_es6`
-        // (`function yield() {}` at top level, es6 target).
-        if (self.strict_mode or self.target_es2015_or_later) {
+        // Outside any [Yield] grammar context, most binders are reserved
+        // when the source is strict mode OR ES2015+ (where `yield` is a
+        // future-reserved word). A generator declaration name is parsed
+        // in the outer binding scope, though, so sloppy-mode
+        // `async function * yield() {}` remains legal even with an
+        // ES2018 target. Strict mode still reports TS1212.
+        if (self.strict_mode or (target_reserved and self.target_es2015_or_later)) {
             try self.reportCodeAt(tok.span.start, tok.line, 1212, "Identifier expected. 'yield' is a reserved word in strict mode.");
         }
     }
@@ -2651,7 +2713,8 @@ pub const Parser = struct {
         if (self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) {
             const name_tok = self.advance();
             try self.reportInvalidStrictName(name_tok);
-            try self.reportInvalidYieldName(name_tok);
+            const yield_target_reserved = !(is_generator and require_name and self.generator_depth == 0);
+            try self.reportInvalidYieldName(name_tok, yield_target_reserved);
             // `async function await()` as a DECLARATION is legal (the
             // function name binds in the outer scope where `await` is
             // not reserved). The same name as a function EXPRESSION
@@ -3040,7 +3103,7 @@ pub const Parser = struct {
                 } else id_blk: {
                     const name_tok = try self.expectIdentifierLike();
                     if (!self.suppress_strict_param_names) try self.reportInvalidStrictName(name_tok);
-                    try self.reportInvalidYieldName(name_tok);
+                    try self.reportInvalidYieldName(name_tok, true);
                     try self.reportInvalidFutureReservedName(name_tok);
                     try self.reportInvalidClassStrictIdentifier(name_tok);
                     try self.reportAwaitReservedInAsyncContext(name_tok);
@@ -6989,6 +7052,10 @@ pub const Parser = struct {
     }
 
     fn jsDocPostfixTypeMarkerCanRecover(self: *const Parser) bool {
+        if (self.peek().kind == .question and self.tuple_type_depth > 0) {
+            const next = self.peekAt(1).kind;
+            if (next == .comma or next == .close_bracket) return false;
+        }
         const next = self.peekAt(1).kind;
         return switch (next) {
             .equal,
@@ -7354,6 +7421,8 @@ pub const Parser = struct {
 
     fn parseTupleType(self: *Parser) ParseError!NodeId {
         const open = try self.expect(.open_bracket, "'[' to start tuple type");
+        self.tuple_type_depth += 1;
+        defer self.tuple_type_depth -= 1;
         var elems: std.ArrayListUnmanaged(NodeId) = .empty;
         defer elems.deinit(self.gpa);
         var saw_optional = false;
@@ -16675,6 +16744,33 @@ test "parser: strict-mode top-level reserves yield in function names and params"
     try T.expect(count_1212 >= 2);
 }
 
+test "parser: sloppy top-level async-generator declaration may be named yield" {
+    // Mirrors `parser.asyncGenerators.functionDeclarations.es2018` /
+    // `yieldNameIsOk`: the declaration name binds in the outer sloppy
+    // script scope, not in the generator's [Yield] context. The
+    // `alwaysStrict=true` variant still reports TS1212.
+    var sloppy = try newTestSetup("async function * yield() {}");
+    defer destroyTestSetup(sloppy);
+
+    sloppy.parser.setTargetEs2015OrLater(true);
+    _ = try sloppy.parser.parseSourceFile();
+    for (sloppy.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1212);
+    }
+
+    var strict = try newTestSetup("async function * yield() {}");
+    defer destroyTestSetup(strict);
+
+    strict.parser.setTargetEs2015OrLater(true);
+    strict.parser.setStrictMode(true);
+    _ = try strict.parser.parseSourceFile();
+    var saw_1212 = false;
+    for (strict.parser.diagnostics.items) |d| {
+        if (d.code == 1212) saw_1212 = true;
+    }
+    try T.expect(saw_1212);
+}
+
 test "parser: nested function declaration named yield inside async generator reports TS1359" {
     // Mirrors `parser.asyncGenerators.functionDeclarations.es2018`
     // (`nestedFunctionDeclarationNamedYieldIsError`). Inside an async
@@ -17548,6 +17644,22 @@ test "parser: invalid enum member still reports missing close brace" {
     }
     try T.expect(invalid_found);
     try T.expect(close_found);
+}
+
+test "parser: JSDoc postfix nullable diagnostics keep TypeScript order" {
+    const src =
+        \\/** @param {number?[]} a */
+        \\function f(a) {}
+    ;
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expect(s.parser.diagnostics.items.len >= 2);
+    try T.expectEqual(@as(u32, 8024), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1), s.parser.diagnostics.items[0].span_len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 2), s.parser.diagnostics.items[1].span_len);
 }
 
 test "parser: enum reserved declaration name reports TS1359" {

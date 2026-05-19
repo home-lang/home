@@ -2230,6 +2230,7 @@ pub const Checker = struct {
                     },
                     .array_literal => try self.checkArrayDestructuringAssignment(fr.target, elem_t, hir_mod.none_node_id, 0),
                     .object_literal => try self.checkObjectDestructuringAssignment(fr.target, elem_t, hir_mod.none_node_id),
+                    .block_stmt => try self.checkForOfExcessDeclarationTarget(fr.target, elem_t),
                     else => {},
                 }
                 try self.bindForLoopTarget(fr.target, elem_t);
@@ -49990,6 +49991,54 @@ pub const Checker = struct {
         };
     }
 
+    fn checkForOfExcessDeclarationTarget(self: *Checker, target: NodeId, elem_t: TypeId) CheckError!void {
+        if (target == hir_mod.none_node_id or self.hir.kindOf(target) != .block_stmt) return;
+        for (hir_mod.blockStmts(self.hir, target)) |stmt| {
+            switch (self.hir.kindOf(stmt)) {
+                .var_decl, .let_decl, .const_decl => {
+                    const v = hir_mod.varDeclOf(self.hir, stmt);
+                    try self.checkForOfExcessDeclarationBindingPattern(v.name, elem_t);
+                },
+                else => {},
+            }
+        }
+    }
+
+    fn checkForOfExcessDeclarationBindingPattern(self: *Checker, pattern: NodeId, source_t: TypeId) CheckError!void {
+        if (pattern == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(pattern)) {
+            .object_pattern => {
+                for (hir_mod.patternElements(self.hir, pattern)) |elem| {
+                    if (self.hir.kindOf(elem) != .parameter) continue;
+                    const p = hir_mod.parameterOf(self.hir, elem);
+                    if (p.flags.is_computed_binding_key) {
+                        if (p.default_value == hir_mod.none_node_id) continue;
+                        const key_t = try self.checkExpression(p.default_value);
+                        try self.reportForOfExcessComputedBindingKeyIndex(p.default_value, source_t, key_t);
+                        continue;
+                    }
+                    try self.checkForOfExcessDeclarationBindingPattern(p.name, types.Primitive.any);
+                }
+            },
+            .array_pattern => {
+                for (hir_mod.patternElements(self.hir, pattern)) |elem| {
+                    if (self.hir.kindOf(elem) != .parameter) continue;
+                    const p = hir_mod.parameterOf(self.hir, elem);
+                    try self.checkForOfExcessDeclarationBindingPattern(p.name, types.Primitive.any);
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn reportForOfExcessComputedBindingKeyIndex(self: *Checker, node: NodeId, source_t: TypeId, key_t: TypeId) CheckError!void {
+        if (key_t == types.Primitive.any) {
+            try self.report(node, TsCodes.type_cannot_be_used_as_index, "Type 'any' cannot be used as an index type.");
+            return;
+        }
+        _ = try self.reportMissingIndexForComputedBindingKey(node, source_t, key_t);
+    }
+
     fn checkForOfVarSelfReferenceDiagnostics(self: *Checker, for_node: NodeId, target: NodeId, source: NodeId) CheckError!void {
         if (target == hir_mod.none_node_id) return;
         const target_kind = self.hir.kindOf(target);
@@ -73220,6 +73269,24 @@ test "checker: for-of array-literal element with non-LHS member emits TS2364" {
         if (d.code == TsCodes.assignment_lhs_not_variable) found_2364 = true;
     }
     try T.expect(found_2364);
+}
+
+test "checker: for-of excess declaration visits computed binding key" {
+    // Mirrors `for-of-excess-declarations`: the parser preserves the
+    // malformed extra declarator inside a synthetic for-of target block.
+    // The checker should still visit its computed binding key after the
+    // parser-owned TS1188.
+    const s = try newSetup("for (const a, { [b]: c } of [1]) {}");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_2304 = false;
+    var found_2538 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name) found_2304 = true;
+        if (d.code == TsCodes.type_cannot_be_used_as_index) found_2538 = true;
+    }
+    try T.expect(found_2304);
+    try T.expect(found_2538);
 }
 
 test "checker: default export merging with namespace and interface anchors at name" {

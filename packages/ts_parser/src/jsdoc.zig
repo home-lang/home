@@ -205,6 +205,14 @@ fn parseTypeExpression(rest: []const u8) ?ParsedTypeExpression {
     const end = matchBalancedBrace(rest);
     if (end == 0) return null;
     var type_text = rest[1 .. end - 1];
+    if (firstInvalidPostfixNullableOffset(type_text)) |invalid| {
+        type_text = type_text[0..invalid];
+        return .{
+            .type_text = type_text,
+            .len = 1 + invalid,
+            .optional_from_type_suffix = false,
+        };
+    }
     var optional_from_type_suffix = false;
     // JSDoc `{T=}` form: trailing `=` inside the braces marks the
     // parameter as optional. Strip the marker so downstream type
@@ -218,6 +226,71 @@ fn parseTypeExpression(rest: []const u8) ?ParsedTypeExpression {
         .len = end,
         .optional_from_type_suffix = optional_from_type_suffix,
     };
+}
+
+/// TypeScript accepts postfix JSDoc nullable (`T?`) only after the full
+/// primary/postfix type. `T?[]` and `T?!` are parse errors at `?`; callers use
+/// the offset both for diagnostics and for TS-like tag recovery.
+pub fn firstInvalidPostfixNullableOffset(type_text: []const u8) ?usize {
+    var paren_depth: i32 = 0;
+    var bracket_depth: i32 = 0;
+    var brace_depth: i32 = 0;
+    var angle_depth: i32 = 0;
+    var quote: u8 = 0;
+    var i: usize = 0;
+    while (i < type_text.len) : (i += 1) {
+        const c = type_text[i];
+        if (quote != 0) {
+            if (c == '\\') {
+                i += 1;
+            } else if (c == quote) {
+                quote = 0;
+            }
+            continue;
+        }
+        if (c == '\'' or c == '"') {
+            quote = c;
+            continue;
+        }
+        switch (c) {
+            '(' => paren_depth += 1,
+            ')' => {
+                if (paren_depth > 0) paren_depth -= 1;
+            },
+            '[' => bracket_depth += 1,
+            ']' => {
+                if (bracket_depth > 0) bracket_depth -= 1;
+            },
+            '{' => brace_depth += 1,
+            '}' => {
+                if (brace_depth > 0) brace_depth -= 1;
+            },
+            '<' => angle_depth += 1,
+            '>' => {
+                if (angle_depth > 0) angle_depth -= 1;
+            },
+            '?' => {
+                if (paren_depth == 0 and bracket_depth == 0 and brace_depth == 0 and angle_depth == 0) {
+                    const next = nextNonWhitespace(type_text, i + 1);
+                    if (next < type_text.len and (type_text[next] == '[' or type_text[next] == '!')) return i;
+                }
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+pub fn isValidRestType(type_text: []const u8) bool {
+    const trimmed = std.mem.trim(u8, type_text, " \t\r\n");
+    if (!std.mem.startsWith(u8, trimmed, "...")) return false;
+    return firstInvalidPostfixNullableOffset(trimmed[3..]) == null;
+}
+
+fn nextNonWhitespace(s: []const u8, start: usize) usize {
+    var i = start;
+    while (i < s.len and (s[i] == ' ' or s[i] == '\t' or s[i] == '\r' or s[i] == '\n')) : (i += 1) {}
+    return i;
 }
 
 /// Returns the index *after* the matching `}` for a brace at offset 0.
@@ -393,6 +466,29 @@ test "jsdoc: backquoted param names support type before and after name" {
     try T.expectEqualStrings("?number?", tags[1].type_text);
     try T.expectEqualStrings("bwarg", tags[1].name);
     try T.expect(!tags[1].optional);
+}
+
+test "jsdoc: postfix nullable before array recovers before the invalid marker" {
+    const body =
+        \\ * @param {number?[]} a
+        \\ * @param {...number?!} h
+    ;
+    const tags = try parse(T.allocator, body);
+    defer T.allocator.free(tags);
+    try T.expectEqual(@as(usize, 2), tags.len);
+    try T.expectEqualStrings("number", tags[0].type_text);
+    try T.expectEqualStrings("", tags[0].name);
+    try T.expectEqualStrings("...number", tags[1].type_text);
+    try T.expectEqualStrings("", tags[1].name);
+}
+
+test "jsdoc: rest type syntax recognizes valid prefix and postfix forms" {
+    try T.expect(isValidRestType("...?number"));
+    try T.expect(isValidRestType("...number?"));
+    try T.expect(isValidRestType("...number!?"));
+    try T.expect(isValidRestType("...number![]?"));
+    try T.expect(!isValidRestType("...number?!"));
+    try T.expect(!isValidRestType("...number?[]!"));
 }
 
 test "jsdoc: bracket-optional mixed with required parameters keeps each tag distinct" {
