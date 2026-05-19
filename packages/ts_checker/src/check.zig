@@ -38982,15 +38982,18 @@ pub const Checker = struct {
     }
 
     fn compoundAdditionAllowsNullish(self: *Checker, lhs: TypeId) bool {
-        if (self.typeIsAnyLike(lhs) or self.typeMaybeStringLike(lhs)) return true;
-        const f = self.interner.pool.flagsOf(lhs);
-        if (f.is_union) {
-            for (self.interner.unionMembers(lhs)) |member| {
-                if (!self.compoundAdditionAllowsNullish(member)) return false;
-            }
-            return true;
-        }
-        return self.isArithmeticOperandAllowed(lhs);
+        // Upstream tsc emits TS18050 on the literal-nullish RHS of a
+        // compound-addition assignment when the LHS is a concrete
+        // arithmetic operand (number/bigint/enum) — `n += null` and
+        // `e += null` fire TS18050. Only `any`-like and string-like
+        // targets absorb a nullish RHS (string concat coerces null
+        // to `"null"`). Mirrors fixtures
+        // `compoundAdditionAssignmentLHSCanBeAssigned.ts(32,7)` /
+        // `(33,7)` / `(39,7)` / `(40,7)` where x3 / x4 fire TS18050
+        // while x2 (string) stays clean.
+        if (self.typeIsAnyLike(lhs)) return true;
+        if (self.typeMaybeStringLike(lhs)) return true;
+        return false;
     }
 
     fn compoundAdditionAssignableBack(self: *Checker, result_t: TypeId, target_t: TypeId) CheckError!bool {
@@ -39051,7 +39054,16 @@ pub const Checker = struct {
             try self.reportSymbolOperator(node, "+=");
             return;
         }
-        if (self.typeIsExactNullish(value_t) and !self.compoundAdditionAllowsNullish(target_t)) {
+        // tsc skips TS18050 when the RHS is an untyped, uninitialized
+        // variable (`var v; x += v;` — v is `any` in tsc's flow even
+        // though our inference widens it to `undefined`). Mirrors the
+        // `*=`/`-=`/etc arm above and matches `compoundAssignmentLHSIsReference`.
+        const value_is_untyped_uninit = self.hir.kindOf(value) == .identifier and
+            self.identifierIsUntypedUninitializedVar(value);
+        if (!value_is_untyped_uninit and
+            self.typeIsExactNullish(value_t) and
+            !self.compoundAdditionAllowsNullish(target_t))
+        {
             try self.reportNullishRelationalOperand(value, value_t);
             return;
         }
@@ -50331,11 +50343,17 @@ test "checker: compound addition validates operands and assignment result" {
 }
 
 test "checker: compound addition reports nullish rhs where TS disallows it" {
+    // Upstream tsc fires TS18050 on the literal-nullish RHS whenever
+    // the LHS is concrete and not string-like: `b += null` (boolean)
+    // and `n += null` (number) both produce TS18050, while `s += null`
+    // (string) is silent. Mirrors `compoundAdditionAssignmentLHSCanBeAssigned`.
     const s = try newSetup(
         \\declare var b: boolean;
         \\declare var n: number;
+        \\declare var s: string;
         \\b += null;
         \\n += null;
+        \\s += null;
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
@@ -50344,7 +50362,7 @@ test "checker: compound addition reports nullish rhs where TS disallows it" {
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.nullish_relational_operand) nullish_errors += 1;
     }
-    try T.expectEqual(@as(usize, 1), nullish_errors);
+    try T.expectEqual(@as(usize, 2), nullish_errors);
 }
 
 test "checker: new expression rejects primitive callee expressions" {
