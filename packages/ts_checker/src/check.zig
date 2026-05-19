@@ -1145,6 +1145,7 @@ pub const Checker = struct {
     /// table preserves declaration-site optional/default metadata and
     /// the TS rule that a trailing `void` parameter may be omitted.
     signature_min_args: std.AutoHashMapUnmanaged(TypeId, usize),
+    signature_nullish_array_defaults: std.AutoHashMapUnmanaged(TypeId, []bool),
     /// Signature TypeId → source-level parameter name StringIds in
     /// declaration order. Populated by `recordSignatureParamNames`
     /// from `fn_decl` / `fn_expr` / `arrow_fn` / `fn_type` /
@@ -1360,6 +1361,7 @@ pub const Checker = struct {
             .inferred_variance = .empty,
             .rest_signatures = .empty,
             .signature_min_args = .empty,
+            .signature_nullish_array_defaults = .empty,
             .signature_param_names = .empty,
             .signature_param_name_occurrences = .empty,
             .enum_member_values = .empty,
@@ -1539,6 +1541,9 @@ pub const Checker = struct {
         self.inferred_variance.deinit(self.gpa);
         self.rest_signatures.deinit(self.gpa);
         self.signature_min_args.deinit(self.gpa);
+        var snad_it = self.signature_nullish_array_defaults.valueIterator();
+        while (snad_it.next()) |flags| self.gpa.free(flags.*);
+        self.signature_nullish_array_defaults.deinit(self.gpa);
         var spn_it = self.signature_param_names.valueIterator();
         while (spn_it.next()) |names| self.gpa.free(names.*);
         self.signature_param_names.deinit(self.gpa);
@@ -8900,6 +8905,7 @@ pub const Checker = struct {
         if (self.signature_min_args.get(sig)) |min_required| {
             try self.signature_min_args.put(self.gpa, new_sig, min_required);
         }
+        try self.copySignatureNullishArrayDefaults(new_sig, sig);
         const recorded_node_params = try self.recordFunctionNodeGenericSignatureParams(new_sig, fn_node);
         if (!recorded_node_params) if (self.generic_signature_params.get(sig)) |type_params| {
             try self.recordGenericSignatureParams(new_sig, type_params);
@@ -10806,6 +10812,8 @@ pub const Checker = struct {
         defer param_omittable.deinit(self.gpa);
         var param_predicates: std.ArrayListUnmanaged(ParamPredicateEntry) = .empty;
         defer param_predicates.deinit(self.gpa);
+        var param_nullish_array_defaults: std.ArrayListUnmanaged(bool) = .empty;
+        defer param_nullish_array_defaults.deinit(self.gpa);
         const params = hir_mod.fnParams(self.hir, node);
         var has_rest_param = false;
         var explicit_this_t: TypeId = types.Primitive.none;
@@ -10841,6 +10849,13 @@ pub const Checker = struct {
             // parameter node itself so the column matches.
             if (is_this_param and (f.flags.is_getter or f.flags.is_setter)) {
                 try self.report(p, TsCodes.accessors_cannot_declare_this, "'get' and 'set' accessors cannot declare 'this' parameters.");
+            }
+            if (!is_this_param) {
+                try param_nullish_array_defaults.append(
+                    self.gpa,
+                    pp.default_value != hir_mod.none_node_id and
+                        (try self.nullishArrayLiteralTypeFromSyntax(pp.default_value)) != null,
+                );
             }
             if (pp.flags.is_rest and !is_this_param) has_rest_param = true;
             const has_anno = pp.type_annotation != hir_mod.none_node_id;
@@ -11153,6 +11168,13 @@ pub const Checker = struct {
 
         const sig = self.interner.internSignature(param_types.items, ret_t, false) catch return error.OutOfMemory;
         try self.recordGenericSignatureParams(sig, captured_tp_ids.items);
+        for (param_nullish_array_defaults.items) |has_nullish_default| {
+            if (has_nullish_default) {
+                const owned = try self.gpa.dupe(bool, param_nullish_array_defaults.items);
+                try self.signature_nullish_array_defaults.put(self.gpa, sig, owned);
+                break;
+            }
+        }
         if (explicit_this_t != types.Primitive.none) try self.signature_this_params.put(self.gpa, sig, explicit_this_t);
         try self.recordSignatureMinArgs(sig, param_omittable.items);
         try self.recordSignatureParamNames(sig, params);
@@ -27537,19 +27559,25 @@ pub const Checker = struct {
         expr: NodeId,
         type_node: NodeId,
         target_t: TypeId,
-    ) CheckError!void {
-        if (self.hir.kindOf(expr) != .object_literal) return;
+    ) CheckError!bool {
+        if (self.hir.kindOf(expr) != .object_literal) return false;
         var keys: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
         defer keys.deinit(self.gpa);
-        if (!try self.collectFiniteRecordKeysFromTypeNode(type_node, &keys, 0)) return;
-        if (keys.count() == 0) return;
+        if (!try self.collectFiniteRecordKeysFromTypeNode(type_node, &keys, 0)) return false;
+        if (keys.count() == 0) return false;
+        const target_text = self.typeNodeDiagnosticText(type_node);
         for (hir_mod.objectLiteralProps(self.hir, expr)) |p| {
             if (self.hir.kindOf(p) != .object_property) continue;
             const op = hir_mod.objectPropertyOf(self.hir, p);
             const name = self.propertyNameFromKeyNode(op.key) orelse continue;
             if (keys.contains(name)) continue;
-            try self.reportSatisfiesExcessProperty(p, name, target_t);
+            if (target_text) |text| {
+                try self.reportSatisfiesExcessPropertyWithText(p, name, text);
+            } else {
+                try self.reportSatisfiesExcessProperty(p, name, target_t);
+            }
         }
+        return true;
     }
 
     fn collectFiniteRecordKeysFromTypeNode(
@@ -27581,20 +27609,30 @@ pub const Checker = struct {
         key_t: TypeId,
         keys: *std.AutoHashMapUnmanaged(hir_mod.StringId, void),
     ) CheckError!bool {
+        if (key_t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(key_t);
+        if (flags.is_union) {
+            var saw_key = false;
+            for (self.interner.unionMembers(key_t)) |member| {
+                const before = keys.count();
+                if (!try self.collectFiniteRecordKeysFromType(member, keys)) return false;
+                if (keys.count() != before) saw_key = true;
+            }
+            return saw_key;
+        }
         if (try self.propertyNameFromLiteralType(key_t)) |name| {
             try keys.put(self.gpa, name, {});
             return true;
         }
-        if (key_t >= self.interner.pool.typeCount()) return false;
-        const flags = self.interner.pool.flagsOf(key_t);
-        if (!flags.is_union) return false;
-        var saw_key = false;
-        for (self.interner.unionMembers(key_t)) |member| {
-            const before = keys.count();
-            if (!try self.collectFiniteRecordKeysFromType(member, keys)) return false;
-            if (keys.count() != before) saw_key = true;
-        }
-        return saw_key;
+        return false;
+    }
+
+    fn typeNodeDiagnosticText(self: *Checker, type_node: NodeId) ?[]const u8 {
+        const src = self.source orelse return null;
+        if (type_node == hir_mod.none_node_id) return null;
+        const span = self.hir.spanOf(type_node);
+        if (span.start >= span.end or span.end > src.len) return null;
+        return std.mem.trim(u8, src[span.start..span.end], " \t\r\n");
     }
 
     fn leadingJsDocBodyBeforeExpression(self: *Checker, src: []const u8, expr_start: u32) ?[]const u8 {
@@ -30583,10 +30621,8 @@ pub const Checker = struct {
                 const diag_start = self.diagnostics.items.len;
                 try self.checkSatisfiesExpressionAgainstTarget(a.expr, inner_t, target_t);
                 if (self.diagnostics.items.len == diag_start and self.hir.kindOf(a.expr) == .object_literal) {
-                    try self.checkFiniteKeySatisfiesExcessProperties(a.expr, target_t);
-                    if (self.diagnostics.items.len == diag_start) {
-                        try self.checkFiniteRecordSatisfiesExcessPropertiesFromTypeNode(a.expr, a.type_node, target_t);
-                    }
+                    const checked_finite_record = try self.checkFiniteRecordSatisfiesExcessPropertiesFromTypeNode(a.expr, a.type_node, target_t);
+                    if (!checked_finite_record) try self.checkFiniteKeySatisfiesExcessProperties(a.expr, target_t);
                 }
                 var result_t = inner_t;
                 var ok = (try self.satisfiesExpressionAssignableToTarget(a.expr, inner_t, target_t));
@@ -42283,6 +42319,7 @@ pub const Checker = struct {
             const is_construct = self.interner.pool.signature_payloads.items[payload_idx].is_construct;
             const new_sig = self.interner.internSignature(new.items, ret, is_construct) catch return t;
             try self.copySignatureParamNames(new_sig, t);
+            try self.copySignatureNullishArrayDefaults(new_sig, t);
             if (self.rest_signatures.contains(t)) {
                 try self.rest_signatures.put(self.gpa, new_sig, {});
             }
@@ -42962,8 +42999,16 @@ pub const Checker = struct {
                     continue;
                 }
             }
-            if (ok and self.hir.kindOf(args[i]) == .array_literal and self.arrayParameterElementTypeIsNullishOnly(param_t)) {
-                if (try self.tryReportArrayLiteralArrayElementMismatch(args[i], param_t)) {
+            const nullish_default_array_param = if (self.signature_nullish_array_defaults.get(sig)) |flags|
+                i < flags.len and flags[i]
+            else
+                false;
+            if (ok and self.hir.kindOf(args[i]) == .array_literal and
+                (self.arrayParameterElementTypeIsNullishOnly(param_t) or nullish_default_array_param))
+            {
+                if ((nullish_default_array_param and try self.tryReportArrayLiteralElementsAgainstNullish(args[i])) or
+                    try self.tryReportArrayLiteralArrayElementMismatch(args[i], param_t))
+                {
                     try self.checkExcessProperties(args[i], param_t);
                     continue;
                 }
@@ -43198,6 +43243,21 @@ pub const Checker = struct {
         else
             self.interner.internUnion(members.items) catch return error.OutOfMemory;
         return self.interner.internArrayType(self.string_interner, elem_t) catch return error.OutOfMemory;
+    }
+
+    fn tryReportArrayLiteralElementsAgainstNullish(self: *Checker, node: NodeId) CheckError!bool {
+        if (self.hir.kindOf(node) != .array_literal) return false;
+        const target_t = self.interner.internUnion(&.{ types.Primitive.null_t, types.Primitive.undefined_t }) catch return error.OutOfMemory;
+        var emitted = false;
+        for (hir_mod.arrayLiteralElements(self.hir, node)) |el| {
+            if (el == hir_mod.none_node_id or self.hir.kindOf(el) == .spread) continue;
+            if (try self.literalExpressionAssignableToTarget(el, target_t)) continue;
+            const el_t = if (self.hir.typeOf(el) != types.Primitive.none) self.hir.typeOf(el) else try self.checkExpression(el);
+            if (self.engine.isAssignableTo(el_t, target_t) catch false) continue;
+            try self.reportTypeNotAssignable(el, el_t, target_t, "Type is not assignable to array element type.");
+            emitted = true;
+        }
+        return emitted;
     }
 
     fn arrayParameterElementTypeIsNullishOnly(self: *Checker, target_t: TypeId) bool {
@@ -45738,13 +45798,12 @@ pub const Checker = struct {
                 const name = prop_name orelse continue;
                 const direct_target = try self.excessPropertyTargetMemberType(target_t, name);
                 const indexed_target = if (direct_target) |dt| dt else blk: {
+                    const finite_record_alias = try self.targetAliasLooksFiniteRecord(target_t);
                     if (self.interner.objectMembers(target_t).len > 0 and
                         string_idx != types.Primitive.none and
-                        self.typeIsAnyLike(string_idx))
+                        self.typeIsAnyLike(string_idx) and
+                        !finite_record_alias)
                     {
-                        break :blk types.Primitive.none;
-                    }
-                    if (try self.targetAliasLooksFiniteRecord(target_t)) {
                         break :blk types.Primitive.none;
                     }
                     if (number_idx != types.Primitive.none and self.isNumericPropertyName(name)) break :blk number_idx;
@@ -45847,6 +45906,20 @@ pub const Checker = struct {
                 "Object literal may only specify known properties, and '{s}' does not exist on the target type.",
                 .{name_str},
             );
+        try self.diagnostics.append(self.gpa, .{
+            .node = prop_node,
+            .code = TsCodes.object_literal_excess_property,
+            .message = msg,
+        });
+    }
+
+    fn reportSatisfiesExcessPropertyWithText(self: *Checker, prop_node: NodeId, name: hir_mod.StringId, target_text: []const u8) CheckError!void {
+        const name_str = self.string_interner.get(name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Object literal may only specify known properties, and '{s}' does not exist in type '{s}'.",
+            .{ name_str, target_text },
+        );
         try self.diagnostics.append(self.gpa, .{
             .node = prop_node,
             .code = TsCodes.object_literal_excess_property,
@@ -46019,7 +46092,8 @@ pub const Checker = struct {
         if (elem_target_t == types.Primitive.none or
             elem_target_t == types.Primitive.any or
             elem_target_t == types.Primitive.unknown) return false;
-        if ((try self.simpleDiagnosticTypeName(elem_target_t)) == null) return false;
+        if (!self.typeIsNullishOnly(elem_target_t) and
+            (try self.simpleDiagnosticTypeName(elem_target_t)) == null) return false;
 
         var emitted = false;
         for (hir_mod.arrayLiteralElements(self.hir, init_node)) |elem_node| {
@@ -49580,6 +49654,14 @@ pub const Checker = struct {
         if (self.signature_param_names.fetchRemove(target_sig)) |old| self.gpa.free(old.value);
         try self.signature_param_names.put(self.gpa, target_sig, dup);
         try self.copySignatureParamNameOccurrences(target_sig, donor_sig);
+    }
+
+    fn copySignatureNullishArrayDefaults(self: *Checker, target_sig: TypeId, donor_sig: TypeId) CheckError!void {
+        if (target_sig == donor_sig) return;
+        const donor_flags = self.signature_nullish_array_defaults.get(donor_sig) orelse return;
+        const dup = self.gpa.dupe(bool, donor_flags) catch return error.OutOfMemory;
+        if (self.signature_nullish_array_defaults.fetchRemove(target_sig)) |old| self.gpa.free(old.value);
+        try self.signature_nullish_array_defaults.put(self.gpa, target_sig, dup);
     }
 
     fn appendSignatureParamNameOccurrence(self: *Checker, sig: TypeId, name: hir_mod.StringId) CheckError!void {
