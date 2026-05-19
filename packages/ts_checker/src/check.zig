@@ -124,6 +124,10 @@ pub const TsCodes = struct {
     /// in-scope name (Levenshtein distance ≤ threshold). Same as
     /// 2304 plus a `Did you mean 'X'?` suggestion.
     pub const cannot_find_name_did_you_mean: u32 = 2552;
+    /// TS2663 — `Cannot find name '{0}'. Did you mean the instance
+    /// member 'this.{0}'?` for a bare identifier used inside a class
+    /// when that name resolves as an instance member instead.
+    pub const cannot_find_name_instance_member: u32 = 2663;
     pub const shorthand_property_no_value: u32 = 18004;
     pub const type_not_generic: u32 = 2315;
     pub const cannot_find_module: u32 = 2307;
@@ -40729,6 +40733,24 @@ pub const Checker = struct {
         // only one Levenshtein edit away.
         const in_type_position = self.hir.kindOf(node) == .type_ref;
 
+        if (!in_type_position and
+            !self.in_computed_property_name and
+            try self.enclosingClassHasInstanceMemberNamed(node, name))
+        {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Cannot find name '{s}'. Did you mean the instance member 'this.{s}'?",
+                .{ name_str, name_str },
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .code = TsCodes.cannot_find_name_instance_member,
+                .message = msg,
+            });
+            self.suggestion_count +|= 1;
+            return;
+        }
+
         const considerCandidate = struct {
             fn call(typo: []const u8, cand_str: []const u8, value_only: bool, in_type_pos: bool, b: *Best) void {
                 if (cand_str.len == 0) return;
@@ -40888,6 +40910,41 @@ pub const Checker = struct {
         // governs how many spelling-suggestion *attempts* the
         // checker is willing to make per file.
         self.suggestion_count +|= 1;
+    }
+
+    fn enclosingClassHasInstanceMemberNamed(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) {
+            const k = self.hir.kindOf(cur);
+            if (k == .class_decl or k == .class_expr) {
+                for (hir_mod.classMembers(self.hir, cur)) |member| {
+                    switch (self.hir.kindOf(member)) {
+                        .fn_decl, .fn_expr, .arrow_fn => {
+                            const fp = hir_mod.fnDeclOf(self.hir, member);
+                            if (fp.flags.is_static or fp.flags.is_constructor) continue;
+                            const member_name = (try self.classMemberNameFromFunctionName(fp.name)) orelse continue;
+                            if (member_name == name) return true;
+                        },
+                        .object_property => {
+                            const op = hir_mod.objectPropertyOf(self.hir, member);
+                            if (op.is_static) continue;
+                            const is_computed = self.nodeIsBracketedComputedName(op.key) or
+                                self.memberSourceLooksComputed(member);
+                            const member_name = (try self.classMemberNameFromPropertyKey(op.key, is_computed)) orelse continue;
+                            if (member_name == name) return true;
+                        },
+                        else => {},
+                    }
+                }
+                return false;
+            }
+            cur = self.hir.parentOf(cur);
+        }
+        return false;
     }
 
     fn identifierLooksLikeMalformedComputedIndexerTypeSlot(self: *const Checker, node: NodeId) bool {
@@ -55984,6 +56041,26 @@ test "checker: typo of in-scope name emits TS2552 with suggestion" {
             found = true;
             try T.expect(std.mem.indexOf(u8, d.message, "myVar") != null);
             try T.expect(std.mem.indexOf(u8, d.message, "Did you mean") != null);
+        }
+    }
+    try T.expect(found);
+}
+
+test "checker: bare class member reference suggests this-qualified instance member" {
+    const b = try newBoundSetup(
+        \\class C {
+        \\  *foo() {
+        \\    yield(foo);
+        \\  }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name_instance_member) {
+            found = true;
+            try T.expect(std.mem.indexOf(u8, d.message, "this.foo") != null);
         }
     }
     try T.expect(found);
