@@ -32429,14 +32429,19 @@ pub const Checker = struct {
                 if (self.nodeIsSuperReference(m.object)) {
                     const super_id = self.string_interner.intern("super") catch return error.OutOfMemory;
                     if (self.lookupNarrow(super_id)) |st| {
-                        obj_t = st;
-                        try self.reportSuperPropertyNotMethodInStatic(m.object, st, node, m.name);
+                        if (self.superReferenceLexicalChainIsBroken(m.object)) {
+                            try self.report(m.object, TsCodes.super_not_in_derived_member, "'super' can only be referenced in members of derived classes or object literal expressions.");
+                            obj_t = types.Primitive.any;
+                        } else {
+                            obj_t = st;
+                            try self.reportSuperPropertyNotMethodInStatic(m.object, st, node, m.name);
+                        }
                     } else {
                         // See note in `call_expr` super branch: TS2466 is the
                         // canonical diagnostic for super used inside a class
                         // computed property name; tsc does not also emit TS2335.
                         if (!self.in_computed_property_name) {
-                            if (self.nodeInsideDecoratorOnDerivedClassMember(m.object)) {
+                            if (self.superReferenceShouldReportNotInDerivedMember(m.object)) {
                                 try self.report(m.object, TsCodes.super_not_in_derived_member, "'super' can only be referenced in members of derived classes or object literal expressions.");
                             } else {
                                 try self.report(m.object, TsCodes.super_not_derived, "'super' can only be referenced in a derived class.");
@@ -32713,11 +32718,17 @@ pub const Checker = struct {
                 const raw_obj_t: TypeId = blk_obj: {
                     if (self.nodeIsSuperReference(e.object)) {
                         const super_id = self.string_interner.intern("super") catch return error.OutOfMemory;
-                        if (self.lookupNarrow(super_id)) |st| break :blk_obj st;
+                        if (self.lookupNarrow(super_id)) |st| {
+                            if (self.superReferenceLexicalChainIsBroken(e.object)) {
+                                try self.report(e.object, TsCodes.super_not_in_derived_member, "'super' can only be referenced in members of derived classes or object literal expressions.");
+                                break :blk_obj types.Primitive.any;
+                            }
+                            break :blk_obj st;
+                        }
                         // TS2466 (super-in-computed-property-name) already covers
                         // the same root error; skip the secondary TS2335.
                         if (!self.in_computed_property_name) {
-                            if (self.nodeInsideDecoratorOnDerivedClassMember(e.object)) {
+                            if (self.superReferenceShouldReportNotInDerivedMember(e.object)) {
                                 try self.report(e.object, TsCodes.super_not_in_derived_member, "'super' can only be referenced in members of derived classes or object literal expressions.");
                             } else {
                                 try self.report(e.object, TsCodes.super_not_derived, "'super' can only be referenced in a derived class.");
@@ -35319,6 +35330,34 @@ pub const Checker = struct {
             cur = parent;
         }
         return false;
+    }
+
+    /// Distinguish TS2660 from TS2335 for invalid `super`
+    /// references. TS2335 is reserved for class members whose nearest
+    /// enclosing class simply lacks `extends`; `super` in object
+    /// literals, top-level/non-member code, decorators, or nested
+    /// non-arrow functions inside a derived class uses TS2660.
+    fn superReferenceShouldReportNotInDerivedMember(self: *Checker, node: NodeId) bool {
+        if (self.nodeInsideDecoratorOnDerivedClassMember(node)) return true;
+
+        var cur: NodeId = node;
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            switch (self.hir.kindOf(cur)) {
+                .object_literal => return true,
+                .class_decl, .class_expr => {
+                    const c = hir_mod.classOf(self.hir, cur);
+                    return c.extends != hir_mod.none_node_id;
+                },
+                else => {},
+            }
+        }
+        return true;
+    }
+
+    fn superReferenceLexicalChainIsBroken(self: *Checker, node: NodeId) bool {
+        if (self.in_computed_property_name) return false;
+        if (!self.superReferenceShouldReportNotInDerivedMember(node)) return false;
+        return self.enclosingSuperClass(node) == hir_mod.none_node_id;
     }
 
     /// Walks parents of `node` and returns the enclosing class
