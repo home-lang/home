@@ -32258,11 +32258,37 @@ pub const Checker = struct {
                 // parameter but the await belongs to the outer
                 // non-async `function fn`.
                 var inside_decorator = false;
+                var crossed_class_body = false;
+                var prev: hir_mod.NodeId = node;
                 var cur: hir_mod.NodeId = self.hir.parentOf(node);
-                while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+                while (cur != hir_mod.none_node_id) : ({
+                    prev = cur;
+                    cur = self.hir.parentOf(cur);
+                }) {
                     const k = self.hir.kindOf(cur);
                     if (k == .decorator) {
                         inside_decorator = true;
+                        continue;
+                    }
+                    // Class field initializers and computed property
+                    // names execute in the class body's evaluation
+                    // context, not the enclosing function's. An
+                    // `await` in `[await x] = await x` inside an
+                    // `async function* test(...)` is still illegal.
+                    // Only count the class boundary when we entered
+                    // it via the MEMBERS list — `extends` /
+                    // `implements` / class-name slots run at class-
+                    // declaration time and live in the enclosing
+                    // function's scope (so `class C extends (await
+                    // import("...")).B {}` inside `async function`
+                    // stays legal, mirrors `importCallExpression*`).
+                    if (k == .class_decl or k == .class_expr) {
+                        for (hir_mod.classMembers(self.hir, cur)) |m| {
+                            if (m == prev) {
+                                crossed_class_body = true;
+                                break;
+                            }
+                        }
                         continue;
                     }
                     if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
@@ -32273,6 +32299,31 @@ pub const Checker = struct {
                             // keep walking.
                             inside_decorator = false;
                             continue;
+                        }
+                        if (crossed_class_body) {
+                            // The class body the `await` lives in
+                            // sits below this function in the AST, so
+                            // the function is transparent for field-
+                            // initializer await scoping — even if
+                            // it's `async`, the field's `await` is
+                            // still illegal because it executes during
+                            // instance construction. Class methods
+                            // themselves are caught by the
+                            // `nodeIsInsideFunctionLike` boundary
+                            // check above (their own fn_decl appears
+                            // BELOW the class_decl in the walk).
+                            //
+                            // Suppress when the await is inside a
+                            // class-field computed key — TS1166 (
+                            // `must have a simple literal type`) is
+                            // already emitted there and upstream tsc
+                            // does NOT cascade an extra TS1308 in
+                            // that position. Mirrors
+                            // `awaitAndYieldInProperty.ts` baseline.
+                            if (!self.in_computed_property_name) {
+                                try self.report(node, TsCodes.await_only_in_async, "'await' expressions are only allowed within async functions and at the top levels of modules.");
+                            }
+                            break;
                         }
                         const fp = hir_mod.fnDeclOf(self.hir, cur);
                         if (!fp.flags.is_async) {
