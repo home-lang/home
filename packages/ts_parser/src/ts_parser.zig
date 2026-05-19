@@ -9973,6 +9973,17 @@ pub const Parser = struct {
                     try self.reportCodeAt(bad.span.start, bad.line, 1109, "Expression expected.");
                     return try self.parseUnaryExpression();
                 }
+                // `++await …` / `--await …` — per spec the operand of a
+                // prefix update operator is a LeftHandSideExpression, so
+                // `await` (a unary expression form) is not allowed here.
+                // tsc anchors TS1109 at the `await` token and treats the
+                // operand as missing.
+                if (self.peek().kind == .kw_await and self.async_function_depth > 0) {
+                    const bad = self.peek();
+                    try self.reportCodeAt(bad.span.start, bad.line, 1109, "Expression expected.");
+                    _ = try self.parseUnaryExpression();
+                    return try self.builder.addLiteralNumber(tokenSpan(bad), 1);
+                }
                 const operand = try self.parseUnaryExpression();
                 if (self.nodeIsSynthesizedUpdateAssignment(operand)) {
                     const update = hir_mod.assignmentOf(self.hir, operand);
