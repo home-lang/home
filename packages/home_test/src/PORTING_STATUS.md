@@ -35,8 +35,11 @@ plus `Bun.stripANSI`, a DOMException shim, a tiny Node `Buffer.alloc` /
 `ShadowRealm.evaluate` shim. The source rewrite lowers supported
 `bun:test` imports to a virtual `globalThis.__home_import("bun:test")`
 module and lowers `import.meta.dir/path` to the same per-file metadata
-used for the directory and filename globals. It is a stepping stone for
-corpus bring-up, not a substitute for the vendored Zig runner below.
+used for the directory and filename globals. Unsupported deep-equality
+types such as `Map`, `Set`, typed arrays, `ArrayBuffer`, and `Error`
+now fail closed instead of silently comparing as empty-key objects. It
+is a stepping stone for corpus bring-up, not a substitute for the
+vendored Zig runner below.
 
 > **Why a verbatim copy?** Per direction 2026-05-14: Bun is shifting
 > its core to Rust; we want to continue maintaining the Zig portion

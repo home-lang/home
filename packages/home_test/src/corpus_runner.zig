@@ -171,10 +171,14 @@ const harness_prelude =
     \\function __home_has_own_property(value, key) {
     \\  return Object.prototype.hasOwnProperty.call(value, key);
     \\}
+    \\function __home_is_unsupported_deep_value(value) {
+    \\  return value !== null && typeof value === "object" && (value instanceof Map || value instanceof Set || value instanceof ArrayBuffer || ArrayBuffer.isView(value) || value instanceof Error);
+    \\}
     \\function __home_deep_equal(a, b, strict, seen) {
     \\  if (Object.is(a, b)) return true;
     \\  if (a === null || b === null) return false;
     \\  if (typeof a !== "object" || typeof b !== "object") return false;
+    \\  if (__home_is_unsupported_deep_value(a) || __home_is_unsupported_deep_value(b)) __home_unsupported("Deep equality for this value type is not supported by the Home Bun corpus bootstrap runner yet");
     \\  if (strict && Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false;
     \\  if (a instanceof Date || b instanceof Date) return a instanceof Date && b instanceof Date && Object.is(a.getTime(), b.getTime());
     \\  if (a instanceof RegExp || b instanceof RegExp) return a instanceof RegExp && b instanceof RegExp && a.source === b.source && a.flags === b.flags;
@@ -277,6 +281,9 @@ const harness_prelude =
     \\    },
     \\    toThrow(expected) {
     \\      if (typeof value !== "function") throw new Error("Expected value to be a function");
+    \\      if (expected !== undefined && expected !== "" && (expected === null || (typeof expected !== "object" && typeof expected !== "string" && typeof expected !== "function"))) {
+    \\        __home_fail("Expected value must be string or Error: " + __home_format(expected));
+    \\      }
     \\      let thrown = null;
     \\      try {
     \\        value();
@@ -301,7 +308,7 @@ const harness_prelude =
     \\        return;
     \\      }
     \\      if (expected && typeof expected === "object" && "message" in expected) {
-    \\        __home_assert(String(thrown && thrown.message) === String(expected.message), isNot, "Expected thrown message" + (isNot ? " not" : "") + " to match " + String(expected.message));
+    \\        __home_assert(Object.is(thrown && thrown.message, expected.message), isNot, "Expected thrown message" + (isNot ? " not" : "") + " to match " + String(expected.message));
     \\        return;
     \\      }
     \\      if (expected !== undefined) {
@@ -312,9 +319,13 @@ const harness_prelude =
     \\      return this.toThrow(expected);
     \\    },
     \\    toIncludeRepeated(needle, expectedCount) {
-    \\      const haystack = String(value);
-    \\      const search = String(needle);
-    \\      if (search.length === 0) __home_fail("toIncludeRepeated() requires a non-empty search string");
+    \\      if (arguments.length < 2) __home_fail("toIncludeRepeated() requires 2 arguments");
+    \\      if (typeof needle !== "string") __home_fail("toIncludeRepeated() requires the first argument to be a string");
+    \\      if (!Number.isInteger(expectedCount) || expectedCount < 0) __home_fail("toIncludeRepeated() requires the second argument to be a number");
+    \\      if (typeof value !== "string") __home_fail("toIncludeRepeated() requires the expect(value) to be a string");
+    \\      const haystack = value;
+    \\      const search = needle;
+    \\      if (search.length === 0) __home_fail("toIncludeRepeated() requires the first argument to be a non-empty string");
     \\      let count = 0;
     \\      let index = 0;
     \\      while (true) {
@@ -987,9 +998,12 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTypeOf() requires a valid type string argument") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeUndefined()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toIncludeRepeated(needle, expectedCount)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toIncludeRepeated() requires the expect(value) to be a string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContainKey(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContainAnyKeys(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "expect.unreachable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Expected value must be string or Error") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Deep equality for this value type is not supported") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "UnreachableError") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_bun_test") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_import") != null);
