@@ -16717,6 +16717,44 @@ pub const Checker = struct {
         return false;
     }
 
+    fn sourceExplicitlyDisablesCheckJs(self: *Checker) bool {
+        const src = self.source orelse return false;
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "@check")) |pos| {
+            search_start = pos + "@check".len;
+            if (src.len < pos + "@checkJs".len) continue;
+            const js = src[pos + "@check".len .. pos + "@checkJs".len];
+            if (!std.ascii.eqlIgnoreCase(js, "js")) continue;
+            var rest = std.mem.trim(u8, src[pos + "@checkJs".len ..], " \t");
+            if (rest.len > 0 and rest[0] == ':') rest = std.mem.trim(u8, rest[1..], " \t");
+            return std.mem.startsWith(u8, rest, "false");
+        }
+        return false;
+    }
+
+    fn reportUncheckedJsUndeclaredPrivateName(
+        self: *Checker,
+        node: NodeId,
+        prop_name: hir_mod.StringId,
+    ) CheckError!bool {
+        if (!self.memberNameIsEcmaPrivate(prop_name)) return false;
+        if (!self.virtualSectionIsJsLike(node) and !self.sourceHasSingleJsLikeVirtualCodeSection()) return false;
+        if (self.sourceHasCheckJsDirective() or self.sourceExplicitlyDisablesCheckJs()) return false;
+        const prop_str = self.string_interner.get(prop_name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Private field '{s}' must be declared in an enclosing class.",
+            .{prop_str},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = self.memberAccessPropertyNamePos(node),
+            .code = TsCodes.private_name_not_declared,
+            .message = msg,
+        });
+        return true;
+    }
+
     fn sourceHasDirectConstSymbolInit(self: *Checker, name: []const u8) bool {
         const src = self.source orelse return false;
         var search_start: usize = 0;
@@ -28859,6 +28897,30 @@ pub const Checker = struct {
             std.mem.endsWith(u8, path, ".cjs");
     }
 
+    fn sourceHasSingleJsLikeVirtualCodeSection(self: *Checker) bool {
+        const src = self.source orelse return false;
+        var saw_code = false;
+        var saw_js = false;
+        var lines = std.mem.splitScalar(u8, src, '\n');
+        while (lines.next()) |raw_line| {
+            const line = std.mem.trim(u8, raw_line, " \t\r");
+            const marker = std.mem.indexOf(u8, line, "@filename:") orelse
+                (std.mem.indexOf(u8, line, "@Filename:") orelse continue);
+            const filename = std.mem.trim(u8, line[marker + "@filename:".len ..], " \t\r");
+            const is_js = self.pathIsJsLike(filename);
+            const is_code = is_js or
+                std.mem.endsWith(u8, filename, ".ts") or
+                std.mem.endsWith(u8, filename, ".tsx") or
+                std.mem.endsWith(u8, filename, ".mts") or
+                std.mem.endsWith(u8, filename, ".cts");
+            if (!is_code) continue;
+            if (saw_code) return false;
+            saw_code = true;
+            saw_js = is_js;
+        }
+        return saw_code and saw_js;
+    }
+
     /// True when `name_node`'s source span begins with a string-literal
     /// quote (`"` or `'`). Distinguishes `module "fs" { ... }` (string
     /// name — module augmentation, not subject to TS8006) from
@@ -32821,8 +32883,14 @@ pub const Checker = struct {
                             break :blk try self.optionalChainResult(t, member_is_optional_chain);
                         }
                     }
+                    if (try self.reportUncheckedJsUndeclaredPrivateName(node, m.name)) {
+                        break :blk types.Primitive.any;
+                    }
                     try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
                 } else if (self.interner.pool.flagsOf(access_obj_t).is_intersection) {
+                    if (try self.reportUncheckedJsUndeclaredPrivateName(node, m.name)) {
+                        break :blk types.Primitive.any;
+                    }
                     if (try self.broadObjectPrototypeMember(m.name)) |t| {
                         break :blk try self.optionalChainResult(t, member_is_optional_chain);
                     }

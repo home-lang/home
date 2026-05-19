@@ -1399,7 +1399,7 @@ test "driver: unchecked allowJs still surfaces JS grammar diagnostics" {
         \\    this.#b;
         \\  }
         \\}
-    , .{ .no_emit = true });
+    , .{ .no_emit = true, .suppress_js_check_diagnostics = true });
     defer {
         c.deinit();
         T.allocator.destroy(c);
@@ -1409,7 +1409,7 @@ test "driver: unchecked allowJs still surfaces JS grammar diagnostics" {
     var found_private = false;
     for (c.diagnostics.items) |d| {
         if (d.code == 1308) found_await = true;
-        if (d.code == ts_checker.check.TsCodes.property_does_not_exist) found_private = true;
+        if (d.code == ts_checker.check.TsCodes.private_name_not_declared) found_private = true;
     }
     try T.expect(found_await);
     try T.expect(found_private);
