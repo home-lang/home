@@ -90,6 +90,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/test-retry-repeats-basic.test.ts",
     "regression/issue23966.test.ts",
     "js/deno/event/custom-event.test.ts",
+    "js/deno/event/event.test.ts",
 };
 
 const harness_prelude =
@@ -476,6 +477,9 @@ const harness_prelude =
     \\}
     \\test.each = __home_each;
     \\test.concurrent.each = __home_each;
+    \\test.ignore = function(nameOrFn, maybeFn) {
+    \\  __home_bun_tests.todo++;
+    \\};
     \\function describe(name, fn) {
     \\  if (typeof fn !== "function") return;
     \\  const parent = globalThis.__home_current_scope;
@@ -717,13 +721,23 @@ const harness_prelude =
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["deno:harness"] = {
     \\  createDenoTest(path) {
+    \\    const denoTest = function(fn) {
+    \\      if (typeof fn !== "function") __home_fail("Deno test requires a function");
+    \\      return test(fn.name || String(path || "deno:harness"), fn);
+    \\    };
+    \\    denoTest.ignore = function(fn) {
+    \\      __home_bun_tests.todo++;
+    \\    };
     \\    return {
-    \\      test(fn) {
-    \\        if (typeof fn !== "function") __home_fail("Deno test requires a function");
-    \\        return test(fn.name || String(path || "deno:harness"), fn);
+    \\      test: denoTest,
+    \\      assert(value, message) {
+    \\        __home_assert(!!value, false, message || "Expected value to be truthy");
     \\      },
     \\      assertEquals(actual, expected) {
     \\        __home_assert(__home_deep_equal(actual, expected, false, new Map()), false, "Expected " + __home_format(actual) + " to equal " + __home_format(expected));
+    \\      },
+    \\      assertStringIncludes(actual, expected) {
+    \\        __home_assert(String(actual).includes(String(expected)), false, "Expected " + __home_format(actual) + " to include " + __home_format(expected));
     \\      },
     \\    };
     \\  },
@@ -1056,6 +1070,7 @@ const harness_prelude =
     \\  return HomeDOMException;
     \\})();
     \\if (typeof Event !== "function") {
+    \\  function __home_event_is_trusted() { return false; }
     \\  var Event = function(type, init) {
     \\    if (arguments.length < 1) throw new TypeError("Not enough arguments");
     \\    const options = init || {};
@@ -1064,7 +1079,23 @@ const harness_prelude =
     \\    this.cancelable = !!options.cancelable;
     \\    this.currentTarget = null;
     \\    this.target = null;
-    \\    this.isTrusted = false;
+    \\    this.cancelBubble = false;
+    \\    this.defaultPrevented = false;
+    \\    this.composed = !!options.composed;
+    \\    this.eventPhase = 0;
+    \\    this.srcElement = null;
+    \\    this.returnValue = true;
+    \\    this.timeStamp = Date.now();
+    \\    Object.defineProperty(this, "isTrusted", { get: __home_event_is_trusted, enumerable: true, configurable: true });
+    \\  };
+    \\  Event.prototype.composedPath = function() { return []; };
+    \\  Event.prototype.stopPropagation = function() { this.cancelBubble = true; };
+    \\  Event.prototype.stopImmediatePropagation = function() { this.cancelBubble = true; };
+    \\  Event.prototype.preventDefault = function() {
+    \\    if (this.cancelable) {
+    \\      this.defaultPrevented = true;
+    \\      this.returnValue = false;
+    \\    }
     \\  };
     \\  Event.prototype.toString = function() { return "[object Event]"; };
     \\}
@@ -1249,13 +1280,19 @@ fn appendBootstrapTypeScriptReplacement(
     }{
         .{ .needle = ": string[] =", .replacement = " =" },
         .{ .needle = ": any[] =", .replacement = " =" },
+        .{ .needle = ": any =", .replacement = " =" },
         .{ .needle = ": number =", .replacement = " =" },
         .{ .needle = ": any)", .replacement = ")" },
+        .{ .needle = ": Event)", .replacement = ")" },
         .{ .needle = ": any;", .replacement = ";" },
+        .{ .needle = "!: any", .replacement = "" },
+        .{ .needle = "!.", .replacement = "." },
         .{ .needle = "<any, any>", .replacement = "" },
+        .{ .needle = ": Array<[any, (event: any) => string]>", .replacement = "" },
         .{ .needle = " as any", .replacement = "" },
         .{ .needle = " as const", .replacement = "" },
         .{ .needle = " as CustomEventInit", .replacement = "" },
+        .{ .needle = " as EventInit", .replacement = "" },
     };
 
     for (replacements) |entry| {
@@ -1610,6 +1647,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/bun/test/test-retry-repeats-basic.test.ts", filesForSubset(.minimal_js)[36]);
     try std.testing.expectEqualStrings("regression/issue23966.test.ts", filesForSubset(.minimal_js)[37]);
     try std.testing.expectEqualStrings("js/deno/event/custom-event.test.ts", filesForSubset(.minimal_js)[38]);
+    try std.testing.expectEqualStrings("js/deno/event/event.test.ts", filesForSubset(.minimal_js)[39]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -1652,6 +1690,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "UnreachableError") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_bun_test") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "createDenoTest(path)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "denoTest.ignore") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_import") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.redirect") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.json") != null);
@@ -1670,6 +1709,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var MessageEvent = function(type, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var MessageChannel = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var CustomEvent = function(type, init)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Event.prototype.preventDefault") != null);
 }
 
 test "Bun test import rewrite lowers to the virtual test module" {
@@ -1775,6 +1815,24 @@ test "bootstrap rewrite lowers deno harness imports" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "createDenoTest(__home_import_meta_path)") != null);
 }
 
+test "bootstrap rewrite erases Deno event type syntax" {
+    const source =
+        \\import { createDenoTest } from "deno:harness";
+        \\const { test, assert } = createDenoTest(import.meta.path);
+        \\test(function eventInitializedWithNonStringType() {
+        \\  const type: any = undefined;
+        \\  const eventInit = { cancelable: true } as EventInit;
+        \\  assert(Object.getOwnPropertyDescriptor(new Event("x"), "isTrusted")!.get);
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/deno/event/event.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, ": any") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, " as EventInit") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "!.") == null);
+}
+
 test "bootstrap rewrite erases const assertions" {
     const source =
         \\import { expect, test } from "bun:test";
@@ -1864,6 +1922,49 @@ test "bootstrap runner keeps todo-only files as todo" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.todo, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
+}
+
+test "bootstrap runner covers Deno Event behavior and ignored tests" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { createDenoTest } from "deno:harness";
+        \\const { test, assert, assertEquals } = createDenoTest(import.meta.path);
+        \\test(function eventBehavior() {
+        \\  const normal = new Event("click");
+        \\  assertEquals(normal.composedPath(), []);
+        \\  assertEquals(normal.cancelBubble, false);
+        \\  normal.stopPropagation();
+        \\  assertEquals(normal.cancelBubble, true);
+        \\  assertEquals(normal.defaultPrevented, false);
+        \\  normal.preventDefault();
+        \\  assertEquals(normal.defaultPrevented, false);
+        \\  const cancelable = new Event("submit", { cancelable: true } as EventInit);
+        \\  cancelable.preventDefault();
+        \\  assertEquals(cancelable.defaultPrevented, true);
+        \\  const desc1 = Object.getOwnPropertyDescriptor(new Event("x"), "isTrusted");
+        \\  const desc2 = Object.getOwnPropertyDescriptor(new Event("y"), "isTrusted");
+        \\  assert(desc1);
+        \\  assert(desc2);
+        \\  assertEquals(typeof desc1!.get, "function");
+        \\  assertEquals(desc1!.get, desc2!.get);
+        \\});
+        \\test.ignore(function ignored() {
+        \\  throw new Error("must not execute");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/event/event.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
 }
 

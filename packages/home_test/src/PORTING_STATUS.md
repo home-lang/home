@@ -43,7 +43,7 @@ rejection, `test.concurrent`, `test.each`, `.not`, `toBe`, `toBeDefined`,
 `Bun.wrapAnsi`,
 `process.versions.bun`, `process.revision`, DOMException,
 Request/Response/Headers/URL, `node-fetch`, `node:buffer`, `deno:harness`,
-Deno `CustomEvent`, Node
+Deno `Event` / `CustomEvent`, Node
 `Buffer.alloc` / fill / `Buffer.from(..., "utf-16le")` / compare /
 write / toString / inspect-limit / isEncoding subsets, Event / MessageChannel /
 MessagePort / MessageEvent constructor shims, `Bun.inspect({ key:
