@@ -19644,6 +19644,15 @@ pub const Checker = struct {
                     try self.readonly_index_types.put(self.gpa, fused, {});
                 }
                 try self.recordMemberPredicatesForReceiver(fused, &iface_member_predicates);
+                // Mirror the merged type onto the prior decl's HIR
+                // type slot so namespace-scoped resolvers
+                // (`resolveUnqualifiedNamespaceTypeRef`,
+                // `findNamedTypeDeclInNamespace`) that read
+                // `hir.typeOf(first_decl)` see the merged shape.
+                // Without this, `var a: A` inside a namespace would
+                // resolve through the first decl's iface_t and miss
+                // subsequent decls' members.
+                self.hir.setType(prev_decl, fused);
                 break :blk fused;
             };
             try self.type_names.put(self.gpa, id.name, merged_iface_t);
@@ -19660,6 +19669,7 @@ pub const Checker = struct {
                 });
             }
             self.hir.setType(it.name, merged_iface_t);
+            if (merged_iface_t != iface_t) self.hir.setType(node, merged_iface_t);
         }
     }
 
@@ -55390,6 +55400,29 @@ test "checker: same-name interface decls merge member lookups at top level" {
         \\declare var a: A;
         \\var r1 = a.foo;
         \\var r2 = a.bar;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: same-name interface decls merge inside a namespace body" {
+    // Mirrors `mergeTwoInterfaces.ts` lines 41-44 (`namespace M { interface
+    // A {} interface A {} ... var r = a.bar; }`). Members from both
+    // sibling A decls must be reachable from `a.bar`. The cross-namespace
+    // sibling-merge gate (`checkSiblingNamespaceInterfaceMerges`) does
+    // NOT cover this — only the within-block merge in `checkInterfaceDecl`
+    // does.
+    const s = try newSetup(
+        \\namespace M {
+        \\  interface A { foo: string; }
+        \\  interface A { bar: number; }
+        \\  declare var a: A;
+        \\  var r1 = a.foo;
+        \\  var r2 = a.bar;
+        \\}
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
