@@ -708,6 +708,7 @@ pub const Parser = struct {
             try self.scanJSDocTypedefDuplicateTypeTags(body_start, body_end);
             try self.scanJSDocTemplateModifierDiagnostics(body_start, body_end);
             try self.scanJSDocPropertyNameDiagnostics(body_start, body_end);
+            try self.scanJSDocImplementsTypeDiagnostics(body_start, body_end);
             i = body_end + 2;
         }
     }
@@ -776,6 +777,41 @@ pub const Parser = struct {
             try self.reportCodeAt(
                 @intCast(name_start),
                 self.lineAt(@intCast(name_start)),
+                1003,
+                "Identifier expected.",
+            );
+        }
+    }
+
+    fn scanJSDocImplementsTypeDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            const tag_name = self.source[tag_name_start..tag_name_end];
+            i = tag_name_end;
+            if (!std.mem.eql(u8, tag_name, "implements")) continue;
+
+            const line_end = self.jsDocTagLineEnd(tag_name_end, end);
+            const type_start = firstNonWhitespace(self.source, tag_name_end, line_end);
+            if (type_start >= line_end) {
+                try self.reportCodeAt(
+                    @intCast(tag_name_end),
+                    self.lineAt(@intCast(tag_name_end)),
+                    1003,
+                    "Identifier expected.",
+                );
+                continue;
+            }
+            if (self.source[type_start] != '{') continue;
+            const close_after = self.jsDocTagTypeAnnotationEnd(tag_name_end, line_end) orelse continue;
+            const close = close_after - 1;
+            if (std.mem.trim(u8, self.source[type_start + 1 .. close], " \t\r\n").len != 0) continue;
+            try self.reportCodeAt(
+                @intCast(type_start + 1),
+                self.lineAt(@intCast(type_start + 1)),
                 1003,
                 "Identifier expected.",
             );
@@ -887,6 +923,12 @@ pub const Parser = struct {
             at_line_start = true;
         }
         return null;
+    }
+
+    fn jsDocTagLineEnd(self: *const Parser, start: usize, end: usize) usize {
+        var i = start;
+        while (i < end and self.source[i] != '\n' and self.source[i] != '\r') : (i += 1) {}
+        return i;
     }
 
     fn jsDocTagTypeAnnotationEnd(self: *const Parser, start: usize, end: usize) ?usize {
@@ -17763,6 +17805,36 @@ test "parser: JSDoc property private-name spelling reports TS1003" {
     try T.expectEqual(@as(u32, 3), d.line);
     const line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..d.pos], '\n').? + 1;
     try T.expectEqual(@as(u32, 23), d.pos - @as(u32, @intCast(line_start)) + 1);
+}
+
+test "parser: JSDoc implements missing type reports TS1003" {
+    var s = try newTestSetup(
+        \\class A {}
+        \\/** @implements */
+        \\class B {}
+        \\/** @implements {} */
+        \\class C {}
+        \\/** @implements A */
+        \\class D {}
+        \\/** @implements {A} */
+        \\class E {}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    const missing = s.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 1003), missing.code);
+    try T.expectEqualStrings("Identifier expected.", missing.message);
+    try T.expectEqual(@as(u32, 2), missing.line);
+    const missing_line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..missing.pos], '\n').? + 1;
+    try T.expectEqual(@as(u32, 16), missing.pos - @as(u32, @intCast(missing_line_start)) + 1);
+
+    const empty = s.parser.diagnostics.items[1];
+    try T.expectEqual(@as(u32, 1003), empty.code);
+    try T.expectEqual(@as(u32, 4), empty.line);
+    const empty_line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..empty.pos], '\n').? + 1;
+    try T.expectEqual(@as(u32, 18), empty.pos - @as(u32, @intCast(empty_line_start)) + 1);
 }
 
 test "parser: top-level public before break reports declaration expected" {
