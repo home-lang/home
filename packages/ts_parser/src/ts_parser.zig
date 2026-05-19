@@ -5109,18 +5109,44 @@ pub const Parser = struct {
 
         // Namespace import: `* as ns`?
         if (self.match(.asterisk)) {
-            _ = try self.expect(.kw_as, "'as' in namespace import");
-            const name_tok = try self.expectIdentifierLike();
-            if (name_tok.kind == .kw_await and self.top_level_external_module_indicator) {
-                try self.reportCodeAt(
-                    name_tok.span.start,
-                    name_tok.line,
-                    1262,
-                    "Identifier expected. 'await' is a reserved word at the top-level of a module.",
-                );
+            // Recover from `import * from "..."` (missing `as`) — emit
+            // TS1005 'as' expected. then continue to treat the next
+            // identifier-like token (including the contextual keyword
+            // `from`) as the namespace binding. Mirrors tsc's recovery
+            // in `invalidSyntaxNamespaceImportWith{Commonjs,AMD,System}`
+            // where the original `import * from Zero from "./0"`
+            // yields the full TS1005 'as' / TS1005 'from' / TS1141 /
+            // TS1005 ';' cascade.
+            const had_as = self.match(.kw_as);
+            if (!had_as) {
+                const here = self.peek();
+                try self.reportCodeAt(here.span.start, here.line, 1005, "'as' expected.");
             }
-            const id = try self.internToken(name_tok);
-            namespace_binding = try self.builder.addIdentifier(tokenSpan(name_tok), id);
+            const k = self.peek().kind;
+            const has_name = blk: {
+                if (k == .identifier) break :blk true;
+                if (k.isKeyword() or k.isContextualKeyword()) {
+                    // Accept reserved/contextual words after a real
+                    // `as`, and also after the synthetic `as` recovery
+                    // (so `* from Zero from "..."` treats `from` as
+                    // the namespace name).
+                    break :blk true;
+                }
+                break :blk false;
+            };
+            if (has_name) {
+                const name_tok = try self.expectIdentifierLike();
+                if (name_tok.kind == .kw_await and self.top_level_external_module_indicator) {
+                    try self.reportCodeAt(
+                        name_tok.span.start,
+                        name_tok.line,
+                        1262,
+                        "Identifier expected. 'await' is a reserved word at the top-level of a module.",
+                    );
+                }
+                const id = try self.internToken(name_tok);
+                namespace_binding = try self.builder.addIdentifier(tokenSpan(name_tok), id);
+            }
         }
         // Named imports: `{ a, b as c, type d }`?
         else if (self.match(.open_brace)) {
@@ -5188,13 +5214,46 @@ pub const Parser = struct {
             );
         }
 
-        _ = try self.expect(.kw_from, "'from' in import declaration");
-        const mod_tok = try self.expect(.string_literal, "module specifier");
+        if (self.peek().kind != .kw_from) {
+            const here = self.peek();
+            try self.reportCodeAt(here.span.start, here.line, 1005, "'from' expected.");
+        } else {
+            _ = self.advance();
+        }
+        const mod_tok: Token = blk: {
+            if (self.peek().kind == .string_literal) {
+                break :blk self.advance();
+            }
+            // Recovery: the module specifier is missing or a non-string
+            // token. Emit TS1141 at the current token and synthesize an
+            // empty string literal. If the offending token is an
+            // identifier/keyword that can be consumed without breaking
+            // continued parsing, advance past it so the trailing tokens
+            // (e.g. a second `from` after `import * from Zero from
+            // "./0"`) get their own `';' expected.` diagnostic.
+            const here = self.peek();
+            try self.reportCodeAt(here.span.start, here.line, 1141, "String literal expected.");
+            const advance_over: bool = switch (here.kind) {
+                .identifier => true,
+                else => false,
+            };
+            if (advance_over) _ = self.advance();
+            const synth = Token{
+                .kind = .string_literal,
+                .span = .{ .start = here.span.start, .end = here.span.start },
+                .line = here.line,
+                .flags = .{},
+            };
+            break :blk synth;
+        };
         // Optional import attributes: `with { type: "json" }` (TS 5.3+)
         // or legacy `assert { type: "json" }` — parsed and discarded.
         try self.skipImportAttributesClause();
         try self.consumeStatementTerminator();
-        const mod_id = try self.internStringLiteral(mod_tok);
+        const mod_id = if (mod_tok.span.start == mod_tok.span.end)
+            (self.interner.intern("") catch return error.OutOfMemory)
+        else
+            try self.internStringLiteral(mod_tok);
         const end_pos = self.tokens[self.cursor - 1].span.end;
         return try self.builder.addImport(
             .{ .start = start.span.start, .end = end_pos },
