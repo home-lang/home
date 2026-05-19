@@ -7562,6 +7562,15 @@ pub const Parser = struct {
                 const dot_tok = self.advance();
                 name_span.end = dot_tok.span.end;
             }
+            // TS18016 — ECMAScript private names are not allowed
+            // outside class bodies. Type literals / interfaces are
+            // outside class bodies so `{ #foo: string }` and
+            // `interface I { #foo: T }` are invalid. Mirrors
+            // upstream `privateNameAndPropertySignature` /
+            // `privateNameInObjectLiteral-3` baselines.
+            if (name_tok.kind == .private_identifier) {
+                try self.reportCodeAt(name_tok.span.start, name_tok.line, 18016, "Private identifiers are not allowed outside class bodies.");
+            }
             // Allow string-literal property names: `"foo": T`.
             const name_id = try self.internPropertyName(name_tok, name_span);
             const is_optional = self.match(.question);
