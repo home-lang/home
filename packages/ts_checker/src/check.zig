@@ -573,6 +573,10 @@ pub const TsCodes = struct {
     /// `noImplicitOverride`: a constructor parameter property
     /// overrides a base member but lacks the `override` modifier.
     pub const missing_parameter_property_override: u32 = 4115;
+    /// `noImplicitOverride`: a member overrides an abstract method
+    /// from the base class but lacks the `override` modifier. Distinct
+    /// from TS4114 because the parent member is declared `abstract`.
+    pub const missing_override_for_abstract: u32 = 4116;
     /// TS legacy `private` modifier violation. Emitted when a
     /// member declared `private` is accessed from outside the
     /// declaring class body.
@@ -15182,6 +15186,49 @@ pub const Checker = struct {
             return;
         }
         if (!has_override and has_base and self.strict_flags.no_implicit_override) {
+            // Look up whether the parent member is `abstract` once —
+            // both the TS4116 branch and the TS4114 suppression below
+            // depend on it. Concrete child + abstract parent = silent
+            // (tsc treats it as legitimate implementation, no override
+            // required). Abstract child + abstract parent = TS4116.
+            const parent_member_is_abstract: bool = blk: {
+                if (is_parameter_property) break :blk false;
+                const parent_name = base_class_name_from_extends orelse break :blk false;
+                const parent_name_id = self.string_interner.intern(parent_name) catch break :blk false;
+                const abs_set = self.class_abstract_members.getPtr(parent_name_id) orelse break :blk false;
+                break :blk abs_set.contains(name);
+            };
+            const child_is_abstract: bool = switch (self.hir.kindOf(node)) {
+                .fn_decl, .fn_expr, .arrow_fn => hir_mod.fnDeclOf(self.hir, node).flags.is_abstract,
+                else => false,
+            };
+            if (parent_member_is_abstract and !child_is_abstract) {
+                // Concrete implementation of abstract method — tsc
+                // does NOT require an `override` modifier here.
+                return;
+            }
+            const overrides_abstract = parent_member_is_abstract and child_is_abstract;
+            if (overrides_abstract) {
+                if (base_name_opt) |bn| {
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "This member must have an 'override' modifier because it overrides an abstract method that is declared in the base class '{s}'.",
+                        .{bn},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = node,
+                        .code = TsCodes.missing_override_for_abstract,
+                        .message = msg,
+                    });
+                } else {
+                    try self.report(
+                        node,
+                        TsCodes.missing_override_for_abstract,
+                        "This member must have an 'override' modifier because it overrides an abstract method that is declared in the base class.",
+                    );
+                }
+                return;
+            }
             const code = if (is_parameter_property) TsCodes.missing_parameter_property_override else TsCodes.missing_override;
             // TS4115 (parameter property variant) uses different prose:
             //   "This parameter property must have an 'override' modifier
