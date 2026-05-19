@@ -8264,6 +8264,13 @@ pub const Checker = struct {
                 try self.collectIdentifierRefsWithNodes(c.extends, out);
                 for (hir_mod.classMembers(self.hir, node)) |m| try self.collectIdentifierRefsWithNodes(m, out);
             },
+            .namespace_decl, .module_decl => {
+                for (hir_mod.namespaceBody(self.hir, node)) |s| try self.collectIdentifierRefsWithNodes(s, out);
+            },
+            .export_decl => {
+                const ex = hir_mod.exportOf(self.hir, node);
+                try self.collectIdentifierRefsWithNodes(ex.decl, out);
+            },
             else => {},
         }
     }
