@@ -1139,6 +1139,11 @@ fn checkerDiagnosticSurfacesInUncheckedJs(code: u32, source: []const u8) bool {
     // which emits this unconditionally for JS sources. Fires for
     // `typeSatisfaction_js`.
     if (code == ts_checker.check.TsCodes.ts_only_satisfies_in_js) return true;
+    // TS2839 — strict equality between fresh object/array/function
+    // references is reported even in unchecked `--allowJs` files.
+    // Mirrors `plainJSTypeErrors`, where `{} === {}` errors while
+    // loose `{} == {}` stays accepted.
+    if (code == ts_checker.check.TsCodes.object_reference_comparison) return true;
     // TS2451 — cross-declaration block-scoped duplicates fire as
     // binder/grammar errors in tsc even under `--allowJs` without
     // `--checkJs`. Suppressed only when the fixture explicitly opts

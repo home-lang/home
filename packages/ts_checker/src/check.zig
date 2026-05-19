@@ -494,6 +494,7 @@ pub const TsCodes = struct {
     pub const symbol_operator_not_allowed: u32 = 2469;
     pub const yield_implicit_any: u32 = 7057;
     pub const no_overlap_comparison: u32 = 2367;
+    pub const object_reference_comparison: u32 = 2839;
     pub const switch_case_not_comparable: u32 = 2678;
     pub const for_of_var_conflict: u32 = 2481;
     pub const iterator_value_missing: u32 = 2490;
@@ -41963,6 +41964,10 @@ pub const Checker = struct {
                 break :blk types.Primitive.number_t;
             },
             .eq, .neq, .eq_strict, .neq_strict => blk: {
+                if (self.strictEqualityComparesFreshObjectReferences(b.op, b.lhs, b.rhs)) |result| {
+                    try self.reportObjectReferenceComparison(node, result);
+                    break :blk types.Primitive.boolean_t;
+                }
                 // TS2367: warn when equality compares two known
                 // types that have no overlap. Unions compare if any
                 // constituent can overlap, primitive intersections
@@ -48044,6 +48049,39 @@ pub const Checker = struct {
         try self.reportAt(node, pos, TsCodes.no_overlap_comparison, "This comparison appears to be unintentional because the types have no overlap.");
     }
 
+    fn strictEqualityComparesFreshObjectReferences(
+        self: *Checker,
+        op: anytype,
+        lhs: NodeId,
+        rhs: NodeId,
+    ) ?bool {
+        if (op != .eq_strict and op != .neq_strict) return null;
+        if (!self.expressionIsFreshObjectReference(lhs) or !self.expressionIsFreshObjectReference(rhs)) return null;
+        return op == .neq_strict;
+    }
+
+    fn expressionIsFreshObjectReference(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(node)) {
+            .object_literal, .array_literal, .fn_expr, .arrow_fn, .class_expr => true,
+            .as_expr, .satisfies_expr, .type_assertion, .non_null_expr => blk: {
+                const a = hir_mod.asExpressionOf(self.hir, node);
+                break :blk self.expressionIsFreshObjectReference(a.expr);
+            },
+            else => false,
+        };
+    }
+
+    fn reportObjectReferenceComparison(self: *Checker, node: NodeId, result: bool) CheckError!void {
+        const word = if (result) "true" else "false";
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "This condition will always return '{s}' since JavaScript compares objects by reference, not value.",
+            .{word},
+        );
+        try self.report(node, TsCodes.object_reference_comparison, msg);
+    }
+
     fn comparisonDiagnosticOperandName(self: *Checker, operand: NodeId, display_t: TypeId) CheckError!?[]const u8 {
         _ = display_t;
         const source_name = self.visibleAnnotatedIdentifierTypeText(operand) orelse return null;
@@ -52356,6 +52394,17 @@ test "checker: comparison ops produce boolean" {
     try s.checker.checkSourceFile(s.root);
     const top = firstStatement(s);
     try T.expectEqual(types.Primitive.boolean_t, s.hir.typeOf(top));
+}
+
+test "checker: strict equality on fresh object references emits TS2839" {
+    const s = try newSetup("if ({} === {}) {} if ({} == {}) {}");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.object_reference_comparison) count += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count);
 }
 
 test "checker: typeof produces string" {
