@@ -390,27 +390,95 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     try appendJsStringLiteral(out, allocator, relative_path);
     try out.appendSlice(allocator, ";\nvar __dirname = ");
     try appendJsStringLiteral(out, allocator, dirname);
-    try out.appendSlice(allocator, ";\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\n");
+    try out.appendSlice(allocator, ";\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\n");
 }
 
-fn replaceAll(allocator: std.mem.Allocator, source: []const u8, needle: []const u8, replacement: []const u8) ![]u8 {
-    var out = std.ArrayList(u8).empty;
-    defer out.deinit(allocator);
+fn sourceShebangLen(source: []const u8) usize {
+    if (!std.mem.startsWith(u8, source, "#!")) return 0;
+    const newline = std.mem.indexOfScalar(u8, source, '\n') orelse return source.len;
+    return newline + 1;
+}
 
-    var cursor: usize = 0;
-    while (std.mem.indexOfPos(u8, source, cursor, needle)) |idx| {
-        try out.appendSlice(allocator, source[cursor..idx]);
-        try out.appendSlice(allocator, replacement);
-        cursor = idx + needle.len;
+fn appendImportMetaReplacement(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    idx: usize,
+) !?usize {
+    const replacements = [_]struct {
+        needle: []const u8,
+        replacement: []const u8,
+    }{
+        .{ .needle = "import.meta.dirname", .replacement = "__home_import_meta_dirname" },
+        .{ .needle = "import.meta.dir", .replacement = "__home_import_meta_dir" },
+        .{ .needle = "import.meta.path", .replacement = "__home_import_meta_path" },
+    };
+
+    for (replacements) |entry| {
+        if (std.mem.startsWith(u8, source[idx..], entry.needle)) {
+            try out.appendSlice(allocator, entry.replacement);
+            return idx + entry.needle.len;
+        }
     }
-    try out.appendSlice(allocator, source[cursor..]);
-    return out.toOwnedSlice(allocator);
+    return null;
 }
 
 fn rewriteImportMeta(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const with_dir = try replaceAll(allocator, source, "import.meta.dir", "__home_import_meta_dir");
-    defer allocator.free(with_dir);
-    return replaceAll(allocator, with_dir, "import.meta.path", "__home_import_meta_path");
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
+
+    const Mode = enum { code, single_quote, double_quote, template, line_comment, block_comment };
+    var mode: Mode = .code;
+    var i: usize = 0;
+    while (i < source.len) {
+        const byte = source[i];
+        switch (mode) {
+            .code => {
+                if (try appendImportMetaReplacement(&out, allocator, source, i)) |next| {
+                    i = next;
+                    continue;
+                }
+                if (byte == '\'') mode = .single_quote;
+                if (byte == '"') mode = .double_quote;
+                if (byte == '`') mode = .template;
+                if (byte == '/' and i + 1 < source.len and source[i + 1] == '/') mode = .line_comment;
+                if (byte == '/' and i + 1 < source.len and source[i + 1] == '*') mode = .block_comment;
+                try out.append(allocator, byte);
+                i += 1;
+            },
+            .single_quote, .double_quote, .template => {
+                const terminator: u8 = switch (mode) {
+                    .single_quote => '\'',
+                    .double_quote => '"',
+                    .template => '`',
+                    else => unreachable,
+                };
+                try out.append(allocator, byte);
+                if (byte == '\\' and i + 1 < source.len) {
+                    i += 1;
+                    try out.append(allocator, source[i]);
+                } else if (byte == terminator) {
+                    mode = .code;
+                }
+                i += 1;
+            },
+            .line_comment => {
+                try out.append(allocator, byte);
+                if (byte == '\n') mode = .code;
+                i += 1;
+            },
+            .block_comment => {
+                try out.append(allocator, byte);
+                if (byte == '*' and i + 1 < source.len and source[i + 1] == '/') {
+                    i += 1;
+                    try out.append(allocator, source[i]);
+                    mode = .code;
+                }
+                i += 1;
+            },
+        }
+    }
+    return out.toOwnedSlice(allocator);
 }
 
 fn hasBunTestImport(source: []const u8) bool {
@@ -419,6 +487,7 @@ fn hasBunTestImport(source: []const u8) bool {
 }
 
 pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) ![]u8 {
+    const shebang_len = sourceShebangLen(source);
     const imports = [_][]const u8{
         "import { expect, it, describe } from \"bun:test\";",
         "import { describe, expect, it } from \"bun:test\";",
@@ -431,8 +500,9 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
             var out = std.ArrayList(u8).empty;
             defer out.deinit(allocator);
 
+            try out.appendSlice(allocator, source[0..shebang_len]);
             try appendFileMetadataPrelude(&out, allocator, relative_path);
-            try out.appendSlice(allocator, source[0..idx]);
+            try out.appendSlice(allocator, source[shebang_len..idx]);
             try out.appendSlice(allocator, prelude);
             try out.appendSlice(allocator, source[idx + import_line.len ..]);
             const with_prelude = try out.toOwnedSlice(allocator);
@@ -443,9 +513,10 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
 
     var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
+    try out.appendSlice(allocator, source[0..shebang_len]);
     try appendFileMetadataPrelude(&out, allocator, relative_path);
     try out.appendSlice(allocator, prelude);
-    try out.appendSlice(allocator, source);
+    try out.appendSlice(allocator, source[shebang_len..]);
     const with_prelude = try out.toOwnedSlice(allocator);
     defer allocator.free(with_prelude);
     return rewriteImportMeta(allocator, with_prelude);
@@ -629,15 +700,33 @@ test "Bun test import rewrite lowers import.meta metadata" {
         \\import { expect, it } from "bun:test";
         \\it("metadata", () => {
         \\  expect(import.meta.dir).toBe(__dirname);
+        \\  expect(import.meta.dirname).toBe(__dirname);
         \\  expect(import.meta.path).toBe(__filename);
+        \\  expect("import.meta.path").toBe("import.meta.path");
+        \\  // import.meta.dir should not be rewritten in comments
         \\});
     ;
     const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/node/dirname.test.js");
     defer std.testing.allocator.free(rewritten);
 
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "import.meta") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "expect(import.meta") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "\"import.meta.path\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "// import.meta.dir") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "__home_import_meta_dir").? < std.mem.indexOf(u8, rewritten, "it(\"metadata\"").?);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "__home_import_meta_dirname").? < std.mem.indexOf(u8, rewritten, "it(\"metadata\"").?);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "__home_import_meta_path").? < std.mem.indexOf(u8, rewritten, "it(\"metadata\"").?);
+}
+
+test "Bun test import rewrite preserves shebangs" {
+    const source =
+        \\#!/usr/bin/env bun
+        \\test("works", () => {});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "cli/hashbang.test.js");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.startsWith(u8, rewritten, "#!/usr/bin/env bun\n"));
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "var __filename") != null);
 }
 
 test "failure recorder keeps the first failing file" {
