@@ -5087,10 +5087,14 @@ pub const Parser = struct {
             self.top_level_external_module_indicator = true;
         }
         var is_type_only = false;
+        var type_kw_start: u32 = start.span.start;
+        var type_kw_line: u32 = start.line;
         if (self.peek().kind == .kw_type) {
             if (!(self.peekAt(1).kind == .kw_from and self.peekAt(2).kind == .string_literal)) {
-                _ = self.advance();
+                const type_tok = self.advance();
                 is_type_only = true;
+                type_kw_start = type_tok.span.start;
+                type_kw_line = type_tok.line;
             }
         }
         var default_binding: NodeId = hir_mod.none_node_id;
@@ -5114,7 +5118,7 @@ pub const Parser = struct {
                     start.span.start,
                     start.line,
                     1392,
-                    "An import alias cannot use 'import type'.",
+                    "An import alias cannot use 'import type'",
                 );
             }
             if (alias_tok.kind == .kw_await and (self.peekAt(2).kind == .kw_require or self.top_level_export_indicator)) {
@@ -5296,9 +5300,12 @@ pub const Parser = struct {
         if (is_type_only and default_binding != hir_mod.none_node_id and
             (namespace_binding != hir_mod.none_node_id or named.items.len != 0))
         {
+            // Upstream anchors TS1363 at the `type` keyword (col after
+            // `import `), not the leading `import` keyword. Mirrors
+            // `grammarErrors.errors.txt: /b.ts(1,8)`.
             try self.reportCodeAt(
-                start.span.start,
-                start.line,
+                type_kw_start,
+                type_kw_line,
                 1363,
                 "A type-only import can specify a default import or named bindings, but not both.",
             );

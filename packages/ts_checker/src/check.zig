@@ -3957,15 +3957,26 @@ pub const Checker = struct {
         if (self.string_interner.get(ex.module).len != 0) return;
         const is_js_section = self.virtualSectionIsJsLike(node);
         const module = self.module orelse return;
+        // Statement-level `export type { ... }` in a `.js` section fires
+        // a single TS8006 anchored at the export keyword (col 1) with the
+        // literal `'export type'` message. Mirrors upstream
+        // `grammarErrors.errors.txt` `/a.js(2,1)`. Specifier-level
+        // `export { type foo }` is handled per-specifier below.
+        if (is_js_section and ex.is_type_only) {
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .code = TsCodes.ts_only_decl_in_js,
+                .message = "'export type' declarations can only be used in TypeScript files.",
+            });
+            return;
+        }
         for (hir_mod.exportNamed(self.hir, node)) |spec_node| {
             const spec = hir_mod.importSpecifierOf(self.hir, spec_node);
-            // `.js` / `.jsx` files reject `export { type foo }` and
-            // `export type { foo }` entirely — TS8006 fires anchored at
-            // the specifier (column = `type` modifier start). Mirrors
-            // `exportSpecifiers_js`: tsc skips the value-locality check
-            // when the syntax itself is invalid. Module-augmentation
-            // ambient `export type` forms are handled separately.
-            if (is_js_section and (spec.is_type_only or ex.is_type_only)) {
+            // `.js` / `.jsx` files reject `export { type foo }` — TS8006
+            // fires anchored at the specifier (column = `type` modifier
+            // start). Mirrors `exportSpecifiers_js`: tsc skips the
+            // value-locality check when the syntax itself is invalid.
+            if (is_js_section and spec.is_type_only) {
                 try self.diagnostics.append(self.gpa, .{
                     .node = spec_node,
                     .code = TsCodes.ts_only_decl_in_js,
@@ -16712,6 +16723,17 @@ pub const Checker = struct {
         if (spec.len == 0) {
             try self.checkImportEqualsEntity(node, imp);
             return;
+        }
+        // Statement-level `import type ... from "..."` inside a `.js`
+        // virtual section is invalid TypeScript-in-JS syntax — emit
+        // TS8006 anchored at the `import` keyword (col 1). Mirrors
+        // upstream `grammarErrors.errors.txt` `/a.js(1,1)`.
+        if (imp.is_type_only and self.virtualSectionIsJsLike(node)) {
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .code = TsCodes.ts_only_decl_in_js,
+                .message = "'import type' declarations can only be used in TypeScript files.",
+            });
         }
         // TS1202 fires for any ECMAScript-module `// @module` target —
         // not just `esnext`. Upstream tsc treats `es2015`, `es2020`,
