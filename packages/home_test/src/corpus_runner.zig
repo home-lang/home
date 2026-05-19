@@ -188,6 +188,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/07736.test.ts",
     "js/node/buffer-inspectmaxbytes.test.ts",
     "js/web/workers/message-event.test.ts",
+    "js/bun/jsc/native-constructor-identity.test.ts",
 };
 
 const harness_prelude =
@@ -238,8 +239,18 @@ const harness_prelude =
     \\function __home_is_unsupported_deep_value(value) {
     \\  return value !== null && typeof value === "object" && (value instanceof ArrayBuffer || ArrayBuffer.isView(value) || value instanceof Error);
     \\}
+    \\function __home_expect_any_matches(value, ctor) {
+    \\  if (typeof ctor !== "function") __home_fail("expect.any() requires a constructor");
+    \\  if (ctor === BigInt) return typeof value === "bigint";
+    \\  if (ctor === Boolean) return typeof value === "boolean" || value instanceof Boolean;
+    \\  if (ctor === Number) return typeof value === "number" || value instanceof Number;
+    \\  if (ctor === String) return typeof value === "string" || value instanceof String;
+    \\  if (ctor === Symbol) return typeof value === "symbol";
+    \\  return value instanceof ctor;
+    \\}
     \\function __home_deep_equal(a, b, strict, seen) {
     \\  if (Object.is(a, b)) return true;
+    \\  if (b && b.__home_expect_any) return __home_expect_any_matches(a, b.ctor);
     \\  if (a === null || b === null) return false;
     \\  if (typeof a !== "object" || typeof b !== "object") return false;
     \\  if (__home_is_unsupported_deep_value(a) || __home_is_unsupported_deep_value(b)) __home_unsupported("Deep equality for this value type is not supported by the Home Bun corpus bootstrap runner yet");
@@ -628,6 +639,12 @@ const harness_prelude =
     \\  };
     \\}
     \\globalThis.__home_modules["node-fetch"] = { Request };
+    \\if (typeof Blob !== "function") {
+    \\  var Blob = function(parts, options) {
+    \\    this.parts = parts || [];
+    \\    this.type = options && options.type ? String(options.type) : "";
+    \\  };
+    \\}
     \\if (typeof Buffer !== "function") {
     \\  var Buffer = function(size) {
     \\    const bytes = new Uint8Array(size);
@@ -1040,6 +1057,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": any)", .replacement = ")" },
         .{ .needle = ": any;", .replacement = ";" },
         .{ .needle = "<any, any>", .replacement = "" },
+        .{ .needle = " as any", .replacement = "" },
         .{ .needle = " as const", .replacement = "" },
     };
 
@@ -1403,6 +1421,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/07736.test.ts", filesForSubset(.minimal_js)[30]);
     try std.testing.expectEqualStrings("js/node/buffer-inspectmaxbytes.test.ts", filesForSubset(.minimal_js)[31]);
     try std.testing.expectEqualStrings("js/web/workers/message-event.test.ts", filesForSubset(.minimal_js)[32]);
+    try std.testing.expectEqualStrings("js/bun/jsc/native-constructor-identity.test.ts", filesForSubset(.minimal_js)[33]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -1415,6 +1434,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTypeOf(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTypeOf() requires a valid type string argument") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeUndefined()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_expect_any_matches(value, ctor)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeNumber()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "a instanceof Map || b instanceof Map") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "a instanceof Set || b instanceof Set") != null);
@@ -1449,6 +1469,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Error.prepareStackTrace") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var MessageEvent = function(type, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var MessageChannel = function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var Blob = function(parts, options)") != null);
 }
 
 test "Bun test import rewrite lowers to the virtual test module" {
@@ -1521,6 +1542,20 @@ test "bootstrap rewrite erases const assertions" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, " as const") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const values = [\"default\"];") != null);
+}
+
+test "bootstrap rewrite erases as any assertions" {
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("works", () => {
+        \\  expect(() => new (BigInt as any)(1)).toThrow(TypeError);
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/bun/jsc/native-constructor-identity.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, " as any") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "new (BigInt)(1)") != null);
 }
 
 test "bootstrap rewrite erases admitted type-only syntax" {

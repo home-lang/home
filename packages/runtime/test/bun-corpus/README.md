@@ -22,9 +22,9 @@ macOS, Linux, and the WASM target.
   `Response.json` / `Response.redirect`, Web `Request` cache/mode/clone, JSC
   `ShadowRealm`, Bun file-metadata, Node `Buffer`
   binary/UTF-16LE/compare/inspect limit, `Map`/`Set` deep-equality, lifecycle
-  hook, `MessageEvent` constructor behavior, own-key matcher, and stack-trace
-  smokes. It is only a smoke path for JSC + `home_test`; it is not the release
-  gate. The bootstrap harness is
+  hook, `expect.any` constructor matching, `MessageEvent` constructor behavior,
+  own-key matcher, and stack-trace smokes. It is only a smoke path for JSC +
+  `home_test`; it is not the release gate. The bootstrap harness is
   installed once per JSC engine, resets counters before each file, and lowers
   supported `bun:test` imports through a virtual
   `globalThis.__home_import("bun:test")` module shim.
