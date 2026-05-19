@@ -10863,7 +10863,47 @@ pub const Parser = struct {
             // for JSX fragment.`) at the offending tag identifier and
             // continue parsing as if it were a fragment close. Mirrors
             // upstream `tsxFragmentErrors` line 13 (`<>hi</div>`).
-            const lt_tok = try self.expect(.less_than, "'<' to start fragment close");
+            // Custom error path when the fragment was never closed:
+            // tsc emits `'</' expected.` (TS1005) anchored just past
+            // the trailing source content of the fragment's last
+            // child — i.e. at the end of the same line where the
+            // children ran out, not the start of the NEXT statement.
+            // Mirrors `tsxFragmentErrors` line 11's unterminated
+            // `<>eof   // Error` fragment where tsc anchors at col 17
+            // (end of `<>eof   // Error`).
+            if (self.peek().kind != .less_than) {
+                const t = self.peek();
+                const src = self.source;
+                // tsc anchors `'</' expected.` at the end of the
+                // line that the fragment's last content was on,
+                // INCLUDING any trailing `// …` line comments —
+                // i.e. just past the last non-newline character on
+                // that line. Walk back from the next token's start
+                // through whitespace + newlines, then forward to the
+                // newline that terminates the current line, then back
+                // to the last non-whitespace character on that line.
+                var anchor = t.span.start;
+                if (anchor > 0 and anchor <= src.len) {
+                    var i: usize = anchor;
+                    // Skip leading whitespace/newlines back to the
+                    // previous non-empty char.
+                    while (i > 0 and (src[i - 1] == ' ' or src[i - 1] == '\t' or src[i - 1] == '\r' or src[i - 1] == '\n')) i -= 1;
+                    // Now `i` sits just past the last significant byte
+                    // on the previous content line. That's the column
+                    // tsc uses.
+                    anchor = @intCast(i);
+                }
+                var anchor_line: u32 = 1;
+                {
+                    var j: usize = 0;
+                    while (j < @as(usize, anchor) and j < src.len) : (j += 1) {
+                        if (src[j] == '\n') anchor_line += 1;
+                    }
+                }
+                try self.reportCodeAt(anchor, anchor_line, 1005, "'</' expected.");
+                return try self.builder.addJsxFragment(.{ .start = open.span.start, .end = anchor }, children.items);
+            }
+            const lt_tok = self.advance();
             _ = try self.expect(.slash, "'/' in fragment close");
             const after_slash = self.peek();
             var named_close_recovered = false;
