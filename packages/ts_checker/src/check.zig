@@ -12236,7 +12236,6 @@ pub const Checker = struct {
                 }
                 if (r.qualifier_len != 0 or r.args_len != 0) return;
                 if (self.typeParamNameMatches(r.name, type_params)) return;
-                if (self.typeRefNameExists(r.name) or self.visibleTypeDeclarationExistsAt(type_node, r.name)) return;
                 if (try self.importedTypeRefForLocal(r.name, type_node)) |_| return;
                 const raw = self.string_interner.get(r.name);
                 if (self.lowerBuiltinObjectType(raw) != null) return;
@@ -12257,6 +12256,11 @@ pub const Checker = struct {
                 {
                     return;
                 }
+                if (self.namespaceTypeRefIsCrossVirtualSectionOnly(type_node, r.name)) {
+                    try self.reportCannotFindNameOnce(type_node, r.name);
+                    return;
+                }
+                if (self.typeRefNameExists(r.name) or self.visibleTypeDeclarationExistsAt(type_node, r.name)) return;
                 try self.reportCannotFindNameOnce(type_node, r.name);
             },
             .array_type => try self.reportUnresolvedBodylessSignatureTypeRefs(hir_mod.arrayTypeOf(self.hir, type_node).element, type_params),
@@ -24379,6 +24383,10 @@ pub const Checker = struct {
                         return t;
                     }
                     if (self.lowerBuiltinObjectType(name_str)) |t| return t;
+                    if (self.namespaceTypeRefIsCrossVirtualSectionOnly(type_node, r.name)) {
+                        try self.reportCannotFindNameOnce(type_node, r.name);
+                        return types.Primitive.any;
+                    }
                     if (self.type_names.get(r.name)) |t| return t;
                     if (try self.reportInvalidUppercasePrimitiveTypeRef(type_node, r.name)) return types.Primitive.any;
                     const lowered = try self.lowerer.lower(type_node);
@@ -25803,6 +25811,107 @@ pub const Checker = struct {
             };
         }
         return null;
+    }
+
+    fn namespaceTypeRefIsCrossVirtualSectionOnly(
+        self: *Checker,
+        type_node: NodeId,
+        name: hir_mod.StringId,
+    ) bool {
+        if (!self.sourceHasVirtualFilenameSections()) return false;
+        if (!self.enclosingTopLevelNamespaceIsExported(type_node)) return false;
+        var path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer path.deinit(self.gpa);
+        self.collectEnclosingNamespacePathNoFail(type_node, &path);
+        if (path.items.len == 0) return false;
+        const root = self.rootBlockFor(type_node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const root_stmts = hir_mod.blockStmts(self.hir, root);
+        const section = self.virtualSectionStartForNode(type_node);
+        var prefix_len = path.items.len;
+        while (prefix_len > 0) : (prefix_len -= 1) {
+            const prefix = path.items[0..prefix_len];
+            if (self.namespacePathHasNamedTypeDeclInSection(root_stmts, prefix, name, section)) return false;
+            if (self.namespacePathHasNamedTypeDeclOutsideSection(root_stmts, prefix, name, section)) return true;
+        }
+        return false;
+    }
+
+    fn enclosingTopLevelNamespaceIsExported(self: *Checker, node: NodeId) bool {
+        var top: NodeId = hir_mod.none_node_id;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            if (self.hir.kindOf(cur) == .namespace_decl) top = cur;
+        }
+        if (top == hir_mod.none_node_id) return false;
+        const parent = self.hir.parentOf(top);
+        return parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .export_decl;
+    }
+
+    fn namespacePathHasNamedTypeDeclInSection(
+        self: *Checker,
+        stmts: []const NodeId,
+        path: []const hir_mod.StringId,
+        name: hir_mod.StringId,
+        section: usize,
+    ) bool {
+        if (path.len == 0) return false;
+        for (stmts) |raw| {
+            const node = self.unwrapExportDecl(raw);
+            if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .namespace_decl) continue;
+            const ns = hir_mod.namespaceOf(self.hir, node);
+            if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) continue;
+            const ns_name = self.string_interner.get(hir_mod.identifierOf(self.hir, ns.name).name);
+            const consumed = self.namespaceNameConsumesPath(ns_name, path) orelse continue;
+            if (consumed == path.len) {
+                if (self.virtualSectionStartForNode(node) == section and
+                    self.findNamedTypeDeclInNamespace(node, name) != null)
+                {
+                    return true;
+                }
+                continue;
+            }
+            if (self.namespacePathHasNamedTypeDeclInSection(
+                hir_mod.namespaceBody(self.hir, node),
+                path[consumed..],
+                name,
+                section,
+            )) return true;
+        }
+        return false;
+    }
+
+    fn namespacePathHasNamedTypeDeclOutsideSection(
+        self: *Checker,
+        stmts: []const NodeId,
+        path: []const hir_mod.StringId,
+        name: hir_mod.StringId,
+        section: usize,
+    ) bool {
+        if (path.len == 0) return false;
+        for (stmts) |raw| {
+            const node = self.unwrapExportDecl(raw);
+            if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .namespace_decl) continue;
+            const ns = hir_mod.namespaceOf(self.hir, node);
+            if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) continue;
+            const ns_name = self.string_interner.get(hir_mod.identifierOf(self.hir, ns.name).name);
+            const consumed = self.namespaceNameConsumesPath(ns_name, path) orelse continue;
+            if (consumed == path.len) {
+                if (self.virtualSectionStartForNode(node) != section and
+                    self.findNamedTypeDeclInNamespace(node, name) != null)
+                {
+                    return true;
+                }
+                continue;
+            }
+            if (self.namespacePathHasNamedTypeDeclOutsideSection(
+                hir_mod.namespaceBody(self.hir, node),
+                path[consumed..],
+                name,
+                section,
+            )) return true;
+        }
+        return false;
     }
 
     fn nodeHasAncestor(self: *Checker, node: NodeId, ancestor: NodeId) bool {
