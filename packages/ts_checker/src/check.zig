@@ -2358,6 +2358,16 @@ pub const Checker = struct {
                 .enum_decl,
                 .type_alias_decl,
                 => try self.checkStatement(s),
+                // Recurse into nested namespaces / modules so their
+                // class members (TS2564 strict-property-init), value
+                // decls, and JSDoc/type checks fire too. Without this
+                // recursion fixtures like `moduleWithStatementsOfEveryKind`
+                // and `invalidModuleWithStatementsOfEveryKind` miss
+                // TS2564 on fields inside `namespace Y { namespace
+                // Module { class A { s: string } } }`.
+                .namespace_decl,
+                .module_decl,
+                => try self.checkStatement(s),
                 .var_decl,
                 .let_decl,
                 .const_decl,
@@ -2398,6 +2408,9 @@ pub const Checker = struct {
                         .interface_decl,
                         .enum_decl,
                         .type_alias_decl,
+                        => try self.checkStatement(ex.decl),
+                        .namespace_decl,
+                        .module_decl,
                         => try self.checkStatement(ex.decl),
                         .fn_decl => try self.checkNamespaceFnBodyAfterSignature(ex.decl),
                         .var_decl,
