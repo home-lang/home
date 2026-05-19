@@ -39,6 +39,7 @@ returned-thenable rejection, `.not`, `toBe`, `toBeDefined`,
 `expect.extend` asymmetric matcher path, `toIncludeRepeated`,
 `toContainKey`, `toContainKeys`, `toContainAnyKeys`, `atob` / `btoa`,
 `Bun` branding plus `Bun.version`, `Bun.revision`, `Bun.stripANSI`,
+`Bun.wrapAnsi`,
 `process.versions.bun`, `process.revision`, DOMException,
 Request/Response/Headers/URL, `node-fetch`, `node:buffer`, Node
 `Buffer.alloc` / fill / `Buffer.from(..., "utf-16le")` / compare /

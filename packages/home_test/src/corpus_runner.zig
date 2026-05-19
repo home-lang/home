@@ -86,6 +86,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/web/workers/message-event.test.ts",
     "js/bun/test/bun-test.test.ts",
     "regression/issue/16007.test.ts",
+    "js/bun/util/wrapAnsi.test.ts",
 };
 
 const harness_prelude =
@@ -108,6 +109,110 @@ const harness_prelude =
     \\  revision: "home",
     \\  stripANSI(value) {
     \\    return String(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+    \\  },
+    \\  wrapAnsi(value, columns, options) {
+    \\    const input = String(value);
+    \\    const width = Number(columns);
+    \\    if (!Number.isFinite(width) || width <= 0) return input;
+    \\    const opts = options || {};
+    \\    const hard = !!opts.hard;
+    \\    const trim = opts.trim !== false;
+    \\    const wordWrap = opts.wordWrap !== false;
+    \\    function stripAnsi(text) {
+    \\      return String(text).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+    \\    }
+    \\    function charWidth(ch) {
+    \\      const code = ch.codePointAt(0);
+    \\      if (code === 0) return 0;
+    \\      if (code >= 0x1100 && (code <= 0x115f || code === 0x2329 || code === 0x232a || (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) || (code >= 0xac00 && code <= 0xd7a3) || (code >= 0xf900 && code <= 0xfaff) || (code >= 0xfe10 && code <= 0xfe19) || (code >= 0xfe30 && code <= 0xfe6f) || (code >= 0xff00 && code <= 0xff60) || (code >= 0xffe0 && code <= 0xffe6))) return 2;
+    \\      if (code >= 0x1f300 && code <= 0x1faff) return 2;
+    \\      if (opts.ambiguousIsNarrow === false && code >= 0x370 && code <= 0x3ff) return 2;
+    \\      return 1;
+    \\    }
+    \\    function stringWidth(text) {
+    \\      let total = 0;
+    \\      for (const ch of stripAnsi(text)) total += charWidth(ch);
+    \\      return total;
+    \\    }
+    \\    function updateActiveColor(active, text) {
+    \\      const pattern = /\x1b\[([0-9;]*)m/g;
+    \\      let match;
+    \\      while ((match = pattern.exec(text)) !== null) {
+    \\        const body = match[1] || "0";
+    \\        const codes = body.split(";").map(part => part === "" ? 0 : Number(part));
+    \\        if (codes.includes(0) || codes.includes(39)) active = "";
+    \\        for (let i = 0; i < codes.length; i++) {
+    \\          if (codes[i] >= 30 && codes[i] <= 37) active = "\x1b[" + String(codes[i]) + "m";
+    \\        }
+    \\      }
+    \\      return active;
+    \\    }
+    \\    function joinChunks(chunks) {
+    \\      let active = "";
+    \\      let out = "";
+    \\      for (let i = 0; i < chunks.length; i++) {
+    \\        const chunk = chunks[i];
+    \\        out += chunk;
+    \\        active = updateActiveColor(active, chunk);
+    \\        if (i + 1 < chunks.length) out += active ? "\x1b[39m\n" + active : "\n";
+    \\      }
+    \\      return out;
+    \\    }
+    \\    function hardWrapLine(line) {
+    \\      const chunks = [];
+    \\      let current = "";
+    \\      let currentWidth = 0;
+    \\      for (let i = 0; i < line.length;) {
+    \\        if (line.charCodeAt(i) === 0x1b) {
+    \\          const match = line.slice(i).match(/^\x1b\[[0-?]*[ -/]*[@-~]/);
+    \\          if (match) {
+    \\            current += match[0];
+    \\            i += match[0].length;
+    \\            continue;
+    \\          }
+    \\        }
+    \\        const ch = Array.from(line.slice(i))[0];
+    \\        const chWidth = charWidth(ch);
+    \\        if (current && currentWidth + chWidth > width) {
+    \\          chunks.push(current);
+    \\          current = "";
+    \\          currentWidth = 0;
+    \\        }
+    \\        current += ch;
+    \\        currentWidth += chWidth;
+    \\        i += ch.length;
+    \\      }
+    \\      if (current || chunks.length === 0) chunks.push(current);
+    \\      return chunks;
+    \\    }
+    \\    function wordWrapLine(line) {
+    \\      if (stringWidth(line) <= width) return [line];
+    \\      const words = line.split(/\s+/).filter(Boolean);
+    \\      if (words.length === 0) return [""];
+    \\      const chunks = [];
+    \\      let current = "";
+    \\      for (const word of words) {
+    \\        if (!current) {
+    \\          current = word;
+    \\          continue;
+    \\        }
+    \\        if (stringWidth(current) + 1 + stringWidth(word) <= width) current += " " + word;
+    \\        else {
+    \\          chunks.push(current);
+    \\          current = word;
+    \\        }
+    \\      }
+    \\      if (current) chunks.push(current);
+    \\      return chunks;
+    \\    }
+    \\    const chunks = [];
+    \\    const lines = input.split(/\r?\n/);
+    \\    for (let i = 0; i < lines.length; i++) {
+    \\      const line = trim ? lines[i].replace(/^[ \t]+/, "") : lines[i];
+    \\      const lineChunks = hard ? hardWrapLine(line) : (wordWrap ? wordWrapLine(line) : [line]);
+    \\      for (const chunk of lineChunks) chunks.push(chunk);
+    \\    }
+    \\    return joinChunks(chunks);
     \\  },
     \\  inspect(value) {
     \\    if (value === null || typeof value !== "object" || Array.isArray(value)) __home_unsupported("Only Bun.inspect({ key: Set<string> }) is supported by the Home Bun corpus bootstrap runner");
@@ -301,6 +406,10 @@ const harness_prelude =
     \\    },
     \\    toBe(expected) {
     \\      __home_assert(Object.is(value, expected), isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be " + __home_format(expected));
+    \\    },
+    \\    toBeGreaterThan(expected) {
+    \\      if (arguments.length < 1) __home_fail("toBeGreaterThan() requires 1 argument");
+    \\      __home_assert(value > expected, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be greater than " + __home_format(expected));
     \\    },
     \\    toBeDefined() {
     \\      __home_assert(value !== undefined, isNot, "Expected value" + (isNot ? " not" : "") + " to be defined");
@@ -1328,12 +1437,14 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/web/workers/message-event.test.ts", filesForSubset(.minimal_js)[32]);
     try std.testing.expectEqualStrings("js/bun/test/bun-test.test.ts", filesForSubset(.minimal_js)[33]);
     try std.testing.expectEqualStrings("regression/issue/16007.test.ts", filesForSubset(.minimal_js)[34]);
+    try std.testing.expectEqualStrings("js/bun/util/wrapAnsi.test.ts", filesForSubset(.minimal_js)[35]);
 }
 
 test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function it(name, fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_is_thenable(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "stripANSI(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapAnsi(value, columns, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "inspect(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Set(\" + entry.size + \")") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "version: \"0.0.0-home\"") != null);
@@ -1345,6 +1456,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTypeOf() requires a valid type string argument") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeUndefined()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTruthy()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeGreaterThan(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_expect_any_matches(value, ctor)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeNumber()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "a instanceof Map || b instanceof Map") != null);
