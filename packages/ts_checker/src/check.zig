@@ -197,6 +197,8 @@ pub const TsCodes = struct {
     pub const new_expression_not_void: u32 = 2350;
     pub const instanceof_left_type: u32 = 2358;
     pub const instanceof_right_type: u32 = 2359;
+    pub const instanceof_has_instance_lhs: u32 = 2860;
+    pub const instanceof_has_instance_return: u32 = 2861;
     pub const arithmetic_operand_type: u32 = 2356;
     pub const update_operand_not_variable: u32 = 2357;
     pub const arithmetic_left_operand_type: u32 = 2362;
@@ -8878,6 +8880,7 @@ pub const Checker = struct {
         const op = hir_mod.objectPropertyOf(self.hir, prop);
         const name = self.propertyNameFromKeyNode(op.key) orelse return false;
         const prop_t = (self.satisfiesTargetPropertyType(target_t, name) catch null) orelse return false;
+        if (prop_t == types.Primitive.any or prop_t == types.Primitive.unknown) return false;
         if (self.firstSignatureType(prop_t) != null) return true;
         return self.typeIsFunctionObjectLike(prop_t) catch false;
     }
@@ -11457,6 +11460,31 @@ pub const Checker = struct {
         return std.mem.eql(u8, src[i..word_end], keyword);
     }
 
+    fn classMemberSourceHasModifierBeforeKey(self: *Checker, member_node: NodeId, key_node: NodeId, keyword: []const u8) bool {
+        const src = self.source orelse return false;
+        const member_span = self.hir.spanOf(member_node);
+        const key_span = self.hir.spanOf(key_node);
+        if (member_span.start >= src.len or key_span.start > src.len) return false;
+        var line_start: usize = key_span.start;
+        while (line_start > 0 and src[line_start - 1] != '\n' and src[line_start - 1] != '\r') {
+            line_start -= 1;
+        }
+        const scan_start = @min(member_span.start, line_start);
+        var i: usize = scan_start;
+        while (i + keyword.len <= key_span.start) : (i += 1) {
+            if (!std.mem.startsWith(u8, src[i..], keyword)) continue;
+            const before_ok = i == scan_start or !isIdentifierPartByte(src[i - 1]);
+            const end = i + keyword.len;
+            const after_ok = end >= key_span.start or !isIdentifierPartByte(src[end]);
+            if (before_ok and after_ok) return true;
+        }
+        return false;
+    }
+
+    fn isIdentifierPartByte(ch: u8) bool {
+        return std.ascii.isAlphanumeric(ch) or ch == '_' or ch == '$';
+    }
+
     fn sourceHasNoLibTrueDirective(self: *Checker) bool {
         const src = self.source orelse return false;
         const pos = std.mem.indexOf(u8, src, "@noLib") orelse std.mem.indexOf(u8, src, "@nolib") orelse return false;
@@ -11979,12 +12007,7 @@ pub const Checker = struct {
                     if (hir_mod.fnTypeParams(self.hir, m).len > 0) self.popNarrowScope();
                     const fn_p = hir_mod.fnDeclOf(self.hir, m);
                     if (fn_p.flags.is_constructor) {
-                        const ctor_has_binding_pattern_parameter_property = self.constructorHasBindingPatternParameterProperty(m);
-                        const effective_ctor_sig = if (ctor_has_binding_pattern_parameter_property)
-                            try self.signatureWithAnyParams(sig, true)
-                        else
-                            sig;
-                        ctor_sig = effective_ctor_sig;
+                        ctor_sig = sig;
                         has_explicit_ctor = true;
                         if (fn_p.body == hir_mod.none_node_id) {
                             if (ctor_first_bodyless == hir_mod.none_node_id) ctor_first_bodyless = m;
@@ -11993,7 +12016,7 @@ pub const Checker = struct {
                             // new-expression arity check can accept
                             // any matching overload (see
                             // `constructSignaturesWithOverloads.ts(10,1)`).
-                            try ctor_overload_sigs.append(self.gpa, effective_ctor_sig);
+                            try ctor_overload_sigs.append(self.gpa, sig);
                             try ctor_overload_nodes.append(self.gpa, m);
                         } else {
                             ctor_impl_count += 1;
@@ -12445,6 +12468,7 @@ pub const Checker = struct {
                             !self.typeAnnotationContainsUnresolvedRef(op.type_annotation) and
                             op.value == hir_mod.none_node_id and
                             !self.classFieldHasOptionalToken(m) and
+                            !self.classMemberSourceHasModifierBeforeKey(m, op.key, "declare") and
                             !self.classNodeIsInsideAmbientDeclaredModule(node) and
                             !self.classHasLeadingDeclare(node) and
                             !self.virtualSectionIsDeclarationFile(node))
@@ -12570,6 +12594,7 @@ pub const Checker = struct {
                     // members (v0 has no syntax for abstract fields).
                     const is_abstract_property = self.classMemberSourceHasLeadingKeyword(m, "abstract");
                     const is_auto_accessor = self.classMemberSourceHasLeadingKeyword(m, "accessor");
+                    const is_declared_property = self.classMemberSourceHasModifierBeforeKey(m, op.key, "declare");
                     // TS18045: auto-accessor (`accessor x = …`) is a stage-3
                     // class field that lowers via `Object.defineProperty` —
                     // tsc refuses to emit it under `--target es5/es3`.
@@ -12694,6 +12719,7 @@ pub const Checker = struct {
                         op.type_annotation == hir_mod.none_node_id and
                         op.value == hir_mod.none_node_id and
                         !(op.is_static and static_block_this_assigned_names.contains(member_name)) and
+                        !is_declared_property and
                         !self.classHasLeadingDeclare(node) and
                         !self.classNodeIsInsideAmbientDeclaredModule(node) and
                         !self.virtualSectionIsDeclarationFile(node))
@@ -12722,6 +12748,7 @@ pub const Checker = struct {
                             self.classFieldAnnotationIsLiteralAnyOrUnknown(op.type_annotation)) and
                         !self.classFieldHasDefiniteAssertion(m) and
                         !self.classFieldHasOptionalToken(m) and
+                        !is_declared_property and
                         !self.classNodeIsInsideAmbientDeclaredModule(node) and
                         !self.classHasLeadingDeclare(node) and
                         !self.virtualSectionIsDeclarationFile(node) and
@@ -14546,6 +14573,13 @@ pub const Checker = struct {
     fn overrideBaseClassDiagnosticNameFromExtends(self: *Checker, extends_node: NodeId) ?[]const u8 {
         if (extends_node == hir_mod.none_node_id) return null;
         const k = self.hir.kindOf(extends_node);
+        if (k == .identifier) {
+            return self.string_interner.get(hir_mod.identifierOf(self.hir, extends_node).name);
+        }
+        if (k == .type_ref) {
+            const r = hir_mod.typeRefOf(self.hir, extends_node);
+            return self.string_interner.get(r.name);
+        }
         if (k != .class_decl and k != .class_expr) return null;
         const c = hir_mod.classOf(self.hir, extends_node);
         if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
@@ -14571,7 +14605,7 @@ pub const Checker = struct {
         // matches upstream's `... 'B'.` suffix. Mirrors `override1.ts`
         // / `override5.ts` baselines.
         const base_name_opt: ?[]const u8 = blk: {
-            const pt = parent_t orelse break :blk null;
+            const pt = parent_t orelse break :blk base_class_name_from_extends;
             break :blk (self.simpleDiagnosticTypeName(pt) catch null) orelse base_class_name_from_extends;
         };
         if ((has_override or has_jsdoc_override) and !has_base) {
@@ -14848,6 +14882,7 @@ pub const Checker = struct {
         seen: *const std.AutoHashMapUnmanaged(hir_mod.StringId, ClassMethodSeen),
     ) CheckError!void {
         if (self.classHasLeadingDeclare(class_node)) return;
+        if (self.classNodeIsInsideAmbientDeclaredModule(class_node)) return;
         if (self.virtualSectionIsDeclarationFile(class_node)) return;
         var it = seen.valueIterator();
         while (it.next()) |info| {
@@ -27664,6 +27699,16 @@ pub const Checker = struct {
         };
     }
 
+    fn deleteOperandOptionalityAnchorPos(self: *Checker, operand: NodeId) ?u32 {
+        if (self.hir.kindOf(operand) != .member_access) return null;
+        const m = hir_mod.memberOf(self.hir, operand);
+        if (!m.optional) return null;
+        const src = self.source orelse return null;
+        const object_span = self.hir.spanOf(m.object);
+        if (object_span.end >= src.len or src[object_span.end] != ')') return null;
+        return self.symbolOperandAnchorPos(m.object);
+    }
+
     /// True when `t` looks array-like enough to destructure with an
     /// array binding pattern: an array/tuple object type whose number
     /// index resolves, or `any`/`unknown` (treated as opaque). Falls
@@ -39402,9 +39447,32 @@ pub const Checker = struct {
             return true;
         }
         if (f.is_signature) return true;
-        if (f.is_object_type) return true;
+        if (self.objectHasCallOrConstructSignature(t)) return true;
+        if ((self.instanceofHasInstanceSignature(t) catch null) != null) return true;
         if (f.is_intersection) return true;
         return false;
+    }
+
+    fn instanceofHasInstanceSignature(self: *Checker, t: TypeId) CheckError!?TypeId {
+        const has_instance_name = self.string_interner.intern("Symbol.hasInstance") catch return error.OutOfMemory;
+        var sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer sigs.deinit(self.gpa);
+        try self.collectNamedMemberSignatures(t, has_instance_name, &sigs);
+        if (sigs.items.len == 0) return null;
+        return sigs.items[0];
+    }
+
+    fn checkInstanceofHasInstanceOperand(self: *Checker, lhs_node: NodeId, lhs: TypeId, rhs_node: NodeId, rhs: TypeId) CheckError!void {
+        const sig = (try self.instanceofHasInstanceSignature(rhs)) orelse return;
+        const ret = self.interner.signatureReturn(sig) orelse types.Primitive.any;
+        if (!(self.engine.isAssignableTo(ret, types.Primitive.boolean_t) catch false)) {
+            try self.report(rhs_node, TsCodes.instanceof_has_instance_return, "An object's '[Symbol.hasInstance]' method must return a boolean value for it to be used on the right-hand side of an 'instanceof' expression.");
+            return;
+        }
+        const params = self.interner.signatureParams(sig);
+        if (params.len == 0) return;
+        if (self.engine.isAssignableTo(lhs, params[0]) catch false) return;
+        try self.report(lhs_node, TsCodes.instanceof_has_instance_lhs, "The left-hand side of an 'instanceof' expression must be assignable to the first argument of the right-hand side's '[Symbol.hasInstance]' method.");
     }
 
     fn isInLeftOperandAllowed(self: *Checker, t: TypeId) bool {
@@ -39718,6 +39786,8 @@ pub const Checker = struct {
                 }
                 if (!self.isInstanceofRightAllowed(rhs)) {
                     try self.report(b.rhs, TsCodes.instanceof_right_type, "The right-hand side of an 'instanceof' expression must be either of type 'any', a class, function, or other type assignable to the 'Function' interface type, or an object type with a 'Symbol.hasInstance' method.");
+                } else {
+                    try self.checkInstanceofHasInstanceOperand(b.lhs, lhs, b.rhs, rhs);
                 }
                 break :blk types.Primitive.boolean_t;
             },
@@ -39853,7 +39923,7 @@ pub const Checker = struct {
                     // Mirrors `symbolType3.ts(2,8)` `delete Symbol.iterator`.
                     try self.report(u.operand, TsCodes.delete_operand_read_only, "The operand of a 'delete' operator cannot be a read-only property.");
                 } else if (self.strict_flags.strict_null_checks and !self.deleteOperandAllowed(u.operand)) {
-                    try self.report(u.operand, TsCodes.delete_operand_must_be_optional, "The operand of a 'delete' operator must be optional.");
+                    try self.reportAt(u.operand, self.deleteOperandOptionalityAnchorPos(u.operand), TsCodes.delete_operand_must_be_optional, "The operand of a 'delete' operator must be optional.");
                 }
                 break :blk types.Primitive.boolean_t;
             },
@@ -41209,7 +41279,9 @@ pub const Checker = struct {
         const npairs_fixed = @min(args.len, fixed_count);
         var i: usize = 0;
         var emitted_spread_shape_mismatch = false;
+        var stop_after_new_arg_mismatch = false;
         while (i < npairs_fixed) : (i += 1) {
+            if (stop_after_new_arg_mismatch) break;
             var param_t = param_ts[i];
             if (param_t >= self.interner.pool.typeCount()) continue;
             if (self.taggedTemplateStringsArrayArg(call_node, args, i, param_t)) continue;
@@ -41298,9 +41370,16 @@ pub const Checker = struct {
                 self.unresolvedRestTupleCallbackFromPriorArrayArg(args, param_ts, i, param_t) catch false
             else
                 false;
+            if (ok and self.hir.kindOf(args[i]) == .array_literal and self.tupleTypeFromMaybeOptional(param_t) != null) {
+                if (try self.tryReportArrayLiteralTupleElementMismatch(args[i], param_t)) {
+                    try self.checkExcessProperties(args[i], param_t);
+                    if (self.hir.kindOf(call_node) == .new_expr) stop_after_new_arg_mismatch = true;
+                    continue;
+                }
+            }
             if (!ok and !contextual_ok and !emitted_2556) {
                 var emitted = false;
-                if (self.hir.kindOf(args[i]) == .array_literal and self.isTupleShapedTarget(param_t)) {
+                if (self.hir.kindOf(args[i]) == .array_literal and self.tupleTypeFromMaybeOptional(param_t) != null) {
                     // Per-element TS2322 prose when the array literal
                     // is a length-matching fixed tuple — mirrors tsc's
                     // mutually-exclusive behavior where each offending
@@ -41337,6 +41416,7 @@ pub const Checker = struct {
                         .message = msg,
                     });
                 }
+                if (self.hir.kindOf(call_node) == .new_expr) stop_after_new_arg_mismatch = true;
             }
             try self.checkExcessProperties(args[i], param_t);
         }
@@ -49705,6 +49785,54 @@ test "checker: instanceof false branch subtracts object constituents" {
     }
 }
 
+test "checker: instanceof rejects non-callable object RHS operands" {
+    const s = try newSetup(
+        \\class C { foo() { } }
+        \\declare var x: any;
+        \\declare var o1: {};
+        \\declare var o2: Object;
+        \\declare var o3: C;
+        \\x instanceof o1;
+        \\x instanceof o2;
+        \\x instanceof o3;
+        \\"" instanceof {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var right_count: usize = 0;
+    var left_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.instanceof_right_type) right_count += 1;
+        if (d.code == TsCodes.instanceof_left_type) left_count += 1;
+    }
+    try T.expectEqual(@as(usize, 4), right_count);
+    try T.expectEqual(@as(usize, 1), left_count);
+}
+
+test "checker: instanceof validates Symbol.hasInstance operand contract" {
+    const s = try newSetup(
+        \\declare var x: any;
+        \\declare var o4: { [Symbol.hasInstance](value: { x: number }): boolean; };
+        \\declare var o5: { y: string };
+        \\o5 instanceof o4;
+        \\declare var o6: { [Symbol.hasInstance](value: unknown): number; };
+        \\x instanceof o6;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_lhs = false;
+    var saw_return = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.instanceof_has_instance_lhs) saw_lhs = true;
+        if (d.code == TsCodes.instanceof_has_instance_return) saw_return = true;
+        try T.expect(d.code != TsCodes.instanceof_right_type);
+    }
+    try T.expect(saw_lhs);
+    try T.expect(saw_return);
+}
+
 test "checker: outer type guard does not narrow inside class constructor" {
     const s = try newSetup(
         \\let x: string | number = "a";
@@ -55296,6 +55424,31 @@ test "checker: delete on property access does not emit TS1102" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.delete_identifier_strict_mode);
     }
+}
+
+test "checker: delete optionality diagnostic anchors at parenthesized operand" {
+    const src =
+        \\declare const o: { b?: { c: { d?: { e: string } } } };
+        \\delete (o.b?.c.d)?.e;
+        \\delete (o.b?.c);
+    ;
+    const s = try newSetup(src);
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    const paren_pos = std.mem.indexOf(u8, src, "(o.b") orelse return error.TestUnexpectedResult;
+    const inner_pos = std.mem.lastIndexOf(u8, src, "o.b?.c") orelse return error.TestUnexpectedResult;
+    var found = false;
+    var found_inner = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.delete_operand_must_be_optional) {
+            const pos = d.pos orelse s.checker.hir.spanOf(d.node).start;
+            if (pos == @as(u32, @intCast(paren_pos))) found = true;
+            if (pos == @as(u32, @intCast(inner_pos))) found_inner = true;
+        }
+    }
+    try T.expect(found);
+    try T.expect(found_inner);
 }
 
 test "checker: delete this does not emit TS1102" {
@@ -62237,6 +62390,28 @@ test "checker: static prototype in `declare class` suppresses TS2699" {
     }
 }
 
+test "checker: ambient namespace class methods suppress missing implementation" {
+    const s = try newSetup(
+        \\declare namespace ambientNamespace {
+        \\  export class AmbientBase {
+        \\    foo(): void;
+        \\  }
+        \\  export class AmbientDerived extends AmbientBase {
+        \\    foo(): void;
+        \\    override bar(): void;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_override = false;
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.implementation_missing);
+        if (d.code == TsCodes.override_not_in_base) saw_override = true;
+    }
+    try T.expect(saw_override);
+}
+
 test "checker: strict false accepts null constructor parameter default" {
     const s = try newSetup(
         \\// @strict: false
@@ -66640,6 +66815,34 @@ test "checker: arrow fn parameter in call argument suppresses TS7006" {
     for (s.checker.diagnostics.items) |diag| {
         try T.expect(diag.code != TsCodes.parameter_implicitly_any);
     }
+}
+
+test "checker: satisfies Record unknown indexer does not contextually type object method params" {
+    const s = try newSetup(
+        \\let obj: { f(s: string): void } & Record<string, unknown> = {
+        \\    f(s) { },
+        \\    g(s) { },
+        \\} satisfies { g(s: string): void } & Record<string, unknown>;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var saw_f = false;
+    var saw_g = false;
+    const src = s.checker.source.?;
+    const g_pos = std.mem.indexOf(u8, src, "g(s)") orelse src.len;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code != TsCodes.parameter_implicitly_any) continue;
+        if (std.mem.indexOf(u8, diag.message, "'s'") == null) continue;
+        const span = s.hir.spanOf(diag.node);
+        if (span.start < g_pos) {
+            saw_f = true;
+        } else {
+            saw_g = true;
+        }
+    }
+    try T.expect(saw_f);
+    try T.expect(!saw_g);
 }
 
 test "checker: setter parameter without annotation suppresses TS7006" {

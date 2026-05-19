@@ -666,6 +666,7 @@ pub const Parser = struct {
     /// Parse a TS source file into HIR. Returns the source-file root
     /// `NodeId` (currently a synthesized block).
     pub fn parseSourceFile(self: *Parser) ParseError!NodeId {
+        try self.reportJSDocTypeArgumentSyntaxDiagnostics();
         self.top_level_external_module_indicator = self.sourceHasTopLevelExternalModuleIndicator();
         if (self.top_level_external_module_indicator) self.strict_mode = true;
         var stmts: std.ArrayListUnmanaged(NodeId) = .empty;
@@ -679,6 +680,93 @@ pub const Parser = struct {
         const end = self.peek(); // eof; span end is its start
         const file_span: Span = .{ .start = start.span.start, .end = end.span.start };
         return try self.builder.addBlock(file_span, stmts.items);
+    }
+
+    fn reportJSDocTypeArgumentSyntaxDiagnostics(self: *Parser) ParseError!void {
+        var i: usize = 0;
+        while (i + 2 < self.source.len) {
+            if (!(self.source[i] == '/' and self.source[i + 1] == '*' and self.source[i + 2] == '*')) {
+                i += 1;
+                continue;
+            }
+            const body_start = i + 3;
+            const close_rel = std.mem.indexOf(u8, self.source[body_start..], "*/") orelse return;
+            const body_end = body_start + close_rel;
+            try self.scanJSDocCommentTypeExpressions(body_start, body_end);
+            i = body_end + 2;
+        }
+    }
+
+    fn scanJSDocCommentTypeExpressions(self: *Parser, start: usize, end: usize) ParseError!void {
+        var i = start;
+        while (i < end) : (i += 1) {
+            if (self.source[i] != '{') continue;
+            var depth: u32 = 1;
+            var j = i + 1;
+            while (j < end) : (j += 1) {
+                switch (self.source[j]) {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if (depth == 0) {
+                            try self.scanJSDocTypeArgumentListSyntax(i + 1, j);
+                            i = j;
+                            break;
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+    }
+
+    fn scanJSDocTypeArgumentListSyntax(self: *Parser, start: usize, end: usize) ParseError!void {
+        var i = start;
+        while (i < end) : (i += 1) {
+            if (self.source[i] != '<') continue;
+            const close = self.findJSDocTypeArgumentClose(i, end) orelse continue;
+            const first_arg = firstNonWhitespace(self.source, i + 1, close);
+            if (first_arg == close) {
+                try self.reportCodeAt(@intCast(i), self.lineAt(@intCast(i)), 1099, "Type argument list cannot be empty.");
+                continue;
+            }
+            const last_arg = lastNonWhitespaceBefore(self.source, i + 1, close) orelse continue;
+            if (self.source[last_arg] == ',') {
+                try self.reportCodeAt(@intCast(last_arg), self.lineAt(@intCast(last_arg)), 1009, "Trailing comma not allowed.");
+            }
+        }
+    }
+
+    fn findJSDocTypeArgumentClose(self: *const Parser, open: usize, end: usize) ?usize {
+        var depth: u32 = 1;
+        var i = open + 1;
+        while (i < end) : (i += 1) {
+            switch (self.source[i]) {
+                '<' => depth += 1,
+                '>' => {
+                    depth -= 1;
+                    if (depth == 0) return i;
+                },
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    fn firstNonWhitespace(source: []const u8, start: usize, end: usize) usize {
+        var i = start;
+        while (i < end and (source[i] == ' ' or source[i] == '\t' or source[i] == '\r' or source[i] == '\n')) : (i += 1) {}
+        return i;
+    }
+
+    fn lastNonWhitespaceBefore(source: []const u8, start: usize, end: usize) ?usize {
+        if (end <= start) return null;
+        var i = end;
+        while (i > start) {
+            i -= 1;
+            if (source[i] != ' ' and source[i] != '\t' and source[i] != '\r' and source[i] != '\n') return i;
+        }
+        return null;
     }
 
     fn sourceHasTopLevelExternalModuleIndicator(self: *const Parser) bool {
@@ -3835,6 +3923,11 @@ pub const Parser = struct {
                             try self.reportCodeAt(at.span.start, at.line, 1089, "'async' modifier cannot appear on a constructor declaration.");
                         }
                     }
+                    if (name_tok.kind == .kw_constructor and mods.is_override) {
+                        if (mods.override_token) |at| {
+                            try self.reportCodeAt(at.span.start, at.line, 1089, "'override' modifier cannot appear on a constructor declaration.");
+                        }
+                    }
                     // TS1089: `static constructor` is forbidden — tsc anchors
                     // at the `static` keyword. Mirrors
                     // `parserConstructorDeclaration2`.
@@ -4027,6 +4120,7 @@ pub const Parser = struct {
         async_token: ?Token = null,
         abstract_token: ?Token = null,
         static_token: ?Token = null,
+        override_token: ?Token = null,
         first_modifier_token: ?Token = null,
         reported_duplicate_accessibility: bool = false,
     };
@@ -4084,6 +4178,19 @@ pub const Parser = struct {
                 switch (k) {
                     .kw_private, .kw_protected, .kw_public => {
                         const mod = self.advance();
+                        if (mods.is_override) {
+                            const which: []const u8 = switch (k) {
+                                .kw_private => "'private'",
+                                .kw_protected => "'protected'",
+                                else => "'public'",
+                            };
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "{s} modifier must precede 'override' modifier.",
+                                .{which},
+                            );
+                            try self.reportCodeAt(mod.span.start, mod.line, 1029, msg);
+                        }
                         // tsc only reports TS1028 once per modifier list
                         // — emit on the FIRST duplicate, then suppress
                         // subsequent ones to match upstream baselines.
@@ -4113,8 +4220,25 @@ pub const Parser = struct {
                         mods.is_async = true;
                         if (mods.async_token == null) mods.async_token = self.peek();
                     },
-                    .kw_override => mods.is_override = true,
+                    .kw_override => {
+                        const mod = self.peek();
+                        if (mods.is_override) {
+                            try self.reportCodeAt(mod.span.start, mod.line, 1030, "'override' modifier already seen.");
+                        }
+                        if (mods.is_readonly) {
+                            try self.reportCodeAt(mod.span.start, mod.line, 1029, "'override' modifier must precede 'readonly' modifier.");
+                        }
+                        if (mods.declare_token != null) {
+                            try self.reportCodeAt(mod.span.start, mod.line, 1040, "'override' modifier cannot be used in an ambient context.");
+                        }
+                        mods.is_override = true;
+                        if (mods.override_token == null) mods.override_token = mod;
+                    },
                     .kw_abstract => {
+                        if (mods.is_override) {
+                            const mod = self.peek();
+                            try self.reportCodeAt(mod.span.start, mod.line, 1029, "'abstract' modifier must precede 'override' modifier.");
+                        }
                         mods.is_abstract = true;
                         if (mods.abstract_token == null) mods.abstract_token = self.peek();
                     },
@@ -4122,6 +4246,10 @@ pub const Parser = struct {
                         if (mods.invalid_class_element_modifier == null) mods.invalid_class_element_modifier = self.peek();
                     },
                     .kw_declare => {
+                        if (mods.is_override) {
+                            const mod = self.peek();
+                            try self.reportCodeAt(mod.span.start, mod.line, 1040, "'override' modifier cannot be used in an ambient context.");
+                        }
                         if (mods.declare_token == null) mods.declare_token = self.peek();
                     },
                     .kw_readonly => {
@@ -16893,6 +17021,23 @@ test "parser: unterminated generic type reference reports TS1005 and recovers" {
         if (d.code == 1005 and std.mem.eql(u8, d.message, "'>' expected.")) found = true;
     }
     try T.expect(found);
+}
+
+test "parser: JSDoc Closure type arguments report empty and trailing-comma diagnostics" {
+    var s = try newTestSetup(
+        \\/** @param {C.<>} x */
+        \\/** @param {C.<number,>} y */
+        \\/** @param {C.<number>} z */
+        \\function f(x, y, z) {}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1099), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1009), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 14), s.parser.diagnostics.items[0].pos);
+    try T.expectEqual(@as(u32, 44), s.parser.diagnostics.items[1].pos);
 }
 
 test "parser: top-level public before break reports declaration expected" {
