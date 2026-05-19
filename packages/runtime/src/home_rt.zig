@@ -927,6 +927,8 @@ pub const sql = struct {
         // on the wave-15 `home_rt.Output.scoped` no-op stub.
         pub const DebugSocketMonitorReader = @import("sql/postgres/DebugSocketMonitorReader.zig");
         pub const DebugSocketMonitorWriter = @import("sql/postgres/DebugSocketMonitorWriter.zig");
+        // Wave-17 grinder (2026-05-19) — debug socket monitor aggregator.
+        pub const SocketMonitor = @import("sql/postgres/SocketMonitor.zig");
         pub const types = struct {
             pub const int_types = @import("sql/postgres/types/int_types.zig");
         };
