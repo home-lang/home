@@ -1046,6 +1046,11 @@ pub const sql = struct {
         pub const QueryStatus = @import("sql/mysql/QueryStatus.zig").Status;
         pub const MySQLQueryResult = @import("sql/mysql/MySQLQueryResult.zig");
         pub const MySQLTypes = @import("sql/mysql/MySQLTypes.zig");
+        // Wave-25 grinder (2026-05-19) — pure `Param` descriptor used
+        // by the wire-protocol encoders. Drops in on top of the
+        // wave-23 ColumnDefinition41 + MySQLTypes ports.
+        pub const MySQLParam = @import("sql/mysql/MySQLParam.zig");
+        pub const Param = MySQLParam.Param;
         // Wave-16 Tier-1 grinder (2026-05-18):
         pub const AuthMethod = @import("sql/mysql/AuthMethod.zig").AuthMethod;
         pub const protocol = struct {
@@ -1183,6 +1188,13 @@ pub const sql = struct {
             // only get analyzed at instantiation; the file is
             // compile-clean today.
             pub const Authentication = @import("sql/postgres/protocol/Authentication.zig").Authentication;
+            // Wave-25 grinder (2026-05-19). Postgres `A`
+            // (NotificationResponse) backend packet. Pid + channel +
+            // payload from a `LISTEN`/`NOTIFY` publication. Uses the
+            // wave-18 `shared.Data.ByteList` stub for `channel` /
+            // `payload`; decoder body reaches into the wave-16 NewReader
+            // stub method surface (length/int4/readZ).
+            pub const NotificationResponse = @import("sql/postgres/protocol/NotificationResponse.zig");
         };
     };
 };
