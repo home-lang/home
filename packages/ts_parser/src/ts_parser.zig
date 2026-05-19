@@ -4926,6 +4926,22 @@ pub const Parser = struct {
             const part = try self.expectIdentifierLike();
             name_end = part.span.end;
         }
+        // Body-less ambient module declaration: `declare module "foo";`
+        // (or terminated by ASI). Common in `.d.ts` shims. Skip the
+        // brace-block parse and produce an empty-bodied namespace.
+        const ambient_bodyless = name_tok.kind == .string_literal and
+            self.ambient_depth > 0 and
+            self.peek().kind != .open_brace;
+        if (ambient_bodyless) {
+            try self.consumeStatementTerminator();
+            const name_id_b = try self.internStringLiteral(name_tok);
+            const name_node_b = try self.builder.addIdentifier(.{ .start = name_tok.span.start, .end = name_end }, name_id_b);
+            return try self.builder.addNamespace(
+                .{ .start = start.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                name_node_b,
+                &.{},
+            );
+        }
         _ = try self.expect(.open_brace, "'{' to open namespace body");
         self.namespace_depth += 1;
         defer self.namespace_depth -= 1;
