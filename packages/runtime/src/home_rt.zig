@@ -207,6 +207,15 @@ pub const jsc = struct {
     // wiring lands.
     pub const call = @import("jsc/call.zig");
     pub const callback = @import("jsc/callback.zig");
+    // Phase 12.2 M6 (2026-05-19) — final scaffold milestone:
+    // JSON + Promise + Iterator + Global helpers. Bodies panic with
+    // TODO(phase-12.2-M3) until the C++ engine wiring lands. After M6
+    // the bridge surface is complete enough for ~30 of the ~800
+    // unported files to depend on.
+    pub const json = @import("jsc/json.zig");
+    pub const promise = @import("jsc/promise.zig");
+    pub const iterator = @import("jsc/iterator.zig");
+    pub const global = @import("jsc/global.zig");
 };
 
 // ---- src/io/ -----------------------------------------------------------
@@ -1047,7 +1056,24 @@ pub const sql = struct {
             pub const ResultSetHeader = @import("sql/mysql/protocol/ResultSetHeader.zig");
             pub const AuthSwitchResponse = @import("sql/mysql/protocol/AuthSwitchResponse.zig");
             pub const ErrorPacket = @import("sql/mysql/protocol/ErrorPacket.zig");
+            // Wave-23 grinder (2026-05-19). Additional MySQL wire-protocol
+            // leaves mined from less-touched corners:
+            //   - SSLRequest: 32-byte TLS-upgrade negotiation packet sent
+            //     right before HandshakeResponse41 once CLIENT_SSL is set.
+            //   - HandshakeV10: server → client opening handshake carrying
+            //     server version, connection id, auth scramble + capability
+            //     flags.
+            //   - ColumnDefinition41: per-column metadata record nested in
+            //     ResultSet response (catalog/schema/table/name/type/...).
+            //   - MySQLRequest (top-level): trivial COM_QUERY +
+            //     COM_STMT_PREPARE writer helpers.
+            // All bodies reach into wave-21 NewReader/NewWriter stub method
+            // surfaces — compile errors out only if exercised.
+            pub const SSLRequest = @import("sql/mysql/protocol/SSLRequest.zig");
+            pub const HandshakeV10 = @import("sql/mysql/protocol/HandshakeV10.zig");
+            pub const ColumnDefinition41 = @import("sql/mysql/protocol/ColumnDefinition41.zig");
         };
+        pub const MySQLRequest = @import("sql/mysql/MySQLRequest.zig");
     };
     pub const postgres = struct {
         pub const SSLMode = @import("sql/postgres/SSLMode.zig").SSLMode;
