@@ -29703,8 +29703,13 @@ pub const Checker = struct {
                                 "Expected {d} type arguments, but got {d}.",
                                 .{ type_params.len, type_arg_nodes.len },
                             );
+                            // tsc anchors TS2558 at the explicit type
+                            // argument list (e.g. `<string>`), not at
+                            // the call expression. When we have fewer
+                            // type args than expected, the first
+                            // existing one is the best anchor.
                             try self.diagnostics.append(self.gpa, .{
-                                .node = node,
+                                .node = type_arg_nodes[0],
                                 .code = TsCodes.expected_n_type_arguments,
                                 .message = msg,
                             });
@@ -29733,7 +29738,7 @@ pub const Checker = struct {
                                 .{ type_params.len, type_arg_nodes.len },
                             );
                             try self.diagnostics.append(self.gpa, .{
-                                .node = node,
+                                .node = type_arg_nodes[0],
                                 .code = TsCodes.expected_n_type_arguments,
                                 .message = msg,
                             });
@@ -29787,8 +29792,12 @@ pub const Checker = struct {
                                 "Expected 0 type arguments, but got {d}.",
                                 .{type_arg_nodes.len},
                             );
+                            // Anchor TS2558 at the first type argument's
+                            // span, matching tsc which underlines the
+                            // explicit type list (e.g. `<string>`) rather
+                            // than the call expression itself.
                             try self.diagnostics.append(self.gpa, .{
-                                .node = node,
+                                .node = type_arg_nodes[0],
                                 .code = TsCodes.expected_n_type_arguments,
                                 .message = msg,
                             });
@@ -33196,7 +33205,7 @@ pub const Checker = struct {
                 .{type_arg_nodes.len},
             );
             try self.diagnostics.append(self.gpa, .{
-                .node = node,
+                .node = type_arg_nodes[0],
                 .code = TsCodes.expected_n_type_arguments,
                 .message = msg,
             });
@@ -33657,6 +33666,7 @@ pub const Checker = struct {
         type_arg_nodes: []const NodeId,
         used_explicit_type_args: *bool,
     ) CheckError!TypeId {
+        _ = call_node;
         used_explicit_type_args.* = false;
         if (type_arg_nodes.len == 0) return sig;
         const type_params = self.generic_signature_params.get(sig) orelse return sig;
@@ -33667,7 +33677,7 @@ pub const Checker = struct {
                 .{ type_params.len, type_arg_nodes.len },
             );
             try self.diagnostics.append(self.gpa, .{
-                .node = call_node,
+                .node = type_arg_nodes[0],
                 .code = TsCodes.expected_n_type_arguments,
                 .message = msg,
             });
