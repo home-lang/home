@@ -15772,7 +15772,17 @@ pub const Checker = struct {
                 try self.reportClassExtendsIndexMismatch(extends_expr);
             }
         }
-        const parent_members = self.interner.objectMembers(parent_t);
+        // Copy `parent_members` locally — the slice borrows from the
+        // interner's `object_member_pool` and the
+        // `heritageMemberAssignable` calls below can intern new types,
+        // growing that pool and invalidating the base pointer (seen
+        // with parserRealSource11 / parserRealSource14, where a long
+        // inheritance chain caused a segfault mid-iteration).
+        const parent_members_borrow = self.interner.objectMembers(parent_t);
+        var parent_members_copy: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer parent_members_copy.deinit(self.gpa);
+        try parent_members_copy.appendSlice(self.gpa, parent_members_borrow);
+        const parent_members = parent_members_copy.items;
 
         // Collect the child declarations so overrides can be checked
         // before inherited-only entries are prepended.
@@ -41820,7 +41830,16 @@ pub const Checker = struct {
         if (p_flags.is_object_type and a_flags.is_object_type) {
             if (p_payload >= pool.object_type_payloads.items.len) return;
             if (pool.payloadOf(arg_t) >= pool.object_type_payloads.items.len) return;
-            const p_members = self.interner.objectMembers(param_t);
+            // Snapshot `p_members` — the recursive `inferFromPair`
+            // calls below can intern new types and grow the interner's
+            // `object_member_pool`, invalidating the borrowed slice
+            // (seen with parserRealSource11 where deeply-generic
+            // signatures triggered a mid-loop segfault).
+            const p_members_borrow = self.interner.objectMembers(param_t);
+            var p_members_copy: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+            defer p_members_copy.deinit(self.gpa);
+            try p_members_copy.appendSlice(self.gpa, p_members_borrow);
+            const p_members = p_members_copy.items;
             for (p_members) |pm| {
                 if (self.interner.objectMember(arg_t, pm.name)) |am_t| {
                     try self.inferFromPair(pm.type, am_t, subs);
