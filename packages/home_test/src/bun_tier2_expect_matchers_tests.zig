@@ -16,6 +16,10 @@ const to_be_nan = @import("bun/expect/toBeNaN.zig");
 const to_be_finite = @import("bun/expect/toBeFinite.zig");
 const to_be_positive = @import("bun/expect/toBePositive.zig");
 const to_be_negative = @import("bun/expect/toBeNegative.zig");
+const to_be_greater_than = @import("bun/expect/toBeGreaterThan.zig");
+const to_be_greater_than_or_equal = @import("bun/expect/toBeGreaterThanOrEqual.zig");
+const to_be_less_than = @import("bun/expect/toBeLessThan.zig");
+const to_be_less_than_or_equal = @import("bun/expect/toBeLessThanOrEqual.zig");
 const to_be_string = @import("bun/expect/toBeString.zig");
 const to_be_function = @import("bun/expect/toBeFunction.zig");
 const to_be_symbol = @import("bun/expect/toBeSymbol.zig");
@@ -38,6 +42,13 @@ fn globalObject() *JSGlobalObject {
 
 fn frame(value: JSValue) CallFrame {
     return .{ .this_value = value };
+}
+
+fn frameWithArgs(value: JSValue, args: []const JSValue) CallFrame {
+    return .{
+        .this_value = value,
+        .arguments = args,
+    };
 }
 
 test "copied Bun primitive truthiness matchers pass positive cases" {
@@ -190,6 +201,56 @@ test "copied Bun numeric matchers honor failure signatures" {
     var positive_frame = frame(.js_number);
     try std.testing.expectError(error.JSException, to_be_negative.toBeNegative(&expect_negative, globalObject(), &positive_frame));
     try std.testing.expectEqualStrings("toBeNegative", expect_negative.last_signature.?);
+}
+
+test "copied Bun numeric comparison matchers pass positive cases" {
+    const less_than_42 = [_]JSValue{.{ .tag = .number, .number_value = 41 }};
+    var expect_greater_than = Expect{ .value = .js_number };
+    var greater_than_frame = frameWithArgs(.js_number, &less_than_42);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_be_greater_than.toBeGreaterThan(&expect_greater_than, globalObject(), &greater_than_frame));
+
+    const equal_42 = [_]JSValue{.js_number};
+    var expect_greater_than_or_equal = Expect{ .value = .js_number };
+    var greater_than_or_equal_frame = frameWithArgs(.js_number, &equal_42);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_be_greater_than_or_equal.toBeGreaterThanOrEqual(&expect_greater_than_or_equal, globalObject(), &greater_than_or_equal_frame));
+
+    const greater_than_42 = [_]JSValue{.{ .tag = .number, .number_value = 43 }};
+    var expect_less_than = Expect{ .value = .js_number };
+    var less_than_frame = frameWithArgs(.js_number, &greater_than_42);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_be_less_than.toBeLessThan(&expect_less_than, globalObject(), &less_than_frame));
+
+    var expect_less_than_or_equal = Expect{ .value = .js_number };
+    var less_than_or_equal_frame = frameWithArgs(.js_number, &equal_42);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_be_less_than_or_equal.toBeLessThanOrEqual(&expect_less_than_or_equal, globalObject(), &less_than_or_equal_frame));
+}
+
+test "copied Bun numeric comparison matchers honor failure signatures" {
+    const greater_than_42 = [_]JSValue{.{ .tag = .number, .number_value = 43 }};
+    var expect_greater_than = Expect{ .value = .js_number };
+    var greater_than_frame = frameWithArgs(.js_number, &greater_than_42);
+    try std.testing.expectError(error.JSException, to_be_greater_than.toBeGreaterThan(&expect_greater_than, globalObject(), &greater_than_frame));
+    try std.testing.expectEqualStrings("toBeGreaterThan", expect_greater_than.last_signature.?);
+
+    var expect_greater_than_or_equal = Expect{ .value = .js_number };
+    var greater_than_or_equal_frame = frameWithArgs(.js_number, &greater_than_42);
+    try std.testing.expectError(error.JSException, to_be_greater_than_or_equal.toBeGreaterThanOrEqual(&expect_greater_than_or_equal, globalObject(), &greater_than_or_equal_frame));
+    try std.testing.expectEqualStrings("toBeGreaterThanOrEqual", expect_greater_than_or_equal.last_signature.?);
+
+    const less_than_42 = [_]JSValue{.{ .tag = .number, .number_value = 41 }};
+    var expect_less_than = Expect{ .value = .js_number };
+    var less_than_frame = frameWithArgs(.js_number, &less_than_42);
+    try std.testing.expectError(error.JSException, to_be_less_than.toBeLessThan(&expect_less_than, globalObject(), &less_than_frame));
+    try std.testing.expectEqualStrings("toBeLessThan", expect_less_than.last_signature.?);
+
+    var expect_less_than_or_equal = Expect{ .value = .js_number };
+    var less_than_or_equal_frame = frameWithArgs(.js_number, &less_than_42);
+    try std.testing.expectError(error.JSException, to_be_less_than_or_equal.toBeLessThanOrEqual(&expect_less_than_or_equal, globalObject(), &less_than_or_equal_frame));
+    try std.testing.expectEqualStrings("toBeLessThanOrEqual", expect_less_than_or_equal.last_signature.?);
+
+    var expect_not_less_than = Expect{ .value = .js_number, .flags = .{ .not = true } };
+    var not_less_than_frame = frameWithArgs(.js_number, &greater_than_42);
+    try std.testing.expectError(error.JSException, to_be_less_than.toBeLessThan(&expect_not_less_than, globalObject(), &not_less_than_frame));
+    try std.testing.expectEqualStrings("not.toBeLessThan", expect_not_less_than.last_signature.?);
 }
 
 test "copied Bun truthiness nil and number matchers honor not flag and failure signatures" {

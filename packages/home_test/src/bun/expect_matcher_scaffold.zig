@@ -3,7 +3,15 @@ const std = @import("std");
 pub const JSError = error{ JSException, OutOfMemory };
 
 pub const jsc = struct {
-    pub const JSGlobalObject = opaque {};
+    pub const JSGlobalObject = struct {
+        pub fn throwInvalidArguments(_: *JSGlobalObject, comptime _: []const u8, _: anytype) JSError!JSValue {
+            return error.JSException;
+        }
+
+        pub fn throw(_: *JSGlobalObject, comptime _: []const u8, _: anytype) JSError!JSValue {
+            return error.JSException;
+        }
+    };
 
     pub const JSValue = struct {
         tag: Tag,
@@ -81,6 +89,18 @@ pub const jsc = struct {
         pub fn isBigInt32(_: JSValue) bool {
             return false;
         }
+
+        pub const BigIntCompareResult = enum {
+            less_than,
+            equal,
+            greater_than,
+        };
+
+        pub fn asBigIntCompare(_: JSValue, _: *JSGlobalObject, _: JSValue) BigIntCompareResult {
+            return .equal;
+        }
+
+        pub fn ensureStillAlive(_: JSValue) void {}
 
         pub fn isInt32(this: JSValue) bool {
             if (!this.isAnyInt()) return false;
@@ -171,9 +191,22 @@ pub const jsc = struct {
 
     pub const CallFrame = struct {
         this_value: JSValue,
+        arguments: []const JSValue = &.{},
+
+        const Arguments = struct {
+            ptr: [*]const JSValue,
+            len: usize,
+        };
 
         pub fn this(this_frame: *CallFrame) JSValue {
             return this_frame.this_value;
+        }
+
+        pub fn arguments_old(this_frame: *CallFrame, _: usize) Arguments {
+            return .{
+                .ptr = this_frame.arguments.ptr,
+                .len = this_frame.arguments.len,
+            };
         }
     };
 
