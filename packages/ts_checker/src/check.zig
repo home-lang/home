@@ -13188,6 +13188,14 @@ pub const Checker = struct {
         }
         if (target_kind == .object_property) {
             const op = hir_mod.objectPropertyOf(self.hir, target);
+            if (self.sourceUsesLegacyDecorators() and op.is_accessor) {
+                if ((try self.classMemberNameFromPropertyKey(op.key, op.is_computed))) |member_name| {
+                    if (self.memberNameIsEcmaPrivate(member_name)) {
+                        try self.report(decorator_node, TsCodes.decorators_not_valid_here, "Decorators are not valid here.");
+                        return;
+                    }
+                }
+            }
             const op_is_method = op.is_method or
                 (op.value != hir_mod.none_node_id and
                     (self.hir.kindOf(op.value) == .fn_decl or self.hir.kindOf(op.value) == .fn_expr or self.hir.kindOf(op.value) == .arrow_fn) and
@@ -61493,6 +61501,25 @@ test "checker: auto-accessor decorator is not checked as property decorator" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_decorator_signature_unresolved);
     }
+}
+
+test "checker: legacy decorators are invalid on private auto-accessors" {
+    const s = try newSetup(
+        \\// @experimentalDecorators: true
+        \\declare var dec: any;
+        \\class C {
+        \\  @dec accessor publicValue;
+        \\  @dec accessor #privateValue;
+        \\  @dec static accessor #staticPrivateValue;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var invalid_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.decorators_not_valid_here) invalid_count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), invalid_count);
 }
 
 test "checker: class decorator signature must accept runtime arity" {
