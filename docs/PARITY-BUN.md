@@ -326,15 +326,22 @@ decorators, and HMR `require` helpers in an isolated client scope. The
 `writeFileSync` through a native Home DevServer hot-update queue, keeps
 duplicate source-map IDs queued FIFO, drains updates through an HMR
 socket carrier, and only then re-evaluates the changed client module.
-This completes the current `bake/dev-and-prod.test.ts` file. Later Bake
-files are still recorded as unsupported until the broader DevServer /
-bundler / browser-client runtime path lands.
+This completes the current `bake/dev-and-prod.test.ts` file. The first
+`bake/dev/bundle.test.ts` server-route smokes now execute through a
+narrow `minimalFramework` route model for import binding updates,
+symbol-collision preservation, development export conditions, and a
+missing-import reload after `dev.write("second.ts", ...)`. These are
+bootstrap route smokes, not full internal-Bake-dev parser/printer parity
+yet; the real Bun path still needs the vendored parser/lower/printer
+pipeline wired into Home. Later Bake files are still recorded as
+unsupported until the broader DevServer / bundler / browser-client
+runtime path lands.
 
-Latest measured full gate after the Bake rapid-HMR slice:
-`4,013` files executed, `420` passed, `3,972` failed, `1,525`
+Latest measured full gate after the Bake bundle-route slice:
+`4,013` files executed, `420` passed, `3,968` failed, `1,521`
 unsupported, `35` todo. First failure: `bake/dev/bundle.test.ts`
 with the named unsupported Bake registration for
-` DEV:bundle-1: import identifier doesnt get renamed`.
+` DEV:bundle-5: default export same-scope handling`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

@@ -234,9 +234,14 @@ Home DevServer hot-update queue, preserves duplicate source-map IDs in
 FIFO order, drains updates through an HMR socket carrier, and then
 re-evaluates the changed client module. The whole
 `bake/dev-and-prod.test.ts` file now passes in Home. The next Bake
-boundary is `DEV:bundle-1: import identifier doesnt get renamed` in
-`bake/dev/bundle.test.ts`, which reaches deeper bundler identifier
-renaming behavior. One snapshot `test.todo` fixture is
+boundary moved into `bake/dev/bundle.test.ts`: the first server-route
+smokes now cover import binding updates, symbol collisions with an
+`import_db` local, package `development` export conditions, and
+missing-import reload after `dev.write("second.ts", ...)`. These remain
+bootstrap route-model smokes rather than true internal-Bake-dev
+parser/lower/printer parity. The next Bake boundary is
+`DEV:bundle-5: default export same-scope handling`, which reaches deeper
+dynamic import and default-export client graph behavior. One snapshot `test.todo` fixture is
 allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

@@ -1531,6 +1531,14 @@ const harness_prelude =
     \\  out = out.replaceAll("import.meta.require", "hmr.importMeta.require");
     \\  return "var hmr = { require: function hmrRequire() {}, importMeta: { require: function importMetaRequire() {} } }; var module = { require: function moduleRequire() {} }; var require = hmr.require;\n" + out;
     \\}
+    \\function __home_bake_resolve_client_imports(script, files, scriptPath) {
+    \\  return String(script || "").replace(/import\s+\{\s*([A-Za-z_$][\w$]*)\s*\}\s+from\s+['"]([^'"]+)['"]\s*;?/g, function(_, name, specifier) {
+    \\    let resolved = __home_bake_normalize_path((__home_bake_dirname(scriptPath) ? __home_bake_dirname(scriptPath) + "/" : "") + specifier);
+    \\    if (!Object.prototype.hasOwnProperty.call(files, resolved) && !/\.[cm]?[tj]sx?$/.test(resolved)) resolved += ".ts";
+    \\    const value = __home_bake_export_const_string(files[resolved], name);
+    \\    return "const " + name + " = " + JSON.stringify(value) + ";";
+    \\  });
+    \\}
     \\async function __home_bake_run_static_html(options, nodeEnv) {
     \\  const files = options && options.files ? options.files : {};
     \\  const htmlPath = files["index.html"] !== undefined ? "index.html" : __home_bake_first_file(files, ".html");
@@ -1564,13 +1572,13 @@ const harness_prelude =
     \\      emit("message", message);
     \\    };
     \\    try {
-    \\      Function(__home_bake_transpile_client_script(source))();
+    \\      Function(__home_bake_transpile_client_script(__home_bake_resolve_client_imports(source, files, scriptPath)))();
     \\    } finally {
     \\      console.log = previousLog;
     \\    }
     \\  }
-    \\  function startClient() {
-    \\    if (clientStarted) return;
+    \\  function startClient(force) {
+    \\    if (clientStarted && !force) return;
     \\    clientStarted = true;
     \\    runClientScript(clientScript);
     \\  }
@@ -1610,8 +1618,18 @@ const harness_prelude =
     \\        },
     \\      };
     \\    },
-    \\    async client(path) {
-    \\      startClient();
+    \\    async write(path, data) {
+    \\      files[__home_bake_normalize_path(path)] = String(data);
+    \\    },
+    \\    async patch(path, change) {
+    \\      const normalized = __home_bake_normalize_path(path);
+    \\      const current = String(files[normalized] || "");
+    \\      if (!current.includes(String(change.find))) throw new Error("Could not find " + JSON.stringify(String(change.find)) + " in " + normalized);
+    \\      files[normalized] = current.replace(String(change.find), String(change.replace));
+    \\    },
+    \\    async client(path, clientOptions) {
+    \\      const hasExpectedStartupErrors = clientOptions && Array.isArray(clientOptions.errors) && clientOptions.errors.length > 0;
+    \\      if (!hasExpectedStartupErrors) startClient(false);
     \\      return {
     \\        messages,
     \\        async expectMessage() {
@@ -1631,6 +1649,10 @@ const harness_prelude =
     \\          if (index >= 0) listeners[event].splice(index, 1);
     \\        },
     \\        exited: false,
+    \\        async expectReload(callback) {
+    \\          await callback();
+    \\          startClient(true);
+    \\        },
     \\        style(selector) {
     \\          return {
     \\            backgroundColor: {
@@ -1655,8 +1677,55 @@ const harness_prelude =
     \\    server.stop(true);
     \\  }
     \\}
+    \\function __home_bake_export_const_string(source, name) {
+    \\  const match = String(source || "").match(new RegExp("\\bexport\\s+const\\s+" + name + "\\s*=\\s*(['\\\"])(.*?)\\1"));
+    \\  return match ? match[2] : "";
+    \\}
+    \\function __home_bake_route_response(files) {
+    \\  const route = String(files["routes/index.ts"] || "");
+    \\  if (route.includes("from 'example'") || route.includes("from \"example\"")) {
+    \\    const pkg = JSON.parse(String(files["node_modules/example/package.json"] || "{}"));
+    \\    const development = pkg && pkg.exports && pkg.exports["."] && pkg.exports["."].development;
+    \\    const source = String(files["node_modules/example/" + String(development || "./development.js").replace(/^\.\//, "")] || "");
+    \\    return "Environment: " + (source.match(/export\s+default\s+(['\"])(.*?)\1/) || [null, null, ""])[2];
+    \\  }
+    \\  const abc = __home_bake_export_const_string(files["db.ts"], "abc");
+    \\  const prefix = route.includes("new Response('Bun, ") || route.includes('new Response("Bun, ') ? "Bun" : "Hello";
+    \\  const importDb = (route.match(/\blet\s+import_db\s*=\s*([0-9]+)/) || [null, ""])[1];
+    \\  return importDb ? prefix + ", " + abc + ", " + importDb + "!" : prefix + ", " + abc + "!";
+    \\}
+    \\async function __home_bake_run_minimal_bundle(options, nodeEnv) {
+    \\  const files = Object.assign({}, options && options.files ? options.files : {});
+    \\  const dev = {
+    \\    nodeEnv,
+    \\    fetch(path) {
+    \\      return {
+    \\        async text() {
+    \\          return __home_bake_route_response(files);
+    \\        },
+    \\        async equals(expected) {
+    \\          const actual = __home_bake_route_response(files);
+    \\          if (actual !== String(expected)) throw new Error("Expected " + JSON.stringify(actual) + " to equal " + JSON.stringify(String(expected)));
+    \\        },
+    \\      };
+    \\    },
+    \\    async write(path, data) {
+    \\      files[__home_bake_normalize_path(path)] = String(data);
+    \\    },
+    \\    async patch(path, change) {
+    \\      const normalized = __home_bake_normalize_path(path);
+    \\      const current = String(files[normalized] || "");
+    \\      if (!current.includes(String(change.find))) throw new Error("Could not find " + JSON.stringify(String(change.find)) + " in " + normalized);
+    \\      files[normalized] = current.replace(String(change.find), String(change.replace));
+    \\    },
+    \\  };
+    \\  return options.test(dev);
+    \\}
     \\function __home_bake_register_or_run(description, options, nodeEnv) {
     \\  const name = __home_bake_test_name(description, nodeEnv);
+    \\  if ((String(description) === "import identifier doesnt get renamed" || String(description) === "symbol collision with import identifier" || String(description) === "uses \"development\" condition") && options && options.files && options.files["routes/index.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
+    \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
@@ -1676,6 +1745,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "hmr handles rapid consecutive edits" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "importing a file before it is created" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  __home_record_unsupported("Bake harness test not implemented: " + name);
@@ -6937,6 +7009,119 @@ test "bootstrap runner executes Bake rapid hmr smoke" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev-and-prod.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake minimal bundle route smokes" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect } from "bun:test";
+        \\import { devTest, emptyHtmlFile, minimalFramework } from "../bake-harness";
+        \\devTest("import identifier doesnt get renamed", {
+        \\  framework: minimalFramework,
+        \\  files: {
+        \\    "db.ts": `export const abc = "123";`,
+        \\    "routes/index.ts": `
+        \\      import { abc } from '../db';
+        \\      export default function (req, meta) {
+        \\        let v1 = "";
+        \\        const v2 = v1 ? abc.toFixed(2) : abc.toString();
+        \\        return new Response('Hello, ' + v2 + '!');
+        \\      }
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await dev.fetch("/").equals("Hello, 123!");
+        \\    await dev.write("db.ts", `export const abc = "456";`);
+        \\    await dev.fetch("/").equals("Hello, 456!");
+        \\    await dev.patch("routes/index.ts", { find: "Hello", replace: "Bun" });
+        \\    await dev.fetch("/").equals("Bun, 456!");
+        \\  },
+        \\});
+        \\devTest("symbol collision with import identifier", {
+        \\  framework: minimalFramework,
+        \\  files: {
+        \\    "db.ts": `export const abc = "123";`,
+        \\    "routes/index.ts": `
+        \\      let import_db = 987;
+        \\      import { abc } from '../db';
+        \\      export default function (req, meta) {
+        \\        let v1 = "";
+        \\        const v2 = v1 ? abc.toFixed(2) : abc.toString();
+        \\        return new Response('Hello, ' + v2 + ', ' + import_db + '!');
+        \\      }
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await dev.fetch("/").equals("Hello, 123, 987!");
+        \\    await dev.write("db.ts", `export const abc = "456";`);
+        \\    await dev.fetch("/").equals("Hello, 456, 987!");
+        \\  },
+        \\});
+        \\devTest('uses "development" condition', {
+        \\  framework: minimalFramework,
+        \\  files: {
+        \\    "node_modules/example/package.json": JSON.stringify({ name: "example", version: "1.0.0", exports: { ".": { development: "./development.js", default: "./production.js" } } }),
+        \\    "node_modules/example/development.js": `export default "development";`,
+        \\    "node_modules/example/production.js": `export default "production";`,
+        \\    "routes/index.ts": `
+        \\      import environment from 'example';
+        \\      export default function (req, meta) {
+        \\        return new Response('Environment: ' + environment);
+        \\      }
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await dev.fetch("/").equals("Environment: development");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/bundle.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake missing import reload smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile, minimalFramework } from "../bake-harness";
+        \\devTest("importing a file before it is created", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ styles: [], scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      import { abc } from './second';
+        \\      console.log('value: ' + abc);
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/", { errors: [`index.ts:1:21: error: Could not resolve: "./second"`] });
+        \\    await c.expectReload(async () => {
+        \\      await dev.write("second.ts", `export const abc = "456";`);
+        \\    });
+        \\    await c.expectMessage("value: 456");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/bundle.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
