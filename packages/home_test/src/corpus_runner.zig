@@ -150,6 +150,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/path/extname.test.js",
     "js/bun/util/index-of-line.test.ts",
     "js/node/url/url-format-whatwg.test.js",
+    "regression/issue/19412.test.ts",
 };
 
 const harness_prelude =
@@ -740,6 +741,10 @@ const harness_prelude =
     \\function __home_parse_test_args(name, first, second) {
     \\  let fn = first;
     \\  let options = second || {};
+    \\  if ((first === null || first === undefined) && typeof second === "function") {
+    \\    options = {};
+    \\    fn = second;
+    \\  }
     \\  if (first && typeof first === "object" && typeof second === "function") {
     \\    options = first;
     \\    fn = second;
@@ -786,9 +791,22 @@ const harness_prelude =
     \\    __home_bun_tests.todo++;
     \\    return;
     \\  }
+    \\  if (options.skip) {
+    \\    __home_bun_tests.todo++;
+    \\    return;
+    \\  }
     \\  const scope = globalThis.__home_current_scope;
     \\  const repeats = options.repeats === undefined ? 0 : Math.max(0, Math.trunc(Number(options.repeats)));
     \\  const retry = options.retry === undefined ? 0 : Math.max(0, Math.trunc(Number(options.retry)));
+    \\  if (options.todo) {
+    \\    try {
+    \\      __home_run_test_attempt(scope, fn);
+    \\    } catch (error) {
+    \\      if (error && error.__home_unsupported) throw error;
+    \\    }
+    \\    __home_bun_tests.todo++;
+    \\    return;
+    \\  }
     \\  try {
     \\    if (repeats > 0) {
     \\      for (let i = 0; i <= repeats; i++) __home_run_test_attempt(scope, fn);
@@ -1177,6 +1195,7 @@ const harness_prelude =
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
     \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, escapeHTML: Bun.escapeHTML, indexOfLine: Bun.indexOfLine };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
+    \\globalThis.__home_modules["node:test"] = { test };
     \\function SourceMap(payload) {
     \\  if (!(this instanceof SourceMap)) return new SourceMap(payload);
     \\  this.payload = payload;
@@ -1191,6 +1210,9 @@ const harness_prelude =
     \\};
     \\__home_assert_module.strictEqual = function(actual, expected, message) {
     \\  if (!Object.is(actual, expected)) throw new Error(message || "Expected values to be strictly equal");
+    \\};
+    \\__home_assert_module.fail = function(message) {
+    \\  throw new Error(message || "Failed");
     \\};
     \\__home_assert_module.match = function(value, regexp, message) {
     \\  if (typeof value !== "string") throw new TypeError('The "string" argument must be of type string. Received type ' + typeof value);
@@ -2539,6 +2561,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { runInNewContext } = globalThis.__home_import(\"node:vm\");",
         },
         .{
+            .needle = "import { test } from \"node:test\";",
+            .replacement = "const { test } = globalThis.__home_import(\"node:test\");",
+        },
+        .{
             .needle = "import testHelpers from \"bun:internal-for-testing\";",
             .replacement = "const testHelpers = globalThis.__home_import(\"bun:internal-for-testing\");",
         },
@@ -3108,6 +3134,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/node/path/extname.test.js",
         "js/bun/util/index-of-line.test.ts",
         "js/node/url/url-format-whatwg.test.js",
+        "regression/issue/19412.test.ts",
     };
 
     for (expected) |path| {

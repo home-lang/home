@@ -102,6 +102,7 @@ basename / extname path table smokes,
 `node:url` URL.canParse, url.format empty-input, and
 WHATWG URL auth stripping plus domainToASCII/domainToUnicode smokes,
 skipped Node URL null-character / internal URL smokes,
+`node:test` skip/todo/null-options smokes,
 `import.meta.resolve` / `resolveSync` bad-parent throw smokes,
 `jest.fn`, narrow `HTMLRewriter` element and doctype callbacks plus
 selector / handler validation,
