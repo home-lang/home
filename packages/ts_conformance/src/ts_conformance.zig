@@ -3467,6 +3467,62 @@ test "conformance: assignObjectToNonPrimitive passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: asOperator3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "asOperator3",
+        .path = "asOperator3.ts",
+        .source =
+        \\// @target: es2015
+        \\declare function tag(...x: any[]): any;
+        \\
+        \\var a = `${123 + 456 as number}`;
+        \\var b = `leading ${123 + 456 as number}`;
+        \\var c = `${123 + 456 as number} trailing`;
+        \\var d = `Hello ${123} World` as string;
+        \\var e = `Hello` as string;
+        \\var f = 1 + `${1} end of string` as string;
+        \\var g = tag `Hello ${123} World` as string;
+        \\var h = tag `Hello` as string;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: asOpEmitParens passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "asOpEmitParens",
+        .path = "asOpEmitParens.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\declare var x;
+        \\// Must emit as (x + 1) * 3
+        \\(x + 1 as number) * 3;
+        \\
+        \\// Should still emit as x.y
+        \\(x as any).y;
+        \\
+        \\// Emit as new (x())
+        \\new (x() as any);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: returnStatements passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "returnStatements",
