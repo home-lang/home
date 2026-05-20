@@ -933,6 +933,18 @@ Peechy fallback encoding, and AsyncLocalStorage request isolation. The
 next direct copied Bake boundary is `bake/dev/react-spa.test.ts`,
 currently failing as `DEV:react-spa-1: react in html`.
 
+The copied `bake/dev/react-spa.test.ts` fixture now passes in Home as
+`6` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap models
+the client-facing React SPA assertions: initial and hot-updated `<h1>`
+text, reload messages after writes and hard reloads, React Refresh hash
+stability/change behavior, PASS messages for component registration and
+hook tracking cases, and the mutual-recursion render smoke's logged
+labels. Native parity still requires Bun's real React transform, Fast
+Refresh registration, hook signature hashing, and browser runtime. The
+next direct copied Bake boundary is `bake/dev/request-cookies.test.ts`,
+currently failing as
+`DEV:request-cookies-1: request.cookies.get() basic functionality`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

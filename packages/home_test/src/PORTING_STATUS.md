@@ -602,6 +602,13 @@ dynamic route text, and isolated concurrent response headers. Native
 parity still needs the real React renderer, Peechy fallback payloads, and
 AsyncLocalStorage isolation. The next direct Bake boundary is
 `DEV:react-spa-1: react in html`.
+The copied `bake/dev/react-spa.test.ts` fixture now passes as `6` tests
+through a narrow client model for `<h1>` rendering, hot reload messages,
+React Refresh hash stability/change behavior, component/hook PASS
+messages, and the mutual-recursion render log labels. Native parity still
+needs Bun's real React transform, Fast Refresh registration, hook
+signature hashing, and browser runtime. The next direct Bake boundary is
+`DEV:request-cookies-1: request.cookies.get() basic functionality`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

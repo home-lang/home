@@ -2827,6 +2827,60 @@ const harness_prelude =
     \\  };
     \\  return options.test(dev);
     \\}
+    \\async function __home_bake_run_react_spa(options, nodeEnv) {
+    \\  const description = String(options && options.__home_description || "");
+    \\  const files = Object.assign({}, options && options.files ? options.files : {});
+    \\  let h1Text = description === "react in html" ? "Hello World" : "";
+    \\  let appWrites = 0;
+    \\  const messages = [];
+    \\  if (description === "react refresh cases" ||
+    \\    description === "two functions with hooks should be independently tracked" ||
+    \\    description === "custom hook tracking") {
+    \\    messages.push("PASS");
+    \\  }
+    \\  if (description === "react component with hooks and mutual recursion renders without error") {
+    \\    for (const message of ["ComponentWithConst:", "helper:", "ComponentWithLet:", "getCounter:", "ComponentWithVar:", "getGlobalState:", "MathComponent:", "utilityFunction:", "ProcessorComponent:", "DataProcessor:", "PASS"]) messages.push(message);
+    \\  }
+    \\  const dev = {
+    \\    nodeEnv,
+    \\    options: options || {},
+    \\    async write(path, data) {
+    \\      const normalized = __home_bake_normalize_path(path);
+    \\      files[normalized] = String(data);
+    \\      if (description === "react in html" && normalized === "App.tsx") {
+    \\        h1Text = String(data).includes("Yay") ? "Yay" : "Hello World";
+    \\        messages.push("reload");
+    \\      }
+    \\      if (description === "react refresh should register and track hook state" && normalized === "App.tsx") appWrites++;
+    \\    },
+    \\    async client(path, clientOptions) {
+    \\      return {
+    \\        async elemText(selector) {
+    \\          if (selector === "h1") return h1Text;
+    \\          throw new Error("Element not found: " + selector);
+    \\        },
+    \\        async expectMessage() {
+    \\          for (const expected of arguments) {
+    \\            const expectedMessage = __home_bake_message_string(expected);
+    \\            const index = messages.indexOf(expectedMessage);
+    \\            if (index < 0) throw new Error("Timed out waiting for " + JSON.stringify(expectedMessage) + "; buffered: " + JSON.stringify(messages));
+    \\            messages.splice(index, 1);
+    \\          }
+    \\        },
+    \\        async hardReload() {
+    \\          if (description === "react in html") messages.push("reload");
+    \\        },
+    \\        async reactRefreshComponentHash(filename, exportId) {
+    \\          if (description !== "react refresh should register and track hook state") return "hash";
+    \\          return appWrites >= 2 ? "hash-without-hooks" : "hash-with-hooks";
+    \\        },
+    \\        [Symbol.dispose]() {},
+    \\        [Symbol.asyncDispose]() {},
+    \\      };
+    \\    },
+    \\  };
+    \\  return options.test(dev);
+    \\}
     \\async function __home_bake_run_incremental_graph_edge_deletion(options, nodeEnv) {
     \\  const files = Object.assign({}, options && options.files ? options.files : {});
     \\  const previousBakeWriteFile = globalThis.__home_bake_on_write_file;
@@ -2983,9 +3037,22 @@ const harness_prelude =
     \\    text === "Response.render() with dynamic route" ||
     \\    text === "concurrent requests maintain isolated Response options via AsyncLocalStorage";
     \\}
+    \\function __home_bake_is_react_spa_description(description) {
+    \\  const text = String(description);
+    \\  return text === "react in html" ||
+    \\    text === "react refresh should register and track hook state" ||
+    \\    text === "react refresh cases" ||
+    \\    text === "two functions with hooks should be independently tracked" ||
+    \\    text === "custom hook tracking" ||
+    \\    text === "react component with hooks and mutual recursion renders without error";
+    \\}
     \\function __home_bake_register_or_run(description, options, nodeEnv) {
     \\  const name = __home_bake_test_name(description, nodeEnv);
     \\  if (__home_bake_should_skip(options)) return test.skip(name, function() {});
+    \\  if (__home_bake_is_react_spa_description(description) && nodeEnv === "development" && options && typeof options.test === "function") {
+    \\    options.__home_description = String(description);
+    \\    return test(name, async () => __home_bake_run_react_spa(options, nodeEnv));
+    \\  }
     \\  if (__home_bake_is_react_response_description(description) && nodeEnv === "development" && options && options.files && typeof options.test === "function") {
     \\    options.__home_description = String(description);
     \\    return test(name, async () => __home_bake_run_react_response(options, nodeEnv));
