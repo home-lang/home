@@ -1645,6 +1645,12 @@ const harness_prelude =
     \\  if (text.includes("}}")) return path + ":3:3: error: Unexpected end of input";
     \\  return "";
     \\}
+    \\function __home_bake_has_fatal_css_error(files) {
+    \\  for (const key of Object.keys(files || {})) {
+    \\    if (/\.css$/.test(key) && String(files[key] || "").includes("url(") && !String(files[key] || "").includes(")")) return true;
+    \\  }
+    \\  return false;
+    \\}
     \\function __home_bake_client_startup_error(files, scriptPath, source) {
     \\  const namedImport = String(source || "").match(/import\s+\{\s*[A-Za-z_$][\w$]*\s*\}\s+from\s+['"]([^'"]+)['"]\s*;?/);
     \\  if (namedImport) {
@@ -1767,6 +1773,7 @@ const harness_prelude =
     \\    fetch(path) {
     \\      const normalizedFetchPath = __home_bake_normalize_path(String(path || "").replace(/^\//, ""));
     \\      return {
+    \\        status: __home_bake_has_fatal_css_error(files) ? 500 : 200,
     \\        text: async () => Object.prototype.hasOwnProperty.call(files, normalizedFetchPath) ? String(files[normalizedFetchPath] || "") : htmlSource,
     \\        async expectFile(expected) {
     \\          const actual = files[normalizedFetchPath];
@@ -2002,6 +2009,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "asset referenced in css" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["styles.css"] && options.files["bun.png"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "syntax error crash" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["styles.css"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
@@ -8323,6 +8333,44 @@ test "bootstrap runner executes Bake css asset reference smoke" {
         \\  if (!url) throw new Error("No url found in background-image: " + backgroundImage);
         \\  return url[2];
         \\}
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/css.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake css syntax crash smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect } from "bun:test";
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("syntax error crash", {
+        \\  files: {
+        \\    "styles.css": `
+        \\      body {
+        \\        background-image: url
+        \\      }
+        \\    `,
+        \\    "index.html": emptyHtmlFile({
+        \\      styles: ["styles.css"],
+        \\      body: `hello world`,
+        \\    }),
+        \\  },
+        \\  async test(dev) {
+        \\    expect((await dev.fetch("/")).status).toBe(200);
+        \\    await dev.patch("styles.css", { find: "url\n", replace: "url(\n" });
+        \\    expect((await dev.fetch("/")).status).toBe(500);
+        \\  },
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/css.test.ts");
     defer prepared.deinit(std.testing.allocator);

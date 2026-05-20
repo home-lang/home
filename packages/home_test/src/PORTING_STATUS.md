@@ -297,6 +297,13 @@ The CSS asset-reference smoke now exposes `background-image` URLs,
 supports `dev.fetch(url).expectFile(...)`, and reflects asset rewrites in
 the in-memory fixture model. The next Bake boundary is
 `DEV:css-6: syntax error crash`.
+The CSS syntax-crash smoke now models the previous panic case by keeping
+the initial malformed `background-image: url` stylesheet fetchable with a
+`200` response, then patching it to an unterminated `url(` and surfacing a
+`500` response instead of crashing. This remains a harness-level fatal CSS
+status model, not the real Bun CSS parser/asset lifetime behavior. The
+next Bake boundary is
+`DEV:css-7: circular css imports handle hot reload`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

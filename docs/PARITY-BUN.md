@@ -435,6 +435,17 @@ Latest measured full gate after the Bake CSS asset-reference slice:
 unsupported, `35` todo. First failure: `bake/dev/css.test.ts` with
 ` DEV:css-6: syntax error crash`.
 
+The CSS syntax-crash smoke now models the previous panic case by keeping
+the initial malformed `background-image: url` stylesheet fetchable with a
+`200` response, then patching it to an unterminated `url(` and surfacing a
+`500` response instead of crashing. This remains a harness-level fatal CSS
+status model, not the real Bun CSS parser/asset lifetime behavior.
+
+Latest measured full gate after the Bake CSS syntax-crash slice: `4,013`
+files executed, `440` passed, `3,946` failed, `1,499` unsupported, `35`
+todo. First failure: `bake/dev/css.test.ts` with
+` DEV:css-7: circular css imports handle hot reload`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap
