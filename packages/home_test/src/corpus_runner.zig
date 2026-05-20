@@ -180,6 +180,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/concurrent_immediate.fixture.ts",
     "js/bun/test/failure-skip.fixture.ts",
     "js/bun/test/test-fixture-preload-global-lifecycle-hook-test.js",
+    "js/bun/test/skip-test-fixture.js",
 };
 
 const harness_prelude =
@@ -911,6 +912,9 @@ const harness_prelude =
     \\test.skipIf = function(condition) {
     \\  return condition ? test.skip : test;
     \\};
+    \\test.if = function(condition) {
+    \\  return condition ? test : test.skip;
+    \\};
     \\test.failing = it.failing;
     \\test.concurrent = test;
     \\function __home_each(rows) {
@@ -956,6 +960,10 @@ const harness_prelude =
     \\describe.only = function(name, fn) { return __home_describe(name, fn, true); };
     \\describe.todo = function(name, fn) {
     \\  __home_bun_tests.todo++;
+    \\};
+    \\describe.skip = describe.todo;
+    \\describe.skipIf = function(condition) {
+    \\  return condition ? describe.skip : describe;
     \\};
     \\describe.each = function(rows) {
     \\  return function(name, fn) {
@@ -3585,6 +3593,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var URLSearchParams = function(init)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.todo = function(name, fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.skip = it.todo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.if = function(condition)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.skipIf = function(condition)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_registered_tests = []") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.only = __home_test_only") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.only = function(name, fn)") != null);
@@ -3675,6 +3685,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/test/concurrent_immediate.fixture.ts",
         "js/bun/test/failure-skip.fixture.ts",
         "js/bun/test/test-fixture-preload-global-lifecycle-hook-test.js",
+        "js/bun/test/skip-test-fixture.js",
     };
 
     for (expected) |path| {
@@ -4226,6 +4237,41 @@ test "bootstrap runner gives test.only precedence over describe.only" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+}
+
+test "bootstrap runner covers conditional skip helpers" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, test } from "bun:test";
+        \\test.skip("test #1", () => expect.unreachable());
+        \\test.skipIf(true)("test #2", () => expect.unreachable());
+        \\test.skipIf(1)("test #3", () => expect.unreachable());
+        \\test.skipIf(false)("test #4", () => expect().pass());
+        \\test.skipIf(null)("test #5", () => expect().pass());
+        \\describe.skip("describe #1", () => test("test #6", () => expect.unreachable()));
+        \\describe.skipIf(true)("describe #2", () => test("test #7", () => expect.unreachable()));
+        \\describe.skipIf(1)("describe #3", () => test("test #8", () => expect.unreachable()));
+        \\describe.skipIf(false)("describe #4", () => test("test #9", () => expect().pass()));
+        \\describe.skipIf(null)("describe #5", () => test("test #10", () => expect().pass()));
+        \\test.if(false)("test #11", () => expect.unreachable());
+        \\test.if(null)("test #12", () => expect.unreachable());
+        \\test.if(true)("test #13", () => expect().pass());
+        \\test.if(1)("test #14", () => expect().pass());
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/skip-test-fixture.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 8), file_run.result.todo);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
 }
 
