@@ -3444,6 +3444,44 @@ test "conformance: sub-strict directive without @strict keeps inferred strict-on
     try T.expect(merged_with_strict_on.use_unknown_in_catch_variables);
 }
 
+test "conformance: strictPropertyInitialization C1 slice" {
+    // Slice of `strictPropertyInitialization.ts` — class C1 only:
+    // four TS2564s for `a: number`, `c: number | null`, `#f: number`,
+    // `#h: number | null` (uninitialized non-undefined-typed fields).
+    const result = try runOneEntry(T.allocator, .{
+        .name = "strictPropertyInitialization",
+        .path = "strictPropertyInitialization.ts",
+        .source =
+        \\// @strict: true
+        \\// @target: es2015
+        \\class C1 {
+        \\    a: number;
+        \\    b: number | undefined;
+        \\    c: number | null;
+        \\    d?: number;
+        \\    #f: number;
+        \\    #g: number | undefined;
+        \\    #h: number | null;
+        \\    #i?: number;
+        \\}
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\strictPropertyInitialization.ts(2,5): error TS2564: Property 'a' has no initializer and is not definitely assigned in the constructor.
+        \\strictPropertyInitialization.ts(4,5): error TS2564: Property 'c' has no initializer and is not definitely assigned in the constructor.
+        \\strictPropertyInitialization.ts(6,5): error TS2564: Property '#f' has no initializer and is not definitely assigned in the constructor.
+        \\strictPropertyInitialization.ts(8,5): error TS2564: Property '#h' has no initializer and is not definitely assigned in the constructor.
+        ,
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_property_initialization = true, .strict_null_checks = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: controlFlowInstanceOfGuardPrimitives passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "controlFlowInstanceOfGuardPrimitives",
