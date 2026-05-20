@@ -1501,15 +1501,22 @@ const harness_prelude =
     \\}
     \\function __home_bake_css_property(files, htmlPath, htmlSource, selector, propertyName) {
     \\  const href = __home_bake_first_attr(htmlSource, "link", "href", "stylesheet");
-    \\  if (!href) return "";
-    \\  const cssPath = __home_bake_resolve_html_ref(files, htmlPath, href);
-    \\  const css = String(files[cssPath] || "");
+    \\  const css = href
+    \\    ? String(files[__home_bake_resolve_html_ref(files, htmlPath, href)] || "")
+    \\    : ((String(htmlSource || "").match(/<style\b[^>]*>([\s\S]*?)<\/style>/i) || [])[1] || "");
     \\  const escapedSelector = String(selector).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     \\  const rule = css.match(new RegExp(escapedSelector + "\\s*\\{([\\s\\S]*?)\\}", "i"));
     \\  if (!rule) return "";
     \\  const property = String(propertyName).replace(/[A-Z]/g, char => "-" + char.toLowerCase());
     \\  const declaration = rule[1].match(new RegExp("(^|;)\\s*" + property + "\\s*:\\s*([^;]+)", "i"));
     \\  return declaration ? declaration[2].trim() : "";
+    \\}
+    \\function __home_bake_inline_scripts(htmlSource) {
+    \\  const scripts = [];
+    \\  const pattern = /<script\b(?![^>]*\bsrc\s*=)[^>]*>([\s\S]*?)<\/script>/gi;
+    \\  let match;
+    \\  while ((match = pattern.exec(String(htmlSource || "")))) scripts.push(match[1]);
+    \\  return scripts.join("\n");
     \\}
     \\async function __home_bake_run_static_html(options, nodeEnv) {
     \\  const files = options && options.files ? options.files : {};
@@ -1520,7 +1527,9 @@ const harness_prelude =
     \\  const scriptSource = String(files[scriptPath] || files[scriptRef] || "");
     \\  const bunfigSource = String(files["bunfig.toml"] || "");
     \\  if (typeof globalThis.__home_buildBakeStaticClientScriptNative !== "function") __home_unsupported("Bake static client script native bridge is not installed");
-    \\  const clientScript = globalThis.__home_buildBakeStaticClientScriptNative(htmlSource, scriptRef || scriptPath, scriptSource, bunfigSource);
+    \\  const clientScript = scriptRef
+    \\    ? globalThis.__home_buildBakeStaticClientScriptNative(htmlSource, scriptRef || scriptPath, scriptSource, bunfigSource)
+    \\    : __home_bake_inline_scripts(htmlSource);
     \\  const html = { __home_bake_html_import: true, path: htmlPath };
     \\  const server = Bun.serve({ static: { "/*": html } });
     \\  const messages = [];
@@ -1598,6 +1607,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "missing all meta tags works fine" && options && options.files && options.files["public/index.html"] && options.files["src/app/index.tsx"] && options.files["src/app/styles.css"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "inline script and styles appear" && options && options.files && options.files["public/index.html"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  __home_record_unsupported("Bake harness test not implemented: " + name);
@@ -6698,6 +6710,48 @@ test "bootstrap runner executes Bake missing meta smoke" {
         \\    await dev.fetch("/").expect.toInclude("root");
         \\    await using c = await dev.client("/");
         \\    await c.expectMessage("hello");
+        \\    await c.style("body").backgroundColor.expect.toBe("red");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev-and-prod.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake inline script and style smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devAndProductionTest, devTest, emptyHtmlFile, WAIT_MULTIPLIER } from "./bake-harness";
+        \\devAndProductionTest("inline script and styles appear", {
+        \\  files: {
+        \\    "public/index.html": `
+        \\      <!DOCTYPE html>
+        \\      <html>
+        \\        <head>
+        \\          <title>Dashboard</title>
+        \\          <style> body { background-color: red; } </style>
+        \\        </head>
+        \\        <body>
+        \\          <script> console.log("hello " + (1 + 2)); </script>
+        \\        </body>
+        \\      </html>
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await dev.fetch("/").expect.toInclude("hello");
+        \\    await dev.fetch("/").expect.not.toInclude("hello 3");
+        \\    await using c = await dev.client("/");
+        \\    await c.expectMessage("hello 3");
         \\    await c.style("body").backgroundColor.expect.toBe("red");
         \\  },
         \\});

@@ -315,15 +315,18 @@ through the same carrier: they resolve script and stylesheet refs
 relative to `public/index.html`, evaluate the real `src/app/index.tsx`
 fixture, derive the `background-color: red` assertion from
 `src/app/styles.css`, and cover the first Bake `dev.fetch("/")`
-HTML-include assertion. Later Bake registrations are still recorded as
-unsupported until the broader DevServer / bundler / browser-client
-runtime path lands.
+HTML-include assertion. The inline
+`devAndProductionTest("inline script and styles appear")` pair now
+executes inline `<script>` code and derives style assertions from inline
+`<style>` content while keeping `dev.fetch()` tied to the raw HTML
+source. Later Bake registrations are still recorded as unsupported until
+the broader DevServer / bundler / browser-client runtime path lands.
 
-Latest measured full gate after the Bake missing-meta slice:
-`4,013` files executed, `408` passed, `3,976` failed, `1,529`
+Latest measured full gate after the Bake inline-script slice:
+`4,013` files executed, `408` passed, `3,974` failed, `1,527`
 unsupported, `35` todo. First failure: `bake/dev-and-prod.test.ts`
 with the named unsupported Bake registration for
-` DEV:dev-and-prod-9: inline script and styles appear`.
+` DEV:dev-and-prod-11: using runtime import`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
