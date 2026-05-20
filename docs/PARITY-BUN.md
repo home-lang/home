@@ -344,14 +344,19 @@ pipeline yet. The delete/recover smoke now models extensionless import
 resolution, expected missing-import error text, reload-after-restore, and
 an unrelated-file delete with no client activity. It is also a bootstrap
 overlay/reload proxy until the real Bake browser overlay and watcher path
-is wired. Later Bake files are still recorded as unsupported until the
-broader DevServer / bundler / browser-client runtime path lands.
+is wired. The client-boundary demotion smoke now exercises the upstream
+write/fetch sequence and final `Response` liveness assertion, but remains
+a route-model proxy for Bun's real DirectoryWatchStore dependency
+lifetime regression; Home still needs the native graph/watch cleanup path
+ported before this is true Bake parity. Later Bake files are still
+recorded as unsupported until the broader DevServer / bundler /
+browser-client runtime path lands.
 
-Latest measured full gate after the Bake delete/recover slice:
-`4,013` files executed, `420` passed, `3,965` failed, `1,518`
+Latest measured full gate after the Bake client-boundary liveness slice:
+`4,013` files executed, `420` passed, `3,964` failed, `1,517`
 unsupported, `35` todo. First failure: `bake/dev/bundle.test.ts`
 with the named unsupported Bake registration for
-` DEV:bundle-8: removing 'use client' from a component with a pending resolution failure`.
+` DEV:bundle-9: deinit with a free-list slot in DirectoryWatchStore.dependencies`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

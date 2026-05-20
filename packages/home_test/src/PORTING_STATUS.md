@@ -249,9 +249,12 @@ real Bake watcher, directory cache, and parser/lower/printer path remain
 to be wired. The delete/recover smoke now models extensionless import
 resolution, delete-triggered missing-import error text, reload recovery
 after the imported file is restored, and no-activity deletion of an
-unrelated file. This remains a bootstrap overlay/reload proxy. The next
-Bake boundary is
-`DEV:bundle-8: removing 'use client' from a component with a pending resolution failure`.
+unrelated file. This remains a bootstrap overlay/reload proxy. The
+client-boundary demotion smoke now models the upstream write/fetch
+sequence and final `Response` liveness assertion, but not the real
+DirectoryWatchStore dependency lifetime cleanup. The next Bake boundary
+is
+`DEV:bundle-9: deinit with a free-list slot in DirectoryWatchStore.dependencies`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

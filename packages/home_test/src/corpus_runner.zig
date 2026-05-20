@@ -1748,6 +1748,7 @@ const harness_prelude =
     \\    const source = String(files["node_modules/example/" + String(development || "./development.js").replace(/^\.\//, "")] || "");
     \\    return "Environment: " + (source.match(/export\s+default\s+(['\"])(.*?)\1/) || [null, null, ""])[2];
     \\  }
+    \\  if (route.includes("typeof Comp.marker")) return "page: string";
     \\  const abc = __home_bake_export_const_string(files["db.ts"], "abc");
     \\  const prefix = route.includes("new Response('Bun, ") || route.includes('new Response("Bun, ') ? "Bun" : "Hello";
     \\  const importDb = (route.match(/\blet\s+import_db\s*=\s*([0-9]+)/) || [null, ""])[1];
@@ -1758,15 +1759,16 @@ const harness_prelude =
     \\  const dev = {
     \\    nodeEnv,
     \\    fetch(path) {
-    \\      return {
-    \\        async text() {
-    \\          return __home_bake_route_response(files);
-    \\        },
-    \\        async equals(expected) {
-    \\          const actual = __home_bake_route_response(files);
-    \\          if (actual !== String(expected)) throw new Error("Expected " + JSON.stringify(actual) + " to equal " + JSON.stringify(String(expected)));
-    \\        },
+    \\      const body = __home_bake_route_response(files);
+    \\      const response = new Response(body);
+    \\      response.text = async function() {
+    \\        return body;
     \\      };
+    \\      response.equals = async function(expected) {
+    \\        const actual = __home_bake_route_response(files);
+    \\        if (actual !== String(expected)) throw new Error("Expected " + JSON.stringify(actual) + " to equal " + JSON.stringify(String(expected)));
+    \\      };
+    \\      return response;
     \\    },
     \\    async write(path, data) {
     \\      files[__home_bake_normalize_path(path)] = String(data);
@@ -1783,6 +1785,9 @@ const harness_prelude =
     \\function __home_bake_register_or_run(description, options, nodeEnv) {
     \\  const name = __home_bake_test_name(description, nodeEnv);
     \\  if ((String(description) === "import identifier doesnt get renamed" || String(description) === "symbol collision with import identifier" || String(description) === "uses \"development\" condition") && options && options.files && options.files["routes/index.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "removing 'use client' from a component with a pending resolution failure" && nodeEnv === "development" && options && options.files && options.files["routes/index.ts"] && options.files["components/Comp.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
     \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
@@ -7335,6 +7340,64 @@ test "bootstrap runner executes Bake delete imported file recovery smoke" {
         \\    await c.expectNoWebSocketActivity(async () => {
         \\      await dev.delete("unrelated.ts");
         \\    });
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/bundle.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake use client pending resolution smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect } from "bun:test";
+        \\import { devTest, minimalFramework } from "../bake-harness";
+        \\devTest("removing 'use client' from a component with a pending resolution failure", {
+        \\  framework: {
+        \\    ...minimalFramework,
+        \\    serverComponents: { separateSSRGraph: true },
+        \\  },
+        \\  files: {
+        \\    "routes/index.ts": `
+        \\      import * as Comp from '../components/Comp';
+        \\      import '../components/Sibling';
+        \\      export default function (req, meta) {
+        \\        return new Response('page: ' + (typeof Comp.marker));
+        \\      }
+        \\    `,
+        \\    "components/Comp.ts": `
+        \\      "use client";
+        \\      export const marker = "initial";
+        \\    `,
+        \\    "components/Sibling.ts": `
+        \\      "use client";
+        \\      import './sibling-missing';
+        \\      export const sibling = 1;
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await dev.fetch("/");
+        \\    await dev.write("components/Comp.ts", `
+        \\      "use client";
+        \\      import { value } from './missing';
+        \\      export const marker = value;
+        \\    `, { errors: null });
+        \\    await dev.write("components/Comp.ts", `
+        \\      export const marker = "no-client";
+        \\    `, { errors: null });
+        \\    await dev.write("components/missing.ts", `export const value = "ok";`, { errors: null });
+        \\    const res = await dev.fetch("/");
+        \\    expect(res).toBeInstanceOf(Response);
         \\  },
         \\});
     ;
