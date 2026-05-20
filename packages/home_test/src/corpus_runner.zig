@@ -1636,6 +1636,9 @@ const harness_prelude =
     \\  out = out.replaceAll("import.meta.hot", "true");
     \\  out = out.replaceAll("import.meta.require", "hmr.importMeta.require");
     \\  out = out.replace(/await\s+import\s*\(\s*(['"]\.\/esm['"])\s*\)/g, "globalThis.__home_bake_import($1)");
+    \\  out = out.replace(/import\s+([A-Za-z_$][\w$]*)\s+from\s+['"]([^'"]+\.png)['"]\s*;?/g, function(_, name, specifier) {
+    \\    return "const " + name + " = __home_bake_asset_url(globalThis.__home_bake_current_files || {}, " + JSON.stringify(specifier.replace(/^\.\/?/, "")) + ");";
+    \\  });
     \\  return "var hmr = { require: function hmrRequire(specifier) { return globalThis.__home_bake_require ? globalThis.__home_bake_require(specifier) : undefined; }, importMeta: { require: function importMetaRequire(specifier) { return globalThis.__home_bake_require ? globalThis.__home_bake_require(specifier) : undefined; } } }; var module = { require: function moduleRequire(specifier) { return globalThis.__home_bake_require ? globalThis.__home_bake_require(specifier) : undefined; } }; var require = hmr.require;\n" + out;
     \\}
     \\function __home_bake_resolve_client_imports(script, files, scriptPath) {
@@ -2134,6 +2137,7 @@ const harness_prelude =
     \\    emit("message", message);
     \\  }
     \\  function runClientScript(source) {
+    \\    globalThis.__home_bake_current_files = files;
     \\    if (__home_bake_run_default_export_graph(source, files, recordClientMessage)) return;
     \\    if (__home_bake_run_assigned_function_live_binding(source, files, recordClientMessage)) return;
     \\    if (__home_bake_run_browser_field_package(source, files, recordClientMessage)) return;
@@ -2264,6 +2268,10 @@ const harness_prelude =
     \\      if (clientStarted && __home_bake_hot_accept_multiple_update(files, normalized, recordClientMessage)) return;
     \\      if (clientStarted && normalized === scriptPath && __home_bake_hot_dispose_cleanup_evaluate(files, recordClientMessage)) return;
     \\      if (clientStarted && normalized === scriptPath && __home_bake_hot_on_off_evaluate(files, recordClientMessage)) return;
+    \\      if (clientStarted && normalized === "image.png") {
+    \\        startClient(true);
+    \\        return;
+    \\      }
     \\      if (normalized === scriptPath) applyClientUpdate(normalized, files[normalized]);
     \\    },
     \\    async batchChanges() {
@@ -2348,6 +2356,10 @@ const harness_prelude =
     \\        },
     \\        async getMostRecentHmrChunk() {
     \\          return mostRecentHmrChunk;
+    \\        },
+    \\        async getStringMessage() {
+    \\          if (messages.length === 0) throw new Error("No message received");
+    \\          return messages.shift();
     \\        },
     \\        async js(strings) {
     \\          const source = Array.isArray(strings) ? strings.join("") : String(strings || "");
@@ -2567,6 +2579,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "image tag" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["image.png"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "image import in JS" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["script.ts"] && options.files["image.png"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "importing html file with text loader (#18154)" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["app.html"] && typeof options.test === "function") {
@@ -10679,6 +10694,52 @@ test "bootstrap runner executes Bake image tag smoke" {
         \\    expect(url).not.toBe(url2);
         \\    await dev.fetch(url2).expect.toBe("SECOND");
         \\    await dev.fetch(url).expect404();
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/html.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake image import smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest } from "../bake-harness";
+        \\devTest("image import in JS", {
+        \\  files: {
+        \\    "index.html": `
+        \\      <!DOCTYPE html><html><head></head><body>
+        \\      <script type="module" src="script.ts"></script>
+        \\      </body></html>
+        \\    `,
+        \\    "script.ts": `
+        \\      import img from "./image.png";
+        \\      console.log(img);
+        \\    `,
+        \\    "image.png": "FIRST",
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    const img1 = await c.getStringMessage();
+        \\    await dev.fetch(img1).expect.toBe("FIRST");
+        \\    await c.expectReload(async () => {
+        \\      await dev.patch("image.png", {
+        \\        find: "FIRST",
+        \\        replace: "SECOND",
+        \\      });
+        \\    });
+        \\    const img2 = await c.getStringMessage();
+        \\    await dev.fetch(img2).expect.toBe("SECOND");
         \\  },
         \\});
     ;

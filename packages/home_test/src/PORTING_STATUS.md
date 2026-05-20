@@ -526,6 +526,13 @@ asset URLs as `404` after the image changes. The native parity target
 remains Bun's asset graph hashing, HTML rewrite, browser reload, and stale
 asset invalidation path. The next Bake boundary is
 `DEV:html-3: image import in JS`.
+The copied `image import in JS` case now runs through the Bake static HTML
+shim. It lowers default `.png` imports in client scripts to versioned asset
+URLs, logs those URLs through the client message queue, and reloads after
+image content edits so the second logged URL fetches the updated asset
+body. The native parity target remains Bun's JS asset import lowering,
+client graph asset hashing, and update propagation when imported assets
+change. The next Bake boundary is `DEV:html-4: import then create`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
