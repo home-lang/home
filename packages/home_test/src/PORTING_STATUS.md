@@ -321,6 +321,12 @@ source parity for this case lives in Bun's `DevServer/Assets.zig`
 the `DevServer.zig` CSS HMR payload that indexes through the stored asset
 entry id. The next Bake boundary is
 `DEV:css-9: multiple stylesheets importing same dependency`.
+The shared CSS dependency smoke now runs two HTML roots that import
+different stylesheet roots, both of which recursively import
+`shared.css`. Editing the shared dependency updates both live clients and
+normalizes the resulting `yellow` style to `#ff0` through the harness CSS
+model. The next Bake boundary is
+`DEV:css-10: removing and re-adding css import`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

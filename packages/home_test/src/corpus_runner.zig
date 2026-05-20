@@ -2031,6 +2031,9 @@ const harness_prelude =
     \\  if (String(description) === "asset index stays valid after another css root is freed" && nodeEnv === "development" && options && options.files && options.files["first.html"] && options.files["second.html"] && options.files["first.css"] && options.files["second.css"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
+    \\  if (String(description) === "multiple stylesheets importing same dependency" && nodeEnv === "development" && options && options.files && options.files["first.html"] && options.files["second.html"] && options.files["first.css"] && options.files["second.css"] && options.files["shared.css"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
@@ -8495,6 +8498,67 @@ test "bootstrap runner executes Bake css asset index smoke" {
         \\      await using c1 = await dev.client("/first");
         \\      await c1.style(".first").color.expect.toBe("#ff0");
         \\    }
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/css.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake shared css dependency smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("multiple stylesheets importing same dependency", {
+        \\  files: {
+        \\    "first.html": emptyHtmlFile({
+        \\      styles: ["first.css"],
+        \\      body: `
+        \\        <div class="first">hello</div>
+        \\        <div class="shared">hello</div>
+        \\      `,
+        \\    }),
+        \\    "second.html": emptyHtmlFile({
+        \\      styles: ["second.css"],
+        \\      body: `
+        \\        <div class="second">hello</div>
+        \\        <div class="shared">hello</div>
+        \\      `,
+        \\    }),
+        \\    "first.css": `
+        \\      @import "./shared.css";
+        \\      .first { color: red; }
+        \\    `,
+        \\    "second.css": `
+        \\      @import "./shared.css";
+        \\      .second { color: blue; }
+        \\    `,
+        \\    "shared.css": `
+        \\      .shared { color: green; }
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c1 = await dev.client("/first");
+        \\    await using c2 = await dev.client("/second");
+        \\    await c1.style(".first").color.expect.toBe("red");
+        \\    await c2.style(".second").color.expect.toBe("#00f");
+        \\    await c1.style(".shared").color.expect.toBe("green");
+        \\    await c2.style(".shared").color.expect.toBe("green");
+        \\    await dev.write("shared.css", `
+        \\      .shared { color: yellow; }
+        \\    `);
+        \\    await c1.style(".shared").color.expect.toBe("#ff0");
+        \\    await c2.style(".shared").color.expect.toBe("#ff0");
         \\  },
         \\});
     ;

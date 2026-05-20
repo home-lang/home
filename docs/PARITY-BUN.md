@@ -473,6 +473,17 @@ files executed, `440` passed, `3,944` failed, `1,497` unsupported, `35`
 todo. First failure: `bake/dev/css.test.ts` with
 ` DEV:css-9: multiple stylesheets importing same dependency`.
 
+The shared CSS dependency smoke now runs two HTML roots that import
+different stylesheet roots, both of which recursively import
+`shared.css`. Editing the shared dependency updates both live clients and
+normalizes the resulting `yellow` style to `#ff0` through the harness CSS
+model.
+
+Latest measured full gate after the Bake shared CSS dependency slice:
+`4,013` files executed, `440` passed, `3,943` failed, `1,496`
+unsupported, `35` todo. First failure: `bake/dev/css.test.ts` with
+` DEV:css-10: removing and re-adding css import`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap
