@@ -26129,7 +26129,14 @@ pub const Checker = struct {
                                 defer record_members.deinit(self.gpa);
                                 try self.appendNumericEnumRecordMembers(enum_name, value_t, &record_members);
                                 if (record_members.items.len > 0) {
-                                    return self.interner.internObjectType(record_members.items) catch return error.OutOfMemory;
+                                    const record_t = self.interner.internObjectType(record_members.items) catch return error.OutOfMemory;
+                                    // Preserve the alias-display name so
+                                    // TS2741 / TS2322 prose renders
+                                    // `Record<E, any>` instead of the
+                                    // structural shape. Mirrors
+                                    // `assignmentCompatWithEnumIndexer.ts(5,5)`.
+                                    try self.registerAliasDisplayName(record_t, r.name, &.{ key_t, value_t });
+                                    return record_t;
                                 }
                             }
                         }

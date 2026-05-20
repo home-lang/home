@@ -3444,6 +3444,22 @@ test "conformance: sub-strict directive without @strict keeps inferred strict-on
     try T.expect(merged_with_strict_on.use_unknown_in_catch_variables);
 }
 
+test "conformance: directReferenceToNull emits TS2304" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "directReferenceToNull",
+        .path = "directReferenceToNull.ts",
+        .source = "// @target: es2015\nvar x: Null;",
+        .expects_error = true,
+        .expected_errors = "directReferenceToNull.ts(1,8): error TS2304: Cannot find name 'Null'.",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: privateStaticMemberAccessibility matches TS2341 baseline" {
     const result = try runOneEntry(T.allocator, .{
         .name = "privateStaticMemberAccessibility",
