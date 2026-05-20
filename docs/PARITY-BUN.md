@@ -273,7 +273,7 @@ through the native lifecycle path. The delegated
 
 Latest measured full gate: `4,013` files executed, `388` passed,
 `3,902` failed, `1,453` unsupported, `33` todo. First failure:
-`bake/dev-and-prod.test.ts` with `unsupported module syntax`.
+`bake/dev-and-prod.test.ts` with `unsupported bake harness module`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

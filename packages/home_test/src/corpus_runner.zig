@@ -3424,6 +3424,11 @@ fn hasBunTestImport(source: []const u8) bool {
         std.mem.indexOf(u8, source, "from 'bun:test'") != null;
 }
 
+fn hasBakeHarnessImport(source: []const u8) bool {
+    return std.mem.indexOf(u8, source, "from \"./bake-harness\"") != null or
+        std.mem.indexOf(u8, source, "from './bake-harness'") != null;
+}
+
 fn hasUnsupportedModuleSyntax(source: []const u8) bool {
     const Mode = enum { code, single_quote, double_quote, template, line_comment, block_comment };
     var mode: Mode = .code;
@@ -3542,6 +3547,14 @@ pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, rel
             .path = relative_path,
             .source = rewritten,
             .unsupported_reason = "unsupported bun:test import shape",
+            .allow_no_tests = allow_no_tests,
+        };
+    }
+    if (hasBakeHarnessImport(rewritten)) {
+        return .{
+            .path = relative_path,
+            .source = rewritten,
+            .unsupported_reason = "unsupported bake harness module",
             .allow_no_tests = allow_no_tests,
         };
     }
@@ -5600,6 +5613,18 @@ test "corpus module preparation reports unsupported module syntax" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expectEqualStrings("unsupported module syntax", prepared.unsupported_reason.?);
+}
+
+test "corpus module preparation reports unsupported Bake harness module" {
+    const source =
+        \\import { writeFileSync } from "node:fs";
+        \\import { devAndProductionTest, devTest, emptyHtmlFile, WAIT_MULTIPLIER } from "./bake-harness";
+        \\devAndProductionTest("smoke", { files: {}, async test() {} });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev-and-prod.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("unsupported bake harness module", prepared.unsupported_reason.?);
 }
 
 test "Bun test import rewrite lowers import.meta metadata" {

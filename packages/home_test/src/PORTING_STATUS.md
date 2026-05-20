@@ -190,12 +190,10 @@ allowlisted, with `console.warn` falling back to `console.log` for the
 printing fixture. The full-gate rewriter also lowers the Bake harness
 `bunEnv` / `bunExe` import. The native `Bun.spawnSync` object-form bridge
 now delegates real OS subprocesses, and delegated corpus file paths route
-through the corpus JSC bootstrap. The full gate reaches the Bake child
-process before failing `bake/deinitialization.test.ts` with
-`Error: Expected 1 to be 0`; the child fixture now lowers the exact
-`bun:internal-for-testing`, `bun:jsc`, and HTML imports before reporting
-`Async tests are not supported by the Home Bun corpus bootstrap runner
-yet`. One snapshot `test.todo` fixture is
+through the corpus JSC bootstrap. The full gate now passes the delegated
+`bake/fixtures/deinitialization/test.ts` child and reports the next Bake
+boundary at `bake/dev-and-prod.test.ts` as
+`unsupported bake harness module`. One snapshot `test.todo` fixture is
 allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
