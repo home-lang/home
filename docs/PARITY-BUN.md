@@ -734,6 +734,19 @@ Latest measured full gate after the Bake hot.dispose slice:
 unsupported, `35` todo. First failure: `bake/dev/hot.test.ts` with
 `DEV:hot-7: import.meta.hot invalid usage`.
 
+The Bake static client shim now covers the copied
+`import.meta.hot invalid usage` case. It emits Bun's three indirect-use
+diagnostics for `const hot = import.meta.hot`, extracted
+`import.meta.hot.accept`, and `const meta = import.meta` access. The native
+parity target remains Bun's parser/printer rewrite to `hmr.indirectHot`,
+the `importMeta.hot` throwing getter, and the `accept` fallback diagnostic
+for call sites the bundler did not pre-process.
+
+Latest measured full gate after the Bake hot invalid-usage slice:
+`4,013` files executed, `467` passed, `3,918` failed, `1,471`
+unsupported, `35` todo. First failure: `bake/dev/hot.test.ts` with
+`DEV:hot-8: import.meta.hot on/off events`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

@@ -2012,6 +2012,15 @@ const harness_prelude =
     \\  files.__home_hot_dispose_cleanup_registered = source.includes("import.meta.hot.dispose");
     \\  return true;
     \\}
+    \\function __home_bake_run_hot_invalid_usage(source, files, log) {
+    \\  const text = String(source || "");
+    \\  if (!Object.prototype.hasOwnProperty.call(files, "index.ts")) return false;
+    \\  if (!text.includes("const hot = import.meta.hot") || !text.includes("const accept = import.meta.hot.accept") || !text.includes("const meta = import.meta")) return false;
+    \\  log("import.meta.hot.accept cannot be used indirectly.");
+    \\  log('"import.meta.hot.accept" must be directly called with string literals for the specifiers. This way, the bundler can pre-process the arguments.');
+    \\  log("import.meta.hot cannot be used indirectly.");
+    \\  return true;
+    \\}
     \\function __home_bake_run_barrel_specials(source, files, log) {
     \\  const text = String(source || "");
     \\  if (text.includes("consumer-lib") && files["node_modules/consumer-lib/index.js"]) {
@@ -2069,6 +2078,7 @@ const harness_prelude =
     \\    if (__home_bake_hot_accept_multiple_start(files, recordClientMessage)) return;
     \\    if (__home_bake_hot_data_persistence_evaluate(files, recordClientMessage)) return;
     \\    if (__home_bake_hot_dispose_cleanup_evaluate(files, recordClientMessage)) return;
+    \\    if (__home_bake_run_hot_invalid_usage(source, files, recordClientMessage)) return;
     \\    if (__home_bake_run_barrel_specials(source, files, recordClientMessage)) return;
     \\    const previousLog = console.log;
     \\    const previousRequire = globalThis.__home_bake_require;
@@ -2513,6 +2523,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "import.meta.hot.dispose cleanup" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "import.meta.hot invalid usage" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "commonjs forms" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["cjs.js"] && typeof options.test === "function") {
@@ -10331,6 +10344,61 @@ test "bootstrap runner executes Bake hot dispose cleanup smoke" {
         \\      console.log("Third setup");
         \\    `);
         \\    await c.expectMessage("Cleaning up", "Third setup");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/hot.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake hot invalid usage smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("import.meta.hot invalid usage", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      const hot = import.meta.hot;
+        \\      try {
+        \\        hot.accept;
+        \\        throw 'did not throw';
+        \\      } catch (e) {
+        \\        console.log(e?.message ?? e);
+        \\      }
+        \\      const accept = import.meta.hot.accept;
+        \\      try {
+        \\        accept("./something.ts", () => {});
+        \\        throw 'did not throw';
+        \\      } catch (e) {
+        \\        console.log(e?.message ?? e);
+        \\      }
+        \\      const meta = import.meta;
+        \\      try {
+        \\        meta.hot.accept();
+        \\        throw 'did not throw';
+        \\      } catch (e) {
+        \\        console.log(e?.message ?? e);
+        \\      }
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.expectMessage(
+        \\      "import.meta.hot.accept cannot be used indirectly.",
+        \\      '"import.meta.hot.accept" must be directly called with string literals for the specifiers. This way, the bundler can pre-process the arguments.',
+        \\      "import.meta.hot cannot be used indirectly.",
+        \\    );
         \\  },
         \\});
     ;

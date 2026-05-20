@@ -479,6 +479,14 @@ target remains Bun's `hmr.dispose` callback queue, `replaceModules`
 disposal pass, stale-state transition, and clearing of `onDispose` before
 the next module evaluation. The next Bake boundary is
 `DEV:hot-7: import.meta.hot invalid usage`.
+The copied `import.meta.hot invalid usage` case now runs through the Bake
+static client shim. It emits Bun's three indirect-use diagnostics for
+`const hot = import.meta.hot`, extracted `import.meta.hot.accept`, and
+`const meta = import.meta` access. The native parity target remains Bun's
+parser/printer rewrite to `hmr.indirectHot`, the `importMeta.hot` throwing
+getter, and the `accept` fallback diagnostic for call sites the bundler did
+not pre-process. The next Bake boundary is
+`DEV:hot-8: import.meta.hot on/off events`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
