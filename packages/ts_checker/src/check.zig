@@ -25015,6 +25015,7 @@ pub const Checker = struct {
                 // TS2314 when `interface Mup<K, V>` is paired with a
                 // `declare var Mup: MupConstructor` — mirrors fixture
                 // `overrideInterfaceProperty.errors.txt` (empty).
+                if (self.findVisibleNamedClassDecl(extends_expr, name)) |class_decl| break :blk class_decl;
                 if (self.findVisibleSameNameValueBinding(extends_expr, name) != null) return;
                 break :blk self.findVisibleNamedTypeDecl(extends_expr, name) orelse return;
             }
@@ -25193,6 +25194,32 @@ pub const Checker = struct {
                     },
                     else => {},
                 }
+            }
+        }
+        return null;
+    }
+
+    fn findVisibleNamedClassDecl(
+        self: *Checker,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+    ) ?NodeId {
+        const anchor_section = self.virtualSectionStartForNode(anchor);
+        var cur: hir_mod.NodeId = self.hir.parentOf(anchor);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k != .block_stmt and k != .namespace_decl) continue;
+            const stmts = if (k == .block_stmt)
+                hir_mod.blockStmts(self.hir, cur)
+            else
+                hir_mod.namespaceBody(self.hir, cur);
+            for (stmts) |raw| {
+                const decl = self.unwrapExportDecl(raw);
+                const decl_kind = self.hir.kindOf(decl);
+                if (decl_kind != .class_decl and decl_kind != .class_expr) continue;
+                if (self.virtualSectionStartForNode(decl) != anchor_section) continue;
+                const decl_name = self.declarationName(decl) orelse continue;
+                if (decl_name == name) return decl;
             }
         }
         return null;
@@ -36432,6 +36459,11 @@ pub const Checker = struct {
         var last = &self.diagnostics.items[idx];
         if (last.node != value_node) return;
         if (last.code != TsCodes.cannot_find_name and last.code != TsCodes.cannot_find_name_did_you_mean) return;
+        if (last.code == TsCodes.cannot_find_name_did_you_mean and
+            self.shorthandPropertyLooksLikeRecoveredSetGenerator(value_node))
+        {
+            return;
+        }
         const id = hir_mod.identifierOf(self.hir, value_node);
         const name = self.string_interner.get(id.name);
         last.code = TsCodes.shorthand_property_no_value;
@@ -36440,6 +36472,19 @@ pub const Checker = struct {
             "No value exists in scope for the shorthand property '{s}'. Either declare one or provide an initializer.",
             .{name},
         );
+    }
+
+    fn shorthandPropertyLooksLikeRecoveredSetGenerator(self: *const Checker, value_node: NodeId) bool {
+        if (self.source == null) return false;
+        if (self.hir.kindOf(value_node) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, value_node);
+        if (!std.mem.eql(u8, self.string_interner.get(id.name), "set")) return false;
+        const span = self.hir.spanOf(value_node);
+        const src = self.source.?;
+        if (span.end >= src.len) return false;
+        var i = span.end;
+        while (i < src.len and std.ascii.isWhitespace(src[i])) : (i += 1) {}
+        return i < src.len and src[i] == '*';
     }
 
     fn isDynamicImportCallee(self: *Checker, callee: NodeId) bool {
@@ -64558,6 +64603,40 @@ test "checker: unresolved shorthand property reports TS18004" {
         try T.expect(d.code != TsCodes.cannot_find_name);
     }
     try T.expect(found);
+}
+
+test "checker: recovered set generator preserves did-you-mean diagnostic" {
+    const s = try newSetup(
+        \\var v = {
+        \\    set
+        \\    *x() {}
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name_did_you_mean) found = true;
+        try T.expect(d.code != TsCodes.shorthand_property_no_value);
+    }
+    try T.expect(found);
+}
+
+test "checker: class heritage prefers merged class over interface" {
+    const s = try newSetup(
+        \\interface I { p: number }
+        \\interface B extends I {}
+        \\class B {}
+        \\class C extends B {
+        \\    get p() { return 1 }
+        \\    set p(value) {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_extend_interface);
+    }
 }
 
 test "checker: noImplicitAny emits TS7008 for bare class and interface members" {
