@@ -496,6 +496,15 @@ event-name normalization, dispose-backed listener cleanup, and
 `replaceModules` `bun:beforeUpdate`/`bun:afterUpdate` emission. The next
 Bake boundary is
 `DEV:hot-9: hmr forwards every merged inotify sub-path from a directory batch`.
+The Bake registration shim now honors platform skip metadata such as
+`skip: ["win32", "darwin"]`, using the native Home runner platform as
+`process.platform`. On macOS this faithfully skips Bun's Linux-only merged
+inotify directory-batch HMR case, so the copied `bake/dev/hot.test.ts`
+file now runs in Home as `8` passed, `0` failed, `0` unsupported, and
+`1` platform skip/todo. The native parity target for that skipped Linux
+case remains Bun's directory watcher merge path and `DevServer.onFileUpdate`
+forwarding of every coalesced sub-path. The next corpus boundary is
+`bake/dev/html.test.ts`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

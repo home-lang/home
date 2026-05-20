@@ -761,6 +761,20 @@ Latest measured full gate after the Bake hot on/off slice:
 unsupported, `35` todo. First failure: `bake/dev/hot.test.ts` with
 `DEV:hot-9: hmr forwards every merged inotify sub-path from a directory batch`.
 
+The Bake registration shim now honors platform skip metadata such as
+`skip: ["win32", "darwin"]`, using the native Home runner platform as
+`process.platform`. On macOS this faithfully skips Bun's Linux-only merged
+inotify directory-batch HMR case, so the copied `bake/dev/hot.test.ts`
+file now runs in Home as `8` passed, `0` failed, `0` unsupported, and
+`1` platform skip/todo. The native parity target for that skipped Linux
+case remains Bun's directory watcher merge path and `DevServer.onFileUpdate`
+forwarding of every coalesced sub-path.
+
+Latest measured full gate after clearing `bake/dev/hot.test.ts` on macOS:
+`4,013` files executed, `474` passed, `3,916` failed, `1,469`
+unsupported, `37` todo. First failure: `bake/dev/html.test.ts` with
+`SyntaxError: Unexpected token ':'. const declared variable 'url' must have an initializer.`
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

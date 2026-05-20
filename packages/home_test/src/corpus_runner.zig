@@ -5,6 +5,7 @@
 //! function surface are still coming online.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const build_options = @import("build_options");
 const corpus = @import("corpus.zig");
 const jsc_bootstrap = @import("adapters/jsc_bootstrap.zig");
@@ -12,6 +13,13 @@ const runner = @import("runner.zig");
 const test_result = @import("result.zig");
 
 const Io = std.Io;
+
+const js_process_platform = switch (builtin.os.tag) {
+    .windows => "win32",
+    .macos => "darwin",
+    .linux => "linux",
+    else => @tagName(builtin.os.tag),
+};
 
 pub const Subset = enum {
     minimal_js,
@@ -189,6 +197,7 @@ pub const minimal_js_files = [_][]const u8{
 };
 
 const harness_prelude =
+    "globalThis.__home_process_platform = \"" ++ js_process_platform ++ "\";\n" ++
     \\var __home_bun_tests = globalThis.__home_bun_tests || { passed: 0, failed: 0, todo: 0, pending: 0, unsupported: 0, firstFailure: null };
     \\globalThis.__home_reset_tests = function() {
     \\  __home_bun_tests = globalThis.__home_bun_tests = { passed: 0, failed: 0, todo: 0, pending: 0, unsupported: 0, firstFailure: null };
@@ -612,6 +621,7 @@ const harness_prelude =
     \\if (!process.versions) process.versions = {};
     \\if (!process.env) process.env = {};
     \\if (!process.execPath) process.execPath = "home";
+    \\if (!process.platform) process.platform = globalThis.__home_process_platform || "unknown";
     \\process.versions.bun = Bun.version;
     \\process.revision = Bun.revision;
     \\process.__home_events = process.__home_events || Object.create(null);
@@ -1473,6 +1483,11 @@ const harness_prelude =
     \\  const count = (__home_bake_counts[basename] = (__home_bake_counts[basename] || 0) + 1);
     \\  const label = nodeEnv === "development" ? " DEV" : "PROD";
     \\  return label + ":" + basename + "-" + count + ": " + String(description);
+    \\}
+    \\function __home_bake_should_skip(options) {
+    \\  if (!options || !options.skip) return false;
+    \\  if (Array.isArray(options.skip)) return options.skip.map(String).includes(String(process.platform || ""));
+    \\  return !!options.skip;
     \\}
     \\function __home_bake_dirname(path) {
     \\  const text = String(path || "");
@@ -2477,6 +2492,7 @@ const harness_prelude =
     \\}
     \\function __home_bake_register_or_run(description, options, nodeEnv) {
     \\  const name = __home_bake_test_name(description, nodeEnv);
+    \\  if (__home_bake_should_skip(options)) return test.skip(name, function() {});
     \\  if ((String(description) === "import identifier doesnt get renamed" || String(description) === "symbol collision with import identifier" || String(description) === "uses \"development\" condition") && options && options.files && options.files["routes/index.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
     \\  }
@@ -6389,6 +6405,37 @@ test "bootstrap runner covers conditional skip helpers" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 8), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+}
+
+test "bootstrap runner honors Bake platform skip metadata" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("platform skip", {
+        \\  skip: [process.platform],
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ scripts: ["index.ts"] }),
+        \\    "index.ts": `console.log("should not run");`,
+        \\  },
+        \\  async test(dev) {
+        \\    throw new Error("skipped Bake test executed");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/hot.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.todo, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
 }
 
