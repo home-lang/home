@@ -37,13 +37,14 @@ pub fn bind(value: JSValue, globalThis: *JSGlobalObject) bun.JSError!JSValue {
 }
 
 const bun = @import("bun");
+const done_callback_scaffold = @import("done_callback_scaffold.zig");
 
-const jsc = bun.jsc;
+const jsc = done_callback_scaffold.jsc;
 const JSGlobalObject = jsc.JSGlobalObject;
 const JSValue = jsc.JSValue;
 const VirtualMachine = jsc.VirtualMachine;
 
-const bun_test = jsc.Jest.bun_test;
-const BunTest = bun_test.BunTest;
-const DoneCallback = bun_test.DoneCallback;
-const groupLog = bun_test.debug.group;
+const bun_test = done_callback_scaffold;
+const BunTest = done_callback_scaffold.BunTest;
+const DoneCallback = done_callback_scaffold.DoneCallback;
+const groupLog = done_callback_scaffold.debug.group;

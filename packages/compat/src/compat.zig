@@ -80,6 +80,20 @@ pub fn create(allocator: std.mem.Allocator, comptime TArg: type, value: TArg) *T
 
 pub const StringHashMapUnmanaged = std.StringHashMapUnmanaged;
 
+pub const String = struct {
+    bytes: []const u8,
+
+    pub const empty = String{ .bytes = "" };
+
+    pub fn static(comptime bytes: []const u8) String {
+        return .{ .bytes = bytes };
+    }
+
+    pub fn slice(this: String) []const u8 {
+        return this.bytes;
+    }
+};
+
 pub const strings = struct {
     pub fn isValidUTF8(input: []const u8) bool {
         return std.unicode.utf8ValidateSlice(input);
@@ -137,6 +151,12 @@ test "compat: StringHashMapUnmanaged alias works" {
     try T.expectEqual(@as(?u32, 1), map.get("a"));
     try T.expectEqual(@as(?u32, 2), map.get("b"));
     try T.expectEqual(@as(?u32, null), map.get("c"));
+}
+
+test "compat: String.static exposes stable bytes" {
+    const value = String.static("done");
+    try T.expectEqualStrings("done", value.slice());
+    try T.expectEqualStrings("", String.empty.slice());
 }
 
 test "compat: handleOom unwraps successful error unions" {

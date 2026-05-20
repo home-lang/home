@@ -55,6 +55,14 @@ while preserving collection semantics: root scope creation under preload
 hooks, describe callback queueing, callback dispatch with scope restore,
 and failed-scope skip behavior.
 
+`zig build test -Dfilter=home_test_bun_tier2_done_callback` build-checks
+the copied async done-callback leaf, `bun/DoneCallback.zig`, through a
+small Home scaffold for the upstream JS wrapper, `JSGlobalObject.bunVM`
+allocator access, `VirtualMachine.get().allocator`, `RefData.deref`, and
+`JSFunction.bind("done")` surface. This keeps the file faithful while
+proving create/bind/finalize semantics under pantry-provided Zig
+0.17-dev.
+
 The bootstrap harness is intentionally narrow but now installs once per
 JSC engine, resets counters before each allowlisted file, reports a file
 as unsupported if it registers zero `bun:test` tests, and preserves
@@ -150,7 +158,7 @@ shape (each ~30-100 LOC, 7-10 `bun.X` references — almost all
 
 | File | LOC | bun | rel | ext | Compile | Top 3 Externs Needed |
 |---|---:|---:|---:|---:|---|---|
-| DoneCallback.zig | 47 | 5 | 0 | 0 | blocked | `bun.md`, `bun.handleOom`, `bun.JSError` |
+| DoneCallback.zig | 47 | 5 | 0 | 0 | tier2-done-callback | `bun.md`, `bun.handleOom`, `bun.JSError` |
 | diff_format.zig | 85 | 5 | 2 | 0 | blocked | `bun.md`, `bun.AllocationScope`, `bun.Output` |
 | debug.zig | 109 | 7 | 1 | 0 | blocked | `bun.JSError`, `bun.md`, `bun.env_var` |
 | harness/recover.zig | 132 | 1 | 0 | 0 | tier0 | `bun.md` |
@@ -291,7 +299,9 @@ These need only `compat` for `OOM`/`handleOom`/`assert`/`md`:
 9. `Order.zig` (187 LOC) — deterministic ordering; compile-checked in
    the focused `home_test_bun_tier2_order` target with a local scaffold
    for the small `bun_test` / `Execution` surface it touches
-10. `DoneCallback.zig` (47 LOC) — async test done callback
+10. `DoneCallback.zig` (47 LOC) — async test done callback;
+    compile-checked in the focused `home_test_bun_tier2_done_callback`
+    target with a local scaffold for create/bind/finalize behavior
 11. `Execution.zig` (695 LOC) — scheduler + timeout machinery
 12. `timers/FakeTimers.zig` (376 LOC) — Jest-style fake timers
 13. `snapshot.zig` (582 LOC) — snapshot persistence (touches
