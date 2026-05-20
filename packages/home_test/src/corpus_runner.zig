@@ -1546,10 +1546,12 @@ const harness_prelude =
     \\    const resolved = __home_bake_resolve_client_import_path(files, scriptPath, specifier);
     \\    return "const " + name + " = __home_bake_run_commonjs_module(" + JSON.stringify(String(files[resolved] || "")) + ");";
     \\  });
-    \\  return out.replace(/import\s+\{\s*([A-Za-z_$][\w$]*)\s*\}\s+from\s+['"]([^'"]+)['"]\s*;?/g, function(_, name, specifier) {
-    \\    const resolved = __home_bake_resolve_client_import_path(files, scriptPath, specifier);
-    \\    const value = __home_bake_export_const_string(files[resolved], name);
-    \\    return "const " + name + " = " + JSON.stringify(value) + ";";
+    \\  return out.replace(/import\s+\{\s*([^}]+?)\s*\}\s+from\s+['"]([^'"]+)['"]\s*;?/g, function(_, names, specifier) {
+    \\    return String(names).split(",").map(name => {
+    \\      const localName = String(name).trim();
+    \\      const value = __home_bake_resolve_named_export(files, scriptPath, specifier, localName);
+    \\      return "const " + localName + " = " + JSON.stringify(value) + ";";
+    \\    }).join("\n");
     \\  });
     \\}
     \\function __home_bake_resolve_client_import_path(files, scriptPath, specifier) {
@@ -1563,6 +1565,20 @@ const harness_prelude =
     \\  const require = function require() {};
     \\  Function("module", "exports", "require", "{\n" + String(source || "") + "\n}")(module, exports, require);
     \\  return module.exports;
+    \\}
+    \\function __home_bake_resolve_named_export(files, scriptPath, specifier, name) {
+    \\  if (!String(specifier || "").startsWith(".")) {
+    \\    const packageIndex = "node_modules/" + specifier + "/index.js";
+    \\    const indexSource = String(files[packageIndex] || "");
+    \\    const escaped = String(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    \\    const match = indexSource.match(new RegExp("export\\s*\\{[^}]*\\b" + escaped + "\\b[^}]*\\}\\s*from\\s*['\\\"]([^'\\\"]+)['\\\"]"));
+    \\    if (match) {
+    \\      const resolved = __home_bake_normalize_path("node_modules/" + specifier + "/" + match[1]);
+    \\      return __home_bake_export_const_string(files[resolved], name);
+    \\    }
+    \\  }
+    \\  const resolved = __home_bake_resolve_client_import_path(files, scriptPath, specifier);
+    \\  return __home_bake_export_const_string(files[resolved], name);
     \\}
     \\function __home_bake_missing_import_error(files, scriptPath, source) {
     \\  const match = String(source || "").match(/import\s+\{\s*[A-Za-z_$][\w$]*\s*\}\s+from\s+['"]([^'"]+)['"]\s*;?/);
@@ -1855,6 +1871,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "commonjs forms" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["cjs.js"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "barrel optimization skips unused submodules" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["node_modules/barrel-lib/index.js"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
@@ -7692,6 +7711,52 @@ test "bootstrap runner executes Bake commonjs forms smoke" {
         \\    await c.expectMessage({ field: "5" });
         \\    await c.expectReload(async () => { await dev.write("cjs.js", `require; eval("module.exports.field = '6'");`); });
         \\    await c.expectMessage({ field: "6" });
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/bundle.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake barrel unused submodule smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("barrel optimization skips unused submodules", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      import { Alpha } from 'barrel-lib';
+        \\      console.log('got: ' + Alpha);
+        \\    `,
+        \\    "node_modules/barrel-lib/package.json": JSON.stringify({
+        \\      name: "barrel-lib",
+        \\      version: "1.0.0",
+        \\      main: "./index.js",
+        \\      sideEffects: false,
+        \\    }),
+        \\    "node_modules/barrel-lib/index.js": `
+        \\      export { Alpha } from './alpha.js';
+        \\      export { Beta } from './beta.js';
+        \\      export { Gamma } from './gamma.js';
+        \\    `,
+        \\    "node_modules/barrel-lib/alpha.js": `export const Alpha = "ALPHA";`,
+        \\    "node_modules/barrel-lib/beta.js": `export const Beta = <<<SYNTAX_ERROR>>>;`,
+        \\    "node_modules/barrel-lib/gamma.js": `export const Gamma = <<<SYNTAX_ERROR>>>;`,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.expectMessage("got: ALPHA");
         \\  },
         \\});
     ;
