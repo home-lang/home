@@ -366,13 +366,15 @@ across startup and hot replay. The CommonJS forms smoke now evaluates the
 imported `.js` fixture with `module`, `exports`, `require`, and `eval`
 bindings and replays all seven Bun update forms. The first barrel
 optimization smoke now resolves only the used `Alpha` re-export and
-leaves broken unused barrel targets untouched.
+leaves broken unused barrel targets untouched. The barrel reload smoke
+now replays entry updates as additional `Beta` and `Gamma` imports are
+introduced from the same barrel.
 
-Latest measured full gate after the Bake barrel-unused slice:
-`4,013` files executed, `420` passed, `3,957` failed, `1,510`
+Latest measured full gate after the Bake barrel reload slice:
+`4,013` files executed, `420` passed, `3,956` failed, `1,509`
 unsupported, `35` todo. First failure: `bake/dev/bundle.test.ts`
 with the named unsupported Bake registration for
-` DEV:bundle-16: barrel optimization: adding a new import triggers reload`.
+` DEV:bundle-17: barrel optimization: multi-file imports preserved across rebuilds`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

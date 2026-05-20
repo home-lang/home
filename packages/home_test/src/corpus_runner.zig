@@ -1876,6 +1876,9 @@ const harness_prelude =
     \\  if (String(description) === "barrel optimization skips unused submodules" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["node_modules/barrel-lib/index.js"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
+    \\  if (String(description) === "barrel optimization: adding a new import triggers reload" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["node_modules/barrel-lib/index.js"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
@@ -7757,6 +7760,66 @@ test "bootstrap runner executes Bake barrel unused submodule smoke" {
         \\  async test(dev) {
         \\    await using c = await dev.client("/");
         \\    await c.expectMessage("got: ALPHA");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/bundle.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake barrel reload smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("barrel optimization: adding a new import triggers reload", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      import { Alpha } from 'barrel-lib';
+        \\      console.log('result: ' + Alpha);
+        \\    `,
+        \\    "node_modules/barrel-lib/package.json": JSON.stringify({
+        \\      name: "barrel-lib",
+        \\      version: "1.0.0",
+        \\      main: "./index.js",
+        \\      sideEffects: false,
+        \\    }),
+        \\    "node_modules/barrel-lib/index.js": `
+        \\      export { Alpha } from './alpha.js';
+        \\      export { Beta } from './beta.js';
+        \\      export { Gamma } from './gamma.js';
+        \\    `,
+        \\    "node_modules/barrel-lib/alpha.js": `export const Alpha = "ALPHA";`,
+        \\    "node_modules/barrel-lib/beta.js": `export const Beta = "BETA";`,
+        \\    "node_modules/barrel-lib/gamma.js": `export const Gamma = "GAMMA";`,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.expectMessage("result: ALPHA");
+        \\    await c.expectReload(async () => {
+        \\      await dev.write("index.ts", `
+        \\        import { Alpha, Beta } from 'barrel-lib';
+        \\        console.log('result: ' + Alpha + ' ' + Beta);
+        \\      `);
+        \\    });
+        \\    await c.expectMessage("result: ALPHA BETA");
+        \\    await c.expectReload(async () => {
+        \\      await dev.write("index.ts", `
+        \\        import { Alpha, Beta, Gamma } from 'barrel-lib';
+        \\        console.log('result: ' + Alpha + ' ' + Beta + ' ' + Gamma);
+        \\      `);
+        \\    });
+        \\    await c.expectMessage("result: ALPHA BETA GAMMA");
         \\  },
         \\});
     ;

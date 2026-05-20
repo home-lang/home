@@ -266,8 +266,10 @@ on startup and after hot replay. The CommonJS forms smoke now evaluates
 the imported `.js` fixture with `module`, `exports`, `require`, and
 `eval` bindings across all seven update forms. The first barrel
 optimization smoke now resolves only the used `Alpha` re-export and
-leaves broken unused barrel targets untouched. The next Bake boundary is
-`DEV:bundle-16: barrel optimization: adding a new import triggers reload`.
+leaves broken unused barrel targets untouched. The barrel reload smoke
+now replays entry updates as additional `Beta` and `Gamma` imports are
+introduced from the same barrel. The next Bake boundary is
+`DEV:bundle-17: barrel optimization: multi-file imports preserved across rebuilds`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
