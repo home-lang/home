@@ -1657,7 +1657,8 @@ pub fn build(b: *std.Build) void {
     debug_exe.root_module.addImport("network", network_pkg);
     debug_exe.root_module.addImport("http", http_pkg);
     debug_exe.root_module.addImport("cloud", cloud_pkg);
-    debug_exe.root_module.addImport("build_options", build_options.createModule());
+    debug_exe.root_module.addImport("home_test", home_test_pkg);
+    debug_exe.root_module.addImport("build_options", build_options_module);
 
     const install_debug = b.addInstallArtifact(debug_exe, .{});
     const debug_step = b.step("debug", "Build Home compiler in Debug mode (with safety checks)");
