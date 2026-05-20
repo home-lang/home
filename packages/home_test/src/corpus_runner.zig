@@ -102,6 +102,9 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/07324.test.ts",
     "regression/issue/07827.test.ts",
     "internal/powershell-escape.test.ts",
+    "js/node/assert/assert.test.cjs",
+    "js/node/assert/assert-match.test.cjs",
+    "js/node/assert/assert-doesNotMatch.test.cjs",
 };
 
 const harness_prelude =
@@ -884,6 +887,25 @@ const harness_prelude =
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
     \\globalThis.__home_modules["bun"] = { semver: Bun.semver };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
+    \\function __home_assert_module(value, message) {
+    \\  if (!value) throw new Error(message || "Assertion failed");
+    \\}
+    \\__home_assert_module.equal = function(actual, expected, message) {
+    \\  if (actual != expected) throw new Error(message || "Expected values to be equal");
+    \\};
+    \\__home_assert_module.strictEqual = function(actual, expected, message) {
+    \\  if (!Object.is(actual, expected)) throw new Error(message || "Expected values to be strictly equal");
+    \\};
+    \\__home_assert_module.match = function(value, regexp, message) {
+    \\  if (typeof value !== "string") throw new TypeError('The "string" argument must be of type string. Received type ' + typeof value);
+    \\  if (!(regexp instanceof RegExp) || !regexp.test(value)) throw new Error(message || "The input did not match");
+    \\};
+    \\__home_assert_module.doesNotMatch = function(value, regexp, message) {
+    \\  if (typeof value !== "string") throw new TypeError('The "string" argument must be of type string. Received type ' + typeof value);
+    \\  if (regexp instanceof RegExp && regexp.test(value)) throw new Error(message || "The input was expected to not match");
+    \\};
+    \\globalThis.__home_modules["assert"] = __home_assert_module;
+    \\globalThis.__home_modules["node:assert"] = __home_assert_module;
     \\globalThis.__home_modules["assert/strict"] = {
     \\  deepStrictEqual(actual, expected) {
     \\    if (!__home_deep_equal(actual, expected, true, new Map())) {
@@ -938,6 +960,10 @@ const harness_prelude =
     \\  if (!module) throw new Error("Cannot find module: " + String(specifier));
     \\  return module;
     \\};
+    \\globalThis.require = function(specifier) {
+    \\  return globalThis.__home_import(specifier);
+    \\};
+    \\globalThis.require.cache = Object.create(null);
     \\if (typeof Headers !== "function") {
     \\  var Headers = function(init) {
     \\    this.__home_headers = {};
@@ -2109,6 +2135,9 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/07324.test.ts", filesForSubset(.minimal_js)[48]);
     try std.testing.expectEqualStrings("regression/issue/07827.test.ts", filesForSubset(.minimal_js)[49]);
     try std.testing.expectEqualStrings("internal/powershell-escape.test.ts", filesForSubset(.minimal_js)[50]);
+    try std.testing.expectEqualStrings("js/node/assert/assert.test.cjs", filesForSubset(.minimal_js)[51]);
+    try std.testing.expectEqualStrings("js/node/assert/assert-match.test.cjs", filesForSubset(.minimal_js)[52]);
+    try std.testing.expectEqualStrings("js/node/assert/assert-doesNotMatch.test.cjs", filesForSubset(.minimal_js)[53]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -2164,6 +2193,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "UnreachableError") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest, mock, onTestFinished, test") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun\"] = { semver: Bun.semver }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"assert\"] = __home_assert_module") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"assert/strict\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:vm\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun:internal-for-testing\"]") != null);
@@ -2172,6 +2202,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "createDenoTest(path)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "denoTest.ignore") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_import") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.require = function(specifier)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.redirect") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.json") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var HTMLRewriter = function()") != null);
@@ -3018,6 +3049,41 @@ test "bootstrap runner covers PowerShell escaping helper" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers CommonJS assert require helpers" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\var assert = require("assert");
+        \\
+        \\test("assert from require as a function does not throw", () => assert(true));
+        \\test("match does not throw when matching", () => {
+        \\  assert.match("I will pass", /pass/);
+        \\});
+        \\test("match throws when argument is not string", () => {
+        \\  expect(() => assert.match(123, /pass/)).toThrow('The "string" argument must be of type string. Received type number');
+        \\});
+        \\test("doesNotMatch does not throw when not matching", () => {
+        \\  assert.doesNotMatch("I will pass", /different/);
+        \\});
+        \\test("doesNotMatch throws when matching", () => {
+        \\  expect(() => assert.doesNotMatch("I will fail", /fail/, "doesNotMatch throws when matching")).toThrow(
+        \\    "doesNotMatch throws when matching",
+        \\  );
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/assert/assert-cjs-smoke.test.cjs");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
 }
 
 test "bootstrap runner reports unsupported thrown by harness as unsupported" {
