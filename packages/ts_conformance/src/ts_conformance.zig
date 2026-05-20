@@ -3444,6 +3444,41 @@ test "conformance: sub-strict directive without @strict keeps inferred strict-on
     try T.expect(merged_with_strict_on.use_unknown_in_catch_variables);
 }
 
+test "conformance: instanceMemberInitialization passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "instanceMemberInitialization",
+        .path = "instanceMemberInitialization.ts",
+        .source =
+        \\// @target: es2015
+        \\class C {
+        \\    x = 1;
+        \\}
+        \\
+        \\var c = new C();
+        \\c.x = 3;
+        \\var c2 = new C();
+        \\var r = c.x === c2.x;
+        \\
+        \\// #31792
+        \\
+        \\
+        \\
+        \\class MyMap<K, V> {
+        \\    constructor(private readonly Map_: { new<K, V>(): any }) {}
+        \\    private readonly store = new this.Map_<K, V>();
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: strictPropertyInitialization C1 slice" {
     // Slice of `strictPropertyInitialization.ts` — class C1 only:
     // four TS2564s for `a: number`, `c: number | null`, `#f: number`,
