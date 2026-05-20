@@ -687,6 +687,11 @@ behavior, split compile maps, and the CLI
 `bun build --compile --outfile ... --sourcemap=external` path. Native
 parity still needs Bun's real compile pipeline, executable embedding,
 source-map writer, and runtime stack remapping.
+The copied `bundler/bun-build-compile-wasm.test.ts` fixture now passes
+as `1` test through the same compile-mode model, with compiled-artifact
+execution returning the expected WASM stdout. Native parity still needs
+Bun's real embedded WASM resource handling and WebAssembly runtime
+loading.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

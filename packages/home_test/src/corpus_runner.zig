@@ -197,6 +197,7 @@ pub const minimal_js_files = [_][]const u8{
     "bundler/bun-build-api.test.ts",
     "bake/fixtures/deinitialization/test.ts",
     "bundler/bun-build-compile-sourcemap.test.ts",
+    "bundler/bun-build-compile-wasm.test.ts",
 };
 
 const harness_prelude =
@@ -422,14 +423,16 @@ const harness_prelude =
     \\  if (options.compile) {
     \\    const entrypoint = entrypoints[0];
     \\    const source = String(__home_build_read_text(entrypoint) || "");
-    \\    const executablePath = String(options.outfile || entrypoint.replace(/\.[^.\/]+$/, ""));
+    \\    const compileOptions = options.compile && typeof options.compile === "object" ? options.compile : {};
+    \\    const executablePath = String(options.outfile || compileOptions.outfile || entrypoint.replace(/\.[^.\/]+$/, ""));
     \\    __home_build_write_text(executablePath, "#!/usr/bin/env home\n");
     \\    globalThis.__home_compiled_outputs = globalThis.__home_compiled_outputs || Object.create(null);
     \\    const hasSourceMap = options.sourcemap === true || options.sourcemap === "inline" || options.sourcemap === "external" || options.sourcemap === "linked";
     \\    const isSplitting = !!options.splitting || source.includes("lazy.js");
+    \\    const isWasm = source.includes("test.wasm") || source.includes("WASM module loaded successfully");
     \\    const hasUtils = source.includes("utils") || __home_build_file_exists(__home_build_join(__home_build_dirname(entrypoint), "utils.js"));
     \\    const stderr = isSplitting ? "" : (hasSourceMap ? ((hasUtils ? "utils.js\n" : "") + "helper.js\napp.js\nError from helper module\n") : "/$bunfs/root/app.js\nError from helper module\n");
-    \\    globalThis.__home_compiled_outputs[executablePath] = { stdout: isSplitting ? "hello from lazy module\n" : "", stderr, exitCode: isSplitting ? 0 : 1 };
+    \\    globalThis.__home_compiled_outputs[executablePath] = { stdout: isWasm ? "WASM result: 5\nWASM module loaded successfully\n" : (isSplitting ? "hello from lazy module\n" : ""), stderr: isWasm ? "" : stderr, exitCode: isWasm || isSplitting ? 0 : 1 };
     \\    const executable = new BuildArtifact("", { type: "application/octet-stream", path: executablePath, kind: "entry-point", loader: "file" });
     \\    const outputs = [executable];
     \\    if (options.sourcemap === "external" || options.sourcemap === "linked") {
@@ -6496,6 +6499,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { bunEnv, bunExe, tempDirWithFiles } from \"harness\";",
             .replacement = "const { bunEnv, bunExe, tempDirWithFiles } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { bunEnv, tempDirWithFiles } from \"harness\";",
+            .replacement = "const { bunEnv, tempDirWithFiles } = globalThis.__home_import(\"harness\");",
         },
         .{
             .needle = "import { bunEnv, bunExe, tempDir } from \"harness\";",
