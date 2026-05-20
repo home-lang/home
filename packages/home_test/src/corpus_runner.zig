@@ -154,6 +154,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/path/normalize.test.js",
     "js/node/path/join.test.js",
     "js/node/path/dirname.test.js",
+    "js/node/path/parse-format.test.js",
 };
 
 const harness_prelude =
@@ -1213,7 +1214,10 @@ const harness_prelude =
     \\  if (actual != expected) throw new Error(message || "Expected values to be equal");
     \\};
     \\__home_assert_module.strictEqual = function(actual, expected, message) {
-    \\  if (!Object.is(actual, expected)) throw new Error(message || "Expected values to be strictly equal");
+    \\  if (!Object.is(actual, expected)) throw new Error(message || ("Expected " + __home_format(actual) + " to be strictly equal to " + __home_format(expected)));
+    \\};
+    \\__home_assert_module.deepStrictEqual = function(actual, expected, message) {
+    \\  if (!__home_deep_equal(actual, expected, true, new Map())) throw new Error(message || ("Expected " + __home_format(actual) + " to deeply equal " + __home_format(expected)));
     \\};
     \\__home_assert_module.fail = function(message) {
     \\  throw new Error(message || "Failed");
@@ -1226,6 +1230,40 @@ const harness_prelude =
     \\  if (typeof value !== "string") throw new TypeError('The "string" argument must be of type string. Received type ' + typeof value);
     \\  if (regexp instanceof RegExp && regexp.test(value)) throw new Error(message || "The input was expected to not match");
     \\};
+    \\__home_assert_module.throws = function(fn, expected, message) {
+    \\  if (typeof fn !== "function") throw new TypeError("The \"fn\" argument must be of type function");
+    \\  let thrown = null;
+    \\  try {
+    \\    fn();
+    \\  } catch (error) {
+    \\    thrown = error;
+    \\  }
+    \\  if (thrown === null) throw new Error(message || "Missing expected exception");
+    \\  if (expected && typeof expected === "object") {
+    \\    for (const key of Object.keys(expected)) {
+    \\      if (!Object.is(thrown[key], expected[key])) {
+    \\        throw new Error(message || "Expected thrown " + key + " to be " + __home_format(expected[key]) + ", got " + __home_format(thrown[key]));
+    \\      }
+    \\    }
+    \\  }
+    \\};
+    \\function __home_path_invalid_arg(name, expected, actual) {
+    \\  const error = new TypeError('The "' + name + '" argument must be of type ' + expected + ". Received " + (actual === null ? "null" : typeof actual));
+    \\  error.code = "ERR_INVALID_ARG_TYPE";
+    \\  return error;
+    \\}
+    \\function __home_path_validate_string(value, name) {
+    \\  if (typeof value !== "string") throw __home_path_invalid_arg(name, "string", value);
+    \\  return value;
+    \\}
+    \\function __home_path_validate_object(value, name) {
+    \\  if (value === null || typeof value !== "object") {
+    \\    const error = new TypeError('The "' + name + '" property must be of type object, got ' + typeof value);
+    \\    error.code = "ERR_INVALID_ARG_TYPE";
+    \\    throw error;
+    \\  }
+    \\  return value;
+    \\}
     \\function __home_path_posix_join() {
     \\  const joined = Array.prototype.slice.call(arguments).filter(part => String(part).length > 0).join("/");
     \\  return joined.length === 0 ? "." : __home_path_posix_normalize(joined);
@@ -1370,6 +1408,84 @@ const harness_prelude =
     \\function __home_path_win32_extname(value) {
     \\  return __home_path_extname_impl(value, true);
     \\}
+    \\function __home_path_parse_ext(base) {
+    \\  if (base === "" || base === "." || base === "..") return { ext: "", name: base };
+    \\  const lastDot = base.lastIndexOf(".");
+    \\  if (lastDot <= 0) return { ext: "", name: base };
+    \\  return { ext: base.slice(lastDot), name: base.slice(0, lastDot) };
+    \\}
+    \\function __home_path_posix_parse(value) {
+    \\  const text = __home_path_validate_string(value, "path");
+    \\  if (text.length === 0) return { root: "", dir: "", base: "", ext: "", name: "" };
+    \\  const root = text.charCodeAt(0) === 47 ? "/" : "";
+    \\  let end = text.length;
+    \\  while (end > root.length && text.charCodeAt(end - 1) === 47) end--;
+    \\  let base = text.slice(root.length, end);
+    \\  let dir = "";
+    \\  const lastSlash = text.lastIndexOf("/", end - 1);
+    \\  if (lastSlash >= 0) {
+    \\    base = text.slice(lastSlash + 1, end);
+    \\    dir = lastSlash === 0 ? root : text.slice(0, lastSlash);
+    \\  }
+    \\  const parsed = __home_path_parse_ext(base);
+    \\  return { root, dir, base, ext: parsed.ext, name: parsed.name };
+    \\}
+    \\function __home_path_win32_root(text) {
+    \\  const drive = text.match(/^([A-Za-z]:)([\\/]?)/);
+    \\  if (drive) return drive[1] + (drive[2] ? "\\" : "");
+    \\  const unc = text.match(/^[\\/]{2}([^\\/]+)[\\/]+([^\\/]+)([\\/]?)/);
+    \\  if (unc) return "\\\\" + unc[1] + "\\" + unc[2] + (unc[3] ? "\\" : "");
+    \\  return /^[\\/]/.test(text) ? text.charAt(0) : "";
+    \\}
+    \\function __home_path_win32_parse(value) {
+    \\  const text = __home_path_validate_string(value, "path");
+    \\  if (text.length === 0) return { root: "", dir: "", base: "", ext: "", name: "" };
+    \\  const root = __home_path_win32_root(text);
+    \\  let end = text.length;
+    \\  while (end > root.length && __home_path_is_win32_separator(text.charCodeAt(end - 1))) end--;
+    \\  let lastSlash = -1;
+    \\  for (let i = end - 1; i >= root.length; --i) {
+    \\    if (__home_path_is_win32_separator(text.charCodeAt(i))) {
+    \\      lastSlash = i;
+    \\      break;
+    \\    }
+    \\  }
+    \\  let dir = "";
+    \\  let base = text.slice(root.length, end);
+    \\  if (lastSlash >= 0) {
+    \\    dir = text.slice(0, lastSlash);
+    \\    if (dir.length === 0 && root.length > 0) dir = root;
+    \\    base = text.slice(lastSlash + 1, end);
+    \\  } else if (root.length > 0) {
+    \\    dir = root;
+    \\  }
+    \\  const parsed = __home_path_parse_ext(base);
+    \\  return { root, dir, base, ext: parsed.ext, name: parsed.name };
+    \\}
+    \\function __home_path_format_impl(value, win32) {
+    \\  const object = __home_path_validate_object(value, "pathObject");
+    \\  const sep = win32 ? "\\" : "/";
+    \\  const dir = object.dir || object.root || "";
+    \\  let base = object.base;
+    \\  if (base === undefined) {
+    \\    const name = object.name || "";
+    \\    let ext = object.ext || "";
+    \\    if (ext.length > 0 && ext.charCodeAt(0) !== 46) ext = "." + ext;
+    \\    base = name + ext;
+    \\  }
+    \\  base = String(base || "");
+    \\  if (dir.length === 0) return base;
+    \\  if (object.root && dir === object.root && base.length === 0) return dir;
+    \\  if (base.length === 0) return /[\\/]$/.test(dir) ? dir : dir + sep;
+    \\  if (object.root && dir === object.root) return dir + base;
+    \\  return dir + sep + base;
+    \\}
+    \\function __home_path_posix_format(value) {
+    \\  return __home_path_format_impl(value, false);
+    \\}
+    \\function __home_path_win32_format(value) {
+    \\  return __home_path_format_impl(value, true);
+    \\}
     \\function __home_path_posix_dirname(value) {
     \\  const text = String(value);
     \\  if (text.length === 0) return ".";
@@ -1448,9 +1564,9 @@ const harness_prelude =
     \\  }
     \\  return text.slice(0, end);
     \\}
-    \\const __home_path_posix = { join: __home_path_posix_join, dirname: __home_path_posix_dirname, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_posix_normalize, basename: __home_path_posix_basename, extname: __home_path_posix_extname };
-    \\const __home_path_win32 = { join: __home_path_win32_join, dirname: __home_path_win32_dirname, isAbsolute: __home_path_win32_is_absolute, normalize: __home_path_win32_normalize, basename: __home_path_win32_basename, extname: __home_path_win32_extname };
-    \\const __home_path_module = { join: __home_path_join, dirname: __home_path_posix_dirname, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_normalize, resolve: __home_path_resolve, relative: __home_path_relative, basename: __home_path_posix_basename, extname: __home_path_posix_extname, posix: __home_path_posix, win32: __home_path_win32 };
+    \\const __home_path_posix = { join: __home_path_posix_join, dirname: __home_path_posix_dirname, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_posix_normalize, basename: __home_path_posix_basename, extname: __home_path_posix_extname, parse: __home_path_posix_parse, format: __home_path_posix_format };
+    \\const __home_path_win32 = { join: __home_path_win32_join, dirname: __home_path_win32_dirname, isAbsolute: __home_path_win32_is_absolute, normalize: __home_path_win32_normalize, basename: __home_path_win32_basename, extname: __home_path_win32_extname, parse: __home_path_win32_parse, format: __home_path_win32_format };
+    \\const __home_path_module = { join: __home_path_join, dirname: __home_path_posix_dirname, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_normalize, resolve: __home_path_resolve, relative: __home_path_relative, basename: __home_path_posix_basename, extname: __home_path_posix_extname, parse: __home_path_posix_parse, format: __home_path_posix_format, posix: __home_path_posix, win32: __home_path_win32 };
     \\globalThis.__home_modules["assert"] = __home_assert_module;
     \\globalThis.__home_modules["node:assert"] = __home_assert_module;
     \\globalThis.__home_modules["path"] = __home_path_module;
@@ -3301,6 +3417,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/node/path/normalize.test.js",
         "js/node/path/join.test.js",
         "js/node/path/dirname.test.js",
+        "js/node/path/parse-format.test.js",
     };
 
     for (expected) |path| {
