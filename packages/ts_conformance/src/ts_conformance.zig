@@ -3444,6 +3444,30 @@ test "conformance: sub-strict directive without @strict keeps inferred strict-on
     try T.expect(merged_with_strict_on.use_unknown_in_catch_variables);
 }
 
+test "conformance: typeAliasesDoNotMerge matches TS2395 baseline" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeAliasesDoNotMerge",
+        .path = "typeAliasesDoNotMerge.ts",
+        .source =
+        \\// @module: commonjs
+        \\// @target: es2015
+        \\export type A = {}
+        \\type A = {}
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\typeAliasesDoNotMerge.ts(1,13): error TS2395: Individual declarations in merged declaration 'A' must be all exported or all local.
+        \\typeAliasesDoNotMerge.ts(2,6): error TS2395: Individual declarations in merged declaration 'A' must be all exported or all local.
+        ,
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: instanceMemberInitialization passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "instanceMemberInitialization",
