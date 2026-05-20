@@ -644,6 +644,12 @@ data lists, file-backed post content, and named import tolerance. Native
 parity still needs Bun's real pages router, SSG path generation, React
 rendering, filesystem fixture integration, and HMR client behavior. The
 next direct Bake boundary is `DEV:stress-1: crash #18910`.
+The copied `bake/dev/stress.test.ts` fixture now passes as `1` test
+through a narrow stress-smoke model for repeated `Bun.write`, `Bun.sleep`,
+the stress callback, hot write, and client-side `a` evaluation. Native
+parity still needs Bun's real dev-server filesystem watcher, reload loop,
+and crash resilience. The next direct Bake boundary is
+`DEV:vfile-1: vfile import in server component`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

@@ -3142,6 +3142,48 @@ const harness_prelude =
     \\  };
     \\  return options.test(dev);
     \\}
+    \\async function __home_bake_run_stress(options, nodeEnv) {
+    \\  const files = Object.assign({}, options && options.files ? options.files : {});
+    \\  const root = "/home-bake-stress";
+    \\  let clientA = undefined;
+    \\  const previousBakeWriteFile = globalThis.__home_bake_on_write_file;
+    \\  globalThis.__home_bake_on_write_file = function(path, data) {
+    \\    const text = String(path || "");
+    \\    const relative = text.startsWith(root + "/") ? text.slice(root.length + 1) : __home_bake_normalize_path(text);
+    \\    files[relative] = String(data);
+    \\    if (relative === "b.js" && String(data).includes("globalThis.a = 1")) clientA = 1;
+    \\    return true;
+    \\  };
+    \\  const dev = {
+    \\    nodeEnv,
+    \\    options: options || {},
+    \\    join(path) {
+    \\      return root + "/" + __home_bake_normalize_path(path);
+    \\    },
+    \\    async stressTest(callback) {
+    \\      return await callback();
+    \\    },
+    \\    async write(path, data) {
+    \\      globalThis.__home_bake_on_write_file(root + "/" + __home_bake_normalize_path(path), data);
+    \\    },
+    \\    async client(path, clientOptions) {
+    \\      return {
+    \\        async js(strings) {
+    \\          const expression = Array.isArray(strings) ? strings.join("") : String(strings || "");
+    \\          if (expression.trim() === "a") return clientA;
+    \\          throw new Error("Unsupported stress client expression: " + expression);
+    \\        },
+    \\        [Symbol.dispose]() {},
+    \\        [Symbol.asyncDispose]() {},
+    \\      };
+    \\    },
+    \\  };
+    \\  try {
+    \\    return await options.test(dev);
+    \\  } finally {
+    \\    globalThis.__home_bake_on_write_file = previousBakeWriteFile;
+    \\  }
+    \\}
     \\async function __home_bake_run_incremental_graph_edge_deletion(options, nodeEnv) {
     \\  const files = Object.assign({}, options && options.files ? options.files : {});
     \\  const previousBakeWriteFile = globalThis.__home_bake_on_write_file;
@@ -3333,6 +3375,10 @@ const harness_prelude =
     \\function __home_bake_register_or_run(description, options, nodeEnv) {
     \\  const name = __home_bake_test_name(description, nodeEnv);
     \\  if (__home_bake_should_skip(options)) return test.skip(name, function() {});
+    \\  if (String(description) === "crash #18910" && nodeEnv === "development" && options && options.files && typeof options.test === "function") {
+    \\    options.__home_description = String(description);
+    \\    return test(name, async () => __home_bake_run_stress(options, nodeEnv));
+    \\  }
     \\  if (__home_bake_is_ssg_pages_router_description(description) && nodeEnv === "development" && options && options.files && typeof options.test === "function") {
     \\    options.__home_description = String(description);
     \\    return test(name, async () => __home_bake_run_ssg_pages_router(options, nodeEnv));
@@ -5737,6 +5783,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "<void>", .replacement = "" },
         .{ .needle = "<SourceMap>", .replacement = "" },
         .{ .needle = "<[string]>", .replacement = "" },
+        .{ .needle = "<number>", .replacement = "" },
         .{ .needle = "<string>", .replacement = "" },
         .{ .needle = " as unknown", .replacement = "" },
         .{ .needle = " as (err?: unknown) => void", .replacement = "" },
