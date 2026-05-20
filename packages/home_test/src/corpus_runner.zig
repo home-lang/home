@@ -92,6 +92,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/deno/event/custom-event.test.ts",
     "js/deno/event/event.test.ts",
     "js/deno/abort/abort-controller.test.ts",
+    "js/deno/url/urlsearchparams.test.ts",
 };
 
 const harness_prelude =
@@ -818,6 +819,142 @@ const harness_prelude =
     \\  };
     \\}
     \\globalThis.__home_modules["node-fetch"] = { Request };
+    \\if (typeof URLSearchParams !== "function") {
+    \\  function __home_url_hex(byte) {
+    \\    const text = byte.toString(16).toUpperCase();
+    \\    return text.length === 1 ? "0" + text : text;
+    \\  }
+    \\  function __home_url_encode(value) {
+    \\    return encodeURIComponent(String(value)).replace(/%20/g, "+").replace(/[!'()~]/g, ch => "%" + __home_url_hex(ch.charCodeAt(0)));
+    \\  }
+    \\  function __home_url_is_hex(ch) {
+    \\    return /^[0-9A-Fa-f]$/.test(ch);
+    \\  }
+    \\  function __home_url_decode(value) {
+    \\    const input = String(value).replace(/\+/g, " ");
+    \\    let output = "";
+    \\    for (let i = 0; i < input.length;) {
+    \\      if (input[i] !== "%") {
+    \\        output += input[i++];
+    \\        continue;
+    \\      }
+    \\      let run = "";
+    \\      let cursor = i;
+    \\      while (cursor + 2 < input.length && input[cursor] === "%" && __home_url_is_hex(input[cursor + 1]) && __home_url_is_hex(input[cursor + 2])) {
+    \\        run += input.slice(cursor, cursor + 3);
+    \\        cursor += 3;
+    \\      }
+    \\      if (run.length === 0) {
+    \\        output += input[i++];
+    \\        continue;
+    \\      }
+    \\      try {
+    \\        output += decodeURIComponent(run);
+    \\      } catch (error) {
+    \\        output += run;
+    \\      }
+    \\      i = cursor;
+    \\    }
+    \\    return output;
+    \\  }
+    \\  var URLSearchParams = function(init) {
+    \\    this.__home_pairs = [];
+    \\    if (init === undefined) return;
+    \\    if (typeof init === "string") {
+    \\      let text = init;
+    \\      if (text[0] === "?") text = text.slice(1);
+    \\      if (text.length === 0) return;
+    \\      const parts = text.split("&");
+    \\      for (const part of parts) {
+    \\        if (part === "") continue;
+    \\        const equal = part.indexOf("=");
+    \\        const name = equal === -1 ? part : part.slice(0, equal);
+    \\        const value = equal === -1 ? "" : part.slice(equal + 1);
+    \\        this.__home_pairs.push([__home_url_decode(name), __home_url_decode(value)]);
+    \\      }
+    \\      return;
+    \\    }
+    \\    if (init !== null && typeof init[Symbol.iterator] === "function") {
+    \\      for (const pair of init) {
+    \\        if (pair == null || typeof pair[Symbol.iterator] !== "function") throw new TypeError("Each query pair must be iterable");
+    \\        const values = Array.from(pair);
+    \\        if (values.length !== 2) throw new TypeError("Each query pair must have exactly two items");
+    \\        this.__home_pairs.push([String(values[0]), String(values[1])]);
+    \\      }
+    \\      return;
+    \\    }
+    \\    if (init !== null && typeof init === "object") {
+    \\      for (const key of Object.keys(init)) this.__home_pairs.push([String(key), String(init[key])]);
+    \\      return;
+    \\    }
+    \\    throw new TypeError("Invalid URLSearchParams initializer");
+    \\  };
+    \\  URLSearchParams.prototype.append = function(name, value) {
+    \\    if (arguments.length < 2) throw new TypeError("append requires 2 arguments");
+    \\    this.__home_pairs.push([String(name), String(value)]);
+    \\  };
+    \\  URLSearchParams.prototype.delete = function(name) {
+    \\    if (arguments.length < 1) throw new TypeError("delete requires 1 argument");
+    \\    const key = String(name);
+    \\    this.__home_pairs = this.__home_pairs.filter(pair => pair[0] !== key);
+    \\  };
+    \\  URLSearchParams.prototype.get = function(name) {
+    \\    if (arguments.length < 1) throw new TypeError("get requires 1 argument");
+    \\    const key = String(name);
+    \\    for (const pair of this.__home_pairs) if (pair[0] === key) return pair[1];
+    \\    return null;
+    \\  };
+    \\  URLSearchParams.prototype.getAll = function(name) {
+    \\    if (arguments.length < 1) throw new TypeError("getAll requires 1 argument");
+    \\    const key = String(name);
+    \\    const values = [];
+    \\    for (const pair of this.__home_pairs) if (pair[0] === key) values.push(pair[1]);
+    \\    return values;
+    \\  };
+    \\  URLSearchParams.prototype.has = function(name) {
+    \\    if (arguments.length < 1) throw new TypeError("has requires 1 argument");
+    \\    const key = String(name);
+    \\    for (const pair of this.__home_pairs) if (pair[0] === key) return true;
+    \\    return false;
+    \\  };
+    \\  URLSearchParams.prototype.set = function(name, value) {
+    \\    if (arguments.length < 2) throw new TypeError("set requires 2 arguments");
+    \\    const key = String(name);
+    \\    const stringValue = String(value);
+    \\    let found = false;
+    \\    const pairs = [];
+    \\    for (const pair of this.__home_pairs) {
+    \\      if (pair[0] === key) {
+    \\        if (!found) pairs.push([key, stringValue]);
+    \\        found = true;
+    \\      } else {
+    \\        pairs.push(pair);
+    \\      }
+    \\    }
+    \\    if (!found) pairs.push([key, stringValue]);
+    \\    this.__home_pairs = pairs;
+    \\  };
+    \\  URLSearchParams.prototype.sort = function() {
+    \\    this.__home_pairs = this.__home_pairs.map((pair, index) => ({ pair, index })).sort((a, b) => a.pair[0] < b.pair[0] ? -1 : (a.pair[0] > b.pair[0] ? 1 : a.index - b.index)).map(item => item.pair);
+    \\  };
+    \\  URLSearchParams.prototype.forEach = function(callback, thisArg) {
+    \\    if (arguments.length < 1) throw new TypeError("forEach requires 1 argument");
+    \\    for (const pair of this.__home_pairs) callback.call(thisArg, pair[1], pair[0], this);
+    \\  };
+    \\  URLSearchParams.prototype.entries = function*() {
+    \\    for (const pair of this.__home_pairs) yield [pair[0], pair[1]];
+    \\  };
+    \\  URLSearchParams.prototype.keys = function*() {
+    \\    for (const pair of this.__home_pairs) yield pair[0];
+    \\  };
+    \\  URLSearchParams.prototype.values = function*() {
+    \\    for (const pair of this.__home_pairs) yield pair[1];
+    \\  };
+    \\  URLSearchParams.prototype[Symbol.iterator] = URLSearchParams.prototype.entries;
+    \\  URLSearchParams.prototype.toString = function() {
+    \\    return this.__home_pairs.map(pair => __home_url_encode(pair[0]) + "=" + __home_url_encode(pair[1])).join("&");
+    \\  };
+    \\}
     \\if (typeof Buffer !== "function") {
     \\  var Buffer = function(size) {
     \\    const bytes = new Uint8Array(size);
@@ -1355,13 +1492,20 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": any[] =", .replacement = " =" },
         .{ .needle = ": any =", .replacement = " =" },
         .{ .needle = ": number =", .replacement = " =" },
+        .{ .needle = ": string)=>", .replacement = ")=>" },
+        .{ .needle = ": string, value: string)", .replacement = ", value)" },
         .{ .needle = ": any)", .replacement = ")" },
         .{ .needle = ": Event)", .replacement = ")" },
         .{ .needle = ": any;", .replacement = ";" },
+        .{ .needle = ": IterableIterator<[string, string]>", .replacement = "" },
+        .{ .needle = ": IterableIterator<[number, number]>", .replacement = "" },
         .{ .needle = "!: any", .replacement = "" },
         .{ .needle = "!.", .replacement = "." },
         .{ .needle = "<any, any>", .replacement = "" },
         .{ .needle = ": Array<[any, (event: any) => string]>", .replacement = "" },
+        .{ .needle = " as unknown", .replacement = "" },
+        .{ .needle = " as string[][]", .replacement = "" },
+        .{ .needle = " as string", .replacement = "" },
         .{ .needle = " as any", .replacement = "" },
         .{ .needle = " as const", .replacement = "" },
         .{ .needle = " as CustomEventInit", .replacement = "" },
@@ -1722,6 +1866,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/deno/event/custom-event.test.ts", filesForSubset(.minimal_js)[38]);
     try std.testing.expectEqualStrings("js/deno/event/event.test.ts", filesForSubset(.minimal_js)[39]);
     try std.testing.expectEqualStrings("js/deno/abort/abort-controller.test.ts", filesForSubset(.minimal_js)[40]);
+    try std.testing.expectEqualStrings("js/deno/url/urlsearchparams.test.ts", filesForSubset(.minimal_js)[41]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -1786,6 +1931,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Event.prototype.preventDefault") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var AbortController = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "AbortSignal.abort = function(reason)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var URLSearchParams = function(init)") != null);
 }
 
 test "Bun test import rewrite lowers to the virtual test module" {
@@ -1907,6 +2053,34 @@ test "bootstrap rewrite erases Deno event type syntax" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, ": any") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, " as EventInit") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "!.") == null);
+}
+
+test "bootstrap rewrite erases Deno URLSearchParams type syntax" {
+    const source =
+        \\import { createDenoTest } from "deno:harness";
+        \\const { test, assertEquals } = createDenoTest(import.meta.path);
+        \\test(function urlSearchParamsAppendArgumentsCheck() {
+        \\  ["append"].forEach((method: string)=>{
+        \\    const searchParams = new URLSearchParams();
+        \\    (searchParams as any)[method]("foo");
+        \\  });
+        \\  const params = new URLSearchParams();
+        \\  params.append("first", (1 as unknown) as string);
+        \\  params[Symbol.iterator] = function*(): IterableIterator<[number, number]> { yield [1, 2]; };
+        \\  const params1 = new URLSearchParams((params as unknown) as string[][]);
+        \\  class CustomSearchParams extends URLSearchParams {
+        \\    append(name: string, value: string) { super.append(name, value); }
+        \\    *entries(): IterableIterator<[string, string]> { yield* []; }
+        \\  }
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/deno/url/urlsearchparams.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, ": string") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, " as ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "IterableIterator") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "append(name, value)") != null);
 }
 
 test "bootstrap rewrite erases const assertions" {
@@ -2075,6 +2249,37 @@ test "bootstrap runner covers Deno AbortController behavior" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/abort/abort-controller.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers URLSearchParams behavior" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { createDenoTest } from "deno:harness";
+        \\const { test, assertEquals } = createDenoTest(import.meta.path);
+        \\test(function urlSearchParamsBehavior() {
+        \\  assertEquals(new URLSearchParams({ str: "this string has spaces in it" }).toString(), "str=this+string+has+spaces+in+it");
+        \\  assertEquals(new URLSearchParams("q=a+b").get("q"), "a b");
+        \\  assertEquals(new URLSearchParams("b=%2%2af%2a").get("b"), "%2*f*");
+        \\  const params = new URLSearchParams("c=4&a=2&b=3&a=1");
+        \\  params.sort();
+        \\  assertEquals(params.toString(), "a=2&a=1&b=3&c=4");
+        \\  let hasThrown = 0;
+        \\  try { new URLSearchParams([["1"]]); } catch (err) { if (err instanceof TypeError) hasThrown = 1; }
+        \\  assertEquals(hasThrown, 1);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/url/urlsearchparams.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);

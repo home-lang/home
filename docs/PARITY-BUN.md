@@ -6,7 +6,7 @@ row is in the
 [README parity status](../README.md#bun-runtime-port-packagesruntime)
 section.
 
-> **Status:** Substrate + JSC M6 landed. 485 / 1,193 Bun source
+> **Status:** Substrate + JSC M6 landed. 486 / 1,193 Bun source
 > files ported (~40.7%); the runtime is not yet JavaScript-callable
 > end-to-end, but Phase 12.2 (JSC bring-up) has reached the M6
 > milestone — JSON + Promise + Iterator + Global helpers — across
@@ -169,13 +169,13 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes forty-one allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes forty-two allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
 todo-registration smoke, the Web `atob`/`btoa` smoke, fourteen
 regression smokes, one bundler constant-fold smoke, six test-runner
 expectation smokes, one nested-describe smoke, `Bun.stripANSI` and
-`Bun.wrapAnsi` smokes, retry/repeats runner behavior, `test.concurrent.each`, Deno `Event` / `CustomEvent` / `AbortController`, and narrow bootstrap coverage for Node `DOMException`, Web
+`Bun.wrapAnsi` smokes, retry/repeats runner behavior, `test.concurrent.each`, Deno `Event` / `CustomEvent` / `AbortController` and a Deno `URLSearchParams` bootstrap smoke, plus narrow bootstrap coverage for Node `DOMException`, Web
 `Response.json` / `Response.redirect`, Web `Request` cache/mode/clone,
 JSC `ShadowRealm`, Bun file metadata, Node `Buffer`
 binary/UTF-16LE/compare/inspect-limit/isEncoding behavior, `Map`/`Set`
@@ -196,8 +196,8 @@ Substrate file-count progress (the only objective number today):
 | Metric | Count | Notes |
 |---|---|---|
 | Bun upstream files (excluding test/codegen/jsc/macros) | 1,193 | pinned at `fd0b6f1a` |
-| Files ported to `packages/runtime/src/` | 485 | ~40.7% |
-| Files remaining to port | 708 | ~59.3% |
+| Files ported to `packages/runtime/src/` | 486 | ~40.7% |
+| Files remaining to port | 707 | ~59.3% |
 | JSC bring-up (`packages/runtime/src/jsc/`) | 97 files | Phase 12.2 M6 milestone + native eval smoke |
 | Node namespace (`packages/runtime/src/node/`) | 28 files | Phase 12.7 round-15 |
 | Tier-0 leaves (≤100 LOC, zero subsystem coupling) | 30 catalogued | next-to-port pool |
