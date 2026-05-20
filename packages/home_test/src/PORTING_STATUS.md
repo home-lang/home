@@ -339,6 +339,13 @@ style assertion, collects multiple stylesheet links, exposes
 `fontSize`, validates unresolved linked stylesheets, and preserves styles
 across write-no-change and hard-reload paths in the harness model. The
 next Bake boundary is `DEV:css-12: css import before create`.
+The CSS import-before-create smoke now models unresolved linked
+stylesheets hiding served HTML, adds `toContain` fetch expectations,
+stores a stylesheet even when its `url(...)` asset is missing, reports
+Bun-shaped missing asset diagnostics, and recovers once `bun.png` is
+created so the image fixture can be fetched through the CSS URL. The next
+Bake boundary is
+`DEV:css-13: css import before create project relative`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

@@ -1507,7 +1507,8 @@ const harness_prelude =
     \\  return values;
     \\}
     \\function __home_bake_resolve_html_ref(files, htmlPath, ref) {
-    \\  const resolved = __home_bake_normalize_path((__home_bake_dirname(htmlPath) ? __home_bake_dirname(htmlPath) + "/" : "") + ref);
+    \\  const base = String(ref || "").startsWith("/") ? "" : (__home_bake_dirname(htmlPath) ? __home_bake_dirname(htmlPath) + "/" : "");
+    \\  const resolved = __home_bake_normalize_path(base + ref);
     \\  return Object.prototype.hasOwnProperty.call(files, resolved) ? resolved : ref;
     \\}
     \\function __home_bake_html_path_for_request(files, path, fallback) {
@@ -1548,6 +1549,15 @@ const harness_prelude =
     \\  if (url) return "url(\"" + url[2] + "\")";
     \\  return text;
     \\}
+    \\function __home_bake_css_url_error(files, path, source) {
+    \\  const text = String(source || "");
+    \\  const match = text.match(/url\((['"]?)(.*?)\1\)/);
+    \\  if (!match) return "";
+    \\  const specifier = match[2];
+    \\  const resolved = __home_bake_resolve_html_ref(files, path, specifier);
+    \\  if (Object.prototype.hasOwnProperty.call(files, resolved)) return "";
+    \\  return path + ":2:21: error: Could not resolve: " + JSON.stringify(specifier) + ". Maybe you need to \"bun install\"?";
+    \\}
     \\function __home_bake_css_selector_found(files, htmlPath, htmlSource, selector) {
     \\  return __home_bake_css_property(files, htmlPath, htmlSource, selector, "color") !== "" ||
     \\    __home_bake_css_property(files, htmlPath, htmlSource, selector, "backgroundColor") !== "" ||
@@ -1570,6 +1580,9 @@ const harness_prelude =
     \\    if (!Object.prototype.hasOwnProperty.call(files, resolved)) return htmlPath + ": error: Could not resolve: " + JSON.stringify(href) + ". Maybe you need to \"bun install\"?";
     \\  }
     \\  return "";
+    \\}
+    \\function __home_bake_html_has_missing_stylesheet(files, htmlPath, htmlSource) {
+    \\  return __home_bake_missing_stylesheet_error(files, htmlPath, htmlSource) !== "";
     \\}
     \\function __home_bake_inline_scripts(htmlSource) {
     \\  const scripts = [];
@@ -1798,20 +1811,27 @@ const harness_prelude =
     \\      const normalizedFetchPath = __home_bake_normalize_path(String(path || "").replace(/^\//, ""));
     \\      const fetchHtmlPath = __home_bake_html_path_for_request(files, path, htmlPath);
     \\      const fetchHtmlSource = String(files[fetchHtmlPath] || htmlSource);
+    \\      const fetchBody = __home_bake_html_has_missing_stylesheet(files, fetchHtmlPath, fetchHtmlSource) ? "" : fetchHtmlSource;
     \\      return {
     \\        status: __home_bake_has_fatal_css_error(files) ? 500 : 200,
-    \\        text: async () => Object.prototype.hasOwnProperty.call(files, normalizedFetchPath) ? String(files[normalizedFetchPath] || "") : fetchHtmlSource,
+    \\        text: async () => Object.prototype.hasOwnProperty.call(files, normalizedFetchPath) ? String(files[normalizedFetchPath] || "") : fetchBody,
     \\        async expectFile(expected) {
     \\          const actual = files[normalizedFetchPath];
     \\          if (actual !== expected) throw new Error("Expected file " + JSON.stringify(normalizedFetchPath) + " to equal fixture");
     \\        },
     \\        expect: {
     \\          toInclude(expected) {
-    \\            if (!String(fetchHtmlSource).includes(String(expected))) throw new Error("Expected HTML to include " + JSON.stringify(String(expected)));
+    \\            if (!String(fetchBody).includes(String(expected))) throw new Error("Expected HTML to include " + JSON.stringify(String(expected)));
+    \\          },
+    \\          toContain(expected) {
+    \\            if (!String(fetchBody).includes(String(expected))) throw new Error("Expected HTML to contain " + JSON.stringify(String(expected)));
     \\          },
     \\          not: {
     \\            toInclude(expected) {
-    \\              if (String(fetchHtmlSource).includes(String(expected))) throw new Error("Expected HTML not to include " + JSON.stringify(String(expected)));
+    \\              if (String(fetchBody).includes(String(expected))) throw new Error("Expected HTML not to include " + JSON.stringify(String(expected)));
+    \\            },
+    \\            toContain(expected) {
+    \\              if (String(fetchBody).includes(String(expected))) throw new Error("Expected HTML not to contain " + JSON.stringify(String(expected)));
     \\            },
     \\          },
     \\        },
@@ -1821,11 +1841,10 @@ const harness_prelude =
     \\      const normalized = __home_bake_normalize_path(path);
     \\      const expectedErrors = writeOptions && Array.isArray(writeOptions.errors) ? writeOptions.errors.map(String) : [];
     \\      if (/\.css$/.test(normalized) && expectedErrors.length > 0) {
-    \\        const actual = __home_bake_css_error(normalized, data);
+    \\        const actual = __home_bake_css_error(normalized, data) || __home_bake_css_url_error(files, normalized, data);
     \\        for (const expected of expectedErrors) {
     \\          if (actual !== expected) throw new Error("Expected Bake CSS error " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\        }
-    \\        return;
     \\      }
     \\      if (/\.html$/.test(normalized) && expectedErrors.length > 0) {
     \\        const actual = __home_bake_missing_stylesheet_error(files, normalized, data);
@@ -2065,6 +2084,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "changing html file with link tag works" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["styles.css"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "css import before create" && nodeEnv === "development" && options && options.files && options.files["index.html"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
@@ -8726,6 +8748,61 @@ test "bootstrap runner executes Bake html link tag css smoke" {
         \\    await c.style(".test").fontSize.expect.toBe("24px");
         \\  },
         \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/css.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake css import before create smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import assert from "node:assert";
+        \\import { devTest, emptyHtmlFile, imageFixtures } from "../bake-harness";
+        \\devTest("css import before create", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({
+        \\      styles: ["styles.css"],
+        \\      body: `
+        \\        <div>HELLO</div>
+        \\      `,
+        \\    }),
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/", {
+        \\      errors: ['index.html: error: Could not resolve: "styles.css". Maybe you need to "bun install"?'],
+        \\    });
+        \\    await dev.fetch("/").expect.not.toContain("HELLO");
+        \\    await dev.write("styles.css", `
+        \\      body {
+        \\        background-image: url(bun.png);
+        \\      }
+        \\    `, {
+        \\      errors: ['styles.css:2:21: error: Could not resolve: "bun.png". Maybe you need to "bun install"?'],
+        \\    });
+        \\    await c.expectReload(async () => {
+        \\      await dev.write("bun.png", imageFixtures.bun);
+        \\    });
+        \\    const backgroundImage = await c.style("body").backgroundImage;
+        \\    assert(backgroundImage);
+        \\    await dev.fetch(extractCssUrl(backgroundImage)).expectFile(imageFixtures.bun);
+        \\    await dev.fetch("/").expect.toContain("HELLO");
+        \\  },
+        \\});
+        \\function extractCssUrl(backgroundImage: string): string {
+        \\  const url = backgroundImage.match(/url\((['"])(.*?)\1\)/);
+        \\  if (!url) throw new Error("No url found in background-image: " + backgroundImage);
+        \\  return url[2];
+        \\}
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/css.test.ts");
     defer prepared.deinit(std.testing.allocator);

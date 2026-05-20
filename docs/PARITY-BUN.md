@@ -506,6 +506,17 @@ Latest measured full gate after the Bake HTML link-tag CSS slice:
 unsupported, `35` todo. First failure: `bake/dev/css.test.ts` with
 ` DEV:css-12: css import before create`.
 
+The CSS import-before-create smoke now models unresolved linked
+stylesheets hiding served HTML, adds `toContain` fetch expectations,
+stores a stylesheet even when its `url(...)` asset is missing, reports
+Bun-shaped missing asset diagnostics, and recovers once `bun.png` is
+created so the image fixture can be fetched through the CSS URL.
+
+Latest measured full gate after the Bake CSS import-before-create slice:
+`4,013` files executed, `440` passed, `3,940` failed, `1,493`
+unsupported, `35` todo. First failure: `bake/dev/css.test.ts` with
+` DEV:css-13: css import before create project relative`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap
