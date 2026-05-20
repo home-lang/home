@@ -368,13 +368,15 @@ bindings and replays all seven Bun update forms. The first barrel
 optimization smoke now resolves only the used `Alpha` re-export and
 leaves broken unused barrel targets untouched. The barrel reload smoke
 now replays entry updates as additional `Beta` and `Gamma` imports are
-introduced from the same barrel.
+introduced from the same barrel. The multi-file barrel smoke now keeps
+entry-file barrel imports available while a sibling module changes its
+own barrel import set.
 
-Latest measured full gate after the Bake barrel reload slice:
-`4,013` files executed, `420` passed, `3,956` failed, `1,509`
+Latest measured full gate after the Bake barrel multi-file slice:
+`4,013` files executed, `420` passed, `3,955` failed, `1,508`
 unsupported, `35` todo. First failure: `bake/dev/bundle.test.ts`
 with the named unsupported Bake registration for
-` DEV:bundle-17: barrel optimization: multi-file imports preserved across rebuilds`.
+` DEV:bundle-18: barrel optimization: export star target not deferred (#27521)`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

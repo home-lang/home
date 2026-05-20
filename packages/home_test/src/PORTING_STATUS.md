@@ -268,8 +268,10 @@ the imported `.js` fixture with `module`, `exports`, `require`, and
 optimization smoke now resolves only the used `Alpha` re-export and
 leaves broken unused barrel targets untouched. The barrel reload smoke
 now replays entry updates as additional `Beta` and `Gamma` imports are
-introduced from the same barrel. The next Bake boundary is
-`DEV:bundle-17: barrel optimization: multi-file imports preserved across rebuilds`.
+introduced from the same barrel. The multi-file barrel smoke now keeps
+entry-file barrel imports available while a sibling module changes its
+own barrel import set. The next Bake boundary is
+`DEV:bundle-18: barrel optimization: export star target not deferred (#27521)`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
