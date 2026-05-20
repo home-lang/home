@@ -14325,10 +14325,25 @@ pub const Checker = struct {
                             }
                         }
                         if (already) {
-                            if (fn_p.flags.is_getter and !setter_names.contains(member_name)) {
-                                try self.reportDuplicateIdentifier(m, member_name);
+                            // The pre-seeded stub from the field/
+                            // method pre-scan above is NOT a
+                            // duplicate — the current accessor IS
+                            // the first real declaration for this
+                            // name. Only fire TS2300 when an own
+                            // member has already been registered
+                            // by a PRIOR loop iteration.
+                            const is_preseeded_stub = !fn_p.flags.is_static and preseeded_field_indices.contains(member_name);
+                            const own_already = own_member_names.contains(member_name);
+                            if (is_preseeded_stub and !own_already) {
+                                // Replace the stub with the accessor
+                                // entry below; do not treat as a
+                                // duplicate.
+                            } else {
+                                if (fn_p.flags.is_getter and !setter_names.contains(member_name)) {
+                                    try self.reportDuplicateIdentifier(m, member_name);
+                                }
+                                continue;
                             }
-                            continue;
                         }
                         const accessor_t: TypeId = blk: {
                             if (fn_p.flags.is_getter) {
@@ -14373,6 +14388,8 @@ pub const Checker = struct {
                         };
                         if (fn_p.flags.is_static) {
                             try static_members.append(self.gpa, member);
+                        } else if (preseeded_field_indices.get(member_name)) |idx| {
+                            instance_members.items[idx] = member;
                         } else {
                             try instance_members.append(self.gpa, member);
                         }
