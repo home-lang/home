@@ -63,8 +63,56 @@ pub const RouteDeclaration = struct {
     }
 };
 
+pub const StaticRouteEntry = struct {
+    route: server.AnyRoute,
+    route_decl: RouteDeclaration = .{},
+
+    pub fn deinit(this: *StaticRouteEntry, allocator: std.mem.Allocator) void {
+        if (this.route_decl.path.len > 0) allocator.free(this.route_decl.path);
+        this.route_decl.path = "";
+    }
+};
+
+pub const ServerConfig = struct {
+    allocator: std.mem.Allocator,
+    static_routes: std.ArrayList(StaticRouteEntry) = .empty,
+    had_routes_object: bool = false,
+    bake: ?bake.UserOptions = null,
+
+    pub fn init(allocator: std.mem.Allocator) ServerConfig {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(this: *ServerConfig) void {
+        for (this.static_routes.items) |*entry| entry.deinit(this.allocator);
+        this.static_routes.deinit(this.allocator);
+        if (this.bake) |*options| options.deinit(this.allocator);
+        this.* = undefined;
+    }
+
+    pub fn appendHTMLRoute(this: *ServerConfig, path: []const u8, route: *HTMLBundleModule.Route) !void {
+        const owned_path = try this.allocator.dupeZ(u8, path);
+        errdefer this.allocator.free(owned_path);
+        try this.static_routes.append(this.allocator, .{
+            .route = .{ .html = route },
+            .route_decl = .{ .path = owned_path, .method = .any },
+        });
+        this.had_routes_object = true;
+    }
+
+    pub fn ensureBakeForHTMLRoutes(this: *ServerConfig, serve_static: *const bake.ServeStaticOptions) !void {
+        if (this.static_routes.items.len == 0) return;
+        if (this.bake == null) this.bake = .{};
+        try this.bake.?.applyServeStaticOptions(this.allocator, serve_static);
+    }
+};
+
 const std = @import("std");
 const home_rt = @import("home_rt");
+const bake = @import("../bake/bake.zig");
+const server = @import("server.zig");
+const HTMLBundleModule = @import("HTMLBundle.zig");
+const HTMLBundle = HTMLBundleModule.HTMLBundle;
 const HTTP = struct {
     pub const Method = home_rt.http_types.Method;
 };
@@ -102,4 +150,43 @@ test "RouteDeclaration: deinit frees owned path" {
     const dup = try home_rt.default_allocator.dupeZ(u8, "/api/users");
     var r: RouteDeclaration = .{ .path = dup, .method = .{ .specific = .POST } };
     r.deinit();
+}
+
+test "ServerConfig appends HTML static routes" {
+    var config = ServerConfig.init(std.testing.allocator);
+    defer config.deinit();
+
+    var bundle = try HTMLBundle.init(std.testing.allocator, "index.html");
+    defer bundle.deinit();
+    var route = bundle.route();
+    defer route.deinit(std.testing.allocator);
+
+    try config.appendHTMLRoute("/*", &route);
+
+    try std.testing.expect(config.had_routes_object);
+    try std.testing.expectEqual(@as(usize, 1), config.static_routes.items.len);
+    try std.testing.expectEqualStrings("/*", config.static_routes.items[0].route_decl.path);
+    try std.testing.expect(config.static_routes.items[0].route == .html);
+}
+
+test "ServerConfig HTML route initializes Bake options with serve.static defines" {
+    var config = ServerConfig.init(std.testing.allocator);
+    defer config.deinit();
+
+    var bundle = try HTMLBundle.init(std.testing.allocator, "index.html");
+    defer bundle.deinit();
+    var route = bundle.route();
+    defer route.deinit(std.testing.allocator);
+    try config.appendHTMLRoute("/*", &route);
+
+    var serve_static: bake.ServeStaticOptions = .{};
+    defer serve_static.deinit(std.testing.allocator);
+    try serve_static.putDefineCopy(std.testing.allocator, "DEFINE", "\"HELLO\"");
+
+    try config.ensureBakeForHTMLRoutes(&serve_static);
+
+    try std.testing.expect(config.bake != null);
+    try std.testing.expectEqualStrings("\"HELLO\"", config.bake.?.bundler_options.client.define.get("DEFINE").?);
+    try std.testing.expectEqualStrings("\"HELLO\"", config.bake.?.bundler_options.server.define.get("DEFINE").?);
+    try std.testing.expectEqualStrings("\"HELLO\"", config.bake.?.bundler_options.ssr.define.get("DEFINE").?);
 }

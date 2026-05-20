@@ -10,6 +10,41 @@
 
 const std = @import("std");
 const bake = @import("../bake/bake.zig");
+const HTMLBundle = @import("HTMLBundle.zig");
+
+pub const AnyRoute = union(enum) {
+    html: *HTMLBundle.Route,
+
+    pub fn ref(this: AnyRoute) void {
+        switch (this) {
+            .html => |route| route.ref(),
+        }
+    }
+
+    pub fn deref(this: AnyRoute) void {
+        switch (this) {
+            .html => |route| route.deref(),
+        }
+    }
+
+    pub fn setServer(this: AnyRoute, server: ?*anyopaque) void {
+        switch (this) {
+            .html => |route| route.setServer(server),
+        }
+    }
+
+    pub fn deinit(this: AnyRoute, allocator: std.mem.Allocator) void {
+        switch (this) {
+            .html => |route| route.deinit(allocator),
+        }
+    }
+};
+
+pub fn applyHTMLRouteToDevServer(dev: *bake.DevServer, path: []const u8, route: *HTMLBundle.Route) !void {
+    const route_index = try dev.registerRoutePattern(path, .{});
+    route.dev_server_id = route_index.toOptional();
+    try dev.html_router.put(dev.allocator, path, route);
+}
 
 pub const Server = struct {
     pending_requests: usize = 0,
@@ -149,3 +184,17 @@ test "server lifecycle deinits attached DevServer once" {
     try std.testing.expectEqual(@as(usize, 1), bake.getDevServerDeinitCountForTesting());
 }
 
+test "server AnyRoute.html mirrors into DevServer HTML router" {
+    var dev = bake.DevServer.init(std.testing.allocator);
+    defer dev.deinit();
+
+    var bundle = try HTMLBundle.HTMLBundle.init(std.testing.allocator, "index.html");
+    defer bundle.deinit();
+    var route = bundle.route();
+    defer route.deinit(std.testing.allocator);
+
+    try applyHTMLRouteToDevServer(&dev, "/*", &route);
+
+    try std.testing.expect(route.dev_server_id.unwrap() != null);
+    try std.testing.expectEqual(@as(*anyopaque, @ptrCast(&route)), dev.html_router.get("/").?);
+}

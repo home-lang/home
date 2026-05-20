@@ -83,6 +83,52 @@ pub const HmrTopic = enum(u8) {
     }
 };
 
+pub const HTMLRouter = struct {
+    map: std.StringHashMap(*anyopaque),
+    fallback: ?*anyopaque = null,
+
+    pub fn init(allocator: std.mem.Allocator) HTMLRouter {
+        return .{ .map = std.StringHashMap(*anyopaque).init(allocator) };
+    }
+
+    pub fn empty(this: *const HTMLRouter) bool {
+        return this.fallback == null and this.map.count() == 0;
+    }
+
+    pub fn deinit(this: *HTMLRouter, allocator: std.mem.Allocator) void {
+        this.clear(allocator);
+        this.map.deinit();
+        this.* = undefined;
+    }
+
+    pub fn clear(this: *HTMLRouter, allocator: std.mem.Allocator) void {
+        var keys = this.map.keyIterator();
+        while (keys.next()) |key| allocator.free(key.*);
+        this.map.clearRetainingCapacity();
+        this.fallback = null;
+    }
+
+    pub fn put(this: *HTMLRouter, allocator: std.mem.Allocator, pattern: []const u8, route: *anyopaque) !void {
+        if (std.mem.eql(u8, pattern, "/*")) {
+            this.fallback = route;
+            return;
+        }
+
+        if (this.map.getEntry(pattern)) |entry| {
+            entry.value_ptr.* = route;
+            return;
+        }
+
+        const owned = try allocator.dupe(u8, pattern);
+        errdefer allocator.free(owned);
+        try this.map.put(owned, route);
+    }
+
+    pub fn get(this: *const HTMLRouter, pattern: []const u8) ?*anyopaque {
+        return this.map.get(pattern) orelse this.fallback;
+    }
+};
+
 pub var dev_server_deinit_count_for_testing: usize = 0;
 
 pub fn resetDeinitCountForTesting() void {
@@ -97,6 +143,7 @@ pub const DevServer = struct {
     allocator: std.mem.Allocator,
     route_bundles: std.ArrayList(RouteBundle) = .empty,
     route_patterns: std.StringHashMap(RouteBundle.Index),
+    html_router: HTMLRouter,
     source_maps: SourceMapStore,
     active_websocket_connections: std.AutoHashMap(*HmrSocket, void),
     configuration_hash_key: [16]u8 = .{
@@ -110,6 +157,7 @@ pub const DevServer = struct {
         return .{
             .allocator = allocator,
             .route_patterns = std.StringHashMap(RouteBundle.Index).init(allocator),
+            .html_router = HTMLRouter.init(allocator),
             .source_maps = SourceMapStore.init(allocator),
             .active_websocket_connections = std.AutoHashMap(*HmrSocket, void).init(allocator),
         };
@@ -136,6 +184,7 @@ pub const DevServer = struct {
         var pattern_keys = this.route_patterns.keyIterator();
         while (pattern_keys.next()) |key| this.allocator.free(key.*);
         this.route_patterns.deinit();
+        this.html_router.deinit(this.allocator);
         this.route_bundles.deinit(this.allocator);
     }
 
@@ -230,4 +279,21 @@ test "DevServer HMR protocol ids match Bun wire bytes" {
     try std.testing.expectEqual(IncomingMessageId.set_url, IncomingMessageId.fromChar('n').?);
     try std.testing.expectEqual(HmrTopic.hot_update, HmrTopic.fromChar('h').?);
     try std.testing.expectEqual(HmrTopic.errors, HmrTopic.fromChar('e').?);
+}
+
+test "DevServer HTMLRouter stores catch-all route as fallback" {
+    var router = HTMLRouter.init(std.testing.allocator);
+    defer router.deinit(std.testing.allocator);
+
+    var fallback: u8 = 1;
+    var exact: u8 = 2;
+
+    try std.testing.expect(router.empty());
+    try router.put(std.testing.allocator, "/*", &fallback);
+    try std.testing.expect(!router.empty());
+    try std.testing.expectEqual(@as(*anyopaque, @ptrCast(&fallback)), router.get("/anything").?);
+
+    try router.put(std.testing.allocator, "/admin", &exact);
+    try std.testing.expectEqual(@as(*anyopaque, @ptrCast(&exact)), router.get("/admin").?);
+    try std.testing.expectEqual(@as(*anyopaque, @ptrCast(&fallback)), router.get("/other").?);
 }

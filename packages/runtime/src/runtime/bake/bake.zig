@@ -82,6 +82,18 @@ pub const SplitBundlerOptions = struct {
     }
 };
 
+pub const UserOptions = struct {
+    bundler_options: SplitBundlerOptions = .{},
+
+    pub fn deinit(this: *UserOptions, allocator: std.mem.Allocator) void {
+        this.bundler_options.deinit(allocator);
+    }
+
+    pub fn applyServeStaticOptions(this: *UserOptions, allocator: std.mem.Allocator, serve_static: *const ServeStaticOptions) !void {
+        try serve_static.applyToBundlerOptions(allocator, &this.bundler_options);
+    }
+};
+
 pub const ServeStaticOptions = struct {
     define: DefineMap = .{},
 
@@ -129,6 +141,20 @@ test "Bake serve static define copies to all bundler graphs" {
     try std.testing.expectEqualStrings("\"HELLO\"", bundler_options.server.define.get("DEFINE").?);
     try std.testing.expectEqualStrings("\"HELLO\"", bundler_options.ssr.define.get("DEFINE").?);
     try std.testing.expectEqualStrings("\"enabled\"", bundler_options.client.define.get("process.env.FEATURE").?);
+}
+
+test "Bake UserOptions applies serve static define maps" {
+    var serve: ServeStaticOptions = .{};
+    defer serve.deinit(std.testing.allocator);
+    try serve.putDefineCopy(std.testing.allocator, "DEFINE", "\"HELLO\"");
+
+    var user_options: UserOptions = .{};
+    defer user_options.deinit(std.testing.allocator);
+    try user_options.applyServeStaticOptions(std.testing.allocator, &serve);
+
+    try std.testing.expectEqualStrings("\"HELLO\"", user_options.bundler_options.client.define.get("DEFINE").?);
+    try std.testing.expectEqualStrings("\"HELLO\"", user_options.bundler_options.server.define.get("DEFINE").?);
+    try std.testing.expectEqualStrings("\"HELLO\"", user_options.bundler_options.ssr.define.get("DEFINE").?);
 }
 
 test "Bake serve static define replacement preserves latest value" {

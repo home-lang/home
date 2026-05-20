@@ -104,11 +104,21 @@ teardown invariants needed by `bake/deinitialization.test.ts` and the
 protocol bytes needed by the first `dev-and-prod.test.ts` HMR handshake
 before the full DevServer graph is connected.
 
-### Phase 12 server — Bake detach lifecycle carrier (1 file)
+### Phase 12 server — Bake static HTML-route carrier (3 files)
 
 - `runtime/server/server.zig` — mirrors Bun's `deinitIfWeCan` gate for
   detaching and deinitializing a Bake DevServer only after pending
-  requests, the listener, and active websockets are gone.
+  requests, the listener, and active websockets are gone; also carries
+  the first `AnyRoute.html` union shape and mirrors HTML routes into the
+  DevServer HTML router.
+- `runtime/server/HTMLBundle.zig` — metadata-only HTMLBundle / Route
+  carrier copied from Bun's `HTMLBundle.zig` shape, with owned imported
+  path, route state, script/style reference parsing, and the
+  `serve.static.define` replacement pass needed by the first
+  `bake/dev-and-prod.test.ts` HTML entry.
+- `runtime/server/ServerConfig.zig` — adds static HTML route entries,
+  `had_routes_object`, and `bake.UserOptions` initialization for HTML
+  routes while reusing the existing serve-static define propagation.
 
 ## Sub-phase status snapshot
 
