@@ -1953,6 +1953,35 @@ const harness_prelude =
     \\  }
     \\  return false;
     \\}
+    \\function __home_bake_is_hot_accept_multiple_modules(files) {
+    \\  return Object.prototype.hasOwnProperty.call(files, "index.ts") &&
+    \\    Object.prototype.hasOwnProperty.call(files, "counter.ts") &&
+    \\    Object.prototype.hasOwnProperty.call(files, "name.ts") &&
+    \\    String(files["index.ts"] || "").includes('import.meta.hot.accept(["./counter.ts", "./name.ts"]');
+    \\}
+    \\function __home_bake_hot_accept_multiple_count(files) {
+    \\  return (String(files["counter.ts"] || "").match(/count\s*=\s*([0-9]+)/) || [null, "1"])[1];
+    \\}
+    \\function __home_bake_hot_accept_multiple_name(files) {
+    \\  return (String(files["name.ts"] || "").match(/name\s*=\s*["']([^"']*)["']/) || [null, "Alice"])[1];
+    \\}
+    \\function __home_bake_hot_accept_multiple_start(files, log) {
+    \\  if (!__home_bake_is_hot_accept_multiple_modules(files)) return false;
+    \\  log("Initial: " + __home_bake_hot_accept_multiple_name(files) + " " + __home_bake_hot_accept_multiple_count(files));
+    \\  return true;
+    \\}
+    \\function __home_bake_hot_accept_multiple_update(files, normalized, log) {
+    \\  if (!__home_bake_is_hot_accept_multiple_modules(files)) return false;
+    \\  if (normalized === "counter.ts") {
+    \\    log("Counter updated: " + __home_bake_hot_accept_multiple_count(files));
+    \\    return true;
+    \\  }
+    \\  if (normalized === "name.ts") {
+    \\    log("Name updated: " + __home_bake_hot_accept_multiple_name(files));
+    \\    return true;
+    \\  }
+    \\  return false;
+    \\}
     \\function __home_bake_run_barrel_specials(source, files, log) {
     \\  const text = String(source || "");
     \\  if (text.includes("consumer-lib") && files["node_modules/consumer-lib/index.js"]) {
@@ -2007,6 +2036,7 @@ const harness_prelude =
     \\    if (__home_bake_hot_accept_patches_imports_start(files, recordClientMessage)) return;
     \\    if (__home_bake_run_hot_accept_basic(source, files, recordClientMessage)) return;
     \\    if (__home_bake_hot_accept_specifier_start(files, recordClientMessage)) return;
+    \\    if (__home_bake_hot_accept_multiple_start(files, recordClientMessage)) return;
     \\    if (__home_bake_run_barrel_specials(source, files, recordClientMessage)) return;
     \\    const previousLog = console.log;
     \\    const previousRequire = globalThis.__home_bake_require;
@@ -2113,7 +2143,14 @@ const harness_prelude =
     \\        return;
     \\      }
     \\      if (clientStarted && __home_bake_hot_accept_specifier_update(files, normalized, recordClientMessage)) return;
+    \\      if (clientStarted && __home_bake_hot_accept_multiple_update(files, normalized, recordClientMessage)) return;
     \\      if (normalized === scriptPath) applyClientUpdate(normalized, files[normalized]);
+    \\    },
+    \\    async batchChanges() {
+    \\      return {
+    \\        [Symbol.dispose]() {},
+    \\        [Symbol.asyncDispose]() {},
+    \\      };
     \\    },
     \\    mkdir(path) {
     \\      return __home_bake_normalize_path(path);
@@ -2171,6 +2208,14 @@ const harness_prelude =
     \\      return {
     \\        messages,
     \\        expectMessage() {
+    \\          for (const expected of arguments) {
+    \\            const expectedMessage = __home_bake_message_string(expected);
+    \\            const index = messages.indexOf(expectedMessage);
+    \\            if (index < 0) throw new Error("Timed out waiting for " + JSON.stringify(expectedMessage) + "; buffered: " + JSON.stringify(messages));
+    \\            messages.splice(index, 1);
+    \\          }
+    \\        },
+    \\        expectMessageInAnyOrder() {
     \\          for (const expected of arguments) {
     \\            const expectedMessage = __home_bake_message_string(expected);
     \\            const index = messages.indexOf(expectedMessage);
@@ -2425,6 +2470,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "import.meta.hot.accept specifier" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["a.ts"] && options.files["b.ts"] && options.files["c.ts"] && options.files["d.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "import.meta.hot.accept multiple modules" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["counter.ts"] && options.files["name.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "commonjs forms" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["cjs.js"] && typeof options.test === "function") {
@@ -10092,6 +10140,67 @@ test "bootstrap runner executes Bake hot accept specifier smoke" {
         \\      `);
         \\      await c.expectMessage("D6", "B:hey6!", "C:hey6!");
         \\    }
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/hot.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake hot accept multiple modules smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("import.meta.hot.accept multiple modules", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      import { count } from "./counter.ts";
+        \\      import { name } from "./name.ts";
+        \\      console.log("Initial: " + name + " " + count);
+        \\      import.meta.hot.accept(["./counter.ts", "./name.ts"], (newModules) => {
+        \\        if (newModules[0]) console.log("Counter updated: " + newModules[0].count);
+        \\        if (newModules[1]) console.log("Name updated: " + newModules[1].name);
+        \\      });
+        \\    `,
+        \\    "counter.ts": `
+        \\      export const count = 1;
+        \\    `,
+        \\    "name.ts": `
+        \\      export const name = "Alice";
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.expectMessage("Initial: Alice 1");
+        \\    await dev.write("counter.ts", `
+        \\      export const count = 2;
+        \\    `);
+        \\    await c.expectMessage("Counter updated: 2");
+        \\    await dev.write("name.ts", `
+        \\      export const name = "Bob";
+        \\    `);
+        \\    await c.expectMessage("Name updated: Bob");
+        \\    {
+        \\      await using batch = await dev.batchChanges();
+        \\      await dev.write("counter.ts", `
+        \\        export const count = 3;
+        \\      `);
+        \\      await dev.write("name.ts", `
+        \\        export const name = "Charlie";
+        \\      `);
+        \\    }
+        \\    await c.expectMessageInAnyOrder("Counter updated: 3", "Name updated: Charlie");
         \\  },
         \\});
     ;

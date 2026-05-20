@@ -452,6 +452,15 @@ and HMR runtime path: `handleImportMetaHotAcceptCall`, resolved specifier
 lowering, `hmr.acceptSpecifiers`, dependency accept arrays, and importer
 boundary replacement. The next Bake boundary is
 `DEV:hot-4: import.meta.hot.accept multiple modules`.
+The copied `import.meta.hot.accept multiple modules` case now runs through
+the Bake static client shim. It models Bun's array specifier callback
+shape for the `counter.ts` and `name.ts` dependencies, including
+independent updates and a batched update whose messages may arrive in
+either order. The native parity target remains Bun's `acceptSpecifiers`
+array lowering and runtime `createAcceptArray` behavior that supplies the
+updated module namespace at the matching array index and `undefined` for
+the rest. The next Bake boundary is
+`DEV:hot-5: import.meta.hot.data persistence`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

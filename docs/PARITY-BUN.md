@@ -692,6 +692,20 @@ Latest measured full gate after the Bake hot accept-specifier slice:
 unsupported, `35` todo. First failure: `bake/dev/hot.test.ts` with
 `DEV:hot-4: import.meta.hot.accept multiple modules`.
 
+The Bake static client shim now covers the copied
+`import.meta.hot.accept multiple modules` case. It models Bun's array
+specifier callback shape for the `counter.ts` and `name.ts` dependencies,
+including independent updates and a batched update whose messages may
+arrive in either order. The native parity target remains Bun's
+`acceptSpecifiers` array lowering and runtime `createAcceptArray` behavior
+that supplies the updated module namespace at the matching array index and
+`undefined` for the rest.
+
+Latest measured full gate after the Bake hot accept-multiple slice:
+`4,013` files executed, `467` passed, `3,921` failed, `1,474`
+unsupported, `35` todo. First failure: `bake/dev/hot.test.ts` with
+`DEV:hot-5: import.meta.hot.data persistence`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap
