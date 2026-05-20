@@ -1542,6 +1542,10 @@ const harness_prelude =
     \\    const resolved = __home_bake_resolve_client_import_path(files, scriptPath, specifier);
     \\    return "const " + name + " = " + JSON.stringify(String(files[resolved] || "")) + ";";
     \\  });
+    \\  out = out.replace(/import\s+([A-Za-z_$][\w$]*)\s+from\s+['"]([^'"]+\.js)['"]\s*;?/g, function(_, name, specifier) {
+    \\    const resolved = __home_bake_resolve_client_import_path(files, scriptPath, specifier);
+    \\    return "const " + name + " = __home_bake_run_commonjs_module(" + JSON.stringify(String(files[resolved] || "")) + ");";
+    \\  });
     \\  return out.replace(/import\s+\{\s*([A-Za-z_$][\w$]*)\s*\}\s+from\s+['"]([^'"]+)['"]\s*;?/g, function(_, name, specifier) {
     \\    const resolved = __home_bake_resolve_client_import_path(files, scriptPath, specifier);
     \\    const value = __home_bake_export_const_string(files[resolved], name);
@@ -1552,6 +1556,13 @@ const harness_prelude =
     \\  let resolved = __home_bake_normalize_path((__home_bake_dirname(scriptPath) ? __home_bake_dirname(scriptPath) + "/" : "") + specifier);
     \\  if (!Object.prototype.hasOwnProperty.call(files, resolved) && !/\.[cm]?[tj]sx?$/.test(resolved)) resolved += ".ts";
     \\  return resolved;
+    \\}
+    \\function __home_bake_run_commonjs_module(source) {
+    \\  const module = { exports: {} };
+    \\  const exports = module.exports;
+    \\  const require = function require() {};
+    \\  Function("module", "exports", "require", "{\n" + String(source || "") + "\n}")(module, exports, require);
+    \\  return module.exports;
     \\}
     \\function __home_bake_missing_import_error(files, scriptPath, source) {
     \\  const match = String(source || "").match(/import\s+\{\s*[A-Za-z_$][\w$]*\s*\}\s+from\s+['"]([^'"]+)['"]\s*;?/);
@@ -1609,7 +1620,7 @@ const harness_prelude =
     \\    for (const listener of listeners[event] || []) listener(value);
     \\  }
     \\  function recordClientMessage() {
-    \\    const message = Array.prototype.map.call(arguments, String).join(" ");
+    \\    const message = Array.prototype.map.call(arguments, __home_bake_message_string).join(" ");
     \\    messages.push(message);
     \\    emit("message", message);
     \\  }
@@ -1717,8 +1728,9 @@ const harness_prelude =
     \\        messages,
     \\        expectMessage() {
     \\          for (const expected of arguments) {
-    \\            const index = messages.indexOf(String(expected));
-    \\            if (index < 0) throw new Error("Timed out waiting for " + JSON.stringify(String(expected)) + "; buffered: " + JSON.stringify(messages));
+    \\            const expectedMessage = __home_bake_message_string(expected);
+    \\            const index = messages.indexOf(expectedMessage);
+    \\            if (index < 0) throw new Error("Timed out waiting for " + JSON.stringify(expectedMessage) + "; buffered: " + JSON.stringify(messages));
     \\            messages.splice(index, 1);
     \\          }
     \\        },
@@ -1769,6 +1781,10 @@ const harness_prelude =
     \\function __home_bake_export_const_string(source, name) {
     \\  const match = String(source || "").match(new RegExp("\\bexport\\s+const\\s+" + name + "\\s*=\\s*(?:(['\\\"])(.*?)\\1|([0-9]+))"));
     \\  return match ? (match[2] !== undefined ? match[2] : match[3]) : "";
+    \\}
+    \\function __home_bake_message_string(value) {
+    \\  if (value && typeof value === "object") return JSON.stringify(value);
+    \\  return String(value);
     \\}
     \\function __home_bake_route_response(files) {
     \\  const route = String(files["routes/index.ts"] || "");
@@ -1836,6 +1852,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "import.meta.main" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "commonjs forms" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["cjs.js"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
@@ -7624,6 +7643,55 @@ test "bootstrap runner executes Bake import meta main smoke" {
         \\      console.log(import.meta.main);
         \\    `);
         \\    await c.expectMessage(false);
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/bundle.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake commonjs forms smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("commonjs forms", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ styles: [], scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      import cjs from "./cjs.js";
+        \\      console.log(cjs);
+        \\    `,
+        \\    "cjs.js": `
+        \\      module.exports.field = {};
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.expectMessage({ field: {} });
+        \\    await c.expectReload(async () => { await dev.write("cjs.js", `exports.field = "1";`); });
+        \\    await c.expectMessage({ field: "1" });
+        \\    await c.expectReload(async () => { await dev.write("cjs.js", `let theExports = exports; theExports.field = "2";`); });
+        \\    await c.expectMessage({ field: "2" });
+        \\    await c.expectReload(async () => { await dev.write("cjs.js", `let theModule = module; theModule.exports.field = "3";`); });
+        \\    await c.expectMessage({ field: "3" });
+        \\    await c.expectReload(async () => { await dev.write("cjs.js", `let { exports } = module; exports.field = "4";`); });
+        \\    await c.expectMessage({ field: "4" });
+        \\    await c.expectReload(async () => { await dev.write("cjs.js", `var { exports } = module; exports.field = "4.5";`); });
+        \\    await c.expectMessage({ field: "4.5" });
+        \\    await c.expectReload(async () => { await dev.write("cjs.js", `let theExports = module.exports; theExports.field = "5";`); });
+        \\    await c.expectMessage({ field: "5" });
+        \\    await c.expectReload(async () => { await dev.write("cjs.js", `require; eval("module.exports.field = '6'");`); });
+        \\    await c.expectMessage({ field: "6" });
         \\  },
         \\});
     ;
