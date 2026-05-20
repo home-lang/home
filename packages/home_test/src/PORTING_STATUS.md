@@ -41,7 +41,8 @@ rejection, `test.concurrent`, `test.each`, `.not`, `toBe`, `toBeDefined`,
 `toContainKey`, `toContainKeys`, `toContainAnyKeys`, `atob` / `btoa`,
 `Bun` branding plus `Bun.version`, `Bun.revision`, `Bun.stripANSI`,
 `Bun.wrapAnsi`, `Bun.semver.satisfies`,
-`process.versions.bun`, `process.revision`, DOMException,
+`process.versions.bun`, `process.revision`, `process.on` / `process.emit`,
+`node:vm.runInNewContext`, DOMException,
 Request/Response/Headers/URL, `node-fetch`, `node:buffer`, `deno:harness`,
 Deno `Event` / `CustomEvent` / `AbortController`, a Deno
 `URLSearchParams` bootstrap smoke, EventTarget, AbortSignal, Node

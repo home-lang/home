@@ -94,6 +94,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/deno/abort/abort-controller.test.ts",
     "js/deno/url/urlsearchparams.test.ts",
     "regression/issue/08040.test.ts",
+    "regression/issue/09778.test.ts",
 };
 
 const harness_prelude =
@@ -304,6 +305,21 @@ const harness_prelude =
     \\if (!process.versions) process.versions = {};
     \\process.versions.bun = Bun.version;
     \\process.revision = Bun.revision;
+    \\process.__home_events = process.__home_events || Object.create(null);
+    \\process.on = function(name, listener) {
+    \\  if (typeof listener !== "function") __home_fail("process.on() requires a listener function");
+    \\  const key = String(name);
+    \\  if (!process.__home_events[key]) process.__home_events[key] = [];
+    \\  process.__home_events[key].push(listener);
+    \\  return process;
+    \\};
+    \\process.emit = function(name) {
+    \\  const listeners = process.__home_events[String(name)];
+    \\  if (!listeners || listeners.length === 0) return false;
+    \\  const args = Array.prototype.slice.call(arguments, 1);
+    \\  for (const listener of listeners.slice()) listener.apply(process, args);
+    \\  return true;
+    \\};
     \\globalThis.process = process;
     \\function __home_fail(message) {
     \\  throw new Error(message);
@@ -780,6 +796,12 @@ const harness_prelude =
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
     \\globalThis.__home_modules["bun"] = { semver: Bun.semver };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
+    \\globalThis.__home_modules["node:vm"] = {
+    \\  runInNewContext(code, sandbox) {
+    \\    const context = sandbox || {};
+    \\    return Function("sandbox", "with (sandbox) {\n" + String(code) + "\n}")(context);
+    \\  },
+    \\};
     \\globalThis.__home_modules["deno:harness"] = {
     \\  createDenoTest(path) {
     \\    const denoTest = function(fn) {
@@ -1651,6 +1673,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { Request } = globalThis.__home_import(\"node-fetch\");",
         },
         .{
+            .needle = "import { runInNewContext } from \"node:vm\";",
+            .replacement = "const { runInNewContext } = globalThis.__home_import(\"node:vm\");",
+        },
+        .{
             .needle = "import buffer, { INSPECT_MAX_BYTES } from \"node:buffer\";",
             .replacement = "const __home_node_buffer = globalThis.__home_import(\"node:buffer\");\nconst buffer = __home_node_buffer.default;\nconst { INSPECT_MAX_BYTES } = __home_node_buffer;",
         },
@@ -1931,6 +1957,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/deno/abort/abort-controller.test.ts", filesForSubset(.minimal_js)[40]);
     try std.testing.expectEqualStrings("js/deno/url/urlsearchparams.test.ts", filesForSubset(.minimal_js)[41]);
     try std.testing.expectEqualStrings("regression/issue/08040.test.ts", filesForSubset(.minimal_js)[42]);
+    try std.testing.expectEqualStrings("regression/issue/09778.test.ts", filesForSubset(.minimal_js)[43]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -1943,6 +1970,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Set(\" + entry.size + \")") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "version: \"0.0.0-home\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.versions.bun = Bun.version") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.on = function(name, listener)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.emit = function(name)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeInstanceOf(ctor)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeInstanceOf() requires 1 argument") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Expected value must be a function:") != null);
@@ -1975,6 +2004,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "UnreachableError") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_bun_test") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun\"] = { semver: Bun.semver }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:vm\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "createDenoTest(path)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "denoTest.ignore") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_import") != null);
@@ -2029,6 +2059,21 @@ test "Bun module import rewrite lowers semver to the virtual bun module" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { semver } = globalThis.__home_import(\"bun\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun\"") == null);
+}
+
+test "Node VM import rewrite lowers runInNewContext to the virtual module" {
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { runInNewContext } from "node:vm";
+        \\test("vm", () => {
+        \\  runInNewContext("process.emit(\"x\")", { process });
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/09778.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { runInNewContext } = globalThis.__home_import(\"node:vm\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"node:vm\"") == null);
 }
 
 test "Bun test import rewrite lowers lifecycle hook imports" {
@@ -2389,6 +2434,39 @@ test "bootstrap runner covers Bun semver satisfies comparator lists" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/08040.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers node vm process event throw propagation" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { runInNewContext } from "node:vm";
+        \\
+        \\test("issue #9778", () => {
+        \\  const code = `
+        \\    process.on("poop", () => {
+        \\      throw new Error("woopsie");
+        \\    });
+        \\    `;
+        \\
+        \\  runInNewContext(code, {
+        \\    process,
+        \\  });
+        \\  expect(() => process.emit("poop")).toThrow("woopsie");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/09778.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
