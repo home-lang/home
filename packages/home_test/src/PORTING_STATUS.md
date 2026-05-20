@@ -20,7 +20,8 @@ owns discovery and test-file classification for `home test
 packages/runtime/test/bun-corpus/`; `result.zig` owns the native
 file/run result model; `runner.zig` owns the adapter-neutral
 prepared-file and file-run contracts; `adapters/jsc_bootstrap.zig` owns
-the current JSC bootstrap execution adapter; `corpus_runner.zig` owns the
+the current JSC bootstrap execution adapter plus the native host-call
+bridge used by bootstrap `Bun.spawnSync`; `corpus_runner.zig` owns the
 explicit `--bun-corpus-native-subset=minimal-js` allowlist, source
 preparation, and summary aggregation. The full corpus gate now walks all
 discovered Bun test files through the Home JSC bootstrap and fails on
@@ -96,7 +97,8 @@ build-checks the copied primitive matcher leaves `toBeTrue.zig`,
 `toBeFinite.zig`, `toBePositive.zig`, `toBeNegative.zig`,
 `toBeString.zig`, `toBeFunction.zig`, `toBeSymbol.zig`,
 `toBeObject.zig`, `toBeDate.zig`, `toBeValidDate.zig`,
-`toBeArray.zig`, `toBeEven.zig`, and `toBeOdd.zig` through a small Home scaffold for the upstream
+`toBeArray.zig`, `toBeEven.zig`, `toBeOdd.zig`, and
+`toBeEmptyObject.zig` through a small Home scaffold for the upstream
 Expect/JSC/formatter surface. The copied matcher files stay unchanged
 apart from the Home license header; the target proves positive matches,
 `.not` failure signatures, post-match cleanup, and expect-call counting.
@@ -177,10 +179,11 @@ fixtures
 (`only-fixture-4`, `21177`, `5738`, and printing dots) are also
 allowlisted, with `console.warn` falling back to `console.log` for the
 printing fixture. The full-gate rewriter also lowers the Bake harness
-`bunEnv` / `bunExe` import and now reaches the real missing
-`Bun.spawnSync` subprocess surface instead of stopping at generic module
-syntax. One snapshot `test.todo` fixture is allowlisted without
-executing its snapshot matcher body. The source
+`bunEnv` / `bunExe` import. The native `Bun.spawnSync` object-form bridge
+now delegates real OS subprocesses, and the full gate reaches the Bake
+child process before failing `bake/deinitialization.test.ts` with
+`Error: Expected 1 to be 0`. One snapshot `test.todo` fixture is
+allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
 `import.meta.dir/path` to the same per-file metadata used for the
@@ -226,7 +229,7 @@ shape (each ~30-100 LOC, 7-10 `bun.X` references — almost all
 | Collection.zig | 171 | 8 | 0 | 0 | tier2-collection | `bun.JSError`, `bun.assert`, `bun.md` |
 | Order.zig | 187 | 16 | 0 | 0 | tier2-order | `bun.JSError`, `bun.assert`, `bun.Environment` |
 | timers/FakeTimers.zig | 376 | 32 | 0 | 0 | blocked | `bun.JSError`, `bun.timespec`, `bun.assert` |
-| expect/toBeTrue.zig + 23 primitive/truthiness/number/tag/array matchers | ~900 | 7-10 each | 0 | 0 | tier2-expect-matchers | `bun.jsc`, `bun.JSError`, `Expect` |
+| expect/toBeTrue.zig + 24 primitive/truthiness/number/tag/array/object matchers | ~930 | 7-10 each | 0 | 0 | tier2-expect-matchers | `bun.jsc`, `bun.JSError`, `Expect` |
 | ScopeFunctions.zig | 498 | 64 | 0 | 0 | blocked | `bun.String`, `bun.JSError`, `bun.handleOom` |
 | jest.zig | 520 | 44 | 3 | 1 | blocked | `bun.handleOom`, `bun.default_allocator`, `bun.JSError` |
 | harness/fixtures.zig | 575 | 1 | 0 | 0 | tier0 | `bun.md` |
@@ -372,8 +375,8 @@ These need only `compat` for `OOM`/`handleOom`/`assert`/`md`:
     compile-checked in the focused `home_test_bun_tier2_execution`
     target with a local scaffold for BunTest/JSC/reporter/timespec
     surfaces
-13. `expect/toBeTrue.zig` + twenty-three matcher leaves — primitive,
-    truthiness, number, tag, array, even/odd, and valid-date expect
+13. `expect/toBeTrue.zig` + twenty-four matcher leaves — primitive,
+    truthiness, number, tag, array, object-empty, even/odd, and valid-date expect
     matchers; compile-checked in the focused
     `home_test_bun_tier2_expect_matchers` target with a local
     Expect/JSC/formatter scaffold

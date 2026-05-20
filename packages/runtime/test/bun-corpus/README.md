@@ -17,7 +17,7 @@ macOS, Linux, and the WASM target.
   bootstrap path exists for the current allowlist:
   `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
-  Latest measured subset run: `124` files, `437` passed, `0` failed,
+  Latest measured subset run: `125` files, `537` passed, `0` failed,
   `32` todo. That subset currently executes the todo-registration smoke, three Node
   `assert` CommonJS smokes, three Node `path` smokes, two Node `url` smokes, the Web
   `atob`/`btoa` smoke, twenty-three regression smokes, one bundler
@@ -49,11 +49,16 @@ macOS, Linux, and the WASM target.
   virtual `globalThis.__home_import("bun:test")` module shim, and fails closed
   as unsupported for unsupported import shapes, unsupported module syntax,
   async tests or hooks, explicit unsupported shim paths, and files that
-  register zero tests. The full gate currently reaches the real first Bake
-  blocker, `Bun.spawnSync` object-form subprocess support, after lowering the
-  upstream `harness` `bunEnv` / `bunExe` import. Latest measured full gate:
-  `4,013` files executed, `386` passed, `3,904` failed, `1,500`
-  unsupported, `33` todo.
+  register zero tests. The bootstrap now exposes a native
+  `Bun.spawnSync({ cmd, cwd, stdio })` bridge for real OS subprocesses,
+  corpus-relative cwd/path resolution, and pipe/inherit/ignore stdio
+  modes. The full gate currently reaches the Bake child process and then
+  fails because delegated `home test <fixture>` still enters Home's
+  parser/runtime directly instead of the corpus JSC bootstrap with the
+  needed Bun module shims. Latest measured full gate: `4,013` files
+  executed, `387` passed, `3,903` failed, `1,495` unsupported,
+  `33` todo. First failure: `bake/deinitialization.test.ts` with
+  `Error: Expected 1 to be 0`.
 - No source renames. `Bun.serve`, `Bun.write`, `Bun.spawn`, etc. appear
   verbatim. The `Bun.* -> Home.*` rename happens at **test-runtime** (via the
   host runtime's surface aliasing), not at copy time, so the corpus stays a

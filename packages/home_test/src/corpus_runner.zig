@@ -183,6 +183,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/skip-test-fixture.js",
     "js/bun/test/expect-type-doctest.test.ts",
     "js/bun/test/todo-test-fixture.js",
+    "cli/test/test-randomize.fixture.ts",
 };
 
 const harness_prelude =
@@ -236,7 +237,13 @@ const harness_prelude =
     \\  revision: "home",
     \\  gc(force) {},
     \\  spawnSync(options) {
-    \\    __home_unsupported("Bun.spawnSync object-form subprocess support is not implemented by the Home Bun corpus bootstrap runner yet");
+    \\    if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("Bun.spawnSync native bridge is not installed");
+    \\    const result = globalThis.__home_spawnSyncNative(options || {});
+    \\    if (typeof Buffer === "function") {
+    \\      result.stdout = Buffer.from(result.stdout || "");
+    \\      result.stderr = Buffer.from(result.stderr || "");
+    \\    }
+    \\    return result;
     \\  },
     \\  stripANSI(value) {
     \\    return String(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
@@ -1276,7 +1283,7 @@ const harness_prelude =
     \\  return globalThis.__home_bun_test;
     \\};
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
-    \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, escapeHTML: Bun.escapeHTML, indexOfLine: Bun.indexOfLine };
+    \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, escapeHTML: Bun.escapeHTML, indexOfLine: Bun.indexOfLine, spawnSync: Bun.spawnSync };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["node:test"] = { test };
     \\globalThis.__home_modules["harness"] = { isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; } };
@@ -3498,6 +3505,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "version: \"0.0.0-home\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "gc(force)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "spawnSync(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawnSyncNative(options || {})") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.versions.bun = Bun.version") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (!process.env) process.env = {}") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.execPath = \"home\"") != null);
@@ -3659,6 +3667,7 @@ test "Bun test import rewrite lowers single test binding" {
 
 test "minimal JS subset includes low-risk Bun corpus expansion files" {
     const expected = [_][]const u8{
+        "cli/test/test-randomize.fixture.ts",
         "js/web/encoding/text-decoder-cjk.test.ts",
         "js/web/encoding/text-decoder-single-byte.test.ts",
         "regression/issue/fix-bindings-stack-trace.test.ts",
