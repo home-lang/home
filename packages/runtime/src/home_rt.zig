@@ -445,6 +445,7 @@ pub const runtime = struct {
         pub const server_module = @import("runtime/server/server.zig");
         pub const Server = server_module.Server;
         pub const HTMLBundle = @import("runtime/server/HTMLBundle.zig");
+        pub const ServerConfig = @import("runtime/server/ServerConfig.zig");
         pub const HTTPStatusText = @import("runtime/server/HTTPStatusText.zig");
         // Sixth-wave port batch (2026-05-18):
         pub const RangeRequest = @import("runtime/server/RangeRequest.zig");

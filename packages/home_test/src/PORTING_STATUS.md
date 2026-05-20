@@ -200,7 +200,10 @@ boundary at `bake/dev-and-prod.test.ts` as a named unsupported Bake
 registration. The bootstrap now lowers the
 `node:fs` sync import shapes used by Bake and forwards string
 `writeFileSync`, utf8 `readFileSync`, `realpathSync`, `renameSync`,
-and `unlinkSync` through native Home host callbacks. Exact
+and `unlinkSync` through native Home host callbacks. The native
+`Bun.serve` bridge accepts Bun's `routes` or `static` HTML-import object
+shape and instantiates Home ServerConfig / HTMLBundle / DevServer route
+carriers for the static route before the harness boundary. Exact
 `./bake-harness` and `../bake-harness`
 imports now lower to a virtual Bake registrar that preserves Bun's
 no-color ` DEV:<basename>-<count>: <description>` and

@@ -291,9 +291,12 @@ that initialize `bake.UserOptions` from `serve.static.define`. This is
 substrate for the first `bake/dev-and-prod.test.ts` HTML-route case; it
 is not yet a browser client or bundler execution path.
 The JSC bootstrap also has a narrow `Bun.serve` host callback for the
-Bake HTML-route shape; it allocates a real DevServer/Server carrier and
-routes `server.stop()`, hosted `fetch`, and HMR WebSocket open/close
-through the native lifecycle path. The bootstrap also lowers the
+Bake HTML-route shape; it now accepts Bun's `routes` or `static`
+HTML-import objects, allocates real ServerConfig / HTMLBundle / Route /
+DevServer / Server carriers, mirrors the `/*` HTML route into the
+DevServer HTML router, and routes `server.stop()`, hosted `fetch`, and
+HMR WebSocket open/close through the native lifecycle path. The bootstrap
+also lowers the
 `node:fs` sync imports used by Bake tests and forwards utf8
 `writeFileSync` / `readFileSync` / `realpathSync` plus `renameSync` /
 `unlinkSync` calls to native Home host callbacks. The delegated

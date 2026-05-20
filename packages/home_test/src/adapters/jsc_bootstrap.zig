@@ -243,8 +243,22 @@ const ServeHandle = struct {
     id: usize,
     dev: home_rt.runtime.bake.DevServer,
     server: home_rt.runtime.server.Server,
+    server_config: ?home_rt.runtime.server.ServerConfig.ServerConfig = null,
+    html_bundle: ?home_rt.runtime.server.HTMLBundle.HTMLBundle = null,
+    html_route: ?home_rt.runtime.server.HTMLBundle.Route = null,
     next_hmr_socket_id: usize = 1,
     hmr_sockets: std.AutoHashMapUnmanaged(usize, *home_rt.runtime.bake.HmrSocket) = .empty,
+};
+
+const BakeHtmlServeShape = struct {
+    route_path: []u8,
+    html_path: []u8,
+
+    pub fn deinit(this: *BakeHtmlServeShape, allocator: std.mem.Allocator) void {
+        allocator.free(this.route_path);
+        allocator.free(this.html_path);
+        this.* = undefined;
+    }
 };
 
 var next_serve_id: usize = 1;
@@ -267,14 +281,15 @@ fn serveNative(
         return null;
     }
 
+    const allocator = std.heap.smp_allocator;
     const options = extern_fns.JSValueToObject(actual_ctx, arguments[0], exception) orelse return null;
-    validateBakeHtmlServeOptions(actual_ctx, options, exception) catch |err| {
+    var serve_shape = validateBakeHtmlServeOptions(allocator, actual_ctx, options, exception) catch |err| {
         if (err == error.NativeException) return null;
         setExceptionFmt(actual_ctx, exception, "Bun.serve() failed: {s}", .{@errorName(err)});
         return null;
     };
+    defer serve_shape.deinit(allocator);
 
-    const allocator = std.heap.smp_allocator;
     const handle = allocator.create(ServeHandle) catch {
         setException(actual_ctx, exception, "Bun.serve() failed: OutOfMemory");
         return null;
@@ -291,6 +306,25 @@ fn serveNative(
     errdefer handle.dev.deinit();
     handle.server.listener_active = true;
     handle.server.attachDevServer(&handle.dev);
+
+    handle.html_bundle = home_rt.runtime.server.HTMLBundle.HTMLBundle.init(allocator, serve_shape.html_path) catch {
+        setException(actual_ctx, exception, "Bun.serve() failed: OutOfMemory");
+        return null;
+    };
+    errdefer handle.html_bundle.?.deinit();
+
+    handle.html_route = handle.html_bundle.?.route();
+    errdefer handle.html_route.?.deinit(allocator);
+
+    handle.server_config = home_rt.runtime.server.ServerConfig.ServerConfig.init(allocator);
+    handle.server_config.?.appendHTMLRoute(serve_shape.route_path, &handle.html_route.?) catch {
+        setException(actual_ctx, exception, "Bun.serve() failed: OutOfMemory");
+        return null;
+    };
+    home_rt.runtime.server.server_module.applyHTMLRouteToDevServer(&handle.dev, serve_shape.route_path, &handle.html_route.?) catch {
+        setException(actual_ctx, exception, "Bun.serve() failed: OutOfMemory");
+        return null;
+    };
 
     serve_handles.put(allocator, id, handle) catch {
         setException(actual_ctx, exception, "Bun.serve() failed: OutOfMemory");
@@ -434,18 +468,44 @@ fn serveIdFromArguments(ctx: *JSContextRef, argument_count: usize, arguments: [*
 }
 
 fn validateBakeHtmlServeOptions(
+    allocator: std.mem.Allocator,
     ctx: *JSContextRef,
     options: *JSObject,
     exception: extern_fns.ExceptionRef,
-) !void {
-    const routes_value = getProperty(ctx, options, "routes", exception) orelse return error.NativeException;
+) !BakeHtmlServeShape {
+    const routes_value = brk: {
+        if (getProperty(ctx, options, "routes", exception)) |value| {
+            if (!extern_fns.JSValueIsUndefined(ctx, value) and !extern_fns.JSValueIsNull(ctx, value)) break :brk value;
+        }
+        if (getProperty(ctx, options, "static", exception)) |value| {
+            if (!extern_fns.JSValueIsUndefined(ctx, value) and !extern_fns.JSValueIsNull(ctx, value)) break :brk value;
+        }
+        return error.UnsupportedServeShape;
+    };
     if (!extern_fns.JSValueIsObject(ctx, routes_value)) return error.UnsupportedServeShape;
     const routes = extern_fns.JSValueToObject(ctx, routes_value, exception) orelse return error.NativeException;
-    const root_value = getProperty(ctx, routes, "/", exception) orelse return error.UnsupportedServeShape;
-    if (!extern_fns.JSValueIsObject(ctx, root_value)) return error.UnsupportedServeShape;
-    const root = extern_fns.JSValueToObject(ctx, root_value, exception) orelse return error.NativeException;
+
+    const root = try getBakeHtmlRouteObject(ctx, routes, exception);
     const marker = getProperty(ctx, root, "__home_bake_html_import", exception) orelse return error.UnsupportedServeShape;
     if (!extern_fns.JSValueToBoolean(ctx, marker)) return error.UnsupportedServeShape;
+
+    const path_value = getProperty(ctx, root, "path", exception) orelse return error.UnsupportedServeShape;
+    return .{
+        .route_path = try allocator.dupe(u8, "/*"),
+        .html_path = try valueToOwnedString(allocator, ctx, path_value, exception),
+    };
+}
+
+fn getBakeHtmlRouteObject(ctx: *JSContextRef, routes: *JSObject, exception: extern_fns.ExceptionRef) !*JSObject {
+    if (getProperty(ctx, routes, "/*", exception)) |root_value| {
+        if (!extern_fns.JSValueIsObject(ctx, root_value)) return error.UnsupportedServeShape;
+        return extern_fns.JSValueToObject(ctx, root_value, exception) orelse error.NativeException;
+    }
+    if (getProperty(ctx, routes, "/", exception)) |root_value| {
+        if (!extern_fns.JSValueIsObject(ctx, root_value)) return error.UnsupportedServeShape;
+        return extern_fns.JSValueToObject(ctx, root_value, exception) orelse error.NativeException;
+    }
+    return error.UnsupportedServeShape;
 }
 
 fn makeServeHandleResult(ctx: *JSContextRef, id: usize) !*JSValue {
@@ -482,6 +542,7 @@ fn destroyStoppedServeHandleIfIdle(id: usize, handle: *ServeHandle) void {
     _ = serve_handles.remove(id);
     deinitHmrSockets(handle);
     handle.hmr_sockets.deinit(std.heap.smp_allocator);
+    deinitServeHandleCarriers(handle);
     std.heap.smp_allocator.destroy(handle);
 }
 
@@ -491,7 +552,24 @@ fn destroyServeHandle(id: usize, abrupt: bool) void {
     handle.value.server.stopListening(abrupt);
     deinitHmrSockets(handle.value);
     handle.value.hmr_sockets.deinit(allocator);
+    deinitServeHandleCarriers(handle.value);
     allocator.destroy(handle.value);
+}
+
+fn deinitServeHandleCarriers(handle: *ServeHandle) void {
+    const allocator = std.heap.smp_allocator;
+    if (handle.server_config) |*config| {
+        config.deinit();
+        handle.server_config = null;
+    }
+    if (handle.html_route) |*route| {
+        route.deinit(allocator);
+        handle.html_route = null;
+    }
+    if (handle.html_bundle) |*bundle| {
+        bundle.deinit();
+        handle.html_bundle = null;
+    }
 }
 
 fn closeHmrSocket(handle: *ServeHandle, socket_id: usize) void {

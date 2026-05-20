@@ -4786,6 +4786,31 @@ test "bootstrap runner covers Request body text and clone smoke" {
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
+test "bootstrap runner accepts Bun.serve static HTML route shape" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("serve static html route", () => {
+        \\  const html = { __home_bake_html_import: true, path: "index.html" };
+        \\  const server = Bun.serve({ static: { "/*": html } });
+        \\  expect(server.url.href).toBe("http://127.0.0.1:0/");
+        \\  server.stop(true);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev-and-prod.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 test "bootstrap rewrite lowers node buffer default and named imports" {
     const source =
         \\import { expect, test } from "bun:test";
