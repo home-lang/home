@@ -113,6 +113,8 @@ pub const minimal_js_files = [_][]const u8{
     "integration/bun-types/fixture/23347.test.ts",
     "js/bun/resolve/toml/toml-parse.test.ts",
     "regression/issue/013880.test.ts",
+    "js/bun/util/exotic-global-mutable-prototype.test.ts",
+    "js/bun/jsc/native-constructor-identity.test.ts",
 };
 
 const harness_prelude =
@@ -135,6 +137,27 @@ const harness_prelude =
     \\globalThis.__home_reset_tests();
     \\if (typeof console !== "object" || console === null) var console = {};
     \\if (typeof console.log !== "function") console.log = function() {};
+    \\const __home_object_set_prototype_of = Object.setPrototypeOf;
+    \\const __home_global_original_prototype = Object.getPrototypeOf(globalThis);
+    \\let __home_global_virtual_prototype_keys = [];
+    \\Object.setPrototypeOf = function(target, prototype) {
+    \\  if (target !== globalThis) return __home_object_set_prototype_of(target, prototype);
+    \\  for (const key of __home_global_virtual_prototype_keys) delete globalThis[key];
+    \\  __home_global_virtual_prototype_keys = [];
+    \\  if (prototype === __home_global_original_prototype) return target;
+    \\  if (prototype && typeof prototype === "object") {
+    \\    for (const key of Object.getOwnPropertyNames(prototype)) {
+    \\      if (Object.prototype.hasOwnProperty.call(globalThis, key)) continue;
+    \\      const descriptor = Object.getOwnPropertyDescriptor(prototype, key);
+    \\      if (!descriptor) continue;
+    \\      descriptor.configurable = true;
+    \\      Object.defineProperty(globalThis, key, descriptor);
+    \\      __home_global_virtual_prototype_keys.push(key);
+    \\    }
+    \\    return target;
+    \\  }
+    \\  return __home_object_set_prototype_of(target, prototype);
+    \\};
     \\var Bun = {
     \\  [Symbol.toStringTag]: "Bun",
     \\  version: "0.0.0-home",
@@ -1107,6 +1130,12 @@ const harness_prelude =
     \\  const text = JSON.stringify(value);
     \\  return new Response(text, init);
     \\};
+    \\if (typeof Blob !== "function") {
+    \\  var Blob = function(parts, options) {
+    \\    this.parts = Array.isArray(parts) ? parts.slice() : [];
+    \\    this.type = options && options.type ? String(options.type) : "";
+    \\  };
+    \\}
     \\if (typeof HTMLRewriter !== "function") {
     \\  var HTMLRewriter = function() {
     \\    this.__home_html_handlers = [];
@@ -2260,11 +2289,15 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("integration/bun-types/fixture/23347.test.ts", filesForSubset(.minimal_js)[59]);
     try std.testing.expectEqualStrings("js/bun/resolve/toml/toml-parse.test.ts", filesForSubset(.minimal_js)[60]);
     try std.testing.expectEqualStrings("regression/issue/013880.test.ts", filesForSubset(.minimal_js)[61]);
+    try std.testing.expectEqualStrings("js/bun/util/exotic-global-mutable-prototype.test.ts", filesForSubset(.minimal_js)[62]);
+    try std.testing.expectEqualStrings("js/bun/jsc/native-constructor-identity.test.ts", filesForSubset(.minimal_js)[63]);
 }
 
 test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function it(name, first, second)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_is_thenable(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.setPrototypeOf = function(target, prototype)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_global_virtual_prototype_keys") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "stripANSI(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapAnsi(value, columns, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "TOML: {") != null);
@@ -2326,6 +2359,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:url\"] = __home_url_module") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "URL.canParse = function(input, base)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:vm\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var Blob = function(parts, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun:internal-for-testing\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "escapeRegExpForPackageNameMatching(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "escapePowershell(value)") != null);
@@ -3472,6 +3506,40 @@ test "bootstrap runner covers relative CJS fixture require" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/013880.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers mutable globalThis prototype smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("Object.setPrototypeOf works on globalThis", () => {
+        \\  const orig = Object.getPrototypeOf(globalThis);
+        \\  Object.setPrototypeOf(
+        \\    globalThis,
+        \\    Object.create(null, {
+        \\      a: {
+        \\        value: 1,
+        \\      },
+        \\    }),
+        \\  );
+        \\  expect(a).toBe(1);
+        \\  Object.setPrototypeOf(globalThis, orig);
+        \\  expect(globalThis.a).toBeUndefined();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/util/exotic-global-mutable-prototype.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);

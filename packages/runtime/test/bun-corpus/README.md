@@ -29,7 +29,8 @@ macOS, Linux, and the WASM target.
   propagation smoke, Deno `Event` / `CustomEvent` /
   `AbortController`, a Deno `URLSearchParams` bootstrap smoke, and narrow bootstrap coverage for Node
   `DOMException`, Web `Response.json` / `Response.redirect`, Web `Request`
-  cache/mode/clone, JSC `ShadowRealm`, Bun file metadata, Node `Buffer`
+  cache/mode/clone, JSC `ShadowRealm`, native constructor identity, mutable
+  `globalThis` prototype behavior, Bun file metadata, Node `Buffer`
   binary/UTF-16LE/compare/inspect-limit/isEncoding behavior, `Map`/`Set` deep-equality,
   lifecycle hooks, `Bun.inspect` Set formatting, `MessageEvent` constructor
   behavior, Bun version aliases, own-key matchers, and a `prepareStackTrace`
