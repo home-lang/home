@@ -895,6 +895,16 @@ to the native Bake graph port. The next direct copied Bake boundary is
 `bake/dev/plugins.test.ts`, currently failing as
 `DEV:plugins-1: onResolve`.
 
+The copied `bake/dev/plugins.test.ts` fixture now passes in Home as `3`
+passed, `0` failed, `0` unsupported, `0` todo. The minimal Bake route
+shim models the observable outputs for the upstream `onResolve`,
+`onLoad`, and virtual namespace `onResolve + onLoad` smokes, including a
+deep equality path for the virtual module JSON response. This remains a
+focused harness model; native parity still requires Bun's real dev plugin
+pipeline. The next direct copied Bake boundary is
+`bake/dev/production.test.ts`, currently failing at source preparation
+with `unsupported module syntax`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

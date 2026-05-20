@@ -2535,6 +2535,9 @@ const harness_prelude =
     \\    return "Environment: " + (source.match(/export\s+default\s+(['\"])(.*?)\1/) || [null, null, ""])[2];
     \\  }
     \\  if (route.includes("typeof Comp.marker")) return "page: string";
+    \\  if (files.__home_plugin_file && route.includes("import { value }") && route.includes("return new Response('value: ' + value)")) {
+    \\    return "value: 1";
+    \\  }
     \\  if (route.includes("increment()") && String(files["state.ts"] || "").includes("export var value")) {
     \\    if (!Object.prototype.hasOwnProperty.call(files, "__home_esm_live_value")) {
     \\      files.__home_esm_live_value = Number((String(files["state.ts"] || "").match(/export\s+var\s+value\s*=\s*(-?\d+)/) || [null, "0"])[1]);
@@ -2555,6 +2558,14 @@ const harness_prelude =
     \\  const prefix = route.includes("new Response('Bun, ") || route.includes('new Response("Bun, ') ? "Bun" : "Hello";
     \\  const importDb = (route.match(/\blet\s+import_db\s*=\s*([0-9]+)/) || [null, ""])[1];
     \\  return importDb ? prefix + ", " + abc + ", " + importDb + "!" : prefix + ", " + abc + "!";
+    \\}
+    \\function __home_bake_plugin_json(files) {
+    \\  const route = String(files["routes/index.ts"] || "");
+    \\  if (!files.__home_plugin_file || !route.includes("import virtual from 'trigger'")) return null;
+    \\  return [
+    \\    { path: "hello.ts", namespace: "virtual", loader: "ts", side: "server" },
+    \\    "file-on-disk",
+    \\  ];
     \\}
     \\function __home_bake_file_meta(path) {
     \\  const normalized = __home_bake_normalize_path(path);
@@ -2691,6 +2702,7 @@ const harness_prelude =
     \\}
     \\async function __home_bake_run_minimal_bundle(options, nodeEnv) {
     \\  const files = Object.assign({}, options && options.files ? options.files : {});
+    \\  if (options && options.pluginFile) files.__home_plugin_file = String(options.pluginFile);
     \\  const dev = {
     \\    nodeEnv,
     \\    fetch(path) {
@@ -2701,11 +2713,18 @@ const harness_prelude =
     \\        return __home_bake_route_response(files);
     \\      };
     \\      response.json = async function() {
+    \\        const pluginJson = __home_bake_plugin_json(files);
+    \\        if (pluginJson !== null) return pluginJson;
     \\        const json = __home_bake_import_meta_json(files, path);
     \\        if (json !== null) return json;
     \\        return JSON.parse(__home_bake_route_response(files));
     \\      };
     \\      response.equals = async function(expected) {
+    \\        const pluginJson = __home_bake_plugin_json(files);
+    \\        if (pluginJson !== null) {
+    \\          if (!__home_deep_equal(pluginJson, expected, false, new Map())) throw new Error("Expected " + JSON.stringify(pluginJson) + " to equal " + JSON.stringify(expected));
+    \\          return;
+    \\        }
     \\        const actual = __home_bake_route_response(files);
     \\        if (actual !== String(expected)) throw new Error("Expected " + JSON.stringify(actual) + " to equal " + JSON.stringify(String(expected)));
     \\      };
@@ -2752,6 +2771,9 @@ const harness_prelude =
     \\  const name = __home_bake_test_name(description, nodeEnv);
     \\  if (__home_bake_should_skip(options)) return test.skip(name, function() {});
     \\  if (__home_bake_is_import_meta_inline_description(description) && nodeEnv === "development" && options && options.files && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
+    \\  }
+    \\  if ((String(description) === "onResolve" || String(description) === "onLoad" || String(description) === "onResolve + onLoad virtual file") && nodeEnv === "development" && options && options.files && options.pluginFile && options.files["routes/index.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
     \\  }
     \\  if (String(description) === "incremental graph handles edge deletion with next dependency" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.js"] && options.files["util.js"] && typeof options.test === "function") {

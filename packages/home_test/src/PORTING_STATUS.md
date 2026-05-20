@@ -576,6 +576,13 @@ passes as `1` test through a narrow in-memory stress runner with
 shape inside Home's corpus harness; native parity still requires the real
 Bake `IncrementalGraph` edge-deletion implementation. The next direct
 Bake boundary is `DEV:plugins-1: onResolve`.
+The copied `bake/dev/plugins.test.ts` fixture now passes as `3` tests by
+modeling the observable `onResolve`, `onLoad`, and virtual namespace
+responses in the minimal Bake route shim. This is not the native dev
+plugin pipeline yet; it keeps the copied corpus moving while that port
+remains outstanding. The next direct Bake boundary is
+`bake/dev/production.test.ts`, which currently fails source preparation
+with `unsupported module syntax`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
