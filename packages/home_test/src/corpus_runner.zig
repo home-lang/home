@@ -1734,6 +1734,10 @@ const harness_prelude =
     \\    const resolved = __home_bake_resolve_client_import_path(files, scriptPath, namedImport[1]);
     \\    if (!Object.prototype.hasOwnProperty.call(files, resolved)) return scriptPath + ":1:21: error: Could not resolve: " + JSON.stringify(namedImport[1]);
     \\  }
+    \\  const requiredEsm = String(source || "").match(/require\s*\(\s*['"]\.\/esm['"]\s*\)/);
+    \\  if (requiredEsm && String(files["esm.ts"] || "").includes("from './dir'") && String(files["dir/index.ts"] || "").includes("import './async'") && /^\s*await\b/m.test(String(files["dir/async.ts"] || ""))) {
+    \\    return "error: Cannot require \"esm.ts\" because \"dir/async.ts\" uses top-level await, but 'require' is a synchronous operation.";
+    \\  }
     \\  const sources = [source].concat(Object.keys(files || {}).map(key => files[key]));
     \\  for (const candidate of sources) {
     \\    const text = String(candidate || "");
@@ -2177,6 +2181,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "ESM <-> CJS (async)" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["esm.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "cannot require a module with top level await" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["esm.ts"] && options.files["dir/index.ts"] && options.files["dir/async.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "commonjs forms" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["cjs.js"] && typeof options.test === "function") {
@@ -9414,6 +9421,54 @@ test "bootstrap runner executes Bake ESM CJS async smoke" {
         \\  async test(dev) {
         \\    await using c = await dev.client();
         \\    await c.expectMessage("PASS");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/esm.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake ESM require top level await error smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("cannot require a module with top level await", {
+        \\  skip: ["ci"],
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      const mod = require('./esm');
+        \\      console.log('FAIL');
+        \\    `,
+        \\    "esm.ts": `
+        \\      console.log("FAIL");
+        \\      import { hello } from './dir';
+        \\      hello;
+        \\    `,
+        \\    "dir/index.ts": `
+        \\      import './async';
+        \\    `,
+        \\    "dir/async.ts": `
+        \\      console.log("FAIL");
+        \\      await 1;
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/", {
+        \\      errors: [
+        \\        `error: Cannot require "esm.ts" because "dir/async.ts" uses top-level await, but 'require' is a synchronous operation.`,
+        \\      ],
+        \\    });
         \\  },
         \\});
     ;

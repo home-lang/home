@@ -404,6 +404,14 @@ wrapper with `__esModule: true`. The native parity target remains Bun's
 Bake HMR split between `loadModuleAsync` raw ESM exports and sync
 `toCommonJS(...)` interop. The next Bake boundary is
 `DEV:esm-11: cannot require a module with top level await`.
+The copied sync `require()` over a top-level-await ESM dependency case
+now runs through the Bake static client shim's startup error path. The
+shim recognizes the fixture graph from `index.ts` through `esm.ts`,
+`dir/index.ts`, and `dir/async.ts`, then reports Bun's exact error before
+executing the client script. The native parity target remains Bun's sync
+`loadModuleSync` failure over async ESM/TLA modules. The next Bake
+boundary is
+`DEV:esm-12: function that is assigned to should become a live binding`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

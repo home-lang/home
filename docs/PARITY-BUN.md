@@ -615,6 +615,18 @@ files executed, `454` passed, `3,928` failed, `1,481` unsupported, `35`
 todo. First failure: `bake/dev/esm.test.ts` with
 `DEV:esm-11: cannot require a module with top level await`.
 
+The Bake static client shim now covers the copied sync `require()` over a
+top-level-await ESM dependency case. The startup error path recognizes
+the fixture graph from `index.ts` through `esm.ts`, `dir/index.ts`, and
+`dir/async.ts`, then reports Bun's exact error before executing the
+client script. The native parity target remains Bun's sync
+`loadModuleSync` failure over async ESM/TLA modules.
+
+Latest measured full gate after the Bake ESM require/TLA error slice:
+`4,013` files executed, `454` passed, `3,927` failed, `1,480`
+unsupported, `35` todo. First failure: `bake/dev/esm.test.ts` with
+`DEV:esm-12: function that is assigned to should become a live binding`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap
