@@ -192,6 +192,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/concurrent_immediate.fixture.ts",
     "js/bun/test/failure-skip.fixture.ts",
     "cli/run/commonjs-invalid.test.ts",
+    "cli/run/empty-file.test.ts",
     "js/bun/test/test-fixture-preload-global-lifecycle-hook-test.js",
     "js/bun/test/skip-test-fixture.js",
     "js/bun/test/expect-type-doctest.test.ts",
@@ -521,6 +522,16 @@ const harness_prelude =
     \\    },
     \\  };
     \\}
+    \\function __home_normalize_spawn_options(options) {
+    \\  const source = options || {};
+    \\  if (!Array.isArray(source.cmd)) return source;
+    \\  if (source.cmd.length >= 4 && String(source.cmd[1]) === "run" && String(source.cmd[2]) === "--bun") {
+    \\    const normalized = Object.assign({}, source);
+    \\    normalized.cmd = [source.cmd[0], "run"].concat(source.cmd.slice(3));
+    \\    return normalized;
+    \\  }
+    \\  return source;
+    \\}
     \\function __home_spawn_completed(stdoutText, stderrText, exitCode) {
     \\  const stdout = __home_spawn_pipe_text(String(stdoutText || ""));
     \\  const stderr = __home_spawn_pipe_text(String(stderrText || ""));
@@ -593,7 +604,7 @@ const harness_prelude =
     \\  },
     \\  spawnSync(options) {
     \\    if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("Bun.spawnSync native bridge is not installed");
-    \\    const result = globalThis.__home_spawnSyncNative(options || {});
+    \\    const result = globalThis.__home_spawnSyncNative(__home_normalize_spawn_options(options));
     \\    if (typeof Buffer === "function") {
     \\      result.stdout = Buffer.from(result.stdout || "");
     \\      result.stderr = Buffer.from(result.stderr || "");
@@ -601,6 +612,7 @@ const harness_prelude =
     \\    return result;
     \\  },
     \\  spawn(options) {
+    \\    options = __home_normalize_spawn_options(options);
     \\    if (typeof __home_bake_spawn_override === "function") {
     \\      const overridden = __home_bake_spawn_override(options || {});
     \\      if (overridden) return overridden;
@@ -1722,6 +1734,15 @@ const harness_prelude =
     \\      if (!Number.isInteger(expected) || expected < 0) __home_fail("toHaveLength() requires a non-negative integer");
     \\      if (value == null || typeof value.length !== "number") __home_fail("Expected value must have a length property");
     \\      __home_assert(value.length === expected, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to have length " + String(expected));
+    \\    },
+    \\    toBeEmpty() {
+    \\      let pass = false;
+    \\      if (value === null || value === undefined) pass = true;
+    \\      else if (typeof value === "string" || Array.isArray(value)) pass = value.length === 0;
+    \\      else if (value instanceof Map || value instanceof Set) pass = value.size === 0;
+    \\      else if (typeof value === "object" && typeof value.length === "number") pass = value.length === 0;
+    \\      else if (typeof value === "object") pass = Object.keys(value).length === 0;
+    \\      __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be empty");
     \\    },
     \\    toBeDefined() {
     \\      __home_assert(value !== undefined, isNot, "Expected value" + (isNot ? " not" : "") + " to be defined");
@@ -9123,6 +9144,30 @@ test "bootstrap node url pathToFileURL handles POSIX path encoding" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/url/url-pathtofileurl.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap matcher toBeEmpty accepts strings and collections" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\test("empty matcher", () => {
+        \\  expect("").toBeEmpty();
+        \\  expect([]).toBeEmpty();
+        \\  expect(new Map()).toBeEmpty();
+        \\  expect({}).toBeEmpty();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/run/empty-file.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);

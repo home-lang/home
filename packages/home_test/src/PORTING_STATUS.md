@@ -131,7 +131,7 @@ rejection, `test.concurrent`, `test.each`, `.not`, `toBe`, `toBeDefined`,
 `toBeUndefined`, `toBeTruthy`, `toBeNumber`, `toBeTypeOf`,
 `toBeInstanceOf`, `toMatchObject`, object-form error matching in
 `toThrow`, small `toEqual` / `toStrictEqual` deep equality including
-`Map` / `Set` / byte-wise ArrayBuffer and typed arrays, `expect.any`, `expect.unreachable`, `describe.todo`, `test.skip`, a small
+`Map` / `Set` / byte-wise ArrayBuffer and typed arrays, `expect.any`, `expect.unreachable`, `expect().toBeEmpty`, `describe.todo`, `test.skip`, a small
 `expect.extend` asymmetric matcher path, `toIncludeRepeated`,
 `toContainKey`, `toContainKeys`, `toContainAnyKeys`, `atob` / `btoa`,
 `Bun` branding plus `Bun.version`, `Bun.revision`, `Bun.stripANSI`,
@@ -729,6 +729,10 @@ this non-Windows host as `2` passed, `0` failed, `0` unsupported, and
 `2` todo. The bootstrap models POSIX path resolution and UTF-8 percent
 encoding; full native parity still needs Windows/UNC and Node-style
 invalid-argument errors.
+The copied `cli/run/empty-file.test.ts` fixture now passes as `1` test
+through the real subprocess path. The bootstrap adds `expect().toBeEmpty`
+and normalizes `home run --bun <file>` to the runtime-compatible
+`home run <file>` command shape.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
