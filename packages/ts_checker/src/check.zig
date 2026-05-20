@@ -13884,6 +13884,8 @@ pub const Checker = struct {
         // detection).
         var ctor_assigned_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
         defer ctor_assigned_names.deinit(self.gpa);
+        var strict_init_candidate_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer strict_init_candidate_names.deinit(self.gpa);
         var static_block_this_assigned_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
         defer static_block_this_assigned_names.deinit(self.gpa);
 
@@ -13908,6 +13910,27 @@ pub const Checker = struct {
             if (params.len > 0) try setter_types.put(self.gpa, nid, params[0]);
         }
 
+        // Pre-scan strict-property-init candidates before constructor
+        // definite-assignment analysis. TS2565 ("used before being
+        // assigned") only applies to fields that participate in
+        // strict initialization.
+        for (members) |m| {
+            if (self.hir.kindOf(m) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, m);
+            if (op.is_static or op.type_annotation == hir_mod.none_node_id or op.value != hir_mod.none_node_id) continue;
+            if (self.classFieldHasOptionalToken(m) or self.classFieldHasDefiniteAssertion(m)) continue;
+            if (self.classMemberSourceHasLeadingKeyword(m, "abstract")) continue;
+            if (self.classMemberSourceHasModifierBeforeKey(m, op.key, "declare")) continue;
+            if (!self.strictPropertyInitializationChecksField(m, op.key, op.is_computed)) continue;
+            const field_t = try self.lowererLowerWithTypeParams(op.type_annotation);
+            if (self.typeAnnotationContainsUnresolvedRef(op.type_annotation)) continue;
+            if (self.typeExplicitlyIncludesUndefined(field_t)) continue;
+            if (self.classFieldTypeIsAnyOrUnknown(field_t) and
+                self.classFieldAnnotationIsLiteralAnyOrUnknown(op.type_annotation)) continue;
+            const member_name = (try self.strictPropertyInitNameFromKey(op.key, op.is_computed)) orelse continue;
+            try strict_init_candidate_names.put(self.gpa, member_name, {});
+        }
+
         // Pre-scan the constructor body for `this.X = ...` so the
         // TS2564 (strict-property-initialization) check below can
         // suppress the diagnostic for typed fields the constructor
@@ -13918,7 +13941,8 @@ pub const Checker = struct {
             if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
             const fp = hir_mod.fnDeclOf(self.hir, m);
             if (!fp.flags.is_constructor) continue;
-            try self.collectConstructorThisAssignedNames(m, &ctor_assigned_names);
+            try self.collectConstructorThisAssignedNames(m, &strict_init_candidate_names, &ctor_assigned_names);
+            try self.reportConstructorThisReadsBeforeAssigned(m, &strict_init_candidate_names);
         }
 
         // Pre-scan the constructor's `(public foo: string)` style
@@ -14623,19 +14647,23 @@ pub const Checker = struct {
                             !self.typeAnnotationContainsUnresolvedRef(op.type_annotation) and
                             op.value == hir_mod.none_node_id and
                             !self.classFieldHasOptionalToken(m) and
+                            !self.classMemberSourceHasLeadingKeyword(m, "abstract") and
                             !self.classMemberSourceHasModifierBeforeKey(m, op.key, "declare") and
                             !self.classNodeIsInsideAmbientDeclaredModule(node) and
                             !self.classHasLeadingDeclare(node) and
                             !self.virtualSectionIsDeclarationFile(node))
                         {
                             if (!self.typeExplicitlyIncludesUndefined(dynamic_field_t)) {
-                                const key_text = self.computedKeyIdentifierText(op.key) orelse "computed";
-                                const msg = try std.fmt.allocPrint(
-                                    self.diag_arena.allocator(),
-                                    "Property '[{s}]' has no initializer and is not definitely assigned in the constructor.",
-                                    .{key_text},
-                                );
-                                try self.report(m, TsCodes.property_not_initialized, msg);
+                                const dynamic_name = try self.strictPropertyInitNameFromKey(op.key, true);
+                                if (dynamic_name == null or !ctor_assigned_names.contains(dynamic_name.?)) {
+                                    const key_text = self.computedKeyIdentifierText(op.key) orelse "computed";
+                                    const msg = try std.fmt.allocPrint(
+                                        self.diag_arena.allocator(),
+                                        "Property '[{s}]' has no initializer and is not definitely assigned in the constructor.",
+                                        .{key_text},
+                                    );
+                                    try self.report(m, TsCodes.property_not_initialized, msg);
+                                }
                             }
                         }
                         // Even when the computed key doesn't resolve to a
@@ -15003,25 +15031,13 @@ pub const Checker = struct {
                             self.classFieldAnnotationIsLiteralAnyOrUnknown(op.type_annotation)) and
                         !self.classFieldHasDefiniteAssertion(m) and
                         !self.classFieldHasOptionalToken(m) and
+                        !is_abstract_property and
                         !is_declared_property and
                         !self.classNodeIsInsideAmbientDeclaredModule(node) and
                         !self.classHasLeadingDeclare(node) and
                         !self.virtualSectionIsDeclarationFile(node) and
                         !ctor_assigned_names.contains(member_name) and
-                        // Upstream tsc never fires TS2564 for fields
-                        // whose name is a string-literal / numeric /
-                        // computed key (e.g. `class { "a b": number }`,
-                        // `class { 1: number }`) — those names can't
-                        // be initialized via `this.<name>` in the
-                        // constructor and the initializer rule only
-                        // applies to identifier-named fields (including
-                        // private `#name` identifiers, which tsc treats
-                        // just like ordinary fields for TS2564). Mirrors
-                        // `stringNamedPropertyAccess.ts` and the
-                        // `privateNameDeclaration` baselines.
-                        (isJsIdentifier(self.string_interner.get(member_name)) or
-                            isPrivateIdentifierName(self.string_interner.get(member_name)) or
-                            std.mem.startsWith(u8, self.string_interner.get(member_name), "Symbol.")))
+                        self.strictPropertyInitializationChecksField(m, op.key, op_is_computed))
                     {
                         const field_name = self.string_interner.get(member_name);
                         // Computed `[Symbol.X]` fields are interned as
@@ -15870,44 +15886,352 @@ pub const Checker = struct {
     fn collectConstructorThisAssignedNames(
         self: *Checker,
         ctor_node: NodeId,
+        candidates: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
         names: *std.AutoHashMapUnmanaged(hir_mod.StringId, void),
     ) CheckError!void {
         const f = hir_mod.fnDeclOf(self.hir, ctor_node);
         if (f.body == hir_mod.none_node_id) return;
-        try self.collectThisAssignedNamesFromNode(f.body, names);
+        var it = candidates.iterator();
+        while (it.next()) |entry| {
+            if (try self.constructorDefinitelyAssignsName(f.body, entry.key_ptr.*)) {
+                try names.put(self.gpa, entry.key_ptr.*, {});
+            }
+        }
     }
 
-    fn collectThisAssignedNamesFromNode(
+    fn strictPropertyInitializationChecksField(self: *Checker, member_node: NodeId, key: NodeId, is_computed: bool) bool {
+        if (is_computed) return true;
+        if (self.source) |src| {
+            const key_span = self.hir.spanOf(key);
+            if (key_span.start < src.len) {
+                const ch = src[key_span.start];
+                if (ch == '"' or ch == '\'' or std.ascii.isDigit(ch)) return false;
+                if (key_span.start > 0) {
+                    const prev = src[key_span.start - 1];
+                    if (prev == '"' or prev == '\'') return false;
+                }
+            }
+            const member_span = self.hir.spanOf(member_node);
+            if (member_span.start < src.len and member_span.start <= key_span.start) {
+                const before_key = src[member_span.start..@min(@as(usize, key_span.start), src.len)];
+                if (std.mem.indexOfScalar(u8, before_key, '"') != null or
+                    std.mem.indexOfScalar(u8, before_key, '\'') != null)
+                {
+                    return false;
+                }
+            }
+        }
+        return switch (self.hir.kindOf(key)) {
+            .identifier => true,
+            else => false,
+        };
+    }
+
+    fn strictPropertyInitNameFromKey(
+        self: *Checker,
+        key: NodeId,
+        is_computed: bool,
+    ) CheckError!?hir_mod.StringId {
+        if (try self.classMemberNameFromPropertyKey(key, is_computed)) |name| return name;
+        if (!is_computed) return null;
+        switch (self.hir.kindOf(key)) {
+            .identifier => {
+                const id = hir_mod.identifierOf(self.hir, key);
+                if (try self.sourceConstStringMemberName(self.string_interner.get(id.name))) |sid| return sid;
+            },
+            .member_access => {
+                const m = hir_mod.memberOf(self.hir, key);
+                if (self.hir.kindOf(m.object) == .identifier) {
+                    const obj = hir_mod.identifierOf(self.hir, m.object);
+                    if (try self.sourceEnumStringMemberName(self.string_interner.get(obj.name), self.string_interner.get(m.name))) |sid| return sid;
+                }
+            },
+            else => {},
+        }
+        const key_t = self.checkExpression(key) catch types.Primitive.any;
+        if (key_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(key_t).is_literal) {
+            return switch (self.interner.literalOf(key_t)) {
+                .string_lit => |sid| sid,
+                else => null,
+            };
+        }
+        return null;
+    }
+
+    fn sourceConstStringMemberName(self: *Checker, name: []const u8) CheckError!?hir_mod.StringId {
+        const src = self.source orelse return null;
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "const")) |const_pos| {
+            search_start = const_pos + "const".len;
+            if (const_pos > 0 and isJsDocIdentChar(src[const_pos - 1])) continue;
+            if (search_start < src.len and isJsDocIdentChar(src[search_start])) continue;
+            const after_const = std.mem.trim(u8, src[search_start..], " \t\r\n");
+            if (!std.mem.startsWith(u8, after_const, name)) continue;
+            if (after_const.len > name.len and isJsDocIdentChar(after_const[name.len])) continue;
+            const line_end = std.mem.indexOfScalar(u8, after_const, '\n') orelse after_const.len;
+            const line = after_const[0..line_end];
+            const eq_pos = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+            const rhs = std.mem.trim(u8, line[eq_pos + 1 ..], " \t\r;");
+            if (rhs.len < 2) continue;
+            const quote = rhs[0];
+            if (quote != '"' and quote != '\'') continue;
+            const close = std.mem.indexOfScalarPos(u8, rhs, 1, quote) orelse continue;
+            return self.string_interner.intern(rhs[1..close]) catch return error.OutOfMemory;
+        }
+        return null;
+    }
+
+    fn sourceEnumStringMemberName(
+        self: *Checker,
+        enum_name: []const u8,
+        member_name: []const u8,
+    ) CheckError!?hir_mod.StringId {
+        const src = self.source orelse return null;
+        const enum_kw = "enum";
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, enum_kw)) |enum_pos| {
+            search_start = enum_pos + enum_kw.len;
+            if (enum_pos > 0 and isJsDocIdentChar(src[enum_pos - 1])) continue;
+            if (search_start < src.len and isJsDocIdentChar(src[search_start])) continue;
+            var name_pos = search_start;
+            while (name_pos < src.len and (src[name_pos] == ' ' or src[name_pos] == '\t' or src[name_pos] == '\r' or src[name_pos] == '\n')) : (name_pos += 1) {}
+            if (!std.mem.startsWith(u8, src[name_pos..], enum_name)) continue;
+            const after_name_pos = name_pos + enum_name.len;
+            if (after_name_pos < src.len and isJsDocIdentChar(src[after_name_pos])) continue;
+            const open_rel = std.mem.indexOfScalar(u8, src[after_name_pos..], '{') orelse continue;
+            const body_start = after_name_pos + open_rel + 1;
+            const close_rel = std.mem.indexOfScalar(u8, src[body_start..], '}') orelse continue;
+            const body = src[body_start .. body_start + close_rel];
+            var member_search: usize = 0;
+            while (std.mem.indexOfPos(u8, body, member_search, member_name)) |member_pos| {
+                member_search = member_pos + member_name.len;
+                if (member_pos > 0 and isJsDocIdentChar(body[member_pos - 1])) continue;
+                if (member_search < body.len and isJsDocIdentChar(body[member_search])) continue;
+                const line_end = std.mem.indexOfScalarPos(u8, body, member_search, '\n') orelse body.len;
+                const line = body[member_pos..line_end];
+                const eq_pos = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+                const rhs = std.mem.trim(u8, line[eq_pos + 1 ..], " \t\r,;");
+                if (rhs.len < 2) continue;
+                const quote = rhs[0];
+                if (quote != '"' and quote != '\'') continue;
+                const close = std.mem.indexOfScalarPos(u8, rhs, 1, quote) orelse continue;
+                return self.string_interner.intern(rhs[1..close]) catch return error.OutOfMemory;
+            }
+        }
+        return null;
+    }
+
+    fn constructorThisAccessName(self: *Checker, node: NodeId) CheckError!?hir_mod.StringId {
+        if (node == hir_mod.none_node_id) return null;
+        switch (self.hir.kindOf(node)) {
+            .member_access => {
+                const ma = hir_mod.memberOf(self.hir, node);
+                if (self.hir.kindOf(ma.object) != .identifier) return null;
+                const obj = hir_mod.identifierOf(self.hir, ma.object);
+                if (!std.mem.eql(u8, self.string_interner.get(obj.name), "this")) return null;
+                return ma.name;
+            },
+            .element_access => {
+                const ea = hir_mod.elementOf(self.hir, node);
+                if (self.hir.kindOf(ea.object) != .identifier) return null;
+                const obj = hir_mod.identifierOf(self.hir, ea.object);
+                if (!std.mem.eql(u8, self.string_interner.get(obj.name), "this")) return null;
+                return try self.strictPropertyInitNameFromKey(ea.index, true);
+            },
+            else => return null,
+        }
+    }
+
+    const BoolStateSet = struct {
+        maybe_false: bool = false,
+        maybe_true: bool = false,
+
+        fn add(self: *BoolStateSet, value: bool) void {
+            if (value) self.maybe_true = true else self.maybe_false = true;
+        }
+
+        fn any(self: BoolStateSet) bool {
+            return self.maybe_false or self.maybe_true;
+        }
+    };
+
+    const DefiniteAssignFlow = struct {
+        continues: BoolStateSet = .{},
+        ok: bool = true,
+    };
+
+    fn constructorDefinitelyAssignsName(self: *Checker, body: NodeId, name: hir_mod.StringId) CheckError!bool {
+        const flow = try self.constructorDefiniteAssignFlow(body, name, false);
+        if (!flow.ok) return false;
+        return !flow.continues.maybe_false;
+    }
+
+    fn constructorDefiniteAssignFlow(
         self: *Checker,
         node: NodeId,
-        names: *std.AutoHashMapUnmanaged(hir_mod.StringId, void),
-    ) CheckError!void {
-        if (node == hir_mod.none_node_id) return;
+        name: hir_mod.StringId,
+        assigned_in: bool,
+    ) CheckError!DefiniteAssignFlow {
+        if (node == hir_mod.none_node_id) {
+            var out: DefiniteAssignFlow = .{};
+            out.continues.add(assigned_in);
+            return out;
+        }
         switch (self.hir.kindOf(node)) {
             .block_stmt => {
+                var states: BoolStateSet = .{};
+                states.add(assigned_in);
+                var ok = true;
                 for (hir_mod.blockStmts(self.hir, node)) |stmt| {
-                    try self.collectThisAssignedNamesFromNode(stmt, names);
+                    var next: BoolStateSet = .{};
+                    if (states.maybe_false) {
+                        const flow = try self.constructorDefiniteAssignFlow(stmt, name, false);
+                        ok = ok and flow.ok;
+                        if (flow.continues.maybe_false) next.add(false);
+                        if (flow.continues.maybe_true) next.add(true);
+                    }
+                    if (states.maybe_true) {
+                        const flow = try self.constructorDefiniteAssignFlow(stmt, name, true);
+                        ok = ok and flow.ok;
+                        if (flow.continues.maybe_false) next.add(false);
+                        if (flow.continues.maybe_true) next.add(true);
+                    }
+                    states = next;
+                    if (!states.any()) break;
                 }
+                return .{ .continues = states, .ok = ok };
+            },
+            .return_stmt => {
+                const r = hir_mod.returnOf(self.hir, node);
+                _ = r;
+                return .{ .continues = .{}, .ok = assigned_in };
             },
             .assignment => {
                 const a = hir_mod.assignmentOf(self.hir, node);
-                if (a.target != hir_mod.none_node_id and self.hir.kindOf(a.target) == .member_access) {
-                    const ma = hir_mod.memberOf(self.hir, a.target);
-                    if (self.hir.kindOf(ma.object) == .identifier) {
-                        const obj = hir_mod.identifierOf(self.hir, ma.object);
-                        if (std.mem.eql(u8, self.string_interner.get(obj.name), "this")) {
-                            try names.put(self.gpa, ma.name, {});
-                        }
+                const assigned_out = if (try self.constructorThisAccessName(a.target)) |target_name|
+                    assigned_in or target_name == name
+                else
+                    assigned_in;
+                var out: DefiniteAssignFlow = .{};
+                out.continues.add(assigned_out);
+                return out;
+            },
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                const then_flow = try self.constructorDefiniteAssignFlow(i.then_branch, name, assigned_in);
+                const else_flow = if (i.else_branch != hir_mod.none_node_id)
+                    try self.constructorDefiniteAssignFlow(i.else_branch, name, assigned_in)
+                else blk: {
+                    var flow: DefiniteAssignFlow = .{};
+                    flow.continues.add(assigned_in);
+                    break :blk flow;
+                };
+                return .{
+                    .continues = .{
+                        .maybe_false = then_flow.continues.maybe_false or else_flow.continues.maybe_false,
+                        .maybe_true = then_flow.continues.maybe_true or else_flow.continues.maybe_true,
+                    },
+                    .ok = then_flow.ok and else_flow.ok,
+                };
+            },
+            else => {
+                var out: DefiniteAssignFlow = .{};
+                out.continues.add(assigned_in);
+                return out;
+            },
+        }
+    }
+
+    fn reportConstructorThisReadsBeforeAssigned(
+        self: *Checker,
+        ctor_node: NodeId,
+        candidates: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) CheckError!void {
+        const f = hir_mod.fnDeclOf(self.hir, ctor_node);
+        if (f.body == hir_mod.none_node_id) return;
+        var assigned: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer assigned.deinit(self.gpa);
+        var reported: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer reported.deinit(self.gpa);
+        try self.scanConstructorReadsBeforeAssigned(f.body, candidates, &assigned, &reported);
+    }
+
+    fn scanConstructorReadsBeforeAssigned(
+        self: *Checker,
+        node: NodeId,
+        candidates: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+        assigned: *std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+        reported: *std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .block_stmt => for (hir_mod.blockStmts(self.hir, node)) |stmt| {
+                try self.scanConstructorReadsBeforeAssigned(stmt, candidates, assigned, reported);
+            },
+            .let_decl, .var_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, node);
+                try self.scanConstructorReadsBeforeAssigned(v.init, candidates, assigned, reported);
+            },
+            .return_stmt => {
+                const r = hir_mod.returnOf(self.hir, node);
+                try self.scanConstructorReadsBeforeAssigned(r.value, candidates, assigned, reported);
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                try self.scanConstructorReadsBeforeAssigned(a.value, candidates, assigned, reported);
+                if (try self.constructorThisAccessName(a.target)) |name| {
+                    if (candidates.contains(name)) try assigned.put(self.gpa, name, {});
+                } else {
+                    try self.scanConstructorReadsBeforeAssigned(a.target, candidates, assigned, reported);
+                }
+            },
+            .member_access, .element_access => {
+                if (try self.constructorThisAccessName(node)) |name| {
+                    if (candidates.contains(name) and !assigned.contains(name) and !reported.contains(name)) {
+                        try self.reportConstructorPropertyUsedBeforeAssigned(node, name);
+                        try reported.put(self.gpa, name, {});
                     }
+                } else switch (self.hir.kindOf(node)) {
+                    .member_access => try self.scanConstructorReadsBeforeAssigned(hir_mod.memberOf(self.hir, node).object, candidates, assigned, reported),
+                    .element_access => {
+                        const ea = hir_mod.elementOf(self.hir, node);
+                        try self.scanConstructorReadsBeforeAssigned(ea.object, candidates, assigned, reported);
+                        try self.scanConstructorReadsBeforeAssigned(ea.index, candidates, assigned, reported);
+                    },
+                    else => {},
                 }
             },
             .if_stmt => {
                 const i = hir_mod.ifOf(self.hir, node);
-                try self.collectThisAssignedNamesFromNode(i.then_branch, names);
-                try self.collectThisAssignedNamesFromNode(i.else_branch, names);
+                try self.scanConstructorReadsBeforeAssigned(i.cond, candidates, assigned, reported);
+                try self.scanConstructorReadsBeforeAssigned(i.then_branch, candidates, assigned, reported);
+                try self.scanConstructorReadsBeforeAssigned(i.else_branch, candidates, assigned, reported);
             },
             else => {},
         }
+    }
+
+    fn reportConstructorPropertyUsedBeforeAssigned(
+        self: *Checker,
+        access_node: NodeId,
+        prop_name: hir_mod.StringId,
+    ) CheckError!void {
+        const prop_str = self.string_interner.get(prop_name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Property '{s}' is used before being assigned.",
+            .{prop_str},
+        );
+        const pos = if (self.hir.kindOf(access_node) == .member_access)
+            self.memberAccessPropertyNamePos(access_node)
+        else
+            self.hir.spanOf(access_node).start;
+        try self.diagnostics.append(self.gpa, .{
+            .node = access_node,
+            .pos = pos,
+            .code = TsCodes.property_used_before_assigned,
+            .message = msg,
+        });
     }
 
     fn collectThisAssignmentsFromNode(
