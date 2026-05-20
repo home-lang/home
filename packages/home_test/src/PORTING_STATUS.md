@@ -32,6 +32,12 @@ copied Bun Zig tier under pantry-provided Zig 0.17-dev:
 Home-owned smoke tests so the full upstream `diff_match_patch` test suite
 does not become a false runner-parity gate.
 
+`zig build test -Dfilter=home_test_bun_tier1` build-checks the next
+copied diff formatter leaf, `bun/diff/printDiff.zig`, through a focused
+Home smoke root. This tier adds only the compat pieces required by that
+file: Bun-style `handleOom(error_union)` unwrapping and
+`bun.strings.isValidUTF8`.
+
 The bootstrap harness is intentionally narrow but now installs once per
 JSC engine, resets counters before each allowlisted file, reports a file
 as unsupported if it registers zero `bun:test` tests, and preserves
@@ -122,7 +128,7 @@ shape (each ~30-100 LOC, 7-10 `bun.X` references — almost all
 | jest.zig | 520 | 44 | 3 | 1 | blocked | `bun.handleOom`, `bun.default_allocator`, `bun.JSError` |
 | harness/fixtures.zig | 575 | 1 | 0 | 0 | tier0 | `bun.md` |
 | snapshot.zig | 582 | 49 | 3 | 0 | blocked | `bun.copy`, `bun.logger`, `bun.sys` |
-| diff/printDiff.zig | 586 | 12 | 1 | 0 | blocked | `bun.handleOom`, `bun.md`, `bun.strings` |
+| diff/printDiff.zig | 586 | 12 | 1 | 0 | tier1 | `bun.handleOom`, `bun.md`, `bun.strings` |
 | Execution.zig | 695 | 35 | 0 | 1 | blocked | `bun.timespec`, `bun.assert`, `bun.JSError` |
 | bun_test.zig | 1 073 | 64 | 7 | 1 | blocked | `bun.JSError`, `bun.timespec`, `bun.jsc` |
 | pretty_format.zig | 2 145 | 33 | 1 | 1 | blocked | `bun.JSError`, `bun.fmt`, `bun.default_allocator` |

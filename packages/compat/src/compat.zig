@@ -14,14 +14,17 @@
 //!
 //!   * `OOM`                — `error{OutOfMemory}` alias for explicit
 //!                            error-return signatures (`bun.OOM!void`).
-//!   * `handleOom`          — convert an OOM into a panic for call
-//!                            sites that can't propagate.
+//!   * `handleOom`          — unwrap OOM-returning calls or convert an
+//!                            OOM into a panic for call sites that
+//!                            can't propagate.
 //!   * `default_allocator`  — process-wide allocator. Re-exports
 //!                            `std.heap.smp_allocator`.
 //!   * `assert`             — alias for `std.debug.assert`.
 //!   * `ast.Index`          — index newtype with a `.Int` (u32)
 //!                            integer companion.
 //!   * `StringHashMapUnmanaged` — alias for the std-lib generic.
+//!   * `strings.isValidUTF8` — UTF-8 validation helper for copied diff
+//!                             formatting code.
 //!   * `fs.Path`            — slot for an interned path; only the
 //!                            `text: []const u8` field is exercised
 //!                            by Tier 0 callers.
@@ -34,9 +37,22 @@ const T = std.testing;
 
 pub const OOM = error{OutOfMemory};
 
-pub fn handleOom(err: anyerror) noreturn {
-    _ = err;
-    @panic("compat: out of memory");
+fn HandleOomReturn(comptime TArg: type) type {
+    return switch (@typeInfo(TArg)) {
+        .error_union => |info| info.payload,
+        .error_set => noreturn,
+        else => @compileError("bun.handleOom expects an error union value or error"),
+    };
+}
+
+pub fn handleOom(result: anytype) HandleOomReturn(@TypeOf(result)) {
+    return switch (@typeInfo(@TypeOf(result))) {
+        .error_union => result catch |err| {
+            @panic(@errorName(err));
+        },
+        .error_set => @panic(@errorName(result)),
+        else => unreachable,
+    };
 }
 
 pub const default_allocator: std.mem.Allocator = std.heap.smp_allocator;
@@ -44,6 +60,12 @@ pub const default_allocator: std.mem.Allocator = std.heap.smp_allocator;
 pub const assert = std.debug.assert;
 
 pub const StringHashMapUnmanaged = std.StringHashMapUnmanaged;
+
+pub const strings = struct {
+    pub fn isValidUTF8(input: []const u8) bool {
+        return std.unicode.utf8ValidateSlice(input);
+    }
+};
 
 pub const ast = struct {
     /// Strongly-typed source-file / module index. Upstream Bun stores
@@ -93,4 +115,14 @@ test "compat: StringHashMapUnmanaged alias works" {
     try T.expectEqual(@as(?u32, 1), map.get("a"));
     try T.expectEqual(@as(?u32, 2), map.get("b"));
     try T.expectEqual(@as(?u32, null), map.get("c"));
+}
+
+test "compat: handleOom unwraps successful error unions" {
+    const value: OOM!u32 = 42;
+    try T.expectEqual(@as(u32, 42), handleOom(value));
+}
+
+test "compat: strings validates UTF-8" {
+    try T.expect(strings.isValidUTF8("hello"));
+    try T.expect(!strings.isValidUTF8(&.{0xff}));
 }
