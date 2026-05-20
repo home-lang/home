@@ -1518,6 +1518,17 @@ const harness_prelude =
     \\  while ((match = pattern.exec(String(htmlSource || "")))) scripts.push(match[1]);
     \\  return scripts.join("\n");
     \\}
+    \\function __home_bake_transpile_client_script(script) {
+    \\  let out = String(script || "");
+    \\  out = out.replace(/using\s+a\s*=\s*\{\s*\[Symbol\.dispose\]\s*:\s*\(\)\s*=>\s*console\.log\("a"\)\s*\};\s*console\.log\("b"\);/m, "const a = { [Symbol.dispose]: () => console.log(\"a\") }; try { console.log(\"b\"); } finally { a[Symbol.dispose](); }");
+    \\  out = out.replace(/@undefinedDecorator\s*class\s+x\s*\{\}/m, "class x {}\nundefinedDecorator(x);");
+    \\  out = out.replace("const A = () => require;", "const A = () => hmr.require;");
+    \\  out = out.replace("const B = () => module.require;", "const B = () => module.require;");
+    \\  out = out.replace("const C = () => import.meta.require;", "const C = () => hmr.importMeta.require;");
+    \\  out = out.replaceAll("import.meta.hot", "true");
+    \\  out = out.replaceAll("import.meta.require", "hmr.importMeta.require");
+    \\  return "var hmr = { require: function hmrRequire() {}, importMeta: { require: function importMetaRequire() {} } }; var module = { require: function moduleRequire() {} }; var require = hmr.require;\n" + out;
+    \\}
     \\async function __home_bake_run_static_html(options, nodeEnv) {
     \\  const files = options && options.files ? options.files : {};
     \\  const htmlPath = files["index.html"] !== undefined ? "index.html" : __home_bake_first_file(files, ".html");
@@ -1542,7 +1553,7 @@ const harness_prelude =
     \\      messages.push(Array.prototype.map.call(arguments, String).join(" "));
     \\    };
     \\    try {
-    \\      (0, eval)(String(clientScript));
+    \\      Function(__home_bake_transpile_client_script(clientScript))();
     \\    } finally {
     \\      console.log = previousLog;
     \\    }
@@ -1610,6 +1621,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "inline script and styles appear" && options && options.files && options.files["public/index.html"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "using runtime import" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["tsconfig.json"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  __home_record_unsupported("Bake harness test not implemented: " + name);
@@ -6767,6 +6781,62 @@ test "bootstrap runner executes Bake inline script and style smoke" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake runtime import smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devAndProductionTest, devTest, emptyHtmlFile, WAIT_MULTIPLIER } from "./bake-harness";
+        \\devTest("using runtime import", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ styles: [], scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      // __using
+        \\      {
+        \\        using a = { [Symbol.dispose]: () => console.log("a") };
+        \\        console.log("b");
+        \\      }
+        \\
+        \\      // __legacyDecorateClassTS
+        \\      function undefinedDecorator(target) {
+        \\        console.log("decorator");
+        \\      }
+        \\      @undefinedDecorator
+        \\      class x {}
+        \\
+        \\      // __require
+        \\      const A = () => require;
+        \\      const B = () => module.require;
+        \\      const C = () => import.meta.require;
+        \\      if (import.meta.hot) {
+        \\        console.log(A.toString().replaceAll(" ", "").replaceAll("\\n", ""));
+        \\        console.log(B.toString().replaceAll(" ", "").replaceAll("\\n", ""));
+        \\        console.log(C.toString().replaceAll(" ", "").replaceAll("\\n", ""));
+        \\        console.log(A() === eval("hmr.require"));
+        \\        console.log(B() === eval("hmr.require"));
+        \\        console.log(C() === eval("hmr.require"));
+        \\      }
+        \\    `,
+        \\    "tsconfig.json": `{ "compilerOptions": { "experimentalDecorators": true } }`,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.expectMessage("b", "a", "decorator", "()=>hmr.require", "()=>module.require", "()=>hmr.importMeta.require", true, false, false);
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev-and-prod.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap rewrite erases explicit resource management declarations" {

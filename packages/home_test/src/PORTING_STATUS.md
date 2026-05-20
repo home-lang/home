@@ -226,9 +226,12 @@ The missing-meta case now adds the first
 next Bake boundary is `DEV:dev-and-prod-9: inline script and styles
 appear` (with Bun's leading no-color label space in the runtime message),
 which now executes inline `<script>` code and extracts inline `<style>`
-rules for the style assertion. The next Bake boundary is
-`DEV:dev-and-prod-11: using runtime import`, which reaches the runtime
-module import path. One snapshot `test.todo` fixture is
+rules for the style assertion. The `using runtime import` dev test now
+executes a narrow Bun runtime-import rewrite for `using`, legacy
+decorators, and HMR `require` helper identities in an isolated client
+scope. The next Bake boundary is
+`DEV:dev-and-prod-12: hmr handles rapid consecutive edits`, which reaches
+the real DevServer watcher / reload path. One snapshot `test.todo` fixture is
 allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

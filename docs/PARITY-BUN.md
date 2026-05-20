@@ -319,14 +319,17 @@ HTML-include assertion. The inline
 `devAndProductionTest("inline script and styles appear")` pair now
 executes inline `<script>` code and derives style assertions from inline
 `<style>` content while keeping `dev.fetch()` tied to the raw HTML
-source. Later Bake registrations are still recorded as unsupported until
-the broader DevServer / bundler / browser-client runtime path lands.
+source. The development-only `devTest("using runtime import")` now runs
+the narrow Bun runtime-import rewrite path for `using`, legacy class
+decorators, and HMR `require` helpers in an isolated client scope. Later
+Bake registrations are still recorded as unsupported until the broader
+DevServer / bundler / browser-client runtime path lands.
 
-Latest measured full gate after the Bake inline-script slice:
-`4,013` files executed, `408` passed, `3,974` failed, `1,527`
+Latest measured full gate after the Bake runtime-import slice:
+`4,013` files executed, `408` passed, `3,973` failed, `1,526`
 unsupported, `35` todo. First failure: `bake/dev-and-prod.test.ts`
 with the named unsupported Bake registration for
-` DEV:dev-and-prod-11: using runtime import`.
+` DEV:dev-and-prod-12: hmr handles rapid consecutive edits`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
