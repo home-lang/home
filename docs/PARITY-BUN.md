@@ -191,7 +191,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes one hundred thirty-seven allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes one hundred thirty-eight allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-four
@@ -228,6 +228,7 @@ selector / handler validation plus element callback methods,
 `RangeError`s, `jest.mock` argument validation, `it.each` /
 `describe.each` synchronous table expansion with done-callback injection,
 `node:url.domainToASCII` / `domainToUnicode` invalid-punycode handling,
+POSIX `node:url.pathToFileURL` path encoding,
 `import.meta.resolve` / `resolveSync` bad-parent throw behavior,
 `jest.resetAllMocks` / `mockReturnThis`, `node:path` isAbsolute and
 zero-length string behavior plus basename/extname/normalize/join/dirname,
@@ -255,8 +256,8 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `137` files, `611` passed, `0` failed,
-`38` todo.
+Latest measured subset run: `138` files, `613` passed, `0` failed,
+`40` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
 uses the same Home-native JSC bootstrap instead of the retired
@@ -1111,6 +1112,13 @@ The copied `js/bun/util/file-type.test.ts` fixture now passes in Home as
 explicit `Bun.file(path, { type })` MIME overrides and Bun's `.css`
 default of `text/css;charset=utf-8`; native parity still belongs in the
 real file/blob implementation.
+
+The copied `js/node/url/url-pathtofileurl.test.js` fixture now passes on
+this non-Windows host as `2` passed, `0` failed, `0` unsupported, `2`
+todo. The bootstrap models POSIX relative/absolute `pathToFileURL`
+resolution and UTF-8 percent encoding; native parity still needs the
+full Node URL implementation, including Windows/UNC and invalid-argument
+error-code behavior.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

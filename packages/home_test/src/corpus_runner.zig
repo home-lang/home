@@ -137,6 +137,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/expect-type.test.ts",
     "regression/issue/02367.test.ts",
     "js/bun/util/file-type.test.ts",
+    "js/node/url/url-pathtofileurl.test.js",
     "js/web/encoding/text-decoder-cjk.test.ts",
     "js/web/encoding/text-decoder-single-byte.test.ts",
     "regression/issue/fix-bindings-stack-trace.test.ts",
@@ -5042,6 +5043,24 @@ const harness_prelude =
     \\    }
     \\  };
     \\}
+    \\function __home_url_path_byte_hex(byte) {
+    \\  const text = byte.toString(16).toUpperCase();
+    \\  return text.length === 1 ? "0" + text : text;
+    \\}
+    \\function __home_url_path_encode_segment(segment) {
+    \\  return Array.from(String(segment)).map(ch => {
+    \\    if (/^[A-Za-z0-9._~!$&'()*+,;=:@-]$/.test(ch)) return ch;
+    \\    const encoded = encodeURIComponent(ch);
+    \\    return encoded.replace(/%[0-9a-f]{2}/g, text => text.toUpperCase());
+    \\  }).join("");
+    \\}
+    \\function __home_url_path_to_file_url(path) {
+    \\  if (typeof path !== "string") throw new TypeError('The "path" argument must be of type string');
+    \\  let text = path;
+    \\  if (!text.startsWith("/")) text = __home_build_join(process.cwd(), text);
+    \\  const encoded = text.split("/").map(__home_url_path_encode_segment).join("/");
+    \\  return new URL("file://" + (encoded.startsWith("/") ? "" : "/") + encoded);
+    \\}
     \\const __home_url_module = {
     \\  URL: URL,
     \\  domainToASCII(value) {
@@ -5071,6 +5090,7 @@ const harness_prelude =
     \\  parse(value) {
     \\    __home_unsupported("node:url.parse is only present for skipped bootstrap tests");
     \\  },
+    \\  pathToFileURL: __home_url_path_to_file_url,
     \\};
     \\__home_url_module.default = __home_url_module;
     \\globalThis.__home_modules["url"] = __home_url_module;
@@ -9078,6 +9098,31 @@ test "bootstrap Bun.file exposes explicit and inferred file types" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/util/file-type.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap node url pathToFileURL handles POSIX path encoding" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import url from "node:url";
+        \\test("pathToFileURL", () => {
+        \\  expect(url.pathToFileURL("/foo bar").href).toBe("file:///foo%20bar");
+        \\  expect(url.pathToFileURL("/foo?bar").href).toBe("file:///foo%3Fbar");
+        \\  expect(url.pathToFileURL("/foo#bar").href).toBe("file:///foo%23bar");
+        \\  expect(url.pathToFileURL("/fóóbàr").href).toBe("file:///f%C3%B3%C3%B3b%C3%A0r");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/url/url-pathtofileurl.test.js");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);

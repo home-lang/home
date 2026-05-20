@@ -157,8 +157,8 @@ isAbsolute / normalize / resolve / relative empty-string smokes,
 basename / extname / normalize / join / dirname / parse / format / resolve path
 table smokes, posix/win32 relative path table smokes, and path
 namespace / invalid-argument coverage,
-`node:url` URL.canParse, url.format empty-input, and
-WHATWG URL auth stripping plus domainToASCII/domainToUnicode smokes,
+`node:url` URL.canParse, url.format empty-input, POSIX pathToFileURL,
+and WHATWG URL auth stripping plus domainToASCII/domainToUnicode smokes,
 skipped Node URL null-character / internal URL smokes,
 `test.skipIf` registration for the Windows-only POSIX relative path smoke,
 `node:test` skip/todo/null-options smokes,
@@ -724,6 +724,11 @@ malformed CommonJS wrapper diagnostic.
 The copied `js/bun/util/file-type.test.ts` fixture now passes as `2`
 tests through the `Bun.file` bootstrap model. It covers explicit
 `{ type }` MIME overrides and Bun's `.css` default MIME type.
+The copied `js/node/url/url-pathtofileurl.test.js` fixture now passes on
+this non-Windows host as `2` passed, `0` failed, `0` unsupported, and
+`2` todo. The bootstrap models POSIX path resolution and UTF-8 percent
+encoding; full native parity still needs Windows/UNC and Node-style
+invalid-argument errors.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

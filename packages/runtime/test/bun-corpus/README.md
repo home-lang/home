@@ -17,8 +17,8 @@ macOS, Linux, and the WASM target.
   bootstrap path exists for the current allowlist:
   `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
-  Latest measured subset run: `137` files, `611` passed, `0` failed,
-  `38` todo. That subset currently executes the todo-registration smoke, three Node
+  Latest measured subset run: `138` files, `613` passed, `0` failed,
+  `40` todo. That subset currently executes the todo-registration smoke, three Node
   `assert` CommonJS smokes, three Node `path` smokes, two Node `url` smokes, the Web
   `atob`/`btoa` smoke, twenty-four regression smokes, one bundler
   constant-fold smoke, one bun-types `test.each` type-shape smoke, six test-runner expectation smokes, one nested-describe
@@ -27,7 +27,8 @@ macOS, Linux, and the WASM target.
   behavior, `test.concurrent.each`, `expect().pass`, a narrow `mock.clearAllMocks` /
   `toHaveBeenCalledTimes` smoke, a narrow `jest.fn` / `HTMLRewriter`
   element-callback smoke, a narrow TypeScript constructor-modifier
-  rewrite smoke, narrow `assert` / `assert/strict`, `node:path`, `node:url`, and relative CJS fixture smokes, a narrow inline-snapshot Unicode object
+  rewrite smoke, narrow `assert` / `assert/strict`, `node:path`, `node:url`
+  including POSIX `pathToFileURL`, and relative CJS fixture smokes, a narrow inline-snapshot Unicode object
   formatting smoke, a `node:vm.runInNewContext` / `process.on` throw
   propagation smoke, Deno `Event` / `CustomEvent` /
   `AbortController`, a Deno `URLSearchParams` bootstrap smoke, and narrow bootstrap coverage for Node
