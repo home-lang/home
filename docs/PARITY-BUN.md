@@ -191,7 +191,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes one hundred forty-one allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes one hundred forty-two allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-four
@@ -231,6 +231,7 @@ selector / handler validation plus element callback methods,
 `node:url.domainToASCII` / `domainToUnicode` invalid-punycode handling,
 POSIX `node:url.pathToFileURL` path encoding,
 `process.binding("constants")` / `process.binding("uv")` smoke coverage,
+Jest fake-timer Date / `Intl.DateTimeFormat` smoke coverage,
 `import.meta.resolve` / `resolveSync` bad-parent throw behavior,
 `jest.resetAllMocks` / `mockReturnThis`, `node:path` isAbsolute and
 zero-length string behavior plus basename/extname/normalize/join/dirname,
@@ -259,7 +260,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `141` files, `622` passed, `0` failed,
+Latest measured subset run: `142` files, `623` passed, `0` failed,
 `40` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
@@ -1143,6 +1144,14 @@ models the reusable `process.binding("constants")` and
 `process.binding("uv")` surfaces asserted by Bun, including UV error-name
 lookup and `getErrorMap()`. Native parity still needs the real Node/Bun
 internal binding layer.
+
+The copied `js/bun/test/test-timers.test.ts` fixture now passes in Home
+as `1` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap
+models Bun's stable `Date` identity under `jest.useFakeTimers()`,
+`jest.setSystemTime()`, `jest.useRealTimers()`, mocked `Date.now()` /
+`new Date()`, and no-argument `Intl.DateTimeFormat().format()` for the
+asserted fake time. Native parity still needs the full copied Bun fake
+timer queue and scheduler semantics.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

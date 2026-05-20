@@ -169,6 +169,7 @@ skipped Node URL null-character / internal URL smokes,
 selector / handler validation,
 `process.versions.bun`, `process.revision`, `process.on` / `process.emit`,
 `process.binding("constants")` / `process.binding("uv")`,
+Jest fake-timer Date / `Intl.DateTimeFormat` behavior,
 `node:vm.runInNewContext`, DOMException, native constructor identity,
 mutable `globalThis` prototype behavior, comment-only module-load smoke,
 `Bun.file(...).type` explicit and `.css` MIME behavior,
@@ -747,6 +748,11 @@ The copied `js/node/process-binding.test.ts` fixture now passes as `2`
 tests through the `process.binding` bootstrap model. It covers the
 `constants` binding buckets Bun asserts plus the `uv` error-name and
 `getErrorMap()` surface used by the upstream fixture.
+The copied `js/bun/test/test-timers.test.ts` fixture now passes as `1`
+test through the Jest fake-timer bootstrap model. It covers Bun's stable
+`Date` identity, mocked `Date.now()` / `new Date()`,
+`jest.setSystemTime()`, `jest.useRealTimers()`, and no-argument
+`Intl.DateTimeFormat().format()` for the asserted fake time.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

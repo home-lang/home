@@ -140,6 +140,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/url/url-pathtofileurl.test.js",
     "js/bun/util/randomUUIDv7.test.ts",
     "js/node/process-binding.test.ts",
+    "js/bun/test/test-timers.test.ts",
     "js/web/encoding/text-decoder-cjk.test.ts",
     "js/web/encoding/text-decoder-single-byte.test.ts",
     "regression/issue/fix-bindings-stack-trace.test.ts",
@@ -212,8 +213,65 @@ pub const minimal_js_files = [_][]const u8{
 
 const harness_prelude =
     "globalThis.__home_process_platform = \"" ++ js_process_platform ++ "\";\n" ++
+    \\const __home_real_Date = globalThis.Date;
+    \\let __home_fake_timers_active = false;
+    \\let __home_fake_timers_now = 0;
+    \\function __home_date_now() {
+    \\  return __home_fake_timers_active ? __home_fake_timers_now : __home_real_Date.now();
+    \\}
+    \\function __home_Date() {
+    \\  if (this instanceof __home_Date) {
+    \\    if (arguments.length === 0 && __home_fake_timers_active) return new __home_real_Date(__home_fake_timers_now);
+    \\    return new __home_real_Date(...arguments);
+    \\  }
+    \\  return __home_real_Date();
+    \\}
+    \\Object.setPrototypeOf(__home_Date, __home_real_Date);
+    \\__home_Date.prototype = __home_real_Date.prototype;
+    \\__home_Date.UTC = __home_real_Date.UTC;
+    \\__home_Date.parse = __home_real_Date.parse;
+    \\__home_Date.now = __home_date_now;
+    \\globalThis.Date = __home_Date;
+    \\function __home_fake_time_from(value) {
+    \\  const timestamp = value instanceof __home_real_Date ? value.getTime() : Number(value);
+    \\  if (!Number.isFinite(timestamp)) __home_fail("jest.setSystemTime() requires a finite Date or timestamp");
+    \\  return Math.trunc(timestamp);
+    \\}
+    \\function __home_use_fake_timers() {
+    \\  if (!__home_fake_timers_active) __home_fake_timers_now = __home_real_Date.now();
+    \\  __home_fake_timers_active = true;
+    \\}
+    \\function __home_set_system_time(value) {
+    \\  __home_fake_timers_now = __home_fake_time_from(value);
+    \\}
+    \\function __home_use_real_timers() {
+    \\  __home_fake_timers_active = false;
+    \\}
+    \\function __home_format_fake_timer_date() {
+    \\  const date = new __home_real_Date(__home_fake_timers_now);
+    \\  return String(date.getUTCMonth() + 1) + "/" + String(date.getUTCDate()) + "/" + String(date.getUTCFullYear());
+    \\}
+    \\if (typeof Intl === "object" && Intl && typeof Intl.DateTimeFormat === "function") {
+    \\  const __home_real_DateTimeFormat = Intl.DateTimeFormat;
+    \\  function __home_DateTimeFormat() {
+    \\    const formatter = new __home_real_DateTimeFormat(...arguments);
+    \\    const realFormat = formatter.format.bind(formatter);
+    \\    Object.defineProperty(formatter, "format", {
+    \\      configurable: true,
+    \\      value(value) {
+    \\        if (arguments.length === 0 && __home_fake_timers_active) return __home_format_fake_timer_date();
+    \\        return realFormat(value);
+    \\      },
+    \\    });
+    \\    return formatter;
+    \\  }
+    \\  Object.setPrototypeOf(__home_DateTimeFormat, __home_real_DateTimeFormat);
+    \\  __home_DateTimeFormat.prototype = __home_real_DateTimeFormat.prototype;
+    \\  Intl.DateTimeFormat = __home_DateTimeFormat;
+    \\}
     \\var __home_bun_tests = globalThis.__home_bun_tests || { passed: 0, failed: 0, todo: 0, pending: 0, unsupported: 0, firstFailure: null };
     \\globalThis.__home_reset_tests = function() {
+    \\  __home_use_real_timers();
     \\  __home_bun_tests = globalThis.__home_bun_tests = { passed: 0, failed: 0, todo: 0, pending: 0, unsupported: 0, firstFailure: null };
     \\  globalThis.__home_root_scope = {
     \\    parent: null,
@@ -1799,6 +1857,18 @@ const harness_prelude =
     \\  __home_is_jest_object: true,
     \\  fn: mock,
     \\  resetAllMocks: mock.resetAllMocks,
+    \\  useFakeTimers() {
+    \\    __home_use_fake_timers();
+    \\    return jest;
+    \\  },
+    \\  setSystemTime(value) {
+    \\    __home_set_system_time(value);
+    \\    return jest;
+    \\  },
+    \\  useRealTimers() {
+    \\    __home_use_real_timers();
+    \\    return jest;
+    \\  },
     \\  mock(moduleName, factory) {
     \\    if (typeof moduleName !== "string") throw new TypeError("jest.mock() module name must be a string");
     \\    if (typeof factory !== "function") throw new TypeError("jest.mock() requires a factory callback");
@@ -7291,6 +7361,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function mock(implementation)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock.clearAllMocks") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock.resetAllMocks") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "useFakeTimers()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_DateTimeFormat") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mockReturnThis") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest.mock() module name must be a string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest.mock() requires a factory callback") != null);
@@ -9431,6 +9503,38 @@ test "bootstrap process.binding exposes constants and uv surfaces" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/process-binding.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap jest fake timers keep Bun Date identity" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\test("we can go back in time", () => {
+        \\  const DateBeforeMocked = Date;
+        \\  jest.useFakeTimers();
+        \\  jest.setSystemTime(new Date("1995-12-19T00:00:00.000Z"));
+        \\  expect(new Date().toISOString()).toBe("1995-12-19T00:00:00.000Z");
+        \\  expect(Date.now()).toBe(819331200000);
+        \\  expect(DateBeforeMocked).toBe(Date);
+        \\  expect(DateBeforeMocked.now).toBe(Date.now);
+        \\  expect(new Intl.DateTimeFormat().format()).toBe("12/19/1995");
+        \\  jest.setSystemTime(new Date("2020-01-01T00:00:00.000Z").getTime());
+        \\  expect(new Date().toISOString()).toBe("2020-01-01T00:00:00.000Z");
+        \\  expect(Date.now()).toBe(1577836800000);
+        \\  jest.useRealTimers();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/test-timers.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
