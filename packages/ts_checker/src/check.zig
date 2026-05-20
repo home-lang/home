@@ -13899,6 +13899,54 @@ pub const Checker = struct {
             try self.collectConstructorThisAssignedNames(m, &ctor_assigned_names);
         }
 
+        // Pre-scan the constructor's `(public foo: string)` style
+        // parameter properties before the main member loop so the
+        // TS2729 check on sibling field initializers fires for fields
+        // that appear BEFORE the constructor in source order (the
+        // main loop populates `parameter_property_names` only when it
+        // reaches the constructor — too late for earlier fields).
+        // Also seed `instance_members` so the `this.<name>` access
+        // resolves against the partial class instance type during
+        // sibling field initializer checks instead of raising a
+        // spurious TS2339 ("does not exist on type '{}'"). The main
+        // loop's constructor branch re-appends, so duplicate handling
+        // in object-type building must remain idempotent for
+        // parameter-property names.
+        // Mirrors `redefinedPararameterProperty.ts(6,14)`.
+        var preseeded_param_property_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer preseeded_param_property_names.deinit(self.gpa);
+        for (members) |m| {
+            const k = self.hir.kindOf(m);
+            if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
+            const fp = hir_mod.fnDeclOf(self.hir, m);
+            if (!fp.flags.is_constructor) continue;
+            const ctor_params = hir_mod.fnParams(self.hir, m);
+            for (ctor_params) |param_node| {
+                const pp = hir_mod.parameterOf(self.hir, param_node);
+                if (!pp.flags.is_parameter_property) continue;
+                if (pp.name == hir_mod.none_node_id or self.hir.kindOf(pp.name) != .identifier) continue;
+                const pid = hir_mod.identifierOf(self.hir, pp.name);
+                try parameter_property_names.put(self.gpa, pid.name, {});
+                try instance_member_names_local.put(self.gpa, pid.name, {});
+                // Seed `instance_members` with the param-property's
+                // declared type so `this.<name>` access type-checks.
+                const param_t = if (self.hir.typeOf(param_node) != types.Primitive.none)
+                    self.hir.typeOf(param_node)
+                else if (pp.type_annotation != hir_mod.none_node_id)
+                    try self.lowererLowerWithTypeParams(pp.type_annotation)
+                else
+                    types.Primitive.any;
+                try instance_members.append(self.gpa, .{
+                    .name = pid.name,
+                    .type = param_t,
+                    .is_optional = pp.flags.is_optional,
+                    .is_readonly = pp.flags.is_readonly,
+                    .is_method = false,
+                });
+                try preseeded_param_property_names.put(self.gpa, pid.name, {});
+            }
+        }
+
         var has_binding_pattern_parameter_property = false;
         for (members) |m| {
             const k = self.hir.kindOf(m);
@@ -13978,13 +14026,20 @@ pub const Checker = struct {
                                     try self.lowererLowerWithTypeParams(pp.type_annotation)
                                 else
                                     types.Primitive.any;
-                                try instance_members.append(self.gpa, .{
-                                    .name = pid.name,
-                                    .type = param_t,
-                                    .is_optional = pp.flags.is_optional,
-                                    .is_readonly = pp.flags.is_readonly,
-                                    .is_method = false,
-                                });
+                                // Skip re-appending if the param
+                                // property was already seeded above
+                                // by the pre-scan — keeps
+                                // `instance_members` from collecting
+                                // duplicate entries.
+                                if (!preseeded_param_property_names.contains(pid.name)) {
+                                    try instance_members.append(self.gpa, .{
+                                        .name = pid.name,
+                                        .type = param_t,
+                                        .is_optional = pp.flags.is_optional,
+                                        .is_readonly = pp.flags.is_readonly,
+                                        .is_method = false,
+                                    });
+                                }
                                 try concrete_names.put(self.gpa, pid.name, {});
                                 try property_names.put(self.gpa, pid.name, {});
                                 try parameter_property_names.put(self.gpa, pid.name, {});

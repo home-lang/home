@@ -3444,6 +3444,46 @@ test "conformance: sub-strict directive without @strict keeps inferred strict-on
     try T.expect(merged_with_strict_on.use_unknown_in_catch_variables);
 }
 
+test "conformance: redefinedPararameterProperty diagnoses TS2729 on `this.a`" {
+    // Mirrors `redefinedPararameterProperty.ts(6,14)` — a parameter
+    // property declared via `constructor(public a: number)` is
+    // initialized AFTER class fields under `useDefineForClassFields:
+    // true`. A sibling field `b = this.a` therefore reads
+    // undefined; tsc reports TS2729 anchored at the property-name
+    // segment. The fix pre-scans constructor parameter properties
+    // before the main loop so the diagnostic fires for fields
+    // appearing before the constructor in source order.
+    const result = try runOneEntry(T.allocator, .{
+        .name = "redefinedPararameterProperty",
+        .path = "redefinedPararameterProperty.ts",
+        .source =
+        \\// @noTypesAndSymbols: true
+        \\// @strictNullChecks: true
+        \\// @target: esnext
+        \\// @useDefineForClassFields: true
+        \\class Base {
+        \\    a = 1;
+        \\  }
+        \\
+        \\  class Derived extends Base {
+        \\    b = this.a /*undefined*/;
+        \\
+        \\    constructor(public a: number) {
+        \\        super();
+        \\    }
+        \\  }
+        ,
+        .expects_error = true,
+        .expected_errors = "redefinedPararameterProperty.ts(6,14): error TS2729: Property 'a' is used before its initialization.",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: redeclaredProperty diagnoses TS2729 on `this.b` access" {
     // Mirrors `redeclaredProperty.ts(7,12)` — when a derived class
     // redeclares a base field `b;` with no initializer under
