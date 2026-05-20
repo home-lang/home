@@ -172,7 +172,7 @@ Request/Response/Headers/URL, `node-fetch`, `node:buffer`, `deno:harness`
 including Bun-copied Deno `test(options, fn)` / permission skip /
 `test.ignore` / `test.todo` call shapes, Deno `Event` / `CustomEvent` /
 `AbortController`, a Deno `URLSearchParams` bootstrap smoke, EventTarget,
-AbortSignal, Node
+AbortSignal, narrow Deno URL authority/hash/origin parsing, Node
 `Buffer.alloc` / fill / `Buffer.from(..., "utf-16le")` / compare /
 write / toString / inspect-limit / isEncoding subsets, `Bun.JSONC.parse`
 comments / trailing commas / deep-nesting `RangeError`s, Node

@@ -2231,26 +2231,107 @@ const harness_prelude =
     \\  };
     \\}
     \\if (typeof URL !== "function") {
+    \\  function __home_parse_url_suffix(value) {
+    \\    const text = String(value || "");
+    \\    const hashIndex = text.indexOf("#");
+    \\    const withoutHash = hashIndex === -1 ? text : text.slice(0, hashIndex);
+    \\    const hash = hashIndex === -1 ? "" : text.slice(hashIndex);
+    \\    const searchIndex = withoutHash.indexOf("?");
+    \\    const pathname = searchIndex === -1 ? (withoutHash || "/") : (withoutHash.slice(0, searchIndex) || "/");
+    \\    const search = searchIndex === -1 ? "" : withoutHash.slice(searchIndex);
+    \\    return { pathname, search, hash };
+    \\  }
     \\  var URL = function(input) {
     \\    const text = String(input);
-    \\    const match = text.match(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^\/?#]*)(.*)$/);
+    \\    const match = text.match(/^([A-Za-z][A-Za-z0-9+.-]*:)(\/\/)([^\/?#]*)(.*)$/);
     \\    if (match) {
-    \\      this.protocolPrefix = match[1];
-    \\      this.hostname = match[2];
-    \\      this.suffix = match[3] || "/";
+    \\      this.protocol = match[1].toLowerCase();
+    \\      this.protocolPrefix = this.protocol + "//";
+    \\      const authority = match[3];
+    \\      const at = authority.lastIndexOf("@");
+    \\      const auth = at === -1 ? "" : authority.slice(0, at);
+    \\      const hostText = at === -1 ? authority : authority.slice(at + 1);
+    \\      const colon = hostText.lastIndexOf(":");
+    \\      this.username = "";
+    \\      this.password = "";
+    \\      if (auth) {
+    \\        const authColon = auth.indexOf(":");
+    \\        this.username = authColon === -1 ? auth : auth.slice(0, authColon);
+    \\        this.password = authColon === -1 ? "" : auth.slice(authColon + 1);
+    \\      }
+    \\      this.hostname = colon > -1 && hostText.indexOf("]") !== hostText.length - 1 ? hostText.slice(0, colon) : hostText;
+    \\      this.port = colon > -1 && hostText.indexOf("]") !== hostText.length - 1 ? hostText.slice(colon + 1) : "";
+    \\      this.host = this.hostname + (this.port ? ":" + this.port : "");
+    \\      const parts = __home_parse_url_suffix(match[4] || "/");
+    \\      this.pathname = parts.pathname;
+    \\      this.search = parts.search;
+    \\      this.hash = parts.hash;
     \\      return;
     \\    }
     \\    const scheme = text.match(/^([A-Za-z][A-Za-z0-9+.-]*:)(.*)$/);
     \\    if (!scheme) throw new TypeError("Invalid URL");
-    \\    this.protocolPrefix = scheme[1];
+    \\    this.protocol = scheme[1].toLowerCase();
+    \\    this.protocolPrefix = this.protocol;
+    \\    this.host = "";
     \\    this.hostname = "";
-    \\    this.suffix = scheme[2];
+    \\    this.port = "";
+    \\    this.username = "";
+    \\    this.password = "";
+    \\    const parts = __home_parse_url_suffix(scheme[2]);
+    \\    this.pathname = parts.pathname;
+    \\    this.search = parts.search;
+    \\    this.hash = parts.hash;
     \\  };
     \\  Object.defineProperty(URL.prototype, "href", {
     \\    get() {
-    \\      return this.protocolPrefix + this.hostname + this.suffix;
+    \\      const auth = this.username ? this.username + (this.password ? ":" + this.password : "") + "@" : "";
+    \\      return this.protocolPrefix + auth + this.host + this.pathname + this.search + this.hash;
+    \\    },
+    \\    set(value) {
+    \\      const next = new URL(value);
+    \\      Object.assign(this, next);
     \\    },
     \\  });
+    \\  Object.defineProperty(URL.prototype, "hostname", {
+    \\    get() {
+    \\      return this.__home_hostname || "";
+    \\    },
+    \\    set(value) {
+    \\      this.__home_hostname = String(value);
+    \\    },
+    \\  });
+    \\  Object.defineProperty(URL.prototype, "port", {
+    \\    get() {
+    \\      return this.__home_port || "";
+    \\    },
+    \\    set(value) {
+    \\      this.__home_port = String(value);
+    \\    },
+    \\  });
+    \\  Object.defineProperty(URL.prototype, "host", {
+    \\    get() {
+    \\      return this.hostname + (this.port ? ":" + this.port : "");
+    \\    },
+    \\    set(value) {
+    \\      const text = String(value);
+    \\      const colon = text.lastIndexOf(":");
+    \\      this.hostname = colon > -1 && text.indexOf("]") !== text.length - 1 ? text.slice(0, colon) : text;
+    \\      this.port = colon > -1 && text.indexOf("]") !== text.length - 1 ? text.slice(colon + 1) : "";
+    \\    },
+    \\  });
+    \\  Object.defineProperty(URL.prototype, "origin", {
+    \\    get() {
+    \\      return this.host ? this.protocol + "//" + this.host : "null";
+    \\    },
+    \\  });
+    \\  Object.defineProperty(URL.prototype, "searchParams", {
+    \\    get() {
+    \\      return new URLSearchParams(this.search.startsWith("?") ? this.search.slice(1) : this.search);
+    \\    },
+    \\  });
+    \\  URL.prototype.toString = function() {
+    \\    return this.href;
+    \\  };
     \\}
     \\if (typeof URL.canParse !== "function") {
     \\  URL.canParse = function(input, base) {
@@ -5064,6 +5145,43 @@ test "bootstrap runner covers URLSearchParams behavior" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/url/urlsearchparams.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers Deno URL parsing smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { createDenoTest } from "deno:harness";
+        \\const { test, assertEquals } = createDenoTest(import.meta.path);
+        \\test(function urlParsing() {
+        \\  const url = new URL("https://foo:bar@baz.qat:8000/qux/quux?foo=bar&baz=12#qat");
+        \\  assertEquals(url.hash, "#qat");
+        \\  assertEquals(url.host, "baz.qat:8000");
+        \\  assertEquals(url.hostname, "baz.qat");
+        \\  assertEquals(url.href, "https://foo:bar@baz.qat:8000/qux/quux?foo=bar&baz=12#qat");
+        \\  assertEquals(url.origin, "https://baz.qat:8000");
+        \\  assertEquals(url.password, "bar");
+        \\  assertEquals(url.pathname, "/qux/quux");
+        \\  assertEquals(url.port, "8000");
+        \\  assertEquals(url.protocol, "https:");
+        \\  assertEquals(url.search, "?foo=bar&baz=12");
+        \\  assertEquals(url.searchParams.getAll("foo"), ["bar"]);
+        \\  assertEquals(url.searchParams.getAll("baz"), ["12"]);
+        \\  assertEquals(url.username, "foo");
+        \\  assertEquals(String(url), "https://foo:bar@baz.qat:8000/qux/quux?foo=bar&baz=12#qat");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/url/url.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
