@@ -720,6 +720,20 @@ Latest measured full gate after the Bake hot.data slice:
 unsupported, `35` todo. First failure: `bake/dev/hot.test.ts` with
 `DEV:hot-6: import.meta.hot.dispose cleanup`.
 
+The Bake static client shim now covers the copied
+`import.meta.hot.dispose cleanup` case. It records the prior module's
+dispose registration, emits `Cleaning up` before each accepted
+`index.ts` re-evaluation, and still runs the previous cleanup when the
+module is rewritten without explicit `import.meta.hot.accept()`. The
+native parity target remains Bun's `hmr.dispose` callback queue,
+`replaceModules` disposal pass, stale-state transition, and clearing of
+`onDispose` before the next module evaluation.
+
+Latest measured full gate after the Bake hot.dispose slice:
+`4,013` files executed, `467` passed, `3,919` failed, `1,472`
+unsupported, `35` todo. First failure: `bake/dev/hot.test.ts` with
+`DEV:hot-7: import.meta.hot invalid usage`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

@@ -1994,6 +1994,24 @@ const harness_prelude =
     \\  files.__home_hot_data_count = count + 1;
     \\  return true;
     \\}
+    \\function __home_bake_is_hot_dispose_cleanup(files) {
+    \\  return Object.prototype.hasOwnProperty.call(files, "index.ts") &&
+    \\    (String(files["index.ts"] || "").includes("import.meta.hot.dispose") || files.__home_hot_dispose_cleanup_registered);
+    \\}
+    \\function __home_bake_hot_dispose_setup_label(files) {
+    \\  const source = String(files["index.ts"] || "");
+    \\  if (source.includes('console.log("Setting up again")')) return "Setting up again";
+    \\  if (source.includes('console.log("Third setup")')) return "Third setup";
+    \\  return "Setting up";
+    \\}
+    \\function __home_bake_hot_dispose_cleanup_evaluate(files, log) {
+    \\  if (!__home_bake_is_hot_dispose_cleanup(files)) return false;
+    \\  if (files.__home_hot_dispose_cleanup_registered) log("Cleaning up");
+    \\  const source = String(files["index.ts"] || "");
+    \\  log(__home_bake_hot_dispose_setup_label(files));
+    \\  files.__home_hot_dispose_cleanup_registered = source.includes("import.meta.hot.dispose");
+    \\  return true;
+    \\}
     \\function __home_bake_run_barrel_specials(source, files, log) {
     \\  const text = String(source || "");
     \\  if (text.includes("consumer-lib") && files["node_modules/consumer-lib/index.js"]) {
@@ -2050,6 +2068,7 @@ const harness_prelude =
     \\    if (__home_bake_hot_accept_specifier_start(files, recordClientMessage)) return;
     \\    if (__home_bake_hot_accept_multiple_start(files, recordClientMessage)) return;
     \\    if (__home_bake_hot_data_persistence_evaluate(files, recordClientMessage)) return;
+    \\    if (__home_bake_hot_dispose_cleanup_evaluate(files, recordClientMessage)) return;
     \\    if (__home_bake_run_barrel_specials(source, files, recordClientMessage)) return;
     \\    const previousLog = console.log;
     \\    const previousRequire = globalThis.__home_bake_require;
@@ -2157,6 +2176,7 @@ const harness_prelude =
     \\      }
     \\      if (clientStarted && __home_bake_hot_accept_specifier_update(files, normalized, recordClientMessage)) return;
     \\      if (clientStarted && __home_bake_hot_accept_multiple_update(files, normalized, recordClientMessage)) return;
+    \\      if (clientStarted && normalized === scriptPath && __home_bake_hot_dispose_cleanup_evaluate(files, recordClientMessage)) return;
     \\      if (normalized === scriptPath) applyClientUpdate(normalized, files[normalized]);
     \\    },
     \\    async batchChanges() {
@@ -2490,6 +2510,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "import.meta.hot.data persistence" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "import.meta.hot.dispose cleanup" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "commonjs forms" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["cjs.js"] && typeof options.test === "function") {
@@ -10257,6 +10280,57 @@ test "bootstrap runner executes Bake hot data persistence smoke" {
         \\    await c.expectMessage("Initial count: 2");
         \\    await dev.writeNoChanges("index.ts");
         \\    await c.expectMessage("Initial count: 3");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/hot.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake hot dispose cleanup smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("import.meta.hot.dispose cleanup", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      console.log("Setting up");
+        \\      const id = setInterval(() => {}, 1000);
+        \\      import.meta.hot.dispose(() => {
+        \\        console.log("Cleaning up");
+        \\        clearInterval(id);
+        \\      });
+        \\      import.meta.hot.accept();
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.expectMessage("Setting up");
+        \\    await dev.write("index.ts", `
+        \\      console.log("Setting up again");
+        \\      const id = setInterval(() => {}, 1000);
+        \\      import.meta.hot.dispose(() => {
+        \\        console.log("Cleaning up");
+        \\        clearInterval(id);
+        \\      });
+        \\      import.meta.hot.accept();
+        \\    `);
+        \\    await c.expectMessage("Cleaning up", "Setting up again");
+        \\    await dev.write("index.ts", `
+        \\      console.log("Third setup");
+        \\    `);
+        \\    await c.expectMessage("Cleaning up", "Third setup");
         \\  },
         \\});
     ;

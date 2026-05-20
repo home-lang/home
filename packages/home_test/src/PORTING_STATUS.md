@@ -470,6 +470,15 @@ Bun's `import.meta.hot.data` parser fold to `.hot_data`, printer lowering
 to `hmr.data`, registry module reuse, and implicit self-accept when data
 has keys. The next Bake boundary is
 `DEV:hot-6: import.meta.hot.dispose cleanup`.
+The copied `import.meta.hot.dispose cleanup` case now runs through the
+Bake static client shim. It records the prior module's dispose
+registration, emits `Cleaning up` before each accepted `index.ts`
+re-evaluation, and still runs the previous cleanup when the module is
+rewritten without explicit `import.meta.hot.accept()`. The native parity
+target remains Bun's `hmr.dispose` callback queue, `replaceModules`
+disposal pass, stale-state transition, and clearing of `onDispose` before
+the next module evaluation. The next Bake boundary is
+`DEV:hot-7: import.meta.hot invalid usage`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
