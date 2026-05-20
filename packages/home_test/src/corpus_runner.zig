@@ -1459,6 +1459,56 @@ const harness_prelude =
     \\  __home_record_unsupported("Bake harness test not implemented: " + name);
     \\  return options;
     \\}
+    \\function __home_bake_test_name(description, nodeEnv) {
+    \\  const basename = __home_bake_basename();
+    \\  const count = (__home_bake_counts[basename] = (__home_bake_counts[basename] || 0) + 1);
+    \\  const label = nodeEnv === "development" ? " DEV" : "PROD";
+    \\  return label + ":" + basename + "-" + count + ": " + String(description);
+    \\}
+    \\async function __home_bake_run_define_config(options, nodeEnv) {
+    \\  const files = options && options.files ? options.files : {};
+    \\  const htmlSource = String(files["index.html"] || "");
+    \\  const scriptSource = String(files["index.ts"] || "");
+    \\  const bunfigSource = String(files["bunfig.toml"] || "");
+    \\  if (typeof globalThis.__home_buildBakeStaticClientScriptNative !== "function") __home_unsupported("Bake static client script native bridge is not installed");
+    \\  const clientScript = globalThis.__home_buildBakeStaticClientScriptNative(htmlSource, scriptSource, bunfigSource);
+    \\  const html = { __home_bake_html_import: true, path: "index.html" };
+    \\  const server = Bun.serve({ static: { "/*": html } });
+    \\  const messages = [];
+    \\  const previousLog = console.log;
+    \\  console.log = function() {
+    \\    messages.push(Array.prototype.map.call(arguments, String).join(" "));
+    \\  };
+    \\  try {
+    \\    (0, eval)(String(clientScript));
+    \\  } finally {
+    \\    console.log = previousLog;
+    \\    server.stop(true);
+    \\  }
+    \\  const dev = {
+    \\    nodeEnv,
+    \\    async client(path) {
+    \\      return {
+    \\        messages,
+    \\        async expectMessage() {
+    \\          for (const expected of arguments) {
+    \\            if (!messages.includes(String(expected))) throw new Error("Timed out waiting for " + JSON.stringify(String(expected)) + "; buffered: " + JSON.stringify(messages));
+    \\          }
+    \\        },
+    \\        [Symbol.dispose]() {},
+    \\      };
+    \\    },
+    \\  };
+    \\  return options.test(dev);
+    \\}
+    \\function __home_bake_register_or_run(description, options, nodeEnv) {
+    \\  const name = __home_bake_test_name(description, nodeEnv);
+    \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_define_config(options, nodeEnv));
+    \\  }
+    \\  __home_record_unsupported("Bake harness test not implemented: " + name);
+    \\  return options;
+    \\}
     \\function __home_bake_empty_html_file(options) {
     \\  const opts = options || {};
     \\  const styles = opts.styles || [];
@@ -1481,14 +1531,14 @@ const harness_prelude =
     \\    __home_unsupported("Bake tempDirWithBakeDeps requires the real Bake runtime");
     \\  },
     \\  devTest(description, options) {
-    \\    return __home_bake_register(description, options, "development");
+    \\    return __home_bake_register_or_run(description, options, "development");
     \\  },
     \\  prodTest(description, options) {
-    \\    return __home_bake_register(description, options, "production");
+    \\    return __home_bake_register_or_run(description, options, "production");
     \\  },
     \\  devAndProductionTest(description, options) {
-    \\    __home_bake_register(description, options, "development");
-    \\    __home_bake_register(description, options, "production");
+    \\    __home_bake_register_or_run(description, options, "development");
+    \\    __home_bake_register_or_run(description, options, "production");
     \\    return options;
     \\  },
     \\};
@@ -6399,6 +6449,41 @@ test "bootstrap runner records Bake dev and production tests as unsupported by n
     try std.testing.expectEqual(test_result.TestStatus.unsupported, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.unsupported);
     try std.testing.expect(std.mem.indexOf(u8, file_run.result.first_failure_message, "Bake harness test not implemented:  DEV:dev-and-prod-1: define config via bunfig.toml") != null);
+}
+
+test "bootstrap runner executes Bake define config smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devAndProductionTest, devTest, emptyHtmlFile, WAIT_MULTIPLIER } from "./bake-harness";
+        \\devAndProductionTest("define config via bunfig.toml", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ styles: [], scripts: ["index.ts"] }),
+        \\    "index.ts": `console.log("a=" + DEFINE);`,
+        \\    "bunfig.toml": `
+        \\      [serve.static]
+        \\      define = {
+        \\        "DEFINE" = "\\"HELLO\\""
+        \\      }
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    const c = await dev.client("/");
+        \\    await c.expectMessage("a=HELLO");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev-and-prod.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap rewrite erases explicit resource management declarations" {

@@ -252,8 +252,8 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `125` files, `537` passed, `0` failed,
-`32` todo.
+Latest measured subset run: `127` files, `544` passed, `0` failed,
+`34` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
 uses the same Home-native JSC bootstrap instead of the retired
@@ -261,12 +261,10 @@ uses the same Home-native JSC bootstrap instead of the retired
 4,013 discovered Bun test files and fails on the first real failing
 file. The native `Bun.spawnSync` bridge now starts the Bake child
 process, and delegated `home test <fixture>` corpus descendants now route
-back through the same JSC bootstrap instead of Home's parser. The current
-first blocker is that the child fixture still exits `1` while Bun expects
-`0`, because the Bake fixture now reaches the bootstrap runner's async
-test boundary and reports `Async tests are not supported by the Home Bun
-corpus bootstrap runner yet`. The exact `bun:internal-for-testing`,
-`bun:jsc`, and fixture HTML imports are lowered. The Zig-side Bake
+back through the same JSC bootstrap instead of Home's parser. The
+delegated Bake deinitialization fixture now passes all nine child tests
+inside the full gate. The exact `bun:internal-for-testing`, `bun:jsc`,
+and fixture HTML imports are lowered. The Zig-side Bake
 DevServer/HmrSocket lifetime carrier is now present under
 `packages/runtime/src/runtime/bake/` with deinit counter, route-viewer,
 source-map ref, active-websocket teardown tests, Bun's HMR wire-message
@@ -303,17 +301,20 @@ also lowers the
 `bake/fixtures/deinitialization/test.ts` child now passes all nine cases.
 Exact Bake harness imports for `./bake-harness` and `../bake-harness`
 now lower to a virtual registrar copied from Bun's no-color test-name
-shape. It records ` DEV:<basename>-<count>: <description>` and
-`PROD:<basename>-<count>: <description>` entries as unsupported without
-executing `options.test`, so the corpus can account for each Bake test
-registration while still failing honestly at the unported DevServer /
-bundler runtime boundary.
+shape. The first `devAndProductionTest("define config via bunfig.toml")`
+pair is now executed through the Home JSC bootstrap: the harness builds
+the static HTML client script from Bun-style HTML references, parses only
+`[serve.static].define` from `bunfig.toml`, routes through the native
+`Bun.serve({ static: { "/*": html } })` HTML carrier, and observes the
+expected `a=HELLO` client log in both development and production
+registrations. Later Bake registrations are still recorded as unsupported
+until the DevServer / bundler / browser-client runtime path lands.
 
-Latest measured full gate after the WebSocket ErrorEvent nucleus:
-`4,013` files executed, `408` passed, `3,984` failed, `1,537`
+Latest measured full gate after the Bake define-config slice:
+`4,013` files executed, `408` passed, `3,982` failed, `1,535`
 unsupported, `35` todo. First failure: `bake/dev-and-prod.test.ts`
 with the named unsupported Bake registration for
-` DEV:dev-and-prod-1: define config via bunfig.toml`.
+` DEV:dev-and-prod-3: invalid html does not crash 1`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

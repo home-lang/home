@@ -90,6 +90,12 @@ pub const Runtime = struct {
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
             self.engine.currentGlobalObject(),
+            "__home_buildBakeStaticClientScriptNative",
+            buildBakeStaticClientScriptNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
             "__home_writeFileSyncNative",
             writeFileSyncNative,
         );
@@ -460,6 +466,71 @@ fn closeHmrSocketNative(
     return extern_fns.JSValueMakeUndefined(actual_ctx);
 }
 
+fn buildBakeStaticClientScriptNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    if (argument_count < 3 or arguments[0] == null or arguments[1] == null or arguments[2] == null) {
+        setException(actual_ctx, exception, "Bake static client script requires html, script, and bunfig inputs");
+        return null;
+    }
+
+    const allocator = std.heap.smp_allocator;
+    const html = valueToOwnedString(allocator, actual_ctx, arguments[0].?, exception) catch {
+        setException(actual_ctx, exception, "Bake static client script failed to read html");
+        return null;
+    };
+    defer allocator.free(html);
+    const script = valueToOwnedString(allocator, actual_ctx, arguments[1].?, exception) catch {
+        setException(actual_ctx, exception, "Bake static client script failed to read script");
+        return null;
+    };
+    defer allocator.free(script);
+    const bunfig = valueToOwnedString(allocator, actual_ctx, arguments[2].?, exception) catch {
+        setException(actual_ctx, exception, "Bake static client script failed to read bunfig");
+        return null;
+    };
+    defer allocator.free(bunfig);
+
+    var refs = home_rt.runtime.server.HTMLBundle.References.parse(allocator, html) catch {
+        setException(actual_ctx, exception, "Bake static client script failed to parse html");
+        return null;
+    };
+    defer refs.deinit(allocator);
+
+    var files = std.StringHashMap([]const u8).init(allocator);
+    defer files.deinit();
+    files.put("index.ts", script) catch {
+        setException(actual_ctx, exception, "Bake static client script failed to index script");
+        return null;
+    };
+
+    var define: home_rt.runtime.bake.DefineMap = .{};
+    defer define.deinit(allocator);
+    home_rt.runtime.bake.parseServeStaticDefineFromBunfig(allocator, bunfig, &define) catch {
+        setException(actual_ctx, exception, "Bake static client script failed to parse serve.static.define");
+        return null;
+    };
+
+    const output = home_rt.runtime.server.HTMLBundle.buildClientScript(allocator, &refs, &files, &define) catch {
+        setException(actual_ctx, exception, "Bake static client script failed to build");
+        return null;
+    };
+    defer allocator.free(output);
+
+    return makeStringValue(actual_ctx, output) catch {
+        setException(actual_ctx, exception, "Bake static client script failed to return output");
+        return null;
+    };
+}
+
 fn serveIdFromArguments(ctx: *JSContextRef, argument_count: usize, arguments: [*c]const ?*JSValue) ?usize {
     if (argument_count < 1 or arguments[0] == null) return null;
     const id_number = extern_fns.JSValueToNumber(ctx, arguments[0], null);
@@ -497,15 +568,21 @@ fn validateBakeHtmlServeOptions(
 }
 
 fn getBakeHtmlRouteObject(ctx: *JSContextRef, routes: *JSObject, exception: extern_fns.ExceptionRef) !*JSObject {
-    if (getProperty(ctx, routes, "/*", exception)) |root_value| {
+    if (getDefinedProperty(ctx, routes, "/*", exception)) |root_value| {
         if (!extern_fns.JSValueIsObject(ctx, root_value)) return error.UnsupportedServeShape;
         return extern_fns.JSValueToObject(ctx, root_value, exception) orelse error.NativeException;
     }
-    if (getProperty(ctx, routes, "/", exception)) |root_value| {
+    if (getDefinedProperty(ctx, routes, "/", exception)) |root_value| {
         if (!extern_fns.JSValueIsObject(ctx, root_value)) return error.UnsupportedServeShape;
         return extern_fns.JSValueToObject(ctx, root_value, exception) orelse error.NativeException;
     }
     return error.UnsupportedServeShape;
+}
+
+fn getDefinedProperty(ctx: *JSContextRef, object: *JSObject, name: []const u8, exception: extern_fns.ExceptionRef) ?*JSValue {
+    const value = getProperty(ctx, object, name, exception) orelse return null;
+    if (extern_fns.JSValueIsUndefined(ctx, value) or extern_fns.JSValueIsNull(ctx, value)) return null;
+    return value;
 }
 
 fn makeServeHandleResult(ctx: *JSContextRef, id: usize) !*JSValue {

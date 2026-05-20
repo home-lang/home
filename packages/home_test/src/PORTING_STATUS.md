@@ -207,9 +207,16 @@ carriers for the static route before the harness boundary. Exact
 `./bake-harness` and `../bake-harness`
 imports now lower to a virtual Bake registrar that preserves Bun's
 no-color ` DEV:<basename>-<count>: <description>` and
-`PROD:<basename>-<count>: <description>` naming while recording each
-registration as unsupported without executing the unported Bake
-`options.test` body. One snapshot `test.todo` fixture is
+`PROD:<basename>-<count>: <description>` naming. The first upstream
+`devAndProductionTest("define config via bunfig.toml")` pair now runs as
+real Home bootstrap tests: it parses only `[serve.static].define`,
+builds the static HTML client script through the Home HTMLBundle
+carrier, routes through native `Bun.serve({ static })`, and observes
+`a=HELLO` in both development and production. The next Bake boundary is
+still the named unsupported ` DEV:dev-and-prod-3: invalid html does not
+crash 1`, which needs tolerant HTML scanning, stylesheet extraction, and
+browser-client style assertions before it can execute faithfully. One
+snapshot `test.todo` fixture is
 allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
