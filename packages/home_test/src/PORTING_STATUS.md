@@ -221,8 +221,12 @@ assertion from `src/app/styles.css`. The next Bake boundary is now the
 named unsupported ` DEV:dev-and-prod-7: missing all meta tags works fine`.
 The missing-head case now uses the same static asset path and tolerates a
 missing `</head>` before executing the script and stylesheet assertions.
-The next case adds the first `dev.fetch("/").expect.toInclude("root")`
-shape to this Bake slice. One snapshot `test.todo` fixture is
+The missing-meta case now adds the first
+`dev.fetch("/").expect.toInclude("root")` shape to this Bake slice. The
+next Bake boundary is `DEV:dev-and-prod-9: inline script and styles
+appear` (with Bun's leading no-color label space in the runtime message),
+which needs inline `<script>` execution and inline `<style>`
+extraction before it can execute faithfully. One snapshot `test.todo` fixture is
 allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

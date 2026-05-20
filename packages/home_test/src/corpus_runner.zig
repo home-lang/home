@@ -1540,6 +1540,21 @@ const harness_prelude =
     \\  }
     \\  const dev = {
     \\    nodeEnv,
+    \\    fetch(path) {
+    \\      return {
+    \\        text: async () => htmlSource,
+    \\        expect: {
+    \\          toInclude(expected) {
+    \\            if (!String(htmlSource).includes(String(expected))) throw new Error("Expected HTML to include " + JSON.stringify(String(expected)));
+    \\          },
+    \\          not: {
+    \\            toInclude(expected) {
+    \\              if (String(htmlSource).includes(String(expected))) throw new Error("Expected HTML not to include " + JSON.stringify(String(expected)));
+    \\            },
+    \\          },
+    \\        },
+    \\      };
+    \\    },
     \\    async client(path) {
     \\      startClient();
     \\      return {
@@ -1580,6 +1595,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "missing head end tag works fine" && options && options.files && options.files["public/index.html"] && options.files["src/app/index.tsx"] && options.files["src/app/styles.css"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "missing all meta tags works fine" && options && options.files && options.files["public/index.html"] && options.files["src/app/index.tsx"] && options.files["src/app/styles.css"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  __home_record_unsupported("Bake harness test not implemented: " + name);
@@ -6636,6 +6654,48 @@ test "bootstrap runner executes Bake missing head smoke" {
         \\    `,
         \\  },
         \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.expectMessage("hello");
+        \\    await c.style("body").backgroundColor.expect.toBe("red");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev-and-prod.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake missing meta smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devAndProductionTest, devTest, emptyHtmlFile, WAIT_MULTIPLIER } from "./bake-harness";
+        \\devAndProductionTest("missing all meta tags works fine", {
+        \\  files: {
+        \\    "public/index.html": `
+        \\      <title>Dashboard</title>
+        \\      <link rel="stylesheet" href="../src/app/styles.css"></link>
+        \\
+        \\      <div id="root" />
+        \\      <script type="module" src="../src/app/index.tsx"></script>
+        \\    `,
+        \\    "src/app/index.tsx": `console.log("hello");`,
+        \\    "src/app/styles.css": `
+        \\      body {
+        \\        background-color: red;
+        \\      }
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await dev.fetch("/").expect.toInclude("root");
         \\    await using c = await dev.client("/");
         \\    await c.expectMessage("hello");
         \\    await c.style("body").backgroundColor.expect.toBe("red");

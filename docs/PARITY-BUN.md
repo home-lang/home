@@ -309,19 +309,21 @@ the static HTML client script from Bun-style HTML references, parses only
 expected `a=HELLO` client log in both development and production
 registrations. The next malformed HTML pairs,
 `devAndProductionTest("invalid html does not crash 1")` and
-`devAndProductionTest("missing head end tag works fine")`, also execute
+`devAndProductionTest("missing head end tag works fine")`, and
+`devAndProductionTest("missing all meta tags works fine")`, also execute
 through the same carrier: they resolve script and stylesheet refs
 relative to `public/index.html`, evaluate the real `src/app/index.tsx`
-fixture, and derive the `background-color: red` assertion from
-`src/app/styles.css` without requiring a perfectly closed head element.
-Later Bake registrations are still recorded as unsupported until the
-broader DevServer / bundler / browser-client runtime path lands.
+fixture, derive the `background-color: red` assertion from
+`src/app/styles.css`, and cover the first Bake `dev.fetch("/")`
+HTML-include assertion. Later Bake registrations are still recorded as
+unsupported until the broader DevServer / bundler / browser-client
+runtime path lands.
 
-Latest measured full gate after the Bake missing-head slice:
-`4,013` files executed, `408` passed, `3,978` failed, `1,531`
+Latest measured full gate after the Bake missing-meta slice:
+`4,013` files executed, `408` passed, `3,976` failed, `1,529`
 unsupported, `35` todo. First failure: `bake/dev-and-prod.test.ts`
 with the named unsupported Bake registration for
-` DEV:dev-and-prod-7: missing all meta tags works fine`.
+` DEV:dev-and-prod-9: inline script and styles appear`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
