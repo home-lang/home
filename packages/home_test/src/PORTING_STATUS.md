@@ -270,8 +270,13 @@ leaves broken unused barrel targets untouched. The barrel reload smoke
 now replays entry updates as additional `Beta` and `Gamma` imports are
 introduced from the same barrel. The multi-file barrel smoke now keeps
 entry-file barrel imports available while a sibling module changes its
-own barrel import set. The next Bake boundary is
-`DEV:bundle-18: barrel optimization: export star target not deferred (#27521)`.
+own barrel import set. The barrel tail smokes cover export-star targets,
+duplicate export-from blocks, and duplicate import statements from the
+same barrel. `bake/dev/bundle.test.ts` now passes in the Home corpus
+runner (`20` passed, `0` failed, `0` unsupported), but this remains a
+bootstrap model until the real Bun barrel optimizer is ported from Zig.
+The next Bake boundary is
+`DEV:css-1: css file with syntax error does not kill old styles`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

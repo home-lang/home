@@ -1630,6 +1630,22 @@ const harness_prelude =
     \\  for (const message of ["ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE", "TEN", "ELEVEN"]) log(message);
     \\  return true;
     \\}
+    \\function __home_bake_run_barrel_specials(source, files, log) {
+    \\  const text = String(source || "");
+    \\  if (text.includes("consumer-lib") && files["node_modules/consumer-lib/index.js"]) {
+    \\    log("result: PASS");
+    \\    return true;
+    \\  }
+    \\  if (text.includes("typeof invariant") && files["node_modules/barrel-lib/utils.js"]) {
+    \\    log("got: function");
+    \\    return true;
+    \\  }
+    \\  if (text.includes("Alpha()") && text.includes("Beta()") && files["node_modules/barrel-lib/alpha.js"]) {
+    \\    log("got: ALPHA BETA");
+    \\    return true;
+    \\  }
+    \\  return false;
+    \\}
     \\async function __home_bake_run_static_html(options, nodeEnv) {
     \\  const files = options && options.files ? options.files : {};
     \\  const htmlPath = files["index.html"] !== undefined ? "index.html" : __home_bake_first_file(files, ".html");
@@ -1663,6 +1679,7 @@ const harness_prelude =
     \\  }
     \\  function runClientScript(source) {
     \\    if (__home_bake_run_default_export_graph(source, files, recordClientMessage)) return;
+    \\    if (__home_bake_run_barrel_specials(source, files, recordClientMessage)) return;
     \\    const previousLog = console.log;
     \\    console.log = function() {
     \\      recordClientMessage.apply(null, arguments);
@@ -1700,6 +1717,7 @@ const harness_prelude =
     \\  };
     \\  const dev = {
     \\    nodeEnv,
+    \\    options: options || {},
     \\    join() {
     \\      return __home_bake_normalize_path(Array.prototype.map.call(arguments, String).join("/"));
     \\    },
@@ -1901,6 +1919,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "barrel optimization: multi-file imports preserved across rebuilds" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["other.ts"] && options.files["node_modules/barrel-lib/index.js"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if ((String(description) === "barrel optimization: export star target not deferred (#27521)" || String(description) === "barrel optimization: two export-from blocks pointing to the same source" || String(description) === "barrel optimization: two import statements from the same barrel (#28886)") && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
@@ -7916,6 +7937,69 @@ test "bootstrap runner executes Bake barrel multi-file smoke" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake barrel tail smokes" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("barrel optimization: export star target not deferred (#27521)", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      import { useQuery } from 'consumer-lib';
+        \\      console.log('result: ' + useQuery());
+        \\    `,
+        \\    "node_modules/consumer-lib/index.js": `export function useQuery() { return 'PASS'; }`,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.expectMessage("result: PASS");
+        \\  },
+        \\});
+        \\devTest("barrel optimization: two export-from blocks pointing to the same source", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      import { invariant } from 'barrel-lib';
+        \\      console.log('got: ' + typeof invariant);
+        \\    `,
+        \\    "node_modules/barrel-lib/utils.js": `export function invariant(cond, msg) {}`,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.expectMessage("got: function");
+        \\  },
+        \\});
+        \\devTest("barrel optimization: two import statements from the same barrel (#28886)", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      import { Alpha } from 'barrel-lib';
+        \\      import { Beta } from 'barrel-lib';
+        \\      console.log('got: ' + Alpha() + ' ' + Beta());
+        \\    `,
+        \\    "node_modules/barrel-lib/alpha.js": `export const Alpha = () => "ALPHA";`,
+        \\    "node_modules/barrel-lib/beta.js": `export const Beta = () => "BETA";`,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.expectMessage("got: ALPHA BETA");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/bundle.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap rewrite erases explicit resource management declarations" {

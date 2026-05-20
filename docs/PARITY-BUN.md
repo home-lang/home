@@ -370,13 +370,20 @@ leaves broken unused barrel targets untouched. The barrel reload smoke
 now replays entry updates as additional `Beta` and `Gamma` imports are
 introduced from the same barrel. The multi-file barrel smoke now keeps
 entry-file barrel imports available while a sibling module changes its
-own barrel import set.
+own barrel import set. The barrel tail smokes cover export-star targets,
+duplicate export-from blocks, and duplicate import statements from the
+same barrel. With those bootstrap models in place,
+`bake/dev/bundle.test.ts` now passes as a Home corpus file (`20` tests
+passed, `0` failed, `0` unsupported). This is still not a substitute for
+the real Bun bundler/barrel optimizer; the parser, linker, and optimizer
+paths still need to be ported from Bun's Zig source for true parity.
 
-Latest measured full gate after the Bake barrel multi-file slice:
-`4,013` files executed, `420` passed, `3,955` failed, `1,508`
+Latest measured full gate after completing the Bake bundle-file smokes:
+`4,013` files executed, `440` passed, `3,952` failed, `1,505`
 unsupported, `35` todo. First failure: `bake/dev/bundle.test.ts`
-with the named unsupported Bake registration for
-` DEV:bundle-18: barrel optimization: export star target not deferred (#27521)`.
+has moved to `bake/dev/css.test.ts` with the named unsupported Bake
+registration for
+` DEV:css-1: css file with syntax error does not kill old styles`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
