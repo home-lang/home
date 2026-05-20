@@ -18290,10 +18290,8 @@ pub const Checker = struct {
                 // emit TS2416. Properties (data fields, function-typed
                 // properties) keep the standard one-way check.
                 const both_methods = pm.is_method and cm.is_method;
-                const method_arity_incompatible = both_methods and self.methodOverrideHasExtraRequiredParams(cm.type, pm.type);
-                const assignable = if (both_methods and !method_arity_incompatible)
-                    (try self.heritageMemberAssignable(cm.type, pm.type)) or
-                        (try self.heritageMemberAssignable(pm.type, cm.type))
+                const assignable = if (both_methods)
+                    try self.methodOverrideAssignable(cm.type, pm.type)
                 else
                     try self.heritageMemberAssignable(cm.type, pm.type);
                 if (!assignable) {
@@ -18327,6 +18325,29 @@ pub const Checker = struct {
         const parent_params = self.interner.signatureParams(parent_t);
         if (self.rest_signatures.contains(parent_t)) return false;
         return self.signatureMinRequiredArgs(child_t, child_params) > parent_params.len;
+    }
+
+    fn methodOverrideAssignable(self: *Checker, child_t: TypeId, parent_t: TypeId) CheckError!bool {
+        if (!self.interner.isSignature(child_t) or !self.interner.isSignature(parent_t)) {
+            return self.heritageMemberAssignable(child_t, parent_t);
+        }
+        if (self.methodOverrideHasExtraRequiredParams(child_t, parent_t)) return false;
+
+        const child_ret = self.interner.signatureReturn(child_t) orelse types.Primitive.any;
+        const parent_ret = self.interner.signatureReturn(parent_t) orelse types.Primitive.any;
+        if (parent_ret != types.Primitive.void_t and
+            !(try self.heritageMemberAssignable(child_ret, parent_ret))) return false;
+
+        const child_params = self.interner.signatureParams(child_t);
+        const parent_params = self.interner.signatureParams(parent_t);
+        const compare_len = @min(child_params.len, parent_params.len);
+        for (child_params[0..compare_len], 0..) |child_param, i| {
+            const parent_param = parent_params[i];
+            const param_ok = (try self.heritageMemberAssignable(child_param, parent_param)) or
+                (try self.heritageMemberAssignable(parent_param, child_param));
+            if (!param_ok) return false;
+        }
+        return true;
     }
 
     /// TS2416 prose: render `Property 'p' in type 'Child<U>' is not
@@ -63276,6 +63297,28 @@ test "checker: TS2416 method override is bivariant (no diagnostic on widened par
         \\class Derived extends Base { b(a: typeof y) { } }
     );
     defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_not_assignable_to_base);
+    }
+}
+
+test "checker: method override keeps bivariant params with covariant return" {
+    // Mirrors derivedTypeAccessesHiddenBaseCallViaSuperPropertyAccess:
+    // method parameters are bivariant, but the child return still flows
+    // to the parent return.
+    const s = try newSetup(
+        \\class Base {
+        \\  foo(x: { a: number }): { a: number } { return { a: 1 }; }
+        \\}
+        \\class Derived extends Base {
+        \\  foo(x: { a: number; b: number }): { a: number; b: number } {
+        \\    return { a: 1, b: 2 };
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_function_types = true });
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_not_assignable_to_base);
