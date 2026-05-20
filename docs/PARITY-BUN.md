@@ -321,15 +321,20 @@ executes inline `<script>` code and derives style assertions from inline
 `<style>` content while keeping `dev.fetch()` tied to the raw HTML
 source. The development-only `devTest("using runtime import")` now runs
 the narrow Bun runtime-import rewrite path for `using`, legacy class
-decorators, and HMR `require` helpers in an isolated client scope. Later
-Bake registrations are still recorded as unsupported until the broader
-DevServer / bundler / browser-client runtime path lands.
+decorators, and HMR `require` helpers in an isolated client scope. The
+`devTest("hmr handles rapid consecutive edits")` case now drives
+`writeFileSync` through a native Home DevServer hot-update queue, keeps
+duplicate source-map IDs queued FIFO, drains updates through an HMR
+socket carrier, and only then re-evaluates the changed client module.
+This completes the current `bake/dev-and-prod.test.ts` file. Later Bake
+files are still recorded as unsupported until the broader DevServer /
+bundler / browser-client runtime path lands.
 
-Latest measured full gate after the Bake runtime-import slice:
-`4,013` files executed, `408` passed, `3,973` failed, `1,526`
-unsupported, `35` todo. First failure: `bake/dev-and-prod.test.ts`
+Latest measured full gate after the Bake rapid-HMR slice:
+`4,013` files executed, `420` passed, `3,972` failed, `1,525`
+unsupported, `35` todo. First failure: `bake/dev/bundle.test.ts`
 with the named unsupported Bake registration for
-` DEV:dev-and-prod-12: hmr handles rapid consecutive edits`.
+` DEV:bundle-1: import identifier doesnt get renamed`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

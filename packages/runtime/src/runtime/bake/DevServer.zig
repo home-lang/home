@@ -140,12 +140,23 @@ pub fn getDeinitCountForTesting() usize {
 }
 
 pub const DevServer = struct {
+    pub const HotUpdate = struct {
+        source_map_id: SourceMapStore.Key,
+        source: []const u8,
+
+        pub fn deinit(this: *HotUpdate, allocator: std.mem.Allocator) void {
+            allocator.free(this.source);
+            this.* = undefined;
+        }
+    };
+
     allocator: std.mem.Allocator,
     route_bundles: std.ArrayList(RouteBundle) = .empty,
     route_patterns: std.StringHashMap(RouteBundle.Index),
     html_router: HTMLRouter,
     source_maps: SourceMapStore,
     active_websocket_connections: std.AutoHashMap(*HmrSocket, void),
+    hot_updates: std.ArrayList(HotUpdate) = .empty,
     configuration_hash_key: [16]u8 = .{
         '0', '0', '0', '0',
         '0', '0', '0', '0',
@@ -180,6 +191,8 @@ pub const DevServer = struct {
 
         std.debug.assert(this.active_websocket_connections.count() == 0);
         this.active_websocket_connections.deinit();
+        for (this.hot_updates.items) |*update| update.deinit(this.allocator);
+        this.hot_updates.deinit(this.allocator);
         this.source_maps.deinit();
         var pattern_keys = this.route_patterns.keyIterator();
         while (pattern_keys.next()) |key| this.allocator.free(key.*);
@@ -211,7 +224,7 @@ pub const DevServer = struct {
     }
 
     pub fn routeToBundleIndexSlow(this: *DevServer, pattern: []const u8) ?RouteBundle.Index {
-        return this.route_patterns.get(pattern);
+        return this.route_patterns.get(pattern) orelse this.route_patterns.get("/*");
     }
 
     pub fn routeBundlePtr(this: *DevServer, index: RouteBundle.Index) *RouteBundle {
@@ -220,6 +233,41 @@ pub const DevServer = struct {
 
     pub fn addSocket(this: *DevServer, socket: *HmrSocket) !void {
         try this.active_websocket_connections.put(socket, {});
+    }
+
+    pub fn emitHotUpdate(this: *DevServer, source: []const u8) !void {
+        const copied = try this.allocator.dupe(u8, source);
+        errdefer this.allocator.free(copied);
+        try this.hot_updates.append(this.allocator, .{
+            .source_map_id = hotUpdateSourceMapId(source),
+            .source = copied,
+        });
+    }
+
+    pub fn drainHotUpdateTextForSocket(
+        this: *DevServer,
+        allocator: std.mem.Allocator,
+        socket: *HmrSocket,
+        separator: []const u8,
+    ) ![]u8 {
+        var out = std.ArrayList(u8).empty;
+        errdefer out.deinit(allocator);
+
+        if (!socket.subscriptions.hot_update) return out.toOwnedSlice(allocator);
+
+        var index = socket.next_hot_update_index;
+        while (index < this.hot_updates.items.len) : (index += 1) {
+            if (out.items.len > 0) try out.appendSlice(allocator, separator);
+            try socket.addSourceMapRef(this.hot_updates.items[index].source_map_id);
+            try out.appendSlice(allocator, this.hot_updates.items[index].source);
+        }
+        socket.next_hot_update_index = this.hot_updates.items.len;
+
+        return out.toOwnedSlice(allocator);
+    }
+
+    pub fn hotUpdateSourceMapId(source: []const u8) SourceMapStore.Key {
+        return @truncate(std.hash.Wyhash.hash(0, source) | 1);
     }
 };
 
@@ -272,6 +320,14 @@ test "DevServer route pattern lookup returns registered bundle index" {
     try std.testing.expect(dev.routeToBundleIndexSlow("/missing") == null);
 }
 
+test "DevServer route pattern lookup falls back to catch-all bundle" {
+    var dev = DevServer.init(std.testing.allocator);
+    defer dev.deinit();
+
+    const index = try dev.registerRoutePattern("/*", .{});
+    try std.testing.expectEqual(index, dev.routeToBundleIndexSlow("/").?);
+}
+
 test "DevServer HMR protocol ids match Bun wire bytes" {
     try std.testing.expectEqual(@as(u8, 'V'), MessageId.version.char());
     try std.testing.expectEqual(@as(u8, 'n'), MessageId.set_url_response.char());
@@ -279,6 +335,40 @@ test "DevServer HMR protocol ids match Bun wire bytes" {
     try std.testing.expectEqual(IncomingMessageId.set_url, IncomingMessageId.fromChar('n').?);
     try std.testing.expectEqual(HmrTopic.hot_update, HmrTopic.fromChar('h').?);
     try std.testing.expectEqual(HmrTopic.errors, HmrTopic.fromChar('e').?);
+}
+
+test "DevServer queues duplicate hot updates FIFO for sockets" {
+    var dev = DevServer.init(std.testing.allocator);
+    defer dev.deinit();
+
+    var socket = HmrSocket.init(&dev);
+    defer socket.deinit();
+    try dev.addSocket(&socket);
+
+    _ = try socket.applyClientMessage(std.testing.allocator, "sh");
+    try dev.emitHotUpdate("console.log(\"rapid\");");
+    try dev.emitHotUpdate("console.log(\"rapid\");");
+    try dev.emitHotUpdate("console.log(\"sentinel\");");
+
+    const rapid_id = DevServer.hotUpdateSourceMapId("console.log(\"rapid\");");
+    try std.testing.expectEqual(rapid_id, dev.hot_updates.items[0].source_map_id);
+    try std.testing.expectEqual(rapid_id, dev.hot_updates.items[1].source_map_id);
+
+    const drained = try dev.drainHotUpdateTextForSocket(std.testing.allocator, &socket, "\n--hmr--\n");
+    defer std.testing.allocator.free(drained);
+
+    try std.testing.expectEqualStrings(
+        "console.log(\"rapid\");\n--hmr--\nconsole.log(\"rapid\");\n--hmr--\nconsole.log(\"sentinel\");",
+        drained,
+    );
+    try std.testing.expectEqual(@as(usize, 1), dev.source_maps.refCount(rapid_id));
+    try std.testing.expectEqual(@as(usize, 3), socket.next_hot_update_index);
+
+    const empty = try dev.drainHotUpdateTextForSocket(std.testing.allocator, &socket, "\n--hmr--\n");
+    defer std.testing.allocator.free(empty);
+    try std.testing.expectEqualStrings("", empty);
+
+    socket.close();
 }
 
 test "DevServer HTMLRouter stores catch-all route as fallback" {

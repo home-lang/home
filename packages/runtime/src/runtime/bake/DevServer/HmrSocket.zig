@@ -23,6 +23,7 @@ pub const HmrSocket = struct {
     active_route: ?RouteBundle.Index = null,
     subscriptions: HmrTopic.Bits = .{},
     referenced_source_maps: std.AutoHashMap(SourceMapStore.Key, void),
+    next_hot_update_index: usize = 0,
     closed: bool = false,
 
     pub fn init(dev: *DevServer) HmrSocket {

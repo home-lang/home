@@ -90,6 +90,24 @@ pub const Runtime = struct {
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
             self.engine.currentGlobalObject(),
+            "__home_sendHmrSocketMessageNative",
+            sendHmrSocketMessageNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_bakeEmitHotUpdateNative",
+            bakeEmitHotUpdateNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_drainHmrMessagesNative",
+            drainHmrMessagesNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
             "__home_buildBakeStaticClientScriptNative",
             buildBakeStaticClientScriptNative,
         );
@@ -466,6 +484,96 @@ fn closeHmrSocketNative(
     return extern_fns.JSValueMakeUndefined(actual_ctx);
 }
 
+fn sendHmrSocketMessageNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const socket = hmrSocketFromArguments(actual_ctx, argument_count, arguments) orelse return extern_fns.JSValueMakeUndefined(actual_ctx);
+    if (argument_count < 3 or arguments[2] == null) return extern_fns.JSValueMakeUndefined(actual_ctx);
+
+    const allocator = std.heap.smp_allocator;
+    const message = valueToOwnedString(allocator, actual_ctx, arguments[2].?, exception) catch {
+        setException(actual_ctx, exception, "HMR socket message failed to read payload");
+        return null;
+    };
+    defer allocator.free(message);
+
+    const response = socket.applyClientMessage(allocator, message) catch {
+        setException(actual_ctx, exception, "HMR socket message failed");
+        return null;
+    } orelse return extern_fns.JSValueMakeUndefined(actual_ctx);
+    defer allocator.free(response);
+
+    return makeStringValue(actual_ctx, response) catch {
+        setException(actual_ctx, exception, "HMR socket message failed to return response");
+        return null;
+    };
+}
+
+fn bakeEmitHotUpdateNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const id = serveIdFromArguments(actual_ctx, argument_count, arguments) orelse return extern_fns.JSValueMakeUndefined(actual_ctx);
+    const handle = serve_handles.get(id) orelse return extern_fns.JSValueMakeUndefined(actual_ctx);
+    if (argument_count < 3 or arguments[2] == null) return extern_fns.JSValueMakeUndefined(actual_ctx);
+
+    const allocator = std.heap.smp_allocator;
+    const source = valueToOwnedString(allocator, actual_ctx, arguments[2].?, exception) catch {
+        setException(actual_ctx, exception, "Bake HMR update failed to read source");
+        return null;
+    };
+    defer allocator.free(source);
+
+    handle.dev.emitHotUpdate(source) catch {
+        setException(actual_ctx, exception, "Bake HMR update failed");
+        return null;
+    };
+    return extern_fns.JSValueMakeUndefined(actual_ctx);
+}
+
+fn drainHmrMessagesNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const socket = hmrSocketFromArguments(actual_ctx, argument_count, arguments) orelse {
+        return makeStringValue(actual_ctx, "") catch return null;
+    };
+
+    const allocator = std.heap.smp_allocator;
+    const drained = socket.dev.drainHotUpdateTextForSocket(allocator, socket, "\n\u{1e}\n") catch {
+        setException(actual_ctx, exception, "Bake HMR drain failed");
+        return null;
+    };
+    defer allocator.free(drained);
+
+    return makeStringValue(actual_ctx, drained) catch {
+        setException(actual_ctx, exception, "Bake HMR drain failed to return messages");
+        return null;
+    };
+}
+
 fn buildBakeStaticClientScriptNative(
     ctx: ?*JSContextRef,
     function: ?*JSObject,
@@ -550,6 +658,16 @@ fn serveIdFromArguments(ctx: *JSContextRef, argument_count: usize, arguments: [*
     const id_number = extern_fns.JSValueToNumber(ctx, arguments[0], null);
     if (!std.math.isFinite(id_number) or id_number < 0 or @floor(id_number) != id_number) return null;
     return @intFromFloat(id_number);
+}
+
+fn hmrSocketFromArguments(ctx: *JSContextRef, argument_count: usize, arguments: [*c]const ?*JSValue) ?*home_rt.runtime.bake.HmrSocket {
+    const id = serveIdFromArguments(ctx, argument_count, arguments) orelse return null;
+    const handle = serve_handles.get(id) orelse return null;
+    if (argument_count < 2 or arguments[1] == null) return null;
+    const socket_id_number = extern_fns.JSValueToNumber(ctx, arguments[1], null);
+    if (!std.math.isFinite(socket_id_number) or socket_id_number < 0 or @floor(socket_id_number) != socket_id_number) return null;
+    const socket_id: usize = @intFromFloat(socket_id_number);
+    return handle.hmr_sockets.get(socket_id);
 }
 
 fn validateBakeHtmlServeOptions(

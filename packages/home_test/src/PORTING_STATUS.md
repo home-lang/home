@@ -229,9 +229,14 @@ which now executes inline `<script>` code and extracts inline `<style>`
 rules for the style assertion. The `using runtime import` dev test now
 executes a narrow Bun runtime-import rewrite for `using`, legacy
 decorators, and HMR `require` helper identities in an isolated client
-scope. The next Bake boundary is
-`DEV:dev-and-prod-12: hmr handles rapid consecutive edits`, which reaches
-the real DevServer watcher / reload path. One snapshot `test.todo` fixture is
+scope. The rapid-HMR dev test now routes `writeFileSync` through a native
+Home DevServer hot-update queue, preserves duplicate source-map IDs in
+FIFO order, drains updates through an HMR socket carrier, and then
+re-evaluates the changed client module. The whole
+`bake/dev-and-prod.test.ts` file now passes in Home. The next Bake
+boundary is `DEV:bundle-1: import identifier doesnt get renamed` in
+`bake/dev/bundle.test.ts`, which reaches deeper bundler identifier
+renaming behavior. One snapshot `test.todo` fixture is
 allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

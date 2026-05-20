@@ -264,6 +264,7 @@ const harness_prelude =
     \\    handle.abrupt = false;
     \\    globalThis.__home_serve_handles_by_origin[handle.origin] = handle;
     \\    const server = {
+    \\      __home_id: handle.id,
     \\      port: handle.port,
     \\      url: { origin: handle.origin, href: handle.origin + "/" },
     \\      stop(closeActiveConnections) {
@@ -1525,6 +1526,7 @@ const harness_prelude =
     \\  out = out.replace("const A = () => require;", "const A = () => hmr.require;");
     \\  out = out.replace("const B = () => module.require;", "const B = () => module.require;");
     \\  out = out.replace("const C = () => import.meta.require;", "const C = () => hmr.importMeta.require;");
+    \\  out = out.replaceAll("import.meta.hot.accept();", "void 0;");
     \\  out = out.replaceAll("import.meta.hot", "true");
     \\  out = out.replaceAll("import.meta.require", "hmr.importMeta.require");
     \\  return "var hmr = { require: function hmrRequire() {}, importMeta: { require: function importMetaRequire() {} } }; var module = { require: function moduleRequire() {} }; var require = hmr.require;\n" + out;
@@ -1544,22 +1546,55 @@ const harness_prelude =
     \\  const html = { __home_bake_html_import: true, path: htmlPath };
     \\  const server = Bun.serve({ static: { "/*": html } });
     \\  const messages = [];
+    \\  const listeners = { message: [], exit: [] };
+    \\  const hmrSocketId = typeof globalThis.__home_openHmrSocketNative === "function" ? globalThis.__home_openHmrSocketNative(server.__home_id) : null;
+    \\  if (hmrSocketId !== null && typeof globalThis.__home_sendHmrSocketMessageNative === "function") {
+    \\    globalThis.__home_sendHmrSocketMessageNative(server.__home_id, hmrSocketId, "sh");
+    \\    globalThis.__home_sendHmrSocketMessageNative(server.__home_id, hmrSocketId, "n/");
+    \\  }
     \\  let clientStarted = false;
-    \\  function startClient() {
-    \\    if (clientStarted) return;
-    \\    clientStarted = true;
+    \\  function emit(event, value) {
+    \\    for (const listener of listeners[event] || []) listener(value);
+    \\  }
+    \\  function runClientScript(source) {
     \\    const previousLog = console.log;
     \\    console.log = function() {
-    \\      messages.push(Array.prototype.map.call(arguments, String).join(" "));
+    \\      const message = Array.prototype.map.call(arguments, String).join(" ");
+    \\      messages.push(message);
+    \\      emit("message", message);
     \\    };
     \\    try {
-    \\      Function(__home_bake_transpile_client_script(clientScript))();
+    \\      Function(__home_bake_transpile_client_script(source))();
     \\    } finally {
     \\      console.log = previousLog;
     \\    }
     \\  }
+    \\  function startClient() {
+    \\    if (clientStarted) return;
+    \\    clientStarted = true;
+    \\    runClientScript(clientScript);
+    \\  }
+    \\  const previousBakeWriteFile = globalThis.__home_bake_on_write_file;
+    \\  globalThis.__home_bake_on_write_file = function(path, data) {
+    \\    const normalized = __home_bake_normalize_path(String(path || ""));
+    \\    if (normalized !== scriptPath) return previousBakeWriteFile ? previousBakeWriteFile(path, data) : false;
+    \\    files[scriptPath] = String(data);
+    \\    if (clientStarted && typeof globalThis.__home_bakeEmitHotUpdateNative === "function" && typeof globalThis.__home_drainHmrMessagesNative === "function" && hmrSocketId !== null) {
+    \\      globalThis.__home_bakeEmitHotUpdateNative(server.__home_id, normalized, files[scriptPath]);
+    \\      const drained = String(globalThis.__home_drainHmrMessagesNative(server.__home_id, hmrSocketId) || "");
+    \\      for (const source of drained ? drained.split("\n\u001e\n") : []) {
+    \\        if (source) runClientScript(source);
+    \\      }
+    \\    } else if (clientStarted) {
+    \\      runClientScript(files[scriptPath]);
+    \\    }
+    \\    return true;
+    \\  };
     \\  const dev = {
     \\    nodeEnv,
+    \\    join() {
+    \\      return __home_bake_normalize_path(Array.prototype.map.call(arguments, String).join("/"));
+    \\    },
     \\    fetch(path) {
     \\      return {
     \\        text: async () => htmlSource,
@@ -1581,9 +1616,21 @@ const harness_prelude =
     \\        messages,
     \\        async expectMessage() {
     \\          for (const expected of arguments) {
-    \\            if (!messages.includes(String(expected))) throw new Error("Timed out waiting for " + JSON.stringify(String(expected)) + "; buffered: " + JSON.stringify(messages));
+    \\            const index = messages.indexOf(String(expected));
+    \\            if (index < 0) throw new Error("Timed out waiting for " + JSON.stringify(String(expected)) + "; buffered: " + JSON.stringify(messages));
+    \\            messages.splice(index, 1);
     \\          }
     \\        },
+    \\        on(event, listener) {
+    \\          if (!listeners[event]) listeners[event] = [];
+    \\          listeners[event].push(listener);
+    \\        },
+    \\        off(event, listener) {
+    \\          if (!listeners[event]) return;
+    \\          const index = listeners[event].indexOf(listener);
+    \\          if (index >= 0) listeners[event].splice(index, 1);
+    \\        },
+    \\        exited: false,
     \\        style(selector) {
     \\          return {
     \\            backgroundColor: {
@@ -1603,6 +1650,8 @@ const harness_prelude =
     \\  try {
     \\    return await options.test(dev);
     \\  } finally {
+    \\    globalThis.__home_bake_on_write_file = previousBakeWriteFile;
+    \\    if (hmrSocketId !== null && typeof globalThis.__home_closeHmrSocketNative === "function") globalThis.__home_closeHmrSocketNative(server.__home_id, hmrSocketId);
     \\    server.stop(true);
     \\  }
     \\}
@@ -1624,6 +1673,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "using runtime import" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["tsconfig.json"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "hmr handles rapid consecutive edits" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  __home_record_unsupported("Bake harness test not implemented: " + name);
@@ -2180,6 +2232,7 @@ const harness_prelude =
     \\};
     \\const __home_node_fs = {
     \\  writeFileSync(path, data) {
+    \\    if (typeof globalThis.__home_bake_on_write_file === "function" && globalThis.__home_bake_on_write_file(String(path), data)) return;
     \\    if (typeof globalThis.__home_writeFileSyncNative !== "function") __home_unsupported("node:fs.writeFileSync native bridge is not installed");
     \\    if (typeof data !== "string") __home_unsupported("Only string data is supported by node:fs.writeFileSync in the Home Bun corpus bootstrap runner");
     \\    return globalThis.__home_writeFileSyncNative(String(path), data);
@@ -6823,6 +6876,63 @@ test "bootstrap runner executes Bake runtime import smoke" {
         \\  async test(dev) {
         \\    await using c = await dev.client("/");
         \\    await c.expectMessage("b", "a", "decorator", "()=>hmr.require", "()=>module.require", "()=>hmr.importMeta.require", true, false, false);
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev-and-prod.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake rapid hmr smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { writeFileSync } from "node:fs";
+        \\import { devAndProductionTest, devTest, emptyHtmlFile, WAIT_MULTIPLIER } from "./bake-harness";
+        \\const hmrSelfAcceptingModule = (label) => `
+        \\  console.log(${JSON.stringify(label)});
+        \\  if (import.meta.hot) {
+        \\    import.meta.hot.accept();
+        \\  }
+        \\`;
+        \\devTest("hmr handles rapid consecutive edits", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ scripts: ["index.ts"] }),
+        \\    "index.ts": hmrSelfAcceptingModule("render initial"),
+        \\  },
+        \\  async test(dev) {
+        \\    await using client = await dev.client("/", { allowUnlimitedReloads: false });
+        \\    await client.expectMessage("render initial");
+        \\    const waitForMessage = (value) =>
+        \\      new Promise((resolve, reject) => {
+        \\        const onMessage = () => {
+        \\          if (client.messages.includes(value)) {
+        \\            client.off("message", onMessage);
+        \\            resolve();
+        \\          }
+        \\        };
+        \\        client.on("message", onMessage);
+        \\        onMessage();
+        \\      });
+        \\    const target = dev.join("index.ts");
+        \\    const rapidContent = hmrSelfAcceptingModule("render rapid");
+        \\    for (let i = 0; i < 10; i++) writeFileSync(target, rapidContent);
+        \\    await waitForMessage("render rapid");
+        \\    writeFileSync(target, hmrSelfAcceptingModule("render sentinel"));
+        \\    await waitForMessage("render sentinel");
+        \\    const expected = new Set(["render rapid", "render sentinel"]);
+        \\    for (const msg of client.messages) {
+        \\      if (!expected.has(msg)) throw new Error(`Unexpected HMR message: ${JSON.stringify(msg)}`);
+        \\    }
         \\  },
         \\});
     ;
