@@ -158,7 +158,6 @@ pub fn countLeadingDirectiveLines(source: []const u8) u32 {
     var count: u32 = 0;
     var directive_seen = false;
     var skipped_preamble_comment = false;
-    var stopped_on_post_directive_comment = false;
     var pending_blanks: u32 = 0;
     // Strip a leading UTF-8 BOM (`\xEF\xBB\xBF`) before scanning —
     // many upstream fixtures start with a BOM that otherwise prevents
@@ -189,12 +188,10 @@ pub fn countLeadingDirectiveLines(source: []const u8) u32 {
                 continue;
             }
             // A post-directive non-directive comment terminates the
-            // strip block. Trailing blanks BEFORE this comment must
-            // NOT be stripped because tsc keeps them visible in the
-            // baseline's line numbering (see
-            // `strictPropertyInitialization.ts` baseline (5,5) vs
-            // source line 8 — only the 3 directives strip).
-            stopped_on_post_directive_comment = true;
+            // strip block. Blanks BETWEEN directives and this first
+            // ordinary comment are still part of the stripped fixture
+            // metadata; blanks after the ordinary comment are visible
+            // baseline content.
             break;
         }
         const body = after_slashes[1..];
@@ -214,10 +211,11 @@ pub fn countLeadingDirectiveLines(source: []const u8) u32 {
         pending_blanks = 0;
         directive_seen = true;
     }
-    // Trailing blanks immediately after the last directive also strip
-    // — UNLESS the directive block was terminated by a non-directive
-    // comment, in which case tsc preserves the blank + comment.
-    if (!skipped_preamble_comment and !stopped_on_post_directive_comment) count += pending_blanks;
+    // Trailing blanks immediately after the last directive also strip.
+    // If a non-directive comment terminated the block, only blanks
+    // BEFORE that comment are pending here; blanks after the comment
+    // were never accumulated.
+    if (!skipped_preamble_comment) count += pending_blanks;
     return count;
 }
 
@@ -4388,10 +4386,10 @@ test "conformance: strictPropertyInitialization full fixture triage" {
         ,
         .expects_error = true,
         .expected_errors =
-        \\strictPropertyInitialization.ts(5,5): error TS2564: Property 'a' has no initializer and is not definitely assigned in the constructor.
-        \\strictPropertyInitialization.ts(7,5): error TS2564: Property 'c' has no initializer and is not definitely assigned in the constructor.
-        \\strictPropertyInitialization.ts(9,5): error TS2564: Property '#f' has no initializer and is not definitely assigned in the constructor.
-        \\strictPropertyInitialization.ts(11,5): error TS2564: Property '#h' has no initializer and is not definitely assigned in the constructor.
+        \\strictPropertyInitialization.ts(4,5): error TS2564: Property 'a' has no initializer and is not definitely assigned in the constructor.
+        \\strictPropertyInitialization.ts(6,5): error TS2564: Property 'c' has no initializer and is not definitely assigned in the constructor.
+        \\strictPropertyInitialization.ts(8,5): error TS2564: Property '#f' has no initializer and is not definitely assigned in the constructor.
+        \\strictPropertyInitialization.ts(10,5): error TS2564: Property '#h' has no initializer and is not definitely assigned in the constructor.
         ,
         .use_exact_errors = true,
         .strict_flags = .{ .strict_property_initialization = true, .strict_null_checks = true },
@@ -6917,11 +6915,33 @@ test "conformance: countLeadingDirectiveLines mirrors upstream baseline strip" {
         \\const x = 1;
     ));
     // Non-directive comment terminates the block; the blank after the
-    // single directive does NOT strip because the comment kept it
+    // ordinary comment does NOT strip because the comment kept it
     // separated.
     try T.expectEqual(@as(u32, 1), countLeadingDirectiveLines(
         \\// @target: es2015
         \\// Check that errors are reported for non-generic types
+        \\
+        \\class C {}
+    ));
+    // A blank between runner directives and the first ordinary comment
+    // strips with the directive metadata. Mirrors decorator and
+    // accessibility modifier exact baselines.
+    try T.expectEqual(@as(u32, 3), countLeadingDirectiveLines(
+        \\// @target: es2015
+        \\// @experimentalDecorators: true
+        \\
+        \\// ordinary comment
+        \\class C {}
+    ));
+    // Blanks after that ordinary comment remain visible content.
+    // Mirrors `strictPropertyInitialization.ts`: 3 directives + the
+    // blank before the banner strip, but the banner/comment gap stays.
+    try T.expectEqual(@as(u32, 4), countLeadingDirectiveLines(
+        \\// @strict: true
+        \\// @target: es2015
+        \\// @declaration: true
+        \\
+        \\// ordinary comment
         \\
         \\class C {}
     ));
