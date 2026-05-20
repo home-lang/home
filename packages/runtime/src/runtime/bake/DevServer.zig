@@ -13,6 +13,76 @@ pub const HmrSocket = @import("DevServer/HmrSocket.zig").HmrSocket;
 pub const RouteBundle = @import("DevServer/RouteBundle.zig").RouteBundle;
 pub const SourceMapStore = @import("DevServer/SourceMapStore.zig").SourceMapStore;
 
+pub const MessageId = enum(u8) {
+    version = 'V',
+    hot_update = 'u',
+    errors = 'e',
+    browser_message = 'b',
+    browser_message_clear = 'B',
+    request_handler_error = 'h',
+    visualizer = 'v',
+    memory_visualizer = 'M',
+    set_url_response = 'n',
+    testing_watch_synchronization = 'r',
+
+    pub inline fn char(id: MessageId) u8 {
+        return @intFromEnum(id);
+    }
+};
+
+pub const IncomingMessageId = enum(u8) {
+    init = 'i',
+    subscribe = 's',
+    set_url = 'n',
+    testing_batch_events = 'H',
+    console_log = 'l',
+    unref_source_map = 'u',
+
+    pub fn fromChar(char: u8) ?IncomingMessageId {
+        return switch (char) {
+            'i' => .init,
+            's' => .subscribe,
+            'n' => .set_url,
+            'H' => .testing_batch_events,
+            'l' => .console_log,
+            'u' => .unref_source_map,
+            else => null,
+        };
+    }
+};
+
+pub const HmrTopic = enum(u8) {
+    hot_update = 'h',
+    errors = 'e',
+    browser_error = 'E',
+    incremental_visualizer = 'v',
+    memory_visualizer = 'M',
+    testing_watch_synchronization = 'r',
+
+    pub const max_count = 6;
+
+    pub const Bits = packed struct {
+        hot_update: bool = false,
+        errors: bool = false,
+        browser_error: bool = false,
+        incremental_visualizer: bool = false,
+        memory_visualizer: bool = false,
+        testing_watch_synchronization: bool = false,
+    };
+
+    pub fn fromChar(char: u8) ?HmrTopic {
+        return switch (char) {
+            'h' => .hot_update,
+            'e' => .errors,
+            'E' => .browser_error,
+            'v' => .incremental_visualizer,
+            'M' => .memory_visualizer,
+            'r' => .testing_watch_synchronization,
+            else => null,
+        };
+    }
+};
+
 pub var dev_server_deinit_count_for_testing: usize = 0;
 
 pub fn resetDeinitCountForTesting() void {
@@ -26,12 +96,20 @@ pub fn getDeinitCountForTesting() usize {
 pub const DevServer = struct {
     allocator: std.mem.Allocator,
     route_bundles: std.ArrayList(RouteBundle) = .empty,
+    route_patterns: std.StringHashMap(RouteBundle.Index),
     source_maps: SourceMapStore,
     active_websocket_connections: std.AutoHashMap(*HmrSocket, void),
+    configuration_hash_key: [16]u8 = .{
+        '0', '0', '0', '0',
+        '0', '0', '0', '0',
+        '0', '0', '0', '0',
+        '0', '0', '0', '0',
+    },
 
     pub fn init(allocator: std.mem.Allocator) DevServer {
         return .{
             .allocator = allocator,
+            .route_patterns = std.StringHashMap(RouteBundle.Index).init(allocator),
             .source_maps = SourceMapStore.init(allocator),
             .active_websocket_connections = std.AutoHashMap(*HmrSocket, void).init(allocator),
         };
@@ -55,13 +133,36 @@ pub const DevServer = struct {
         std.debug.assert(this.active_websocket_connections.count() == 0);
         this.active_websocket_connections.deinit();
         this.source_maps.deinit();
+        var pattern_keys = this.route_patterns.keyIterator();
+        while (pattern_keys.next()) |key| this.allocator.free(key.*);
+        this.route_patterns.deinit();
         this.route_bundles.deinit(this.allocator);
+    }
+
+    pub fn setConfigurationHashKey(this: *DevServer, key: [16]u8) void {
+        this.configuration_hash_key = key;
     }
 
     pub fn addRouteBundle(this: *DevServer, route_bundle: RouteBundle) !RouteBundle.Index {
         const index = RouteBundle.Index.fromInt(@intCast(this.route_bundles.items.len));
         try this.route_bundles.append(this.allocator, route_bundle);
         return index;
+    }
+
+    pub fn registerRoutePattern(this: *DevServer, pattern: []const u8, route_bundle: RouteBundle) !RouteBundle.Index {
+        if (this.route_patterns.get(pattern)) |existing| return existing;
+
+        const index = try this.addRouteBundle(route_bundle);
+        errdefer _ = this.route_bundles.pop();
+
+        const owned_pattern = try this.allocator.dupe(u8, pattern);
+        errdefer this.allocator.free(owned_pattern);
+        try this.route_patterns.put(owned_pattern, index);
+        return index;
+    }
+
+    pub fn routeToBundleIndexSlow(this: *DevServer, pattern: []const u8) ?RouteBundle.Index {
+        return this.route_patterns.get(pattern);
     }
 
     pub fn routeBundlePtr(this: *DevServer, index: RouteBundle.Index) *RouteBundle {
@@ -109,4 +210,24 @@ test "DevServer.deinit snapshots HMR sockets before close mutates the map" {
     try std.testing.expect(first.closed);
     try std.testing.expect(second.closed);
     try std.testing.expectEqual(@as(usize, 1), getDeinitCountForTesting());
+}
+
+test "DevServer route pattern lookup returns registered bundle index" {
+    var dev = DevServer.init(std.testing.allocator);
+    defer dev.deinit();
+
+    const index = try dev.registerRoutePattern("/", .{});
+    try std.testing.expectEqual(index, dev.routeToBundleIndexSlow("/").?);
+    try std.testing.expectEqual(index, try dev.registerRoutePattern("/", .{}));
+    try std.testing.expectEqual(@as(usize, 1), dev.route_bundles.items.len);
+    try std.testing.expect(dev.routeToBundleIndexSlow("/missing") == null);
+}
+
+test "DevServer HMR protocol ids match Bun wire bytes" {
+    try std.testing.expectEqual(@as(u8, 'V'), MessageId.version.char());
+    try std.testing.expectEqual(@as(u8, 'n'), MessageId.set_url_response.char());
+    try std.testing.expectEqual(IncomingMessageId.subscribe, IncomingMessageId.fromChar('s').?);
+    try std.testing.expectEqual(IncomingMessageId.set_url, IncomingMessageId.fromChar('n').?);
+    try std.testing.expectEqual(HmrTopic.hot_update, HmrTopic.fromChar('h').?);
+    try std.testing.expectEqual(HmrTopic.errors, HmrTopic.fromChar('e').?);
 }

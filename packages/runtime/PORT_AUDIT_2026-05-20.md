@@ -87,18 +87,22 @@ Wave-19 through wave-23 dropped Tier-0 / Tier-1 leaves across:
   `serve.static.define` propagation carrier that copies define maps into
   client/server/ssr Bake bundler options and preserves Bun's
   `import.meta.env.*` define strings.
-- `runtime/bake/DevServer.zig` — deinit counter plus active-socket
-  snapshot-before-close teardown.
+- `runtime/bake/DevServer.zig` — deinit counter, Bun HMR wire-message
+  ids, route-pattern lookup, configuration hash payload storage, and
+  active-socket snapshot-before-close teardown.
 - `runtime/bake/DevServer/HmrSocket.zig` — borrowed parent reference,
-  route viewer release, source-map ref release, active-map removal.
+  opening version payload, `subscribe` / `set_url` client-message
+  handling, route viewer release, source-map ref release, active-map
+  removal.
 - `runtime/bake/DevServer/RouteBundle.zig` — stable route index and
   active-viewer/source-map lifetime fields.
 - `runtime/bake/DevServer/SourceMapStore.zig` — source-map refcount and
   weak-ref upgrade/remove semantics.
 
 This is not yet the JS-visible `Bun.serve`/Bake API; it preserves the Bun
-teardown invariants needed by `bake/deinitialization.test.ts` before the
-full DevServer graph is connected.
+teardown invariants needed by `bake/deinitialization.test.ts` and the
+protocol bytes needed by the first `dev-and-prod.test.ts` HMR handshake
+before the full DevServer graph is connected.
 
 ### Phase 12 server — Bake detach lifecycle carrier (1 file)
 

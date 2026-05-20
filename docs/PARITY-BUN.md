@@ -269,7 +269,9 @@ corpus bootstrap runner yet`. The exact `bun:internal-for-testing`,
 `bun:jsc`, and fixture HTML imports are lowered. The Zig-side Bake
 DevServer/HmrSocket lifetime carrier is now present under
 `packages/runtime/src/runtime/bake/` with deinit counter, route-viewer,
-source-map ref, and active-websocket teardown tests. The
+source-map ref, active-websocket teardown tests, Bun's HMR wire-message
+ids, the opening `V` + configuration-hash payload, `subscribe`
+topic-state handling, and `set_url` route-index responses. The
 `bun:internal-for-testing` getter is connected to that real native
 counter through the JSC bootstrap. The narrow Bake deinitialization
 fixture path now wires JS-visible `Bun.serve`, `fetch`, timers, and HMR
