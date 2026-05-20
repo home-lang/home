@@ -19,7 +19,7 @@ macOS, Linux, and the WASM target.
   `assert` CommonJS smokes, three Node `path` smokes, two Node `url` smokes, the Web
   `atob`/`btoa` smoke, twenty-one regression smokes, one bundler
   constant-fold smoke, one bun-types `test.each` type-shape smoke, six test-runner expectation smokes, one nested-describe
-  smoke, `Bun.stripANSI`, `Bun.wrapAnsi`, `Bun.semver.satisfies`, and
+  smoke, a narrow `Bun.TOML.parse` throw smoke, `Bun.stripANSI`, `Bun.wrapAnsi`, `Bun.semver.satisfies`, and
   `bun:internal-for-testing` regexp / PowerShell escaping smokes, retry/repeats runner
   behavior, `test.concurrent.each`, `expect().pass`, a narrow `mock.clearAllMocks` /
   `toHaveBeenCalledTimes` smoke, a narrow `jest.fn` / `HTMLRewriter`

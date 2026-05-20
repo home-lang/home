@@ -111,6 +111,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/url/url-canParse-whatwg.test.js",
     "js/node/url/url-format-invalid-input.test.js",
     "integration/bun-types/fixture/23347.test.ts",
+    "js/bun/resolve/toml/toml-parse.test.ts",
 };
 
 const harness_prelude =
@@ -242,6 +243,12 @@ const harness_prelude =
     \\      for (const chunk of lineChunks) chunks.push(chunk);
     \\    }
     \\    return joinChunks(chunks);
+    \\  },
+    \\  TOML: {
+    \\    parse(value) {
+    \\      if (typeof value !== "string") throw new TypeError("Bun.TOML.parse expects a string");
+    \\      __home_unsupported("Only Bun.TOML.parse non-string input errors are supported by this bootstrap path");
+    \\    },
     \\  },
     \\  semver: {
     \\    satisfies(version, range) {
@@ -2203,6 +2210,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/node/url/url-canParse-whatwg.test.js", filesForSubset(.minimal_js)[57]);
     try std.testing.expectEqualStrings("js/node/url/url-format-invalid-input.test.js", filesForSubset(.minimal_js)[58]);
     try std.testing.expectEqualStrings("integration/bun-types/fixture/23347.test.ts", filesForSubset(.minimal_js)[59]);
+    try std.testing.expectEqualStrings("js/bun/resolve/toml/toml-parse.test.ts", filesForSubset(.minimal_js)[60]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -2210,6 +2218,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_is_thenable(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "stripANSI(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapAnsi(value, columns, options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "TOML: {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Bun.TOML.parse expects a string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "satisfies(version, range)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "inspect(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Set(\" + entry.size + \")") != null);
@@ -2845,6 +2855,31 @@ test "bootstrap runner covers Bun semver satisfies comparator lists" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/08040.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers Bun TOML parse non-string errors" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("Bun.TOML.parse with non-string input throws", () => {
+        \\  expect(() => Bun.TOML.parse(SharedArrayBuffer)).toThrow();
+        \\  expect(() => Bun.TOML.parse(undefined)).toThrow();
+        \\  expect(() => Bun.TOML.parse(null)).toThrow();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/toml/toml-parse.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
