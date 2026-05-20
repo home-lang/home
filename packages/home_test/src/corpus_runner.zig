@@ -181,6 +181,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/failure-skip.fixture.ts",
     "js/bun/test/test-fixture-preload-global-lifecycle-hook-test.js",
     "js/bun/test/skip-test-fixture.js",
+    "js/bun/test/expect-type-doctest.test.ts",
 };
 
 const harness_prelude =
@@ -1224,11 +1225,18 @@ const harness_prelude =
     \\  return __home_make_expectation(value, false);
     \\}
     \\function expectTypeOf(value) {
-    \\  return {
-    \\    toMatchObjectType() {
-    \\      return undefined;
-    \\    },
+    \\  const chain = {
+    \\    toMatchObjectType() { return chain; },
+    \\    toEqualTypeOf() { return chain; },
+    \\    toBeNumber() { return chain; },
+    \\    toBeString() { return chain; },
+    \\    toBeFunction() { return chain; },
     \\  };
+    \\  Object.defineProperty(chain, "parameters", { get() { return chain; } });
+    \\  Object.defineProperty(chain, "returns", { get() { return chain; } });
+    \\  Object.defineProperty(chain, "items", { get() { return chain; } });
+    \\  Object.defineProperty(chain, "resolves", { get() { return chain; } });
+    \\  return chain;
     \\}
     \\expect.unreachable = function(reason) {
     \\  if (reason === undefined || reason === null || typeof reason === "string") {
@@ -2918,6 +2926,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": any[] =", .replacement = " =" },
         .{ .needle = ": any =", .replacement = " =" },
         .{ .needle = ": number =", .replacement = " =" },
+        .{ .needle = ": string {", .replacement = " {" },
         .{ .needle = ": number)", .replacement = ")" },
         .{ .needle = ": string)", .replacement = ")" },
         .{ .needle = ": string)=>", .replacement = ")=>" },
@@ -2935,6 +2944,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": Array<[any, (event: any) => string]>", .replacement = "" },
         .{ .needle = "<{ a: number }>", .replacement = "" },
         .{ .needle = "<{ a: 1 }>", .replacement = "" },
+        .{ .needle = "<[string]>", .replacement = "" },
+        .{ .needle = "<string>", .replacement = "" },
         .{ .needle = " as unknown", .replacement = "" },
         .{ .needle = " as (err?: unknown) => void", .replacement = "" },
         .{ .needle = " as string[][]", .replacement = "" },
@@ -3108,6 +3119,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .needle = "import { createDenoTest } from \"deno:harness\";",
             .replacement = "const { createDenoTest } = globalThis.__home_import(\"deno:harness\");",
         },
+        .{
+            .needle = "import { expectTypeOf } from \"bun:test\";",
+            .replacement = "const { expectTypeOf } = globalThis.__home_import(\"bun:test\");",
+        },
     };
 
     var cursor: usize = 0;
@@ -3255,7 +3270,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
 
 pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) !runner.PreparedFile {
     const rewritten = try rewriteBunTestImport(allocator, source, relative_path);
-    const allow_no_tests = std.mem.eql(u8, relative_path, "js/bun/empty-file.test.ts");
+    const allow_no_tests = std.mem.eql(u8, relative_path, "js/bun/empty-file.test.ts") or
+        std.mem.eql(u8, relative_path, "js/bun/test/expect-type-doctest.test.ts");
     if (hasBunTestImport(rewritten)) {
         return .{
             .path = relative_path,
@@ -3686,6 +3702,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/test/failure-skip.fixture.ts",
         "js/bun/test/test-fixture-preload-global-lifecycle-hook-test.js",
         "js/bun/test/skip-test-fixture.js",
+        "js/bun/test/expect-type-doctest.test.ts",
     };
 
     for (expected) |path| {
@@ -4169,6 +4186,35 @@ test "bootstrap runner allows admitted module-load smokes with no registered tes
     try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner allows expectTypeOf doctest as type-only smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expectTypeOf } from "bun:test";
+        \\expectTypeOf<string>().toEqualTypeOf<string>();
+        \\expectTypeOf(123).toBeNumber();
+        \\function greet(name: string): string {
+        \\  return `Hello ${name}`;
+        \\}
+        \\expectTypeOf(greet).parameters.toEqualTypeOf<[string]>();
+        \\expectTypeOf(greet).returns.toEqualTypeOf<string>();
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/expect-type-doctest.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.fileSpec().allow_no_tests);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
 }
 
 test "bootstrap runner covers expectTypeOf type-only smokes" {

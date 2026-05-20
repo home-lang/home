@@ -137,6 +137,7 @@ deferred `test.only` filtering for synchronous fixtures,
 concurrent / failure-skip / preload lifecycle fixture smokes,
 conditional skip / `test.if` fixture behavior,
 todo-only fixture registration,
+type-only `expectTypeOf` doctest module loading,
 `node:path` / `path` join and posix/win32 identity smokes,
 isAbsolute / normalize / resolve / relative empty-string smokes,
 basename / extname / normalize / join / dirname / parse / format / resolve path
