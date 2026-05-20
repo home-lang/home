@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const build_options = @import("build_options");
+const corpus = @import("corpus.zig");
 const jsc_bootstrap = @import("adapters/jsc_bootstrap.zig");
 const runner = @import("runner.zig");
 const test_result = @import("result.zig");
@@ -27,17 +28,23 @@ pub const Summary = struct {
     passed: usize = 0,
     failed: usize = 0,
     todo: usize = 0,
+    unsupported: usize = 0,
     blocked: bool = false,
     reason: []const u8 = "",
     first_failure_file: []const u8 = "",
+    first_failure_file_owned: bool = false,
     first_failure_message: []const u8 = "",
     first_failure_message_owned: bool = false,
 
     pub fn deinit(self: *Summary, allocator: std.mem.Allocator) void {
+        if (self.first_failure_file_owned) {
+            allocator.free(self.first_failure_file);
+        }
         if (self.first_failure_message_owned) {
             allocator.free(self.first_failure_message);
         }
         self.first_failure_file = "";
+        self.first_failure_file_owned = false;
         self.first_failure_message = "";
         self.first_failure_message_owned = false;
     }
@@ -47,6 +54,7 @@ pub const Summary = struct {
         self.passed += file.passed;
         self.failed += file.failed + file.unsupported;
         self.todo += file.todo;
+        self.unsupported += file.unsupported;
     }
 };
 
@@ -3270,35 +3278,68 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
     defer runtime.deinit();
 
     var summary = Summary{};
-    for (filesForSubset(subset)) |relative| {
-        var file_result = test_result.FileResult{ .path = relative };
-        const file_path = try std.fs.path.join(allocator, &.{ corpus_path, relative });
-        defer allocator.free(file_path);
-
-        const source = try Io.Dir.cwd().readFileAlloc(io, file_path, allocator, std.Io.Limit.limited(1024 * 1024));
-        defer allocator.free(source);
-
-        var prepared = try prepareCorpusModule(allocator, source, relative);
-        defer prepared.deinit(allocator);
-
-        if (prepared.unsupported_reason) |reason| {
-            file_result.unsupported += 1;
-            summary.addFileResult(file_result);
-            try recordFailure(allocator, &summary, relative, reason);
-            continue;
-        }
-
-        var file_run = try runtime.runFile(allocator, prepared.fileSpec());
-        defer file_run.deinit(allocator);
-
-        summary.addFileResult(file_run.result);
-        switch (file_run.result.status()) {
-            .failed, .unsupported => try recordFailure(allocator, &summary, relative, file_run.result.first_failure_message),
-            .passed, .todo => {},
-        }
-    }
+    for (filesForSubset(subset)) |relative| try runRelativeFile(io, allocator, &runtime, corpus_path, relative, &summary);
 
     return summary;
+}
+
+pub fn runGate(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8) !Summary {
+    const test_files = corpus.collectTestFiles(io, allocator, corpus_path) catch |err| switch (err) {
+        error.FileNotFound => return .{ .blocked = true, .reason = "corpus-not-found" },
+        else => return err,
+    };
+    defer corpus.freeTestFiles(allocator, test_files);
+
+    if (!build_options.enable_jsc) {
+        return .{
+            .files = test_files.len,
+            .blocked = true,
+            .reason = "jsc-disabled",
+        };
+    }
+
+    var runtime = try jsc_bootstrap.Runtime.init(allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var summary = Summary{};
+    for (test_files) |relative| try runRelativeFile(io, allocator, &runtime, corpus_path, relative, &summary);
+
+    return summary;
+}
+
+fn runRelativeFile(
+    io: Io,
+    allocator: std.mem.Allocator,
+    runtime: *jsc_bootstrap.Runtime,
+    corpus_path: []const u8,
+    relative: []const u8,
+    summary: *Summary,
+) !void {
+    var file_result = test_result.FileResult{ .path = relative };
+    const file_path = try std.fs.path.join(allocator, &.{ corpus_path, relative });
+    defer allocator.free(file_path);
+
+    const source = try Io.Dir.cwd().readFileAlloc(io, file_path, allocator, std.Io.Limit.limited(1024 * 1024));
+    defer allocator.free(source);
+
+    var prepared = try prepareCorpusModule(allocator, source, relative);
+    defer prepared.deinit(allocator);
+
+    if (prepared.unsupported_reason) |reason| {
+        file_result.unsupported += 1;
+        summary.addFileResult(file_result);
+        try recordFailure(allocator, summary, relative, reason);
+        return;
+    }
+
+    var file_run = try runtime.runFile(allocator, prepared.fileSpec());
+    defer file_run.deinit(allocator);
+
+    summary.addFileResult(file_run.result);
+    switch (file_run.result.status()) {
+        .failed, .unsupported => try recordFailure(allocator, summary, relative, file_run.result.first_failure_message),
+        .passed, .todo => {},
+    }
 }
 
 fn recordFailure(
@@ -3309,7 +3350,8 @@ fn recordFailure(
 ) !void {
     if (summary.first_failure_file.len != 0) return;
 
-    summary.first_failure_file = relative;
+    summary.first_failure_file = try allocator.dupe(u8, relative);
+    summary.first_failure_file_owned = true;
     if (message) |text| {
         summary.first_failure_message = try allocator.dupe(u8, text);
         summary.first_failure_message_owned = true;
@@ -5130,6 +5172,7 @@ test "Bun test import rewrite preserves shebangs" {
 
 test "failure recorder keeps the first failing file" {
     var summary = Summary{};
+    defer summary.deinit(std.testing.allocator);
     try recordFailure(std.testing.allocator, &summary, "first.test.js", null);
     try recordFailure(std.testing.allocator, &summary, "second.test.js", null);
 

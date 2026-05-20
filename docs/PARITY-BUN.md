@@ -226,6 +226,14 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
+The unfiltered command `home test packages/runtime/test/bun-corpus` now
+uses the same Home-native JSC bootstrap instead of the retired
+`native-js-test-runner-missing` placeholder. It currently executes all
+4,013 discovered Bun test files and fails on the first real unsupported
+surface (`bake/deinitialization.test.ts`, unsupported module syntax), so
+the gate is measurable but still red until those unsupported surfaces
+are ported.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

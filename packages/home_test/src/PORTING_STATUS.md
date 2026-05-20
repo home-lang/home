@@ -22,8 +22,11 @@ file/run result model; `runner.zig` owns the adapter-neutral
 prepared-file and file-run contracts; `adapters/jsc_bootstrap.zig` owns
 the current JSC bootstrap execution adapter; `corpus_runner.zig` owns the
 explicit `--bun-corpus-native-subset=minimal-js` allowlist, source
-preparation, and summary aggregation. The full runner remains blocked on
-the native `bun:test` port and JSC host-call bridge.
+preparation, and summary aggregation. The full corpus gate now walks all
+discovered Bun test files through the Home JSC bootstrap and fails on
+real unsupported/failing files instead of the old synthetic
+`native-js-test-runner-missing` blocker; it remains red until the native
+`bun:test` port and JSC host-call bridge close the unsupported surface.
 
 `zig build test -Dfilter=home_test_bun_tier0` now build-checks the first
 copied Bun Zig tier under pantry-provided Zig 0.17-dev:

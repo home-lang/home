@@ -2100,7 +2100,7 @@ fn printTestUsage() void {
         \\
         \\{s}Bun Corpus Bootstrap:{s}
         \\  home test packages/runtime/test/bun-corpus
-        \\                                  Full corpus gate; intentionally blocked until 100% native parity
+        \\                                  Run the full native corpus gate; fails until 100% native parity
         \\  home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js
         \\                                  Run the current allowlisted native JSC smoke subset
         \\
@@ -3046,18 +3046,50 @@ fn runBunCorpusNativeGate(allocator: std.mem.Allocator, corpus_path: []const u8)
     const sha = Io.Dir.cwd().readFileAlloc(g_io, sha_path, allocator, std.Io.Limit.limited(256)) catch "unknown";
     defer if (!std.mem.eql(u8, sha, "unknown")) allocator.free(sha);
 
-    std.debug.print("\n{s}Bun Corpus Native Gate: BLOCKED{s}\n", .{ Color.Yellow.code(), Color.Reset.code() });
+    var summary = try home_test.corpus_runner.runGate(g_io, allocator, corpus_path);
+    defer summary.deinit(allocator);
+
+    if (summary.blocked) {
+        std.debug.print("\n{s}Bun Corpus Native Gate: BLOCKED{s}\n", .{ Color.Yellow.code(), Color.Reset.code() });
+        std.debug.print("{s}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
+        std.debug.print("path: {s}\n", .{corpus_path});
+        std.debug.print("upstream: {s}\n", .{std.mem.trim(u8, sha, " \t\r\n")});
+        std.debug.print("corpus files discovered: {d}\n", .{counts.files});
+        std.debug.print("test files discovered: {d}\n", .{counts.tests});
+        std.debug.print("runner package: packages/home_test\n", .{});
+        std.debug.print("reason: {s}\n\n", .{summary.reason});
+        std.debug.print("Build `home` with `./pantry/.bin/zig build -Denable_jsc=true` to execute the native Bun corpus gate.\n\n", .{});
+        std.process.exit(1);
+    }
+
+    const tests_observed = summary.passed + summary.failed + summary.todo;
+    const failed = summary.failed != 0 or summary.files == 0 or tests_observed == 0;
+    std.debug.print("\n{s}Bun Corpus Native Gate: {s}{s}\n", .{
+        if (!failed) Color.Green.code() else Color.Red.code(),
+        if (!failed) "PASS" else "FAIL",
+        Color.Reset.code(),
+    });
     std.debug.print("{s}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
     std.debug.print("path: {s}\n", .{corpus_path});
     std.debug.print("upstream: {s}\n", .{std.mem.trim(u8, sha, " \t\r\n")});
     std.debug.print("corpus files discovered: {d}\n", .{counts.files});
     std.debug.print("test files discovered: {d}\n", .{counts.tests});
     std.debug.print("runner package: packages/home_test\n", .{});
-    std.debug.print("reason: native-js-test-runner-missing\n\n", .{});
-    std.debug.print("This gate intentionally fails until Phase 12.2 (JSC JS-callable bridge)\n", .{});
-    std.debug.print("and Phase 12.8 (Bun test runner port) replace system-Bun delegation.\n", .{});
+    std.debug.print("files executed: {d}\n", .{summary.files});
+    std.debug.print("tests passed: {d}\n", .{summary.passed});
+    std.debug.print("tests failed: {d}\n", .{summary.failed});
+    std.debug.print("tests unsupported: {d}\n", .{summary.unsupported});
+    std.debug.print("tests todo: {d}\n\n", .{summary.todo});
+    if (summary.first_failure_file.len != 0) {
+        std.debug.print("first failure: {s}\n", .{summary.first_failure_file});
+        std.debug.print("message: {s}\n\n", .{summary.first_failure_message});
+    }
+    if (tests_observed == 0) {
+        std.debug.print("reason: no-tests-observed\n\n", .{});
+    }
     std.debug.print("A delegated `bun test` result is not accepted as Home runtime parity.\n\n", .{});
-    std.process.exit(1);
+
+    if (failed) std.process.exit(1);
 }
 
 fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
