@@ -144,6 +144,8 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/util/concat.test.js",
     "js/bun/util/escapeHTML.test.js",
     "js/node/url/url-revokeobjecturl.test.js",
+    "js/node/url/url-null-char.test.js",
+    "js/node/url/url-is-url.test.js",
 };
 
 const harness_prelude =
@@ -808,6 +810,7 @@ const harness_prelude =
     \\};
     \\function test(name, first, second) { return it(name, first, second); }
     \\test.todo = it.todo;
+    \\test.skip = it.todo;
     \\test.failing = it.failing;
     \\test.concurrent = test;
     \\function __home_each(rows) {
@@ -1365,6 +1368,9 @@ const harness_prelude =
     \\    if (typeof value === "string") return value;
     \\    if (value && typeof value === "object" && Object.keys(value).length === 0) return "";
     \\    throw new TypeError('The "urlObject" argument must be one of type object or string.');
+    \\  },
+    \\  parse(value) {
+    \\    __home_unsupported("node:url.parse is only present for skipped bootstrap tests");
     \\  },
     \\};
     \\__home_url_module.default = __home_url_module;
@@ -2447,6 +2453,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { URL } = globalThis.__home_import(\"node:url\");",
         },
         .{
+            .needle = "import { URL, parse } from \"node:url\";",
+            .replacement = "const { URL, parse } = globalThis.__home_import(\"node:url\");",
+        },
+        .{
             .needle = "import url from \"node:url\";",
             .replacement = "const url = globalThis.__home_import(\"node:url\");",
         },
@@ -2915,6 +2925,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "AbortSignal.abort = function(reason)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var URLSearchParams = function(init)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.todo = function(name, fn)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.skip = it.todo") != null);
 }
 
 test "Bun test import rewrite lowers to the virtual test module" {
@@ -2961,6 +2972,8 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/util/concat.test.js",
         "js/bun/util/escapeHTML.test.js",
         "js/node/url/url-revokeobjecturl.test.js",
+        "js/node/url/url-null-char.test.js",
+        "js/node/url/url-is-url.test.js",
     };
 
     for (expected) |path| {

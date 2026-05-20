@@ -75,7 +75,7 @@ rejection, `test.concurrent`, `test.each`, `.not`, `toBe`, `toBeDefined`,
 `toBeUndefined`, `toBeTruthy`, `toBeNumber`, `toBeTypeOf`,
 `toBeInstanceOf`, `toMatchObject`, object-form error matching in
 `toThrow`, small `toEqual` / `toStrictEqual` deep equality including
-`Map` / `Set` / byte-wise ArrayBuffer and typed arrays, `expect.any`, `expect.unreachable`, `describe.todo`, a small
+`Map` / `Set` / byte-wise ArrayBuffer and typed arrays, `expect.any`, `expect.unreachable`, `describe.todo`, `test.skip`, a small
 `expect.extend` asymmetric matcher path, `toIncludeRepeated`,
 `toContainKey`, `toContainKeys`, `toContainAnyKeys`, `atob` / `btoa`,
 `Bun` branding plus `Bun.version`, `Bun.revision`, `Bun.stripANSI`,
@@ -93,6 +93,7 @@ relative CJS fixture require for `regression/issue/013880-fixture.cjs`,
 isAbsolute / normalize / resolve / relative empty-string smokes,
 `node:url` URL.canParse, url.format empty-input, and
 domainToASCII/domainToUnicode smokes,
+skipped Node URL null-character / internal URL smokes,
 `import.meta.resolve` / `resolveSync` bad-parent throw smokes,
 `jest.fn`, narrow `HTMLRewriter` element and doctype callbacks plus
 selector / handler validation,
