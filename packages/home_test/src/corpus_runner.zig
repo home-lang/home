@@ -138,6 +138,9 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/htmlrewriter-additional-bugs.test.ts",
     "regression/issue/24191.test.ts",
     "js/bun/resolve/resolve-bad-parent.test.mjs",
+    "regression/issue/issue-1825-jest-mock-functions.test.ts",
+    "js/node/path/is-absolute.test.js",
+    "js/node/path/zero-length-strings.test.js",
 };
 
 const harness_prelude =
@@ -498,6 +501,9 @@ const harness_prelude =
     \\  for (const listener of listeners.slice()) listener.apply(process, args);
     \\  return true;
     \\};
+    \\process.cwd = function() {
+    \\  return "/";
+    \\};
     \\globalThis.process = process;
     \\if (typeof structuredClone !== "function") {
     \\  var structuredClone = function(value) {
@@ -843,15 +849,20 @@ const harness_prelude =
     \\  };
     \\  wrapped.__home_is_mock = true;
     \\  wrapped.mock = { calls: [] };
+    \\  wrapped.mockReturnThis = function() {
+    \\    return wrapped;
+    \\  };
     \\  globalThis.__home_mocks.push(wrapped);
     \\  return wrapped;
     \\}
     \\mock.clearAllMocks = function() {
     \\  for (const fn of globalThis.__home_mocks) fn.mock.calls = [];
     \\};
+    \\mock.resetAllMocks = mock.clearAllMocks;
     \\const jest = {
     \\  __home_is_jest_object: true,
     \\  fn: mock,
+    \\  resetAllMocks: mock.resetAllMocks,
     \\  mock(moduleName, factory) {
     \\    if (typeof moduleName !== "string") throw new TypeError("jest.mock() module name must be a string");
     \\    if (typeof factory !== "function") throw new TypeError("jest.mock() requires a factory callback");
@@ -1136,11 +1147,30 @@ const harness_prelude =
     \\  if (regexp instanceof RegExp && regexp.test(value)) throw new Error(message || "The input was expected to not match");
     \\};
     \\function __home_path_join() {
-    \\  return Array.prototype.slice.call(arguments).filter(part => String(part).length > 0).join("/");
+    \\  const joined = Array.prototype.slice.call(arguments).filter(part => String(part).length > 0).join("/");
+    \\  return joined.length === 0 ? "." : joined;
     \\}
-    \\const __home_path_posix = { join: __home_path_join };
-    \\const __home_path_win32 = { join: __home_path_join };
-    \\const __home_path_module = { join: __home_path_join, posix: __home_path_posix, win32: __home_path_win32 };
+    \\function __home_path_posix_is_absolute(value) {
+    \\  return String(value).startsWith("/");
+    \\}
+    \\function __home_path_win32_is_absolute(value) {
+    \\  const text = String(value);
+    \\  return text.startsWith("/") || text.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(text);
+    \\}
+    \\function __home_path_normalize(value) {
+    \\  const text = String(value);
+    \\  return text.length === 0 ? "." : text;
+    \\}
+    \\function __home_path_resolve() {
+    \\  const parts = Array.prototype.slice.call(arguments).filter(part => String(part).length > 0);
+    \\  return parts.length === 0 ? process.cwd() : String(parts[parts.length - 1]);
+    \\}
+    \\function __home_path_relative(from, to) {
+    \\  return __home_path_resolve(from) === __home_path_resolve(to) ? "" : String(to);
+    \\}
+    \\const __home_path_posix = { join: __home_path_join, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_normalize };
+    \\const __home_path_win32 = { join: __home_path_join, isAbsolute: __home_path_win32_is_absolute, normalize: __home_path_normalize };
+    \\const __home_path_module = { join: __home_path_join, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_normalize, resolve: __home_path_resolve, relative: __home_path_relative, posix: __home_path_posix, win32: __home_path_win32 };
     \\globalThis.__home_modules["assert"] = __home_assert_module;
     \\globalThis.__home_modules["node:assert"] = __home_assert_module;
     \\globalThis.__home_modules["path"] = __home_path_module;
@@ -2351,6 +2381,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const path = globalThis.__home_import(\"path\");",
         },
         .{
+            .needle = "import path from \"node:path\";",
+            .replacement = "const path = globalThis.__home_import(\"node:path\");",
+        },
+        .{
             .needle = "import { URL } from \"node:url\";",
             .replacement = "const { URL } = globalThis.__home_import(\"node:url\");",
         },
@@ -2475,6 +2509,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         .{ .line = "import { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, it } from \"bun:test\";", .binding = "const { expect, it } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expectTypeOf, test } from \"bun:test\";", .binding = "const { expectTypeOf, test } = globalThis.__home_import(\"bun:test\");\n" },
+        .{ .line = "import { describe, expect, jest, test } from \"bun:test\";", .binding = "const { describe, expect, jest, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, jest, test } from \"bun:test\";", .binding = "const { expect, jest, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, mock, test } from \"bun:test\";", .binding = "const { expect, mock, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, test } from \"bun:test\";", .binding = "const { expect, test } = globalThis.__home_import(\"bun:test\");\n" },
@@ -2704,6 +2739,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.versions.bun = Bun.version") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.on = function(name, listener)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.emit = function(name)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.cwd = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "pass()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeInstanceOf(ctor)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeInstanceOf() requires 1 argument") != null);
@@ -2728,6 +2764,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function onTestFinished(fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function mock(implementation)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock.clearAllMocks") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock.resetAllMocks") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mockReturnThis") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest.mock() module name must be a string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest.mock() requires a factory callback") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Cannot set both retry and repeats") != null);
@@ -2757,6 +2795,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"assert/strict\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"path\"] = __home_path_module") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"path/posix\"] = __home_path_posix") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_path_win32_is_absolute") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_path_relative") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:url\"] = __home_url_module") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "URL.canParse = function(input, base)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "domainToASCII(value)") != null);
@@ -2844,6 +2884,10 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/test/jest-each.test.ts",
         "regression/issue/htmlrewriter-additional-bugs.test.ts",
         "regression/issue/24191.test.ts",
+        "js/bun/resolve/resolve-bad-parent.test.mjs",
+        "regression/issue/issue-1825-jest-mock-functions.test.ts",
+        "js/node/path/is-absolute.test.js",
+        "js/node/path/zero-length-strings.test.js",
     };
 
     for (expected) |path| {

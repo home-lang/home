@@ -81,6 +81,7 @@ narrow `toMatchInlineSnapshot` object formatting,
 `assert/strict.deepStrictEqual` boxed primitive handling,
 relative CJS fixture require for `regression/issue/013880-fixture.cjs`,
 `node:path` / `path` join and posix/win32 identity smokes,
+isAbsolute / normalize / resolve / relative empty-string smokes,
 `node:url` URL.canParse, url.format empty-input, and
 domainToASCII/domainToUnicode smokes,
 `import.meta.resolve` / `resolveSync` bad-parent throw smokes,
@@ -100,8 +101,9 @@ constructor shims, Web `TextDecoder` CJK and single-byte encoding smokes,
 a primitive/object `structuredClone` fallback for the string atomization
 smoke, `Bun.inspect({ key: Set<string> })`, `Bun.jest(import.meta.path)`
 as an alias to the existing bootstrap `bun:test` facade, `jest.mock`
-argument validation, `expect.extend` matcher validation plus installed
-expectation-object matchers, validation-only `Bun.S3Client.write`
+argument validation, `jest.resetAllMocks`, `mockReturnThis`,
+`expect.extend` matcher validation plus installed expectation-object
+matchers, validation-only `Bun.S3Client.write`
 numeric path errors, validation-only `Bun.Transpiler` invalid UTF-16
 loader errors, and a narrow `ShadowRealm.evaluate` shim. Four sync runner
 fixtures
