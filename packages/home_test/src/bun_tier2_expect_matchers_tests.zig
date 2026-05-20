@@ -25,6 +25,7 @@ const to_be_array = @import("bun/expect/toBeArray.zig");
 const to_be_even = @import("bun/expect/toBeEven.zig");
 const to_be_odd = @import("bun/expect/toBeOdd.zig");
 const to_be_valid_date = @import("bun/expect/toBeValidDate.zig");
+const to_be_empty_object = @import("bun/expect/toBeEmptyObject.zig");
 
 const Expect = bun.jsc.Expect.Expect;
 const JSValue = bun.jsc.JSValue;
@@ -158,6 +159,10 @@ test "copied Bun tagged primitive matchers pass positive cases" {
     var expect_odd = Expect{ .value = .js_odd };
     var odd_frame = frame(.js_odd);
     try std.testing.expectEqual(JSValue.js_undefined, try to_be_odd.toBeOdd(&expect_odd, globalObject(), &odd_frame));
+
+    var expect_empty_object = Expect{ .value = .js_object };
+    var empty_object_frame = frame(.js_object);
+    try std.testing.expectEqual(JSValue.js_object, try to_be_empty_object.toBeEmptyObject(&expect_empty_object, globalObject(), &empty_object_frame));
 }
 
 test "copied Bun numeric matchers honor failure signatures" {
@@ -264,4 +269,14 @@ test "copied Bun tagged primitive matchers honor not flag and failure signatures
     var even_frame = frame(.js_even);
     try std.testing.expectError(error.JSException, to_be_odd.toBeOdd(&expect_odd, globalObject(), &even_frame));
     try std.testing.expectEqualStrings("toBeOdd", expect_odd.last_signature.?);
+
+    var expect_empty_object = Expect{ .value = .js_object, .flags = .{ .not = true } };
+    var empty_object_frame = frame(.js_object);
+    try std.testing.expectError(error.JSException, to_be_empty_object.toBeEmptyObject(&expect_empty_object, globalObject(), &empty_object_frame));
+    try std.testing.expectEqualStrings("not.toBeEmptyObject", expect_empty_object.last_signature.?);
+
+    var expect_non_empty_object = Expect{ .value = .js_non_empty_object };
+    var non_empty_object_frame = frame(.js_non_empty_object);
+    try std.testing.expectError(error.JSException, to_be_empty_object.toBeEmptyObject(&expect_non_empty_object, globalObject(), &non_empty_object_frame));
+    try std.testing.expectEqualStrings("toBeEmptyObject", expect_non_empty_object.last_signature.?);
 }

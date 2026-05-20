@@ -17,6 +17,7 @@ pub const jsc = struct {
             function,
             symbol,
             object,
+            non_empty_object,
             array,
             date,
             null,
@@ -37,6 +38,7 @@ pub const jsc = struct {
         pub const js_function = JSValue{ .tag = .function };
         pub const js_symbol = JSValue{ .tag = .symbol };
         pub const js_object = JSValue{ .tag = .object };
+        pub const js_non_empty_object = JSValue{ .tag = .non_empty_object };
         pub const js_date = JSValue{ .tag = .date };
         pub const js_invalid_date = JSValue{ .tag = .date, .number_value = std.math.nan(f64) };
         pub const js_array = JSValue{ .tag = .array };
@@ -65,7 +67,7 @@ pub const jsc = struct {
         }
 
         pub fn isObject(this: JSValue) bool {
-            return this.tag == .object;
+            return this.tag == .object or this.tag == .non_empty_object;
         }
 
         pub fn isDate(this: JSValue) bool {
@@ -105,6 +107,14 @@ pub const jsc = struct {
             return .{ .tag = this.tag };
         }
 
+        pub fn isObjectEmpty(this: JSValue, _: *JSGlobalObject) JSError!bool {
+            return switch (this.tag) {
+                .object => true,
+                .non_empty_object => false,
+                else => false,
+            };
+        }
+
         pub fn isAnyInt(this: JSValue) bool {
             return this.isNumber() and std.math.isFinite(this.number_value) and @floor(this.number_value) == this.number_value;
         }
@@ -141,6 +151,7 @@ pub const jsc = struct {
                 .function => "[Function]",
                 .symbol => "Symbol()",
                 .object => "{}",
+                .non_empty_object => "{ key: true }",
                 .array => "[]",
                 .date => "Date",
                 .null => "null",
