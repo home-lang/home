@@ -191,7 +191,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes one hundred thirty-three allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes one hundred thirty-four allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-three
@@ -254,8 +254,8 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `133` files, `607` passed, `0` failed,
-`37` todo.
+Latest measured subset run: `134` files, `607` passed, `0` failed,
+`38` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
 uses the same Home-native JSC bootstrap instead of the retired
@@ -1084,6 +1084,14 @@ bootstrap models the inline `InternalSourceMap` stack remapping outcome
 for compiled executables by returning source-frame stderr for
 `util.ts:5` and `ismapp.ts:4`. Native parity still requires Bun's real
 InternalSourceMap embedding and runtime stack-frame remapper.
+
+The copied `bundler/compile-windows-metadata.test.ts` fixture now
+registers faithfully on this non-Windows host as `0` passed, `0` failed,
+`0` unsupported, `1` todo/skipped. The bootstrap lowers its harness,
+`fs.promises`, `node:fs`, and `child_process` imports and honors
+`describe.skipIf(!isWindows).concurrent`; native parity still requires
+Bun's real Windows executable metadata embedding and verification path
+from copied compile source.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

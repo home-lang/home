@@ -200,6 +200,7 @@ pub const minimal_js_files = [_][]const u8{
     "bundler/bun-build-compile-wasm.test.ts",
     "bundler/bun-build-compile.test.ts",
     "bundler/compile-sourcemap-internal.test.ts",
+    "bundler/compile-windows-metadata.test.ts",
 };
 
 const harness_prelude =
@@ -1630,6 +1631,7 @@ const harness_prelude =
     \\  __home_bun_tests.todo++;
     \\};
     \\describe.skip = describe.todo;
+    \\describe.skip.concurrent = describe.skip;
     \\describe.skipIf = function(condition) {
     \\  return condition ? describe.skip : describe;
     \\};
@@ -4571,6 +4573,11 @@ const harness_prelude =
     \\  chmodSync(path, mode) {
     \\    return undefined;
     \\  },
+    \\  promises: {
+    \\    rm(path, options) {
+    \\      return Promise.resolve();
+    \\    },
+    \\  },
     \\  existsSync(path) {
     \\    if (__home_bake_virtual_exists(String(path))) return true;
     \\    return false;
@@ -4579,6 +4586,11 @@ const harness_prelude =
     \\__home_node_fs.default = __home_node_fs;
     \\globalThis.__home_modules["fs"] = __home_node_fs;
     \\globalThis.__home_modules["node:fs"] = __home_node_fs;
+    \\globalThis.__home_modules["child_process"] = {
+    \\  execSync(command, options) {
+    \\    return "";
+    \\  },
+    \\};
     \\function __home_framework_route_result(kind, pattern) {
     \\  return { kind, pattern };
     \\}
@@ -6207,6 +6219,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "(style: string) =>", .replacement = "(style) =>" },
         .{ .needle = "(pattern: string, expected: string, kind: \"page\" | \"layout\" | \"extra\" = \"page\") =>", .replacement = "(pattern, expected, kind = \"page\") =>" },
         .{ .needle = "(sourcemapValue: \"inline\" | \"external\" | true, testName: string)", .replacement = "(sourcemapValue, testName)" },
+        .{ .needle = "cleanup(outfile: string)", .replacement = "cleanup(outfile)" },
         .{ .needle = "(pattern: string, msg: string) =>", .replacement = "(pattern, msg) =>" },
         .{ .needle = "(pattern: string) =>", .replacement = "(pattern) =>" },
         .{ .needle = ": Promise<any>", .replacement = "" },
@@ -6397,6 +6410,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { chmodSync } = globalThis.__home_import(\"node:fs\");",
         },
         .{
+            .needle = "import { promises as fs } from \"fs\";",
+            .replacement = "const fs = globalThis.__home_import(\"fs\").promises;",
+        },
+        .{
+            .needle = "import { execSync } from \"child_process\";",
+            .replacement = "const { execSync } = globalThis.__home_import(\"child_process\");",
+        },
+        .{
             .needle = "import { existsSync } from \"fs\";",
             .replacement = "const { existsSync } = globalThis.__home_import(\"fs\");",
         },
@@ -6555,6 +6576,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { bunEnv, bunExe, isArm64, isLinux, isMacOS, isMusl, isWindows, tempDir } from \"harness\";",
             .replacement = "const { bunEnv, bunExe, isArm64, isLinux, isMacOS, isMusl, isWindows, tempDir } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { bunEnv, bunExe, isWindows, tempDir } from \"harness\";",
+            .replacement = "const { bunEnv, bunExe, isWindows, tempDir } = globalThis.__home_import(\"harness\");",
         },
         .{
             .needle = "import { tempDirWithFiles } from \"harness\";",
