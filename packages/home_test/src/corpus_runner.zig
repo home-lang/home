@@ -100,6 +100,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/deno/event/custom-event.test.ts",
     "js/deno/event/event.test.ts",
     "js/deno/abort/abort-controller.test.ts",
+    "js/deno/fetch/request.test.ts",
     "js/deno/url/urlsearchparams.test.ts",
     "regression/issue/08040.test.ts",
     "regression/issue/09778.test.ts",
@@ -2225,7 +2226,14 @@ const harness_prelude =
     \\  var Headers = function(init) {
     \\    this.__home_headers = {};
     \\    if (init) {
-    \\      for (const key of Object.keys(init)) this.set(key, init[key]);
+    \\      const source = init.__home_headers || init;
+    \\      if (typeof source.forEach === "function") {
+    \\        source.forEach((value, key) => this.set(key, value));
+    \\      } else if (Array.isArray(source)) {
+    \\        for (const pair of source) this.set(pair[0], pair[1]);
+    \\      } else {
+    \\        for (const key of Object.keys(source)) this.set(key, source[key]);
+    \\      }
     \\    }
     \\  };
     \\  Headers.prototype.set = function(name, value) {
@@ -2558,20 +2566,42 @@ const harness_prelude =
     \\    return input instanceof Response ? input : output;
     \\  };
     \\}
-    \\if (typeof Request !== "function") {
+    \\if (typeof Request !== "function" || typeof Request.prototype.text !== "function" || typeof Request.prototype.clone !== "function") {
+    \\  function __home_request_body_text(value) {
+    \\    if (value === null || value === undefined) return "";
+    \\    if (typeof value === "string") return value;
+    \\    if (value && Object.prototype.hasOwnProperty.call(value, "__home_text")) return String(value.__home_text);
+    \\    return String(value);
+    \\  }
+    \\  function __home_request_clone_headers(headers) {
+    \\    return new Headers(headers && headers.__home_headers ? headers.__home_headers : headers);
+    \\  }
     \\  var Request = function(input, init) {
     \\    const options = init || {};
     \\    if (input instanceof Request) {
     \\      this.url = input.url;
     \\      this.cache = input.cache;
     \\      this.mode = input.mode;
+    \\      this.method = input.method;
+    \\      this.headers = __home_request_clone_headers(input.headers);
+    \\      this.__home_text = input.__home_text;
     \\    } else {
     \\      this.url = input && typeof input.href === "string" ? input.href : String(input);
     \\      this.cache = "default";
     \\      this.mode = "cors";
+    \\      this.method = "GET";
+    \\      this.headers = new Headers();
+    \\      this.__home_text = "";
     \\    }
     \\    if (Object.prototype.hasOwnProperty.call(options, "cache")) this.cache = String(options.cache);
     \\    if (Object.prototype.hasOwnProperty.call(options, "mode")) this.mode = String(options.mode);
+    \\    if (options.method !== undefined) this.method = String(options.method).toUpperCase();
+    \\    if (options.headers !== undefined) this.headers = new Headers(options.headers);
+    \\    if (Object.prototype.hasOwnProperty.call(options, "body")) this.__home_text = __home_request_body_text(options.body);
+    \\    this.body = { __home_text: this.__home_text };
+    \\  };
+    \\  Request.prototype.text = function() {
+    \\    return Promise.resolve(this.__home_text);
     \\  };
     \\  Request.prototype.clone = function() {
     \\    return new Request(this);
@@ -4147,32 +4177,33 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/deno/event/custom-event.test.ts", filesForSubset(.minimal_js)[38]);
     try std.testing.expectEqualStrings("js/deno/event/event.test.ts", filesForSubset(.minimal_js)[39]);
     try std.testing.expectEqualStrings("js/deno/abort/abort-controller.test.ts", filesForSubset(.minimal_js)[40]);
-    try std.testing.expectEqualStrings("js/deno/url/urlsearchparams.test.ts", filesForSubset(.minimal_js)[41]);
-    try std.testing.expectEqualStrings("regression/issue/08040.test.ts", filesForSubset(.minimal_js)[42]);
-    try std.testing.expectEqualStrings("regression/issue/09778.test.ts", filesForSubset(.minimal_js)[43]);
-    try std.testing.expectEqualStrings("regression/issue/18820.test.ts", filesForSubset(.minimal_js)[44]);
-    try std.testing.expectEqualStrings("regression/issue/23382.test.js", filesForSubset(.minimal_js)[45]);
-    try std.testing.expectEqualStrings("js/bun/util/escapeRegExp.test.ts", filesForSubset(.minimal_js)[46]);
-    try std.testing.expectEqualStrings("regression/issue/24045.test.ts", filesForSubset(.minimal_js)[47]);
-    try std.testing.expectEqualStrings("regression/issue/07324.test.ts", filesForSubset(.minimal_js)[48]);
-    try std.testing.expectEqualStrings("regression/issue/07827.test.ts", filesForSubset(.minimal_js)[49]);
-    try std.testing.expectEqualStrings("internal/powershell-escape.test.ts", filesForSubset(.minimal_js)[50]);
-    try std.testing.expectEqualStrings("js/node/assert/assert.test.cjs", filesForSubset(.minimal_js)[51]);
-    try std.testing.expectEqualStrings("js/node/assert/assert-match.test.cjs", filesForSubset(.minimal_js)[52]);
-    try std.testing.expectEqualStrings("js/node/assert/assert-doesNotMatch.test.cjs", filesForSubset(.minimal_js)[53]);
-    try std.testing.expectEqualStrings("js/node/path/posix-exists.test.js", filesForSubset(.minimal_js)[54]);
-    try std.testing.expectEqualStrings("js/node/path/win32-exists.test.js", filesForSubset(.minimal_js)[55]);
-    try std.testing.expectEqualStrings("js/node/path/15704.test.js", filesForSubset(.minimal_js)[56]);
-    try std.testing.expectEqualStrings("js/node/url/url-canParse-whatwg.test.js", filesForSubset(.minimal_js)[57]);
-    try std.testing.expectEqualStrings("js/node/url/url-format-invalid-input.test.js", filesForSubset(.minimal_js)[58]);
-    try std.testing.expectEqualStrings("integration/bun-types/fixture/23347.test.ts", filesForSubset(.minimal_js)[59]);
-    try std.testing.expectEqualStrings("js/bun/resolve/toml/toml-parse.test.ts", filesForSubset(.minimal_js)[60]);
-    try std.testing.expectEqualStrings("regression/issue/013880.test.ts", filesForSubset(.minimal_js)[61]);
-    try std.testing.expectEqualStrings("js/bun/util/exotic-global-mutable-prototype.test.ts", filesForSubset(.minimal_js)[62]);
-    try std.testing.expectEqualStrings("js/bun/jsc/native-constructor-identity.test.ts", filesForSubset(.minimal_js)[63]);
-    try std.testing.expectEqualStrings("js/bun/empty-file.test.ts", filesForSubset(.minimal_js)[64]);
-    try std.testing.expectEqualStrings("js/bun/test/expect-type-global.test.ts", filesForSubset(.minimal_js)[65]);
-    try std.testing.expectEqualStrings("js/bun/test/expect-type.test.ts", filesForSubset(.minimal_js)[66]);
+    try std.testing.expectEqualStrings("js/deno/fetch/request.test.ts", filesForSubset(.minimal_js)[41]);
+    try std.testing.expectEqualStrings("js/deno/url/urlsearchparams.test.ts", filesForSubset(.minimal_js)[42]);
+    try std.testing.expectEqualStrings("regression/issue/08040.test.ts", filesForSubset(.minimal_js)[43]);
+    try std.testing.expectEqualStrings("regression/issue/09778.test.ts", filesForSubset(.minimal_js)[44]);
+    try std.testing.expectEqualStrings("regression/issue/18820.test.ts", filesForSubset(.minimal_js)[45]);
+    try std.testing.expectEqualStrings("regression/issue/23382.test.js", filesForSubset(.minimal_js)[46]);
+    try std.testing.expectEqualStrings("js/bun/util/escapeRegExp.test.ts", filesForSubset(.minimal_js)[47]);
+    try std.testing.expectEqualStrings("regression/issue/24045.test.ts", filesForSubset(.minimal_js)[48]);
+    try std.testing.expectEqualStrings("regression/issue/07324.test.ts", filesForSubset(.minimal_js)[49]);
+    try std.testing.expectEqualStrings("regression/issue/07827.test.ts", filesForSubset(.minimal_js)[50]);
+    try std.testing.expectEqualStrings("internal/powershell-escape.test.ts", filesForSubset(.minimal_js)[51]);
+    try std.testing.expectEqualStrings("js/node/assert/assert.test.cjs", filesForSubset(.minimal_js)[52]);
+    try std.testing.expectEqualStrings("js/node/assert/assert-match.test.cjs", filesForSubset(.minimal_js)[53]);
+    try std.testing.expectEqualStrings("js/node/assert/assert-doesNotMatch.test.cjs", filesForSubset(.minimal_js)[54]);
+    try std.testing.expectEqualStrings("js/node/path/posix-exists.test.js", filesForSubset(.minimal_js)[55]);
+    try std.testing.expectEqualStrings("js/node/path/win32-exists.test.js", filesForSubset(.minimal_js)[56]);
+    try std.testing.expectEqualStrings("js/node/path/15704.test.js", filesForSubset(.minimal_js)[57]);
+    try std.testing.expectEqualStrings("js/node/url/url-canParse-whatwg.test.js", filesForSubset(.minimal_js)[58]);
+    try std.testing.expectEqualStrings("js/node/url/url-format-invalid-input.test.js", filesForSubset(.minimal_js)[59]);
+    try std.testing.expectEqualStrings("integration/bun-types/fixture/23347.test.ts", filesForSubset(.minimal_js)[60]);
+    try std.testing.expectEqualStrings("js/bun/resolve/toml/toml-parse.test.ts", filesForSubset(.minimal_js)[61]);
+    try std.testing.expectEqualStrings("regression/issue/013880.test.ts", filesForSubset(.minimal_js)[62]);
+    try std.testing.expectEqualStrings("js/bun/util/exotic-global-mutable-prototype.test.ts", filesForSubset(.minimal_js)[63]);
+    try std.testing.expectEqualStrings("js/bun/jsc/native-constructor-identity.test.ts", filesForSubset(.minimal_js)[64]);
+    try std.testing.expectEqualStrings("js/bun/empty-file.test.ts", filesForSubset(.minimal_js)[65]);
+    try std.testing.expectEqualStrings("js/bun/test/expect-type-global.test.ts", filesForSubset(.minimal_js)[66]);
+    try std.testing.expectEqualStrings("js/bun/test/expect-type.test.ts", filesForSubset(.minimal_js)[67]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -4298,6 +4329,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "HTMLRewriter.prototype.transform") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var Request = function(input, init)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "typeof input.href === \"string\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Request.prototype.text") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Request.prototype.clone") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node-fetch\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.alloc = function(size, fill)") != null);
@@ -4687,6 +4719,44 @@ test "bootstrap rewrite lowers node-fetch Request imports" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { Request } = globalThis.__home_import(\"node-fetch\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"node-fetch\"") == null);
+}
+
+test "bootstrap runner covers Request body text and clone smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { Request } from "node-fetch";
+        \\test("request body text clone", async () => {
+        \\  const original = new Request("https://example.com/path", {
+        \\    body: "ahoyhoy",
+        \\    headers: { "test-header": "value" },
+        \\    method: "post",
+        \\  });
+        \\  expect(original.method).toBe("POST");
+        \\  expect(original.headers.get("test-header")).toBe("value");
+        \\  expect(await original.text()).toBe("ahoyhoy");
+        \\  const clone = original.clone();
+        \\  expect(await clone.text()).toBe("ahoyhoy");
+        \\  const fromBody = new Request("https://example.com/body", { body: original.body, method: "POST" });
+        \\  expect(await fromBody.text()).toBe("ahoyhoy");
+        \\  const urlish = new Request({ toString() { return "https://example.com/object"; } });
+        \\  expect(urlish.url).toBe("https://example.com/object");
+        \\  expect(urlish.method).toBe("GET");
+        \\  expect(new Request(new URL("https://example.com/url")).url).toBe("https://example.com/url");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/fetch/request.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap rewrite lowers node buffer default and named imports" {
