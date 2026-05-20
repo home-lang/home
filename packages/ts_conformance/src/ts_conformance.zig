@@ -3444,6 +3444,31 @@ test "conformance: sub-strict directive without @strict keeps inferred strict-on
     try T.expect(merged_with_strict_on.use_unknown_in_catch_variables);
 }
 
+test "conformance: enum member assignment fixture matches TS2540 baseline" {
+    // Mirrors `validNullAssignments.ts(10,3)` — the enum-member
+    // assignment `E.A = null;` should report only TS2540, not the
+    // cascading TS2322 (which we previously emitted too). The
+    // suppression path runs through `checkEnumMemberAssignment`
+    // returning a bool that seeds `readonly_target_fired` on the
+    // assignment-expression handler.
+    const result = try runOneEntry(T.allocator, .{
+        .name = "enumMemberAssignmentCascade",
+        .path = "enumMemberAssignmentCascade.ts",
+        .source =
+        \\enum E { A }
+        \\E.A = null;
+        ,
+        .expects_error = true,
+        .expected_errors = "enumMemberAssignmentCascade.ts(2,3): error TS2540: Cannot assign to 'A' because it is a read-only property.",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: catch-variable alias fixture matches TS18046 baseline" {
     const result = try runOneEntry(T.allocator, .{
         .name = "controlFlowAliasingCatchVariables",
