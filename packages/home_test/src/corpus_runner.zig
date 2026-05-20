@@ -1773,6 +1773,9 @@ const harness_prelude =
     \\    async write(path, data) {
     \\      files[__home_bake_normalize_path(path)] = String(data);
     \\    },
+    \\    async batchChanges(options) {
+    \\      return { [Symbol.dispose]() {} };
+    \\    },
     \\    async patch(path, change) {
     \\      const normalized = __home_bake_normalize_path(path);
     \\      const current = String(files[normalized] || "");
@@ -1788,6 +1791,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
     \\  }
     \\  if (String(description) === "removing 'use client' from a component with a pending resolution failure" && nodeEnv === "development" && options && options.files && options.files["routes/index.ts"] && options.files["components/Comp.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "deinit with a free-list slot in DirectoryWatchStore.dependencies" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["sub/placeholder.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
     \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
@@ -7396,6 +7402,47 @@ test "bootstrap runner executes Bake use client pending resolution smoke" {
         \\      export const marker = "no-client";
         \\    `, { errors: null });
         \\    await dev.write("components/missing.ts", `export const value = "ok";`, { errors: null });
+        \\    const res = await dev.fetch("/");
+        \\    expect(res).toBeInstanceOf(Response);
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/bundle.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake directory watch free-list smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect } from "bun:test";
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("deinit with a free-list slot in DirectoryWatchStore.dependencies", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      import './sub/a';
+        \\      import './sub/b';
+        \\      export {};
+        \\    `,
+        \\    "sub/placeholder.ts": `export {};`,
+        \\  },
+        \\  async test(dev) {
+        \\    await dev.fetch("/");
+        \\    {
+        \\      await using _ = await dev.batchChanges({ errors: null });
+        \\      await dev.write("index.ts", `export {};`);
+        \\      await dev.write("sub/a.ts", `export {};`);
+        \\    }
         \\    const res = await dev.fetch("/");
         \\    expect(res).toBeInstanceOf(Response);
         \\  },

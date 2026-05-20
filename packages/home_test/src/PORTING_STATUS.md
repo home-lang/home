@@ -252,9 +252,11 @@ after the imported file is restored, and no-activity deletion of an
 unrelated file. This remains a bootstrap overlay/reload proxy. The
 client-boundary demotion smoke now models the upstream write/fetch
 sequence and final `Response` liveness assertion, but not the real
-DirectoryWatchStore dependency lifetime cleanup. The next Bake boundary
-is
-`DEV:bundle-9: deinit with a free-list slot in DirectoryWatchStore.dependencies`.
+DirectoryWatchStore dependency lifetime cleanup. The free-list deinit
+smoke now models the upstream `batchChanges` shape and final liveness
+fetch, but real failed-import directory watches, sparse dependency slots,
+and graceful DevServer deinit still need Bun's native Zig path ported.
+The next Bake boundary is `DEV:bundle-10: importing html file`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

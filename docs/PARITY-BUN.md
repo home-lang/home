@@ -348,15 +348,20 @@ is wired. The client-boundary demotion smoke now exercises the upstream
 write/fetch sequence and final `Response` liveness assertion, but remains
 a route-model proxy for Bun's real DirectoryWatchStore dependency
 lifetime regression; Home still needs the native graph/watch cleanup path
-ported before this is true Bake parity. Later Bake files are still
-recorded as unsupported until the broader DevServer / bundler /
-browser-client runtime path lands.
+ported before this is true Bake parity. The free-list deinit smoke now
+executes the upstream `batchChanges` shape and final `Response` liveness
+check, but likewise remains a bootstrap proxy until Home tracks failed
+relative imports through real directory watches, sparse dependency slots,
+and graceful DevServer deinit. It should eventually be replaced by the
+native DirectoryWatchStore path copied from Bun's Zig base. Later Bake
+files are still recorded as unsupported until the broader DevServer /
+bundler / browser-client runtime path lands.
 
-Latest measured full gate after the Bake client-boundary liveness slice:
-`4,013` files executed, `420` passed, `3,964` failed, `1,517`
+Latest measured full gate after the Bake directory-watch free-list slice:
+`4,013` files executed, `420` passed, `3,963` failed, `1,516`
 unsupported, `35` todo. First failure: `bake/dev/bundle.test.ts`
 with the named unsupported Bake registration for
-` DEV:bundle-9: deinit with a free-list slot in DirectoryWatchStore.dependencies`.
+` DEV:bundle-10: importing html file`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
