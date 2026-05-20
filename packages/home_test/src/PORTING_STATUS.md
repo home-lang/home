@@ -40,7 +40,7 @@ rejection, `test.concurrent`, `test.each`, `.not`, `toBe`, `toBeDefined`,
 `expect.extend` asymmetric matcher path, `toIncludeRepeated`,
 `toContainKey`, `toContainKeys`, `toContainAnyKeys`, `atob` / `btoa`,
 `Bun` branding plus `Bun.version`, `Bun.revision`, `Bun.stripANSI`,
-`Bun.wrapAnsi`,
+`Bun.wrapAnsi`, `Bun.semver.satisfies`,
 `process.versions.bun`, `process.revision`, DOMException,
 Request/Response/Headers/URL, `node-fetch`, `node:buffer`, `deno:harness`,
 Deno `Event` / `CustomEvent` / `AbortController`, a Deno

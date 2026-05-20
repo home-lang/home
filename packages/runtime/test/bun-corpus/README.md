@@ -16,9 +16,9 @@ macOS, Linux, and the WASM target.
   `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
   That subset currently executes the todo-registration smoke, the Web
-  `atob`/`btoa` smoke, fourteen regression smokes, one bundler
+  `atob`/`btoa` smoke, fifteen regression smokes, one bundler
   constant-fold smoke, six test-runner expectation smokes, one nested-describe
-  smoke, `Bun.stripANSI` and `Bun.wrapAnsi` smokes, retry/repeats runner
+  smoke, `Bun.stripANSI`, `Bun.wrapAnsi`, and `Bun.semver.satisfies` smokes, retry/repeats runner
   behavior, `test.concurrent.each`, Deno `Event` / `CustomEvent` /
   `AbortController`, a Deno `URLSearchParams` bootstrap smoke, and narrow bootstrap coverage for Node
   `DOMException`, Web `Response.json` / `Response.redirect`, Web `Request`

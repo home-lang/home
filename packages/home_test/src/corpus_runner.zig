@@ -93,6 +93,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/deno/event/event.test.ts",
     "js/deno/abort/abort-controller.test.ts",
     "js/deno/url/urlsearchparams.test.ts",
+    "regression/issue/08040.test.ts",
 };
 
 const harness_prelude =
@@ -222,6 +223,60 @@ const harness_prelude =
     \\      for (const chunk of lineChunks) chunks.push(chunk);
     \\    }
     \\    return joinChunks(chunks);
+    \\  },
+    \\  semver: {
+    \\    satisfies(version, range) {
+    \\      function parse(text) {
+    \\        const match = String(text).trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
+    \\        if (!match) return null;
+    \\        return {
+    \\          major: Number(match[1]),
+    \\          minor: Number(match[2]),
+    \\          patch: Number(match[3]),
+    \\          pre: match[4] ? match[4].split(".") : [],
+    \\        };
+    \\      }
+    \\      function compareIdentifiers(a, b) {
+    \\        const aNum = /^[0-9]+$/.test(a);
+    \\        const bNum = /^[0-9]+$/.test(b);
+    \\        if (aNum && bNum) return Number(a) === Number(b) ? 0 : (Number(a) < Number(b) ? -1 : 1);
+    \\        if (aNum) return -1;
+    \\        if (bNum) return 1;
+    \\        return a === b ? 0 : (a < b ? -1 : 1);
+    \\      }
+    \\      function compare(a, b) {
+    \\        for (const key of ["major", "minor", "patch"]) {
+    \\          if (a[key] !== b[key]) return a[key] < b[key] ? -1 : 1;
+    \\        }
+    \\        if (a.pre.length === 0 && b.pre.length === 0) return 0;
+    \\        if (a.pre.length === 0) return 1;
+    \\        if (b.pre.length === 0) return -1;
+    \\        const len = Math.max(a.pre.length, b.pre.length);
+    \\        for (let i = 0; i < len; i++) {
+    \\          if (a.pre[i] === undefined) return -1;
+    \\          if (b.pre[i] === undefined) return 1;
+    \\          const order = compareIdentifiers(a.pre[i], b.pre[i]);
+    \\          if (order !== 0) return order;
+    \\        }
+    \\        return 0;
+    \\      }
+    \\      function testComparator(versionSemver, comparator) {
+    \\        const match = String(comparator).trim().match(/^(>=|<=|>|<|=)?\s*(.+)$/);
+    \\        if (!match) __home_unsupported("Unsupported semver range comparator: " + String(comparator));
+    \\        const target = parse(match[2]);
+    \\        if (!target) __home_unsupported("Unsupported semver range comparator: " + String(comparator));
+    \\        const order = compare(versionSemver, target);
+    \\        const op = match[1] || "=";
+    \\        if (op === ">=") return order >= 0;
+    \\        if (op === "<=") return order <= 0;
+    \\        if (op === ">") return order > 0;
+    \\        if (op === "<") return order < 0;
+    \\        return order === 0;
+    \\      }
+    \\      const versionSemver = parse(version);
+    \\      if (!versionSemver) return false;
+    \\      return String(range).trim().split(/\s+/).filter(Boolean).every(part => testComparator(versionSemver, part));
+    \\    },
     \\  },
     \\  inspect(value) {
     \\    if (value === null || typeof value !== "object" || Array.isArray(value)) __home_unsupported("Only Bun.inspect({ key: Set<string> }) is supported by the Home Bun corpus bootstrap runner");
@@ -535,6 +590,9 @@ const harness_prelude =
     \\    toBeTruthy() {
     \\      __home_assert(!!value, isNot, "Expected value" + (isNot ? " not" : "") + " to be truthy");
     \\    },
+    \\    toBeFalse() {
+    \\      __home_assert(value === false, isNot, "Expected value" + (isNot ? " not" : "") + " to be false");
+    \\    },
     \\    toBeNumber() {
     \\      __home_assert(typeof value === "number", isNot, "Expected value" + (isNot ? " not" : "") + " to be a number");
     \\    },
@@ -720,6 +778,7 @@ const harness_prelude =
     \\};
     \\globalThis.__home_bun_test = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, test };
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
+    \\globalThis.__home_modules["bun"] = { semver: Bun.semver };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["deno:harness"] = {
     \\  createDenoTest(path) {
@@ -1596,6 +1655,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const __home_node_buffer = globalThis.__home_import(\"node:buffer\");\nconst buffer = __home_node_buffer.default;\nconst { INSPECT_MAX_BYTES } = __home_node_buffer;",
         },
         .{
+            .needle = "import { semver } from \"bun\";",
+            .replacement = "const { semver } = globalThis.__home_import(\"bun\");",
+        },
+        .{
             .needle = "import { Buffer } from \"node:buffer\";",
             .replacement = "const { Buffer } = globalThis.__home_import(\"node:buffer\");",
         },
@@ -1867,6 +1930,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/deno/event/event.test.ts", filesForSubset(.minimal_js)[39]);
     try std.testing.expectEqualStrings("js/deno/abort/abort-controller.test.ts", filesForSubset(.minimal_js)[40]);
     try std.testing.expectEqualStrings("js/deno/url/urlsearchparams.test.ts", filesForSubset(.minimal_js)[41]);
+    try std.testing.expectEqualStrings("regression/issue/08040.test.ts", filesForSubset(.minimal_js)[42]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -1874,6 +1938,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_is_thenable(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "stripANSI(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapAnsi(value, columns, options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "satisfies(version, range)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "inspect(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Set(\" + entry.size + \")") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "version: \"0.0.0-home\"") != null);
@@ -1885,6 +1950,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTypeOf() requires a valid type string argument") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeUndefined()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTruthy()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeFalse()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeGreaterThan(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_expect_any_matches(value, ctor)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeNumber()") != null);
@@ -1908,6 +1974,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Deep equality for this value type is not supported") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "UnreachableError") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_bun_test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun\"] = { semver: Bun.semver }") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "createDenoTest(path)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "denoTest.ignore") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_import") != null);
@@ -1947,6 +2014,21 @@ test "Bun test import rewrite lowers to the virtual test module" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "var __dirname = \"js/node\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "globalThis.__home_current_filename = __filename") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "it(\"works\"") != null);
+}
+
+test "Bun module import rewrite lowers semver to the virtual bun module" {
+    const source =
+        \\import { semver } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\test("semver", () => {
+        \\  expect(semver.satisfies("3.4.5", ">=3.3.0-beta.1 <3.4.0-beta.3")).toBeFalse();
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/08040.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { semver } = globalThis.__home_import(\"bun\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun\"") == null);
 }
 
 test "Bun test import rewrite lowers lifecycle hook imports" {
@@ -2280,6 +2362,33 @@ test "bootstrap runner covers URLSearchParams behavior" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/url/urlsearchparams.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers Bun semver satisfies comparator lists" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { semver } from "bun";
+        \\import { expect, test } from "bun:test";
+        \\test("semver with multiple tags work properly", () => {
+        \\  expect(semver.satisfies("3.3.1", ">=3.3.0-beta.1 <3.4.0-beta.3")).toBe(true);
+        \\  expect(semver.satisfies("3.4.5", ">=3.3.0-beta.1 <3.4.0-beta.3")).toBeFalse();
+        \\  let unsupported = false;
+        \\  try { semver.satisfies("1.2.3", "^1.2.0"); } catch (error) { unsupported = error && error.__home_unsupported === true; }
+        \\  expect(unsupported).toBe(true);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/08040.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
