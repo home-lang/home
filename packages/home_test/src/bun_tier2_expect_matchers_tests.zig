@@ -11,6 +11,11 @@ const to_be_falsy = @import("bun/expect/toBeFalsy.zig");
 const to_be_boolean = @import("bun/expect/toBeBoolean.zig");
 const to_be_nil = @import("bun/expect/toBeNil.zig");
 const to_be_number = @import("bun/expect/toBeNumber.zig");
+const to_be_integer = @import("bun/expect/toBeInteger.zig");
+const to_be_nan = @import("bun/expect/toBeNaN.zig");
+const to_be_finite = @import("bun/expect/toBeFinite.zig");
+const to_be_positive = @import("bun/expect/toBePositive.zig");
+const to_be_negative = @import("bun/expect/toBeNegative.zig");
 
 const Expect = bun.jsc.Expect.Expect;
 const JSValue = bun.jsc.JSValue;
@@ -86,6 +91,53 @@ test "copied Bun truthiness and boolean matchers pass positive cases" {
     var expect_number = Expect{ .value = .js_number };
     var number_frame = frame(.js_number);
     try std.testing.expectEqual(JSValue.js_undefined, try to_be_number.toBeNumber(&expect_number, globalObject(), &number_frame));
+
+    var expect_integer = Expect{ .value = .js_number };
+    var integer_frame = frame(.js_number);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_be_integer.toBeInteger(&expect_integer, globalObject(), &integer_frame));
+
+    var expect_nan = Expect{ .value = .js_nan };
+    var nan_frame = frame(.js_nan);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_be_nan.toBeNaN(&expect_nan, globalObject(), &nan_frame));
+
+    var expect_finite = Expect{ .value = .js_number };
+    var finite_frame = frame(.js_number);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_be_finite.toBeFinite(&expect_finite, globalObject(), &finite_frame));
+
+    var expect_positive = Expect{ .value = .js_number };
+    var positive_frame = frame(.js_number);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_be_positive.toBePositive(&expect_positive, globalObject(), &positive_frame));
+
+    var expect_negative = Expect{ .value = .js_negative };
+    var negative_frame = frame(.js_negative);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_be_negative.toBeNegative(&expect_negative, globalObject(), &negative_frame));
+}
+
+test "copied Bun numeric matchers honor failure signatures" {
+    var expect_integer = Expect{ .value = .js_fraction };
+    var fraction_frame = frame(.js_fraction);
+    try std.testing.expectError(error.JSException, to_be_integer.toBeInteger(&expect_integer, globalObject(), &fraction_frame));
+    try std.testing.expectEqualStrings("toBeInteger", expect_integer.last_signature.?);
+
+    var expect_nan = Expect{ .value = .js_number };
+    var number_frame = frame(.js_number);
+    try std.testing.expectError(error.JSException, to_be_nan.toBeNaN(&expect_nan, globalObject(), &number_frame));
+    try std.testing.expectEqualStrings("toBeNaN", expect_nan.last_signature.?);
+
+    var expect_finite = Expect{ .value = .js_inf };
+    var inf_frame = frame(.js_inf);
+    try std.testing.expectError(error.JSException, to_be_finite.toBeFinite(&expect_finite, globalObject(), &inf_frame));
+    try std.testing.expectEqualStrings("toBeFinite", expect_finite.last_signature.?);
+
+    var expect_positive = Expect{ .value = .js_negative };
+    var negative_frame = frame(.js_negative);
+    try std.testing.expectError(error.JSException, to_be_positive.toBePositive(&expect_positive, globalObject(), &negative_frame));
+    try std.testing.expectEqualStrings("toBePositive", expect_positive.last_signature.?);
+
+    var expect_negative = Expect{ .value = .js_number };
+    var positive_frame = frame(.js_number);
+    try std.testing.expectError(error.JSException, to_be_negative.toBeNegative(&expect_negative, globalObject(), &positive_frame));
+    try std.testing.expectEqualStrings("toBeNegative", expect_negative.last_signature.?);
 }
 
 test "copied Bun truthiness nil and number matchers honor not flag and failure signatures" {
@@ -103,4 +155,14 @@ test "copied Bun truthiness nil and number matchers honor not flag and failure s
     var number_frame = frame(.js_number);
     try std.testing.expectError(error.JSException, to_be_number.toBeNumber(&expect_number, globalObject(), &number_frame));
     try std.testing.expectEqualStrings("not.toBeNumber", expect_number.last_signature.?);
+
+    var expect_integer = Expect{ .value = .js_number, .flags = .{ .not = true } };
+    var integer_frame = frame(.js_number);
+    try std.testing.expectError(error.JSException, to_be_integer.toBeInteger(&expect_integer, globalObject(), &integer_frame));
+    try std.testing.expectEqualStrings("not.toBeInteger", expect_integer.last_signature.?);
+
+    var expect_finite = Expect{ .value = .js_number, .flags = .{ .not = true } };
+    var finite_frame = frame(.js_number);
+    try std.testing.expectError(error.JSException, to_be_finite.toBeFinite(&expect_finite, globalObject(), &finite_frame));
+    try std.testing.expectEqualStrings("not.toBeFinite", expect_finite.last_signature.?);
 }

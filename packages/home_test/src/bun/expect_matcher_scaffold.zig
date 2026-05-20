@@ -23,6 +23,10 @@ pub const jsc = struct {
         pub const js_true = JSValue{ .tag = .boolean, .bool_value = true };
         pub const js_false = JSValue{ .tag = .boolean, .bool_value = false };
         pub const js_number = JSValue{ .tag = .number, .number_value = 42 };
+        pub const js_fraction = JSValue{ .tag = .number, .number_value = 1.5 };
+        pub const js_negative = JSValue{ .tag = .number, .number_value = -42 };
+        pub const js_nan = JSValue{ .tag = .number, .number_value = std.math.nan(f64) };
+        pub const js_inf = JSValue{ .tag = .number, .number_value = std.math.inf(f64) };
         pub const js_other = JSValue{ .tag = .other };
 
         pub fn isBoolean(this: JSValue) bool {
@@ -31,6 +35,14 @@ pub const jsc = struct {
 
         pub fn isNumber(this: JSValue) bool {
             return this.tag == .number;
+        }
+
+        pub fn asNumber(this: JSValue) f64 {
+            return this.number_value;
+        }
+
+        pub fn isAnyInt(this: JSValue) bool {
+            return this.isNumber() and std.math.isFinite(this.number_value) and @floor(this.number_value) == this.number_value;
         }
 
         pub fn toBoolean(this: JSValue) bool {

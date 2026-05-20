@@ -89,7 +89,8 @@ classification, and retry/reset cleanup of execution-phase entries.
 build-checks the copied primitive matcher leaves `toBeTrue.zig`,
 `toBeFalse.zig`, `toBeDefined.zig`, `toBeUndefined.zig`, `toBeNull.zig`,
 `toBeTruthy.zig`, `toBeFalsy.zig`, `toBeBoolean.zig`, and
-`toBeNil.zig`, and `toBeNumber.zig` through a small Home scaffold for the upstream
+`toBeNil.zig`, `toBeNumber.zig`, `toBeInteger.zig`, `toBeNaN.zig`,
+`toBeFinite.zig`, `toBePositive.zig`, and `toBeNegative.zig` through a small Home scaffold for the upstream
 Expect/JSC/formatter surface. The copied matcher files stay unchanged
 apart from the Home license header; the target proves positive matches,
 `.not` failure signatures, post-match cleanup, and expect-call counting.
@@ -213,7 +214,7 @@ shape (each ~30-100 LOC, 7-10 `bun.X` references — almost all
 | Collection.zig | 171 | 8 | 0 | 0 | tier2-collection | `bun.JSError`, `bun.assert`, `bun.md` |
 | Order.zig | 187 | 16 | 0 | 0 | tier2-order | `bun.JSError`, `bun.assert`, `bun.Environment` |
 | timers/FakeTimers.zig | 376 | 32 | 0 | 0 | blocked | `bun.JSError`, `bun.timespec`, `bun.assert` |
-| expect/toBeTrue.zig + 9 primitive/truthiness/number matchers | ~370 | 7-10 each | 0 | 0 | tier2-expect-matchers | `bun.jsc`, `bun.JSError`, `Expect` |
+| expect/toBeTrue.zig + 14 primitive/truthiness/number matchers | ~560 | 7-10 each | 0 | 0 | tier2-expect-matchers | `bun.jsc`, `bun.JSError`, `Expect` |
 | ScopeFunctions.zig | 498 | 64 | 0 | 0 | blocked | `bun.String`, `bun.JSError`, `bun.handleOom` |
 | jest.zig | 520 | 44 | 3 | 1 | blocked | `bun.handleOom`, `bun.default_allocator`, `bun.JSError` |
 | harness/fixtures.zig | 575 | 1 | 0 | 0 | tier0 | `bun.md` |
@@ -359,7 +360,7 @@ These need only `compat` for `OOM`/`handleOom`/`assert`/`md`:
     compile-checked in the focused `home_test_bun_tier2_execution`
     target with a local scaffold for BunTest/JSC/reporter/timespec
     surfaces
-13. `expect/toBeTrue.zig` + nine primitive matcher leaves — primitive,
+13. `expect/toBeTrue.zig` + fourteen primitive matcher leaves — primitive,
     truthiness, and number expect matchers; compile-checked in the focused
     `home_test_bun_tier2_expect_matchers` target with a local
     Expect/JSC/formatter scaffold
