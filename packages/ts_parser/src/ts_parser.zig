@@ -4697,7 +4697,7 @@ pub const Parser = struct {
                     try self.reportCodeAt(bad.span.start, bad.line, 1442, "Expected '=' for property initializer.");
                     default_value = try self.parseAssignmentExpression();
                 }
-                try self.consumeStatementTerminator();
+                try self.consumeClassPropertyTerminator();
                 // TS1031: `export` on a class member property (e.g.
                 // `export Foo;`). `declare` is permitted on properties
                 // — it tells the type system the field is initialized
@@ -5280,7 +5280,7 @@ pub const Parser = struct {
                 _ = self.match(.bang);
             }
             if (self.match(.equal)) value = try self.parseAssignmentExpression();
-            self.consumeStatementTerminator() catch |err| switch (err) {
+            self.consumeClassPropertyTerminator() catch |err| switch (err) {
                 error.UnexpectedToken => self.skipMalformedClassFieldTail(),
                 else => return err,
             };
@@ -5306,6 +5306,15 @@ pub const Parser = struct {
             if (self.peek().flags.preceded_by_newline) return;
             _ = self.advance();
         }
+    }
+
+    fn consumeClassPropertyTerminator(self: *Parser) ParseError!void {
+        if (self.peek().kind == .at and !self.peek().flags.preceded_by_newline) {
+            const dec_tok = self.peek();
+            try self.reportCodeAt(dec_tok.span.start, dec_tok.line, 1436, "Decorators must precede the name and all keywords of property declarations.");
+            return;
+        }
+        try self.consumeStatementTerminator();
     }
 
     fn parseClassMemberDecoratorExpression(self: *Parser) ParseError!NodeId {
@@ -19178,6 +19187,26 @@ test "parser: 'declare' on a class method still reports TS1031" {
         if (d.code == 1031) saw_ts1031 = true;
     }
     try T.expect(saw_ts1031);
+}
+
+test "parser: same-line decorator after class property reports TS1436" {
+    var s = try newTestSetup(
+        \\class Foo {
+        \\    private prop @decorator
+        \\    foo() { return 0; }
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+
+    var saw_ts1436 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1436 and std.mem.eql(u8, d.message, "Decorators must precede the name and all keywords of property declarations.")) {
+            saw_ts1436 = true;
+        }
+        try T.expect(d.code != 1005);
+    }
+    try T.expect(saw_ts1436);
 }
 
 test "parser: object-literal generator '*' without property name reports TS1003" {
