@@ -174,7 +174,7 @@ including Bun-copied Deno `test(options, fn)` / permission skip /
 `AbortController`, a Deno Request string body / `text()` / clone nucleus,
 a Deno `URLSearchParams` bootstrap smoke, EventTarget, AbortSignal,
 narrow Deno URL authority/hash/origin parsing, a Deno `performance`
-bootstrap nucleus, Node
+bootstrap nucleus, WebSocket failed-connect `ErrorEvent` snapshots, Node
 `Buffer.alloc` / fill / `Buffer.from(..., "utf-16le")` / compare /
 write / toString / inspect-limit / isEncoding subsets, `Bun.JSONC.parse`
 comments / trailing commas / deep-nesting `RangeError`s, Node

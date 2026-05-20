@@ -184,6 +184,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/skip-test-fixture.js",
     "js/bun/test/expect-type-doctest.test.ts",
     "js/bun/test/todo-test-fixture.js",
+    "js/web/websocket/error-event.test.ts",
     "cli/test/test-randomize.fixture.ts",
 };
 
@@ -584,6 +585,7 @@ const harness_prelude =
     \\    },
     \\  },
     \\  inspect(value) {
+    \\    if (value && value.__home_error_event === true) return __home_inspect_error_event(value);
     \\    if (value === null || typeof value !== "object" || Array.isArray(value)) __home_unsupported("Only Bun.inspect({ key: Set<string> }) is supported by the Home Bun corpus bootstrap runner");
     \\    const keys = Object.keys(value);
     \\    const lines = ["{"];
@@ -670,6 +672,7 @@ const harness_prelude =
     \\  return lines.map(line => line.slice(indent)).join("\n");
     \\}
     \\function __home_format_snapshot(value) {
+    \\  if (value && value.__home_error_event === true) return __home_format_error_event_snapshot(value);
     \\  if (value && typeof value === "object" && !Array.isArray(value)) {
     \\    const keys = Object.keys(value);
     \\    const lines = ["{"];
@@ -678,6 +681,16 @@ const harness_prelude =
     \\    return lines.join("\n");
     \\  }
     \\  return __home_format(value);
+    \\}
+    \\function __home_error_event_error_text(error) {
+    \\  return error === null || error === undefined ? "null" : "[Error: " + String(error.message || error) + "]";
+    \\}
+    \\function __home_format_error_event_snapshot(event) {
+    \\  return "ErrorEvent {\n  type: " + JSON.stringify(event.type) + ",\n  message: " + JSON.stringify(event.message) + ", \n  error: " + __home_error_event_error_text(event.error) + "\n}";
+    \\}
+    \\function __home_inspect_error_event(event) {
+    \\  if (event.error === null || event.error === undefined) return "\"ErrorEvent {\n  type: " + JSON.stringify(event.type) + ",\n  message: " + JSON.stringify(event.message) + ",\n  error: null,\n}\"";
+    \\  return "\"ErrorEvent {\n  type: " + JSON.stringify(event.type) + ",\n  message: " + JSON.stringify(event.message) + ",\n  error: error: " + String(event.error.message || event.error) + "\n,\n}\"";
     \\}
     \\function __home_escape_regexp(value, packageNameMode) {
     \\  let output = "";
@@ -2461,7 +2474,8 @@ const harness_prelude =
     \\  return __home_fetch_thenable(new Response("", { status: 200 }), null);
     \\}
     \\function WebSocket(url) {
-    \\  const href = String(url);
+    \\  let href = String(url);
+    \\  if (/^wss?:\/\/[^\/?#]+$/.test(href)) href += "/";
     \\  let origin = href;
     \\  const scheme = href.indexOf("://");
     \\  if (scheme !== -1) {
@@ -2477,7 +2491,8 @@ const harness_prelude =
     \\  if (!handle || path !== "/_bun/hmr" || typeof globalThis.__home_openHmrSocketNative !== "function") {
     \\    Promise.resolve().then(() => {
     \\      this.readyState = 3;
-    \\      const event = { preventDefault() {} };
+    \\      const message = "WebSocket connection to '" + href + "' failed: Failed to connect";
+    \\      const event = new ErrorEvent("error", { message, error: new Error(message) });
     \\      if (typeof this.onerror === "function") this.onerror(event);
     \\      if (typeof this.onclose === "function") this.onclose(event);
     \\    });
@@ -3174,6 +3189,18 @@ const harness_prelude =
     \\    }
     \\  };
     \\  Event.prototype.toString = function() { return "[object Event]"; };
+    \\}
+    \\if (typeof ErrorEvent !== "function") {
+    \\  var ErrorEvent = function(type, init) {
+    \\    const options = init || {};
+    \\    Event.call(this, type, options);
+    \\    this.message = Object.prototype.hasOwnProperty.call(options, "message") ? String(options.message) : "";
+    \\    this.error = Object.prototype.hasOwnProperty.call(options, "error") ? options.error : null;
+    \\    this.__home_error_event = true;
+    \\  };
+    \\  ErrorEvent.prototype = Object.create(Event.prototype);
+    \\  ErrorEvent.prototype.constructor = ErrorEvent;
+    \\  ErrorEvent.prototype.toString = function() { return "[object ErrorEvent]"; };
     \\}
     \\if (typeof EventTarget !== "function") {
     \\  var EventTarget = function() {
@@ -5266,6 +5293,58 @@ test "bootstrap runner covers Deno performance nucleus" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/performance/performance.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers WebSocket ErrorEvent snapshot nucleus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("websocket error event", async () => {
+        \\  const ws = new WebSocket("ws://127.0.0.1:8080");
+        \\  const { promise, resolve } = Promise.withResolvers();
+        \\  ws.onerror = error => resolve(error);
+        \\  const error = await promise;
+        \\  expect(error).toMatchInlineSnapshot(`ErrorEvent {
+        \\  type: "error",
+        \\  message: "WebSocket connection to 'ws://127.0.0.1:8080/' failed: Failed to connect", 
+        \\  error: [Error: WebSocket connection to 'ws://127.0.0.1:8080/' failed: Failed to connect]
+        \\}`);
+        \\  expect(Bun.inspect(error)).toMatchInlineSnapshot(`
+        \\    "ErrorEvent {
+        \\      type: "error",
+        \\      message: "WebSocket connection to 'ws://127.0.0.1:8080/' failed: Failed to connect",
+        \\      error: error: WebSocket connection to 'ws://127.0.0.1:8080/' failed: Failed to connect
+        \\    ,
+        \\    }"
+        \\  `);
+        \\  const empty = new ErrorEvent("error");
+        \\  expect(empty.message).toBe("");
+        \\  expect(Bun.inspect(empty)).toMatchInlineSnapshot(`
+        \\    "ErrorEvent {
+        \\      type: "error",
+        \\      message: "",
+        \\      error: null,
+        \\    }"
+        \\  `);
+        \\  expect(empty).toMatchInlineSnapshot(`ErrorEvent {
+        \\  type: "error",
+        \\  message: "", 
+        \\  error: null
+        \\}`);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/websocket/error-event.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);

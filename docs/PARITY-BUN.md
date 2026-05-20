@@ -191,7 +191,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes one hundred twenty-six allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes one hundred twenty-seven allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-three
@@ -202,7 +202,8 @@ expectation smokes, one nested-describe smoke, two `expectTypeOf` type-only smok
 and Deno Request string-body `text()` / clone call shapes,
 narrow Deno URL authority/hash/origin parsing, a Deno `performance`
 bootstrap nucleus (`now`, `timeOrigin`, `toJSON`, marks, measures, and
-entry lookup), JSC `ShadowRealm`, native constructor identity, mutable
+entry lookup), WebSocket failed-connect `ErrorEvent` snapshots, JSC
+`ShadowRealm`, native constructor identity, mutable
 `globalThis` prototype behavior, a comment-only module-load smoke, Bun file metadata, Node `Buffer`
 binary/UTF-16LE/compare/inspect-limit/isEncoding behavior, `Map`/`Set`
 deep-equality, `Bun.inspect` Set formatting, `MessageEvent` constructor
@@ -300,8 +301,8 @@ executing `options.test`, so the corpus can account for each Bake test
 registration while still failing honestly at the unported DevServer /
 bundler runtime boundary.
 
-Latest measured full gate after the Deno Request body/text nucleus:
-`4,013` files executed, `406` passed, `3,985` failed, `1,537`
+Latest measured full gate after the WebSocket ErrorEvent nucleus:
+`4,013` files executed, `408` passed, `3,984` failed, `1,537`
 unsupported, `35` todo. First failure: `bake/dev-and-prod.test.ts`
 with the named unsupported Bake registration for
 ` DEV:dev-and-prod-1: define config via bunfig.toml`.
