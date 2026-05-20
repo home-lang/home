@@ -96,6 +96,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/08040.test.ts",
     "regression/issue/09778.test.ts",
     "regression/issue/18820.test.ts",
+    "regression/issue/23382.test.js",
 };
 
 const harness_prelude =
@@ -339,6 +340,29 @@ const harness_prelude =
     \\  } catch (error) {
     \\    return String(value);
     \\  }
+    \\}
+    \\function __home_dedent_snapshot(text) {
+    \\  const lines = String(text).replace(/\r\n/g, "\n").split("\n");
+    \\  while (lines.length && lines[0].trim() === "") lines.shift();
+    \\  while (lines.length && lines[lines.length - 1].trim() === "") lines.pop();
+    \\  let indent = Infinity;
+    \\  for (const line of lines) {
+    \\    if (line.trim() === "") continue;
+    \\    const match = line.match(/^ */);
+    \\    indent = Math.min(indent, match ? match[0].length : 0);
+    \\  }
+    \\  if (!Number.isFinite(indent)) indent = 0;
+    \\  return lines.map(line => line.slice(indent)).join("\n");
+    \\}
+    \\function __home_format_snapshot(value) {
+    \\  if (value && typeof value === "object" && !Array.isArray(value)) {
+    \\    const keys = Object.keys(value);
+    \\    const lines = ["{"];
+    \\    for (const key of keys) lines.push("  " + JSON.stringify(key) + ": " + JSON.stringify(value[key]) + ",");
+    \\    lines.push("}");
+    \\    return lines.join("\n");
+    \\  }
+    \\  return __home_format(value);
     \\}
     \\function __home_is_thenable(value) {
     \\  return value !== null && (typeof value === "object" || typeof value === "function") && typeof value.then === "function";
@@ -629,6 +653,12 @@ const harness_prelude =
     \\      if (!Number.isInteger(expected) || expected < 0) __home_fail("toHaveBeenCalledTimes() requires a non-negative integer");
     \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.calls)) __home_fail("toHaveBeenCalledTimes() value must be a mock function");
     \\      __home_assert(value.mock.calls.length === expected, isNot, "Expected mock" + (isNot ? " not" : "") + " to have been called " + String(expected) + " times");
+    \\    },
+    \\    toMatchInlineSnapshot(expected) {
+    \\      if (arguments.length < 1) __home_fail("toMatchInlineSnapshot() requires 1 argument");
+    \\      const actual = __home_format_snapshot(value);
+    \\      const snapshot = __home_dedent_snapshot(expected);
+    \\      __home_assert(actual === snapshot, isNot, "Expected inline snapshot" + (isNot ? " not" : "") + " to match");
     \\    },
     \\    toBeNumber() {
     \\      __home_assert(typeof value === "number", isNot, "Expected value" + (isNot ? " not" : "") + " to be a number");
@@ -1981,6 +2011,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/08040.test.ts", filesForSubset(.minimal_js)[42]);
     try std.testing.expectEqualStrings("regression/issue/09778.test.ts", filesForSubset(.minimal_js)[43]);
     try std.testing.expectEqualStrings("regression/issue/18820.test.ts", filesForSubset(.minimal_js)[44]);
+    try std.testing.expectEqualStrings("regression/issue/23382.test.js", filesForSubset(.minimal_js)[45]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -2004,6 +2035,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTruthy()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeFalse()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toHaveBeenCalledTimes(expected)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toMatchInlineSnapshot(expected)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_format_snapshot(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeGreaterThan(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_expect_any_matches(value, ctor)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeNumber()") != null);
@@ -2547,6 +2580,31 @@ test "bootstrap runner covers mock clearAllMocks call counts" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/18820.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers inline snapshot unicode object formatting" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\test("correct snapshot formatting for object key with unicode", () => {
+        \\  expect({ "▶": "▹" }).toMatchInlineSnapshot(`
+        \\    {
+        \\      "▶": "▹",
+        \\    }
+        \\  `);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/23382.test.js");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
