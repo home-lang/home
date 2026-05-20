@@ -170,6 +170,7 @@ selector / handler validation,
 `process.versions.bun`, `process.revision`, `process.on` / `process.emit`,
 `process.binding("constants")` / `process.binding("uv")`,
 Jest fake-timer Date / `Intl.DateTimeFormat` behavior,
+`bun:internal-for-testing.highlightJavaScript` template-literal behavior,
 `node:vm.runInNewContext`, DOMException, native constructor identity,
 mutable `globalThis` prototype behavior, comment-only module-load smoke,
 `Bun.file(...).type` explicit and `.css` MIME behavior,
@@ -753,6 +754,11 @@ test through the Jest fake-timer bootstrap model. It covers Bun's stable
 `Date` identity, mocked `Date.now()` / `new Date()`,
 `jest.setSystemTime()`, `jest.useRealTimers()`, and no-argument
 `Intl.DateTimeFormat().format()` for the asserted fake time.
+The copied `internal/highlighter.test.ts` fixture now passes as `1` test
+through the `bun:internal-for-testing.highlightJavaScript` bootstrap
+model. It covers the template-literal interpolation path from Bun's
+quick JavaScript syntax highlighter; the pure Zig `fmtJavaScript` /
+`fmt_jsc` binding port remains the native follow-up.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

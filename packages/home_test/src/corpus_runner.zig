@@ -141,6 +141,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/util/randomUUIDv7.test.ts",
     "js/node/process-binding.test.ts",
     "js/bun/test/test-timers.test.ts",
+    "internal/highlighter.test.ts",
     "js/web/encoding/text-decoder-cjk.test.ts",
     "js/web/encoding/text-decoder-single-byte.test.ts",
     "regression/issue/fix-bindings-stack-trace.test.ts",
@@ -1897,6 +1898,10 @@ const harness_prelude =
     \\    toBeGreaterThan(expected) {
     \\      if (arguments.length < 1) __home_fail("toBeGreaterThan() requires 1 argument");
     \\      __home_assert(value > expected, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be greater than " + __home_format(expected));
+    \\    },
+    \\    toBeLessThan(expected) {
+    \\      if (arguments.length < 1) __home_fail("toBeLessThan() requires 1 argument");
+    \\      __home_assert(value < expected, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be less than " + __home_format(expected));
     \\    },
     \\    toBeGreaterThanOrEqual(expected) {
     \\      if (arguments.length < 1) __home_fail("toBeGreaterThanOrEqual() requires 1 argument");
@@ -4917,6 +4922,98 @@ const harness_prelude =
     \\    ],
     \\  };
     \\};
+    \\function __home_js_highlight_is_identifier_start(char) {
+    \\  return /^[A-Za-z_$]$/.test(char);
+    \\}
+    \\function __home_js_highlight_is_identifier_continue(char) {
+    \\  return /^[A-Za-z0-9_$]$/.test(char);
+    \\}
+    \\function __home_highlight_javascript(source) {
+    \\  const input = String(source);
+    \\  const reset = "\x1b[0m";
+    \\  const green = "\x1b[32m";
+    \\  const yellow = "\x1b[33m";
+    \\  const dim = "\x1b[2m";
+    \\  const magenta = "\x1b[35m";
+    \\  const blue = "\x1b[34m";
+    \\  const keywordColors = {
+    \\    abstract: blue, as: blue, async: magenta, await: magenta, boolean: blue, break: magenta,
+    \\    case: magenta, catch: magenta, class: magenta, const: magenta, continue: magenta,
+    \\    declare: blue, default: magenta, do: magenta, else: magenta, export: magenta,
+    \\    false: yellow, finally: magenta, for: magenta, function: magenta, if: magenta,
+    \\    import: magenta, in: magenta, instanceof: magenta, interface: blue, let: magenta,
+    \\    namespace: blue, never: blue, new: magenta, null: yellow, number: blue,
+    \\    object: blue, readonly: blue, return: magenta, string: blue, super: magenta,
+    \\    switch: magenta, symbol: blue, this: yellow, throw: magenta, true: yellow,
+    \\    try: magenta, type: blue, typeof: magenta, undefined: yellow, unknown: blue,
+    \\    var: magenta, void: magenta, while: magenta, with: magenta, yield: magenta,
+    \\  };
+    \\  function highlightRange(text) {
+    \\    let out = "";
+    \\    let i = 0;
+    \\    while (i < text.length) {
+    \\      const c = text[i];
+    \\      if (__home_js_highlight_is_identifier_start(c)) {
+    \\        let end = i + 1;
+    \\        while (end < text.length && __home_js_highlight_is_identifier_continue(text[end])) end++;
+    \\        const word = text.slice(i, end);
+    \\        out += Object.prototype.hasOwnProperty.call(keywordColors, word) ? reset + keywordColors[word] + word + reset : word;
+    \\        i = end;
+    \\        continue;
+    \\      }
+    \\      if (c >= "0" && c <= "9") {
+    \\        let end = i + 1;
+    \\        while (end < text.length && /[0-9.eExXbBoO]/.test(text[end])) end++;
+    \\        out += reset + yellow + text.slice(i, end) + reset;
+    \\        i = end;
+    \\        continue;
+    \\      }
+    \\      if (c === "/" && text[i + 1] === "/") {
+    \\        let end = i + 2;
+    \\        while (end < text.length && text[end] !== "\n") end++;
+    \\        out += reset + dim + text.slice(i, end) + reset;
+    \\        i = end;
+    \\        continue;
+    \\      }
+    \\      if (c === "'" || c === "\"" || c === "`") {
+    \\        const quote = c;
+    \\        let end = i + 1;
+    \\        let chunkStart = i;
+    \\        while (end < text.length && text[end] !== quote) {
+    \\          if (quote === "`" && text[end] === "$" && text[end + 1] === "{") {
+    \\            out += reset + green + text.slice(chunkStart, end) + reset + "${";
+    \\            end += 2;
+    \\            const exprStart = end;
+    \\            let depth = 1;
+    \\            while (end < text.length && depth > 0) {
+    \\              if (text[end] === "\\") end += 2;
+    \\              else if (text[end] === "{") { depth++; end++; }
+    \\              else if (text[end] === "}") { depth--; if (depth === 0) break; end++; }
+    \\              else end++;
+    \\            }
+    \\            out += highlightRange(text.slice(exprStart, end));
+    \\            if (end < text.length && text[end] === "}") {
+    \\              out += "}";
+    \\              end++;
+    \\            }
+    \\            chunkStart = end;
+    \\            continue;
+    \\          }
+    \\          if (text[end] === "\\") end++;
+    \\          end++;
+    \\        }
+    \\        if (end < text.length) end++;
+    \\        out += reset + green + text.slice(chunkStart, end) + reset;
+    \\        i = end;
+    \\        continue;
+    \\      }
+    \\      out += c;
+    \\      i++;
+    \\    }
+    \\    return out;
+    \\  }
+    \\  return highlightRange(input);
+    \\}
     \\globalThis.__home_modules["bun:internal-for-testing"] = {
     \\  escapeRegExp(value) {
     \\    return __home_escape_regexp(value, false);
@@ -4926,6 +5023,9 @@ const harness_prelude =
     \\  },
     \\  escapePowershell(value) {
     \\    return __home_escape_powershell(value);
+    \\  },
+    \\  highlightJavaScript(value) {
+    \\    return __home_highlight_javascript(value);
     \\  },
     \\  getDevServerDeinitCount() {
     \\    if (typeof globalThis.__home_getDevServerDeinitCountNative !== "function") __home_unsupported("Bun Bake DevServer deinit counter native bridge is not installed");
@@ -6786,6 +6886,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { escapePowershell } = globalThis.__home_import(\"bun:internal-for-testing\");",
         },
         .{
+            .needle = "import { highlightJavaScript as highlighter } from \"bun:internal-for-testing\";",
+            .replacement = "const { highlightJavaScript: highlighter } = globalThis.__home_import(\"bun:internal-for-testing\");",
+        },
+        .{
             .needle = "import { frameworkRouterInternals } from \"bun:internal-for-testing\";",
             .replacement = "const { frameworkRouterInternals } = globalThis.__home_import(\"bun:internal-for-testing\");",
         },
@@ -7347,6 +7451,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toMatchInlineSnapshot(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_format_snapshot(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeGreaterThan(expected)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeLessThan(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_expect_any_matches(value, ctor)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_array_buffer_view(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_concat_array_buffers") != null);
@@ -7407,6 +7512,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun:internal-for-testing\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "escapeRegExpForPackageNameMatching(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "escapePowershell(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "highlightJavaScript(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "getDevServerDeinitCount()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_getDevServerDeinitCountNative()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun:jsc\"]") != null);
@@ -7494,6 +7600,19 @@ test "Bun test import rewrite lowers single test binding" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { test } = globalThis.__home_import(\"bun:test\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "test(\"fixture\"") != null);
+}
+
+test "internal highlighter import rewrite lowers alias binding" {
+    const source =
+        \\import { highlightJavaScript as highlighter } from "bun:internal-for-testing";
+        \\import { expect, test } from "bun:test";
+        \\test("highlighter", () => expect(highlighter("123").length).toBeLessThan(20));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "internal/highlighter.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { highlightJavaScript: highlighter } = globalThis.__home_import(\"bun:internal-for-testing\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:internal-for-testing\"") == null);
 }
 
 test "minimal JS subset includes low-risk Bun corpus expansion files" {
@@ -9535,6 +9654,31 @@ test "bootstrap jest fake timers keep Bun Date identity" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/test-timers.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap internal highlighter handles template interpolation" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { highlightJavaScript as highlighter } from "bun:internal-for-testing";
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("highlighter", () => {
+        \\  expect(highlighter("`can do ${123} ${'123'} ${`123`}`").length).toBeLessThan(150);
+        \\  expect(highlighter("`can do ${123} ${'123'} ${`123`}`123").length).toBeLessThan(150);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "internal/highlighter.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
