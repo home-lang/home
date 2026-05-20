@@ -191,7 +191,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes one hundred forty-five allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes one hundred forty-six allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-four
@@ -235,6 +235,7 @@ Jest fake-timer Date / `Intl.DateTimeFormat` smoke coverage,
 `bun:internal-for-testing.highlightJavaScript` template-literal coverage,
 `home test --pass-with-no-tests` subprocess exit/stderr coverage,
 JS-only `Bun.serve({ fetch })` / long-lived `Bun.spawn` server-fixture coverage,
+IPC-style server-fixture URL delivery and URL(base) coverage,
 `import.meta.resolve` / `resolveSync` bad-parent throw behavior,
 `jest.resetAllMocks` / `mockReturnThis`, `node:path` isAbsolute and
 zero-length string behavior plus basename/extname/normalize/join/dirname,
@@ -263,7 +264,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `145` files, `630` passed, `0` failed,
+Latest measured subset run: `146` files, `631` passed, `0` failed,
 `40` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
@@ -1177,6 +1178,13 @@ an async-iterable stdout URL, `kill()`, null `signalCode` before kill,
 and a JS-only `Bun.serve({ fetch })` path that echoes parsed JSON
 request bodies. Native parity still needs the real async subprocess
 handle and streaming pipe bridge.
+
+The copied `js/bun/http/req-url-leak.test.ts` fixture now passes in Home
+as `1` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap
+models the long-lived IPC server fixture by delivering `{ url }` through
+the `Bun.spawn({ ipc })` callback, serving bounded RSS text, and accepting
+large relative URLs via `new URL(input, base)`. Native parity still needs
+the real IPC subprocess bridge and memory-behavior validation.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

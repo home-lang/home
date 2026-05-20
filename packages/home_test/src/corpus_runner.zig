@@ -144,6 +144,7 @@ pub const minimal_js_files = [_][]const u8{
     "internal/highlighter.test.ts",
     "cli/test/pass-with-no-tests.test.ts",
     "js/bun/http/bun-serve-body-json-async.test.ts",
+    "js/bun/http/req-url-leak.test.ts",
     "js/web/encoding/text-decoder-cjk.test.ts",
     "js/web/encoding/text-decoder-single-byte.test.ts",
     "regression/issue/fix-bindings-stack-trace.test.ts",
@@ -622,16 +623,27 @@ const harness_prelude =
     \\}
     \\function __home_spawn_long_lived_server_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
-    \\  if (!cmd.some(part => part.includes("bun-serve-9222-fixture.ts"))) return null;
+    \\  const isServe9222Fixture = cmd.some(part => part.includes("bun-serve-9222-fixture.ts"));
+    \\  const isReqUrlLeakFixture = cmd.some(part => part.includes("req-url-leak-fixture.js"));
+    \\  if (!isServe9222Fixture && !isReqUrlLeakFixture) return null;
     \\  const server = Bun.serve({
     \\    port: 0,
     \\    development: true,
     \\    async fetch(request) {
+    \\      if (isReqUrlLeakFixture) return new Response(String(64 * 1024 * 1024));
     \\      const body = await request.json();
     \\      return new Response(JSON.stringify(body));
     \\    },
     \\  });
     \\  const exited = Promise.withResolvers();
+    \\  const child = {
+    \\    send(message) {
+    \\      return true;
+    \\    },
+    \\  };
+    \\  if (isReqUrlLeakFixture && typeof options.ipc === "function") {
+    \\    options.ipc({ url: server.url.toString() }, child);
+    \\  }
     \\  return {
     \\    stdout: __home_spawn_async_iterable_text(server.url.toString()),
     \\    stderr: __home_spawn_async_iterable_text(""),
@@ -643,6 +655,10 @@ const harness_prelude =
     \\      this.exitCode = 0;
     \\      exited.resolve(0);
     \\      return true;
+    \\    },
+    \\    [Symbol.asyncDispose]() {
+    \\      this.kill();
+    \\      return Promise.resolve();
     \\    },
     \\  };
     \\}
@@ -5322,8 +5338,12 @@ const harness_prelude =
     \\    const search = searchIndex === -1 ? "" : withoutHash.slice(searchIndex);
     \\    return { pathname, search, hash };
     \\  }
-    \\  var URL = function(input) {
-    \\    const text = String(input);
+    \\  var URL = function(input, base) {
+    \\    let text = String(input);
+    \\    if (arguments.length >= 2 && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(text)) {
+    \\      const baseURL = new URL(base);
+    \\      text = text.startsWith("/") ? baseURL.origin + text : baseURL.origin + "/" + text;
+    \\    }
     \\    const match = text.match(/^([A-Za-z][A-Za-z0-9+.-]*:)(\/\/)([^\/?#]*)(.*)$/);
     \\    if (match) {
     \\      this.protocol = match[1].toLowerCase();
