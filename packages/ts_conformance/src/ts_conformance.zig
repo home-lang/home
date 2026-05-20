@@ -3444,6 +3444,105 @@ test "conformance: sub-strict directive without @strict keeps inferred strict-on
     try T.expect(merged_with_strict_on.use_unknown_in_catch_variables);
 }
 
+test "conformance: initializerReferencingConstructorLocals value-position slice" {
+    // Slice of `initializerReferencingConstructorLocals.ts` covering
+    // the value-position references — `c = this.z` (TS2339 with the
+    // class display name) and the bare `z` identifier (TS2304). The
+    // full fixture also exercises `b: typeof z` / `d: typeof this.z`
+    // in type position; the typeof-on-this property check is a
+    // follow-up. Tests both non-generic and generic class forms so
+    // the partial class type renders as `'C'` and `'D<T>'`.
+    const result = try runOneEntry(T.allocator, .{
+        .name = "initializerReferencingConstructorLocals",
+        .path = "initializerReferencingConstructorLocals.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\class C {
+        \\    a = z; // error
+        \\    c = this.z; // error
+        \\    constructor(x) {
+        \\        z = 1;
+        \\    }
+        \\}
+        \\
+        \\class D<T> {
+        \\    a = z; // error
+        \\    c = this.z; // error
+        \\    constructor(x: T) {
+        \\        z = 1;
+        \\    }
+        \\}
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\initializerReferencingConstructorLocals.ts(2,9): error TS2304: Cannot find name 'z'.
+        \\initializerReferencingConstructorLocals.ts(3,14): error TS2339: Property 'z' does not exist on type 'C'.
+        \\initializerReferencingConstructorLocals.ts(5,9): error TS2304: Cannot find name 'z'.
+        \\initializerReferencingConstructorLocals.ts(10,9): error TS2304: Cannot find name 'z'.
+        \\initializerReferencingConstructorLocals.ts(11,14): error TS2339: Property 'z' does not exist on type 'D<T>'.
+        \\initializerReferencingConstructorLocals.ts(13,9): error TS2304: Cannot find name 'z'.
+        ,
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: assignParameterPropertyToPropertyDeclaration class-C slice" {
+    // Slice of `assignParameterPropertyToPropertyDeclarationES2022.ts`
+    // covering the class-C body: five TS2729 fires across forward
+    // field refs (`qux = this.bar`), parameter-property refs
+    // (`bar = this.foo`), and backwards method-expression refs
+    // (`quanch = this.m3()`). The full fixture also exercises nested
+    // `class extends Outer { ... }` patterns where the inner class's
+    // partial parent type doesn't yet include the outer's later
+    // fields; that path is a follow-up.
+    const result = try runOneEntry(T.allocator, .{
+        .name = "assignParameterPropertyToPropertyDeclarationES2022",
+        .path = "assignParameterPropertyToPropertyDeclarationES2022.ts",
+        .source =
+        \\// @useDefineForClassFields: true
+        \\// @target: es2022
+        \\class C {
+        \\    qux = this.bar // should error
+        \\    bar = this.foo // should error
+        \\    quiz = this.bar // ok
+        \\    quench = this.m1() // ok
+        \\    quanch = this.m3() // should error
+        \\    m1() {
+        \\        this.foo // ok
+        \\    }
+        \\    m3 = function() { }
+        \\    constructor(public foo: string) {}
+        \\    quim = this.baz // should error
+        \\    baz = this.foo; // should error
+        \\    quid = this.baz // ok
+        \\    m2() {
+        \\        this.foo // ok
+        \\    }
+        \\}
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\assignParameterPropertyToPropertyDeclarationES2022.ts(2,16): error TS2729: Property 'bar' is used before its initialization.
+        \\assignParameterPropertyToPropertyDeclarationES2022.ts(3,16): error TS2729: Property 'foo' is used before its initialization.
+        \\assignParameterPropertyToPropertyDeclarationES2022.ts(6,19): error TS2729: Property 'm3' is used before its initialization.
+        \\assignParameterPropertyToPropertyDeclarationES2022.ts(12,17): error TS2729: Property 'baz' is used before its initialization.
+        \\assignParameterPropertyToPropertyDeclarationES2022.ts(13,16): error TS2729: Property 'foo' is used before its initialization.
+        ,
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: directReferenceToNull emits TS2304" {
     const result = try runOneEntry(T.allocator, .{
         .name = "directReferenceToNull",

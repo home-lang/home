@@ -13969,6 +13969,97 @@ pub const Checker = struct {
             }
         }
 
+        // Pre-scan non-static class fields and methods so a sibling
+        // field initializer's `this.<future-member>` access resolves
+        // against the partial class instance type without raising a
+        // spurious TS2339 ("does not exist on type '{a: any; ...}'").
+        // Stub the type as `any` here; the main loop's field /
+        // method branch updates the entry with the actual computed
+        // type by index. Tracked names are skipped when the main
+        // loop reaches the duplicate-append branch.
+        // Mirrors the part of upstream tsc where the full class
+        // instance type is materialized before per-field checking,
+        // not incrementally as members are visited.
+        //
+        // `preseeded_future_field_names` is the field-only subset
+        // (no methods) used by the TS2729 forward-ref check below:
+        // `qux = this.bar` where `bar` is a sibling field declared
+        // later in source order fires TS2729 on the access.
+        var preseeded_field_indices: std.AutoHashMapUnmanaged(hir_mod.StringId, usize) = .empty;
+        defer preseeded_field_indices.deinit(self.gpa);
+        var preseeded_future_field_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer preseeded_future_field_names.deinit(self.gpa);
+        // Seed inherited instance members from the base class so a
+        // sibling field initializer's `this.<inherited-member>`
+        // access resolves through the partial class type — e.g.
+        // `class D extends C { quill = this.foo }` reading `foo`
+        // declared on C. Record each name in `preseeded_field_indices`
+        // so the own-field branch's replacement logic overwrites the
+        // inherited stub when the subclass re-declares the member
+        // (TS2416-style child overrides win in the structural shape).
+        // Don't add to `preseeded_future_field_names` — these aren't
+        // "future" fields of this class.
+        if (parent_instance_t) |pt| {
+            if (pt < self.interner.pool.typeCount() and self.interner.pool.flagsOf(pt).is_object_type) {
+                for (self.interner.objectMembers(pt)) |inherited| {
+                    if (preseeded_field_indices.contains(inherited.name)) continue;
+                    try preseeded_field_indices.put(self.gpa, inherited.name, instance_members.items.len);
+                    try instance_member_names_local.put(self.gpa, inherited.name, {});
+                    try instance_members.append(self.gpa, inherited);
+                }
+            }
+        }
+        for (members) |m| {
+            const mk = self.hir.kindOf(m);
+            // Field-style class member (`x = 1;` / `x: T;`).
+            if (mk == .object_property) {
+                const op = hir_mod.objectPropertyOf(self.hir, m);
+                if (op.is_static) continue;
+                if (op.is_computed) continue;
+                if (op.key == hir_mod.none_node_id) continue;
+                const member_name = (try self.classMemberNameFromPropertyKey(op.key, false)) orelse continue;
+                if (preseeded_param_property_names.contains(member_name)) continue;
+                if (preseeded_field_indices.contains(member_name)) continue;
+                try instance_member_names_local.put(self.gpa, member_name, {});
+                try preseeded_field_indices.put(self.gpa, member_name, instance_members.items.len);
+                if (!op.is_method) {
+                    try preseeded_future_field_names.put(self.gpa, member_name, {});
+                }
+                try instance_members.append(self.gpa, .{
+                    .name = member_name,
+                    .type = types.Primitive.any,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = op.is_method,
+                });
+                continue;
+            }
+            // Method-shorthand class member (`m() { ... }`). Skip
+            // getter/setter accessors — they share a property name
+            // with sibling accessors and go through a duplicate-name
+            // check (line ~14293) that would misfire against a
+            // pre-seeded stub.
+            if (mk == .fn_decl or mk == .fn_expr or mk == .arrow_fn) {
+                const fp = hir_mod.fnDeclOf(self.hir, m);
+                if (fp.flags.is_static) continue;
+                if (fp.flags.is_constructor) continue;
+                if (fp.flags.is_getter or fp.flags.is_setter) continue;
+                if (fp.name == hir_mod.none_node_id) continue;
+                const member_name = (try self.classMemberNameFromFunctionName(fp.name)) orelse continue;
+                if (preseeded_param_property_names.contains(member_name)) continue;
+                if (preseeded_field_indices.contains(member_name)) continue;
+                try instance_member_names_local.put(self.gpa, member_name, {});
+                try preseeded_field_indices.put(self.gpa, member_name, instance_members.items.len);
+                try instance_members.append(self.gpa, .{
+                    .name = member_name,
+                    .type = types.Primitive.any,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = true,
+                });
+            }
+        }
+
         var has_binding_pattern_parameter_property = false;
         for (members) |m| {
             const k = self.hir.kindOf(m);
@@ -14439,6 +14530,9 @@ pub const Checker = struct {
                     if (fn_p.flags.is_static) {
                         try static_members.append(self.gpa, method_member);
                         if (method_predicate) |pred| try static_member_predicates.put(self.gpa, member_name, pred);
+                    } else if (preseeded_field_indices.get(member_name)) |idx| {
+                        instance_members.items[idx] = method_member;
+                        if (method_predicate) |pred| try instance_member_predicates.put(self.gpa, member_name, pred);
                     } else {
                         try instance_members.append(self.gpa, method_member);
                         if (method_predicate) |pred| try instance_member_predicates.put(self.gpa, member_name, pred);
@@ -14628,6 +14722,9 @@ pub const Checker = struct {
                         if (op.is_static) {
                             try static_members.append(self.gpa, method_member);
                             if (method_predicate) |pred| try static_member_predicates.put(self.gpa, member_name, pred);
+                        } else if (preseeded_field_indices.get(member_name)) |idx| {
+                            instance_members.items[idx] = method_member;
+                            if (method_predicate) |pred| try instance_member_predicates.put(self.gpa, member_name, pred);
                         } else {
                             try instance_members.append(self.gpa, method_member);
                             if (method_predicate) |pred| try instance_member_predicates.put(self.gpa, member_name, pred);
@@ -14699,6 +14796,13 @@ pub const Checker = struct {
                         }
                         try self.checkFieldInitializerParameterPropertyOrder(m, op.value, &parameter_property_names);
                         try self.checkFieldInitializerRedeclaredFieldOrder(op.value, &uninit_instance_field_names);
+                        // The current field is no longer "future" —
+                        // remove it from the forward-ref set BEFORE
+                        // running the forward-ref check, so a field
+                        // referring to itself (`a = this.a`) does not
+                        // count as a forward ref.
+                        _ = preseeded_future_field_names.remove(member_name);
+                        try self.checkFieldInitializerForwardFieldRef(op.value, &preseeded_future_field_names);
                         // Record fields with no initializer (and no
                         // `!` definite-assignment — our HIR doesn't
                         // track `!` yet, so we accept the rare
@@ -14758,6 +14862,37 @@ pub const Checker = struct {
                                     number_idx,
                                     symbol_idx,
                                 ) catch return error.OutOfMemory;
+                            // Register the partial class type under
+                            // the enclosing class name so TS2339 /
+                            // TS2741 prose renders as `'C'` /
+                            // `'D<T>'` (via `classDisplayName`)
+                            // instead of the structural shape.
+                            // Mirrors `initializerReferencingConstructorLocals.ts(6,14)`.
+                            if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
+                                const class_name_id = hir_mod.identifierOf(self.hir, c.name).name;
+                                if (op.is_static) {
+                                    try self.class_name_by_static.put(self.gpa, partial_this_t, class_name_id);
+                                } else {
+                                    try self.class_name_by_instance.put(self.gpa, partial_this_t, class_name_id);
+                                }
+                                // For generic classes, also register
+                                // an `alias_display_name` carrying
+                                // the `<T, U, …>` suffix so the prose
+                                // matches tsc's `'D<T>'` rendering.
+                                // `classDisplayName` returns a `gpa`
+                                // allocation; copy into the diag
+                                // arena so we don't leak it (the
+                                // diag arena resets per source-file
+                                // check; alias_display_names entries
+                                // are pure borrowed views).
+                                if (c.type_params_len > 0 and !self.alias_display_names.contains(partial_this_t)) {
+                                    if (self.classDisplayName(node, class_name_id) catch null) |display| {
+                                        defer self.gpa.free(display);
+                                        const stored = try self.diag_arena.allocator().dupe(u8, display);
+                                        try self.alias_display_names.put(self.gpa, partial_this_t, stored);
+                                    }
+                                }
+                            }
                             try self.pushNarrowScope();
                             defer self.popNarrowScope();
                             try self.recordNarrow(this_id, partial_this_t);
@@ -14870,6 +15005,14 @@ pub const Checker = struct {
                     };
                     if (op.is_static) {
                         try static_members.append(self.gpa, field_member);
+                    } else if (preseeded_field_indices.get(member_name)) |idx| {
+                        // The pre-scan placed an `any`-typed stub at
+                        // `idx`; replace it with the real type now
+                        // that we've computed the annotation- or
+                        // initializer-inferred type. Keeps
+                        // `instance_members` from carrying duplicate
+                        // entries for the same field name.
+                        instance_members.items[idx] = field_member;
                     } else {
                         try instance_members.append(self.gpa, field_member);
                     }
@@ -18403,6 +18546,38 @@ pub const Checker = struct {
             .code = TsCodes.method_overridden_by_accessor,
             .message = msg,
         });
+    }
+
+    /// `qux = this.bar` where `bar` is a sibling field declared
+    /// later in source order reads undefined at runtime and tsc
+    /// reports TS2729 anchored at the property-name segment of the
+    /// access. Mirrors `assignParameterPropertyToPropertyDeclarationES2022.ts(2,16)`.
+    fn checkFieldInitializerForwardFieldRef(
+        self: *Checker,
+        init_node: NodeId,
+        future_field_names: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) CheckError!void {
+        if (init_node == hir_mod.none_node_id or future_field_names.count() == 0) return;
+        if (!self.sourceHasUseDefineForClassFieldsTrueDirective()) return;
+        var it = future_field_names.keyIterator();
+        while (it.next()) |name_ptr| {
+            const access_node = self.findThisMemberAccess(init_node, name_ptr.*);
+            if (access_node == hir_mod.none_node_id) continue;
+            const name_text = self.string_interner.get(name_ptr.*);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Property '{s}' is used before its initialization.",
+                .{name_text},
+            );
+            const property_name_pos = self.memberAccessPropertyNamePos(access_node);
+            try self.diagnostics.append(self.gpa, .{
+                .node = access_node,
+                .pos = property_name_pos,
+                .code = TsCodes.property_used_before_initialization,
+                .message = msg,
+            });
+            return;
+        }
     }
 
     /// Under `useDefineForClassFields: true`, a class field declared
@@ -55126,6 +55301,18 @@ pub const Checker = struct {
                     break :blk self.string_interner.get(enum_name);
                 }
                 if (self.namedTypeForId(t)) |type_name| {
+                    // An `alias_display_names` entry (registered for
+                    // generic-alias instantiations or partial class
+                    // types built during field checks) already
+                    // includes the `<…>` type-arg suffix — prefer it
+                    // over the bare class name. Mirrors
+                    // `initializerReferencingConstructorLocals.ts(16,14)`
+                    // where the partial type for `D<T>` must render
+                    // with the formal parameter, not collapse to
+                    // `'D'`.
+                    if (self.alias_display_names.get(t)) |display| {
+                        break :blk display;
+                    }
                     // Generic class self-instance (`this: C1<T, U, V>`):
                     // when the named type is the body of a generic alias
                     // AND the alias's formal type-parameter ids are all
@@ -55136,7 +55323,7 @@ pub const Checker = struct {
                     // `this.b` inside a `C1<T, U, V>` method renders
                     // `Property 'b' does not exist on type 'C1<T, U, V>'.`
                     // rather than collapsing to `'C1'`.
-                    if (self.alias_display_names.get(t) == null) {
+                    {
                         if (self.genericAliasFormalDisplayName(type_name, t) catch null) |display| {
                             break :blk display;
                         }
@@ -55601,6 +55788,16 @@ pub const Checker = struct {
         var it = self.type_names.iterator();
         while (it.next()) |entry| {
             if (entry.value_ptr.* == t) return entry.key_ptr.*;
+        }
+        // Partial class instance types built inside per-field
+        // initializer checks aren't in `type_names` yet but they are
+        // registered in `class_name_by_instance` at construction time
+        // (see the `partial_this_t` registration). Surface them here
+        // so TS2339 / TS2741 prose can render them by their class
+        // name rather than the structural member shape. Mirrors
+        // `initializerReferencingConstructorLocals.ts(6,14)`.
+        if (self.class_name_by_instance.get(t)) |class_name_id| {
+            return class_name_id;
         }
         return null;
     }
