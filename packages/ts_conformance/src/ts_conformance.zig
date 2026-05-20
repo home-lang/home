@@ -3955,6 +3955,121 @@ test "conformance: instanceMemberInitialization passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: neverType passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "neverType",
+        .path = "neverType.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strictNullChecks: true
+        \\// @declaration: true
+        \\
+        \\
+        \\function error(message: string): never {
+        \\    throw new Error(message);
+        \\}
+        \\
+        \\function errorVoid(message: string) {
+        \\    throw new Error(message);
+        \\}
+        \\
+        \\function fail() {
+        \\    return error("Something failed");
+        \\}
+        \\
+        \\function failOrThrow(shouldFail: boolean) {
+        \\    if (shouldFail) {
+        \\        return fail();
+        \\    }
+        \\    throw new Error();
+        \\}
+        \\
+        \\function infiniteLoop1() {
+        \\    while (true) {
+        \\    }
+        \\}
+        \\
+        \\function infiniteLoop2(): never {
+        \\    while (true) {
+        \\    }
+        \\}
+        \\
+        \\function move1(direction: "up" | "down") {
+        \\    switch (direction) {
+        \\        case "up":
+        \\            return 1;
+        \\        case "down":
+        \\            return -1;
+        \\    }
+        \\    return error("Should never get here");
+        \\}
+        \\
+        \\function move2(direction: "up" | "down") {
+        \\    return direction === "up" ? 1 :
+        \\        direction === "down" ? -1 :
+        \\        error("Should never get here");
+        \\}
+        \\
+        \\function check<T>(x: T | undefined) {
+        \\    return x || error("Undefined value");
+        \\}
+        \\
+        \\class C {
+        \\    void1() {
+        \\        throw new Error();
+        \\    }
+        \\    void2() {
+        \\        while (true) {}
+        \\    }
+        \\    never1(): never {
+        \\        throw new Error();
+        \\    }
+        \\    never2(): never {
+        \\        while (true) {}
+        \\    }
+        \\}
+        \\
+        \\function f1(x: string | number) {
+        \\    if (typeof x === "boolean") {
+        \\        x;  // never
+        \\    }
+        \\}
+        \\
+        \\function f2(x: string | number) {
+        \\    while (true) {
+        \\        if (typeof x === "boolean") {
+        \\            return x;  // never
+        \\        }
+        \\    }
+        \\}
+        \\
+        \\function test(cb: () => string) {
+        \\    let s = cb();
+        \\    return s;
+        \\}
+        \\
+        \\let errorCallback = () => error("Error callback");
+        \\
+        \\test(() => "hello");
+        \\test(() => fail());
+        \\test(() => { throw new Error(); })
+        \\test(errorCallback);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    if (result.outcome != .passed) {
+        std.debug.print("neverType detail:\n{s}\n", .{result.detail});
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: privateInstanceVisibility matches TS2564 baseline" {
     const result = try runOneEntry(T.allocator, .{
         .name = "privateInstanceVisibility",
