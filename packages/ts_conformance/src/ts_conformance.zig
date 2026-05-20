@@ -3955,6 +3955,107 @@ test "conformance: instanceMemberInitialization passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: keyofIntersection passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "keyofIntersection",
+        .path = "keyofIntersection.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\// @declaration: true
+        \\
+        \\type A = { a: string };
+        \\type B = { b: string };
+        \\
+        \\type T01 = keyof (A & B);  // "a" | "b"
+        \\type T02<T> = keyof (T & B);  // "b" | keyof T
+        \\type T03<U> = keyof (A & U);  // "a" | keyof U
+        \\type T04<T, U> = keyof (T & U);  // keyof T | keyof U
+        \\type T05 = T02<A>;  // "a" | "b"
+        \\type T06 = T03<B>;  // "a" | "b"
+        \\type T07 = T04<A, B>;  // "a" | "b"
+        \\
+        \\// Repros from #22291
+        \\
+        \\type Example1<T extends string, U extends string> = keyof (Record<T, any> & Record<U, any>);
+        \\type Result1 = Example1<'x', 'y'>;  // "x" | "y"
+        \\
+        \\type Result2 = keyof (Record<'x', any> & Record<'y', any>);  // "x" | "y"
+        \\
+        \\type Example3<T extends string> = keyof (Record<T, any>);
+        \\type Result3 = Example3<'x' | 'y'>;  // "x" | "y"
+        \\
+        \\type Example4<T extends string, U extends string> = (Record<T, any> & Record<U, any>);
+        \\type Result4 = keyof Example4<'x', 'y'>;  // "x" | "y"
+        \\
+        \\type Example5<T, U> = keyof (T & U);
+        \\type Result5 = Example5<Record<'x', any>, Record<'y', any>>;  // "x" | "y"
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: keyofAndForIn passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "keyofAndForIn",
+        .path = "keyofAndForIn.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\
+        \\// Repro from #12513
+        \\
+        \\function f1<K extends string, T>(obj: { [P in K]: T }, k: K) {
+        \\    const b = k in obj;
+        \\    let k1: K;
+        \\    for (k1 in obj) {
+        \\        let x1 = obj[k1];
+        \\    }
+        \\    for (let k2 in obj) {
+        \\        let x2 = obj[k2];
+        \\    }
+        \\}
+        \\
+        \\function f2<T>(obj: { [P in keyof T]: T[P] }, k: keyof T) {
+        \\    const b = k in obj;
+        \\    let k1: keyof T;
+        \\    for (k1 in obj) {
+        \\        let x1 = obj[k1];
+        \\    }
+        \\    for (let k2 in obj) {
+        \\        let x2 = obj[k2];
+        \\    }
+        \\}
+        \\
+        \\function f3<T, K extends keyof T>(obj: { [P in K]: T[P] }, k: K) {
+        \\    const b = k in obj;
+        \\    let k1: K;
+        \\    for (k1 in obj) {
+        \\        let x1 = obj[k1];
+        \\    }
+        \\    for (let k2 in obj) {
+        \\        let x2 = obj[k2];
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: objectTypesIdentityWithComplexConstraints passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "objectTypesIdentityWithComplexConstraints",
