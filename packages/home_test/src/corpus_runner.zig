@@ -99,6 +99,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/23382.test.js",
     "js/bun/util/escapeRegExp.test.ts",
     "regression/issue/24045.test.ts",
+    "regression/issue/07324.test.ts",
 };
 
 const harness_prelude =
@@ -652,6 +653,9 @@ const harness_prelude =
     \\    },
     \\    toBe(expected) {
     \\      __home_assert(Object.is(value, expected), isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be " + __home_format(expected));
+    \\    },
+    \\    pass() {
+    \\      __home_assert(true, isNot, "Expected explicit pass");
     \\    },
     \\    toBeGreaterThan(expected) {
     \\      if (arguments.length < 1) __home_fail("toBeGreaterThan() requires 1 argument");
@@ -1663,6 +1667,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": number =", .replacement = " =" },
         .{ .needle = ": string)=>", .replacement = ")=>" },
         .{ .needle = ": string, value: string)", .replacement = ", value)" },
+        .{ .needle = "readonly foo: FooParent", .replacement = "foo" },
+        .{ .needle = "override foo: FooChild", .replacement = "foo" },
         .{ .needle = ": any)", .replacement = ")" },
         .{ .needle = ": Event)", .replacement = ")" },
         .{ .needle = ": any;", .replacement = ";" },
@@ -2059,6 +2065,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/23382.test.js", filesForSubset(.minimal_js)[45]);
     try std.testing.expectEqualStrings("js/bun/util/escapeRegExp.test.ts", filesForSubset(.minimal_js)[46]);
     try std.testing.expectEqualStrings("regression/issue/24045.test.ts", filesForSubset(.minimal_js)[47]);
+    try std.testing.expectEqualStrings("regression/issue/07324.test.ts", filesForSubset(.minimal_js)[48]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -2073,6 +2080,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.versions.bun = Bun.version") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.on = function(name, listener)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.emit = function(name)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "pass()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeInstanceOf(ctor)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeInstanceOf() requires 1 argument") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Expected value must be a function:") != null);
@@ -2359,6 +2367,33 @@ test "bootstrap rewrite erases Deno URLSearchParams type syntax" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, " as ") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "IterableIterator") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "append(name, value)") != null);
+}
+
+test "bootstrap rewrite erases TypeScript constructor accessibility modifiers" {
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("override is an accessibility modifier", () => {
+        \\  class FooParent {}
+        \\  class FooChild extends FooParent {}
+        \\  class BarParent {
+        \\    constructor(readonly foo: FooParent) {}
+        \\  }
+        \\  class BarChild extends BarParent {
+        \\    constructor(override foo: FooChild) {
+        \\      super(foo);
+        \\    }
+        \\  }
+        \\  new BarChild(new FooChild());
+        \\  expect().pass();
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/07324.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "constructor(foo)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "readonly foo") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "override foo") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, ": Foo") == null);
 }
 
 test "bootstrap rewrite erases const assertions" {
@@ -2800,6 +2835,45 @@ test "bootstrap runner covers assert strict boxed primitive equality" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
+test "bootstrap runner covers TypeScript override accessibility smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("override is an accessibility modifier", () => {
+        \\  class FooParent {}
+        \\
+        \\  class FooChild extends FooParent {}
+        \\
+        \\  class BarParent {
+        \\    constructor(readonly foo: FooParent) {}
+        \\  }
+        \\
+        \\  class BarChild extends BarParent {
+        \\    constructor(override foo: FooChild) {
+        \\      super(foo);
+        \\    }
+        \\  }
+        \\
+        \\  new BarChild(new FooChild());
+        \\
+        \\  expect().pass();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/07324.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner reports unsupported thrown by harness as unsupported" {
