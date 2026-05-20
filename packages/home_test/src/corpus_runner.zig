@@ -139,6 +139,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/util/file-type.test.ts",
     "js/node/url/url-pathtofileurl.test.js",
     "js/bun/util/randomUUIDv7.test.ts",
+    "js/node/process-binding.test.ts",
     "js/web/encoding/text-decoder-cjk.test.ts",
     "js/web/encoding/text-decoder-single-byte.test.ts",
     "regression/issue/fix-bindings-stack-trace.test.ts",
@@ -1245,6 +1246,41 @@ const harness_prelude =
     \\  for (const listener of listeners.slice()) listener.apply(process, args);
     \\  return true;
     \\};
+    \\process.binding = function(name) {
+    \\  const key = String(name);
+    \\  if (key === "constants") {
+    \\    return {
+    \\      os: {},
+    \\      crypto: {},
+    \\      fs: {},
+    \\      trace: {},
+    \\      zlib: {},
+    \\    };
+    \\  }
+    \\  if (key === "uv") {
+    \\    const uv = {
+    \\      UV_EACCES: -13,
+    \\      UV_EINTR: -4,
+    \\      UV_EISCONN: -56,
+    \\      errname(code) {
+    \\        const normalized = Math.trunc(Number(code));
+    \\        if (normalized === -4) return "EINTR";
+    \\        if (normalized === -13) return "EACCES";
+    \\        if (normalized === -56) return "EISCONN";
+    \\        return "Unknown system error: " + String(normalized);
+    \\      },
+    \\      getErrorMap() {
+    \\        return new Map([
+    \\          [uv.UV_EACCES, ["EACCES", "permission denied"]],
+    \\          [uv.UV_EINTR, ["EINTR", "interrupted system call"]],
+    \\          [uv.UV_EISCONN, ["EISCONN", "socket is already connected"]],
+    \\        ]);
+    \\      },
+    \\    };
+    \\    return uv;
+    \\  }
+    \\  throw new Error("No such module: " + key);
+    \\};
     \\globalThis.__home_process_cwd = globalThis.__home_process_cwd || globalThis.__home_current_dirname || "/";
     \\process.cwd = function() {
     \\  return globalThis.__home_process_cwd || globalThis.__home_current_dirname || "/";
@@ -2062,6 +2098,23 @@ const harness_prelude =
     \\        }
     \\      }
     \\      __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to match object " + __home_format(expected));
+    \\    },
+    \\    toHaveProperty(expected, expectedValue) {
+    \\      if (arguments.length < 1) __home_fail("toHaveProperty() requires 1 argument");
+    \\      if (value === null || (typeof value !== "object" && typeof value !== "function")) __home_fail("Expected value must be an object");
+    \\      const path = Array.isArray(expected) ? expected.map(String) : String(expected).split(".");
+    \\      let current = value;
+    \\      let pass = true;
+    \\      for (let i = 0; i < path.length; i++) {
+    \\        const key = path[i];
+    \\        if (current === null || current === undefined || !Object.prototype.hasOwnProperty.call(Object(current), key)) {
+    \\          pass = false;
+    \\          break;
+    \\        }
+    \\        current = current[key];
+    \\      }
+    \\      if (arguments.length >= 2 && pass) pass = __home_deep_equal(current, expectedValue, false, new Map());
+    \\      __home_assert(pass, isNot, "Expected value" + (isNot ? " not" : "") + " to have property " + __home_format(expected));
     \\    },
     \\    toContainKey(expected) {
     \\      if (arguments.length < 1) __home_fail("toContainKey() takes 1 argument");
@@ -7248,6 +7301,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_finish_tests") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContain(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toMatchObject(expected)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toHaveProperty(expected, expectedValue)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toIncludeRepeated() requires the expect(value) to be a string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContainKey(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContainAnyKeys(expected)") != null);
@@ -9348,6 +9402,35 @@ test "bootstrap toMatchObject rejects missing keys and array length mismatches" 
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/to-match-object-fidelity.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap process.binding exposes constants and uv surfaces" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\test("process binding", () => {
+        \\  const constants = process.binding("constants");
+        \\  expect(constants).toHaveProperty("os");
+        \\  expect(constants).toHaveProperty("crypto");
+        \\  const uv = process.binding("uv");
+        \\  expect(uv).toHaveProperty("UV_EACCES");
+        \\  expect(uv.errname(-4)).toBe("EINTR");
+        \\  expect(uv.errname(Number("-5.9") + 1.9)).toBe("EINTR");
+        \\  expect(uv.errname(5)).toBe("Unknown system error: 5");
+        \\  expect(uv.getErrorMap().get(uv.UV_EISCONN)).toEqual(["EISCONN", "socket is already connected"]);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/process-binding.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
