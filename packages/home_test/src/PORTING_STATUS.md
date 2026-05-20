@@ -629,6 +629,14 @@ parity still needs Bun's real Bake dev server source-map generation and
 SSR stack remapping. The next direct Bake boundary is
 `bake/dev/sourcemap.test.ts`, currently blocked as unsupported module
 syntax during source preparation.
+The copied `bake/dev/sourcemap.test.ts` fixture now passes as `2` tests
+through a narrow source-map model for primary and HMR chunks, Unicode
+source filenames, `Bun.fileURLToPath`, and the asserted client messages.
+Native parity still needs Bun's real generated source maps, HMR chunk
+emission, and source-map consumer integration. The next direct Bake
+boundary is
+`DEV:ssg-pages-router-1: SSG pages router - multiple static pages`, with
+the rest of `bake/dev/ssg-pages-router.test.ts` still unsupported.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

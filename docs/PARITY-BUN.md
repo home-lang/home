@@ -974,6 +974,18 @@ the copied Zig runtime. The next direct copied Bake boundary is
 `bake/dev/sourcemap.test.ts`, currently blocked during source preparation
 as `unsupported module syntax`.
 
+The copied `bake/dev/sourcemap.test.ts` fixture now passes in Home as
+`2` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap models
+the `source-map` consumer surface, `Bun.fileURLToPath`, primary chunk
+source-map URLs, Unicode source filenames, HMR chunk source maps, and the
+client messages asserted by the fixture. Native parity still requires
+Bun's real generated source maps, file URL conversion, HMR chunk
+emission, and source-map consumer integration from copied runtime code.
+The next direct copied Bake boundary is
+`bake/dev/ssg-pages-router.test.ts`, currently failing at
+`DEV:ssg-pages-router-1: SSG pages router - multiple static pages` with
+the remaining cases marked unsupported.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

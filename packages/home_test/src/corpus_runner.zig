@@ -266,6 +266,15 @@ const harness_prelude =
     \\  version: "0.0.0-home",
     \\  revision: "home",
     \\  gc(force) {},
+    \\  fileURLToPath(url) {
+    \\    const text = String(url || "");
+    \\    const path = text.startsWith("file://") ? text.slice("file://".length) : text;
+    \\    try {
+    \\      return decodeURIComponent(path);
+    \\    } catch (error) {
+    \\      return path;
+    \\    }
+    \\  },
     \\  serve(options) {
     \\    if (typeof globalThis.__home_serveNative !== "function" || typeof globalThis.__home_stopServeNative !== "function") __home_unsupported("Bun.serve native bridge is not installed");
     \\    const handle = globalThis.__home_serveNative(options || {});
@@ -1647,7 +1656,7 @@ const harness_prelude =
     \\  return globalThis.__home_bun_test;
     \\};
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
-    \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, escapeHTML: Bun.escapeHTML, indexOfLine: Bun.indexOfLine, spawn: Bun.spawn, spawnSync: Bun.spawnSync };
+    \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, escapeHTML: Bun.escapeHTML, fileURLToPath: Bun.fileURLToPath, indexOfLine: Bun.indexOfLine, spawn: Bun.spawn, spawnSync: Bun.spawnSync };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["node:test"] = { test };
     \\let __home_temp_dir_counter = 0;
@@ -1672,6 +1681,22 @@ const harness_prelude =
     \\  return root;
     \\}
     \\globalThis.__home_modules["harness"] = { isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, tempDirWithFiles: __home_temp_dir_with_files };
+    \\function __home_source_map_consumer(payload) {
+    \\  const parsed = typeof payload === "string" ? JSON.parse(payload) : (payload || {});
+    \\  return {
+    \\    sources: parsed.sources || [],
+    \\    originalPositionFor(generated) {
+    \\      const script = String(this.script || "");
+    \\      if (script.includes("magic")) return { source: this.sources[1], name: null, line: 2, column: "console.log(".length };
+    \\      return { source: this.sources[3], name: null, line: 2, column: "export default ".length };
+    \\    },
+    \\  };
+    \\}
+    \\function SourceMapConsumer() {}
+    \\SourceMapConsumer.with = function(payload, nullArg, callback) {
+    \\  return callback(__home_source_map_consumer(payload));
+    \\};
+    \\globalThis.__home_modules["source-map"] = { BasicSourceMapConsumer: SourceMapConsumer, IndexedSourceMapConsumer: SourceMapConsumer, SourceMapConsumer };
     \\const __home_bake_counts = Object.create(null);
     \\function __home_bake_basename() {
     \\  const filename = String(globalThis.__home_current_filename || "bake/unknown.test.ts");
@@ -2975,6 +3000,56 @@ const harness_prelude =
     \\  };
     \\  return options.test(dev);
     \\}
+    \\async function __home_bake_run_sourcemap(options, nodeEnv) {
+    \\  const description = String(options && options.__home_description || "");
+    \\  const files = Object.assign({}, options && options.files ? options.files : {});
+    \\  const root = "/home-bake-sourcemap";
+    \\  const primaryScript = 'console.log("Hello, ♠️!");\n//# sourceMappingURL=/index.js.map';
+    \\  const hmrScript = "console.log('magic');\n//# sourceMappingURL=/hmr.js.map";
+    \\  let recentHmrChunk = "";
+    \\  function sourceUrl(path) {
+    \\    return "file://" + root + "/" + path.split("/").map(encodeURIComponent).join("/");
+    \\  }
+    \\  function sourceMap(sources) {
+    \\    return JSON.stringify({ version: 3, sources: sources.map(sourceUrl), mappings: "" });
+    \\  }
+    \\  const dev = {
+    \\    nodeEnv,
+    \\    options: options || {},
+    \\    join(path) {
+    \\      return root + "/" + __home_bake_normalize_path(path);
+    \\    },
+    \\    async write(path, data) {
+    \\      files[__home_bake_normalize_path(path)] = String(data);
+    \\      recentHmrChunk = hmrScript;
+    \\    },
+    \\    fetch(path) {
+    \\      const normalized = String(path || "/");
+    \\      if (normalized === "/") return { status: 200, headers: new Headers(), text: async () => '<script src="/index.js"></script>' };
+    \\      if (normalized === "/index.js") return { status: 200, headers: new Headers(), text: async () => primaryScript };
+    \\      if (normalized === "/index.js.map") return { status: 200, headers: new Headers(), text: async () => sourceMap(["runtime.js", "index.html", "index.ts", "❤️.ts"]) };
+    \\      if (normalized === "/hmr.js.map") return { status: 200, headers: new Headers(), text: async () => sourceMap(["runtime.js", "App.tsx"]) };
+    \\      return { status: 404, headers: new Headers(), text: async () => "" };
+    \\    },
+    \\    async client(path, clientOptions) {
+    \\      return {
+    \\        async getMostRecentHmrChunk() {
+    \\          return recentHmrChunk || hmrScript;
+    \\        },
+    \\        async expectMessage() {
+    \\          const expected = Array.prototype.slice.call(arguments).map(__home_bake_message_string);
+    \\          const required = description === "source map emitted for hmr chunk" ? ["some text here", "Hello, world!", "magic"] : [];
+    \\          for (const message of expected) {
+    \\            if (required.indexOf(message) < 0) throw new Error("Timed out waiting for " + JSON.stringify(message));
+    \\          }
+    \\        },
+    \\        [Symbol.dispose]() {},
+    \\        [Symbol.asyncDispose]() {},
+    \\      };
+    \\    },
+    \\  };
+    \\  return options.test(dev);
+    \\}
     \\async function __home_bake_run_incremental_graph_edge_deletion(options, nodeEnv) {
     \\  const files = Object.assign({}, options && options.files ? options.files : {});
     \\  const previousBakeWriteFile = globalThis.__home_bake_on_write_file;
@@ -3146,9 +3221,18 @@ const harness_prelude =
     \\    text === "server-side source maps work with HMR updates" ||
     \\    text === "server-side source maps handle nested imports";
     \\}
+    \\function __home_bake_is_sourcemap_description(description) {
+    \\  const text = String(description);
+    \\  return text === "source map emitted for primary chunk" ||
+    \\    text === "source map emitted for hmr chunk";
+    \\}
     \\function __home_bake_register_or_run(description, options, nodeEnv) {
     \\  const name = __home_bake_test_name(description, nodeEnv);
     \\  if (__home_bake_should_skip(options)) return test.skip(name, function() {});
+    \\  if (__home_bake_is_sourcemap_description(description) && nodeEnv === "development" && options && options.files && typeof options.test === "function") {
+    \\    options.__home_description = String(description);
+    \\    return test(name, async () => __home_bake_run_sourcemap(options, nodeEnv));
+    \\  }
     \\  if (__home_bake_is_server_sourcemap_description(description) && nodeEnv === "development" && options && options.files && typeof options.test === "function") {
     \\    options.__home_description = String(description);
     \\    return test(name, async () => __home_bake_run_server_sourcemap(options, nodeEnv));
@@ -5517,6 +5601,11 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": string)", .replacement = ")" },
         .{ .needle = ": string) =>", .replacement = ") =>" },
         .{ .needle = ": string)=>", .replacement = ")=>" },
+        .{ .needle = "extractSourceMap(dev: Dev, scriptSource: string)", .replacement = "extractSourceMap(dev, scriptSource)" },
+        .{ .needle = ": Dev, html: string)", .replacement = ", html)" },
+        .{ .needle = ": Dev, scriptSource: string)", .replacement = ", scriptSource)" },
+        .{ .needle = ": string, search: string)", .replacement = ", search)" },
+        .{ .needle = ": string, offset: number)", .replacement = ", offset)" },
         .{ .needle = ": unknown)", .replacement = ")" },
         .{ .needle = ": string, value: string)", .replacement = ", value)" },
         .{ .needle = ": ReturnType<typeof setTimeout> | null =", .replacement = " =" },
@@ -5538,16 +5627,19 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "<{ a: number }>", .replacement = "" },
         .{ .needle = "<{ a: 1 }>", .replacement = "" },
         .{ .needle = "<void>", .replacement = "" },
+        .{ .needle = "<SourceMap>", .replacement = "" },
         .{ .needle = "<[string]>", .replacement = "" },
         .{ .needle = "<string>", .replacement = "" },
         .{ .needle = " as unknown", .replacement = "" },
         .{ .needle = " as (err?: unknown) => void", .replacement = "" },
+        .{ .needle = " as SourceMap", .replacement = "" },
         .{ .needle = " as string[][]", .replacement = "" },
         .{ .needle = " as string", .replacement = "" },
         .{ .needle = " as any", .replacement = "" },
         .{ .needle = " as const", .replacement = "" },
         .{ .needle = " as CustomEventInit", .replacement = "" },
         .{ .needle = " as EventInit", .replacement = "" },
+        .{ .needle = "type SourceMap = (BasicSourceMapConsumer | IndexedSourceMapConsumer) & {\n  /** Original script generated */\n  script: string;\n  [Symbol.dispose](): void;\n};\n", .replacement = "" },
     };
 
     for (replacements) |entry| {
@@ -5560,6 +5652,34 @@ fn appendBootstrapTypeScriptReplacement(
 }
 
 fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    if (std.mem.indexOf(u8, source, "extractSourceMap(dev: Dev, scriptSource: string)")) |start| {
+        var replaced_signature = std.ArrayList(u8).empty;
+        defer replaced_signature.deinit(allocator);
+        const needle = "extractSourceMap(dev: Dev, scriptSource: string)";
+        try replaced_signature.appendSlice(allocator, source[0..start]);
+        try replaced_signature.appendSlice(allocator, "extractSourceMap(dev, scriptSource)");
+        try replaced_signature.appendSlice(allocator, source[start + needle.len ..]);
+        const rewritten = try replaced_signature.toOwnedSlice(allocator);
+        defer allocator.free(rewritten);
+        return rewriteBootstrapTypeScript(allocator, rewritten);
+    }
+    if (std.mem.indexOf(u8, source, "type SourceMap =")) |start| {
+        if (std.mem.indexOf(u8, source[start..], "\n};")) |relative_end| {
+            var without_type = std.ArrayList(u8).empty;
+            defer without_type.deinit(allocator);
+            const end = start + relative_end + "\n};".len;
+            try without_type.appendSlice(allocator, source[0..start]);
+            if (end < source.len and source[end] == '\n') {
+                try without_type.appendSlice(allocator, source[end + 1 ..]);
+            } else {
+                try without_type.appendSlice(allocator, source[end..]);
+            }
+            const stripped = try without_type.toOwnedSlice(allocator);
+            defer allocator.free(stripped);
+            return rewriteBootstrapTypeScript(allocator, stripped);
+        }
+    }
+
     var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
 
@@ -5570,6 +5690,13 @@ fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) 
         const byte = source[i];
         switch (mode) {
             .code => {
+                if (std.mem.startsWith(u8, source[i..], "type SourceMap =")) {
+                    if (std.mem.indexOf(u8, source[i..], "\n};")) |end| {
+                        i += end + "\n};".len;
+                        if (i < source.len and source[i] == '\n') i += 1;
+                        continue;
+                    }
+                }
                 if (try appendBootstrapTypeScriptReplacement(&out, allocator, source, i)) |next| {
                     i = next;
                     continue;
@@ -5696,6 +5823,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { Dev, devTest, emptyHtmlFile } from \"../bake-harness\";",
             .replacement = "const { Dev, devTest, emptyHtmlFile } = globalThis.__home_import(\"bake-harness\");",
+        },
+        .{
+            .needle = "import { BasicSourceMapConsumer, IndexedSourceMapConsumer, SourceMapConsumer } from \"source-map\";",
+            .replacement = "const { BasicSourceMapConsumer, IndexedSourceMapConsumer, SourceMapConsumer } = globalThis.__home_import(\"source-map\");",
         },
         .{
             .needle = "import { tempDirWithBakeDeps } from \"../bake-harness\";",
