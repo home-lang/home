@@ -1818,7 +1818,14 @@ pub const Parser = struct {
             .kw_type => blk: {
                 // `type X = T;` is a TS type alias. `type` is contextual,
                 // so only treat as a keyword when followed by an identifier.
-                if (self.peekAt(1).kind == .identifier) break :blk try self.parseTypeAlias();
+                // Reserved primitive-type keywords (`any`, `string`, …)
+                // ALSO route here so `parseTypeAlias` can emit the
+                // upstream TS2457 ("Type alias name cannot be '...'.").
+                // Mirrors `reservedNamesInAliases.ts`.
+                const next = self.peekAt(1);
+                if (next.kind == .identifier or self.tokenAtLexemeIsReservedTypeAliasName(self.cursor + 1)) {
+                    break :blk try self.parseTypeAlias();
+                }
                 break :blk try self.parseExpressionStatement();
             },
             .string_literal => blk: {
@@ -5411,7 +5418,34 @@ pub const Parser = struct {
 
     fn parseTypeAlias(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // type
-        const name_tok = try self.expect(.identifier, "type alias name");
+        // Accept primitive-type keywords (`any`, `string`, `number`,
+        // …) as the alias-name token so we can emit the upstream
+        // TS2457 ("Type alias name cannot be '<reserved>'.") at the
+        // exact source column. Without this branch the parser bails
+        // with TS1005 ("';' expected.") and the rest of the file
+        // recovers badly. Mirrors `reservedNamesInAliases.ts`.
+        const peek_kind = self.peek().kind;
+        const name_tok = if (peek_kind == .identifier or self.tokenLexemeIsReservedTypeAliasName())
+            self.advance()
+        else
+            try self.expect(.identifier, "type alias name");
+        // TS2457 — `Type alias name cannot be '<reserved>'.` fires for
+        // primitive-type keywords used as type alias names. Mirrors
+        // `reservedNamesInAliases.ts` lines 2-7.
+        const name_text = self.source[name_tok.span.start..name_tok.span.end];
+        if (isReservedTypeAliasName(name_text)) {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Type alias name cannot be '{s}'.",
+                .{name_text},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .pos = name_tok.span.start,
+                .line = name_tok.line,
+                .code = 2457,
+                .message = msg,
+            });
+        }
         var type_params: []NodeId = &.{};
         var owns_tps = false;
         if (self.peek().kind == .less_than) {
@@ -12174,6 +12208,42 @@ pub const Parser = struct {
 
     fn isJsxNamePart(kind: TokenKind) bool {
         return kind == .identifier or kind.isKeyword() or kind.isContextualKeyword();
+    }
+
+    /// Primitive type keywords that are reserved as type-alias names.
+    /// `type any = ...` etc. is a parser-level error (TS2457). Mirrors
+    /// upstream's `reservedNamesInAliases.ts` baseline.
+    fn isReservedTypeAliasName(name: []const u8) bool {
+        const reserved = [_][]const u8{
+            "any",       "unknown", "never",  "object",   "string",
+            "number",    "bigint",  "symbol", "boolean",  "void",
+            "undefined", "null",    "intrinsic",
+        };
+        for (reserved) |r| {
+            if (std.mem.eql(u8, r, name)) return true;
+        }
+        return false;
+    }
+
+    /// True when the next token's lexeme matches one of the reserved
+    /// primitive-type names — even when the lexer classified it as a
+    /// keyword (e.g. `kw_any`). Lets `parseTypeAlias` consume `any`
+    /// as the alias-name slot before emitting TS2457.
+    fn tokenLexemeIsReservedTypeAliasName(self: *Parser) bool {
+        const tok = self.peek();
+        if (tok.span.end > self.source.len or tok.span.start >= tok.span.end) return false;
+        return isReservedTypeAliasName(self.source[tok.span.start..tok.span.end]);
+    }
+
+    /// Variant of `tokenLexemeIsReservedTypeAliasName` that probes an
+    /// arbitrary token index. Used by the `type` dispatch so a
+    /// `kw_any` (etc.) following `type` routes to `parseTypeAlias`
+    /// for the TS2457 diagnostic.
+    fn tokenAtLexemeIsReservedTypeAliasName(self: *Parser, idx: usize) bool {
+        if (idx >= self.tokens.len) return false;
+        const tok = self.tokens[idx];
+        if (tok.span.end > self.source.len or tok.span.start >= tok.span.end) return false;
+        return isReservedTypeAliasName(self.source[tok.span.start..tok.span.end]);
     }
 
     /// `<Foo x={0} />` is a JSX self-close, but the lexer is context-
