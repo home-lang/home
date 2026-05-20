@@ -260,8 +260,10 @@ The HTML-import startup-error smoke now checks the Bun browser-build
 diagnostic for importing HTML without a loader. The HTML text-loader
 smoke now rewrites `with { type: "text" }` imports to fixture text and
 checks the client log. The Bun-builtin client import smoke now checks the
-browser-build diagnostic for `import bun from "bun"`. The next Bake
-boundary is `DEV:bundle-13: import.meta.main`.
+browser-build diagnostic for `import bun from "bun"`. The
+`import.meta.main` smoke now lowers Bake browser client reads to `false`
+on startup and after hot replay. The next Bake boundary is
+`DEV:bundle-14: commonjs forms`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

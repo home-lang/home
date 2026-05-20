@@ -1531,6 +1531,7 @@ const harness_prelude =
     \\  out = out.replace("const A = () => require;", "const A = () => hmr.require;");
     \\  out = out.replace("const B = () => module.require;", "const B = () => module.require;");
     \\  out = out.replace("const C = () => import.meta.require;", "const C = () => hmr.importMeta.require;");
+    \\  out = out.replaceAll("import.meta.main", "false");
     \\  out = out.replaceAll("import.meta.hot.accept();", "void 0;");
     \\  out = out.replaceAll("import.meta.hot", "true");
     \\  out = out.replaceAll("import.meta.require", "hmr.importMeta.require");
@@ -1832,6 +1833,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "importing bun on the client" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "import.meta.main" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
@@ -7583,6 +7587,43 @@ test "bootstrap runner executes Bake bun client import error smoke" {
         \\    await using c = await dev.client("/", {
         \\      errors: ['index.ts:1:17: error: Browser build cannot import Bun builtin: "bun"'],
         \\    });
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/bundle.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake import meta main smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("import.meta.main", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ styles: [], scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      console.log(import.meta.main);
+        \\      import.meta.hot.accept();
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.expectMessage(false);
+        \\    await dev.write("index.ts", `
+        \\      require;
+        \\      console.log(import.meta.main);
+        \\    `);
+        \\    await c.expectMessage(false);
         \\  },
         \\});
     ;

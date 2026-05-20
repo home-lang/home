@@ -360,13 +360,15 @@ error smoke now checks the expected Bun diagnostic for browser builds
 that import HTML without a loader. The HTML text-loader smoke now lowers
 `import html from "./app.html" with { type: "text" }` to the fixture text
 and verifies the client log. The Bun-builtin client import smoke now
-checks the browser-build diagnostic for `import bun from "bun"`.
+checks the browser-build diagnostic for `import bun from "bun"`. The
+`import.meta.main` smoke now lowers Bake browser client reads to `false`
+across startup and hot replay.
 
-Latest measured full gate after the Bake Bun-client import slice:
-`4,013` files executed, `420` passed, `3,960` failed, `1,513`
+Latest measured full gate after the Bake `import.meta.main` slice:
+`4,013` files executed, `420` passed, `3,959` failed, `1,512`
 unsupported, `35` todo. First failure: `bake/dev/bundle.test.ts`
 with the named unsupported Bake registration for
-` DEV:bundle-13: import.meta.main`.
+` DEV:bundle-14: commonjs forms`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
