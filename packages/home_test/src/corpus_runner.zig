@@ -137,6 +137,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/jest-each.test.ts",
     "regression/issue/htmlrewriter-additional-bugs.test.ts",
     "regression/issue/24191.test.ts",
+    "js/bun/resolve/resolve-bad-parent.test.mjs",
 };
 
 const harness_prelude =
@@ -2074,7 +2075,7 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     try appendJsStringLiteral(out, allocator, relative_path);
     try out.appendSlice(allocator, ";\nvar __dirname = ");
     try appendJsStringLiteral(out, allocator, dirname);
-    try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\n");
+    try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\nfunction __home_import_meta_resolve(specifier, parent) { throw new Error(\"Cannot resolve \" + String(specifier) + \" from \" + String(parent)); }\n");
     if (std.mem.eql(u8, relative_path, "regression/issue/fix-bindings-stack-trace.test.ts")) {
         try out.appendSlice(allocator,
             \\(function() {
@@ -2128,6 +2129,8 @@ fn appendImportMetaReplacement(
         needle: []const u8,
         replacement: []const u8,
     }{
+        .{ .needle = "import.meta.resolveSync", .replacement = "__home_import_meta_resolve" },
+        .{ .needle = "import.meta.resolve", .replacement = "__home_import_meta_resolve" },
         .{ .needle = "import.meta.dirname", .replacement = "__home_import_meta_dirname" },
         .{ .needle = "import.meta.dir", .replacement = "__home_import_meta_dir" },
         .{ .needle = "import.meta.path", .replacement = "__home_import_meta_path" },
@@ -4277,6 +4280,22 @@ test "Bun test import rewrite lowers import.meta metadata" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "__home_import_meta_dir").? < std.mem.indexOf(u8, rewritten, "it(\"metadata\"").?);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "__home_import_meta_dirname").? < std.mem.indexOf(u8, rewritten, "it(\"metadata\"").?);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "__home_import_meta_path").? < std.mem.indexOf(u8, rewritten, "it(\"metadata\"").?);
+}
+
+test "Bun test import rewrite lowers import.meta resolve helpers" {
+    const source =
+        \\test("resolve", () => {
+        \\  expect(() => import.meta.resolveSync("#foo", "file:/tmp")).toThrow();
+        \\  expect(() => import.meta.resolve("#foo", "file:/tmp")).toThrow();
+        \\  expect("import.meta.resolve").toBe("import.meta.resolve");
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/bun/resolve/resolve-bad-parent.test.mjs");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "__home_import_meta_resolve(\"#foo\", \"file:/tmp\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "import.meta.resolveSync") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "expect(\"import.meta.resolve\")") != null);
 }
 
 test "Bun test import rewrite preserves shebangs" {

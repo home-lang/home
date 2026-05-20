@@ -83,6 +83,7 @@ relative CJS fixture require for `regression/issue/013880-fixture.cjs`,
 `node:path` / `path` join and posix/win32 identity smokes,
 `node:url` URL.canParse, url.format empty-input, and
 domainToASCII/domainToUnicode smokes,
+`import.meta.resolve` / `resolveSync` bad-parent throw smokes,
 `jest.fn`, narrow `HTMLRewriter` element and doctype callbacks plus
 selector / handler validation,
 `process.versions.bun`, `process.revision`, `process.on` / `process.emit`,
