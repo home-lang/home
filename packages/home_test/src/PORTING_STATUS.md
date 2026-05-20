@@ -42,7 +42,7 @@ rejection, `test.concurrent`, `test.each`, `.not`, `toBe`, `toBeDefined`,
 `Bun` branding plus `Bun.version`, `Bun.revision`, `Bun.stripANSI`,
 `Bun.wrapAnsi`, `Bun.semver.satisfies`, `Bun.TOML.parse` non-string input errors,
 `Bun.gc`, `mock.clearAllMocks`,
-`toHaveBeenCalledTimes`, `expect().pass`, narrow TypeScript
+`toHaveBeenCalledTimes`, `expect().pass`, `expectTypeOf` type-only no-op checks, narrow TypeScript
 constructor-modifier rewrites, bun-types `test.each` type-shape smoke, narrow `toMatchInlineSnapshot` object formatting,
 `bun:internal-for-testing` regexp and PowerShell escaping helpers,
 `assert` CJS require, `assert.match` / `assert.doesNotMatch`,

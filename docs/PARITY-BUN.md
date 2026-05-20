@@ -170,12 +170,12 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes sixty-five allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes sixty-seven allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-two
 regression smokes, one bundler constant-fold smoke, one bun-types `test.each` type-shape smoke, six test-runner
-expectation smokes, one nested-describe smoke, a narrow `Bun.TOML.parse` throw smoke, `Bun.stripANSI` and
+expectation smokes, one nested-describe smoke, two `expectTypeOf` type-only smokes, a narrow `Bun.TOML.parse` throw smoke, `Bun.stripANSI` and
 `Bun.wrapAnsi`, `Bun.semver.satisfies`, and `bun:internal-for-testing` regexp / PowerShell escaping smokes, retry/repeats runner behavior, `test.concurrent.each`, `expect().pass`, a narrow `mock.clearAllMocks` / `toHaveBeenCalledTimes` smoke, a narrow `jest.fn` / `HTMLRewriter` element-callback smoke, a narrow TypeScript constructor-modifier rewrite smoke, narrow `assert` / `assert/strict`, `node:path`, `node:url`, and relative CJS fixture smokes, a narrow inline-snapshot Unicode object formatting smoke, a `node:vm.runInNewContext` / `process.on` throw propagation smoke, Deno `Event` / `CustomEvent` / `AbortController` and a Deno `URLSearchParams` bootstrap smoke, plus narrow bootstrap coverage for Node `DOMException`, Web
 `Response.json` / `Response.redirect`, Web `Request` cache/mode/clone,
 JSC `ShadowRealm`, native constructor identity, mutable `globalThis` prototype behavior, a comment-only module-load smoke, Bun file metadata, Node `Buffer`

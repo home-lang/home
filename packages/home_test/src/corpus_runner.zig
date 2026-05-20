@@ -116,6 +116,8 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/util/exotic-global-mutable-prototype.test.ts",
     "js/bun/jsc/native-constructor-identity.test.ts",
     "js/bun/empty-file.test.ts",
+    "js/bun/test/expect-type-global.test.ts",
+    "js/bun/test/expect-type.test.ts",
 };
 
 const harness_prelude =
@@ -896,6 +898,13 @@ const harness_prelude =
     \\function expect(value) {
     \\  return __home_make_expectation(value, false);
     \\}
+    \\function expectTypeOf(value) {
+    \\  return {
+    \\    toMatchObjectType() {
+    \\      return undefined;
+    \\    },
+    \\  };
+    \\}
     \\expect.unreachable = function(reason) {
     \\  if (reason === undefined || reason === null || typeof reason === "string") {
     \\    const error = new Error(reason == null ? "reached unreachable code" : reason);
@@ -923,7 +932,7 @@ const harness_prelude =
     \\    };
     \\  }
     \\};
-    \\globalThis.__home_bun_test = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, jest, mock, onTestFinished, test };
+    \\globalThis.__home_bun_test = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, expectTypeOf, it, jest, mock, onTestFinished, test };
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
     \\globalThis.__home_modules["bun"] = { semver: Bun.semver };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
@@ -1863,6 +1872,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "!.", .replacement = "." },
         .{ .needle = "<any, any>", .replacement = "" },
         .{ .needle = ": Array<[any, (event: any) => string]>", .replacement = "" },
+        .{ .needle = "<{ a: number }>", .replacement = "" },
+        .{ .needle = "<{ a: 1 }>", .replacement = "" },
         .{ .needle = " as unknown", .replacement = "" },
         .{ .needle = " as string[][]", .replacement = "" },
         .{ .needle = " as string", .replacement = "" },
@@ -2103,6 +2114,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         .{ .line = "import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeAll, beforeEach, expect, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, it } from \"bun:test\";", .binding = "const { expect, it } = globalThis.__home_import(\"bun:test\");\n" },
+        .{ .line = "import { expectTypeOf, test } from \"bun:test\";", .binding = "const { expectTypeOf, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, jest, test } from \"bun:test\";", .binding = "const { expect, jest, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, mock, test } from \"bun:test\";", .binding = "const { expect, mock, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, test } from \"bun:test\";", .binding = "const { expect, test } = globalThis.__home_import(\"bun:test\");\n" },
@@ -2297,6 +2309,8 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/bun/util/exotic-global-mutable-prototype.test.ts", filesForSubset(.minimal_js)[62]);
     try std.testing.expectEqualStrings("js/bun/jsc/native-constructor-identity.test.ts", filesForSubset(.minimal_js)[63]);
     try std.testing.expectEqualStrings("js/bun/empty-file.test.ts", filesForSubset(.minimal_js)[64]);
+    try std.testing.expectEqualStrings("js/bun/test/expect-type-global.test.ts", filesForSubset(.minimal_js)[65]);
+    try std.testing.expectEqualStrings("js/bun/test/expect-type.test.ts", filesForSubset(.minimal_js)[66]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -2348,6 +2362,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toIncludeRepeated() requires the expect(value) to be a string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContainKey(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContainAnyKeys(expected)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function expectTypeOf(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toMatchObjectType()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "expect.unreachable") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "expect.extend") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "asymmetricMatch(received)") != null);
@@ -2738,6 +2754,23 @@ test "bootstrap rewrite erases const assertions" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const values = [\"default\"];") != null);
 }
 
+test "bootstrap rewrite lowers expectTypeOf type-only checks" {
+    const source =
+        \\import { expectTypeOf, test } from "bun:test";
+        \\test("types", () => {
+        \\  expectTypeOf({ a: 1 }).toMatchObjectType<{ a: number }>();
+        \\  expectTypeOf({ a: 1 as const }).toMatchObjectType<{ a: 1 }>();
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/bun/test/expect-type.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { expectTypeOf, test } = globalThis.__home_import(\"bun:test\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "toMatchObjectType();") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "toMatchObjectType<") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, " as const") == null);
+}
+
 test "bootstrap rewrite erases as any assertions" {
     const source =
         \\import { expect, test } from "bun:test";
@@ -2817,6 +2850,31 @@ test "bootstrap runner allows admitted module-load smokes with no registered tes
     try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+}
+
+test "bootstrap runner covers expectTypeOf type-only smokes" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expectTypeOf, test } from "bun:test";
+        \\
+        \\test("types", () => {
+        \\  expectTypeOf({ a: 1 }).toMatchObjectType<{ a: number }>();
+        \\  expectTypeOf({ a: 1 }).toMatchObjectType<{ a: 1 }>();
+        \\  expectTypeOf({ a: 1 as const }).toMatchObjectType<{ a: 1 }>();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/expect-type.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner keeps todo-only files as todo" {
