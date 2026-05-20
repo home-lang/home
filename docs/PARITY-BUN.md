@@ -385,6 +385,20 @@ has moved to `bake/dev/css.test.ts` with the named unsupported Bake
 registration for
 ` DEV:css-1: css file with syntax error does not kill old styles`.
 
+The first `bake/dev/css.test.ts` smoke now models stylesheet state for a
+previously-valid CSS file that is rewritten to a syntax error. The Home
+runner validates the expected Bun error text, preserves the last good
+stylesheet for style assertions, normalizes `blue` to `#00f`, and removes
+the selector after a blank stylesheet write. This is still a harness-level
+model. True source parity requires porting Bun's CSS incremental asset
+graph, serialized overlay errors, CSS asset ids, and client CSS reloader
+behavior from the Zig runtime.
+
+Latest measured full gate after the first Bake CSS syntax-preservation
+slice: `4,013` files executed, `440` passed, `3,951` failed, `1,504`
+unsupported, `35` todo. First failure: `bake/dev/css.test.ts` with
+` DEV:css-2: css file with initial syntax error gets recovered`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

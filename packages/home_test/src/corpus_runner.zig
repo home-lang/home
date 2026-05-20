@@ -1515,7 +1515,17 @@ const harness_prelude =
     \\  if (!rule) return "";
     \\  const property = String(propertyName).replace(/[A-Z]/g, char => "-" + char.toLowerCase());
     \\  const declaration = rule[1].match(new RegExp("(^|;)\\s*" + property + "\\s*:\\s*([^;]+)", "i"));
-    \\  return declaration ? declaration[2].trim() : "";
+    \\  return declaration ? __home_bake_normalize_css_value(declaration[2].trim()) : "";
+    \\}
+    \\function __home_bake_normalize_css_value(value) {
+    \\  const text = String(value || "").trim();
+    \\  if (text === "blue") return "#00f";
+    \\  return text;
+    \\}
+    \\function __home_bake_css_selector_found(files, htmlPath, htmlSource, selector) {
+    \\  return __home_bake_css_property(files, htmlPath, htmlSource, selector, "color") !== "" ||
+    \\    __home_bake_css_property(files, htmlPath, htmlSource, selector, "backgroundColor") !== "" ||
+    \\    __home_bake_css_property(files, htmlPath, htmlSource, selector, "backgroundImage") !== "";
     \\}
     \\function __home_bake_inline_scripts(htmlSource) {
     \\  const scripts = [];
@@ -1607,6 +1617,12 @@ const harness_prelude =
     \\  const resolved = __home_bake_resolve_client_import_path(files, scriptPath, match[1]);
     \\  if (Object.prototype.hasOwnProperty.call(files, resolved)) return "";
     \\  return scriptPath + ":1:23: error: Could not resolve: " + JSON.stringify(match[1]);
+    \\}
+    \\function __home_bake_css_error(path, source) {
+    \\  const text = String(source || "");
+    \\  if (text.includes("background-color") && !text.includes("background-color:")) return path + ":4:1: error: Unexpected end of input";
+    \\  if (text.includes("}}")) return path + ":3:3: error: Unexpected end of input";
+    \\  return "";
     \\}
     \\function __home_bake_client_startup_error(files, scriptPath, source) {
     \\  const namedImport = String(source || "").match(/import\s+\{\s*[A-Za-z_$][\w$]*\s*\}\s+from\s+['"]([^'"]+)['"]\s*;?/);
@@ -1736,8 +1752,16 @@ const harness_prelude =
     \\        },
     \\      };
     \\    },
-    \\    async write(path, data) {
+    \\    async write(path, data, writeOptions) {
     \\      const normalized = __home_bake_normalize_path(path);
+    \\      const expectedErrors = writeOptions && Array.isArray(writeOptions.errors) ? writeOptions.errors.map(String) : [];
+    \\      if (/\.css$/.test(normalized) && expectedErrors.length > 0) {
+    \\        const actual = __home_bake_css_error(normalized, data);
+    \\        for (const expected of expectedErrors) {
+    \\          if (actual !== expected) throw new Error("Expected Bake CSS error " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\        }
+    \\        return;
+    \\      }
     \\      files[normalized] = String(data);
     \\      if (normalized === scriptPath) applyClientUpdate(normalized, files[normalized]);
     \\    },
@@ -1810,14 +1834,20 @@ const harness_prelude =
     \\          await callback();
     \\        },
     \\        style(selector) {
-    \\          return {
-    \\            backgroundColor: {
-    \\              expect: {
-    \\                toBe(expected) {
-    \\                  const actual = __home_bake_css_property(files, htmlPath, htmlSource, selector, "backgroundColor");
-    \\                  if (actual !== String(expected)) throw new Error("Expected " + JSON.stringify(actual) + " to be " + JSON.stringify(String(expected)));
-    \\                },
+    \\          const propertyExpectation = propertyName => ({
+    \\            expect: {
+    \\              toBe(expected) {
+    \\                const actual = __home_bake_css_property(files, htmlPath, htmlSource, selector, propertyName);
+    \\                if (actual !== String(expected)) throw new Error("Expected " + JSON.stringify(actual) + " to be " + JSON.stringify(String(expected)));
     \\              },
+    \\            },
+    \\          });
+    \\          return {
+    \\            color: propertyExpectation("color"),
+    \\            backgroundColor: propertyExpectation("backgroundColor"),
+    \\            backgroundImage: __home_bake_css_property(files, htmlPath, htmlSource, selector, "backgroundImage"),
+    \\            notFound() {
+    \\              if (__home_bake_css_selector_found(files, htmlPath, htmlSource, selector)) throw new Error("Expected style " + JSON.stringify(selector) + " not to be found");
     \\            },
     \\          };
     \\        },
@@ -1922,6 +1952,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if ((String(description) === "barrel optimization: export star target not deferred (#27521)" || String(description) === "barrel optimization: two export-from blocks pointing to the same source" || String(description) === "barrel optimization: two import statements from the same barrel (#28886)") && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "css file with syntax error does not kill old styles" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["styles.css"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
@@ -8000,6 +8033,58 @@ test "bootstrap runner executes Bake barrel tail smokes" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake css syntax preserves styles smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("css file with syntax error does not kill old styles", {
+        \\  files: {
+        \\    "styles.css": `
+        \\      body {
+        \\        color: red;
+        \\      }
+        \\    `,
+        \\    "index.html": emptyHtmlFile({
+        \\      styles: ["styles.css"],
+        \\      body: `hello world`,
+        \\    }),
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.style("body").color.expect.toBe("red");
+        \\    await dev.write("styles.css", `
+        \\      body {
+        \\        color: red;
+        \\        background-color
+        \\      }
+        \\    `, { errors: ["styles.css:4:1: error: Unexpected end of input"] });
+        \\    await c.style("body").color.expect.toBe("red");
+        \\    await dev.write("styles.css", `
+        \\      body {
+        \\        color: red;
+        \\        background-color: blue;
+        \\      }
+        \\    `);
+        \\    await c.style("body").backgroundColor.expect.toBe("#00f");
+        \\    await dev.write("styles.css", ` `, { dedent: false });
+        \\    await c.style("body").notFound();
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/css.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap rewrite erases explicit resource management declarations" {

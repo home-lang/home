@@ -275,8 +275,13 @@ duplicate export-from blocks, and duplicate import statements from the
 same barrel. `bake/dev/bundle.test.ts` now passes in the Home corpus
 runner (`20` passed, `0` failed, `0` unsupported), but this remains a
 bootstrap model until the real Bun barrel optimizer is ported from Zig.
+The first CSS syntax-preservation smoke now validates the expected Bun
+error text, preserves the last good stylesheet, normalizes blue to `#00f`,
+and removes the style after a blank stylesheet write. This remains a
+harness-level model until Bun's CSS incremental asset graph, overlay
+serialization, CSS asset IDs, and client CSS reloader are ported from Zig.
 The next Bake boundary is
-`DEV:css-1: css file with syntax error does not kill old styles`.
+`DEV:css-2: css file with initial syntax error gets recovered`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
