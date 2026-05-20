@@ -246,11 +246,13 @@ now covers the `web/index.html` entry fixture, an inert sibling-module
 write inside `expectNoWebSocketActivity()`, and hot replay after the
 entry imports that sibling module. This is still a bootstrap proxy; the
 real Bake watcher, directory cache, and parser/lower/printer path remain
-to be wired. The next Bake boundary is
-`DEV:bundle-7: deleting imported file shows error then recovers`, which
-requires delete-triggered build errors, overlay recovery, reload
-semantics, and no-activity deletion of unrelated imports. One snapshot `test.todo` fixture is
-allowlisted without executing its snapshot matcher body. The source
+to be wired. The delete/recover smoke now models extensionless import
+resolution, delete-triggered missing-import error text, reload recovery
+after the imported file is restored, and no-activity deletion of an
+unrelated file. This remains a bootstrap overlay/reload proxy. The next
+Bake boundary is
+`DEV:bundle-8: removing 'use client' from a component with a pending resolution failure`.
+One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
 `import.meta.dir/path` to the same per-file metadata used for the

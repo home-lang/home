@@ -1538,11 +1538,22 @@ const harness_prelude =
     \\}
     \\function __home_bake_resolve_client_imports(script, files, scriptPath) {
     \\  return String(script || "").replace(/import\s+\{\s*([A-Za-z_$][\w$]*)\s*\}\s+from\s+['"]([^'"]+)['"]\s*;?/g, function(_, name, specifier) {
-    \\    let resolved = __home_bake_normalize_path((__home_bake_dirname(scriptPath) ? __home_bake_dirname(scriptPath) + "/" : "") + specifier);
-    \\    if (!Object.prototype.hasOwnProperty.call(files, resolved) && !/\.[cm]?[tj]sx?$/.test(resolved)) resolved += ".ts";
+    \\    const resolved = __home_bake_resolve_client_import_path(files, scriptPath, specifier);
     \\    const value = __home_bake_export_const_string(files[resolved], name);
     \\    return "const " + name + " = " + JSON.stringify(value) + ";";
     \\  });
+    \\}
+    \\function __home_bake_resolve_client_import_path(files, scriptPath, specifier) {
+    \\  let resolved = __home_bake_normalize_path((__home_bake_dirname(scriptPath) ? __home_bake_dirname(scriptPath) + "/" : "") + specifier);
+    \\  if (!Object.prototype.hasOwnProperty.call(files, resolved) && !/\.[cm]?[tj]sx?$/.test(resolved)) resolved += ".ts";
+    \\  return resolved;
+    \\}
+    \\function __home_bake_missing_import_error(files, scriptPath, source) {
+    \\  const match = String(source || "").match(/import\s+\{\s*[A-Za-z_$][\w$]*\s*\}\s+from\s+['"]([^'"]+)['"]\s*;?/);
+    \\  if (!match) return "";
+    \\  const resolved = __home_bake_resolve_client_import_path(files, scriptPath, match[1]);
+    \\  if (Object.prototype.hasOwnProperty.call(files, resolved)) return "";
+    \\  return scriptPath + ":1:23: error: Could not resolve: " + JSON.stringify(match[1]);
     \\}
     \\function __home_bake_run_default_export_graph(source, files, log) {
     \\  if (!String(source || "").includes('import("./fixture1.ts")')) return false;
@@ -1641,6 +1652,17 @@ const harness_prelude =
     \\      const normalized = __home_bake_normalize_path(path);
     \\      files[normalized] = String(data);
     \\      if (normalized === scriptPath) applyClientUpdate(normalized, files[normalized]);
+    \\    },
+    \\    async delete(path, options) {
+    \\      const normalized = __home_bake_normalize_path(path);
+    \\      delete files[normalized];
+    \\      const expectedErrors = options && Array.isArray(options.errors) ? options.errors.map(String) : [];
+    \\      if (expectedErrors.length > 0) {
+    \\        const actual = __home_bake_missing_import_error(files, scriptPath, files[scriptPath]);
+    \\        for (const expected of expectedErrors) {
+    \\          if (actual !== expected) throw new Error("Expected Bake delete error " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\        }
+    \\      }
     \\    },
     \\    async patch(path, change) {
     \\      const normalized = __home_bake_normalize_path(path);
@@ -1791,6 +1813,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "directory cache bust case #17576" && nodeEnv === "development" && options && options.files && options.files["web/index.html"] && options.files["web/index.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "deleting imported file shows error then recovers" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["other.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  __home_record_unsupported("Bake harness test not implemented: " + name);
@@ -7260,6 +7285,56 @@ test "bootstrap runner executes Bake directory cache bust smoke" {
         \\      console.log(abc);
         \\    `);
         \\    await c.expectMessage(456);
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/bundle.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake delete imported file recovery smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile, minimalFramework } from "../bake-harness";
+        \\devTest("deleting imported file shows error then recovers", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ styles: [], scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      import { value } from "./other";
+        \\      console.log(value);
+        \\    `,
+        \\    "other.ts": `
+        \\      export const value = 123;
+        \\    `,
+        \\    "unrelated.ts": `
+        \\      export const value = 123;
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.expectMessage(123);
+        \\    await dev.delete("other.ts", {
+        \\      errors: ['index.ts:1:23: error: Could not resolve: "./other"'],
+        \\    });
+        \\    await c.expectReload(async () => {
+        \\      await dev.write("other.ts", `
+        \\        export const value = 456;
+        \\      `);
+        \\    });
+        \\    await c.expectMessage(456);
+        \\    await c.expectNoWebSocketActivity(async () => {
+        \\      await dev.delete("unrelated.ts");
+        \\    });
         \\  },
         \\});
     ;

@@ -340,14 +340,18 @@ inside `expectNoWebSocketActivity()`, then hot-replays the entry module
 after it imports that new file. This keeps the corpus boundary moving,
 but it is still a bootstrap model: it does not prove the real Bake
 watcher, directory cache invalidation, or internal parser/lower/printer
-pipeline yet. Later Bake files are still recorded as unsupported until
-the broader DevServer / bundler / browser-client runtime path lands.
+pipeline yet. The delete/recover smoke now models extensionless import
+resolution, expected missing-import error text, reload-after-restore, and
+an unrelated-file delete with no client activity. It is also a bootstrap
+overlay/reload proxy until the real Bake browser overlay and watcher path
+is wired. Later Bake files are still recorded as unsupported until the
+broader DevServer / bundler / browser-client runtime path lands.
 
-Latest measured full gate after the Bake directory-cache-bust slice:
-`4,013` files executed, `420` passed, `3,966` failed, `1,519`
+Latest measured full gate after the Bake delete/recover slice:
+`4,013` files executed, `420` passed, `3,965` failed, `1,518`
 unsupported, `35` todo. First failure: `bake/dev/bundle.test.ts`
 with the named unsupported Bake registration for
-` DEV:bundle-7: deleting imported file shows error then recovers`.
+` DEV:bundle-8: removing 'use client' from a component with a pending resolution failure`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
