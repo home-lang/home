@@ -14533,7 +14533,7 @@ pub const Checker = struct {
                 if (self.typeHasReadonlyIndexSignature(parent_t)) has_readonly_index = true;
             }
             if (parent_static_t) |pst| {
-                try self.mergeInheritedStaticMembers(pst, &static_members);
+                try self.mergeInheritedStaticMembers(node, pst, &static_members);
                 const parent_static_string_idx = self.interner.objectStringIndex(pst);
                 const parent_static_number_idx = self.interner.objectNumberIndex(pst);
                 const parent_static_symbol_idx = self.interner.objectSymbolIndex(pst);
@@ -14985,7 +14985,7 @@ pub const Checker = struct {
             self.classExtendsInstanceType(c.extends) catch null
         else
             null;
-        const static_super_t = if (c.extends != hir_mod.none_node_id)
+        const static_super_t = if (c.extends != hir_mod.none_node_id and self.hir.kindOf(c.extends) != .literal_null)
             (self.classExtendsStaticType(c.extends) catch null) orelse types.Primitive.any
         else
             null;
@@ -15012,7 +15012,7 @@ pub const Checker = struct {
                 try self.pushNarrowScope();
                 errdefer self.popNarrowScope();
                 try self.recordNarrow(this_id, if (fn_p.flags.is_static) static_t else instance_this_t);
-                const method_super_t = if (fn_p.flags.is_static) static_super_t else super_t;
+                const method_super_t = if (fn_p.flags.is_static or fn_p.flags.is_constructor) static_super_t else super_t;
                 if (method_super_t) |st| try self.recordNarrow(super_id, st);
                 try self.checkFnDecl(m);
                 if (c.extends != hir_mod.none_node_id and fn_p.flags.is_constructor and
@@ -17471,7 +17471,8 @@ pub const Checker = struct {
                 // emit TS2416. Properties (data fields, function-typed
                 // properties) keep the standard one-way check.
                 const both_methods = pm.is_method and cm.is_method;
-                const assignable = if (both_methods)
+                const method_arity_incompatible = both_methods and self.methodOverrideHasExtraRequiredParams(cm.type, pm.type);
+                const assignable = if (both_methods and !method_arity_incompatible)
                     (try self.heritageMemberAssignable(cm.type, pm.type)) or
                         (try self.heritageMemberAssignable(pm.type, cm.type))
                 else
@@ -17499,6 +17500,14 @@ pub const Checker = struct {
         }
         if (inherited.items.len == 0) return;
         try child_members.insertSlice(self.gpa, 0, inherited.items);
+    }
+
+    fn methodOverrideHasExtraRequiredParams(self: *Checker, child_t: TypeId, parent_t: TypeId) bool {
+        if (!self.interner.isSignature(child_t) or !self.interner.isSignature(parent_t)) return false;
+        const child_params = self.interner.signatureParams(child_t);
+        const parent_params = self.interner.signatureParams(parent_t);
+        if (self.rest_signatures.contains(parent_t)) return false;
+        return self.signatureMinRequiredArgs(child_t, child_params) > parent_params.len;
     }
 
     /// TS2416 prose: render `Property 'p' in type 'Child<U>' is not
@@ -17547,19 +17556,40 @@ pub const Checker = struct {
 
     fn mergeInheritedStaticMembers(
         self: *Checker,
+        child_node: NodeId,
         parent_static_t: TypeId,
         child_members: *std.ArrayListUnmanaged(types.ObjectMember),
     ) CheckError!void {
         const construct_name = self.string_interner.intern("__construct") catch return error.OutOfMemory;
-        var child_by_name: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        var child_by_name: std.AutoHashMapUnmanaged(hir_mod.StringId, types.ObjectMember) = .empty;
         defer child_by_name.deinit(self.gpa);
-        for (child_members.items) |m| try child_by_name.put(self.gpa, m.name, {});
+        for (child_members.items) |m| try child_by_name.put(self.gpa, m.name, m);
 
         var inherited: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer inherited.deinit(self.gpa);
         for (self.interner.objectMembers(parent_static_t)) |pm| {
             if (pm.name == construct_name) continue;
-            if (child_by_name.contains(pm.name)) continue;
+            if (child_by_name.get(pm.name)) |cm| {
+                const assignable = self.heritageAssignable(cm.type, pm.type) catch false;
+                if (!assignable) {
+                    if (try self.classDisplayNameFromNode(child_node)) |child_disp| {
+                        defer self.gpa.free(child_disp);
+                        const parent_disp = (try self.allocSimpleTypeName(parent_static_t)) orelse "base class";
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Class static side 'typeof {s}' incorrectly extends base class static side '{s}'.",
+                            .{ child_disp, parent_disp },
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = child_node,
+                            .pos = self.classNameSpanStart(child_node),
+                            .code = TsCodes.class_static_side_incorrectly_extends_base,
+                            .message = msg,
+                        });
+                    }
+                }
+                continue;
+            }
             try inherited.append(self.gpa, pm);
         }
         if (inherited.items.len == 0) return;
@@ -18644,7 +18674,10 @@ pub const Checker = struct {
                 if (self.class_instance_types.get(id.name)) |t| break :blk t;
                 if (try self.resolveForwardClassInstanceType(extends_expr, id.name)) |t| break :blk t;
                 if (self.lowerBuiltinObjectType(self.string_interner.get(id.name))) |t| break :blk t;
-                if (try self.jsConstructorInstanceTypeForHeritage(extends_expr, id.name)) |t| break :blk t;
+                if (try self.jsConstructorInstanceTypeForHeritage(extends_expr, id.name)) |t| {
+                    if (try self.applyClassJsDocExtendsSubstitution(extends_expr, id.name, t)) |instantiated| break :blk instantiated;
+                    break :blk t;
+                }
                 if (try self.heritageValueType(extends_expr, id.name)) |value_t| {
                     if (try self.constructReturnType(value_t)) |instance_t| break :blk instance_t;
                 }
@@ -18676,6 +18709,165 @@ pub const Checker = struct {
         try self.collectConstructSignatures(t, &construct_sigs);
         if (construct_sigs.items.len == 0) return null;
         return self.interner.signatureReturn(construct_sigs.items[0]) orelse types.Primitive.any;
+    }
+
+    fn applyClassJsDocExtendsSubstitution(
+        self: *Checker,
+        extends_expr: NodeId,
+        parent_name: hir_mod.StringId,
+        inherited_t: TypeId,
+    ) CheckError!?TypeId {
+        const class_node = self.enclosingClassNode(extends_expr);
+        if (class_node == hir_mod.none_node_id) return null;
+        const src = self.source orelse return null;
+        const span = self.hir.spanOf(class_node);
+        const body = self.leadingJsDocBody(src, span.start) orelse return null;
+        const extends_text = jsDocBlockTagTypeText(body, "@extends") orelse return null;
+        const open = jsDocTopLevelOpenAngle(extends_text) orelse return null;
+        if (!std.mem.endsWith(u8, std.mem.trim(u8, extends_text, " \t\r\n"), ">")) return null;
+        const raw_name = std.mem.trim(u8, extends_text[0..open], " \t\r\n");
+        if (!std.mem.eql(u8, raw_name, self.string_interner.get(parent_name))) return null;
+
+        const fn_node = self.jsConstructorFunctionDeclForName(extends_expr, parent_name) orelse return null;
+        var sig = self.hir.typeOf(fn_node);
+        if (sig == types.Primitive.none or sig >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(sig).is_signature) {
+            sig = try self.checkFnSignatureOnly(fn_node);
+            if (hir_mod.fnTypeParams(self.hir, fn_node).len > 0 or self.fnHasJsDocTemplateTags(fn_node)) self.popNarrowScope();
+        }
+        const type_params = self.generic_signature_params.get(sig) orelse return null;
+        if (type_params.len == 0) return null;
+
+        const trimmed = std.mem.trim(u8, extends_text, " \t\r\n");
+        const args_text = trimmed[open + 1 .. trimmed.len - 1];
+        var arg_split = JsDocTopLevelSplitter.init(args_text, ',');
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        var i: usize = 0;
+        const old_anchor = self.jsdoc_diagnostic_anchor;
+        self.jsdoc_diagnostic_anchor = class_node;
+        defer self.jsdoc_diagnostic_anchor = old_anchor;
+        while (arg_split.next()) |arg_text| : (i += 1) {
+            if (i >= type_params.len) break;
+            const arg_t = (try self.jsDocTypeTextToType(src, arg_text)) orelse types.Primitive.any;
+            try subs.put(self.gpa, type_params[i], arg_t);
+        }
+        if (subs.count() == 0) return null;
+        return try self.substituteTypeNoCycles(inherited_t, &subs);
+    }
+
+    fn substituteTypeNoCycles(
+        self: *Checker,
+        t: TypeId,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!TypeId {
+        var visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+        defer visited.deinit(self.gpa);
+        return try self.substituteTypeNoCyclesInner(t, subs, &visited);
+    }
+
+    fn substituteTypeNoCyclesInner(
+        self: *Checker,
+        t: TypeId,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+        visited: *std.AutoHashMapUnmanaged(TypeId, void),
+    ) CheckError!TypeId {
+        if (subs.get(t)) |s| return s;
+        if (t >= self.interner.pool.typeCount()) return t;
+        if (visited.contains(t)) return t;
+        try visited.put(self.gpa, t, {});
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_type_parameter) return t;
+        if (flags.is_union) {
+            const members = self.interner.unionMembers(t);
+            var new_members: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer new_members.deinit(self.gpa);
+            for (members) |member| try new_members.append(self.gpa, try self.substituteTypeNoCyclesInner(member, subs, visited));
+            return self.interner.internUnion(new_members.items) catch return t;
+        }
+        if (flags.is_intersection) {
+            const members = self.interner.intersectionMembers(t);
+            var new_members: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer new_members.deinit(self.gpa);
+            for (members) |member| try new_members.append(self.gpa, try self.substituteTypeNoCyclesInner(member, subs, visited));
+            return self.interner.internIntersection(new_members.items) catch return t;
+        }
+        if (flags.is_signature) {
+            const payload_idx = self.interner.pool.payloadOf(t);
+            if (payload_idx >= self.interner.pool.signature_payloads.items.len) return t;
+            const params = self.interner.signatureParams(t);
+            var new_params: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer new_params.deinit(self.gpa);
+            for (params) |param_t| try new_params.append(self.gpa, try self.substituteTypeNoCyclesInner(param_t, subs, visited));
+            const ret = if (self.interner.signatureReturn(t)) |ret_t|
+                try self.substituteTypeNoCyclesInner(ret_t, subs, visited)
+            else
+                types.Primitive.void_t;
+            const new_sig = self.interner.internSignature(
+                new_params.items,
+                ret,
+                self.interner.pool.signature_payloads.items[payload_idx].is_construct,
+            ) catch return t;
+            try self.copySignatureParamNames(new_sig, t);
+            try self.copySignatureNullishArrayDefaults(new_sig, t);
+            if (self.rest_signatures.contains(t)) try self.rest_signatures.put(self.gpa, new_sig, {});
+            if (self.signature_min_args.get(t)) |min_required| try self.signature_min_args.put(self.gpa, new_sig, min_required);
+            return new_sig;
+        }
+        if (flags.is_object_type) {
+            const members = self.interner.objectMembers(t);
+            var new_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+            defer new_members.deinit(self.gpa);
+            for (members) |member| {
+                try new_members.append(self.gpa, .{
+                    .name = member.name,
+                    .type = try self.substituteTypeNoCyclesInner(member.type, subs, visited),
+                    .is_optional = member.is_optional,
+                    .is_readonly = member.is_readonly,
+                    .is_method = member.is_method,
+                });
+            }
+            const str_idx = self.interner.objectStringIndex(t);
+            const num_idx = self.interner.objectNumberIndex(t);
+            const sym_idx = self.interner.objectSymbolIndex(t);
+            const new_str = if (str_idx != types.Primitive.none) try self.substituteTypeNoCyclesInner(str_idx, subs, visited) else types.Primitive.none;
+            const new_num = if (num_idx != types.Primitive.none) try self.substituteTypeNoCyclesInner(num_idx, subs, visited) else types.Primitive.none;
+            const new_sym = if (sym_idx != types.Primitive.none) try self.substituteTypeNoCyclesInner(sym_idx, subs, visited) else types.Primitive.none;
+            const new_obj = if (new_str == types.Primitive.none and new_num == types.Primitive.none and new_sym == types.Primitive.none)
+                self.interner.internObjectType(new_members.items) catch return t
+            else
+                self.interner.internObjectTypeWithIndexAndSymbol(new_members.items, new_str, new_num, new_sym) catch return t;
+            if (self.alias_display_names.get(t)) |display| {
+                try self.alias_display_names.put(self.gpa, new_obj, display);
+            }
+            return new_obj;
+        }
+        return t;
+    }
+
+    fn reportImplicitThisInTsJsDocConstructor(self: *Checker, fn_node: NodeId) CheckError!void {
+        if (self.virtualSectionFilenameForNode(fn_node)) |filename| {
+            if (self.pathIsJsLike(filename)) return;
+        } else if (self.pathIsJsLike(self.importer_path)) {
+            return;
+        }
+        const src = self.source orelse return;
+        const jsdoc = self.leadingJsDocBodyForFunctionOrOwner(src, fn_node) orelse return;
+        if (std.mem.indexOf(u8, jsdoc, "@constructor") == null) return;
+        const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (f.body == hir_mod.none_node_id) return;
+        const span = self.hir.spanOf(f.body);
+        if (span.start >= span.end or span.end > src.len) return;
+        const rel = std.mem.indexOf(u8, src[span.start..span.end], "this") orelse return;
+        const pos: u32 = @intCast(span.start + rel);
+        for (self.diagnostics.items) |diag| {
+            if (diag.code == TsCodes.this_implicitly_any and (diag.pos orelse self.hir.spanOf(diag.node).start) == pos) return;
+        }
+        try self.diagnostics.append(self.gpa, .{
+            .node = fn_node,
+            .pos = pos,
+            .code = TsCodes.this_implicitly_any,
+            .message = "'this' implicitly has type 'any' because it does not have a type annotation.",
+        });
     }
 
     fn heritageValueType(self: *Checker, at_node: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
@@ -18766,7 +18958,10 @@ pub const Checker = struct {
             .identifier => blk: {
                 const id = hir_mod.identifierOf(self.hir, extends_expr);
                 if (self.class_static_types.get(id.name)) |t| break :blk t;
-                if (try self.jsConstructorStaticTypeForHeritage(extends_expr, id.name)) |t| break :blk t;
+                if (try self.jsConstructorStaticTypeForHeritage(extends_expr, id.name)) |t| {
+                    if (try self.applyClassJsDocExtendsSubstitution(extends_expr, id.name, t)) |instantiated| break :blk instantiated;
+                    break :blk t;
+                }
                 if (try self.heritageValueType(extends_expr, id.name)) |value_t| {
                     const static_t = self.typeParameterConstraint(value_t) orelse value_t;
                     if (try self.constructReturnType(static_t)) |_| break :blk static_t;
@@ -22483,6 +22678,15 @@ pub const Checker = struct {
                 const span = self.hir.spanOf(member_node);
                 if (span.start >= span.end or span.end > src.len) return canonical;
                 const key_text = src[span.start..span.end];
+                if (self.hir.kindOf(member_node) == .identifier) {
+                    var i: usize = span.start;
+                    while (i > 0) {
+                        i -= 1;
+                        if (src[i] == ' ' or src[i] == '\t' or src[i] == '\r' or src[i] == '\n') continue;
+                        if (src[i] != '[') return key_text;
+                        break;
+                    }
+                }
                 const arena = self.diag_arena.allocator();
                 const wrapped = std.fmt.allocPrint(arena, "[{s}]", .{key_text}) catch return key_text;
                 return wrapped;
@@ -24260,6 +24464,25 @@ pub const Checker = struct {
             if (sig == types.Primitive.none or sig >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(sig).is_signature) {
                 sig = try self.checkFnSignatureOnly(fn_node);
                 if (hir_mod.fnTypeParams(self.hir, fn_node).len > 0 or self.fnHasJsDocTemplateTags(fn_node)) self.popNarrowScope();
+            }
+            const f = hir_mod.fnDeclOf(self.hir, fn_node);
+            if (f.return_type == hir_mod.none_node_id and f.body != hir_mod.none_node_id and self.hir.kindOf(f.body) == .block_stmt) {
+                try self.reportImplicitThisInTsJsDocConstructor(fn_node);
+                var ret_types: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer ret_types.deinit(self.gpa);
+                try self.collectReturnTypes(f.body, &ret_types);
+                const inferred_ret: TypeId = if (ret_types.items.len == 0)
+                    (if (self.statementDefinitelyExits(f.body)) types.Primitive.never else types.Primitive.void_t)
+                else if (ret_types.items.len == 1 and ret_types.items[0] != types.Primitive.none)
+                    ret_types.items[0]
+                else
+                    types.Primitive.any;
+                if (inferred_ret != types.Primitive.any) {
+                    const params = self.interner.signatureParams(sig);
+                    const rendered_sig = self.interner.internSignature(params, inferred_ret, false) catch return error.OutOfMemory;
+                    try self.copySignatureParamNames(rendered_sig, sig);
+                    break :blk rendered_sig;
+                }
             }
             break :blk sig;
         };
@@ -31775,7 +31998,13 @@ pub const Checker = struct {
             return self.interner.internObjectTypeWithIndex(&.{}, value_t, types.Primitive.none) catch return error.OutOfMemory;
         }
 
-        var lines = std.mem.splitScalar(u8, type_text, '\n');
+        const trimmed_outer = std.mem.trim(u8, type_text, " \t\r\n");
+        const is_inline_braced_object = trimmed_outer.len >= 2 and trimmed_outer[0] == '{' and trimmed_outer[trimmed_outer.len - 1] == '}';
+        const object_body = if (is_inline_braced_object)
+            std.mem.trim(u8, trimmed_outer[1 .. trimmed_outer.len - 1], " \t\r\n")
+        else
+            type_text;
+        var lines = std.mem.tokenizeAny(u8, object_body, "\n;,");
         while (lines.next()) |raw_line| {
             var line = std.mem.trim(u8, raw_line, " \t\r");
             if (line.len > 0 and line[0] == '*') {
@@ -31789,10 +32018,15 @@ pub const Checker = struct {
             if (after_name.len == 0) continue;
             if (std.mem.startsWith(u8, after_name, "?:")) continue;
             if (after_name[0] != ':') continue;
+            const member_type_text = std.mem.trim(u8, after_name[1..], " \t\r");
             const name = self.string_interner.intern(line[0..name_end]) catch return error.OutOfMemory;
+            const prop_t = if (is_inline_braced_object and member_type_text.len > 0)
+                (try self.jsDocTypeTextToType(self.source orelse "", member_type_text)) orelse types.Primitive.unknown
+            else
+                types.Primitive.unknown;
             try members.append(self.gpa, .{
                 .name = name,
-                .type = types.Primitive.unknown,
+                .type = prop_t,
                 .is_optional = false,
                 .is_readonly = false,
                 .is_method = false,
@@ -31800,7 +32034,13 @@ pub const Checker = struct {
         }
 
         if (members.items.len == 0) return null;
-        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+        const obj_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+        if (is_inline_braced_object) {
+            const inner = std.mem.trim(u8, trimmed_outer[1 .. trimmed_outer.len - 1], " \t\r\n");
+            const display = try std.fmt.allocPrint(self.diag_arena.allocator(), "{{ {s}; }}", .{inner});
+            try self.registerAliasDisplayText(obj_t, display);
+        }
+        return obj_t;
     }
 
     fn jsDocStringIndexerFromTypeText(self: *Checker, type_text: []const u8) ?TypeId {
@@ -33805,8 +34045,14 @@ pub const Checker = struct {
                                 }
                             }
                         } else {
+                            const super_t = self.lookupNarrow(id.name) orelse types.Primitive.any;
                             const args = hir_mod.callArgs(self.hir, node);
-                            for (args) |arg| _ = try self.checkExpression(arg);
+                            var arg_types: std.ArrayListUnmanaged(TypeId) = .empty;
+                            defer arg_types.deinit(self.gpa);
+                            for (args) |arg| {
+                                const arg_t = try self.checkExpression(arg);
+                                try arg_types.append(self.gpa, arg_t);
+                            }
                             // TS2754 is now emitted unconditionally by the
                             // parser when it encounters `super<T>` — see
                             // `parseCallOrMemberExpression`. The checker no
@@ -33825,6 +34071,9 @@ pub const Checker = struct {
                                 // grammar-level TS2337 there. Mirrors
                                 // `computedPropertyNames30_ES{5,6}.ts(11,19)`.
                                 try self.report(c.callee, TsCodes.super_call_not_permitted, "Super calls are not permitted outside constructors or in nested functions inside constructors.");
+                            }
+                            if (self.nodeIsDirectlyInsideConstructor(c.callee)) {
+                                try self.checkSuperConstructSignature(node, super_t, args, arg_types.items);
                             }
                             break :blk types.Primitive.any;
                         }
@@ -38070,6 +38319,38 @@ pub const Checker = struct {
         }
 
         return self.interner.signatureReturn(selected_sig) orelse types.Primitive.any;
+    }
+
+    fn checkSuperConstructSignature(
+        self: *Checker,
+        call_node: NodeId,
+        super_t: TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+    ) CheckError!void {
+        if (super_t == types.Primitive.any or super_t == types.Primitive.unknown) return;
+        var construct_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer construct_sigs.deinit(self.gpa);
+        try self.collectConstructSignatures(super_t, &construct_sigs);
+        if (construct_sigs.items.len == 0) return;
+
+        var selected_sig: TypeId = construct_sigs.items[0];
+        var found_applicable = false;
+        for (construct_sigs.items) |sig| {
+            const effective_sig = try self.instantiateSignatureFromArgs(sig, args, arg_types);
+            if (try self.signatureAccepts(call_node, effective_sig, args, arg_types)) {
+                selected_sig = effective_sig;
+                found_applicable = true;
+                break;
+            }
+            if (selected_sig == construct_sigs.items[0]) selected_sig = effective_sig;
+        }
+
+        if (!found_applicable and construct_sigs.items.len > 1) {
+            try self.report(call_node, TsCodes.no_overload_matches, "No overload matches this call.");
+            return;
+        }
+        try self.checkArgsAgainstSignature(call_node, args, arg_types, selected_sig);
     }
 
     fn newCalleeIsAbstractClass(self: *Checker, callee_node: NodeId) bool {
