@@ -108,6 +108,8 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/path/posix-exists.test.js",
     "js/node/path/win32-exists.test.js",
     "js/node/path/15704.test.js",
+    "js/node/url/url-canParse-whatwg.test.js",
+    "js/node/url/url-format-invalid-input.test.js",
 };
 
 const harness_prelude =
@@ -1006,6 +1008,28 @@ const harness_prelude =
     \\    },
     \\  });
     \\}
+    \\if (typeof URL.canParse !== "function") {
+    \\  URL.canParse = function(input, base) {
+    \\    try {
+    \\      if (arguments.length === 0) throw new TypeError("URL.canParse requires an input");
+    \\      new URL(input, base);
+    \\      return true;
+    \\    } catch (error) {
+    \\      return false;
+    \\    }
+    \\  };
+    \\}
+    \\const __home_url_module = {
+    \\  URL: URL,
+    \\  format(value) {
+    \\    if (typeof value === "string") return value;
+    \\    if (value && typeof value === "object" && Object.keys(value).length === 0) return "";
+    \\    throw new TypeError('The "urlObject" argument must be one of type object or string.');
+    \\  },
+    \\};
+    \\__home_url_module.default = __home_url_module;
+    \\globalThis.__home_modules["url"] = __home_url_module;
+    \\globalThis.__home_modules["node:url"] = __home_url_module;
     \\if (typeof Response !== "function") {
     \\  var Response = function(body, init) {
     \\    this.body = body;
@@ -1870,6 +1894,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const path = globalThis.__home_import(\"path\");",
         },
         .{
+            .needle = "import { URL } from \"node:url\";",
+            .replacement = "const { URL } = globalThis.__home_import(\"node:url\");",
+        },
+        .{
+            .needle = "import url from \"node:url\";",
+            .replacement = "const url = globalThis.__home_import(\"node:url\");",
+        },
+        .{
             .needle = "import buffer, { INSPECT_MAX_BYTES } from \"node:buffer\";",
             .replacement = "const __home_node_buffer = globalThis.__home_import(\"node:buffer\");\nconst buffer = __home_node_buffer.default;\nconst { INSPECT_MAX_BYTES } = __home_node_buffer;",
         },
@@ -2167,6 +2199,8 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/node/path/posix-exists.test.js", filesForSubset(.minimal_js)[54]);
     try std.testing.expectEqualStrings("js/node/path/win32-exists.test.js", filesForSubset(.minimal_js)[55]);
     try std.testing.expectEqualStrings("js/node/path/15704.test.js", filesForSubset(.minimal_js)[56]);
+    try std.testing.expectEqualStrings("js/node/url/url-canParse-whatwg.test.js", filesForSubset(.minimal_js)[57]);
+    try std.testing.expectEqualStrings("js/node/url/url-format-invalid-input.test.js", filesForSubset(.minimal_js)[58]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -2226,6 +2260,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"assert/strict\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"path\"] = __home_path_module") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"path/posix\"] = __home_path_posix") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:url\"] = __home_url_module") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "URL.canParse = function(input, base)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:vm\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun:internal-for-testing\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "escapeRegExpForPackageNameMatching(value)") != null);
@@ -2373,6 +2409,25 @@ test "Bun test import rewrite lowers describe and test imports" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { describe, test } = globalThis.__home_import(\"bun:test\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
+}
+
+test "Node url import rewrites lower named and default imports" {
+    const source =
+        \\import assert from "node:assert";
+        \\import { URL } from "node:url";
+        \\import url from "node:url";
+        \\import { describe, test } from "bun:test";
+        \\describe("url", () => {
+        \\  test("empty", () => assert.strictEqual(url.format(""), ""));
+        \\  test("canParse", () => assert(URL.canParse("https://example.com")));
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/node/url/url-format-invalid-input.test.js");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { URL } = globalThis.__home_import(\"node:url\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const url = globalThis.__home_import(\"node:url\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"node:url\"") == null);
 }
 
 test "Bun test import rewrite lowers mock imports" {
@@ -3185,6 +3240,52 @@ test "bootstrap runner covers Node path bootstrap smokes" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap runner covers Node url bootstrap smokes" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, test } from "bun:test";
+        \\import assert from "node:assert";
+        \\import { URL } from "node:url";
+        \\import url from "node:url";
+        \\
+        \\describe("URL.canParse", () => {
+        \\  test.todo("invalid input", () => {
+        \\    URL.canParse();
+        \\  });
+        \\
+        \\  test("repeatedly called produces same result", () => {
+        \\    for (let i = 0; i < 10; i++) {
+        \\      assert(URL.canParse("https://www.example.com/path/?query=param#hash"));
+        \\    }
+        \\  });
+        \\});
+        \\
+        \\describe("url.format", () => {
+        \\  test.todo("invalid input", () => {
+        \\    url.format(null);
+        \\  });
+        \\
+        \\  test("empty", () => {
+        \\    assert.strictEqual(url.format(""), "");
+        \\    assert.strictEqual(url.format({}), "");
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/url/url-bootstrap-smoke.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.todo);
 }
 
 test "bootstrap runner reports unsupported thrown by harness as unsupported" {
