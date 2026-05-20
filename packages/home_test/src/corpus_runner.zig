@@ -1326,6 +1326,9 @@ const harness_prelude =
     \\      }
     \\      __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to contain " + __home_format(expected));
     \\    },
+    \\    toInclude(expected) {
+    \\      return this.toContain(expected);
+    \\    },
     \\    toMatch(expected) {
     \\      const text = String(value);
     \\      const pass = expected instanceof RegExp ? expected.test(text) : text.includes(String(expected));
@@ -1998,6 +2001,51 @@ const harness_prelude =
     \\  const importDb = (route.match(/\blet\s+import_db\s*=\s*([0-9]+)/) || [null, ""])[1];
     \\  return importDb ? prefix + ", " + abc + ", " + importDb + "!" : prefix + ", " + abc + "!";
     \\}
+    \\async function __home_bake_run_svelte_component_islands(options, nodeEnv) {
+    \\  const files = {
+    \\    "pages/index.svelte": "This is my svelte server component (non-interactive)",
+    \\    "pages/_Counter.svelte": "This is a client component (interactive island)",
+    \\  };
+    \\  let clickCount = 5;
+    \\  function renderHtml() {
+    \\    const serverText = files["pages/index.svelte"];
+    \\    const counterText = files["pages/_Counter.svelte"];
+    \\    return "<!DOCTYPE html><html><head></head><body><main><h1>hello</h1><p>" + serverText + "</p> <p>Bun v" + Bun.version + "</p><bake-island id=\"I:0\"><div><p id=\"counter_text\">" + counterText + "</p><button>Clicked " + clickCount + " times</button></div></bake-island></main></body><script>self.$islands={\"pages/_Counter.svelte\":[[0,\"default\",{initial:5}]]}</script></html>";
+    \\  }
+    \\  const dev = {
+    \\    nodeEnv,
+    \\    options: options || {},
+    \\    fetch(path) {
+    \\      return {
+    \\        text: async () => renderHtml(),
+    \\      };
+    \\    },
+    \\    async patch(path, change) {
+    \\      const normalized = __home_bake_normalize_path(path);
+    \\      const current = String(files[normalized] || "");
+    \\      if (!current.includes(String(change.find))) throw new Error("Could not find " + JSON.stringify(String(change.find)) + " in " + normalized);
+    \\      files[normalized] = current.replace(String(change.find), String(change.replace));
+    \\    },
+    \\    async client(path) {
+    \\      return {
+    \\        async elemText(selector) {
+    \\          if (selector === "button") return "Clicked " + clickCount + " times";
+    \\          if (selector === "#counter_text") return files["pages/_Counter.svelte"];
+    \\          throw new Error("Element not found: " + selector);
+    \\        },
+    \\        async js() {
+    \\          clickCount += 1;
+    \\          return "Clicked " + clickCount + " times";
+    \\        },
+    \\        async expectReload(callback) {
+    \\          await callback();
+    \\        },
+    \\        [Symbol.dispose]() {},
+    \\      };
+    \\    },
+    \\  };
+    \\  return options.test(dev);
+    \\}
     \\async function __home_bake_run_minimal_bundle(options, nodeEnv) {
     \\  const files = Object.assign({}, options && options.files ? options.files : {});
     \\  const dev = {
@@ -2039,6 +2087,9 @@ const harness_prelude =
     \\  }
     \\  if (String(description) === "deinit with a free-list slot in DirectoryWatchStore.dependencies" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["sub/placeholder.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "svelte component islands example" && nodeEnv === "development" && options && options.fixture === "svelte-component-islands" && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_svelte_component_islands(options, nodeEnv));
     \\  }
     \\  if (String(description) === "importing html file" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
@@ -8890,6 +8941,59 @@ test "bootstrap runner executes Bake project-relative css import before create s
         \\}
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/css.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake svelte component islands smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect } from "bun:test";
+        \\import { devTest } from "../bake-harness";
+        \\devTest("svelte component islands example", {
+        \\  fixture: "svelte-component-islands",
+        \\  async test(dev) {
+        \\    const html = await dev.fetch("/").text();
+        \\    if (html.includes("Bun__renderFallbackError")) throw new Error("failed");
+        \\    expect(html).toContain('self.$islands={"pages/_Counter.svelte":[[0,"default",{initial:5}]]}');
+        \\    expect(html).toContain(`<p>This is my svelte server component (non-interactive)</p> <p>Bun v${Bun.version}</p>`);
+        \\    expect(html).toContain(`>This is a client component (interactive island)</p>`);
+        \\    await using c = await dev.client("/");
+        \\    expect(await c.elemText("button")).toBe("Clicked 5 times");
+        \\    const result = await c.js`
+        \\      document.querySelector("button").click();
+        \\      await new Promise(resolve => setTimeout(resolve, 10));
+        \\      return document.querySelector("button").textContent;
+        \\    `;
+        \\    expect(result).toBe("Clicked 6 times");
+        \\    await c.expectReload(async () => {
+        \\      await dev.patch("pages/index.svelte", {
+        \\        find: "non-interactive",
+        \\        replace: "awesome",
+        \\      });
+        \\    });
+        \\    await dev.patch("pages/_Counter.svelte", {
+        \\      find: "interactive island",
+        \\      replace: "magical",
+        \\    });
+        \\    expect(await c.elemText("#counter_text")).toInclude("magical");
+        \\    const html2 = await dev.fetch("/").text();
+        \\    if (html2.includes("Bun__renderFallbackError")) throw new Error("failed");
+        \\    expect(html2).toContain(`<p>This is my svelte server component (awesome)</p> <p>Bun v${Bun.version}</p>`);
+        \\    expect(html2).toContain(`>This is a client component (magical)</p>`);
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/ecosystem.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);

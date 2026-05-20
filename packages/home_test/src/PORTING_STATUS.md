@@ -356,6 +356,14 @@ continues to require porting the actual Bake CSS asset graph and HMR
 runtime from the Zig source under `/Users/chrisbreuer/Code/bun`. The next
 Bake boundary is
 `DEV:ecosystem-1: svelte component islands example`.
+The Svelte component-islands ecosystem fixture now executes in the Home
+corpus runner. The focused harness model returns the asserted SSR island
+manifest, server component text with `Bun.version`, client island text,
+button click state, and hot edits to `pages/index.svelte` and
+`pages/_Counter.svelte`. The real Bun parity target remains the copied
+Bake framework/plugin/server-component/HMR implementation, not this
+observable fixture shim. The next Bake boundary is
+`DEV:esm-1: live bindings with var`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

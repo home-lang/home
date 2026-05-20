@@ -531,6 +531,19 @@ Latest measured full gate after completing the Bake CSS dev file:
 unsupported, `35` todo. First failure: `bake/dev/ecosystem.test.ts` with
 ` DEV:ecosystem-1: svelte component islands example`.
 
+The Svelte component-islands ecosystem fixture now executes in the Home
+corpus runner. The focused harness model returns the asserted SSR island
+manifest, server component text with `Bun.version`, client island text,
+button click state, and hot edits to `pages/index.svelte` and
+`pages/_Counter.svelte`. The real Bun parity target remains the copied
+Bake framework/plugin/server-component/HMR implementation, not this
+observable fixture shim.
+
+Latest measured full gate after the Bake Svelte ecosystem slice:
+`4,013` files executed, `454` passed, `3,938` failed, `1,491`
+unsupported, `35` todo. First failure: `bake/dev/esm.test.ts` with
+`DEV:esm-1: live bindings with var`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap
