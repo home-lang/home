@@ -3444,6 +3444,37 @@ test "conformance: sub-strict directive without @strict keeps inferred strict-on
     try T.expect(merged_with_strict_on.use_unknown_in_catch_variables);
 }
 
+test "conformance: controlFlowInstanceOfGuardPrimitives passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "controlFlowInstanceOfGuardPrimitives",
+        .path = "controlFlowInstanceOfGuardPrimitives.ts",
+        .source =
+        \\// @target: es2015
+        \\function distinguish(thing: string | number | Date) {
+        \\    if (thing instanceof Object) {
+        \\        console.log("Aha!! It's a Date in " + thing.getFullYear());
+        \\    } else if (typeof thing === 'string') {
+        \\        console.log("Aha!! It's a string of length " + thing.length);
+        \\    } else {
+        \\        console.log("Aha!! It's the number " + thing.toPrecision(3));
+        \\    }
+        \\}
+        \\
+        \\distinguish(new Date());
+        \\distinguish("beef");
+        \\distinguish(3.14159265);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: asOperator1 matches TS2352 baseline" {
     const result = try runOneEntry(T.allocator, .{
         .name = "asOperator1",
