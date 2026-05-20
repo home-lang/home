@@ -153,6 +153,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/19412.test.ts",
     "js/node/path/normalize.test.js",
     "js/node/path/join.test.js",
+    "js/node/path/dirname.test.js",
 };
 
 const harness_prelude =
@@ -1198,6 +1199,7 @@ const harness_prelude =
     \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, escapeHTML: Bun.escapeHTML, indexOfLine: Bun.indexOfLine };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["node:test"] = { test };
+    \\globalThis.__home_modules["harness"] = { isWindows: false };
     \\function SourceMap(payload) {
     \\  if (!(this instanceof SourceMap)) return new SourceMap(payload);
     \\  this.payload = payload;
@@ -1238,6 +1240,12 @@ const harness_prelude =
     \\}
     \\function __home_path_join() {
     \\  return __home_path_posix_join.apply(null, arguments);
+    \\}
+    \\function __home_path_is_win32_separator(code) {
+    \\  return code === 47 || code === 92;
+    \\}
+    \\function __home_path_is_win32_drive(code) {
+    \\  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
     \\}
     \\function __home_path_posix_is_absolute(value) {
     \\  return String(value).startsWith("/");
@@ -1362,9 +1370,87 @@ const harness_prelude =
     \\function __home_path_win32_extname(value) {
     \\  return __home_path_extname_impl(value, true);
     \\}
-    \\const __home_path_posix = { join: __home_path_posix_join, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_posix_normalize, basename: __home_path_posix_basename, extname: __home_path_posix_extname };
-    \\const __home_path_win32 = { join: __home_path_win32_join, isAbsolute: __home_path_win32_is_absolute, normalize: __home_path_win32_normalize, basename: __home_path_win32_basename, extname: __home_path_win32_extname };
-    \\const __home_path_module = { join: __home_path_join, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_normalize, resolve: __home_path_resolve, relative: __home_path_relative, basename: __home_path_posix_basename, extname: __home_path_posix_extname, posix: __home_path_posix, win32: __home_path_win32 };
+    \\function __home_path_posix_dirname(value) {
+    \\  const text = String(value);
+    \\  if (text.length === 0) return ".";
+    \\  const hasRoot = text.charCodeAt(0) === 47;
+    \\  let end = -1;
+    \\  let matchedSlash = true;
+    \\  for (let i = text.length - 1; i >= 1; --i) {
+    \\    const code = text.charCodeAt(i);
+    \\    if (code === 47) {
+    \\      if (!matchedSlash) {
+    \\        end = i;
+    \\        break;
+    \\      }
+    \\    } else {
+    \\      matchedSlash = false;
+    \\    }
+    \\  }
+    \\  if (end === -1) return hasRoot ? "/" : ".";
+    \\  if (hasRoot && end === 1) return "//";
+    \\  return text.slice(0, end);
+    \\}
+    \\function __home_path_win32_dirname(value) {
+    \\  const text = String(value);
+    \\  const len = text.length;
+    \\  if (len === 0) return ".";
+    \\  const first = text.charCodeAt(0);
+    \\  let rootEnd = -1;
+    \\  let offset = 0;
+    \\  if (len === 1) return __home_path_is_win32_separator(first) ? text : ".";
+    \\  if (__home_path_is_win32_separator(first)) {
+    \\    rootEnd = 1;
+    \\    offset = 1;
+    \\    if (__home_path_is_win32_separator(text.charCodeAt(1))) {
+    \\      let j = 2;
+    \\      let last = j;
+    \\      while (j < len && !__home_path_is_win32_separator(text.charCodeAt(j))) j++;
+    \\      if (j < len && j !== last) {
+    \\        last = j;
+    \\        while (j < len && __home_path_is_win32_separator(text.charCodeAt(j))) j++;
+    \\        if (j < len && j !== last) {
+    \\          last = j;
+    \\          while (j < len && !__home_path_is_win32_separator(text.charCodeAt(j))) j++;
+    \\          if (j === len) return text;
+    \\          if (j !== last) {
+    \\            rootEnd = j + 1;
+    \\            offset = j + 1;
+    \\          }
+    \\        }
+    \\      }
+    \\    }
+    \\  } else if (__home_path_is_win32_drive(first) && text.charCodeAt(1) === 58) {
+    \\    rootEnd = 2;
+    \\    offset = 2;
+    \\    if (len > 2 && __home_path_is_win32_separator(text.charCodeAt(2))) {
+    \\      rootEnd = 3;
+    \\      offset = 3;
+    \\    }
+    \\  }
+    \\  let end = -1;
+    \\  let matchedSlash = true;
+    \\  for (let i = len - 1; i >= offset; --i) {
+    \\    if (__home_path_is_win32_separator(text.charCodeAt(i))) {
+    \\      if (!matchedSlash) {
+    \\        end = i;
+    \\        break;
+    \\      }
+    \\    } else {
+    \\      matchedSlash = false;
+    \\    }
+    \\  }
+    \\  if (end === -1) {
+    \\    if (rootEnd === -1) return ".";
+    \\    end = rootEnd;
+    \\  } else if (rootEnd !== -1 && end < rootEnd) {
+    \\    end = rootEnd;
+    \\  }
+    \\  return text.slice(0, end);
+    \\}
+    \\const __home_path_posix = { join: __home_path_posix_join, dirname: __home_path_posix_dirname, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_posix_normalize, basename: __home_path_posix_basename, extname: __home_path_posix_extname };
+    \\const __home_path_win32 = { join: __home_path_win32_join, dirname: __home_path_win32_dirname, isAbsolute: __home_path_win32_is_absolute, normalize: __home_path_win32_normalize, basename: __home_path_win32_basename, extname: __home_path_win32_extname };
+    \\const __home_path_module = { join: __home_path_join, dirname: __home_path_posix_dirname, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_normalize, resolve: __home_path_resolve, relative: __home_path_relative, basename: __home_path_posix_basename, extname: __home_path_posix_extname, posix: __home_path_posix, win32: __home_path_win32 };
     \\globalThis.__home_modules["assert"] = __home_assert_module;
     \\globalThis.__home_modules["node:assert"] = __home_assert_module;
     \\globalThis.__home_modules["path"] = __home_path_module;
@@ -2666,6 +2752,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const path = globalThis.__home_import(\"node:path\");",
         },
         .{
+            .needle = "import { isWindows } from \"harness\";",
+            .replacement = "const { isWindows } = globalThis.__home_import(\"harness\");",
+        },
+        .{
             .needle = "import { URL } from \"node:url\";",
             .replacement = "const { URL } = globalThis.__home_import(\"node:url\");",
         },
@@ -3210,6 +3300,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "regression/issue/19412.test.ts",
         "js/node/path/normalize.test.js",
         "js/node/path/join.test.js",
+        "js/node/path/dirname.test.js",
     };
 
     for (expected) |path| {
@@ -3311,6 +3402,20 @@ test "Node path and assert import rewrites lower default imports" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const path = globalThis.__home_import(\"path\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"node:assert\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"path\"") == null);
+}
+
+test "Bun harness import rewrite lowers isWindows import" {
+    const source =
+        \\import { describe, test } from "bun:test";
+        \\import { isWindows } from "harness";
+        \\import path from "node:path";
+        \\test("platform", () => path.dirname(__filename).includes(isWindows ? "\\" : "/"));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/node/path/dirname.test.js");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { isWindows } = globalThis.__home_import(\"harness\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"harness\"") == null);
 }
 
 test "Bun test import rewrite lowers describe and test imports" {
