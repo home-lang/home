@@ -87,6 +87,7 @@ pub extern "c" fn JSValueUnprotect(ctx: ?*JSContextRef, value: ?*JSValue) void;
 
 pub extern "c" fn JSObjectMake(ctx: ?*JSContextRef, class: ?*anyopaque, data: ?*anyopaque) ?*JSObject;
 pub extern "c" fn JSObjectMakeArray(ctx: ?*JSContextRef, argc: usize, argv: [*c]const ?*JSValue, exception: ExceptionRef) ?*JSObject;
+pub extern "c" fn JSObjectMakeDeferredPromise(ctx: ?*JSContextRef, resolve: [*c]?*JSObject, reject: [*c]?*JSObject, exception: ExceptionRef) ?*JSObject;
 pub extern "c" fn JSObjectGetProperty(ctx: ?*JSContextRef, object: ?*JSObject, name: ?*JSString, exception: ExceptionRef) ?*JSValue;
 pub extern "c" fn JSObjectSetProperty(ctx: ?*JSContextRef, object: ?*JSObject, name: ?*JSString, value: ?*JSValue, attrs: c_uint, exception: ExceptionRef) void;
 pub extern "c" fn JSObjectGetPropertyAtIndex(ctx: ?*JSContextRef, object: ?*JSObject, index: c_uint, exception: ExceptionRef) ?*JSValue;
@@ -115,6 +116,7 @@ test "extern fn type signatures are well-formed" {
     try std.testing.expect(@typeInfo(@TypeOf(JSValueMakeNull)) == .@"fn");
     try std.testing.expect(@typeInfo(@TypeOf(JSEvaluateScript)) == .@"fn");
     try std.testing.expect(@typeInfo(@TypeOf(JSObjectMake)) == .@"fn");
+    try std.testing.expect(@typeInfo(@TypeOf(JSObjectMakeDeferredPromise)) == .@"fn");
     try std.testing.expect(@typeInfo(@TypeOf(JSObjectMakeFunctionWithCallback)) == .@"fn");
     try std.testing.expect(@typeInfo(@TypeOf(JSObjectCallAsConstructor)) == .@"fn");
     try std.testing.expect(@typeInfo(@TypeOf(JSObjectIsFunction)) == .@"fn");

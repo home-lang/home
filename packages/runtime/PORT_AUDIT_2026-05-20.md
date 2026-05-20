@@ -22,8 +22,8 @@ scripts/measure-parity.sh --values
 
 ## What landed since 2026-05-18
 
-The previous audit measured **366 ported** files. Since then, **+106
-files** have landed across:
+The previous audit measured **366 ported** files. Since then,
+**106 additional files** have landed across:
 
 ### Phase 12.2 — JSC bring-up (95 files in `src/jsc/`)
 
@@ -36,8 +36,9 @@ files** have landed across:
 - **M5** — Call + callback helpers (`call`, `construct`,
   `getCallee`, `makeFunctionCallback`).
 - **M6** — JSON + Promise + Iterator + Global helpers
-  (`JSON.parse` / `JSON.stringify` bridges, Promise creation +
-  resolve / reject, iterator protocol, `globalThis` accessors).
+  (`JSON.parse` / `JSON.stringify` bridges, public deferred-promise
+  creation via `JSObjectMakeDeferredPromise`, retained resolver calls,
+  iterator protocol, `globalThis` accessors).
 
 JS-callable end-to-end wire-up (the `home run` reaches JS via JSC)
 is the remaining gate.
@@ -85,7 +86,7 @@ Wave-19 through wave-23 dropped Tier-0 / Tier-1 leaves across:
 | Sub-phase | Source under `~/Code/bun/src/` | Destination | Files | Status |
 |---|---|---|---|---|
 | 12.1 | `cli/` | `src/cli/` | varies | 🟡 scaffold landed |
-| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | **95** | 🟡 M6 milestone landed; JS-callable bridge pending |
+| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | **97** | 🟡 M6 milestone landed; JS-callable bridge pending |
 | 12.3 | `event_loop/`, `io/`, `async/` | `src/event_loop/`, `src/io/`, `src/async/` | varies | 🟡 substrate landing |
 | 12.4 | `resolver/`, `module_loader.zig` | `src/module_loader/` | — | 🔴 blocked on 12.2 |
 | 12.5 | `web/`, `http/`, `csrf/`, `dns/` | `src/web/`, … | varies (substrate) | 🔴 blocked on 12.3 |

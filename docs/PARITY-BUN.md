@@ -11,7 +11,9 @@ section.
 > end-to-end, but Phase 12.2 (JSC bring-up) has reached the M6
 > milestone — JSON + Promise + Iterator + Global helpers — across
 > 97 files in `packages/runtime/src/jsc/`, including a live
-> `JSEvaluateScript` smoke. Full audit:
+> `JSEvaluateScript` smoke and the public JavaScriptCore
+> `JSObjectMakeDeferredPromise` deferred-promise constructor bridge.
+> Full audit:
 > [`packages/runtime/PORT_AUDIT_2026-05-20.md`](../packages/runtime/PORT_AUDIT_2026-05-20.md).
 
 Legend:
@@ -25,7 +27,7 @@ Legend:
 | Sub-phase | Source under `~/Code/bun/src/` | Destination | Status |
 |---|---|---|---|
 | 12.1 | `cli/` | `src/cli/` | 🟡 scaffold landed (CLI flag parsing partial) |
-| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone + native eval smoke landed (97 files: JSON + Promise + Iterator + Global helpers + `JSEvaluateScript`) |
+| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone + native eval smoke landed (97 files: JSON + Promise + Iterator + Global helpers + `JSEvaluateScript` + `JSObjectMakeDeferredPromise`) |
 | 12.3 | `event_loop/`, `io/`, `async/` | `src/event_loop/` | 🟡 substrate landing (~30+ leaves ported) |
 | 12.4 | `resolver/`, `module_loader.zig` | `src/module_loader/` | 🔴 blocked on 12.2 |
 | 12.5 | `web/`, `http/`, `csrf/`, `dns/` | `src/web/` | 🔴 blocked on 12.3 |

@@ -61,9 +61,11 @@ packages while the execution engine is still blocked.
 
 - `src/home_rt.zig` — aggregator that re-exports every ported subsystem.
 - `src/jsc/` — 97 files; Phase 12.2 milestones M1-M6 plus the first
-  native `JSEvaluateScript` helper. Default tests compile the surface;
-  `./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=true`
-  runs a live `1 + 2` evaluation through JavaScriptCore.
+  native `JSEvaluateScript` helper and the public
+  `JSObjectMakeDeferredPromise` deferred-promise constructor bridge.
+  Default tests compile the surface; run
+  `./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=true` for
+  a live `1 + 2` evaluation through JavaScriptCore.
 - `src/node/` — 28 files; Phase 12.7 round-15 (top-level `assert.zig`, `buffer.zig`, `crypto.zig`, `events.zig`, `fs.zig`, `os.zig`, `path.zig`, `process.zig`, `querystring.zig`, `stream.zig`, `string_decoder.zig`, `tty.zig`, `url.zig`, `util.zig`, plus binding/helper files: `Stat`, `StatFS`, `dir_iterator`, `fs_events`, `os_constants`, `nodejs_error_code`, `node_fs_constant`, `node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`, `types`, `time_like`, `util/parse_args_utils`, `assert/myers_diff`).
 - `src/cli/` — destination for Bun's `src/cli/` command dispatch (Phase 12.10 scaffold landed).
 - `src/install/` — `home <-> pantry` shim. Pantry replaces `bun install` entirely.
@@ -74,7 +76,7 @@ packages while the execution engine is still blocked.
 | Sub-phase | Source under `~/Code/bun/src/` | Destination | Status |
 |---|---|---|---|
 | 12.1 | `cli/` | `src/cli/` | 🟡 scaffold landed |
-| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone landed (96 files; JS-callable bridge pending) |
+| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone landed (97 files; JS-callable bridge pending) |
 | 12.3 | `event_loop/`, `io/`, `async/` | `src/event_loop/` | 🟡 substrate landing (~30+ leaves via wave-19+ grinders) |
 | 12.4 | `resolver/`, `module_loader.zig` | `src/module_loader/` | 🔴 blocked on 12.2 |
 | 12.5 | `web/`, `http/`, `csrf/`, `dns/` | `src/web/` | 🔴 blocked on 12.3 |
