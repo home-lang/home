@@ -3444,6 +3444,52 @@ test "conformance: sub-strict directive without @strict keeps inferred strict-on
     try T.expect(merged_with_strict_on.use_unknown_in_catch_variables);
 }
 
+test "conformance: asOperator1 matches TS2352 baseline" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "asOperator1",
+        .path = "asOperator1.ts",
+        .source =
+        \\// @target: es2015
+        \\var as = 43;
+        \\var x = undefined as number;
+        \\var y = (null as string).length;
+        \\var z = Date as any as string;
+        \\
+        \\// Should parse as a union type, not a bitwise 'or' of (32 as number) and 'string'
+        \\var j = 32 as number|string;
+        \\j = '';
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\asOperator1.ts(2,9): error TS2352: Conversion of type 'undefined' to type 'number' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+        \\asOperator1.ts(3,10): error TS2352: Conversion of type 'null' to type 'string' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+        ,
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: asOperator2 matches TS2352 baseline" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "asOperator2",
+        .path = "asOperator2.ts",
+        .source = "// @target: es2015\nvar x = 23 as string;",
+        .expects_error = true,
+        .expected_errors = "asOperator2.ts(1,9): error TS2352: Conversion of type 'number' to type 'string' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: nonPrimitiveAndEmptyObject passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "nonPrimitiveAndEmptyObject",
