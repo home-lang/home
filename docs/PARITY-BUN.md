@@ -251,13 +251,16 @@ corpus bootstrap runner yet`. The exact `bun:internal-for-testing`,
 `bun:jsc`, and fixture HTML imports are lowered. The Zig-side Bake
 DevServer/HmrSocket lifetime carrier is now present under
 `packages/runtime/src/runtime/bake/` with deinit counter, route-viewer,
-source-map ref, and active-websocket teardown tests, but it is not yet
-connected to the JS-visible `Bun.serve`/Bake API. Real async `bun:test`,
-`Bun.serve`, fetch, and HMR WebSocket surfaces are still unported.
+source-map ref, and active-websocket teardown tests. The
+`bun:internal-for-testing` getter is connected to that real native
+counter through the JSC bootstrap, but it is not yet connected to the
+JS-visible `Bun.serve`/Bake API. Real async `bun:test`, `Bun.serve`,
+fetch, and HMR WebSocket surfaces are still unported.
 
 Latest measured full gate: `4,013` files executed, `387` passed,
 `3,903` failed, `1,453` unsupported, `33` todo. First failure:
-`bake/deinitialization.test.ts` with `Error: Expected 1 to be 0`.
+`bake/deinitialization.test.ts` with `Error: Expected 1 to be 0`; the
+delegated child now reaches `TypeError: Bun.serve is not a function`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

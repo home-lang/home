@@ -42,9 +42,17 @@ pub const Runtime = struct {
             "__home_spawnSyncNative",
             spawnSyncNative,
         );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_getDevServerDeinitCountNative",
+            getDevServerDeinitCountNative,
+        );
     }
 
     fn resetFileState(self: *Runtime, allocator: std.mem.Allocator) !void {
+        home_rt.runtime.bake.resetDevServerDeinitCountForTesting();
+
         const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(
             allocator,
             self.engine.currentContext(),
@@ -160,6 +168,26 @@ const opaques = home_rt.jsc.opaques;
 const JSValue = opaques.JSValue;
 const JSContextRef = opaques.JSContextRef;
 const JSObject = opaques.JSObject;
+
+fn getDevServerDeinitCountNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    _ = argument_count;
+    _ = arguments;
+    _ = exception;
+
+    return extern_fns.JSValueMakeNumber(
+        ctx.?,
+        @floatFromInt(home_rt.runtime.bake.getDevServerDeinitCountForTesting()),
+    );
+}
 
 fn spawnSyncNative(
     ctx: ?*JSContextRef,

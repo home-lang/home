@@ -7,7 +7,11 @@
 // surface yet; it carries the deinit/HMR ownership invariants needed before
 // wiring Bun.serve({ routes: html }) into Home.
 
-pub const DevServer = @import("DevServer.zig").DevServer;
+const DevServerModule = @import("DevServer.zig");
+
+pub const DevServer = DevServerModule.DevServer;
+pub const resetDevServerDeinitCountForTesting = DevServerModule.resetDeinitCountForTesting;
+pub const getDevServerDeinitCountForTesting = DevServerModule.getDeinitCountForTesting;
 pub const HmrSocket = @import("DevServer/HmrSocket.zig").HmrSocket;
 pub const RouteBundle = @import("DevServer/RouteBundle.zig").RouteBundle;
 pub const SourceMapStore = @import("DevServer/SourceMapStore.zig").SourceMapStore;

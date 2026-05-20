@@ -1852,7 +1852,8 @@ const harness_prelude =
     \\    return __home_escape_powershell(value);
     \\  },
     \\  getDevServerDeinitCount() {
-    \\    __home_unsupported("Bun Bake DevServer deinit counter is not ported into Home yet");
+    \\    if (typeof globalThis.__home_getDevServerDeinitCountNative !== "function") __home_unsupported("Bun Bake DevServer deinit counter native bridge is not installed");
+    \\    return globalThis.__home_getDevServerDeinitCountNative();
     \\  },
     \\};
     \\globalThis.__home_modules["bun:jsc"] = {
@@ -3671,6 +3672,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "escapeRegExpForPackageNameMatching(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "escapePowershell(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "getDevServerDeinitCount()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_getDevServerDeinitCountNative()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun:jsc\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bake/fixtures/deinitialization/index.html\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "createDenoTest(path)") != null);
