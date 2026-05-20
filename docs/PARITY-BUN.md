@@ -273,6 +273,13 @@ general `Bun.serve`, `fetch`, and HMR WebSocket APIs are still unported.
 The native server lifecycle carrier now mirrors Bun's DevServer detach
 gate: no pending requests, no listener, and no active websockets before
 the Bake DevServer is deinitialized.
+The Bake nucleus also carries the first `serve.static.define`
+propagation slice copied from Bun's bunfig / HTMLBundle flow: define maps
+can be copied into client, server, and SSR Bake bundler options, and
+`import.meta.env.*` mode/side flags are represented with Bun-compatible
+replacement strings. This is substrate for the first
+`bake/dev-and-prod.test.ts` HTML-route case; it is not yet a real
+HTMLBundle route, browser client, or bundler execution path.
 The JSC bootstrap also has a narrow `Bun.serve` host callback for the
 Bake HTML-route shape; it allocates a real DevServer/Server carrier and
 routes `server.stop()`, hosted `fetch`, and HMR WebSocket open/close

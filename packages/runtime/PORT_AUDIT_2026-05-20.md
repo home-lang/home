@@ -83,7 +83,10 @@ Wave-19 through wave-23 dropped Tier-0 / Tier-1 leaves across:
 
 ### Phase 12 Bake — DevServer/HMR lifetime carrier (5 files)
 
-- `runtime/bake/bake.zig` — public Bake nucleus.
+- `runtime/bake/bake.zig` — public Bake nucleus plus the
+  `serve.static.define` propagation carrier that copies define maps into
+  client/server/ssr Bake bundler options and preserves Bun's
+  `import.meta.env.*` define strings.
 - `runtime/bake/DevServer.zig` — deinit counter plus active-socket
   snapshot-before-close teardown.
 - `runtime/bake/DevServer/HmrSocket.zig` — borrowed parent reference,
