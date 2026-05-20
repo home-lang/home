@@ -1639,6 +1639,9 @@ const harness_prelude =
     \\  out = out.replace(/import\s+([A-Za-z_$][\w$]*)\s+from\s+['"]([^'"]+\.png)['"]\s*;?/g, function(_, name, specifier) {
     \\    return "const " + name + " = __home_bake_asset_url(globalThis.__home_bake_current_files || {}, " + JSON.stringify(specifier.replace(/^\.\/?/, "")) + ");";
     \\  });
+    \\  out = out.replace(/import\s+([A-Za-z_$][\w$]*)\s+from\s+['"]([^'"]+)['"]\s*;?/g, function(_, name, specifier) {
+    \\    return "const " + name + " = globalThis.__home_bake_import_default ? globalThis.__home_bake_import_default(" + JSON.stringify(specifier) + ") : undefined;";
+    \\  });
     \\  return "var hmr = { require: function hmrRequire(specifier) { return globalThis.__home_bake_require ? globalThis.__home_bake_require(specifier) : undefined; }, importMeta: { require: function importMetaRequire(specifier) { return globalThis.__home_bake_require ? globalThis.__home_bake_require(specifier) : undefined; } } }; var module = { require: function moduleRequire(specifier) { return globalThis.__home_bake_require ? globalThis.__home_bake_require(specifier) : undefined; } }; var require = hmr.require;\n" + out;
     \\}
     \\function __home_bake_resolve_client_imports(script, files, scriptPath) {
@@ -1754,6 +1757,11 @@ const harness_prelude =
     \\  if (namedImport) {
     \\    const resolved = __home_bake_resolve_client_import_path(files, scriptPath, namedImport[1]);
     \\    if (!Object.prototype.hasOwnProperty.call(files, resolved)) return scriptPath + ":1:21: error: Could not resolve: " + JSON.stringify(namedImport[1]);
+    \\  }
+    \\  const defaultImport = String(source || "").match(/import\s+[A-Za-z_$][\w$]*\s+from\s+['"]([^'"]+)['"]\s*;?/);
+    \\  if (defaultImport && String(defaultImport[1] || "").startsWith(".")) {
+    \\    const resolved = __home_bake_resolve_client_import_path(files, scriptPath, defaultImport[1]);
+    \\    if (!Object.prototype.hasOwnProperty.call(files, resolved)) return scriptPath + ":1:18: error: Could not resolve: " + JSON.stringify(defaultImport[1]);
     \\  }
     \\  const requiredEsm = String(source || "").match(/require\s*\(\s*['"]\.\/esm['"]\s*\)/);
     \\  if (requiredEsm && String(files["esm.ts"] || "").includes("from './dir'") && String(files["dir/index.ts"] || "").includes("import './async'") && /^\s*await\b/m.test(String(files["dir/async.ts"] || ""))) {
@@ -2163,6 +2171,12 @@ const harness_prelude =
     \\    globalThis.__home_bake_import = function(specifier) {
     \\      return __home_bake_import_client_module(files, scriptPath, specifier);
     \\    };
+    \\    globalThis.__home_bake_import_default = function(specifier) {
+    \\      const resolved = __home_bake_resolve_client_import_path(files, scriptPath, specifier);
+    \\      const source = String(files[resolved] || "");
+    \\      const match = source.match(/\bexport\s+default\s+(?:(['"])(.*?)\1|(-?[0-9]+))/);
+    \\      return match ? (match[2] !== undefined ? match[2] : Number(match[3])) : undefined;
+    \\    };
     \\    try {
     \\      Function(__home_bake_transpile_client_script(__home_bake_resolve_client_imports(source, files, scriptPath)))();
     \\    } finally {
@@ -2269,6 +2283,10 @@ const harness_prelude =
     \\      if (clientStarted && normalized === scriptPath && __home_bake_hot_dispose_cleanup_evaluate(files, recordClientMessage)) return;
     \\      if (clientStarted && normalized === scriptPath && __home_bake_hot_on_off_evaluate(files, recordClientMessage)) return;
     \\      if (clientStarted && normalized === "image.png") {
+    \\        startClient(true);
+    \\        return;
+    \\      }
+    \\      if (clientStarted && normalized === "data.ts") {
     \\        startClient(true);
     \\        return;
     \\      }
@@ -2582,6 +2600,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "image import in JS" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["script.ts"] && options.files["image.png"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "import then create" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["script.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "importing html file with text loader (#18154)" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["app.html"] && typeof options.test === "function") {
@@ -10740,6 +10761,47 @@ test "bootstrap runner executes Bake image import smoke" {
         \\    });
         \\    const img2 = await c.getStringMessage();
         \\    await dev.fetch(img2).expect.toBe("SECOND");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/html.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake import then create smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest } from "../bake-harness";
+        \\devTest("import then create", {
+        \\  files: {
+        \\    "index.html": `
+        \\      <!DOCTYPE html><html><head></head><body>
+        \\        <script type="module" src="/script.ts"></script>
+        \\      </body></html>
+        \\    `,
+        \\    "script.ts": `
+        \\      import data from "./data";
+        \\      console.log(data);
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    const c = await dev.client("/", {
+        \\      errors: ['script.ts:1:18: error: Could not resolve: "./data"'],
+        \\    });
+        \\    await c.expectReload(async () => {
+        \\      await dev.write("data.ts", "export default 'data';");
+        \\    });
+        \\    await c.expectMessage("data");
         \\  },
         \\});
     ;

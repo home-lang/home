@@ -824,6 +824,18 @@ Latest measured full gate after the HTML image-import slice:
 unsupported, `37` todo. First failure: `bake/dev/html.test.ts` with
 `DEV:html-4: import then create`.
 
+The Bake static HTML shim now covers the copied `import then create` case.
+It reports the expected missing relative default-import error, then reloads
+the client when `data.ts` is written and lowers default imports from the
+new module so the script logs `data`. The native parity target remains
+Bun's missing import diagnostics, file watcher recovery, and ESM default
+binding update path.
+
+Latest measured full gate after the HTML import-then-create slice:
+`4,013` files executed, `474` passed, `3,918` failed, `1,472`
+unsupported, `37` todo. First failure: `bake/dev/html.test.ts` with
+`DEV:html-5: external links`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

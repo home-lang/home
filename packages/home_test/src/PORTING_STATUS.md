@@ -533,6 +533,13 @@ image content edits so the second logged URL fetches the updated asset
 body. The native parity target remains Bun's JS asset import lowering,
 client graph asset hashing, and update propagation when imported assets
 change. The next Bake boundary is `DEV:html-4: import then create`.
+The copied `import then create` case now runs through the Bake static HTML
+shim. It reports the expected missing relative default-import error, then
+reloads the client when `data.ts` is written and lowers default imports
+from the new module so the script logs `data`. The native parity target
+remains Bun's missing import diagnostics, file watcher recovery, and ESM
+default binding update path. The next Bake boundary is
+`DEV:html-5: external links`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
