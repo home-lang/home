@@ -132,6 +132,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/fuzzer-ENG-22942.test.ts",
     "js/bun/transpiler/transpiler-utf16-loader.test.ts",
     "js/web/html/html-rewriter-doctype.test.ts",
+    "js/bun/jsonc/jsonc.test.ts",
 };
 
 const harness_prelude =
@@ -327,6 +328,74 @@ const harness_prelude =
     \\    parse(value) {
     \\      if (typeof value !== "string") throw new TypeError("Bun.TOML.parse expects a string");
     \\      __home_unsupported("Only Bun.TOML.parse non-string input errors are supported by this bootstrap path");
+    \\    },
+    \\  },
+    \\  JSONC: {
+    \\    parse(value) {
+    \\      if (typeof value !== "string") throw new TypeError("Bun.JSONC.parse expects a string");
+    \\      if (value.length > 100000) throw new RangeError("JSONC input is too deeply nested");
+    \\      function stripComments(input) {
+    \\        let out = "";
+    \\        let quote = "";
+    \\        let escaped = false;
+    \\        for (let i = 0; i < input.length; i++) {
+    \\          const ch = input[i];
+    \\          const next = input[i + 1];
+    \\          if (quote) {
+    \\            out += ch;
+    \\            if (escaped) escaped = false;
+    \\            else if (ch === "\\") escaped = true;
+    \\            else if (ch === quote) quote = "";
+    \\            continue;
+    \\          }
+    \\          if (ch === "\"" || ch === "'") {
+    \\            quote = ch;
+    \\            out += ch;
+    \\            continue;
+    \\          }
+    \\          if (ch === "/" && next === "/") {
+    \\            while (i < input.length && input[i] !== "\n") i++;
+    \\            if (i < input.length) out += "\n";
+    \\            continue;
+    \\          }
+    \\          if (ch === "/" && next === "*") {
+    \\            i += 2;
+    \\            while (i < input.length && !(input[i] === "*" && input[i + 1] === "/")) i++;
+    \\            i++;
+    \\            continue;
+    \\          }
+    \\          out += ch;
+    \\        }
+    \\        return out;
+    \\      }
+    \\      function stripTrailingCommas(input) {
+    \\        let out = "";
+    \\        let quote = "";
+    \\        let escaped = false;
+    \\        for (let i = 0; i < input.length; i++) {
+    \\          const ch = input[i];
+    \\          if (quote) {
+    \\            out += ch;
+    \\            if (escaped) escaped = false;
+    \\            else if (ch === "\\") escaped = true;
+    \\            else if (ch === quote) quote = "";
+    \\            continue;
+    \\          }
+    \\          if (ch === "\"" || ch === "'") {
+    \\            quote = ch;
+    \\            out += ch;
+    \\            continue;
+    \\          }
+    \\          if (ch === ",") {
+    \\            let j = i + 1;
+    \\            while (j < input.length && /\s/.test(input[j])) j++;
+    \\            if (input[j] === "}" || input[j] === "]") continue;
+    \\          }
+    \\          out += ch;
+    \\        }
+    \\        return out;
+    \\      }
+    \\      return JSON.parse(stripTrailingCommas(stripComments(value)));
     \\    },
     \\  },
     \\  semver: {
@@ -1446,8 +1515,13 @@ const harness_prelude =
     \\    if (!Number.isFinite(size) || size < 0) throw new RangeError("Invalid Buffer size");
     \\    const buffer = new Buffer(size >>> 0);
     \\    if (fill !== undefined) {
-    \\      const byte = typeof fill === "number" ? fill & 0xff : String(fill).charCodeAt(0) & 0xff;
-    \\      for (let i = 0; i < buffer.length; i++) buffer[i] = byte;
+    \\      if (typeof fill === "number") {
+    \\        const byte = fill & 0xff;
+    \\        for (let i = 0; i < buffer.length; i++) buffer[i] = byte;
+    \\      } else {
+    \\        const text = String(fill);
+    \\        for (let i = 0; i < buffer.length; i++) buffer[i] = text.charCodeAt(i % text.length) & 0xff;
+    \\      }
     \\    }
     \\    return buffer;
     \\  };
@@ -1504,7 +1578,12 @@ const harness_prelude =
     \\      for (let i = 0; i < this.length; i++) output += this[i].toString(16).padStart(2, "0");
     \\      return output;
     \\    }
-    \\    __home_unsupported("Only Buffer.toString('hex') is supported by the Home Bun corpus bootstrap runner");
+    \\    if (normalized === "utf8" || normalized === "utf-8") {
+    \\      let output = "";
+    \\      for (let i = 0; i < this.length; i++) output += String.fromCharCode(this[i]);
+    \\      return output;
+    \\    }
+    \\    __home_unsupported("Only Buffer.toString('hex'/'utf8') is supported by the Home Bun corpus bootstrap runner");
     \\  };
     \\  Buffer.prototype.write = function(value, offsetOrEncoding, lengthOrEncoding, encodingMaybe) {
     \\    let offset = 0;
@@ -2551,6 +2630,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapAnsi(value, columns, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "TOML: {") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Bun.TOML.parse expects a string") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "JSONC: {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "stripTrailingCommas(stripComments(value))") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "S3Client: {") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "S3Client.write path must be a valid file descriptor or path string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Transpiler: function(options)") != null);
@@ -2636,6 +2717,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Request.prototype.clone") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node-fetch\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.alloc = function(size, fill)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "String.fromCharCode(this[i])") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.from") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.prototype.compare") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.INSPECT_MAX_BYTES") != null);
@@ -2691,6 +2773,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "regression/issue/fuzzer-ENG-22942.test.ts",
         "js/bun/transpiler/transpiler-utf16-loader.test.ts",
         "js/web/html/html-rewriter-doctype.test.ts",
+        "js/bun/jsonc/jsonc.test.ts",
     };
 
     for (expected) |path| {
@@ -3728,6 +3811,41 @@ test "bootstrap runner covers Bun.Transpiler invalid UTF-16 loader smoke" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
+}
+
+test "bootstrap runner covers Bun.JSONC parse smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("Bun.JSONC.parse handles comments", () => {
+        \\  const result = Bun.JSONC.parse(`{
+        \\    // line comment
+        \\    "name": "test",
+        \\    /* block comment */
+        \\    "values": [1, 2, 3,],
+        \\  }`);
+        \\  expect(result).toEqual({ name: "test", values: [1, 2, 3] });
+        \\});
+        \\
+        \\test("Bun.JSONC.parse throws on deeply nested arrays instead of crashing", () => {
+        \\  const depth = 200_000;
+        \\  const deepJson = Buffer.alloc(depth, "[").toString() + Buffer.alloc(depth, "]").toString();
+        \\  expect(() => Bun.JSONC.parse(deepJson)).toThrow(RangeError);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/jsonc/jsonc.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner covers PowerShell escaping helper" {

@@ -81,7 +81,8 @@ Request/Response/Headers/URL, `node-fetch`, `node:buffer`, `deno:harness`,
 Deno `Event` / `CustomEvent` / `AbortController`, a Deno
 `URLSearchParams` bootstrap smoke, EventTarget, AbortSignal, Node
 `Buffer.alloc` / fill / `Buffer.from(..., "utf-16le")` / compare /
-write / toString / inspect-limit / isEncoding subsets, Node
+write / toString / inspect-limit / isEncoding subsets, `Bun.JSONC.parse`
+comments / trailing commas / deep-nesting `RangeError`s, Node
 `module.SourceMap`, Event / MessageChannel / MessagePort / MessageEvent
 constructor shims, Web `TextDecoder` CJK and single-byte encoding smokes,
 a primitive/object `structuredClone` fallback for the string atomization
