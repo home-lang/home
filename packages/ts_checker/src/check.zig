@@ -736,6 +736,18 @@ pub const MemberKey = struct {
     prop_name: hir_mod.StringId,
 };
 
+const CommonJsExportEntry = struct {
+    name: hir_mod.StringId,
+    typ: TypeId,
+    module_nodes: std.ArrayListUnmanaged(NodeId) = .empty,
+    alias_nodes: std.ArrayListUnmanaged(NodeId) = .empty,
+
+    fn deinit(self: *CommonJsExportEntry, gpa: std.mem.Allocator) void {
+        self.module_nodes.deinit(gpa);
+        self.alias_nodes.deinit(gpa);
+    }
+};
+
 /// Predicate metadata attached to a specific object member. Unlike
 /// `signature_predicates`, this key distinguishes same-shaped methods
 /// such as `isLeader(): this is LeadGuard` and
@@ -9994,7 +10006,11 @@ pub const Checker = struct {
         if (std.mem.lastIndexOfScalar(u8, file_tail, '/')) |idx| file_tail = file_tail[idx + 1 ..];
         return std.mem.eql(u8, spec_tail, file_tail) or
             (std.mem.endsWith(u8, file_tail, ".ts") and std.mem.eql(u8, spec_tail, file_tail[0 .. file_tail.len - ".ts".len])) or
-            (std.mem.endsWith(u8, file_tail, ".tsx") and std.mem.eql(u8, spec_tail, file_tail[0 .. file_tail.len - ".tsx".len]));
+            (std.mem.endsWith(u8, file_tail, ".tsx") and std.mem.eql(u8, spec_tail, file_tail[0 .. file_tail.len - ".tsx".len])) or
+            (std.mem.endsWith(u8, file_tail, ".js") and std.mem.eql(u8, spec_tail, file_tail[0 .. file_tail.len - ".js".len])) or
+            (std.mem.endsWith(u8, file_tail, ".jsx") and std.mem.eql(u8, spec_tail, file_tail[0 .. file_tail.len - ".jsx".len])) or
+            (std.mem.endsWith(u8, file_tail, ".cjs") and std.mem.eql(u8, spec_tail, file_tail[0 .. file_tail.len - ".cjs".len])) or
+            (std.mem.endsWith(u8, file_tail, ".mjs") and std.mem.eql(u8, spec_tail, file_tail[0 .. file_tail.len - ".mjs".len]));
     }
 
     /// Re-intern the function's signature with `new_ret` as the
@@ -20616,6 +20632,153 @@ pub const Checker = struct {
             return self.interner.internObjectType(&members) catch return error.OutOfMemory;
         }
         return null;
+    }
+
+    fn virtualCommonJsRequireCallType(self: *Checker, callee: NodeId, args: []const NodeId) CheckError!?TypeId {
+        if (!self.sourceHasCheckJsDirective() or !self.sourceHasVirtualFilenameSections()) return null;
+        if (self.hir.kindOf(callee) != .identifier) return null;
+        const id = hir_mod.identifierOf(self.hir, callee);
+        if (!std.mem.eql(u8, self.string_interner.get(id.name), "require")) return null;
+        if (args.len == 0 or self.hir.kindOf(args[0]) != .literal_string) return null;
+        const lit = hir_mod.literalStringOf(self.hir, args[0]);
+        const spec = self.string_interner.get(lit.value);
+        if (!std.mem.startsWith(u8, spec, ".")) return null;
+        return try self.virtualCommonJsModuleExportObjectType(callee, spec);
+    }
+
+    fn virtualCommonJsModuleExportObjectType(self: *Checker, anchor: NodeId, spec: []const u8) CheckError!?TypeId {
+        const src = self.source orelse return null;
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const stmts = hir_mod.blockStmts(self.hir, root);
+        var export_alias: ?hir_mod.StringId = null;
+        var found_section = false;
+        for (stmts) |raw| {
+            if (!self.virtualSectionMatchesSpecifier(src, raw, spec)) continue;
+            found_section = true;
+            if (self.hir.kindOf(raw) != .assignment) continue;
+            const a = hir_mod.assignmentOf(self.hir, raw);
+            if (a.op != null or a.target == hir_mod.none_node_id or a.value == hir_mod.none_node_id) continue;
+            if (!self.memberAccessIsModuleExports(a.target)) continue;
+            if (self.hir.kindOf(a.value) != .identifier) continue;
+            export_alias = hir_mod.identifierOf(self.hir, a.value).name;
+        }
+        if (!found_section) return null;
+
+        var entries: std.ArrayListUnmanaged(CommonJsExportEntry) = .empty;
+        defer {
+            for (entries.items) |*entry| entry.deinit(self.gpa);
+            entries.deinit(self.gpa);
+        }
+
+        for (stmts) |raw| {
+            if (!self.virtualSectionMatchesSpecifier(src, raw, spec)) continue;
+            if (self.hir.kindOf(raw) != .assignment) continue;
+            const a = hir_mod.assignmentOf(self.hir, raw);
+            if (a.op != null or a.target == hir_mod.none_node_id or a.value == hir_mod.none_node_id) continue;
+            if (self.commonJsModuleExportsPropertyName(a.target)) |prop_name| {
+                const value_t = try self.commonJsExportAssignmentValueType(a.value);
+                try self.appendCommonJsExportEntry(&entries, prop_name, value_t, raw, true);
+                continue;
+            }
+            if (export_alias) |alias_name| {
+                if (self.commonJsAliasExportPropertyName(a.target, alias_name)) |prop_name| {
+                    const value_t = try self.commonJsExportAssignmentValueType(a.value);
+                    try self.appendCommonJsExportEntry(&entries, prop_name, value_t, raw, false);
+                }
+            }
+        }
+
+        if (entries.items.len == 0) return null;
+        for (entries.items) |entry| {
+            if (entry.module_nodes.items.len == 0 or entry.alias_nodes.items.len == 0) continue;
+            for (entry.module_nodes.items) |node| try self.reportCommonJsExportRedeclaredOnce(node, entry.name);
+            for (entry.alias_nodes.items) |node| try self.reportCommonJsExportRedeclaredOnce(node, entry.name);
+        }
+
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        for (entries.items) |entry| {
+            try members.append(self.gpa, .{
+                .name = entry.name,
+                .type = entry.typ,
+                .is_optional = false,
+                .is_readonly = false,
+                .is_method = false,
+            });
+        }
+        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+    }
+
+    fn commonJsModuleExportsPropertyName(self: *Checker, target: NodeId) ?hir_mod.StringId {
+        if (self.hir.kindOf(target) != .member_access) return null;
+        const m = hir_mod.memberOf(self.hir, target);
+        if (m.object == hir_mod.none_node_id or self.hir.kindOf(m.object) != .member_access) return null;
+        if (!self.memberAccessIsModuleExports(m.object)) return null;
+        return m.name;
+    }
+
+    fn commonJsAliasExportPropertyName(self: *Checker, target: NodeId, alias_name: hir_mod.StringId) ?hir_mod.StringId {
+        if (self.hir.kindOf(target) != .member_access) return null;
+        const m = hir_mod.memberOf(self.hir, target);
+        if (m.object == hir_mod.none_node_id or self.hir.kindOf(m.object) != .identifier) return null;
+        if (hir_mod.identifierOf(self.hir, m.object).name != alias_name) return null;
+        return m.name;
+    }
+
+    fn commonJsExportAssignmentValueType(self: *Checker, value: NodeId) CheckError!TypeId {
+        const raw_t = try self.checkExpression(value);
+        return switch (self.hir.kindOf(value)) {
+            .literal_number => types.Primitive.number_t,
+            else => try self.flowTypeForAssignmentValue(value, raw_t),
+        };
+    }
+
+    fn appendCommonJsExportEntry(
+        self: *Checker,
+        entries: *std.ArrayListUnmanaged(CommonJsExportEntry),
+        prop_name: hir_mod.StringId,
+        value_t: TypeId,
+        node: NodeId,
+        is_module_write: bool,
+    ) CheckError!void {
+        for (entries.items) |*entry| {
+            if (entry.name != prop_name) continue;
+            if (entry.typ != value_t) {
+                entry.typ = self.interner.internUnion(&.{ entry.typ, value_t }) catch return error.OutOfMemory;
+            }
+            if (is_module_write) {
+                try entry.module_nodes.append(self.gpa, node);
+            } else {
+                try entry.alias_nodes.append(self.gpa, node);
+            }
+            return;
+        }
+        var entry: CommonJsExportEntry = .{ .name = prop_name, .typ = value_t };
+        errdefer entry.deinit(self.gpa);
+        if (is_module_write) {
+            try entry.module_nodes.append(self.gpa, node);
+        } else {
+            try entry.alias_nodes.append(self.gpa, node);
+        }
+        try entries.append(self.gpa, entry);
+    }
+
+    fn reportCommonJsExportRedeclaredOnce(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!void {
+        for (self.diagnostics.items) |d| {
+            if (d.node == node and d.code == TsCodes.export_default_redeclared) return;
+        }
+        const name_text = self.string_interner.get(name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot redeclare exported variable '{s}'.",
+            .{name_text},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.export_default_redeclared,
+            .message = msg,
+        });
     }
 
     fn memberAccessOnVirtualJsDefaultImport(self: *Checker, object_node: NodeId, member_name: hir_mod.StringId) CheckError!bool {
@@ -33373,6 +33536,9 @@ pub const Checker = struct {
                 }
                 try self.checkRewriteRelativeImportCall(node, c.callee, args);
                 try self.checkBareRequireCallImport(c.callee, args);
+                if (try self.virtualCommonJsRequireCallType(c.callee, args)) |require_t| {
+                    break :blk try self.optionalChainResult(require_t, call_is_optional_chain);
+                }
                 if (self.isDynamicImportCallee(c.callee) and args.len > 0 and self.hir.kindOf(args[0]) == .literal_string) {
                     const lit = hir_mod.literalStringOf(self.hir, args[0]);
                     const spec = self.string_interner.get(lit.value);
