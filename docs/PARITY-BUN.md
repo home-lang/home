@@ -42,12 +42,17 @@ Legend:
 
 ### `Bun.serve`
 
-🔴 Not implemented. HTTP/HTTPS/WebSocket server. Substrate at
-`packages/runtime/src/web/` + `packages/runtime/src/uws_sys/`.
+🔴 Not implemented as a general JS API. A narrow Home-native bootstrap
+path exists for the Bake deinitialization corpus fixture: HTML-route
+`Bun.serve`, `server.stop()`, in-flight `fetch`, and HMR WebSocket
+lifetime all route through native DevServer/Server carriers so teardown
+uses the real `DevServer.deinit()` counter.
 
 ### `Bun.fetch`
 
-🔴 Not implemented. WHATWG `fetch` with Bun extensions.
+🔴 Not implemented as a general JS API. The Bun corpus bootstrap has a
+narrow hosted fetch path for the Bake deinitialization fixture's
+`fetch(server.url.origin, { keepalive: false })` cases.
 
 ### `Bun.file` / `Bun.write`
 
@@ -253,21 +258,22 @@ DevServer/HmrSocket lifetime carrier is now present under
 `packages/runtime/src/runtime/bake/` with deinit counter, route-viewer,
 source-map ref, and active-websocket teardown tests. The
 `bun:internal-for-testing` getter is connected to that real native
-counter through the JSC bootstrap, but it is not yet connected to the
-JS-visible `Bun.serve`/Bake API. Real async `bun:test`, `Bun.serve`,
-fetch, and HMR WebSocket surfaces are still unported.
+counter through the JSC bootstrap. The narrow Bake deinitialization
+fixture path now wires JS-visible `Bun.serve`, `fetch`, timers, and HMR
+WebSocket shims into native DevServer/Server/HmrSocket carriers, but the
+general `Bun.serve`, `fetch`, and HMR WebSocket APIs are still unported.
 The native server lifecycle carrier now mirrors Bun's DevServer detach
 gate: no pending requests, no listener, and no active websockets before
 the Bake DevServer is deinitialized.
 The JSC bootstrap also has a narrow `Bun.serve` host callback for the
 Bake HTML-route shape; it allocates a real DevServer/Server carrier and
-routes `server.stop()` through the native lifecycle path. The fixture now
-advances to the next missing Web API, `fetch`.
+routes `server.stop()`, hosted `fetch`, and HMR WebSocket open/close
+through the native lifecycle path. The delegated
+`bake/fixtures/deinitialization/test.ts` child now passes all nine cases.
 
-Latest measured full gate: `4,013` files executed, `387` passed,
-`3,903` failed, `1,453` unsupported, `33` todo. First failure:
-`bake/deinitialization.test.ts` with `Error: Expected 1 to be 0`; the
-delegated child now reaches `ReferenceError: Can't find variable: fetch`.
+Latest measured full gate: `4,013` files executed, `388` passed,
+`3,902` failed, `1,453` unsupported, `33` todo. First failure:
+`bake/dev-and-prod.test.ts` with `unsupported module syntax`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

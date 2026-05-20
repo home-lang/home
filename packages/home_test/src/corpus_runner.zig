@@ -210,6 +210,19 @@ const harness_prelude =
     \\if (typeof console !== "object" || console === null) var console = {};
     \\if (typeof console.log !== "function") console.log = function() {};
     \\if (typeof console.warn !== "function") console.warn = console.log;
+    \\let __home_next_timer_id = 1;
+    \\const __home_cancelled_timers = new Set();
+    \\function setTimeout(callback, delay) {
+    \\  const id = __home_next_timer_id++;
+    \\  Promise.resolve().then(() => {
+    \\    if (__home_cancelled_timers.has(id)) return;
+    \\    if (typeof callback === "function") callback();
+    \\  });
+    \\  return id;
+    \\}
+    \\function clearTimeout(id) {
+    \\  __home_cancelled_timers.add(id);
+    \\}
     \\const __home_object_set_prototype_of = Object.setPrototypeOf;
     \\const __home_global_original_prototype = Object.getPrototypeOf(globalThis);
     \\let __home_global_virtual_prototype_keys = [];
@@ -239,13 +252,21 @@ const harness_prelude =
     \\  serve(options) {
     \\    if (typeof globalThis.__home_serveNative !== "function" || typeof globalThis.__home_stopServeNative !== "function") __home_unsupported("Bun.serve native bridge is not installed");
     \\    const handle = globalThis.__home_serveNative(options || {});
-    \\    return {
+    \\    handle.stopped = false;
+    \\    handle.abrupt = false;
+    \\    globalThis.__home_serve_handles_by_origin[handle.origin] = handle;
+    \\    const server = {
     \\      port: handle.port,
     \\      url: { origin: handle.origin, href: handle.origin + "/" },
     \\      stop(closeActiveConnections) {
-    \\        return globalThis.__home_stopServeNative(handle.id, !!closeActiveConnections);
+    \\        if (handle.stopped) return;
+    \\        handle.stopped = true;
+    \\        handle.abrupt = !!closeActiveConnections;
+    \\        delete globalThis.__home_serve_handles_by_origin[handle.origin];
+    \\        return globalThis.__home_stopServeNative(handle.id, handle.abrupt);
     \\      },
     \\    };
+    \\    return server;
     \\  },
     \\  spawnSync(options) {
     \\    if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("Bun.spawnSync native bridge is not installed");
@@ -827,10 +848,27 @@ const harness_prelude =
     \\}
     \\function __home_track_test_thenable(result) {
     \\  __home_bun_tests.pending++;
-    \\  Promise.resolve(result).then(
+    \\  return Promise.resolve(result).then(
     \\    function() {
     \\      __home_bun_tests.passed++;
     \\    },
+    \\    function(error) {
+    \\      __home_record_async_failure(error);
+    \\    },
+    \\  ).then(
+    \\    function() {
+    \\      __home_bun_tests.pending--;
+    \\    },
+    \\    function(error) {
+    \\      __home_bun_tests.pending--;
+    \\      __home_record_async_failure(error);
+    \\    },
+    \\  );
+    \\}
+    \\function __home_track_sequence_thenable(result) {
+    \\  __home_bun_tests.pending++;
+    \\  Promise.resolve(result).then(
+    \\    function() {},
     \\    function(error) {
     \\      __home_record_async_failure(error);
     \\    },
@@ -856,8 +894,7 @@ const harness_prelude =
     \\    if (__home_is_thenable(result)) {
     \\      const hasLifecycleHooks = chain.some(item => item.beforeEach.length > 0 || item.afterEach.length > 0);
     \\      if (hasLifecycleHooks || globalThis.__home_current_finished_callbacks.length > 0) __home_unsupported("Async tests with lifecycle hooks are not supported by the Home Bun corpus bootstrap runner yet");
-    \\      __home_track_test_thenable(result);
-    \\      return false;
+    \\      return __home_track_test_thenable(result);
     \\    }
     \\  } finally {
     \\    const callbacks = globalThis.__home_current_finished_callbacks;
@@ -901,16 +938,17 @@ const harness_prelude =
     \\    if (repeats > 0) {
     \\      for (let i = 0; i <= repeats; i++) {
     \\        const attemptResult = __home_run_test_attempt(scope, fn);
-    \\        if (attemptResult === false) __home_unsupported("Async tests with repeats are not supported by the Home Bun corpus bootstrap runner yet");
+    \\        if (__home_is_thenable(attemptResult)) __home_unsupported("Async tests with repeats are not supported by the Home Bun corpus bootstrap runner yet");
     \\      }
     \\    } else {
     \\      let lastError = null;
     \\      for (let i = 0; i <= retry; i++) {
     \\        try {
     \\          const attemptResult = __home_run_test_attempt(scope, fn);
-    \\          if (attemptResult === false) {
+    \\          if (__home_is_thenable(attemptResult)) {
     \\            if (retry > 0) __home_unsupported("Async tests with retry are not supported by the Home Bun corpus bootstrap runner yet");
     \\            completedSync = false;
+    \\            return attemptResult;
     \\          }
     \\          lastError = null;
     \\          break;
@@ -922,6 +960,7 @@ const harness_prelude =
     \\      if (lastError) throw lastError;
     \\    }
     \\    if (completedSync) __home_bun_tests.passed++;
+    \\    return null;
     \\  } catch (error) {
     \\    __home_bun_tests.failed++;
     \\    throw error;
@@ -939,11 +978,21 @@ const harness_prelude =
     \\  const queue = globalThis.__home_registered_tests;
     \\  const hasOnly = queue.some(entry => entry.only);
     \\  const hasScopeOnly = queue.some(entry => entry.scopeOnly);
-    \\  for (const entry of queue) {
-    \\    if (hasOnly && !entry.only) continue;
-    \\    if (!hasOnly && hasScopeOnly && !entry.scopeOnly) continue;
-    \\    __home_execute_test(entry);
+    \\  let chain = null;
+    \\  function runEntry(entry) {
+    \\    if (hasOnly && !entry.only) return null;
+    \\    if (!hasOnly && hasScopeOnly && !entry.scopeOnly) return null;
+    \\    return __home_execute_test(entry);
     \\  }
+    \\  for (const entry of queue) {
+    \\    if (chain) {
+    \\      chain = chain.then(function() { return runEntry(entry); });
+    \\      continue;
+    \\    }
+    \\    const result = runEntry(entry);
+    \\    if (__home_is_thenable(result)) chain = Promise.resolve(result);
+    \\  }
+    \\  if (chain) __home_track_sequence_thenable(chain);
     \\  globalThis.__home_registered_tests = [];
     \\}
     \\function __home_test_only(name, first, second) { __home_register_test(name, first, second, true); }
@@ -1181,6 +1230,39 @@ const harness_prelude =
     \\      if (expected !== undefined) {
     \\        __home_assert(String(thrown && thrown.message).includes(String(expected)), isNot, "Expected thrown message" + (isNot ? " not" : "") + " to include " + String(expected));
     \\      }
+    \\    },
+    \\    get rejects() {
+    \\      return {
+    \\        toThrow(expected) {
+    \\          const thrown = value && value.__home_rejected_error;
+    \\          if (!thrown) __home_fail("Expected promise to reject");
+    \\          if (expected !== undefined && expected !== "" && (expected === null || (typeof expected !== "object" && typeof expected !== "string" && typeof expected !== "function"))) {
+    \\            __home_fail("Expected value must be string or Error: " + __home_format(expected));
+    \\          }
+    \\          if (expected && expected.__home_expect_any) {
+    \\            __home_assert(thrown instanceof expected.ctor, isNot, "Expected rejected value" + (isNot ? " not" : "") + " to be instance of " + expected.ctor.name);
+    \\            return;
+    \\          }
+    \\          if (typeof expected === "function") {
+    \\            __home_assert(thrown instanceof expected, isNot, "Expected rejected value" + (isNot ? " not" : "") + " to be instance of " + expected.name);
+    \\            return;
+    \\          }
+    \\          if (expected instanceof RegExp) {
+    \\            __home_assert(expected.test(String(thrown && thrown.message)), isNot, "Expected rejection message" + (isNot ? " not" : "") + " to match " + String(expected));
+    \\            return;
+    \\          }
+    \\          if (expected && typeof expected === "object" && ("message" in expected || "name" in expected)) {
+    \\            let pass = true;
+    \\            if ("message" in expected) pass = pass && Object.is(thrown && thrown.message, expected.message);
+    \\            if ("name" in expected) pass = pass && Object.is(thrown && thrown.name, expected.name);
+    \\            __home_assert(pass, isNot, "Expected rejected error" + (isNot ? " not" : "") + " to match " + __home_format(expected));
+    \\            return;
+    \\          }
+    \\          if (expected !== undefined) {
+    \\            __home_assert(String(thrown && thrown.message).includes(String(expected)), isNot, "Expected rejection message" + (isNot ? " not" : "") + " to include " + String(expected));
+    \\          }
+    \\        },
+    \\      };
     \\    },
     \\    toThrowError(expected) {
     \\      return this.toThrow(expected);
@@ -2040,6 +2122,7 @@ const harness_prelude =
     \\  var Response = function(body, init) {
     \\    this.body = body;
     \\    this.init = init || {};
+    \\    this.status = this.init.status === undefined ? 200 : Number(this.init.status);
     \\    this.headers = new Headers(this.init.headers);
     \\  };
     \\}
@@ -2056,6 +2139,90 @@ const harness_prelude =
     \\  }
     \\  const text = JSON.stringify(value);
     \\  return new Response(text, init);
+    \\};
+    \\globalThis.__home_serve_handles_by_origin = Object.create(null);
+    \\function __home_fetch_thenable(response, error) {
+    \\  return {
+    \\    __home_rejected_error: error || null,
+    \\    then(resolve, reject) {
+    \\      return (error ? Promise.reject(error) : Promise.resolve(response)).then(resolve, reject);
+    \\    },
+    \\    catch(reject) {
+    \\      return this.then(undefined, reject);
+    \\    },
+    \\    finally(callback) {
+    \\      return this.then(
+    \\        value => Promise.resolve(callback && callback()).then(() => value),
+    \\        reason => Promise.resolve(callback && callback()).then(() => { throw reason; }),
+    \\      );
+    \\    },
+    \\  };
+    \\}
+    \\function fetch(input, init) {
+    \\  const href = String(input && input.href ? input.href : input);
+    \\  let origin = href;
+    \\  const scheme = href.indexOf("://");
+    \\  if (scheme !== -1) {
+    \\    const slash = href.indexOf("/", scheme + 3);
+    \\    origin = slash === -1 ? href : href.slice(0, slash);
+    \\  }
+    \\  const handle = globalThis.__home_serve_handles_by_origin[origin];
+    \\  if (!handle || handle.stopped) return __home_fetch_thenable(null, new Error("Unable to connect"));
+    \\  if (typeof globalThis.__home_beginServeRequestNative === "function") globalThis.__home_beginServeRequestNative(handle.id);
+    \\  try {
+    \\    if (typeof globalThis.callback === "function") {
+    \\      const callbackResult = globalThis.callback();
+    \\      if (callbackResult && typeof callbackResult.then === "function" && handle.abrupt) {
+    \\        callbackResult.catch(() => {});
+    \\      }
+    \\    }
+    \\  } catch (error) {
+    \\    if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
+    \\    return __home_fetch_thenable(null, error);
+    \\  }
+    \\  if (handle.abrupt) {
+    \\    if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
+    \\    return __home_fetch_thenable(null, new Error("closed unexpectedly"));
+    \\  }
+    \\  if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
+    \\  return __home_fetch_thenable(new Response("", { status: 200 }), null);
+    \\}
+    \\function WebSocket(url) {
+    \\  const href = String(url);
+    \\  let origin = href;
+    \\  const scheme = href.indexOf("://");
+    \\  if (scheme !== -1) {
+    \\    const slash = href.indexOf("/", scheme + 3);
+    \\    origin = slash === -1 ? href : href.slice(0, slash);
+    \\  }
+    \\  const path = href.slice(origin.length) || "/";
+    \\  const handle = globalThis.__home_serve_handles_by_origin[origin];
+    \\  this.url = href;
+    \\  this.readyState = 0;
+    \\  this.__home_handle = handle || null;
+    \\  this.__home_socket_id = null;
+    \\  if (!handle || path !== "/_bun/hmr" || typeof globalThis.__home_openHmrSocketNative !== "function") {
+    \\    Promise.resolve().then(() => {
+    \\      this.readyState = 3;
+    \\      const event = { preventDefault() {} };
+    \\      if (typeof this.onerror === "function") this.onerror(event);
+    \\      if (typeof this.onclose === "function") this.onclose(event);
+    \\    });
+    \\    return;
+    \\  }
+    \\  this.__home_socket_id = globalThis.__home_openHmrSocketNative(handle.id);
+    \\  Promise.resolve().then(() => {
+    \\    this.readyState = 1;
+    \\    if (typeof this.onopen === "function") this.onopen({ type: "open" });
+    \\  });
+    \\}
+    \\WebSocket.prototype.close = function() {
+    \\  if (this.readyState === 3) return;
+    \\  this.readyState = 3;
+    \\  if (this.__home_handle && this.__home_socket_id != null && typeof globalThis.__home_closeHmrSocketNative === "function") {
+    \\    globalThis.__home_closeHmrSocketNative(this.__home_handle.id, this.__home_socket_id);
+    \\  }
+    \\  if (typeof this.onclose === "function") this.onclose({ type: "close" });
     \\};
     \\if (typeof Blob !== "function") {
     \\  var Blob = function(parts, options) {

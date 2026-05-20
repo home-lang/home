@@ -61,6 +61,30 @@ pub const Runtime = struct {
             "__home_stopServeNative",
             stopServeNative,
         );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_beginServeRequestNative",
+            beginServeRequestNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_endServeRequestNative",
+            endServeRequestNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_openHmrSocketNative",
+            openHmrSocketNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_closeHmrSocketNative",
+            closeHmrSocketNative,
+        );
     }
 
     fn resetFileState(self: *Runtime, allocator: std.mem.Allocator) !void {
@@ -187,6 +211,8 @@ const ServeHandle = struct {
     id: usize,
     dev: home_rt.runtime.bake.DevServer,
     server: home_rt.runtime.server.Server,
+    next_hmr_socket_id: usize = 1,
+    hmr_sockets: std.AutoHashMapUnmanaged(usize, *home_rt.runtime.bake.HmrSocket) = .empty,
 };
 
 var next_serve_id: usize = 1;
@@ -259,16 +285,120 @@ fn stopServeNative(
     _ = this;
     _ = exception;
     const actual_ctx = ctx.?;
-    if (argument_count < 1 or arguments[0] == null) return extern_fns.JSValueMakeUndefined(actual_ctx);
+    const id = serveIdFromArguments(actual_ctx, argument_count, arguments) orelse return extern_fns.JSValueMakeUndefined(actual_ctx);
+    const abrupt = argument_count >= 2 and arguments[1] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[1]);
+    stopServeHandle(id, abrupt);
+    return extern_fns.JSValueMakeUndefined(actual_ctx);
+}
 
-    const id_number = extern_fns.JSValueToNumber(actual_ctx, arguments[0], null);
-    if (!std.math.isFinite(id_number) or id_number < 0 or @floor(id_number) != id_number) {
+fn beginServeRequestNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    _ = exception;
+    const actual_ctx = ctx.?;
+    const id = serveIdFromArguments(actual_ctx, argument_count, arguments) orelse return extern_fns.JSValueMakeUndefined(actual_ctx);
+    if (serve_handles.get(id)) |handle| {
+        handle.server.beginRequest();
+    }
+    return extern_fns.JSValueMakeUndefined(actual_ctx);
+}
+
+fn endServeRequestNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    _ = exception;
+    const actual_ctx = ctx.?;
+    const id = serveIdFromArguments(actual_ctx, argument_count, arguments) orelse return extern_fns.JSValueMakeUndefined(actual_ctx);
+    if (serve_handles.get(id)) |handle| {
+        handle.server.endRequest();
+        destroyStoppedServeHandleIfIdle(id, handle);
+    }
+    return extern_fns.JSValueMakeUndefined(actual_ctx);
+}
+
+fn openHmrSocketNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const id = serveIdFromArguments(actual_ctx, argument_count, arguments) orelse return extern_fns.JSValueMakeNull(actual_ctx);
+    const handle = serve_handles.get(id) orelse return extern_fns.JSValueMakeNull(actual_ctx);
+
+    const allocator = std.heap.smp_allocator;
+    const socket = allocator.create(home_rt.runtime.bake.HmrSocket) catch {
+        setException(actual_ctx, exception, "WebSocket() failed: OutOfMemory");
+        return null;
+    };
+    errdefer allocator.destroy(socket);
+
+    socket.* = home_rt.runtime.bake.HmrSocket.init(&handle.dev);
+    errdefer socket.deinit();
+
+    const socket_id = handle.next_hmr_socket_id;
+    handle.next_hmr_socket_id +|= 1;
+    handle.dev.addSocket(socket) catch {
+        setException(actual_ctx, exception, "WebSocket() failed: OutOfMemory");
+        return null;
+    };
+    handle.hmr_sockets.put(allocator, socket_id, socket) catch {
+        socket.close();
+        setException(actual_ctx, exception, "WebSocket() failed: OutOfMemory");
+        return null;
+    };
+
+    return extern_fns.JSValueMakeNumber(actual_ctx, @floatFromInt(socket_id));
+}
+
+fn closeHmrSocketNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    _ = exception;
+    const actual_ctx = ctx.?;
+    const id = serveIdFromArguments(actual_ctx, argument_count, arguments) orelse return extern_fns.JSValueMakeUndefined(actual_ctx);
+    if (argument_count < 2 or arguments[1] == null) return extern_fns.JSValueMakeUndefined(actual_ctx);
+    const socket_id_number = extern_fns.JSValueToNumber(actual_ctx, arguments[1], null);
+    if (!std.math.isFinite(socket_id_number) or socket_id_number < 0 or @floor(socket_id_number) != socket_id_number) {
         return extern_fns.JSValueMakeUndefined(actual_ctx);
     }
-    const id: usize = @intFromFloat(id_number);
-    const abrupt = argument_count >= 2 and arguments[1] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[1]);
-    destroyServeHandle(id, abrupt);
+    const socket_id: usize = @intFromFloat(socket_id_number);
+    if (serve_handles.get(id)) |handle| {
+        closeHmrSocket(handle, socket_id);
+    }
     return extern_fns.JSValueMakeUndefined(actual_ctx);
+}
+
+fn serveIdFromArguments(ctx: *JSContextRef, argument_count: usize, arguments: [*c]const ?*JSValue) ?usize {
+    if (argument_count < 1 or arguments[0] == null) return null;
+    const id_number = extern_fns.JSValueToNumber(ctx, arguments[0], null);
+    if (!std.math.isFinite(id_number) or id_number < 0 or @floor(id_number) != id_number) return null;
+    return @intFromFloat(id_number);
 }
 
 fn validateBakeHtmlServeOptions(
@@ -309,11 +439,53 @@ fn cleanupServeHandles() void {
     }
 }
 
+fn stopServeHandle(id: usize, abrupt: bool) void {
+    const handle = serve_handles.get(id) orelse return;
+    handle.server.stopListening(abrupt);
+    destroyStoppedServeHandleIfIdle(id, handle);
+}
+
+fn destroyStoppedServeHandleIfIdle(id: usize, handle: *ServeHandle) void {
+    if (handle.server.dev_server != null or handle.server.pending_requests != 0) return;
+    _ = serve_handles.remove(id);
+    deinitHmrSockets(handle);
+    handle.hmr_sockets.deinit(std.heap.smp_allocator);
+    std.heap.smp_allocator.destroy(handle);
+}
+
 fn destroyServeHandle(id: usize, abrupt: bool) void {
     const allocator = std.heap.smp_allocator;
     const handle = serve_handles.fetchRemove(id) orelse return;
     handle.value.server.stopListening(abrupt);
+    deinitHmrSockets(handle.value);
+    handle.value.hmr_sockets.deinit(allocator);
     allocator.destroy(handle.value);
+}
+
+fn closeHmrSocket(handle: *ServeHandle, socket_id: usize) void {
+    const allocator = std.heap.smp_allocator;
+    const entry = handle.hmr_sockets.fetchRemove(socket_id) orelse return;
+    entry.value.close();
+    entry.value.deinit();
+    allocator.destroy(entry.value);
+}
+
+fn deinitHmrSockets(handle: *ServeHandle) void {
+    const allocator = std.heap.smp_allocator;
+    var sockets: std.ArrayList(*home_rt.runtime.bake.HmrSocket) = .empty;
+    defer sockets.deinit(allocator);
+
+    var it = handle.hmr_sockets.valueIterator();
+    while (it.next()) |socket| {
+        sockets.append(allocator, socket.*) catch @panic("failed to snapshot HMR sockets");
+    }
+    handle.hmr_sockets.clearRetainingCapacity();
+
+    for (sockets.items) |socket| {
+        socket.close();
+        socket.deinit();
+        allocator.destroy(socket);
+    }
 }
 
 fn getDevServerDeinitCountNative(
