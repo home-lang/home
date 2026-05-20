@@ -1334,6 +1334,13 @@ fn checkerDiagnosticSurfacesInUncheckedJs(code: u32, message: []const u8, source
     if (code == ts_checker.check.TsCodes.cannot_redeclare_block_scoped) {
         return !sourceExplicitlyDisablesCheckJs(source);
     }
+    // TS2528 — duplicate default exports are binder/module-shape
+    // diagnostics, so they still surface in `allowJs` files even
+    // without `checkJs`. Explicit `@checkJS: false` keeps the stronger
+    // opt-out behavior used by other binder diagnostics above.
+    if (code == ts_checker.check.TsCodes.multiple_default_exports) {
+        return !sourceExplicitlyDisablesCheckJs(source);
+    }
     return false;
 }
 
@@ -1590,6 +1597,25 @@ test "driver: unchecked allowJs still surfaces JS grammar diagnostics" {
     }
     try T.expect(found_await);
     try T.expect(found_private);
+}
+
+test "driver: unchecked allowJs surfaces duplicate default export diagnostics" {
+    var c = try compileSource(T.allocator,
+        \\// @allowJs: true
+        \\// @filename: unchecked.js
+        \\export default 1;
+        \\export default 2;
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var count_2528: u32 = 0;
+    for (c.diagnostics.items) |d| {
+        if (d.code == ts_checker.check.TsCodes.multiple_default_exports) count_2528 += 1;
+    }
+    try T.expectEqual(@as(u32, 2), count_2528);
 }
 
 test "driver: unchecked allowJs still surfaces satisfies JS grammar diagnostic" {

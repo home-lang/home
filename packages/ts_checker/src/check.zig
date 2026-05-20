@@ -5099,7 +5099,7 @@ pub const Checker = struct {
     /// store it on the fn_decl node. Walks the body so nested
     /// expressions get typed too.
     fn checkFnDecl(self: *Checker, node: NodeId) CheckError!void {
-        const had_type_params = hir_mod.fnTypeParams(self.hir, node).len > 0;
+        const had_type_params = hir_mod.fnTypeParams(self.hir, node).len > 0 or self.fnHasJsDocTemplateTags(node);
         _ = try self.checkFnSignatureOnly(node);
         try self.checkJsDocFunctionTypeTag(node);
         const contextual_return = if (hir_mod.fnDeclOf(self.hir, node).return_type == hir_mod.none_node_id)
@@ -10175,6 +10175,7 @@ pub const Checker = struct {
                 .assignment => {
                     const a = hir_mod.assignmentOf(self.hir, cur);
                     if (a.value != prev or a.target == hir_mod.none_node_id) return false;
+                    if (self.sourceHasCheckJsDirective() and self.assignmentTargetIsPrototypeMember(a.target)) return false;
                     return true;
                 },
                 .return_stmt => return true,
@@ -12002,9 +12003,10 @@ pub const Checker = struct {
         try self.checkJsDocThisTagOnArrowFunction(node);
         try self.checkJsDocFunctionTypeReturnAnnotations(node);
         const type_params = hir_mod.fnTypeParams(self.hir, node);
+        const has_jsdoc_templates = self.fnHasJsDocTemplateTags(node);
         try self.checkTypeParameterDeclList(type_params);
         try self.checkFunctionSignatureLocalTypeVisibility(node, type_params);
-        if (type_params.len > 0) try self.pushNarrowScope();
+        if (type_params.len > 0 or has_jsdoc_templates) try self.pushNarrowScope();
         for (type_params) |tp| {
             if (self.hir.kindOf(tp) != .type_parameter) continue;
             const tpp = hir_mod.typeParameterOf(self.hir, tp);
@@ -12045,6 +12047,7 @@ pub const Checker = struct {
             try self.recordNarrow(tpp.name, tp_id);
             try captured_tp_ids.append(self.gpa, tp_id);
         }
+        try self.recordJsDocTemplateTypeParams(node, &captured_tp_ids);
 
         var param_types: std.ArrayListUnmanaged(TypeId) = .empty;
         defer param_types.deinit(self.gpa);
@@ -12288,7 +12291,7 @@ pub const Checker = struct {
                 continue;
             }
             try param_types.append(self.gpa, signature_t);
-            try param_omittable.append(self.gpa, pp.flags.is_rest or !has_anno or pp.flags.is_optional or jsdoc_marks_optional or pp.default_value != hir_mod.none_node_id or self.parameterTypeAllowsVoidOmission(t));
+            try param_omittable.append(self.gpa, pp.flags.is_rest or (!has_anno and !has_jsdoc_param_type) or pp.flags.is_optional or jsdoc_marks_optional or pp.default_value != hir_mod.none_node_id or self.parameterTypeAllowsVoidOmission(t));
             if (self.signature_predicates.get(t)) |param_pred| {
                 try param_predicates.append(self.gpa, .{ .param_index = value_param_index, .pred = param_pred });
             }
@@ -18641,6 +18644,7 @@ pub const Checker = struct {
                 if (self.class_instance_types.get(id.name)) |t| break :blk t;
                 if (try self.resolveForwardClassInstanceType(extends_expr, id.name)) |t| break :blk t;
                 if (self.lowerBuiltinObjectType(self.string_interner.get(id.name))) |t| break :blk t;
+                if (try self.jsConstructorInstanceTypeForHeritage(extends_expr, id.name)) |t| break :blk t;
                 if (try self.heritageValueType(extends_expr, id.name)) |value_t| {
                     if (try self.constructReturnType(value_t)) |instance_t| break :blk instance_t;
                 }
@@ -18762,6 +18766,7 @@ pub const Checker = struct {
             .identifier => blk: {
                 const id = hir_mod.identifierOf(self.hir, extends_expr);
                 if (self.class_static_types.get(id.name)) |t| break :blk t;
+                if (try self.jsConstructorStaticTypeForHeritage(extends_expr, id.name)) |t| break :blk t;
                 if (try self.heritageValueType(extends_expr, id.name)) |value_t| {
                     const static_t = self.typeParameterConstraint(value_t) orelse value_t;
                     if (try self.constructReturnType(static_t)) |_| break :blk static_t;
@@ -24249,7 +24254,15 @@ pub const Checker = struct {
         if (self.generic_aliases.contains(id.name)) return;
         // Resolve the heritage value; skip when the name doesn't bind
         // at all (TS2304 fires separately).
-        const value_t = (try self.heritageValueType(extends_expr, id.name)) orelse return;
+        const value_t = (try self.heritageValueType(extends_expr, id.name)) orelse blk: {
+            const fn_node = self.findFunctionDeclForNameNearNode(extends_expr, id.name) orelse return;
+            var sig = self.hir.typeOf(fn_node);
+            if (sig == types.Primitive.none or sig >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(sig).is_signature) {
+                sig = try self.checkFnSignatureOnly(fn_node);
+                if (hir_mod.fnTypeParams(self.hir, fn_node).len > 0 or self.fnHasJsDocTemplateTags(fn_node)) self.popNarrowScope();
+            }
+            break :blk sig;
+        };
         if (value_t == types.Primitive.any or value_t == types.Primitive.unknown) return;
         if (value_t == types.Primitive.none) return;
         // Already have a construct signature? then `classExtendsInstanceType`
@@ -24534,6 +24547,7 @@ pub const Checker = struct {
         if (try self.heritageValueType(anchor, name)) |_| return true;
         if (self.generic_aliases.contains(name)) return true;
         if (self.type_names.contains(name)) return true;
+        if (self.findFunctionDeclForNameNearNode(anchor, name) != null) return true;
         if (self.visibleTypeDeclarationExistsAt(anchor, name)) return true;
         if (self.numeric_enums.contains(name)) return true;
         if (self.enumDeclForNameAt(name, anchor) != null) return true;
@@ -30226,6 +30240,47 @@ pub const Checker = struct {
         return false;
     }
 
+    fn fnHasJsDocTemplateTags(self: *Checker, fn_node: NodeId) bool {
+        const src = self.source orelse return false;
+        const body = self.leadingJsDocBodyForFunctionOrOwner(src, fn_node) orelse return false;
+        if (std.mem.indexOf(u8, body, "@template") == null) return false;
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return false;
+        defer self.gpa.free(tags);
+        for (tags) |tag| {
+            if (tag.kind == .template_tag and tag.name.len > 0) return true;
+        }
+        return false;
+    }
+
+    fn recordJsDocTemplateTypeParams(
+        self: *Checker,
+        fn_node: NodeId,
+        captured_tp_ids: *std.ArrayListUnmanaged(TypeId),
+    ) CheckError!void {
+        const src = self.source orelse return;
+        const body = self.leadingJsDocBodyForFunctionOrOwner(src, fn_node) orelse return;
+        if (std.mem.indexOf(u8, body, "@template") == null) return;
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return;
+        defer self.gpa.free(tags);
+        for (tags) |tag| {
+            if (tag.kind != .template_tag or tag.name.len == 0) continue;
+            const name = self.string_interner.intern(tag.name) catch return error.OutOfMemory;
+            if (self.lookupNarrow(name)) |existing| {
+                try captured_tp_ids.append(self.gpa, existing);
+                continue;
+            }
+            const tp_id = self.interner.internFreshTypeParameterWithFlags(
+                name,
+                types.Primitive.unknown,
+                types.Primitive.none,
+                .invariant,
+                false,
+            ) catch return error.OutOfMemory;
+            try self.recordNarrow(name, tp_id);
+            try captured_tp_ids.append(self.gpa, tp_id);
+        }
+    }
+
     /// True when the var/let/const decl `node` has a leading
     /// `/** @type {T} */` JSDoc tag. Used to extend
     /// `parameterHasContextualType` so an arrow/fn initializer of a
@@ -30850,7 +30905,44 @@ pub const Checker = struct {
         if (try self.jsDocCallbackSignature(src, base)) |sig| return sig;
         if (try self.jsDocTypedefObjectSkeleton(src, base)) |t| return t;
         if (try self.jsDocTypedefAliasType(src, base)) |t| return t;
+        if (try self.jsDocSimpleNameType(src, base)) |t| return t;
         if (try self.jsDocUnresolvedSimpleNameToType(src, trimmed, base)) |t| return t;
+        return null;
+    }
+
+    fn jsDocSimpleNameType(self: *Checker, src: []const u8, base: []const u8) CheckError!?TypeId {
+        _ = src;
+        if (base.len == 0) return null;
+        const name = self.string_interner.intern(base) catch return error.OutOfMemory;
+        if (self.lookupNarrow(name)) |t| return t;
+        const anchor = self.jsdoc_diagnostic_anchor;
+        if (anchor != hir_mod.none_node_id) {
+            if (try self.jsDocTemplateParamTypeForAnchor(anchor, name)) |t| return t;
+            if (try self.jsConstructorInstanceTypeForHeritage(anchor, name)) |t| return t;
+        }
+        return null;
+    }
+
+    fn jsDocTemplateParamTypeForAnchor(self: *Checker, anchor: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
+        const src = self.source orelse return null;
+        const body = self.leadingJsDocBodyForFunctionOrOwner(src, anchor) orelse return null;
+        if (std.mem.indexOf(u8, body, "@template") == null) return null;
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
+        defer self.gpa.free(tags);
+        for (tags) |tag| {
+            if (tag.kind != .template_tag or tag.name.len == 0) continue;
+            const tag_name = self.string_interner.intern(tag.name) catch return error.OutOfMemory;
+            if (tag_name != name) continue;
+            const tp_id = self.interner.internFreshTypeParameterWithFlags(
+                name,
+                types.Primitive.unknown,
+                types.Primitive.none,
+                .invariant,
+                false,
+            ) catch return error.OutOfMemory;
+            try self.recordNarrow(name, tp_id);
+            return tp_id;
+        }
         return null;
     }
 
@@ -31032,9 +31124,9 @@ pub const Checker = struct {
         while (t.len >= 2 and t[0] == '(' and t[t.len - 1] == ')') {
             t = std.mem.trim(u8, t[1 .. t.len - 1], " \t\r\n");
         }
-        if (std.mem.eql(u8, t, "string")) return types.Primitive.string_t;
-        if (std.mem.eql(u8, t, "number")) return types.Primitive.number_t;
-        if (std.mem.eql(u8, t, "boolean")) return types.Primitive.boolean_t;
+        if (std.mem.eql(u8, t, "string") or std.mem.eql(u8, t, "String")) return types.Primitive.string_t;
+        if (std.mem.eql(u8, t, "number") or std.mem.eql(u8, t, "Number")) return types.Primitive.number_t;
+        if (std.mem.eql(u8, t, "boolean") or std.mem.eql(u8, t, "Boolean")) return types.Primitive.boolean_t;
         if (std.mem.eql(u8, t, "undefined")) return types.Primitive.undefined_t;
         if (std.mem.eql(u8, t, "null")) return types.Primitive.null_t;
         if (std.mem.eql(u8, t, "void")) return types.Primitive.void_t;
@@ -44652,11 +44744,17 @@ pub const Checker = struct {
 
     fn thisInsideCheckJsConstructorFunction(self: *Checker, node: NodeId) bool {
         if (!self.sourceHasCheckJsDirective()) return false;
+        if (self.virtualSectionFilenameForNode(node)) |filename| {
+            if (!self.pathIsJsLike(filename)) return false;
+        }
         var cur = self.hir.parentOf(node);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             const k = self.hir.kindOf(cur);
             if (k == .arrow_fn) return false;
             if (k != .fn_decl and k != .fn_expr) continue;
+            if (self.virtualSectionFilenameForNode(cur)) |filename| {
+                if (!self.pathIsJsLike(filename)) return false;
+            }
             const f = hir_mod.fnDeclOf(self.hir, cur);
             if (f.flags.is_method or f.flags.is_constructor) return false;
             return self.fnLooksLikeCheckJsConstructor(cur);
@@ -44701,7 +44799,7 @@ pub const Checker = struct {
         if (std.mem.eql(u8, owner_str, "Event")) {
             return self.lowerBuiltinObjectType("Event") orelse types.Primitive.any;
         }
-        return null;
+        return (self.jsConstructorInstanceTypeForHeritage(node, owner) catch null) orelse null;
     }
 
     fn checkJsPrototypeAssignmentOwnerName(self: *Checker, node: NodeId) ?hir_mod.StringId {
@@ -44709,7 +44807,7 @@ pub const Checker = struct {
         var cur = self.hir.parentOf(node);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             const k = self.hir.kindOf(cur);
-            if (k == .arrow_fn) return null;
+            if (k == .arrow_fn) continue;
             if (k == .fn_decl or k == .fn_expr) {
                 fn_node = cur;
                 break;
@@ -50845,8 +50943,13 @@ pub const Checker = struct {
         if (self.class_instance_types.get(name)) |existing| return existing;
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
-        if (self.jsConstructorFunctionDeclForCallee(callee_node, name)) |fn_node| {
+        if (self.jsConstructorFunctionDeclForName(callee_node, name)) |fn_node| {
             try self.collectJsConstructorThisMembers(fn_node, &members);
+            const seed_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+            try self.class_instance_types.put(self.gpa, name, seed_t);
+            try self.class_name_by_instance.put(self.gpa, seed_t, name);
+            try self.type_names.put(self.gpa, name, seed_t);
+            try self.collectJsConstructorPrototypeMembers(name, callee_node, &members);
         }
         const instance_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
         try self.class_instance_types.put(self.gpa, name, instance_t);
@@ -50855,9 +50958,53 @@ pub const Checker = struct {
         return instance_t;
     }
 
-    fn jsConstructorFunctionDeclForCallee(
+    fn jsConstructorInstanceTypeForHeritage(
         self: *Checker,
-        callee_node: NodeId,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        if (!self.sourceHasCheckJsDirective()) return null;
+        const fn_node = self.jsConstructorFunctionDeclForName(anchor, name) orelse return null;
+        if (self.virtualSectionFilenameForNode(fn_node)) |filename| {
+            if (!self.pathIsJsLike(filename)) return null;
+        }
+        if (!self.fnLooksLikeCheckJsConstructor(fn_node)) return null;
+        return try self.jsConstructorInstanceType(name, anchor);
+    }
+
+    fn jsConstructorStaticTypeForHeritage(
+        self: *Checker,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        if (!self.sourceHasCheckJsDirective()) return null;
+        if (self.class_static_types.get(name)) |existing| return existing;
+        const fn_node = self.jsConstructorFunctionDeclForName(anchor, name) orelse return null;
+        if (self.virtualSectionFilenameForNode(fn_node)) |filename| {
+            if (!self.pathIsJsLike(filename)) return null;
+        }
+        if (!self.fnLooksLikeCheckJsConstructor(fn_node)) return null;
+        const instance_t = try self.jsConstructorInstanceType(name, anchor);
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        try self.collectJsConstructorStaticMembers(name, anchor, &members);
+        const construct_name = self.string_interner.intern("__construct") catch return error.OutOfMemory;
+        const construct_sig = try self.jsConstructorConstructSignature(fn_node, instance_t);
+        try members.append(self.gpa, .{
+            .name = construct_name,
+            .type = construct_sig,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = true,
+        });
+        const static_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+        try self.class_static_types.put(self.gpa, name, static_t);
+        return static_t;
+    }
+
+    fn jsConstructorFunctionDeclForName(
+        self: *Checker,
+        anchor: NodeId,
         name: hir_mod.StringId,
     ) ?NodeId {
         if (self.module) |module| {
@@ -50869,7 +51016,35 @@ pub const Checker = struct {
                 }
             }
         }
-        return self.findSiblingFunctionDecl(callee_node);
+        return self.findFunctionDeclForNameNearNode(anchor, name);
+    }
+
+    fn findFunctionDeclForNameNearNode(self: *Checker, anchor: NodeId, name: hir_mod.StringId) ?NodeId {
+        const root = self.rootBlockFor(anchor);
+        if (root != hir_mod.none_node_id and self.hir.kindOf(root) == .block_stmt) {
+            if (self.findFunctionDeclInStatements(hir_mod.blockStmts(self.hir, root), name)) |fn_node| return fn_node;
+        }
+        if (self.hir.kindOf(anchor) == .identifier) return self.findSiblingFunctionDecl(anchor);
+        return null;
+    }
+
+    fn jsConstructorConstructSignature(self: *Checker, fn_node: NodeId, instance_t: TypeId) CheckError!TypeId {
+        var sig = self.hir.typeOf(fn_node);
+        if (sig == types.Primitive.none or sig >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(sig).is_signature) {
+            sig = try self.checkFnSignatureOnly(fn_node);
+            if (hir_mod.fnTypeParams(self.hir, fn_node).len > 0 or self.fnHasJsDocTemplateTags(fn_node)) self.popNarrowScope();
+        }
+        const params = self.interner.signatureParams(sig);
+        const construct_sig = self.interner.internSignature(params, instance_t, true) catch return error.OutOfMemory;
+        if (self.signature_min_args.get(sig)) |min_required| {
+            try self.signature_min_args.put(self.gpa, construct_sig, min_required);
+        }
+        if (self.rest_signatures.contains(sig)) try self.rest_signatures.put(self.gpa, construct_sig, {});
+        try self.copySignatureParamNames(construct_sig, sig);
+        if (self.generic_signature_params.get(sig)) |type_params| {
+            try self.recordGenericSignatureParams(construct_sig, type_params);
+        }
+        return construct_sig;
     }
 
     fn collectJsConstructorThisMembers(
@@ -50924,6 +51099,150 @@ pub const Checker = struct {
             },
             else => {},
         }
+    }
+
+    fn collectJsConstructorPrototypeMembers(
+        self: *Checker,
+        name: hir_mod.StringId,
+        anchor: NodeId,
+        members: *std.ArrayListUnmanaged(types.ObjectMember),
+    ) CheckError!void {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            try self.collectJsConstructorPrototypeMembersFromNode(name, stmt, members);
+        }
+    }
+
+    fn collectJsConstructorPrototypeMembersFromNode(
+        self: *Checker,
+        name: hir_mod.StringId,
+        node: NodeId,
+        members: *std.ArrayListUnmanaged(types.ObjectMember),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(node) == .export_decl) {
+            const ex = hir_mod.exportOf(self.hir, node);
+            return try self.collectJsConstructorPrototypeMembersFromNode(name, ex.decl, members);
+        }
+        if (self.hir.kindOf(node) != .assignment) return;
+        const a = hir_mod.assignmentOf(self.hir, node);
+        if (a.op != null) return;
+        const prop_name = self.prototypeAssignmentPropertyName(a.target, name) orelse return;
+        const value_t = if (a.value != hir_mod.none_node_id) try self.checkExpression(a.value) else types.Primitive.any;
+        const is_method = value_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(value_t).is_signature;
+        if (!objectMemberListContains(members.items, prop_name)) {
+            try members.append(self.gpa, .{
+                .name = prop_name,
+                .type = value_t,
+                .is_optional = false,
+                .is_readonly = false,
+                .is_method = is_method,
+            });
+        }
+        if (a.value != hir_mod.none_node_id) {
+            try self.collectJsPrototypeLexicalThisMembersFromNode(a.value, a.value, members);
+        }
+    }
+
+    fn collectJsPrototypeLexicalThisMembersFromNode(
+        self: *Checker,
+        root_fn: NodeId,
+        node: NodeId,
+        members: *std.ArrayListUnmanaged(types.ObjectMember),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .fn_decl, .fn_expr => {
+                if (node != root_fn) return;
+                const f = hir_mod.fnDeclOf(self.hir, node);
+                try self.collectJsPrototypeLexicalThisMembersFromNode(root_fn, f.body, members);
+            },
+            .arrow_fn => {
+                const f = hir_mod.fnDeclOf(self.hir, node);
+                try self.collectJsPrototypeLexicalThisMembersFromNode(root_fn, f.body, members);
+            },
+            .block_stmt => for (hir_mod.blockStmts(self.hir, node)) |stmt| {
+                try self.collectJsPrototypeLexicalThisMembersFromNode(root_fn, stmt, members);
+            },
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                try self.collectJsPrototypeLexicalThisMembersFromNode(root_fn, i.then_branch, members);
+                try self.collectJsPrototypeLexicalThisMembersFromNode(root_fn, i.else_branch, members);
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                if (a.op == null) {
+                    if (self.directThisPropertyName(a.target)) |prop_name| {
+                        if (!objectMemberListContains(members.items, prop_name)) {
+                            const value_t = if (a.value != hir_mod.none_node_id) try self.checkExpression(a.value) else types.Primitive.any;
+                            const prop_t = self.unionWithUndefined(value_t) catch value_t;
+                            try members.append(self.gpa, .{
+                                .name = prop_name,
+                                .type = prop_t,
+                                .is_optional = true,
+                                .is_readonly = false,
+                                .is_method = false,
+                            });
+                        }
+                    }
+                }
+                try self.collectJsPrototypeLexicalThisMembersFromNode(root_fn, a.value, members);
+            },
+            .call_expr, .new_expr => {
+                const c = hir_mod.callOf(self.hir, node);
+                try self.collectJsPrototypeLexicalThisMembersFromNode(root_fn, c.callee, members);
+                for (hir_mod.callArgs(self.hir, node)) |arg| {
+                    try self.collectJsPrototypeLexicalThisMembersFromNode(root_fn, arg, members);
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn collectJsConstructorStaticMembers(
+        self: *Checker,
+        name: hir_mod.StringId,
+        anchor: NodeId,
+        members: *std.ArrayListUnmanaged(types.ObjectMember),
+    ) CheckError!void {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.kindOf(stmt) != .assignment) continue;
+            const a = hir_mod.assignmentOf(self.hir, stmt);
+            if (a.op != null) continue;
+            const prop_name = self.staticAssignmentPropertyName(a.target, name) orelse continue;
+            const value_t = if (a.value != hir_mod.none_node_id) try self.checkExpression(a.value) else types.Primitive.any;
+            const is_method = value_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(value_t).is_signature;
+            try self.appendOrReplaceObjectMember(members, .{
+                .name = prop_name,
+                .type = value_t,
+                .is_optional = false,
+                .is_readonly = false,
+                .is_method = is_method,
+            });
+        }
+    }
+
+    fn prototypeAssignmentPropertyName(self: *Checker, target: NodeId, name: hir_mod.StringId) ?hir_mod.StringId {
+        if (target == hir_mod.none_node_id or self.hir.kindOf(target) != .member_access) return null;
+        const prop = hir_mod.memberOf(self.hir, target);
+        if (prop.object == hir_mod.none_node_id or self.hir.kindOf(prop.object) != .member_access) return null;
+        const proto = hir_mod.memberOf(self.hir, prop.object);
+        if (!std.mem.eql(u8, self.string_interner.get(proto.name), "prototype")) return null;
+        if (proto.object == hir_mod.none_node_id or self.hir.kindOf(proto.object) != .identifier) return null;
+        if (hir_mod.identifierOf(self.hir, proto.object).name != name) return null;
+        return prop.name;
+    }
+
+    fn staticAssignmentPropertyName(self: *Checker, target: NodeId, name: hir_mod.StringId) ?hir_mod.StringId {
+        if (target == hir_mod.none_node_id or self.hir.kindOf(target) != .member_access) return null;
+        const m = hir_mod.memberOf(self.hir, target);
+        if (std.mem.eql(u8, self.string_interner.get(m.name), "prototype")) return null;
+        if (m.object == hir_mod.none_node_id or self.hir.kindOf(m.object) != .identifier) return null;
+        if (hir_mod.identifierOf(self.hir, m.object).name != name) return null;
+        return m.name;
     }
 
     fn directThisPropertyName(self: *Checker, target: NodeId) ?hir_mod.StringId {

@@ -116,6 +116,10 @@ pub const Parser = struct {
     /// declaration site, so `break LBL` / `continue LBL` can detect
     /// undeclared labels (TS1116) and cross-function jumps (TS1107).
     label_stack: std.ArrayListUnmanaged(LabelEntry),
+    /// Labels seen in the current parse, including labels whose
+    /// statement has already ended. TypeScript reports a jump to a
+    /// non-enclosing label as TS1107 rather than TS1116.
+    seen_labels: std.ArrayListUnmanaged(LabelEntry),
     diag_arena: std.heap.ArenaAllocator,
     ambient_depth: u32,
     block_depth: u32,
@@ -181,6 +185,7 @@ pub const Parser = struct {
     disallow_arrow_return_type: bool,
     enum_recovered_missing_close_at_eof: bool,
     top_level_external_module_indicator: bool,
+    top_level_module_syntax_indicator: bool,
     top_level_export_indicator: bool,
     in_top_level_module_binding_decl: bool,
     in_export_declaration: bool,
@@ -236,6 +241,7 @@ pub const Parser = struct {
             .for_init_extras = .empty,
             .regex_rescan_spans = .empty,
             .label_stack = .empty,
+            .seen_labels = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
             .ambient_depth = 0,
             .block_depth = 0,
@@ -265,6 +271,7 @@ pub const Parser = struct {
             .disallow_arrow_return_type = false,
             .enum_recovered_missing_close_at_eof = false,
             .top_level_external_module_indicator = false,
+            .top_level_module_syntax_indicator = false,
             .top_level_export_indicator = false,
             .in_top_level_module_binding_decl = false,
             .in_export_declaration = false,
@@ -300,6 +307,7 @@ pub const Parser = struct {
         self.for_init_extras.deinit(self.gpa);
         self.regex_rescan_spans.deinit(self.gpa);
         self.label_stack.deinit(self.gpa);
+        self.seen_labels.deinit(self.gpa);
         self.pending_ts2463_indices.deinit(self.gpa);
         self.diag_arena.deinit();
     }
@@ -707,6 +715,7 @@ pub const Parser = struct {
     pub fn parseSourceFile(self: *Parser) ParseError!NodeId {
         try self.reportJSDocTypeArgumentSyntaxDiagnostics();
         self.top_level_external_module_indicator = self.sourceHasTopLevelExternalModuleIndicator();
+        self.top_level_module_syntax_indicator = self.sourceHasTopLevelModuleSyntaxIndicator();
         if (self.top_level_external_module_indicator) self.strict_mode = true;
         var stmts: std.ArrayListUnmanaged(NodeId) = .empty;
         defer stmts.deinit(self.gpa);
@@ -1306,6 +1315,25 @@ pub const Parser = struct {
         return false;
     }
 
+    fn sourceHasTopLevelModuleSyntaxIndicator(self: *const Parser) bool {
+        var depth: u32 = 0;
+        var i: usize = 0;
+        while (i < self.tokens.len) : (i += 1) {
+            const tok = self.tokens[i];
+            switch (tok.kind) {
+                .open_brace, .open_paren, .open_bracket => depth += 1,
+                .close_brace, .close_paren, .close_bracket => if (depth > 0) {
+                    depth -= 1;
+                },
+                .kw_export => if (depth == 0) return true,
+                .kw_import => if (depth == 0 and (i + 1 >= self.tokens.len or self.tokens[i + 1].kind != .open_paren)) return true,
+                .eof => return false,
+                else => {},
+            }
+        }
+        return false;
+    }
+
     // ========================================================================
     // Statements
     // ========================================================================
@@ -1355,7 +1383,7 @@ pub const Parser = struct {
         {
             const label_tok = self.advance();
             _ = self.advance();
-            const label_disallowed = self.block_depth == 0 and self.isInvalidLabeledDeclarationStart();
+            const label_disallowed = self.isInvalidLabeledDeclarationStart();
             if (label_disallowed) {
                 try self.reportCodeAt(label_tok.span.start, label_tok.line, 1344, "A label is not allowed here.");
                 // Upstream tsc also emits TS1235 ("A namespace declaration
@@ -1428,6 +1456,11 @@ pub const Parser = struct {
                 }
             };
             try self.label_stack.append(self.gpa, .{
+                .name = label_name,
+                .function_depth = self.function_depth,
+                .wraps_iteration = wraps_iteration,
+            });
+            try self.seen_labels.append(self.gpa, .{
                 .name = label_name,
                 .function_depth = self.function_depth,
                 .wraps_iteration = wraps_iteration,
@@ -1988,21 +2021,9 @@ pub const Parser = struct {
 
     fn reportInvalidStrictName(self: *Parser, tok: Token) ParseError!void {
         if (!self.isRestrictedStrictName(tok)) return;
-        if (self.strict_mode) {
-            const raw = self.source[tok.span.start..tok.span.end];
-            const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Invalid use of '{s}' in strict mode.", .{raw});
-            try self.diagnostics.append(self.gpa, .{
-                .pos = tok.span.start,
-                .line = tok.line,
-                .code = 1100,
-                .message = msg,
-            });
-            return;
-        }
-        // Class bodies are implicitly strict — flag `arguments`/`eval`
-        // as restricted parameter names there even when the outer
-        // module hasn't opted into strict mode. Mirrors tsc TS1210
-        // (`emitArrowFunctionWhenUsingArguments12`).
+        // Class bodies are implicitly strict — tsc prefers the
+        // class-specific TS1210 wording even when the surrounding file
+        // is also a strict external module.
         if (self.class_body_depth > 0) {
             const raw = self.source[tok.span.start..tok.span.end];
             const msg = try std.fmt.allocPrint(
@@ -2014,6 +2035,32 @@ pub const Parser = struct {
                 .pos = tok.span.start,
                 .line = tok.line,
                 .code = 1210,
+                .message = msg,
+            });
+            return;
+        }
+        if (self.top_level_module_syntax_indicator) {
+            const raw = self.source[tok.span.start..tok.span.end];
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Invalid use of '{s}'. Modules are automatically in strict mode.",
+                .{raw},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .pos = tok.span.start,
+                .line = tok.line,
+                .code = 1215,
+                .message = msg,
+            });
+            return;
+        }
+        if (self.strict_mode) {
+            const raw = self.source[tok.span.start..tok.span.end];
+            const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Invalid use of '{s}' in strict mode.", .{raw});
+            try self.diagnostics.append(self.gpa, .{
+                .pos = tok.span.start,
+                .line = tok.line,
+                .code = 1100,
                 .message = msg,
             });
         }
@@ -2035,6 +2082,10 @@ pub const Parser = struct {
         // `nestedFunctionDeclarationNamedYieldIsError` (classMethods).
         if (self.class_body_depth > 0) {
             try self.reportCodeAt(tok.span.start, tok.line, 1213, "Identifier expected. 'yield' is a reserved word in strict mode. Class definitions are automatically in strict mode.");
+            return;
+        }
+        if (self.top_level_module_syntax_indicator) {
+            try self.reportCodeAt(tok.span.start, tok.line, 1214, "Identifier expected. 'yield' is a reserved word in strict mode. Modules are automatically in strict mode.");
             return;
         }
         // Inside a generator body (outside a class), the grammar itself
@@ -2080,7 +2131,7 @@ pub const Parser = struct {
                     // automatically in strict mode." sentence instead of
                     // the bare TS1212. Mirrors fixtures
                     // `exportNonInitializedVariables{ES6,UMD,CommonJS,AMD,System}`.
-                    if (self.top_level_external_module_indicator) {
+                    if (self.top_level_module_syntax_indicator) {
                         const msg = try std.fmt.allocPrint(
                             self.diag_arena.allocator(),
                             "Identifier expected. '{s}' is a reserved word in strict mode. Modules are automatically in strict mode.",
@@ -2102,7 +2153,7 @@ pub const Parser = struct {
         }
         if (!self.strict_mode and !self.target_es2015_or_later) return;
         if (!self.tokenTextEquals(tok, "interface")) return;
-        if (self.top_level_external_module_indicator) {
+        if (self.top_level_module_syntax_indicator) {
             try self.reportCodeAt(tok.span.start, tok.line, 1214, "Identifier expected. 'interface' is a reserved word in strict mode. Modules are automatically in strict mode.");
             return;
         }
@@ -2736,6 +2787,7 @@ pub const Parser = struct {
         const start = self.advance(); // with
         if (self.isAmbientContextAt(start.span.start)) {
             try self.reportCodeAt(start.span.start, start.line, 1036, "Statements are not allowed in ambient contexts.");
+            try self.reportCodeAt(start.span.start, start.line, 2410, "The 'with' statement is not supported. All symbols in a 'with' block will have type 'any'.");
         } else if (self.strict_mode) {
             // tsc only emits TS1101 when the source is genuinely in
             // strict mode (either an explicit `"use strict"`, an ES
@@ -2745,8 +2797,9 @@ pub const Parser = struct {
             // `arrowFunctionContexts(alwaysstrict=false).errors.txt`
             // emits TS2410 only.
             try self.reportCodeAt(start.span.start, start.line, 1101, "'with' statements are not allowed in strict mode.");
+        } else {
+            try self.reportCodeAt(start.span.start, start.line, 2410, "The 'with' statement is not supported. All symbols in a 'with' block will have type 'any'.");
         }
-        try self.reportCodeAt(start.span.start, start.line, 2410, "The 'with' statement is not supported. All symbols in a 'with' block will have type 'any'.");
         _ = try self.expect(.open_paren, "'(' after 'with'");
         const object_expr = try self.parseExpression();
         _ = try self.expect(.close_paren, "')' after with expression");
@@ -2836,6 +2889,14 @@ pub const Parser = struct {
             return;
         }
         if (is_break) {
+            var seen_i: usize = self.seen_labels.items.len;
+            while (seen_i > 0) {
+                seen_i -= 1;
+                const entry = self.seen_labels.items[seen_i];
+                if (entry.name != label_name) continue;
+                try self.reportCodeAt(start.span.start, start.line, 1107, "Jump target cannot cross function boundary.");
+                return;
+            }
             try self.reportCodeAt(start.span.start, start.line, 1116, "A 'break' statement can only jump to a label of an enclosing statement.");
         } else {
             try self.reportCodeAt(start.span.start, start.line, 1115, "A 'continue' statement can only jump to a label of an enclosing iteration statement.");
@@ -5591,6 +5652,7 @@ pub const Parser = struct {
         const start = self.advance(); // import
         if (self.block_depth == 0 and self.namespace_depth == 0 and self.ambient_depth == 0) {
             self.top_level_external_module_indicator = true;
+            self.top_level_module_syntax_indicator = true;
         }
         var is_type_only = false;
         var type_kw_start: u32 = start.span.start;
@@ -6028,6 +6090,7 @@ pub const Parser = struct {
         const start = self.advance(); // export
         if (self.block_depth == 0 and self.namespace_depth == 0 and self.ambient_depth == 0) {
             self.top_level_external_module_indicator = true;
+            self.top_level_module_syntax_indicator = true;
             self.top_level_export_indicator = true;
         }
         if (self.peek().kind == .kw_export) {
@@ -14087,6 +14150,21 @@ test "parser: label before declaration reports TS1344" {
     try T.expectEqual(@as(u32, 1344), s.parser.diagnostics.items[2].code);
 }
 
+test "parser: label before var in block reports TS1344 and later break TS1107" {
+    var s = try newTestSetup("function f() { for (;;) { label: var x = 1; break label; } }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_1344 = false;
+    var saw_1107 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1344) saw_1344 = true;
+        if (d.code == 1107) saw_1107 = true;
+    }
+    try T.expect(saw_1344);
+    try T.expect(saw_1107);
+}
+
 test "parser: label before namespace reports TS1344 + TS1235" {
     var s = try newTestSetup("label: namespace M { }\nlabel: module N { }\n");
     defer destroyTestSetup(s);
@@ -17108,6 +17186,34 @@ test "parser: arguments parameter in non-strict class method reports TS1210" {
     try T.expect(saw_1210);
 }
 
+test "parser: class-body eval arguments prefer TS1210 over module strict TS1100" {
+    var s = try newTestSetup("export default 1; class C { m() { const eval = 1; const arguments = 2; } }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count_1210: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1210) count_1210 += 1;
+        try T.expect(d.code != 1100);
+    }
+    try T.expectEqual(@as(u32, 2), count_1210);
+}
+
+test "parser: external module restricted names use module-strict diagnostics" {
+    var s = try newTestSetup("export default 1; const yield = 2; const eval = 3; const arguments = 4;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_1214 = false;
+    var count_1215: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1214) saw_1214 = true;
+        if (d.code == 1215) count_1215 += 1;
+    }
+    try T.expect(saw_1214);
+    try T.expectEqual(@as(u32, 2), count_1215);
+}
+
 test "parser: arguments parameter outside class does not report TS1210" {
     var s = try newTestSetup("function f(arguments) {}");
     defer destroyTestSetup(s);
@@ -17295,7 +17401,7 @@ test "parser: invalid later binary and octal digits in var initializers report c
     try T.expectEqualStrings("',' expected.", s.parser.diagnostics.items[1].message);
 }
 
-test "parser: with statement reports strict and unsupported diagnostics" {
+test "parser: with statement in strict mode suppresses unsupported diagnostic" {
     // tsc reserves TS1101 ("'with' statements are not allowed in
     // strict mode.") for genuinely strict sources — a `"use strict"`
     // directive or the always-strict harness setting. Targeting
@@ -17306,9 +17412,11 @@ test "parser: with statement reports strict and unsupported diagnostics" {
     defer destroyTestSetup(s);
 
     _ = try s.parser.parseSourceFile();
-    try T.expect(s.parser.diagnostics.items.len >= 2);
+    try T.expect(s.parser.diagnostics.items.len >= 1);
     try T.expectEqual(@as(u32, 1101), s.parser.diagnostics.items[0].code);
-    try T.expectEqual(@as(u32, 2410), s.parser.diagnostics.items[1].code);
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 2410);
+    }
 }
 
 test "parser: with statement in declaration file reports ambient and unsupported diagnostics" {
