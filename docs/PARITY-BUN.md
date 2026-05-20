@@ -800,6 +800,18 @@ Latest measured full gate after the HTML watched-file slice:
 unsupported, `37` todo. First failure: `bake/dev/html.test.ts` with
 `DEV:html-2: image tag`.
 
+The Bake static HTML shim now covers the copied `image tag` case. It
+models versioned asset URLs for `<img src="image.png">`, returns those
+URLs from the client DOM query, serves the current asset body, and marks
+older asset URLs as `404` after the image changes. The native parity target
+remains Bun's asset graph hashing, HTML rewrite, browser reload, and stale
+asset invalidation path.
+
+Latest measured full gate after the HTML image-tag slice:
+`4,013` files executed, `474` passed, `3,920` failed, `1,474`
+unsupported, `37` todo. First failure: `bake/dev/html.test.ts` with
+`DEV:html-3: image import in JS`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

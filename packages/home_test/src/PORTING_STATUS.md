@@ -519,6 +519,13 @@ script edits so the fixture observes `hello`, `hello`, `hello`, and
 `world`. The native parity target remains Bun's file watcher to dev server
 reload path for HTML entrypoints and their module scripts. The next Bake
 boundary is `DEV:html-2: image tag`.
+The copied `image tag` case now runs through the Bake static HTML shim. It
+models versioned asset URLs for `<img src="image.png">`, returns those URLs
+from the client DOM query, serves the current asset body, and marks older
+asset URLs as `404` after the image changes. The native parity target
+remains Bun's asset graph hashing, HTML rewrite, browser reload, and stale
+asset invalidation path. The next Bake boundary is
+`DEV:html-3: image import in JS`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

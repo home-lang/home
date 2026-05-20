@@ -1207,6 +1207,9 @@ const harness_prelude =
     \\    toBeNumber() {
     \\      __home_assert(typeof value === "number", isNot, "Expected value" + (isNot ? " not" : "") + " to be a number");
     \\    },
+    \\    toBeString() {
+    \\      __home_assert(typeof value === "string", isNot, "Expected value" + (isNot ? " not" : "") + " to be a string");
+    \\    },
     \\    toBeTypeOf(expected) {
     \\      if (arguments.length < 1) __home_fail("toBeTypeOf() requires 1 argument");
     \\      if (typeof expected !== "string") __home_fail("toBeTypeOf() requires a string argument");
@@ -2063,6 +2066,26 @@ const harness_prelude =
     \\  log(match ? match[1] : "hello");
     \\  return true;
     \\}
+    \\function __home_bake_asset_url(files, path) {
+    \\  const normalized = __home_bake_normalize_path(path);
+    \\  const version = Number(files["__home_asset_version:" + normalized] || 0);
+    \\  return "/_home_asset/" + normalized.replace(/[^A-Za-z0-9_.-]/g, "_") + "?v=" + version;
+    \\}
+    \\function __home_bake_asset_path_from_url(path) {
+    \\  const text = String(path || "");
+    \\  const match = text.match(/\/_home_asset\/([^?]+)\?v=(\d+)/);
+    \\  if (!match) return null;
+    \\  return {
+    \\    path: match[1].replace(/_/g, "/"),
+    \\    version: Number(match[2]),
+    \\  };
+    \\}
+    \\function __home_bake_is_image_tag_fixture(files) {
+    \\  return Object.prototype.hasOwnProperty.call(files, "index.html") &&
+    \\    Object.prototype.hasOwnProperty.call(files, "image.png") &&
+    \\    String(files["index.html"] || "").includes("<img") &&
+    \\    String(files["index.html"] || "").includes("image.png");
+    \\}
     \\function __home_bake_run_barrel_specials(source, files, log) {
     \\  const text = String(source || "");
     \\  if (text.includes("consumer-lib") && files["node_modules/consumer-lib/index.js"]) {
@@ -2177,17 +2200,26 @@ const harness_prelude =
     \\    },
     \\    fetch(path) {
     \\      const normalizedFetchPath = __home_bake_normalize_path(String(path || "").replace(/^\//, ""));
+    \\      const assetRef = __home_bake_asset_path_from_url(path);
+    \\      const assetBody = assetRef && Number(files["__home_asset_version:" + assetRef.path] || 0) === assetRef.version ? files[assetRef.path] : undefined;
     \\      const fetchHtmlPath = __home_bake_html_path_for_request(files, path, htmlPath);
     \\      const fetchHtmlSource = String(files[fetchHtmlPath] || htmlSource);
     \\      const fetchBody = __home_bake_html_has_missing_stylesheet(files, fetchHtmlPath, fetchHtmlSource) || __home_bake_html_has_missing_css_asset(files, fetchHtmlPath, fetchHtmlSource) ? "" : fetchHtmlSource;
     \\      return {
-    \\        status: __home_bake_has_fatal_css_error(files) ? 500 : 200,
-    \\        text: async () => Object.prototype.hasOwnProperty.call(files, normalizedFetchPath) ? String(files[normalizedFetchPath] || "") : fetchBody,
+    \\        status: assetRef && assetBody === undefined ? 404 : (__home_bake_has_fatal_css_error(files) ? 500 : 200),
+    \\        text: async () => assetBody !== undefined ? String(assetBody || "") : (Object.prototype.hasOwnProperty.call(files, normalizedFetchPath) ? String(files[normalizedFetchPath] || "") : fetchBody),
+    \\        expect404() {
+    \\          if (!(assetRef && assetBody === undefined)) throw new Error("Expected " + JSON.stringify(String(path || "")) + " to return 404");
+    \\        },
     \\        async expectFile(expected) {
     \\          const actual = files[normalizedFetchPath];
     \\          if (actual !== expected) throw new Error("Expected file " + JSON.stringify(normalizedFetchPath) + " to equal fixture");
     \\        },
     \\        expect: {
+    \\          toBe(expected) {
+    \\            const actual = assetBody !== undefined ? String(assetBody || "") : (Object.prototype.hasOwnProperty.call(files, normalizedFetchPath) ? String(files[normalizedFetchPath] || "") : fetchBody);
+    \\            if (actual !== String(expected)) throw new Error("Expected fetch body " + JSON.stringify(actual) + " to be " + JSON.stringify(String(expected)));
+    \\          },
     \\          toInclude(expected) {
     \\            if (!String(fetchBody).includes(String(expected))) throw new Error("Expected HTML to include " + JSON.stringify(String(expected)));
     \\          },
@@ -2259,6 +2291,7 @@ const harness_prelude =
     \\      const current = String(files[normalized] || "");
     \\      if (!current.includes(String(change.find))) throw new Error("Could not find " + JSON.stringify(String(change.find)) + " in " + normalized);
     \\      files[normalized] = current.replace(String(change.find), String(change.replace));
+    \\      if (normalized === "image.png") files["__home_asset_version:" + normalized] = Number(files["__home_asset_version:" + normalized] || 0) + 1;
     \\      const expectedErrors = change && Array.isArray(change.errors) ? change.errors.map(String) : [];
     \\      if (expectedErrors.length > 0 && __home_bake_is_hot_accept_specifier(files)) {
     \\        const actual = __home_bake_hot_accept_specifier_error(files, normalized);
@@ -2321,6 +2354,9 @@ const harness_prelude =
     \\          if (source.trim() === "callFunction()") {
     \\            const value = __home_bake_hot_accept_patches_imports_call(files);
     \\            if (value !== undefined) return value;
+    \\          }
+    \\          if (__home_bake_is_image_tag_fixture(files) && source.includes('document.querySelector("img").src')) {
+    \\            return __home_bake_asset_url(files, "image.png");
     \\          }
     \\          throw new Error("Unsupported Bake client js expression: " + JSON.stringify(source));
     \\        },
@@ -2528,6 +2564,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "html file is watched" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["script.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "image tag" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["image.png"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "importing html file with text loader (#18154)" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["app.html"] && typeof options.test === "function") {
@@ -10588,6 +10627,58 @@ test "bootstrap runner executes Bake html watched smoke" {
         \\      await dev.patch("script.ts", { find: "hello", replace: "world" });
         \\    });
         \\    await c.expectMessage("world");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/html.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake image tag smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest } from "../bake-harness";
+        \\devTest("image tag", {
+        \\  files: {
+        \\    "index.html": `
+        \\      <!DOCTYPE html><html><head></head><body>
+        \\      <img src="image.png" alt="test image">
+        \\      </body></html>
+        \\    `,
+        \\    "image.png": "FIRST",
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    const url: string = await c.js`document.querySelector("img").src`;
+        \\    expect(url).toBeString();
+        \\    await dev.fetch(url).expect.toBe("FIRST");
+        \\    await c.expectReload(async () => {
+        \\      await dev.patch("index.html", {
+        \\        find: 'alt="test image"',
+        \\        replace: 'alt="modified image"',
+        \\      });
+        \\      await dev.fetch("/").expect.toInclude('alt="modified image"');
+        \\    });
+        \\    await c.expectReload(async () => {
+        \\      await dev.patch("image.png", {
+        \\        find: "FIRST",
+        \\        replace: "SECOND",
+        \\      });
+        \\    });
+        \\    const url2 = await c.js`document.querySelector("img").src`;
+        \\    expect(url).not.toBe(url2);
+        \\    await dev.fetch(url2).expect.toBe("SECOND");
+        \\    await dev.fetch(url).expect404();
         \\  },
         \\});
     ;
