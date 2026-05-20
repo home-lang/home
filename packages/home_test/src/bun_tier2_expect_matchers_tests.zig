@@ -32,6 +32,7 @@ const to_be_odd = @import("bun/expect/toBeOdd.zig");
 const to_be_valid_date = @import("bun/expect/toBeValidDate.zig");
 const to_be_empty_object = @import("bun/expect/toBeEmptyObject.zig");
 const to_contain = @import("bun/expect/toContain.zig");
+const to_end_with = @import("bun/expect/toEndWith.zig");
 const to_equal_ignoring_whitespace = @import("bun/expect/toEqualIgnoringWhitespace.zig");
 const to_include = @import("bun/expect/toInclude.zig");
 
@@ -352,6 +353,44 @@ test "copied Bun string inclusion matchers honor not flag and failure signatures
     var whitespace_frame = frameWithArgs(JSValue.string("hello world"), &expected_different);
     try std.testing.expectError(error.JSException, to_equal_ignoring_whitespace.toEqualIgnoringWhitespace(&expect_whitespace, globalObject(), &whitespace_frame));
     try std.testing.expectEqualStrings("toEqualIgnoringWhitespace", expect_whitespace.last_signature.?);
+}
+
+test "copied Bun toEndWith matcher passes positive cases" {
+    const cases = [_]struct {
+        value: []const u8,
+        expected: []const u8,
+    }{
+        .{ .value = "123", .expected = "3" },
+        .{ .value = "abc", .expected = "abc" },
+        .{ .value = " 123 ", .expected = " " },
+        .{ .value = " ", .expected = "" },
+        .{ .value = "", .expected = "" },
+    };
+
+    for (cases, 0..) |case, index| {
+        const expected = [_]JSValue{JSValue.string(case.expected)};
+        var expect_end = Expect{ .value = JSValue.string(case.value) };
+        var end_frame = frameWithArgs(JSValue.string(case.value), &expected);
+        try std.testing.expectEqual(JSValue.js_undefined, try to_end_with.toEndWith(&expect_end, globalObject(), &end_frame));
+        if (index == 0) {
+            try std.testing.expectEqual(@as(usize, 1), expect_end.call_count);
+            try std.testing.expectEqual(@as(usize, 1), expect_end.post_count);
+        }
+    }
+}
+
+test "copied Bun toEndWith matcher honors not flag and failure signatures" {
+    const expected_missing = [_]JSValue{JSValue.string("alice")};
+    var expect_missing = Expect{ .value = JSValue.string("bob") };
+    var missing_frame = frameWithArgs(JSValue.string("bob"), &expected_missing);
+    try std.testing.expectError(error.JSException, to_end_with.toEndWith(&expect_missing, globalObject(), &missing_frame));
+    try std.testing.expectEqualStrings("toEndWith", expect_missing.last_signature.?);
+
+    const expected_present = [_]JSValue{JSValue.string("c")};
+    var expect_not_end = Expect{ .value = JSValue.string("abc"), .flags = .{ .not = true } };
+    var not_end_frame = frameWithArgs(JSValue.string("abc"), &expected_present);
+    try std.testing.expectError(error.JSException, to_end_with.toEndWith(&expect_not_end, globalObject(), &not_end_frame));
+    try std.testing.expectEqualStrings("not.toEndWith", expect_not_end.last_signature.?);
 }
 
 test "copied Bun truthiness nil and number matchers honor not flag and failure signatures" {

@@ -7,6 +7,10 @@ pub const strings = struct {
     pub fn contains(haystack: []const u8, needle: []const u8) bool {
         return std.mem.indexOf(u8, haystack, needle) != null;
     }
+
+    pub fn endsWith(haystack: []const u8, needle: []const u8) bool {
+        return std.mem.endsWith(u8, haystack, needle);
+    }
 };
 
 pub fn cast(comptime T: type, ptr: anytype) T {
