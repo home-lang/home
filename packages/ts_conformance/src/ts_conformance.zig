@@ -3444,6 +3444,66 @@ test "conformance: sub-strict directive without @strict keeps inferred strict-on
     try T.expect(merged_with_strict_on.use_unknown_in_catch_variables);
 }
 
+test "conformance: assignObjectToNonPrimitive passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "assignObjectToNonPrimitive",
+        .path = "assignObjectToNonPrimitive.ts",
+        .source =
+        \\// @target: es2015
+        \\var x = {};
+        \\var y = {foo: "bar"};
+        \\var a: object;
+        \\a = x;
+        \\a = y;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: tryStatements passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "tryStatements",
+        .path = "tryStatements.ts",
+        .source =
+        \\// @target: es2015
+        \\
+        \\function fn() {
+        \\    try { } catch { }
+        \\
+        \\    try { } catch {
+        \\        try { } catch {
+        \\            try { } catch { }
+        \\        }
+        \\        try { } catch { }
+        \\    }
+        \\
+        \\    try { } catch (x) { var x: any; }
+        \\
+        \\    try { } finally { }
+        \\
+        \\    try { } catch { } finally { }
+        \\
+        \\    try { } catch (z) { } finally { }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: typeofClass2 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "typeofClass2",
