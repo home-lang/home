@@ -192,11 +192,16 @@ printing fixture. The full-gate rewriter also lowers the Bake harness
 now delegates real OS subprocesses, and delegated corpus file paths route
 through the corpus JSC bootstrap. The full gate now passes the delegated
 `bake/fixtures/deinitialization/test.ts` child and reports the next Bake
-boundary at `bake/dev-and-prod.test.ts` as
-`unsupported bake harness module`. The bootstrap now lowers the
+boundary at `bake/dev-and-prod.test.ts` as a named unsupported Bake
+registration. The bootstrap now lowers the
 `node:fs` sync import shapes used by Bake and forwards string
 `writeFileSync`, utf8 `readFileSync`, and `realpathSync` through native
-Home host callbacks. One snapshot `test.todo` fixture is
+Home host callbacks. Exact `./bake-harness` and `../bake-harness`
+imports now lower to a virtual Bake registrar that preserves Bun's
+no-color ` DEV:<basename>-<count>: <description>` and
+`PROD:<basename>-<count>: <description>` naming while recording each
+registration as unsupported without executing the unported Bake
+`options.test` body. One snapshot `test.todo` fixture is
 allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

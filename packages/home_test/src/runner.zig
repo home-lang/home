@@ -88,11 +88,15 @@ pub const FileRun = struct {
     }
 
     pub fn unsupportedOwned(allocator: std.mem.Allocator, path: []const u8, message: []const u8) !FileRun {
+        return unsupportedCountOwned(allocator, path, message, 1);
+    }
+
+    pub fn unsupportedCountOwned(allocator: std.mem.Allocator, path: []const u8, message: []const u8, count: usize) !FileRun {
         const copied = try allocator.dupe(u8, message);
         return .{
             .result = .{
                 .path = path,
-                .unsupported = 1,
+                .unsupported = count,
                 .first_failure_message = copied,
             },
             .first_failure_message_owned = true,
@@ -142,4 +146,12 @@ test "file run owns copied unsupported reasons" {
     try std.testing.expectEqual(result.TestStatus.unsupported, file_run.result.status());
     try std.testing.expectEqualStrings("not implemented", file_run.result.first_failure_message);
     try std.testing.expect(file_run.first_failure_message_owned);
+}
+
+test "file run can report multiple unsupported registrations" {
+    var file_run = try FileRun.unsupportedCountOwned(std.testing.allocator, "sample.test.ts", "not implemented", 3);
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(result.TestStatus.unsupported, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.unsupported);
 }

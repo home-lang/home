@@ -846,6 +846,10 @@ const harness_prelude =
     \\  __home_bun_tests.failed++;
     \\  if (__home_bun_tests.firstFailure === null) __home_bun_tests.firstFailure = __home_error_message(error);
     \\}
+    \\function __home_record_unsupported(message) {
+    \\  __home_bun_tests.unsupported++;
+    \\  if (__home_bun_tests.firstFailure === null) __home_bun_tests.firstFailure = String(message);
+    \\}
     \\function __home_track_test_thenable(result) {
     \\  __home_bun_tests.pending++;
     \\  return Promise.resolve(result).then(
@@ -1421,6 +1425,56 @@ const harness_prelude =
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["node:test"] = { test };
     \\globalThis.__home_modules["harness"] = { isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; } };
+    \\const __home_bake_counts = Object.create(null);
+    \\function __home_bake_basename() {
+    \\  const filename = String(globalThis.__home_current_filename || "bake/unknown.test.ts");
+    \\  const leaf = filename.slice(filename.lastIndexOf("/") + 1);
+    \\  return leaf.replace(/\.test\.[^.]+$/, "");
+    \\}
+    \\function __home_bake_register(description, options, nodeEnv) {
+    \\  const basename = __home_bake_basename();
+    \\  const count = (__home_bake_counts[basename] = (__home_bake_counts[basename] || 0) + 1);
+    \\  const label = nodeEnv === "development" ? " DEV" : "PROD";
+    \\  const name = label + ":" + basename + "-" + count + ": " + String(description);
+    \\  __home_record_unsupported("Bake harness test not implemented: " + name);
+    \\  return options;
+    \\}
+    \\function __home_bake_empty_html_file(options) {
+    \\  const opts = options || {};
+    \\  const styles = opts.styles || [];
+    \\  const scripts = opts.scripts || [];
+    \\  const body = opts.body || "";
+    \\  return "<!DOCTYPE html>\n<html>\n  <head>\n    " + styles.map(style => "<link rel=\"stylesheet\" href=\"" + style + "\">").join("\n    ") + "\n  </head>\n  <body>\n    " + scripts.map(script => "<script type=\"module\" src=\"" + script + "\"></script>").join("\n    ") + "\n    " + body + "\n  </body>\n</html>";
+    \\}
+    \\const __home_bake_minimal_framework = {
+    \\  fileSystemRouterTypes: [{ root: "routes", style: "nextjs-pages", serverEntryPoint: "minimal.server.ts" }],
+    \\  serverComponents: { separateSSRGraph: false, serverRuntimeImportSource: "minimal.server.ts", serverRegisterClientReferenceExport: "registerClientReference" },
+    \\};
+    \\const __home_bake_harness = {
+    \\  WAIT_MULTIPLIER: 1,
+    \\  minimalFramework: __home_bake_minimal_framework,
+    \\  imageFixtures: { bun: "home-bake-image-fixture:bun", bun2: "home-bake-image-fixture:bun2" },
+    \\  emptyHtmlFile: __home_bake_empty_html_file,
+    \\  Dev: function Dev() {},
+    \\  Client: function Client() {},
+    \\  tempDirWithBakeDeps() {
+    \\    __home_unsupported("Bake tempDirWithBakeDeps requires the real Bake runtime");
+    \\  },
+    \\  devTest(description, options) {
+    \\    return __home_bake_register(description, options, "development");
+    \\  },
+    \\  prodTest(description, options) {
+    \\    return __home_bake_register(description, options, "production");
+    \\  },
+    \\  devAndProductionTest(description, options) {
+    \\    __home_bake_register(description, options, "development");
+    \\    __home_bake_register(description, options, "production");
+    \\    return options;
+    \\  },
+    \\};
+    \\__home_bake_harness.devTest.only = __home_bake_harness.devTest;
+    \\__home_bake_harness.prodTest.only = __home_bake_harness.prodTest;
+    \\globalThis.__home_modules["bake-harness"] = __home_bake_harness;
     \\function SourceMap(payload) {
     \\  if (!(this instanceof SourceMap)) return new SourceMap(payload);
     \\  this.payload = payload;
@@ -3196,8 +3250,14 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": string {", .replacement = " {" },
         .{ .needle = ": number)", .replacement = ")" },
         .{ .needle = ": string)", .replacement = ")" },
+        .{ .needle = ": string) =>", .replacement = ") =>" },
         .{ .needle = ": string)=>", .replacement = ")=>" },
+        .{ .needle = ": unknown)", .replacement = ")" },
         .{ .needle = ": string, value: string)", .replacement = ", value)" },
+        .{ .needle = ": ReturnType<typeof setTimeout> | null =", .replacement = " =" },
+        .{ .needle = "await using ", .replacement = "const " },
+        .{ .needle = "using ", .replacement = "const " },
+        .{ .needle = "serverComponents!", .replacement = "serverComponents" },
         .{ .needle = "readonly foo: FooParent", .replacement = "foo" },
         .{ .needle = "override foo: FooChild", .replacement = "foo" },
         .{ .needle = ": any)", .replacement = ")" },
@@ -3322,6 +3382,38 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import fs from \"node:fs\";",
             .replacement = "const fs = globalThis.__home_import(\"node:fs\").default;",
+        },
+        .{
+            .needle = "import { devAndProductionTest, devTest, emptyHtmlFile, WAIT_MULTIPLIER } from \"./bake-harness\";",
+            .replacement = "const { devAndProductionTest, devTest, emptyHtmlFile, WAIT_MULTIPLIER } = globalThis.__home_import(\"bake-harness\");",
+        },
+        .{
+            .needle = "import { devTest } from \"../bake-harness\";",
+            .replacement = "const { devTest } = globalThis.__home_import(\"bake-harness\");",
+        },
+        .{
+            .needle = "import { devTest, emptyHtmlFile } from \"../bake-harness\";",
+            .replacement = "const { devTest, emptyHtmlFile } = globalThis.__home_import(\"bake-harness\");",
+        },
+        .{
+            .needle = "import { devTest, minimalFramework } from \"../bake-harness\";",
+            .replacement = "const { devTest, minimalFramework } = globalThis.__home_import(\"bake-harness\");",
+        },
+        .{
+            .needle = "import { devTest, emptyHtmlFile, minimalFramework } from \"../bake-harness\";",
+            .replacement = "const { devTest, emptyHtmlFile, minimalFramework } = globalThis.__home_import(\"bake-harness\");",
+        },
+        .{
+            .needle = "import { devTest, emptyHtmlFile, imageFixtures } from \"../bake-harness\";",
+            .replacement = "const { devTest, emptyHtmlFile, imageFixtures } = globalThis.__home_import(\"bake-harness\");",
+        },
+        .{
+            .needle = "import { Dev, devTest, emptyHtmlFile } from \"../bake-harness\";",
+            .replacement = "const { Dev, devTest, emptyHtmlFile } = globalThis.__home_import(\"bake-harness\");",
+        },
+        .{
+            .needle = "import { tempDirWithBakeDeps } from \"../bake-harness\";",
+            .replacement = "const { tempDirWithBakeDeps } = globalThis.__home_import(\"bake-harness\");",
         },
         .{
             .needle = "import { test } from \"node:test\";",
@@ -5656,9 +5748,8 @@ test "corpus module preparation reports unsupported module syntax" {
 
 test "corpus module preparation reports unsupported Bake harness module" {
     const source =
-        \\import { writeFileSync } from "node:fs";
-        \\import { devAndProductionTest, devTest, emptyHtmlFile, WAIT_MULTIPLIER } from "./bake-harness";
-        \\devAndProductionTest("smoke", { files: {}, async test() {} });
+        \\import * as bakeHarness from "./bake-harness";
+        \\bakeHarness.devTest("smoke", { files: {}, async test() {} });
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev-and-prod.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -5675,12 +5766,14 @@ test "Bun corpus rewrite lowers node fs sync imports before Bake harness boundar
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev-and-prod.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
-    try std.testing.expectEqualStrings("unsupported bake harness module", prepared.unsupported_reason.?);
+    try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import { writeFileSync } from \"node:fs\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"./bake-harness\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { writeFileSync } = globalThis.__home_import(\"node:fs\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { devAndProductionTest, devTest, emptyHtmlFile, WAIT_MULTIPLIER } = globalThis.__home_import(\"bake-harness\");") != null);
 }
 
-test "Bun corpus rewrite reports parent Bake harness after expect-only bun test import" {
+test "Bun corpus rewrite lowers parent Bake harness after expect-only bun test import" {
     const source =
         \\import { expect } from "bun:test";
         \\import { devTest, emptyHtmlFile, minimalFramework } from "../bake-harness";
@@ -5689,9 +5782,76 @@ test "Bun corpus rewrite reports parent Bake harness after expect-only bun test 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/bundle.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
-    try std.testing.expectEqualStrings("unsupported bake harness module", prepared.unsupported_reason.?);
+    try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import { expect } from \"bun:test\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"../bake-harness\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { expect } = globalThis.__home_import(\"bun:test\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { devTest, emptyHtmlFile, minimalFramework } = globalThis.__home_import(\"bake-harness\");") != null);
+}
+
+test "bootstrap runner records Bake dev and production tests as unsupported by name" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devAndProductionTest, devTest, emptyHtmlFile, WAIT_MULTIPLIER } from "./bake-harness";
+        \\devAndProductionTest("define config via bunfig.toml", {
+        \\  files: { "index.html": emptyHtmlFile({ scripts: ["index.ts"] }) },
+        \\  async test(dev) {},
+        \\});
+        \\devTest("using runtime import", { files: {}, async test(dev) {} });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev-and-prod.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.unsupported, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.unsupported);
+    try std.testing.expect(std.mem.indexOf(u8, file_run.result.first_failure_message, "Bake harness test not implemented:  DEV:dev-and-prod-1: define config via bunfig.toml") != null);
+}
+
+test "bootstrap rewrite erases explicit resource management declarations" {
+    const source =
+        \\import { expect } from "bun:test";
+        \\test("using", async () => {
+        \\  await using client = await connect();
+        \\  using cleanup = makeCleanup();
+        \\  expect(client).toBeDefined();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/using.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await using ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "using cleanup") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const client = await connect();") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const cleanup = makeCleanup();") != null);
+}
+
+test "bootstrap rewrite erases Bake TypeScript-only syntax" {
+    const source =
+        \\import { expect } from "bun:test";
+        \\test("syntax", () => {
+        \\  const hmrSelfAcceptingModule = (label: string) => String(label);
+        \\  const waitForMessage = (value: string) => value;
+        \\  let timer: ReturnType<typeof setTimeout> | null = setTimeout(() => {}, 1);
+        \\  client.on("message", (m: unknown) => expect(m).toBeDefined());
+        \\  const framework = { serverComponents: { ...minimalFramework.serverComponents!, separateSSRGraph: true } };
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev-and-prod.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, ": string") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, ": unknown") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "ReturnType") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "serverComponents!") == null);
 }
 
 test "bootstrap runner supports node fs sync utf8 file methods" {

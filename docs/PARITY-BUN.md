@@ -280,10 +280,19 @@ through the native lifecycle path. The bootstrap also lowers the
 `writeFileSync` / `readFileSync` / `realpathSync` calls to native Home
 host callbacks. The delegated
 `bake/fixtures/deinitialization/test.ts` child now passes all nine cases.
+Exact Bake harness imports for `./bake-harness` and `../bake-harness`
+now lower to a virtual registrar copied from Bun's no-color test-name
+shape. It records ` DEV:<basename>-<count>: <description>` and
+`PROD:<basename>-<count>: <description>` entries as unsupported without
+executing `options.test`, so the corpus can account for each Bake test
+registration while still failing honestly at the unported DevServer /
+bundler runtime boundary.
 
-Latest measured full gate: `4,013` files executed, `388` passed,
-`3,902` failed, `1,453` unsupported, `33` todo. First failure:
-`bake/dev-and-prod.test.ts` with `unsupported bake harness module`.
+Latest measured full gate after the Bake harness registrar:
+`4,013` files executed, `388` passed, `3,979` failed, `1,529`
+unsupported, `33` todo. First failure: `bake/dev-and-prod.test.ts`
+with the named unsupported Bake registration for
+` DEV:dev-and-prod-1: define config via bunfig.toml`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

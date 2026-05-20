@@ -189,7 +189,7 @@ pub const Runtime = struct {
                 return runner.FileRun.failBorrowed(spec.path, @errorName(err));
             };
             defer allocator.free(message);
-            return runner.FileRun.unsupportedOwned(allocator, spec.path, message);
+            return runner.FileRun.unsupportedCountOwned(allocator, spec.path, message, counters.unsupported);
         }
         if (counters.failed != 0) {
             const message = readString(self, allocator, "__home_bun_tests.firstFailure || 'test failed'") catch |err| {
