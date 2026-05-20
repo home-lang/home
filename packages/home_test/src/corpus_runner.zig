@@ -1639,6 +1639,12 @@ const harness_prelude =
     \\    const text = String(candidate || "");
     \\    if (/import\s+[A-Za-z_$][\w$]*\s+from\s+['"]bun['"]\s*;?/.test(text)) return scriptPath + ":1:17: error: Browser build cannot import Bun builtin: \"bun\"";
     \\  }
+    \\  for (const key of Object.keys(files || {})) {
+    \\    if (/\.css$/.test(key)) {
+    \\      const actual = __home_bake_css_error(key, files[key]);
+    \\      if (actual) return actual;
+    \\    }
+    \\  }
     \\  return "";
     \\}
     \\function __home_bake_run_default_export_graph(source, files, log) {
@@ -1955,6 +1961,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "css file with syntax error does not kill old styles" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["styles.css"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "css file with initial syntax error gets recovered" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["styles.css"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
@@ -8071,6 +8080,62 @@ test "bootstrap runner executes Bake css syntax preserves styles smoke" {
         \\    await c.style("body").backgroundColor.expect.toBe("#00f");
         \\    await dev.write("styles.css", ` `, { dedent: false });
         \\    await c.style("body").notFound();
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/css.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake css initial syntax recovery smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("css file with initial syntax error gets recovered", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({
+        \\      styles: ["styles.css"],
+        \\      body: `hello world`,
+        \\    }),
+        \\    "styles.css": `
+        \\      body {
+        \\        color: red;
+        \\      }}
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/", {
+        \\      errors: ["styles.css:3:3: error: Unexpected end of input"],
+        \\    });
+        \\    await c.expectReload(async () => {
+        \\      await dev.write("styles.css", `
+        \\        body {
+        \\          color: red;
+        \\        }
+        \\      `);
+        \\    });
+        \\    await c.style("body").color.expect.toBe("red");
+        \\    await dev.write("styles.css", `
+        \\      body {
+        \\        color: blue;
+        \\      }
+        \\    `);
+        \\    await c.style("body").color.expect.toBe("#00f");
+        \\    await dev.write("styles.css", `
+        \\      body {
+        \\        color: blue;
+        \\      }}
+        \\    `, { errors: ["styles.css:3:3: error: Unexpected end of input"] });
         \\  },
         \\});
     ;

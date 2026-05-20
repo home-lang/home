@@ -281,7 +281,11 @@ and removes the style after a blank stylesheet write. This remains a
 harness-level model until Bun's CSS incremental asset graph, overlay
 serialization, CSS asset IDs, and client CSS reloader are ported from Zig.
 The next Bake boundary is
-`DEV:css-2: css file with initial syntax error gets recovered`.
+`DEV:css-2: css file with initial syntax error gets recovered`. The
+initial-error CSS recovery smoke now validates startup overlay text,
+reloads after a valid stylesheet write, observes `red`, hot-replaces to
+browser-normalized blue, and validates the later syntax-error overlay.
+The next Bake boundary is `DEV:css-3: add new css import later`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

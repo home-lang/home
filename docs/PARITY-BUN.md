@@ -399,6 +399,15 @@ slice: `4,013` files executed, `440` passed, `3,951` failed, `1,504`
 unsupported, `35` todo. First failure: `bake/dev/css.test.ts` with
 ` DEV:css-2: css file with initial syntax error gets recovered`.
 
+The initial-error CSS recovery smoke now validates startup overlay text,
+reloads after a valid stylesheet write, observes `red`, hot-replaces to
+browser-normalized blue, and validates the later syntax-error overlay.
+
+Latest measured full gate after the Bake CSS initial-recovery slice:
+`4,013` files executed, `440` passed, `3,950` failed, `1,503`
+unsupported, `35` todo. First failure: `bake/dev/css.test.ts` with
+` DEV:css-3: add new css import later`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap
