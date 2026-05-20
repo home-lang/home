@@ -141,6 +141,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/issue-1825-jest-mock-functions.test.ts",
     "js/node/path/is-absolute.test.js",
     "js/node/path/zero-length-strings.test.js",
+    "js/bun/util/concat.test.js",
 };
 
 const harness_prelude =
@@ -585,7 +586,12 @@ const harness_prelude =
     \\  return Object.prototype.hasOwnProperty.call(value, key);
     \\}
     \\function __home_is_unsupported_deep_value(value) {
-    \\  return value !== null && typeof value === "object" && (value instanceof ArrayBuffer || ArrayBuffer.isView(value) || value instanceof Error);
+    \\  return value !== null && typeof value === "object" && value instanceof Error;
+    \\}
+    \\function __home_array_buffer_view(value) {
+    \\  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+    \\  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    \\  return null;
     \\}
     \\function __home_expect_any_matches(value, ctor) {
     \\  if (typeof ctor !== "function") __home_fail("expect.any() requires a constructor");
@@ -602,6 +608,13 @@ const harness_prelude =
     \\  if (a === null || b === null) return false;
     \\  if (typeof a !== "object" || typeof b !== "object") return false;
     \\  if (__home_is_unsupported_deep_value(a) || __home_is_unsupported_deep_value(b)) __home_unsupported("Deep equality for this value type is not supported by the Home Bun corpus bootstrap runner yet");
+    \\  const aBufferView = __home_array_buffer_view(a);
+    \\  const bBufferView = __home_array_buffer_view(b);
+    \\  if (aBufferView || bBufferView) {
+    \\    if (!aBufferView || !bBufferView || aBufferView.length !== bBufferView.length) return false;
+    \\    for (let i = 0; i < aBufferView.length; i++) if (aBufferView[i] !== bBufferView[i]) return false;
+    \\    return true;
+    \\  }
     \\  if (strict && Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false;
     \\  if (a instanceof Date || b instanceof Date) return a instanceof Date && b instanceof Date && Object.is(a.getTime(), b.getTime());
     \\  if (a instanceof RegExp || b instanceof RegExp) return a instanceof RegExp && b instanceof RegExp && a.source === b.source && a.flags === b.flags;
@@ -1121,7 +1134,7 @@ const harness_prelude =
     \\  return globalThis.__home_bun_test;
     \\};
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
-    \\globalThis.__home_modules["bun"] = { semver: Bun.semver };
+    \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\function SourceMap(payload) {
     \\  if (!(this instanceof SourceMap)) return new SourceMap(payload);
@@ -1841,6 +1854,27 @@ const harness_prelude =
     \\expect.any = function(ctor) {
     \\  return { __home_expect_any: true, ctor };
     \\};
+    \\function __home_concat_array_buffers(chunks, maxLength, asUint8Array) {
+    \\  const limit = maxLength === undefined ? Infinity : Number(maxLength);
+    \\  const views = [];
+    \\  let size = 0;
+    \\  for (const chunk of chunks) {
+    \\    const view = __home_array_buffer_view(chunk);
+    \\    if (!view) throw new TypeError("concatArrayBuffers expects ArrayBuffer or typed array chunks");
+    \\    views.push(view);
+    \\    size += view.byteLength;
+    \\  }
+    \\  const outputLength = Math.min(size, Number.isFinite(limit) ? Math.max(0, Math.trunc(limit)) : size);
+    \\  const output = new Uint8Array(outputLength);
+    \\  let offset = 0;
+    \\  for (const view of views) {
+    \\    if (offset >= outputLength) break;
+    \\    const take = Math.min(view.byteLength, outputLength - offset);
+    \\    output.set(view.subarray(0, take), offset);
+    \\    offset += take;
+    \\  }
+    \\  return asUint8Array ? output : output.buffer;
+    \\}
     \\var ShadowRealm = (function() {
     \\  class HomeShadowRealm {
     \\    constructor() {
@@ -2401,6 +2435,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { semver } = globalThis.__home_import(\"bun\");",
         },
         .{
+            .needle = "import { concatArrayBuffers } from \"bun\";",
+            .replacement = "const { concatArrayBuffers } = globalThis.__home_import(\"bun\");",
+        },
+        .{
             .needle = "import { Buffer } from \"node:buffer\";",
             .replacement = "const { Buffer } = globalThis.__home_import(\"node:buffer\");",
         },
@@ -2754,6 +2792,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_format_snapshot(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeGreaterThan(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_expect_any_matches(value, ctor)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_array_buffer_view(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_concat_array_buffers") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeNumber()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "a instanceof Map || b instanceof Map") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "a instanceof Number || b instanceof Number") != null);
@@ -2788,7 +2828,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Deep equality for this value type is not supported") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "UnreachableError") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest, mock, onTestFinished, test") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun\"] = { semver: Bun.semver }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "concatArrayBuffers: __home_concat_array_buffers") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_cjs_factories[\"regression/issue/013880-fixture.cjs\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_resolve_require(specifier)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"assert\"] = __home_assert_module") != null);
@@ -2888,6 +2928,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "regression/issue/issue-1825-jest-mock-functions.test.ts",
         "js/node/path/is-absolute.test.js",
         "js/node/path/zero-length-strings.test.js",
+        "js/bun/util/concat.test.js",
     };
 
     for (expected) |path| {
