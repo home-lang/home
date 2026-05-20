@@ -905,6 +905,21 @@ pipeline. The next direct copied Bake boundary is
 `bake/dev/production.test.ts`, currently failing at source preparation
 with `unsupported module syntax`.
 
+The copied `bake/dev/production.test.ts` fixture now passes in Home as
+`8` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap lowers
+the `fs.existsSync` import, erases the TypeScript non-null index
+assertion used by `scriptMatch![1]`, and adds a narrow virtual Bake
+production filesystem for `tempDirWithBakeDeps`, `Bun.$` build / `ls`
+commands, `Bun.file`, `Bun.Glob`, and `fs.existsSync`. The model
+generates only the dist files and stderr strings asserted by the copied
+fixture: sourcemap failure text, production import-meta HTML, catch-all
+static paths, no-pages graceful failure, client component output,
+server-side `useState` diagnostics, client bundle discovery, and static
+no-client-JS output. Native parity still requires Bun's real Bake
+production build, React SSG, routing, and bundler plugin pipeline. The
+next direct copied Bake boundary is `bake/dev/react-response.test.ts`,
+currently failing at source preparation with `unsupported module syntax`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

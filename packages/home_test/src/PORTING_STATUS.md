@@ -583,6 +583,17 @@ plugin pipeline yet; it keeps the copied corpus moving while that port
 remains outstanding. The next direct Bake boundary is
 `bake/dev/production.test.ts`, which currently fails source preparation
 with `unsupported module syntax`.
+The copied `bake/dev/production.test.ts` fixture now passes as `8` tests
+through a narrow virtual production filesystem: `tempDirWithBakeDeps`,
+`Bun.$` build / `ls` commands, `Bun.file`, `Bun.Glob`, and
+`fs.existsSync` are modeled only for the asserted dist outputs and error
+strings in that fixture. The source rewrite also handles
+`import { existsSync } from "fs"` and the TypeScript `scriptMatch![1]`
+non-null index assertion. This keeps the copied production corpus moving;
+native parity still needs Bun's real Bake production build, React SSG,
+routing, and bundle output. The next direct Bake boundary is
+`bake/dev/react-response.test.ts`, which currently fails source
+preparation with `unsupported module syntax`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

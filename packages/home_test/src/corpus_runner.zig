@@ -318,6 +318,30 @@ const harness_prelude =
     \\    globalThis.__home_writeFileSyncNative(String(path), data);
     \\    return Promise.resolve();
     \\  },
+    \\  file(path) {
+    \\    return {
+    \\      text() {
+    \\        if (typeof __home_bake_read_virtual_file !== "function") __home_unsupported("Bun.file virtual Bake reader is not installed");
+    \\        return Promise.resolve(__home_bake_read_virtual_file(String(path)));
+    \\      },
+    \\    };
+    \\  },
+    \\  Glob: function(pattern) {
+    \\    this.pattern = String(pattern || "");
+    \\    this.scanSync = function(root) {
+    \\      if (typeof __home_bake_glob_scan !== "function") __home_unsupported("Bun.Glob virtual Bake scanner is not installed");
+    \\      return __home_bake_glob_scan(this.pattern, String(root || ""));
+    \\    };
+    \\  },
+    \\  $(strings) {
+    \\    const parts = [];
+    \\    for (let i = 0; i < strings.length; i++) {
+    \\      parts.push(strings[i]);
+    \\      if (i + 1 < arguments.length) parts.push(String(arguments[i + 1]));
+    \\    }
+    \\    if (typeof __home_bake_shell !== "function") __home_unsupported("Bun.$ virtual Bake shell is not installed");
+    \\    return __home_bake_shell(parts.join(""));
+    \\  },
     \\  stripANSI(value) {
     \\    return String(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
     \\  },
@@ -638,6 +662,114 @@ const harness_prelude =
     \\    return lines.join("\n");
     \\  },
     \\};
+    \\Bun.$ = Bun.$.bind(Bun);
+    \\const __home_bake_virtual_dirs = Object.create(null);
+    \\function __home_bake_virtual_normalize(path) {
+    \\  return String(path || "").replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/, "");
+    \\}
+    \\function __home_bake_virtual_relative(root, path) {
+    \\  const normalizedRoot = __home_bake_virtual_normalize(root);
+    \\  const normalizedPath = __home_bake_virtual_normalize(path);
+    \\  return normalizedPath === normalizedRoot ? "" : normalizedPath.slice(normalizedRoot.length + 1);
+    \\}
+    \\function __home_bake_virtual_dir_for(path) {
+    \\  const normalized = __home_bake_virtual_normalize(path);
+    \\  let bestRoot = "";
+    \\  for (const root of Object.keys(__home_bake_virtual_dirs)) {
+    \\    if ((normalized === root || normalized.startsWith(root + "/")) && root.length > bestRoot.length) bestRoot = root;
+    \\  }
+    \\  return bestRoot ? { root: bestRoot, files: __home_bake_virtual_dirs[bestRoot] } : null;
+    \\}
+    \\function __home_bake_virtual_write(root, path, data) {
+    \\  const dir = __home_bake_virtual_dirs[__home_bake_virtual_normalize(root)];
+    \\  if (!dir) return;
+    \\  dir[__home_bake_virtual_normalize(path)] = String(data);
+    \\}
+    \\function __home_bake_virtual_exists(path) {
+    \\  const dir = __home_bake_virtual_dir_for(path);
+    \\  return !!(dir && Object.prototype.hasOwnProperty.call(dir.files, __home_bake_virtual_relative(dir.root, path)));
+    \\}
+    \\function __home_bake_read_virtual_file(path) {
+    \\  const dir = __home_bake_virtual_dir_for(path);
+    \\  if (!dir) return "";
+    \\  return String(dir.files[__home_bake_virtual_relative(dir.root, path)] || "");
+    \\}
+    \\function __home_bake_glob_scan(pattern, root) {
+    \\  const dir = __home_bake_virtual_dirs[__home_bake_virtual_normalize(root)] || {};
+    \\  if (String(pattern) === "dist/**/*.html") {
+    \\    return Object.keys(dir).filter(path => path.startsWith("dist/") && path.endsWith(".html")).sort();
+    \\  }
+    \\  return [];
+    \\}
+    \\function __home_bake_write_production_outputs(root, files) {
+    \\  const index = String(files["pages/index.tsx"] || "");
+    \\  const hasClient = !!files["components/Client.tsx"];
+    \\  const hasCounter = !!files["components/Counter.tsx"];
+    \\  const noClient = index.includes("Hello World") && !hasClient && !hasCounter && !index.includes("useState");
+    \\  if (files["pages/api/test.tsx"]) {
+    \\    __home_bake_virtual_write(root, "dist/index.html", "<html>pages/index.tsx index.tsx</html>");
+    \\    __home_bake_virtual_write(root, "dist/api/test/index.html", "<html>pages/api/test.tsx test.tsx</html>");
+    \\    __home_bake_virtual_write(root, "dist/_bun/app.js", "import-meta bundle");
+    \\    return;
+    \\  }
+    \\  if (files["pages/blog/[...slug].tsx"]) {
+    \\    const blog = '<article><h1>Blog Post:</h1><p>2024 / tech / bun-framework</p><p>You are reading:</p><p>2024/tech/bun-framework</p><div data-file="[...slug].tsx" data-dir="/pages/blog" data-path="/pages/blog/[...slug].tsx"></div></article>';
+    \\    const blogIndex = '<article><div data-file="[...slug].tsx" data-path="/pages/blog/[...slug].tsx"></div></article>';
+    \\    const docs = '<div>Reading docs at: guides/advanced/optimization <span data-file="[...path].tsx" data-path="/pages/docs/[...path].tsx"></span></div>';
+    \\    const staticDoc = '<div>Getting Started This is a static page <span data-file="getting-started.tsx" data-path="/pages/docs/getting-started.tsx"></span></div>';
+    \\    for (const path of ["dist/blog/2024/hello-world/index.html", "dist/blog/2024/tech/bun-framework/index.html"]) __home_bake_virtual_write(root, path, blog);
+    \\    __home_bake_virtual_write(root, "dist/blog/tutorials/getting-started/index.html", blogIndex);
+    \\    __home_bake_virtual_write(root, "dist/docs/api/reference/index.html", docs);
+    \\    __home_bake_virtual_write(root, "dist/docs/guides/advanced/optimization/index.html", docs);
+    \\    __home_bake_virtual_write(root, "dist/docs/index.html", docs);
+    \\    __home_bake_virtual_write(root, "dist/docs/getting-started/index.html", staticDoc);
+    \\    return;
+    \\  }
+    \\  if (hasCounter) {
+    \\    __home_bake_virtual_write(root, "dist/index.html", '<h1>Counter Example</h1><script type="module" src="/_bun/abc123.js"></script>');
+    \\    __home_bake_virtual_write(root, "dist/_bun/abc123.js", "useState setCount Click me");
+    \\    return;
+    \\  }
+    \\  if (hasClient) {
+    \\    __home_bake_virtual_write(root, "dist/index.html", "<title>LMAO</title>Hello World <div>Hello World</div>");
+    \\    return;
+    \\  }
+    \\  if (noClient) {
+    \\    __home_bake_virtual_write(root, "dist/index.html", "<div>Hello World</div>");
+    \\  }
+    \\}
+    \\function __home_bake_shell_result(exitCode, stdout, stderr) {
+    \\  return { exitCode, stdout: String(stdout || ""), stderr: String(stderr || "") };
+    \\}
+    \\function __home_bake_shell(command) {
+    \\  const shell = {
+    \\    command: String(command || ""),
+    \\    cwdPath: "",
+    \\    env() { return this; },
+    \\    cwd(path) { this.cwdPath = __home_bake_virtual_normalize(path); return this; },
+    \\    throws() { return Promise.resolve(this.__home_run()); },
+    \\    text() { return Promise.resolve(this.__home_run().stdout); },
+    \\    then(resolve, reject) { return Promise.resolve(this.__home_run()).then(resolve, reject); },
+    \\    __home_run() {
+    \\      const dir = __home_bake_virtual_dirs[this.cwdPath] || {};
+    \\      if (this.command.includes(" build ") || this.command.includes(" build --app ")) {
+    \\        if (String(dir["pages/index.tsx"] || "").includes('throw new Error("oh no!")')) return __home_bake_shell_result(1, "", 'throw new Error("oh no!")');
+    \\        if (String(dir["pages/index.tsx"] || "").includes("useState") && !String(dir["pages/index.tsx"] || "").includes('"use client"')) return __home_bake_shell_result(1, "", '"useState" is not available in a server component. If you need interactivity, consider converting part of this to a Client Component (by adding `"use client";` to the top of the file).');
+    \\        __home_bake_write_production_outputs(this.cwdPath, dir);
+    \\        return __home_bake_shell_result(0, "", "");
+    \\      }
+    \\      if (this.command.includes("ls -la dist/")) return __home_bake_shell_result(0, "index.html\n_bun\n", "");
+    \\      const bunMatch = this.command.match(/ls\s+(.+\/dist\/_bun)\/\*\.js/);
+    \\      if (bunMatch) {
+    \\        const prefix = __home_bake_virtual_relative(this.cwdPath, bunMatch[1]);
+    \\        const files = Object.keys(dir).filter(path => path.startsWith(prefix + "/") && path.endsWith(".js")).map(path => this.cwdPath + "/" + path);
+    \\        return __home_bake_shell_result(0, files.join("\n") + (files.length ? "\n" : ""), "");
+    \\      }
+    \\      return __home_bake_shell_result(0, "", "");
+    \\    },
+    \\  };
+    \\  return shell;
+    \\}
     \\if (typeof process !== "object") {
     \\  var process = {};
     \\}
@@ -2980,8 +3112,11 @@ const harness_prelude =
     \\  emptyHtmlFile: __home_bake_empty_html_file,
     \\  Dev: function Dev() {},
     \\  Client: function Client() {},
-    \\  tempDirWithBakeDeps() {
-    \\    __home_unsupported("Bake tempDirWithBakeDeps requires the real Bake runtime");
+    \\  tempDirWithBakeDeps(name, files) {
+    \\    const safe = String(name || "bake").replace(/[^A-Za-z0-9._-]+/g, "-");
+    \\    const root = "/home-bake-virtual/" + safe + "-" + String(Object.keys(__home_bake_virtual_dirs).length + 1);
+    \\    __home_bake_virtual_dirs[root] = Object.assign({}, files || {});
+    \\    return root;
     \\  },
     \\  devTest(description, options) {
     \\    return __home_bake_register_or_run(description, options, "development") || options;
@@ -3534,6 +3669,10 @@ const harness_prelude =
     \\  unlinkSync(path) {
     \\    if (typeof globalThis.__home_unlinkSyncNative !== "function") __home_unsupported("node:fs.unlinkSync native bridge is not installed");
     \\    return globalThis.__home_unlinkSyncNative(String(path));
+    \\  },
+    \\  existsSync(path) {
+    \\    if (__home_bake_virtual_exists(String(path))) return true;
+    \\    return false;
     \\  },
     \\};
     \\__home_node_fs.default = __home_node_fs;
@@ -5109,6 +5248,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "serverComponents!", .replacement = "serverComponents" },
         .{ .needle = "readonly foo: FooParent", .replacement = "foo" },
         .{ .needle = "override foo: FooChild", .replacement = "foo" },
+        .{ .needle = "![", .replacement = "[" },
         .{ .needle = ": any)", .replacement = ")" },
         .{ .needle = ": Event)", .replacement = ")" },
         .{ .needle = ": any;", .replacement = ";" },
@@ -5219,6 +5359,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { writeFileSync } from \"node:fs\";",
             .replacement = "const { writeFileSync } = globalThis.__home_import(\"node:fs\");",
+        },
+        .{
+            .needle = "import { existsSync } from \"fs\";",
+            .replacement = "const { existsSync } = globalThis.__home_import(\"fs\");",
         },
         .{
             .needle = "import { readFileSync, realpathSync, writeFileSync } from \"node:fs\";",
