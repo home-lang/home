@@ -34,7 +34,9 @@ macOS, Linux, and the WASM target.
   binary/UTF-16LE/compare/inspect-limit/isEncoding behavior, `Map`/`Set` deep-equality,
   lifecycle hooks, `Bun.inspect` Set formatting, `MessageEvent` constructor
   behavior, Bun version aliases, own-key matchers, a `prepareStackTrace`
-  crash smoke plus a non-empty filename regression, Web `TextDecoder`
+  crash smoke plus a non-empty filename regression, four sync runner
+  fixture smokes (`only-fixture-4`, `21177`, `5738`, and printing dots),
+  Web `TextDecoder`
   CJK and single-byte encoding smokes, Node `module.SourceMap`, and a JSC string atomization smoke through
   `Bun.jest(import.meta.path)` plus a narrow `structuredClone` fallback. It is only a smoke path for JSC + `home_test`; it is not the
   release gate. The bootstrap harness is installed once per JSC engine, resets

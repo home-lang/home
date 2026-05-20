@@ -72,7 +72,10 @@ constructor shims, Web `TextDecoder` CJK and single-byte encoding smokes,
 a primitive/object `structuredClone` fallback for the string atomization
 smoke, `Bun.inspect({ key: Set<string> })`, `Bun.jest(import.meta.path)`
 as an alias to the existing bootstrap `bun:test` facade, and a narrow
-`ShadowRealm.evaluate` shim. The source
+`ShadowRealm.evaluate` shim. Four sync runner fixtures
+(`only-fixture-4`, `21177`, `5738`, and printing dots) are also
+allowlisted, with `console.warn` falling back to `console.log` for the
+printing fixture. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
 `import.meta.dir/path` to the same per-file metadata used for the

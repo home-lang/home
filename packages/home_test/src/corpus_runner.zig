@@ -123,6 +123,10 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/fix-bindings-stack-trace.test.ts",
     "js/node/module/module-sourcemap.test.js",
     "js/bun/jsc/string-noAtomize.test.ts",
+    "js/bun/test/only-fixture-4.ts",
+    "regression/issue/21177.fixture.ts",
+    "regression/issue/5738.fixture.ts",
+    "js/bun/test/printing/dots/dots1.fixture.ts",
 };
 
 const harness_prelude =
@@ -145,6 +149,7 @@ const harness_prelude =
     \\globalThis.__home_reset_tests();
     \\if (typeof console !== "object" || console === null) var console = {};
     \\if (typeof console.log !== "function") console.log = function() {};
+    \\if (typeof console.warn !== "function") console.warn = console.log;
     \\const __home_object_set_prototype_of = Object.setPrototypeOf;
     \\const __home_global_original_prototype = Object.getPrototypeOf(globalThis);
     \\let __home_global_virtual_prototype_keys = [];
@@ -2453,6 +2458,7 @@ test "minimal JS subset starts with the todo smoke" {
 
 test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function it(name, first, second)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "console.warn = console.log") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_is_thenable(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.setPrototypeOf = function(target, prototype)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_global_virtual_prototype_keys") != null);
@@ -2582,6 +2588,10 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "regression/issue/fix-bindings-stack-trace.test.ts",
         "js/node/module/module-sourcemap.test.js",
         "js/bun/jsc/string-noAtomize.test.ts",
+        "js/bun/test/only-fixture-4.ts",
+        "regression/issue/21177.fixture.ts",
+        "regression/issue/5738.fixture.ts",
+        "js/bun/test/printing/dots/dots1.fixture.ts",
     };
 
     for (expected) |path| {
