@@ -700,6 +700,11 @@ generated executable output, and execute-only permission no-ops. Native
 parity still needs Bun's real cross-target compiler, executable section
 layout, embedded payload expansion, permission-sensitive execution, and
 platform-specific binary writer.
+The copied `bundler/compile-sourcemap-internal.test.ts` fixture now
+passes as `1` test through the compile-mode model, returning the expected
+source-frame stderr for `util.ts:5` and `ismapp.ts:4`. Native parity
+still needs Bun's real InternalSourceMap embedding and runtime
+stack-frame remapper.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

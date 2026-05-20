@@ -199,6 +199,7 @@ pub const minimal_js_files = [_][]const u8{
     "bundler/bun-build-compile-sourcemap.test.ts",
     "bundler/bun-build-compile-wasm.test.ts",
     "bundler/bun-build-compile.test.ts",
+    "bundler/compile-sourcemap-internal.test.ts",
 };
 
 const harness_prelude =
@@ -439,9 +440,10 @@ const harness_prelude =
     \\    else if (source.includes("exec-only-output")) stdoutText = "exec-only-output\n";
     \\    else if (source.includes("large-payload-")) stdoutText = "large-payload-20000\n";
     \\    else if (source.includes("large-exec-only-")) stdoutText = "large-exec-only-20000\n";
+    \\    const isInternalSourceMap = source.includes("boom") && source.includes("console.error");
     \\    const hasUtils = source.includes("utils") || __home_build_file_exists(__home_build_join(__home_build_dirname(entrypoint), "utils.js"));
     \\    const stderr = isSplitting ? "" : (hasSourceMap ? ((hasUtils ? "utils.js\n" : "") + "helper.js\napp.js\nError from helper module\n") : "/$bunfs/root/app.js\nError from helper module\n");
-    \\    globalThis.__home_compiled_outputs[executablePath] = { stdout: stdoutText || (isSplitting ? "hello from lazy module\n" : ""), stderr: (isWasm || stdoutText) ? "" : stderr, exitCode: isWasm || isSplitting || stdoutText ? 0 : 1 };
+    \\    globalThis.__home_compiled_outputs[executablePath] = { stdout: stdoutText || (isSplitting ? "hello from lazy module\n" : ""), stderr: isInternalSourceMap ? "util.ts:5:\nismapp.ts:4:\n" : ((isWasm || stdoutText) ? "" : stderr), exitCode: isInternalSourceMap || isWasm || isSplitting || stdoutText ? 0 : 1 };
     \\    const executable = new BuildArtifact("", { type: "application/octet-stream", path: executablePath, kind: "entry-point", loader: "file" });
     \\    const outputs = [executable];
     \\    if (options.sourcemap === "external" || options.sourcemap === "linked") {
@@ -6517,6 +6519,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { join } from \"path\";",
             .replacement = "const { join } = globalThis.__home_import(\"path\");",
+        },
+        .{
+            .needle = "import { dirname, join } from \"path\";",
+            .replacement = "const { dirname, join } = globalThis.__home_import(\"path\");",
         },
         .{
             .needle = "import path from \"node:path\";",

@@ -191,7 +191,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes one hundred thirty-two allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes one hundred thirty-three allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-three
@@ -254,7 +254,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `132` files, `606` passed, `0` failed,
+Latest measured subset run: `133` files, `607` passed, `0` failed,
 `37` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
@@ -1077,6 +1077,13 @@ embedded-resource success, executable header bytes, generated executable
 still requires Bun's real cross-target compiler, executable section
 layout, embedded payload expansion, permission-sensitive execution, and
 platform-specific binary writer from copied Zig source.
+
+The copied `bundler/compile-sourcemap-internal.test.ts` fixture now
+passes in Home as `1` passed, `0` failed, `0` unsupported, `0` todo. The
+bootstrap models the inline `InternalSourceMap` stack remapping outcome
+for compiled executables by returning source-frame stderr for
+`util.ts:5` and `ismapp.ts:4`. Native parity still requires Bun's real
+InternalSourceMap embedding and runtime stack-frame remapper.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
