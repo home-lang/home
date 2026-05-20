@@ -3444,6 +3444,46 @@ test "conformance: sub-strict directive without @strict keeps inferred strict-on
     try T.expect(merged_with_strict_on.use_unknown_in_catch_variables);
 }
 
+test "conformance: typeofClass2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeofClass2",
+        .path = "typeofClass2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\class C {
+        \\    constructor(x: number);
+        \\    constructor(x: string);
+        \\    constructor(x) { }
+        \\
+        \\    static foo(x: number);
+        \\    static foo(x: C);
+        \\    static foo(x) { }
+        \\
+        \\    static bar(x) { }
+        \\}
+        \\
+        \\class D extends C {
+        \\    static baz(x: number) { }
+        \\    foo() { }
+        \\}
+        \\
+        \\var d: D;
+        \\
+        \\var r1: typeof D;
+        \\var r2: typeof d;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: typeAliasesDoNotMerge matches TS2395 baseline" {
     const result = try runOneEntry(T.allocator, .{
         .name = "typeAliasesDoNotMerge",
