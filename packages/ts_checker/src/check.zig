@@ -5106,7 +5106,8 @@ pub const Checker = struct {
         const had_type_params = hir_mod.fnTypeParams(self.hir, node).len > 0 or self.fnHasJsDocTemplateTags(node);
         _ = try self.checkFnSignatureOnly(node);
         try self.checkJsDocFunctionTypeTag(node);
-        const contextual_return = if (hir_mod.fnDeclOf(self.hir, node).return_type == hir_mod.none_node_id)
+        const contextual_return = if (hir_mod.fnDeclOf(self.hir, node).return_type == hir_mod.none_node_id and
+            self.fnBodyHasReturnValueSyntax(hir_mod.fnDeclOf(self.hir, node).body))
             self.contextualReturnTypeForFunction(node)
         else
             null;
@@ -5550,15 +5551,19 @@ pub const Checker = struct {
                 }
             }
         } else if (!f.flags.is_generator and !f.flags.is_async and
-            f.return_type != hir_mod.none_node_id and
-            self.hir.kindOf(f.return_type) != .type_predicate_type)
+            (f.return_type == hir_mod.none_node_id or self.hir.kindOf(f.return_type) != .type_predicate_type))
         {
-            // Capture the declared return type so `return <expr>;`
-            // statements inside the body can validate against it and
-            // emit TS2322. Skipped for generators (handled via
-            // `current_generator_info`), async (Promise-wrapped),
-            // and predicate-typed bodies which always return boolean.
-            const declared = self.lowererLowerWithTypeParams(f.return_type) catch types.Primitive.none;
+            // Capture the declared/contextual return type so `return
+            // <expr>;` statements inside the body can validate against
+            // it and emit TS2322. A contextual target validates return
+            // expressions, but it must not overwrite the function's own
+            // inferred return type: `C.bar = () => {}` is still
+            // `() => void`, which is then compared against
+            // `(x: number) => number` at the assignment.
+            const declared = if (f.return_type != hir_mod.none_node_id)
+                self.lowererLowerWithTypeParams(f.return_type) catch types.Primitive.none
+            else
+                self.contextualReturnTypeForFunction(node) orelse types.Primitive.none;
             if (declared != types.Primitive.none and
                 declared != types.Primitive.any and
                 declared != types.Primitive.unknown and
@@ -5605,9 +5610,7 @@ pub const Checker = struct {
                     try self.buildStructuralPromise(expr_t)
                 else
                     expr_t;
-                if (self.contextualReturnTypeForFunction(node) == null) {
-                    try self.refineSignatureReturn(node, inferred_t);
-                }
+                try self.refineSignatureReturn(node, inferred_t);
                 // TS 5.5 inferred type predicate.
                 try self.tryInferTypePredicate(node, f.body);
             }
@@ -5617,7 +5620,9 @@ pub const Checker = struct {
         // For block-bodied fns without an annotation, infer the
         // return type by unioning every return statement's value
         // type. No returns → `void_t`.
-        if (f.return_type == hir_mod.none_node_id and self.contextualReturnTypeForFunction(node) == null) {
+        const has_contextual_return_value_body = self.contextualReturnTypeForFunction(node) != null and
+            self.fnBodyHasReturnValueSyntax(f.body);
+        if (f.return_type == hir_mod.none_node_id and !has_contextual_return_value_body) {
             if (f.flags.is_generator) {
                 // §3.A — Generator return-type inference.
                 // Walk the body for `yield` expressions, collect their
@@ -10569,6 +10574,47 @@ pub const Checker = struct {
     /// statement reachable from `node`, but stop at any nested
     /// function boundary so inner-fn returns don't leak into the
     /// outer signature.
+    fn fnBodyHasReturnValueSyntax(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(node)) {
+            .return_stmt => hir_mod.returnOf(self.hir, node).value != hir_mod.none_node_id,
+            .fn_decl, .fn_expr, .arrow_fn => false,
+            .block_stmt => blk: {
+                for (hir_mod.blockStmts(self.hir, node)) |s| {
+                    if (self.fnBodyHasReturnValueSyntax(s)) break :blk true;
+                }
+                break :blk false;
+            },
+            .if_stmt => blk: {
+                const i = hir_mod.ifOf(self.hir, node);
+                break :blk self.fnBodyHasReturnValueSyntax(i.then_branch) or
+                    self.fnBodyHasReturnValueSyntax(i.else_branch);
+            },
+            .while_stmt => self.fnBodyHasReturnValueSyntax(hir_mod.whileOf(self.hir, node).body),
+            .do_while_stmt => self.fnBodyHasReturnValueSyntax(hir_mod.doWhileOf(self.hir, node).body),
+            .for_stmt => self.fnBodyHasReturnValueSyntax(hir_mod.forStmtOf(self.hir, node).body),
+            .try_stmt => blk: {
+                const ts = hir_mod.tryOf(self.hir, node);
+                break :blk self.fnBodyHasReturnValueSyntax(ts.block) or
+                    self.fnBodyHasReturnValueSyntax(ts.catch_block) or
+                    self.fnBodyHasReturnValueSyntax(ts.finally_block);
+            },
+            .switch_stmt => blk: {
+                for (hir_mod.switchCases(self.hir, node)) |case| {
+                    if (self.fnBodyHasReturnValueSyntax(case)) break :blk true;
+                }
+                break :blk false;
+            },
+            .switch_case => blk: {
+                for (hir_mod.switchCaseStmts(self.hir, node)) |s| {
+                    if (self.fnBodyHasReturnValueSyntax(s)) break :blk true;
+                }
+                break :blk false;
+            },
+            else => false,
+        };
+    }
+
     fn collectReturnTypes(
         self: *Checker,
         node: NodeId,
@@ -79288,6 +79334,54 @@ test "checker: class prototype object assignment checks instance shape" {
     }
     try T.expect(saw_excess);
     try T.expect(saw_missing);
+}
+
+test "checker: static method reassignment checks declared method signature" {
+    const s = try newSetup(
+        \\class C {
+        \\  static foo() {
+        \\    C.foo = () => {}
+        \\  }
+        \\  static bar(x: number): number {
+        \\    C.bar = () => {}
+        \\    C.bar = (x) => x;
+        \\    C.bar = (x: number) => 1;
+        \\    return 1;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_bar_mismatch = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) saw_bar_mismatch = true;
+    }
+    try T.expect(saw_bar_mismatch);
+}
+
+test "checker: prototype method reassignment checks declared instance signature" {
+    const s = try newSetup(
+        \\class C {
+        \\  foo() {
+        \\    C.prototype.foo = () => {}
+        \\  }
+        \\  bar(x: number): number {
+        \\    C.prototype.bar = () => {}
+        \\    C.prototype.bar = (x) => x;
+        \\    C.prototype.bar = (x: number) => 1;
+        \\    return 1;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_bar_mismatch = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) saw_bar_mismatch = true;
+    }
+    try T.expect(saw_bar_mismatch);
 }
 
 test "checker: checkjs computed prototype assignment makes function constructable but not indexed" {
