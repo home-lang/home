@@ -47,6 +47,14 @@ merge into one group, `generateAllOrder` resets entry links and creates
 one group per entry, and `generateOrderTest` wraps before/after hooks
 around the test while preserving retry/repeat counts.
 
+`zig build test -Dfilter=home_test_bun_tier2_collection` build-checks
+the copied collection-phase leaf, `bun/Collection.zig`, through a small
+Home scaffold that mirrors only the upstream BunTest/JSC types it
+touches. This keeps the real JSC callback machinery out of the tier
+while preserving collection semantics: root scope creation under preload
+hooks, describe callback queueing, callback dispatch with scope restore,
+and failed-scope skip behavior.
+
 The bootstrap harness is intentionally narrow but now installs once per
 JSC engine, resets counters before each allowlisted file, reports a file
 as unsupported if it registers zero `bun:test` tests, and preserves
@@ -138,7 +146,7 @@ shape (each ~30-100 LOC, 7-10 `bun.X` references — almost all
 | diff_format.zig | 85 | 5 | 2 | 0 | blocked | `bun.md`, `bun.AllocationScope`, `bun.Output` |
 | debug.zig | 109 | 7 | 1 | 0 | blocked | `bun.JSError`, `bun.md`, `bun.env_var` |
 | harness/recover.zig | 132 | 1 | 0 | 0 | tier0 | `bun.md` |
-| Collection.zig | 171 | 8 | 0 | 0 | blocked | `bun.JSError`, `bun.assert`, `bun.md` |
+| Collection.zig | 171 | 8 | 0 | 0 | tier2-collection | `bun.JSError`, `bun.assert`, `bun.md` |
 | Order.zig | 187 | 16 | 0 | 0 | tier2-order | `bun.JSError`, `bun.assert`, `bun.Environment` |
 | timers/FakeTimers.zig | 376 | 32 | 0 | 0 | blocked | `bun.JSError`, `bun.timespec`, `bun.assert` |
 | ScopeFunctions.zig | 498 | 64 | 0 | 0 | blocked | `bun.String`, `bun.JSError`, `bun.handleOom` |
@@ -269,7 +277,9 @@ These need only `compat` for `OOM`/`handleOom`/`assert`/`md`:
 
 ### Tier 2 — test scaffolding (need `bun.timespec` + `bun.assert`)
 
-8. `Collection.zig` (171 LOC) — test collection; minimal externs
+8. `Collection.zig` (171 LOC) — test collection; compile-checked in
+   the focused `home_test_bun_tier2_collection` target with a local
+   BunTest/JSC scaffold for collection-phase callback scheduling
 9. `Order.zig` (187 LOC) — deterministic ordering; compile-checked in
    the focused `home_test_bun_tier2_order` target with a local scaffold
    for the small `bun_test` / `Execution` surface it touches

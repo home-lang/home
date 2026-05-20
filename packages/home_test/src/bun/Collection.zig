@@ -164,10 +164,11 @@ pub fn handleUncaughtException(this: *Collection, _: bun_test.BunTest.RefDataVal
 const std = @import("std");
 
 const bun = @import("bun");
-const jsc = bun.jsc;
+const collection_scaffold = @import("collection_scaffold.zig");
 
-const bun_test = jsc.Jest.bun_test;
-const BunTest = bun_test.BunTest;
-const Collection = bun_test.Collection;
-const DescribeScope = bun_test.DescribeScope;
-const group = bun_test.debug.group;
+const jsc = collection_scaffold.jsc;
+const bun_test = collection_scaffold;
+const BunTest = collection_scaffold.BunTest;
+const Collection = @This();
+const DescribeScope = collection_scaffold.DescribeScope;
+const group = collection_scaffold.debug.group;
