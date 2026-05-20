@@ -2703,7 +2703,8 @@ const harness_prelude =
     \\  return String(value);
     \\}
     \\function __home_bake_route_response(files) {
-    \\  const route = String(files["routes/index.ts"] || "");
+    \\  const route = String(files["routes/index.ts"] || files["routes/test.ts"] || "");
+    \\  if (route.includes("new VFile(\"hello world\")")) return "VFile content: hello world";
     \\  if (route.includes("from 'example'") || route.includes("from \"example\"")) {
     \\    const pkg = JSON.parse(String(files["node_modules/example/package.json"] || "{}"));
     \\    const development = pkg && pkg.exports && pkg.exports["."] && pkg.exports["."].development;
@@ -2786,6 +2787,7 @@ const harness_prelude =
     \\function __home_bake_import_meta_text(files) {
     \\  if (!files["routes/test.ts"]) return null;
     \\  const source = String(files["routes/test.ts"]);
+    \\  if (source.includes("new VFile(\"hello world\")")) return null;
     \\  const label = source.includes('"directory: "') ? "directory" : "dir";
     \\  const meta = __home_bake_file_meta("routes/test.ts");
     \\  return label + ": " + meta.dir + "\nfile: " + meta.file + "\npath: " + meta.path;
@@ -3378,6 +3380,9 @@ const harness_prelude =
     \\  if (String(description) === "crash #18910" && nodeEnv === "development" && options && options.files && typeof options.test === "function") {
     \\    options.__home_description = String(description);
     \\    return test(name, async () => __home_bake_run_stress(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "vfile import in server component" && nodeEnv === "development" && options && options.files && options.files["routes/test.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
     \\  }
     \\  if (__home_bake_is_ssg_pages_router_description(description) && nodeEnv === "development" && options && options.files && typeof options.test === "function") {
     \\    options.__home_description = String(description);

@@ -1007,6 +1007,15 @@ reload loop, and crash resilience. The next direct copied Bake boundary
 is `bake/dev/vfile.test.ts`, currently failing at
 `DEV:vfile-1: vfile import in server component`.
 
+The copied `bake/dev/vfile.test.ts` fixture now passes in Home as `1`
+passed, `0` failed, `0` unsupported, `0` todo. The bootstrap models the
+minimal-framework server response for a `vfile` import that depends on
+`process`, returning `VFile content: hello world` with status `200`.
+Native parity still requires Bun's real server-component bundling of
+node builtins through package exports. The next direct copied Bake
+boundary is `bake/framework-router.test.ts`, currently blocked during
+source preparation as `unsupported module syntax`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

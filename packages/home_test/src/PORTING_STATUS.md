@@ -650,6 +650,12 @@ the stress callback, hot write, and client-side `a` evaluation. Native
 parity still needs Bun's real dev-server filesystem watcher, reload loop,
 and crash resilience. The next direct Bake boundary is
 `DEV:vfile-1: vfile import in server component`.
+The copied `bake/dev/vfile.test.ts` fixture now passes as `1` test
+through a narrow minimal-framework response for a `vfile` import that
+depends on `process`. Native parity still needs Bun's real
+server-component bundling of node builtins through package exports. The
+next direct Bake boundary is `bake/framework-router.test.ts`, currently
+blocked as unsupported module syntax during source preparation.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
