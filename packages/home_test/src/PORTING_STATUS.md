@@ -289,6 +289,10 @@ The next Bake boundary is `DEV:css-3: add new css import later`.
 The dynamic CSS import smoke now attaches and detaches `styles.css` based
 on an `index.ts` import being uncommented and re-commented. The next Bake
 boundary is `DEV:css-4: css import another css file`.
+The CSS `@import` smoke now recursively expands imported stylesheets,
+checks hot edits to the imported file, and preserves the result across a
+hard reload in the harness model. The next Bake boundary is
+`DEV:css-5: asset referenced in css`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

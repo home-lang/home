@@ -1508,14 +1508,14 @@ const harness_prelude =
     \\function __home_bake_css_property(files, htmlPath, htmlSource, selector, propertyName) {
     \\  let css = "";
     \\  const href = __home_bake_first_attr(htmlSource, "link", "href", "stylesheet");
-    \\  if (href) css += String(files[__home_bake_resolve_html_ref(files, htmlPath, href)] || "");
+    \\  if (href) css += __home_bake_collect_css(files, __home_bake_resolve_html_ref(files, htmlPath, href), new Set());
     \\  else css += ((String(htmlSource || "").match(/<style\b[^>]*>([\s\S]*?)<\/style>/i) || [])[1] || "");
     \\  const scriptRef = __home_bake_first_attr(htmlSource, "script", "src", "");
     \\  const scriptPath = scriptRef ? __home_bake_resolve_html_ref(files, htmlPath, scriptRef) : "";
     \\  const scriptSource = String(files[scriptPath] || "");
     \\  scriptSource.replace(/(^|[\n\r])\s*import\s+['"]([^'"]+\.css)['"]\s*;?/g, function(_, _prefix, specifier) {
     \\    const resolved = __home_bake_resolve_html_ref(files, scriptPath || htmlPath, specifier);
-    \\    css += "\n" + String(files[resolved] || "");
+    \\    css += "\n" + __home_bake_collect_css(files, resolved, new Set());
     \\    return "";
     \\  });
     \\  const escapedSelector = String(selector).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -1534,6 +1534,16 @@ const harness_prelude =
     \\  return __home_bake_css_property(files, htmlPath, htmlSource, selector, "color") !== "" ||
     \\    __home_bake_css_property(files, htmlPath, htmlSource, selector, "backgroundColor") !== "" ||
     \\    __home_bake_css_property(files, htmlPath, htmlSource, selector, "backgroundImage") !== "";
+    \\}
+    \\function __home_bake_collect_css(files, cssPath, seen) {
+    \\  const normalized = __home_bake_normalize_path(cssPath);
+    \\  if (seen.has(normalized)) return "";
+    \\  seen.add(normalized);
+    \\  let css = String(files[normalized] || "");
+    \\  return css.replace(/@import\s+['"]([^'"]+\.css)['"]\s*;/g, function(_, specifier) {
+    \\    const resolved = __home_bake_resolve_html_ref(files, normalized, specifier);
+    \\    return __home_bake_collect_css(files, resolved, seen);
+    \\  });
     \\}
     \\function __home_bake_inline_scripts(htmlSource) {
     \\  const scripts = [];
@@ -1848,6 +1858,9 @@ const harness_prelude =
     \\        async expectNoWebSocketActivity(callback) {
     \\          await callback();
     \\        },
+    \\        async hardReload() {
+    \\          startClient(true);
+    \\        },
     \\        style(selector) {
     \\          const propertyExpectation = propertyName => ({
     \\            expect: {
@@ -1976,6 +1989,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "add new css import later" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["styles.css"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "css import another css file" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["styles.css"] && options.files["second.css"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
@@ -8195,6 +8211,58 @@ test "bootstrap runner executes Bake add css import later smoke" {
         \\    await c.style("body").color.expect.toBe("red");
         \\    await dev.patch("index.ts", { find: "import", replace: "// import" });
         \\    await c.style("body").notFound();
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/css.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake css import another file smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("css import another css file", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({
+        \\      styles: ["styles.css"],
+        \\    }),
+        \\    "styles.css": `
+        \\      @import "./second.css";
+        \\      body {
+        \\        color: red;
+        \\      }
+        \\    `,
+        \\    "second.css": `
+        \\      h1 {
+        \\        color: blue;
+        \\      }
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.style("h1").color.expect.toBe("#00f");
+        \\    await c.style("body").color.expect.toBe("red");
+        \\    await dev.write("second.css", `
+        \\      h1 {
+        \\        color: green;
+        \\      }
+        \\    `);
+        \\    await c.style("h1").color.expect.toBe("green");
+        \\    await c.style("body").color.expect.toBe("red");
+        \\    await c.hardReload();
+        \\    await c.style("h1").color.expect.toBe("green");
+        \\    await c.style("body").color.expect.toBe("red");
         \\  },
         \\});
     ;

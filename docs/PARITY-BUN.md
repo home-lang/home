@@ -417,6 +417,15 @@ Latest measured full gate after the Bake dynamic CSS-import slice:
 unsupported, `35` todo. First failure: `bake/dev/css.test.ts` with
 ` DEV:css-4: css import another css file`.
 
+The CSS `@import` smoke now recursively expands imported stylesheets,
+checks hot edits to the imported file, and preserves the result across a
+hard reload in the harness model.
+
+Latest measured full gate after the Bake CSS `@import` slice: `4,013`
+files executed, `440` passed, `3,948` failed, `1,501` unsupported, `35`
+todo. First failure: `bake/dev/css.test.ts` with
+` DEV:css-5: asset referenced in css`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap
