@@ -58,6 +58,13 @@ narrow hosted fetch path for the Bake deinitialization fixture's
 
 🔴 Not implemented. `BunFile` reader/writer.
 
+### `node:fs` sync methods
+
+🔴 Not implemented as general runtime APIs. The Bun corpus bootstrap now has
+a narrow native bridge for `writeFileSync`, `readFileSync(..., "utf8")`,
+and `realpathSync`, which are needed by the Bake harness and
+`bake/dev-and-prod.test.ts` import surface.
+
 ### `Bun.spawn` / `Bun.spawnSync`
 
 🟡 Partial bootstrap bridge. `Bun.spawnSync({ cmd, cwd, stdio })` now
@@ -268,7 +275,10 @@ the Bake DevServer is deinitialized.
 The JSC bootstrap also has a narrow `Bun.serve` host callback for the
 Bake HTML-route shape; it allocates a real DevServer/Server carrier and
 routes `server.stop()`, hosted `fetch`, and HMR WebSocket open/close
-through the native lifecycle path. The delegated
+through the native lifecycle path. The bootstrap also lowers the
+`node:fs` sync imports used by Bake tests and forwards utf8
+`writeFileSync` / `readFileSync` / `realpathSync` calls to native Home
+host callbacks. The delegated
 `bake/fixtures/deinitialization/test.ts` child now passes all nine cases.
 
 Latest measured full gate: `4,013` files executed, `388` passed,

@@ -2,6 +2,8 @@ const std = @import("std");
 const home_rt = @import("home_rt");
 const runner = @import("../runner.zig");
 
+const Io = std.Io;
+
 pub const Runtime = struct {
     engine: home_rt.jsc.engine.Engine,
 
@@ -84,6 +86,24 @@ pub const Runtime = struct {
             self.engine.currentGlobalObject(),
             "__home_closeHmrSocketNative",
             closeHmrSocketNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_writeFileSyncNative",
+            writeFileSyncNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_readFileSyncNative",
+            readFileSyncNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_realpathSyncNative",
+            realpathSyncNative,
         );
     }
 
@@ -508,6 +528,127 @@ fn getDevServerDeinitCountNative(
     );
 }
 
+fn writeFileSyncNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+
+    if (argument_count < 2 or arguments[0] == null or arguments[1] == null) {
+        setException(actual_ctx, exception, "node:fs.writeFileSync() requires path and data");
+        return null;
+    }
+
+    const path = valueToOwnedString(allocator, actual_ctx, arguments[0].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.writeFileSync() path failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(path);
+
+    const data = valueToOwnedString(allocator, actual_ctx, arguments[1].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.writeFileSync() data failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(data);
+
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data }) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.writeFileSync() failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    return extern_fns.JSValueMakeUndefined(actual_ctx);
+}
+
+fn readFileSyncNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+
+    if (argument_count < 1 or arguments[0] == null) {
+        setException(actual_ctx, exception, "node:fs.readFileSync() requires a path");
+        return null;
+    }
+
+    const path = valueToOwnedString(allocator, actual_ctx, arguments[0].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.readFileSync() path failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(path);
+
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const data = Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(16 * 1024 * 1024)) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.readFileSync() failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(data);
+
+    return makeStringValue(actual_ctx, data) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.readFileSync() result failed: {s}", .{@errorName(err)});
+        return null;
+    };
+}
+
+fn realpathSyncNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+
+    if (argument_count < 1 or arguments[0] == null) {
+        setException(actual_ctx, exception, "node:fs.realpathSync() requires a path");
+        return null;
+    }
+
+    const path = valueToOwnedString(allocator, actual_ctx, arguments[0].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.realpathSync() path failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(path);
+
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const realpath = Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.realpathSync() failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(realpath);
+
+    return makeStringValue(actual_ctx, realpath) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.realpathSync() result failed: {s}", .{@errorName(err)});
+        return null;
+    };
+}
+
 fn spawnSyncNative(
     ctx: ?*JSContextRef,
     function: ?*JSObject,
@@ -768,10 +909,14 @@ fn setNullProperty(ctx: *JSContextRef, object: *JSObject, name: []const u8) void
 }
 
 fn setStringProperty(ctx: *JSContextRef, object: *JSObject, name: []const u8, value: []const u8) !void {
+    const js_value = try makeStringValue(ctx, value);
+    setProperty(ctx, object, name, js_value);
+}
+
+fn makeStringValue(ctx: *JSContextRef, value: []const u8) !*JSValue {
     const js_string = try makeJSString(value);
     defer extern_fns.JSStringRelease(js_string);
-    const js_value = extern_fns.JSValueMakeString(ctx, js_string) orelse return error.MakeStringFailed;
-    setProperty(ctx, object, name, js_value);
+    return extern_fns.JSValueMakeString(ctx, js_string) orelse error.MakeStringFailed;
 }
 
 fn setProperty(ctx: *JSContextRef, object: *JSObject, name: []const u8, value: *JSValue) void {
