@@ -199,8 +199,10 @@ regression smokes, one bundler constant-fold smoke, one bun-types `test.each` ty
 expectation smokes, one nested-describe smoke, two `expectTypeOf` type-only smokes, a narrow `Bun.TOML.parse` throw smoke, `Bun.stripANSI` and
 `Bun.wrapAnsi`, `Bun.semver.satisfies`, and `bun:internal-for-testing` regexp / PowerShell escaping smokes, retry/repeats runner behavior, `test.concurrent.each`, `expect().pass`, a narrow `mock.clearAllMocks` / `toHaveBeenCalledTimes` smoke, a narrow `jest.fn` / `HTMLRewriter` element-callback smoke, a narrow TypeScript constructor-modifier rewrite smoke, narrow `assert` / `assert/strict`, `node:path`, `node:url`, and relative CJS fixture smokes, a narrow inline-snapshot Unicode object formatting smoke, a `node:vm.runInNewContext` / `process.on` throw propagation smoke, Deno harness `test(options, fn)` / permission skip / `test.ignore` / `test.todo` call-shape parity, Deno `Event` / `CustomEvent` / `AbortController`, and a Deno `URLSearchParams` bootstrap smoke, plus narrow bootstrap coverage for Node `DOMException`, Web
 `Response.json` / `Response.redirect`, Web `Request` cache/mode/clone,
-narrow Deno URL authority/hash/origin parsing, JSC `ShadowRealm`,
-native constructor identity, mutable `globalThis` prototype behavior, a comment-only module-load smoke, Bun file metadata, Node `Buffer`
+narrow Deno URL authority/hash/origin parsing, a Deno `performance`
+bootstrap nucleus (`now`, `timeOrigin`, `toJSON`, marks, measures, and
+entry lookup), JSC `ShadowRealm`, native constructor identity, mutable
+`globalThis` prototype behavior, a comment-only module-load smoke, Bun file metadata, Node `Buffer`
 binary/UTF-16LE/compare/inspect-limit/isEncoding behavior, `Map`/`Set`
 deep-equality, `Bun.inspect` Set formatting, `MessageEvent` constructor
 behavior, Bun version aliases, lifecycle hooks, own-key matchers, and a
@@ -297,8 +299,8 @@ executing `options.test`, so the corpus can account for each Bake test
 registration while still failing honestly at the unported DevServer /
 bundler runtime boundary.
 
-Latest measured full gate after the Bake harness registrar:
-`4,013` files executed, `388` passed, `3,987` failed, `1,537`
+Latest measured full gate after the Deno performance nucleus:
+`4,013` files executed, `401` passed, `3,986` failed, `1,537`
 unsupported, `33` todo. First failure: `bake/dev-and-prod.test.ts`
 with the named unsupported Bake registration for
 ` DEV:dev-and-prod-1: define config via bunfig.toml`.

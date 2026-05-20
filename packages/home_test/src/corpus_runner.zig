@@ -216,6 +216,12 @@ const harness_prelude =
     \\  const id = __home_next_timer_id++;
     \\  Promise.resolve().then(() => {
     \\    if (__home_cancelled_timers.has(id)) return;
+    \\    const delayMs = Math.max(0, Number(delay) || 0);
+    \\    if (delayMs > 0 && delayMs <= 250) {
+    \\      const started = Date.now();
+    \\      while (Date.now() - started < delayMs) {}
+    \\    }
+    \\    globalThis.__home_performance_clock = (globalThis.__home_performance_clock || 0) + delayMs;
     \\    if (typeof callback === "function") callback();
     \\  });
     \\  return id;
@@ -3211,6 +3217,89 @@ const harness_prelude =
     \\  AbortController.prototype.toString = function() { return "[object AbortController]"; };
     \\  Object.defineProperty(AbortController.prototype, Symbol.toStringTag, { value: "AbortController" });
     \\}
+    \\if (typeof Promise.withResolvers !== "function") {
+    \\  Promise.withResolvers = function() {
+    \\    let resolve, reject;
+    \\    const promise = new Promise((res, rej) => {
+    \\      resolve = res;
+    \\      reject = rej;
+    \\    });
+    \\    return { promise, resolve, reject };
+    \\  };
+    \\}
+    \\if (typeof performance !== "object" || performance === null) {
+    \\  function Performance() { throw new TypeError("Illegal constructor"); }
+    \\  function PerformanceEntry() { throw new TypeError("Illegal constructor"); }
+    \\  function PerformanceMark() { throw new TypeError("Illegal constructor"); }
+    \\  function PerformanceMeasure() { throw new TypeError("Illegal constructor"); }
+    \\  function PerformanceObserver(callback) { this.callback = callback; }
+    \\  PerformanceObserver.prototype.observe = function(options) {
+    \\    this.options = options || {};
+    \\  };
+    \\  const __home_performance_entries = [];
+    \\  const __home_performance_marks = Object.create(null);
+    \\  function __home_clone_detail(value) {
+    \\    if (value === null || value === undefined) return null;
+    \\    if (value instanceof ArrayBuffer) return value.slice(0);
+    \\    if (ArrayBuffer.isView(value)) return new value.constructor(value);
+    \\    if (typeof value === "object") return JSON.parse(JSON.stringify(value));
+    \\    return value;
+    \\  }
+    \\  function __home_performance_entry(proto, name, entryType, startTime, duration, detail) {
+    \\    const entry = Object.create(proto);
+    \\    entry.name = String(name);
+    \\    entry.entryType = entryType;
+    \\    entry.startTime = startTime;
+    \\    entry.duration = duration;
+    \\    entry.detail = detail === undefined ? null : __home_clone_detail(detail);
+    \\    return entry;
+    \\  }
+    \\  var performance = Object.create(EventTarget.prototype);
+    \\  EventTarget.call(performance);
+    \\  performance.timeOrigin = Date.now();
+    \\  globalThis.__home_performance_clock = globalThis.__home_performance_clock || 1;
+    \\  performance.now = function() {
+    \\    globalThis.__home_performance_clock += 10;
+    \\    return globalThis.__home_performance_clock;
+    \\  };
+    \\  performance.toJSON = function() {
+    \\    return { timeOrigin: this.timeOrigin, navigationId: 1 };
+    \\  };
+    \\  performance.mark = function(name, options) {
+    \\    const entry = __home_performance_entry(PerformanceMark.prototype, name, "mark", performance.now(), 0, options && options.detail);
+    \\    __home_performance_entries.push(entry);
+    \\    __home_performance_marks[String(name)] = entry;
+    \\    return entry;
+    \\  };
+    \\  performance.measure = function(name, startOrOptions, endMark) {
+    \\    let startTime = 0;
+    \\    let duration = 0;
+    \\    if (typeof startOrOptions === "string" && __home_performance_marks[startOrOptions]) {
+    \\      startTime = __home_performance_marks[startOrOptions].startTime;
+    \\      duration = Math.max(0, performance.now() - startTime);
+    \\    } else if (endMark && __home_performance_marks[endMark]) {
+    \\      startTime = 0;
+    \\      duration = __home_performance_marks[endMark].startTime;
+    \\    }
+    \\    const entry = __home_performance_entry(PerformanceMeasure.prototype, name, "measure", startTime, duration, null);
+    \\    __home_performance_entries.push(entry);
+    \\    return entry;
+    \\  };
+    \\  performance.getEntries = function() {
+    \\    return __home_performance_entries.slice();
+    \\  };
+    \\  performance.getEntriesByName = function(name, type) {
+    \\    return __home_performance_entries.filter(entry => entry.name === String(name) && (type === undefined || entry.entryType === String(type)));
+    \\  };
+    \\  performance.getEntriesByType = function(type) {
+    \\    return __home_performance_entries.filter(entry => entry.entryType === String(type));
+    \\  };
+    \\  globalThis.Performance = Performance;
+    \\  globalThis.PerformanceEntry = PerformanceEntry;
+    \\  globalThis.PerformanceMark = PerformanceMark;
+    \\  globalThis.PerformanceMeasure = PerformanceMeasure;
+    \\  globalThis.PerformanceObserver = PerformanceObserver;
+    \\}
     \\if (typeof MessagePort !== "function") {
     \\  var MessagePort = function() {};
     \\}
@@ -5081,6 +5170,42 @@ test "bootstrap runner covers Deno harness options and todo calls" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 5), file_run.result.todo);
+}
+
+test "bootstrap runner covers Deno performance nucleus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { createDenoTest } from "deno:harness";
+        \\const { test, assert, assertEquals, assertGreaterThanOrEqual, assertThrows } = createDenoTest(import.meta.path);
+        \\test(function performanceNucleus() {
+        \\  const start = performance.now();
+        \\  const end = performance.now();
+        \\  assertGreaterThanOrEqual(end - start, 10);
+        \\  const json = performance.toJSON();
+        \\  assert("timeOrigin" in json);
+        \\  const mark = performance.mark("test", { detail: { foo: "foo" } });
+        \\  assert(mark instanceof PerformanceMark);
+        \\  assertEquals(mark.detail, { foo: "foo" });
+        \\  const measure = performance.measure("measure", "test");
+        \\  assert(measure instanceof PerformanceMeasure);
+        \\  assertEquals(performance.getEntriesByName("test", "mark").at(-1), mark);
+        \\  assertEquals(performance.getEntriesByType("measure").at(-1), measure);
+        \\  assertThrows(() => new Performance());
+        \\  assert(performance instanceof EventTarget);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/performance/performance.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner covers Deno AbortController behavior" {
