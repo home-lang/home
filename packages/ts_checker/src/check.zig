@@ -354,6 +354,7 @@ pub const TsCodes = struct {
     pub const parameter_decorator_signature_unresolved: u32 = 1239;
     pub const property_decorator_signature_unresolved: u32 = 1240;
     pub const method_decorator_signature_unresolved: u32 = 1241;
+    pub const decorator_return_type_not_assignable: u32 = 1270;
     pub const decorator_on_method_overload: u32 = 1249;
     pub const decorator_or_modifier_on_this_parameter: u32 = 1433;
     pub const arrow_function_cannot_have_this_parameter: u32 = 2730;
@@ -13027,6 +13028,7 @@ pub const Checker = struct {
                 TsCodes.method_decorator_signature_unresolved,
                 "method",
             );
+            try self.checkLegacyMethodDecoratorReturnType(decorator_node, d.expression, target);
             return;
         }
         if (target_kind == .object_property) {
@@ -13044,6 +13046,7 @@ pub const Checker = struct {
                     TsCodes.method_decorator_signature_unresolved,
                     "method",
                 );
+                try self.checkLegacyMethodDecoratorReturnType(decorator_node, d.expression, target);
             } else if (self.sourceUsesLegacyDecorators() and !self.classMemberSourceHasLeadingKeyword(target, "accessor")) {
                 try self.checkPropertyDecoratorCallableShape(decorator_node, d.expression);
             } else if (!self.sourceUsesLegacyDecorators()) {
@@ -13243,6 +13246,62 @@ pub const Checker = struct {
         if (!self.interner.pool.flagsOf(ret_t).is_signature) return false;
         try self.reportDecoratorFactoryMustBeCalled(decorator_node, expr);
         return true;
+    }
+
+    fn checkLegacyMethodDecoratorReturnType(self: *Checker, decorator_node: NodeId, expr: NodeId, target: NodeId) CheckError!void {
+        if (!self.sourceUsesLegacyDecorators()) return;
+        const dec_t = self.hir.typeOf(expr);
+        if (dec_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(dec_t).is_signature) return;
+        const params = self.interner.signatureParams(dec_t);
+        if (params.len != 1) return;
+        const ret_t = self.interner.signatureReturn(dec_t) orelse return;
+        if (ret_t != params[0]) return;
+        if (!self.containsFreeTypeParameter(ret_t)) return;
+        const class_name = self.enclosingClassNameForMember(target) orelse return;
+        const method_type = (try self.classMemberMethodTypeDisplay(target)) orelse return;
+        const expected_type = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "void | TypedPropertyDescriptor<{s}>",
+            .{method_type},
+        );
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Decorator function return type '{s}' is not assignable to type '{s}'.",
+            .{ class_name, expected_type },
+        );
+        try self.reportAt(decorator_node, self.decoratorExpressionPos(decorator_node), TsCodes.decorator_return_type_not_assignable, msg);
+    }
+
+    fn classMemberMethodTypeDisplay(self: *Checker, member_node: NodeId) CheckError!?[]const u8 {
+        return switch (self.hir.kindOf(member_node)) {
+            .fn_decl, .fn_expr, .arrow_fn => blk: {
+                const fn_p = hir_mod.fnDeclOf(self.hir, member_node);
+                break :blk try self.classMemberDuplicateFnTypeDisplay(fn_p);
+            },
+            .object_property => blk: {
+                const op = hir_mod.objectPropertyOf(self.hir, member_node);
+                if (op.value == hir_mod.none_node_id) break :blk null;
+                if (self.hir.kindOf(op.value) != .fn_decl and
+                    self.hir.kindOf(op.value) != .fn_expr and
+                    self.hir.kindOf(op.value) != .arrow_fn) break :blk null;
+                const fn_p = hir_mod.fnDeclOf(self.hir, op.value);
+                break :blk try self.classMemberDuplicateFnTypeDisplay(fn_p);
+            },
+            else => null,
+        };
+    }
+
+    fn enclosingClassNameForMember(self: *Checker, member_node: NodeId) ?[]const u8 {
+        var cur = member_node;
+        while (cur != hir_mod.none_node_id) {
+            if (self.hir.kindOf(cur) == .class_decl or self.hir.kindOf(cur) == .class_expr) {
+                const c = hir_mod.classOf(self.hir, cur);
+                if (c.name == hir_mod.none_node_id or self.hir.kindOf(c.name) != .identifier) return null;
+                return self.string_interner.get(hir_mod.identifierOf(self.hir, c.name).name);
+            }
+            cur = self.hir.parentOf(cur);
+        }
+        return null;
     }
 
     fn checkPropertyDecoratorSignatureArity(self: *Checker, decorator_node: NodeId, sig: TypeId) CheckError!void {
@@ -61148,6 +61207,45 @@ test "checker: method decorator factory must be called" {
         try T.expect(d.code != TsCodes.method_decorator_signature_unresolved);
     }
     try T.expect(found);
+}
+
+test "checker: legacy method decorator return type must be descriptor-compatible" {
+    const s = try newSetup(
+        \\// @experimentalDecorators: true
+        \\declare function dec<T>(target: T): T;
+        \\class C {
+        \\  @dec method() {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_arity = false;
+    var found_return = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.method_decorator_signature_unresolved) found_arity = true;
+        if (d.code == TsCodes.decorator_return_type_not_assignable and
+            std.mem.indexOf(u8, d.message, "TypedPropertyDescriptor<() => void>") != null)
+        {
+            found_return = true;
+        }
+    }
+    try T.expect(found_arity);
+    try T.expect(found_return);
+}
+
+test "checker: descriptor-returning method decorator does not emit TS1270" {
+    const s = try newSetup(
+        \\// @experimentalDecorators: true
+        \\declare function dec<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
+        \\class C {
+        \\  @dec method() {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.decorator_return_type_not_assignable);
+    }
 }
 
 test "checker: property decorator signature must accept runtime arity" {

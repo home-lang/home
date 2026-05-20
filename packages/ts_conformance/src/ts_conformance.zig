@@ -1418,25 +1418,28 @@ pub fn loadDirectoryWithOptions(
         code_index += 1;
         if (!include_entry) continue;
         // Open through the iterating root so paths are dir-relative.
-        var file = entry.dir.openFile(io, entry.basename, .{}) catch continue;
-        defer file.close(io);
-        const stat = file.stat(io) catch continue;
-        const file_size: usize = @intCast(stat.size);
-        const src = gpa.alloc(u8, file_size) catch continue;
-        var read_total: usize = 0;
-        var read_failed = false;
-        while (read_total < file_size) {
-            const n = file.readPositionalAll(io, src[read_total..], read_total) catch {
-                read_failed = true;
-                break;
-            };
-            if (n == 0) break;
-            read_total += n;
-        }
-        if (read_failed or read_total != file_size) {
-            gpa.free(src);
-            continue;
-        }
+        const src = read_src: {
+            var file = entry.dir.openFile(io, entry.basename, .{}) catch continue;
+            defer file.close(io);
+            const stat = file.stat(io) catch continue;
+            const file_size: usize = @intCast(stat.size);
+            const buf = gpa.alloc(u8, file_size) catch continue;
+            var read_total: usize = 0;
+            var read_failed = false;
+            while (read_total < file_size) {
+                const n = file.readPositionalAll(io, buf[read_total..], read_total) catch {
+                    read_failed = true;
+                    break;
+                };
+                if (n == 0) break;
+                read_total += n;
+            }
+            if (read_failed or read_total != file_size) {
+                gpa.free(buf);
+                continue;
+            }
+            break :read_src buf;
+        };
         const virtual_code_path = firstCodeVirtualFilename(src);
         const virtual_is_tsx = if (virtual_code_path) |p|
             (std.mem.endsWith(u8, p, ".tsx") or std.mem.endsWith(u8, p, ".jsx"))
