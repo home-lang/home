@@ -17,6 +17,7 @@ pub const Runtime = struct {
     }
 
     pub fn deinit(self: *Runtime) void {
+        cleanupServeHandles();
         self.engine.deinit();
     }
 
@@ -48,9 +49,22 @@ pub const Runtime = struct {
             "__home_getDevServerDeinitCountNative",
             getDevServerDeinitCountNative,
         );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_serveNative",
+            serveNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_stopServeNative",
+            stopServeNative,
+        );
     }
 
     fn resetFileState(self: *Runtime, allocator: std.mem.Allocator) !void {
+        cleanupServeHandles();
         home_rt.runtime.bake.resetDevServerDeinitCountForTesting();
 
         const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(
@@ -168,6 +182,139 @@ const opaques = home_rt.jsc.opaques;
 const JSValue = opaques.JSValue;
 const JSContextRef = opaques.JSContextRef;
 const JSObject = opaques.JSObject;
+
+const ServeHandle = struct {
+    id: usize,
+    dev: home_rt.runtime.bake.DevServer,
+    server: home_rt.runtime.server.Server,
+};
+
+var next_serve_id: usize = 1;
+var serve_handles: std.AutoHashMapUnmanaged(usize, *ServeHandle) = .empty;
+
+fn serveNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+
+    if (argument_count < 1 or arguments[0] == null) {
+        setException(actual_ctx, exception, "Bun.serve() requires an options object");
+        return null;
+    }
+
+    const options = extern_fns.JSValueToObject(actual_ctx, arguments[0], exception) orelse return null;
+    validateBakeHtmlServeOptions(actual_ctx, options, exception) catch |err| {
+        if (err == error.NativeException) return null;
+        setExceptionFmt(actual_ctx, exception, "Bun.serve() failed: {s}", .{@errorName(err)});
+        return null;
+    };
+
+    const allocator = std.heap.smp_allocator;
+    const handle = allocator.create(ServeHandle) catch {
+        setException(actual_ctx, exception, "Bun.serve() failed: OutOfMemory");
+        return null;
+    };
+    errdefer allocator.destroy(handle);
+
+    const id = next_serve_id;
+    next_serve_id +|= 1;
+    handle.* = .{
+        .id = id,
+        .dev = home_rt.runtime.bake.DevServer.init(allocator),
+        .server = home_rt.runtime.server.Server.init(),
+    };
+    errdefer handle.dev.deinit();
+    handle.server.listener_active = true;
+    handle.server.attachDevServer(&handle.dev);
+
+    serve_handles.put(allocator, id, handle) catch {
+        setException(actual_ctx, exception, "Bun.serve() failed: OutOfMemory");
+        return null;
+    };
+    return makeServeHandleResult(actual_ctx, id) catch |err| {
+        _ = serve_handles.remove(id);
+        handle.dev.deinit();
+        allocator.destroy(handle);
+        setExceptionFmt(actual_ctx, exception, "Bun.serve() failed: {s}", .{@errorName(err)});
+        return null;
+    };
+}
+
+fn stopServeNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    _ = exception;
+    const actual_ctx = ctx.?;
+    if (argument_count < 1 or arguments[0] == null) return extern_fns.JSValueMakeUndefined(actual_ctx);
+
+    const id_number = extern_fns.JSValueToNumber(actual_ctx, arguments[0], null);
+    if (!std.math.isFinite(id_number) or id_number < 0 or @floor(id_number) != id_number) {
+        return extern_fns.JSValueMakeUndefined(actual_ctx);
+    }
+    const id: usize = @intFromFloat(id_number);
+    const abrupt = argument_count >= 2 and arguments[1] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[1]);
+    destroyServeHandle(id, abrupt);
+    return extern_fns.JSValueMakeUndefined(actual_ctx);
+}
+
+fn validateBakeHtmlServeOptions(
+    ctx: *JSContextRef,
+    options: *JSObject,
+    exception: extern_fns.ExceptionRef,
+) !void {
+    const routes_value = getProperty(ctx, options, "routes", exception) orelse return error.NativeException;
+    if (!extern_fns.JSValueIsObject(ctx, routes_value)) return error.UnsupportedServeShape;
+    const routes = extern_fns.JSValueToObject(ctx, routes_value, exception) orelse return error.NativeException;
+    const root_value = getProperty(ctx, routes, "/", exception) orelse return error.UnsupportedServeShape;
+    if (!extern_fns.JSValueIsObject(ctx, root_value)) return error.UnsupportedServeShape;
+    const root = extern_fns.JSValueToObject(ctx, root_value, exception) orelse return error.NativeException;
+    const marker = getProperty(ctx, root, "__home_bake_html_import", exception) orelse return error.UnsupportedServeShape;
+    if (!extern_fns.JSValueToBoolean(ctx, marker)) return error.UnsupportedServeShape;
+}
+
+fn makeServeHandleResult(ctx: *JSContextRef, id: usize) !*JSValue {
+    const object = extern_fns.JSObjectMake(ctx, null, null) orelse return error.MakeObjectFailed;
+    setNumberProperty(ctx, object, "id", id);
+    setNumberProperty(ctx, object, "port", 0);
+    try setStringProperty(ctx, object, "origin", "http://127.0.0.1:0");
+    return @ptrCast(object);
+}
+
+fn cleanupServeHandles() void {
+    const allocator = std.heap.smp_allocator;
+    var ids: std.ArrayList(usize) = .empty;
+    defer ids.deinit(allocator);
+
+    var it = serve_handles.keyIterator();
+    while (it.next()) |id| {
+        ids.append(allocator, id.*) catch @panic("failed to snapshot Bun.serve handles");
+    }
+
+    for (ids.items) |id| {
+        destroyServeHandle(id, true);
+    }
+}
+
+fn destroyServeHandle(id: usize, abrupt: bool) void {
+    const allocator = std.heap.smp_allocator;
+    const handle = serve_handles.fetchRemove(id) orelse return;
+    handle.value.server.stopListening(abrupt);
+    allocator.destroy(handle.value);
+}
 
 fn getDevServerDeinitCountNative(
     ctx: ?*JSContextRef,

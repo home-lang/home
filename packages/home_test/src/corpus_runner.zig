@@ -236,6 +236,17 @@ const harness_prelude =
     \\  version: "0.0.0-home",
     \\  revision: "home",
     \\  gc(force) {},
+    \\  serve(options) {
+    \\    if (typeof globalThis.__home_serveNative !== "function" || typeof globalThis.__home_stopServeNative !== "function") __home_unsupported("Bun.serve native bridge is not installed");
+    \\    const handle = globalThis.__home_serveNative(options || {});
+    \\    return {
+    \\      port: handle.port,
+    \\      url: { origin: handle.origin, href: handle.origin + "/" },
+    \\      stop(closeActiveConnections) {
+    \\        return globalThis.__home_stopServeNative(handle.id, !!closeActiveConnections);
+    \\      },
+    \\    };
+    \\  },
     \\  spawnSync(options) {
     \\    if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("Bun.spawnSync native bridge is not installed");
     \\    const result = globalThis.__home_spawnSyncNative(options || {});
@@ -3592,6 +3603,9 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Set(\" + entry.size + \")") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "version: \"0.0.0-home\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "gc(force)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "serve(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_serveNative(options || {})") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_stopServeNative(handle.id") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "spawnSync(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawnSyncNative(options || {})") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.versions.bun = Bun.version") != null);

@@ -259,11 +259,15 @@ fetch, and HMR WebSocket surfaces are still unported.
 The native server lifecycle carrier now mirrors Bun's DevServer detach
 gate: no pending requests, no listener, and no active websockets before
 the Bake DevServer is deinitialized.
+The JSC bootstrap also has a narrow `Bun.serve` host callback for the
+Bake HTML-route shape; it allocates a real DevServer/Server carrier and
+routes `server.stop()` through the native lifecycle path. The fixture now
+advances to the next missing Web API, `fetch`.
 
 Latest measured full gate: `4,013` files executed, `387` passed,
 `3,903` failed, `1,453` unsupported, `33` todo. First failure:
 `bake/deinitialization.test.ts` with `Error: Expected 1 to be 0`; the
-delegated child now reaches `TypeError: Bun.serve is not a function`.
+delegated child now reaches `ReferenceError: Can't find variable: fetch`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
