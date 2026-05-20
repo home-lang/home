@@ -4945,12 +4945,15 @@ pub const Parser = struct {
                     .kw_accessor => {
                         // `accessor x = …` modifier (TS 4.9 / Stage 3).
                         // Only valid in front of a field name — if the
-                        // next token starts a member name, consume the
-                        // keyword and set the flag. Otherwise fall
-                        // through (the trailing parser handles e.g.
-                        // `accessor` as a plain identifier).
-                        const next = self.peekAt(1).kind;
-                        if (isClassMemberNameStart(next) or next == .open_bracket) {
+                        // next token starts a same-line member name,
+                        // consume the keyword and set the flag. Unlike
+                        // `static`, `accessor` does not cross a line
+                        // terminator in tsc (`accessor\na` declares a
+                        // field named `accessor`, then `a`).
+                        const next_tok = self.peekAt(1);
+                        if (!next_tok.flags.preceded_by_newline and
+                            (isClassMemberNameStart(next_tok.kind) or next_tok.kind == .open_bracket))
+                        {
                             mods.is_accessor = true;
                         } else {
                             return mods;
@@ -12215,8 +12218,8 @@ pub const Parser = struct {
     /// upstream's `reservedNamesInAliases.ts` baseline.
     fn isReservedTypeAliasName(name: []const u8) bool {
         const reserved = [_][]const u8{
-            "any",       "unknown", "never",  "object",   "string",
-            "number",    "bigint",  "symbol", "boolean",  "void",
+            "any",       "unknown", "never",     "object",  "string",
+            "number",    "bigint",  "symbol",    "boolean", "void",
             "undefined", "null",    "intrinsic",
         };
         for (reserved) |r| {

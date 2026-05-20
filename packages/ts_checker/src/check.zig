@@ -13019,6 +13019,7 @@ pub const Checker = struct {
             if (self.sourceUsesLegacyDecorators() and !fn_p.flags.is_constructor and self.sourceHasNoLibTrueDirective()) {
                 try self.reportMissingGlobalTypeOnce(decorator_node, "TypedPropertyDescriptor");
             }
+            if (try self.checkDecoratorFactoryMustBeCalled(decorator_node, d.expression, self.hir.typeOf(d.expression))) return;
             try self.checkDecoratorRuntimeArity(
                 decorator_node,
                 self.hir.typeOf(d.expression),
@@ -13035,6 +13036,7 @@ pub const Checker = struct {
                     (self.hir.kindOf(op.value) == .fn_decl or self.hir.kindOf(op.value) == .fn_expr or self.hir.kindOf(op.value) == .arrow_fn) and
                     self.memberSourceLooksMethod(target));
             if (op_is_method) {
+                if (try self.checkDecoratorFactoryMustBeCalled(decorator_node, d.expression, self.hir.typeOf(d.expression))) return;
                 try self.checkDecoratorRuntimeArity(
                     decorator_node,
                     self.hir.typeOf(d.expression),
@@ -13228,6 +13230,19 @@ pub const Checker = struct {
             .code = TsCodes.decorator_too_few_arguments,
             .message = msg,
         });
+    }
+
+    fn checkDecoratorFactoryMustBeCalled(self: *Checker, decorator_node: NodeId, expr: NodeId, dec_t: TypeId) CheckError!bool {
+        if (self.hir.kindOf(expr) != .identifier) return false;
+        if (dec_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(dec_t).is_signature) return false;
+        const params = self.interner.signatureParams(dec_t);
+        if (params.len != 0) return false;
+        const ret_t = self.interner.signatureReturn(dec_t) orelse return false;
+        if (ret_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(ret_t).is_signature) return false;
+        try self.reportDecoratorFactoryMustBeCalled(decorator_node, expr);
+        return true;
     }
 
     fn checkPropertyDecoratorSignatureArity(self: *Checker, decorator_node: NodeId, sig: TypeId) CheckError!void {
@@ -15739,7 +15754,12 @@ pub const Checker = struct {
                                 self.hir.kindOf(op.value) == .fn_expr or
                                 self.hir.kindOf(op.value) == .arrow_fn) and
                             self.memberSourceLooksMethod(m));
-                    const k: Kind = if (op_is_method) .method else .field;
+                    const k: Kind = if (op_is_method)
+                        .method
+                    else if (self.classMemberSourceHasModifierBeforeKey(m, op.key, "accessor"))
+                        .getter
+                    else
+                        .field;
                     try entries.append(self.gpa, .{
                         .name_node = op.key,
                         .canonical = canonical,
@@ -61093,6 +61113,24 @@ test "checker: property decorator factory must be called" {
     try T.expect(found);
 }
 
+test "checker: method decorator factory must be called" {
+    const s = try newSetup(
+        \\// @experimentalDecorators: true
+        \\declare function dec(): <T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>) => TypedPropertyDescriptor<T>;
+        \\class C {
+        \\  @dec ["method"]() {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.decorator_too_few_arguments) found = true;
+        try T.expect(d.code != TsCodes.method_decorator_signature_unresolved);
+    }
+    try T.expect(found);
+}
+
 test "checker: property decorator signature must accept runtime arity" {
     const s = try newSetup(
         \\// @experimentalDecorators: true
@@ -77710,6 +77748,32 @@ test "checker: string-named class fields collide with TS2300" {
         if (d.code == TsCodes.duplicate_identifier) dup_count += 1;
     }
     try T.expect(dup_count >= 1);
+}
+
+test "checker: accessor modifier does not cross newline" {
+    const s = try newSetup(
+        \\class C {
+        \\  accessor
+        \\  a
+        \\
+        \\  static accessor
+        \\  b
+        \\
+        \\  static
+        \\  accessor
+        \\  c
+        \\
+        \\  accessor accessor
+        \\  d;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var dup_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.duplicate_identifier) dup_count += 1;
+    }
+    try T.expectEqual(@as(usize, 3), dup_count);
 }
 
 test "checker: private static and instance names emit TS2804" {
