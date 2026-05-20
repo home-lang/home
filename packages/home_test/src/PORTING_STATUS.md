@@ -168,9 +168,11 @@ selector / handler validation,
 `process.versions.bun`, `process.revision`, `process.on` / `process.emit`,
 `node:vm.runInNewContext`, DOMException, native constructor identity,
 mutable `globalThis` prototype behavior, comment-only module-load smoke,
-Request/Response/Headers/URL, `node-fetch`, `node:buffer`, `deno:harness`,
-Deno `Event` / `CustomEvent` / `AbortController`, a Deno
-`URLSearchParams` bootstrap smoke, EventTarget, AbortSignal, Node
+Request/Response/Headers/URL, `node-fetch`, `node:buffer`, `deno:harness`
+including Bun-copied Deno `test(options, fn)` / permission skip /
+`test.ignore` / `test.todo` call shapes, Deno `Event` / `CustomEvent` /
+`AbortController`, a Deno `URLSearchParams` bootstrap smoke, EventTarget,
+AbortSignal, Node
 `Buffer.alloc` / fill / `Buffer.from(..., "utf-16le")` / compare /
 write / toString / inspect-limit / isEncoding subsets, `Bun.JSONC.parse`
 comments / trailing commas / deep-nesting `RangeError`s, Node

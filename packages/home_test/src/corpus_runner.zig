@@ -2039,26 +2039,123 @@ const harness_prelude =
     \\  default: { __home_bake_html_import: true, path: "bake/fixtures/deinitialization/index.html" },
     \\};
     \\globalThis.__home_modules["deno:harness"] = {
-    \\  createDenoTest(path) {
-    \\    const denoTest = function(fn) {
-    \\      if (typeof fn !== "function") __home_fail("Deno test requires a function");
-    \\      return test(fn.name || String(path || "deno:harness"), fn);
+    \\  createDenoTest(path, defaultTimeout) {
+    \\    function __home_deno_name(fn) {
+    \\      return fn && fn.name ? fn.name : String(path || "deno:harness");
+    \\    }
+    \\    function __home_deno_should_skip(options) {
+    \\      return !!(options && (options.ignore === true || options.permissions === "none" || (options.permissions && (options.permissions.net === false || options.permissions.read === false))));
+    \\    }
+    \\    const denoTest = function(arg0, arg1) {
+    \\      if (typeof arg0 === "function") return test(__home_deno_name(arg0), arg0, defaultTimeout);
+    \\      if (typeof arg1 === "function") {
+    \\        if (__home_deno_should_skip(arg0)) return test.skip(__home_deno_name(arg1), arg1);
+    \\        return test(__home_deno_name(arg1), arg1, defaultTimeout);
+    \\      }
+    \\      __home_fail("Unimplemented: test(" + typeof arg0 + ", " + typeof arg1 + ")");
     \\    };
-    \\    denoTest.ignore = function(fn) {
-    \\      __home_bun_tests.todo++;
+    \\    denoTest.ignore = function(arg0, arg1) {
+    \\      if (typeof arg0 === "function") return test.skip(__home_deno_name(arg0), arg0);
+    \\      if (typeof arg1 === "function") return test.skip(__home_deno_name(arg1), arg1);
+    \\      __home_fail("Unimplemented: test.ignore(" + typeof arg0 + ", " + typeof arg1 + ")");
     \\    };
-    \\    return {
+    \\    denoTest.todo = function(arg0, arg1) {
+    \\      if (typeof arg0 === "function") return test.todo(__home_deno_name(arg0), arg0);
+    \\      if (typeof arg1 === "function") return test.todo(__home_deno_name(arg1), arg1);
+    \\      __home_fail("Unimplemented: test.todo(" + typeof arg0 + ", " + typeof arg1 + ")");
+    \\    };
+    \\    const assert = function(value, message) {
+    \\      __home_assert(!!value, false, message || "Expected value to be truthy");
+    \\    };
+    \\    const assertFalse = function(value, message) {
+    \\      __home_assert(!value, false, message || "Expected value to be falsy");
+    \\    };
+    \\    const assertEquals = function(actual, expected, message) {
+    \\      __home_assert(__home_deep_equal(actual, expected, false, new Map()), false, message || ("Expected " + __home_format(actual) + " to equal " + __home_format(expected)));
+    \\    };
+    \\    const assertNotEquals = function(actual, expected, message) {
+    \\      __home_assert(!__home_deep_equal(actual, expected, false, new Map()), false, message || ("Expected " + __home_format(actual) + " not to equal " + __home_format(expected)));
+    \\    };
+    \\    const assertStrictEquals = function(actual, expected, message) {
+    \\      __home_assert(Object.is(actual, expected), false, message || ("Expected " + __home_format(actual) + " to strictly equal " + __home_format(expected)));
+    \\    };
+    \\    const assertNotStrictEquals = function(actual, expected, message) {
+    \\      __home_assert(!Object.is(actual, expected), false, message || ("Expected " + __home_format(actual) + " not to strictly equal " + __home_format(expected)));
+    \\    };
+    \\    const assertThrows = function(fn, message) {
+    \\      try { fn(); } catch (error) { return error; }
+    \\      throw new Error(message || "Expected an error to be thrown");
+    \\    };
+    \\    const assertRejects = async function(fn, message) {
+    \\      try { await fn(); } catch (error) { return error; }
+    \\      throw new Error(message || "Expected an error to be thrown");
+    \\    };
+    \\    const delay = function(ms, options) {
+    \\      options = options || {};
+    \\      if (options.signal && options.signal.aborted) return Promise.reject(new DOMException("Delay was aborted.", "AbortError"));
+    \\      return new Promise((resolve, reject) => {
+    \\        const done = () => {
+    \\          if (options.signal) options.signal.removeEventListener("abort", abort);
+    \\          resolve();
+    \\        };
+    \\        const abort = () => {
+    \\          clearTimeout(timer);
+    \\          reject(new DOMException("Delay was aborted.", "AbortError"));
+    \\        };
+    \\        const timer = setTimeout(done, ms);
+    \\        if (options.signal) options.signal.addEventListener("abort", abort, { once: true });
+    \\      });
+    \\    };
+    \\    const exports = {
     \\      test: denoTest,
-    \\      assert(value, message) {
-    \\        __home_assert(!!value, false, message || "Expected value to be truthy");
+    \\      assert,
+    \\      assertFalse,
+    \\      assertEquals,
+    \\      assertExists(value, message) { __home_assert(value !== null && value !== undefined, false, message || "Expected value to exist"); },
+    \\      assertNotEquals,
+    \\      assertStrictEquals,
+    \\      assertNotStrictEquals,
+    \\      assertAlmostEquals(actual, expected, epsilon, message) { __home_assert(Math.abs(Number(actual) - Number(expected)) <= (epsilon === undefined ? 1e-7 : Number(epsilon)), false, message || "Expected values to be almost equal"); },
+    \\      assertGreaterThan(actual, expected, message) { __home_assert(actual > expected, false, message || "Expected " + actual + " to be greater than " + expected); },
+    \\      assertGreaterThanOrEqual(actual, expected, message) { __home_assert(actual >= expected, false, message || "Expected " + actual + " to be greater than or equal to " + expected); },
+    \\      assertLessThan(actual, expected, message) { __home_assert(actual < expected, false, message || "Expected " + actual + " to be less than " + expected); },
+    \\      assertLessThanOrEqual(actual, expected, message) { __home_assert(actual <= expected, false, message || "Expected " + actual + " to be less than or equal to " + expected); },
+    \\      assertInstanceOf(actual, expected, message) { __home_assert(actual instanceof expected, false, message || "Expected value to be an instance of constructor"); },
+    \\      assertNotInstanceOf(actual, expected, message) { __home_assert(!(actual instanceof expected), false, message || "Expected value not to be an instance of constructor"); },
+    \\      assertStringIncludes(actual, expected, message) { __home_assert(String(actual).includes(String(expected)), false, message || ("Expected " + __home_format(actual) + " to include " + __home_format(expected))); },
+    \\      assertArrayIncludes(actual, expected, message) {
+    \\        __home_assert(Array.isArray(actual), false, message || "Expected value to be an array");
+    \\        for (const value of expected) __home_assert(actual.includes(value), false, message || ("Expected array to include " + __home_format(value)));
     \\      },
-    \\      assertEquals(actual, expected) {
-    \\        __home_assert(__home_deep_equal(actual, expected, false, new Map()), false, "Expected " + __home_format(actual) + " to equal " + __home_format(expected));
+    \\      assertMatch(actual, expected, message) { __home_assert(expected.test(String(actual)), false, message || "Expected string to match"); },
+    \\      assertNotMatch(actual, expected, message) { __home_assert(!expected.test(String(actual)), false, message || "Expected string not to match"); },
+    \\      assertObjectMatch(actual, expected, message) {
+    \\        __home_assert(actual !== null && typeof actual === "object", false, message || "Expected value to be an object");
+    \\        for (const key of Object.keys(expected)) __home_assert(__home_deep_equal(actual[key], expected[key], false, new Map()), false, message || ("Expected object property " + key + " to match"));
     \\      },
-    \\      assertStringIncludes(actual, expected) {
-    \\        __home_assert(String(actual).includes(String(expected)), false, "Expected " + __home_format(actual) + " to include " + __home_format(expected));
+    \\      assertThrows,
+    \\      assertRejects,
+    \\      equal(a, b) { return __home_deep_equal(a, b, false, new Map()); },
+    \\      fail(message) { throw new Error(message || "Failed"); },
+    \\      unimplemented(message) { throw new Error("Unimplemented: " + message); },
+    \\      unreachable() { throw new Error("Unreachable"); },
+    \\      deferred() {
+    \\        let resolveFn, rejectFn, state = "pending";
+    \\        const promise = new Promise((resolve, reject) => {
+    \\          resolveFn = value => { state = "fulfilled"; resolve(value); };
+    \\          rejectFn = reason => { state = "rejected"; reject(reason); };
+    \\        });
+    \\        Object.defineProperty(promise, "state", { get() { return state; } });
+    \\        promise.resolve = resolveFn;
+    \\        promise.reject = rejectFn;
+    \\        return promise;
     \\      },
+    \\      delay,
+    \\      concat(...buffers) { return __home_concat_array_buffers(buffers, Infinity, true); },
     \\    };
+    \\    globalThis.window = globalThis.window || { crypto: globalThis.crypto };
+    \\    globalThis.Deno = { test: denoTest, inspect() { throw new Error("Deno.inspect()"); } };
+    \\    return exports;
     \\  },
     \\};
     \\globalThis.__home_cjs_factories = Object.create(null);
@@ -4016,8 +4113,9 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_getDevServerDeinitCountNative()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun:jsc\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bake/fixtures/deinitialization/index.html\"]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "createDenoTest(path)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "createDenoTest(path, defaultTimeout)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "denoTest.ignore") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "denoTest.todo") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_import") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.require = function(specifier)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.redirect") != null);
@@ -4861,6 +4959,47 @@ test "bootstrap runner covers Deno Event behavior and ignored tests" {
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
+}
+
+test "bootstrap runner covers Deno harness options and todo calls" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { createDenoTest } from "deno:harness";
+        \\const { test, assertEquals, assertGreaterThanOrEqual, assertThrows } = createDenoTest(import.meta.path);
+        \\test({ permissions: "none" }, function skippedByPermissions() {
+        \\  throw new Error("must not execute");
+        \\});
+        \\test({ permissions: { net: false } }, function skippedByNetPermission() {
+        \\  throw new Error("must not execute");
+        \\});
+        \\test({ ignore: true }, function skippedByIgnoreOption() {
+        \\  throw new Error("must not execute");
+        \\});
+        \\test.todo(function pendingFunction() {
+        \\  throw new Error("must not execute");
+        \\});
+        \\test.todo({}, function pendingOptionsFunction() {
+        \\  throw new Error("must not execute");
+        \\});
+        \\test(function executedDenoHarnessTest() {
+        \\  assertEquals(1 + 1, 2);
+        \\  assertGreaterThanOrEqual(2, 2);
+        \\  assertThrows(() => { throw new Error("ok"); });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/performance/performance.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 5), file_run.result.todo);
 }
 
 test "bootstrap runner covers Deno AbortController behavior" {
