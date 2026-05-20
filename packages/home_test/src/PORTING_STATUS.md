@@ -553,8 +553,17 @@ serves the Chrome DevTools workspace discovery JSON with the root shape
 expected by the fixture. The copied HTML file now runs in Home as `7`
 passed, `0` failed, `0` unsupported, `0` todo. The native parity target
 remains Bun's real source-map lifetime behavior and DevTools workspace
-metadata generation. The next corpus boundary is
+metadata generation. The previous corpus boundary was
 `bake/dev/import-meta-inline-negative.test.ts`.
+That negative fixture now passes as a copied Home corpus test by lowering
+the `bunEnv` / `bunExe` / `tempDirWithFiles` harness import, creating the
+temp script through the native file bridge, running `Bun.spawn` through
+the Home subprocess bridge, adding the missing `Response.text()` body
+shape, and translating Bun-style direct script launches to Home's
+`home run` CLI form. The next direct Bake boundary is now
+`DEV:import-meta-inline-1: import.meta properties are inlined in bake`;
+that requires modeling the server-side Bake import-meta inlining path for
+`bake/dev/import-meta-inline.test.ts`, not just raw runtime import-meta.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

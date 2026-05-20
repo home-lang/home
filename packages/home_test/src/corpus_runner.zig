@@ -295,6 +295,19 @@ const harness_prelude =
     \\    }
     \\    return result;
     \\  },
+    \\  spawn(options) {
+    \\    if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("Bun.spawn native bridge is not installed");
+    \\    const result = globalThis.__home_spawnSyncNative(options || {});
+    \\    const stdout = typeof Buffer === "function" ? Buffer.from(result.stdout || "") : (result.stdout || "");
+    \\    const stderr = typeof Buffer === "function" ? Buffer.from(result.stderr || "") : (result.stderr || "");
+    \\    return {
+    \\      stdout,
+    \\      stderr,
+    \\      exited: Promise.resolve(result.exitCode == null ? 1 : result.exitCode),
+    \\      exitCode: result.exitCode == null ? 1 : result.exitCode,
+    \\      signalCode: result.signalCode,
+    \\    };
+    \\  },
     \\  stripANSI(value) {
     \\    return String(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
     \\  },
@@ -1463,10 +1476,31 @@ const harness_prelude =
     \\  return globalThis.__home_bun_test;
     \\};
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
-    \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, escapeHTML: Bun.escapeHTML, indexOfLine: Bun.indexOfLine, spawnSync: Bun.spawnSync };
+    \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, escapeHTML: Bun.escapeHTML, indexOfLine: Bun.indexOfLine, spawn: Bun.spawn, spawnSync: Bun.spawnSync };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["node:test"] = { test };
-    \\globalThis.__home_modules["harness"] = { isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; } };
+    \\let __home_temp_dir_counter = 0;
+    \\function __home_write_temp_files(root, files) {
+    \\  for (const name of Object.keys(files || {})) {
+    \\    const value = files[name];
+    \\    const path = root + "/" + name;
+    \\    if (value && typeof value === "object" && !Array.isArray(value)) {
+    \\      if (typeof globalThis.__home_createDirPathNative === "function") globalThis.__home_createDirPathNative(path);
+    \\      __home_write_temp_files(path, value);
+    \\    } else if (typeof globalThis.__home_writeFileSyncNative === "function") {
+    \\      globalThis.__home_writeFileSyncNative(path, String(value));
+    \\    }
+    \\  }
+    \\}
+    \\function __home_temp_dir_with_files(name, files) {
+    \\  const base = String((process.env && (process.env.TMPDIR || process.env.TEMP || process.env.TMP)) || "/tmp").replace(/\/+$/, "");
+    \\  const safe = String(name || "home").replace(/[^A-Za-z0-9._-]+/g, "-");
+    \\  const root = base + "/home-bun-corpus-" + safe + "-" + (++__home_temp_dir_counter);
+    \\  if (typeof globalThis.__home_createDirPathNative === "function") globalThis.__home_createDirPathNative(root);
+    \\  __home_write_temp_files(root, files || {});
+    \\  return root;
+    \\}
+    \\globalThis.__home_modules["harness"] = { isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, tempDirWithFiles: __home_temp_dir_with_files };
     \\const __home_bake_counts = Object.create(null);
     \\function __home_bake_basename() {
     \\  const filename = String(globalThis.__home_current_filename || "bake/unknown.test.ts");
@@ -3719,6 +3753,15 @@ const harness_prelude =
     \\    this.headers = new Headers(this.init.headers);
     \\  };
     \\}
+    \\function __home_response_body_text(body) {
+    \\  if (body == null) return "";
+    \\  if (typeof body === "string") return body;
+    \\  if (typeof body.toString === "function") return body.toString();
+    \\  return String(body);
+    \\}
+    \\Response.prototype.text = function() {
+    \\  return Promise.resolve(__home_response_body_text(this.body));
+    \\};
     \\Response.redirect = function(url, status) {
     \\  return new Response(null, { status: status || 302, headers: { Location: String(url) } });
     \\};
@@ -5116,6 +5159,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { bunEnv, bunExe } = globalThis.__home_import(\"harness\");",
         },
         .{
+            .needle = "import { bunEnv, bunExe, tempDirWithFiles } from \"harness\";",
+            .replacement = "const { bunEnv, bunExe, tempDirWithFiles } = globalThis.__home_import(\"harness\");",
+        },
+        .{
             .needle = "import { URL } from \"node:url\";",
             .replacement = "const { URL } = globalThis.__home_import(\"node:url\");",
         },
@@ -5955,6 +6002,24 @@ test "Bun harness import rewrite lowers bunEnv and bunExe import" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"harness\"") == null);
 }
 
+test "Bun harness import rewrite lowers tempDirWithFiles import" {
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDirWithFiles } from "harness";
+        \\test("import.meta properties are NOT inlined without bake framework", async () => {
+        \\  const dir = tempDirWithFiles("import-meta-no-inline", { "index.ts": "console.log(import.meta.path);" });
+        \\  const proc = Bun.spawn({ cmd: [bunExe(), "index.ts"], env: bunEnv, cwd: dir });
+        \\  expect(await proc.exited).toBe(0);
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "bake/dev/import-meta-inline-negative.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { bunEnv, bunExe, tempDirWithFiles } = globalThis.__home_import(\"harness\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"harness\"") == null);
+    try std.testing.expect(!hasUnsupportedModuleSyntax(rewritten));
+}
+
 test "Bun test import rewrite lowers describe and test imports" {
     const source =
         \\import { describe, test } from "bun:test";
@@ -6082,6 +6147,29 @@ test "bootstrap runner covers Request body text and clone smoke" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/fetch/request.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers Response body text smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("response text", async () => {
+        \\  expect(await new Response("ahoyhoy").text()).toBe("ahoyhoy");
+        \\  expect(await new Response(null).text()).toBe("");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/fetch/response-text.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);

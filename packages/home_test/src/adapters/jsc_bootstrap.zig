@@ -141,6 +141,12 @@ pub const Runtime = struct {
             "__home_unlinkSyncNative",
             unlinkSyncNative,
         );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_createDirPathNative",
+            createDirPathNative,
+        );
     }
 
     fn resetFileState(self: *Runtime, allocator: std.mem.Allocator) !void {
@@ -1025,6 +1031,41 @@ fn unlinkSyncNative(
     return extern_fns.JSValueMakeUndefined(actual_ctx);
 }
 
+fn createDirPathNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+
+    if (argument_count < 1 or arguments[0] == null) {
+        setException(actual_ctx, exception, "node:fs.mkdirSync() requires a path");
+        return null;
+    }
+
+    const path = valueToOwnedString(allocator, actual_ctx, arguments[0].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.mkdirSync() path failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(path);
+
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    Io.Dir.cwd().createDirPath(io, path) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.mkdirSync() failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    return extern_fns.JSValueMakeUndefined(actual_ctx);
+}
+
 fn spawnSyncNative(
     ctx: ?*JSContextRef,
     function: ?*JSObject,
@@ -1068,10 +1109,14 @@ fn runSpawnSyncNative(
     try readStringArray(allocator, ctx, cmd_value, exception, &argv_storage);
     if (argv_storage.items.len == 0) return error.EmptyCmd;
 
-    if (std.mem.eql(u8, argv_storage.items[0], "home")) {
+    const is_home_invocation = std.mem.eql(u8, argv_storage.items[0], "home");
+    if (is_home_invocation) {
         const self_path = try selfExePathAlloc(allocator);
         allocator.free(argv_storage.items[0]);
         argv_storage.items[0] = self_path;
+    }
+    if (is_home_invocation and shouldInsertHomeRunForScript(argv_storage.items)) {
+        try argv_storage.insert(allocator, 1, try allocator.dupe(u8, "run"));
     }
     try resolveCorpusArguments(allocator, &argv_storage);
 
@@ -1159,6 +1204,66 @@ fn resolveCorpusArguments(allocator: std.mem.Allocator, argv: *std.ArrayList([]c
             allocator.free(corpus_path);
         }
     }
+}
+
+fn shouldInsertHomeRunForScript(argv: []const []const u8) bool {
+    if (argv.len < 2) return false;
+    const candidate = argv[1];
+    if (std.mem.startsWith(u8, candidate, "-")) return false;
+    if (isKnownHomeCommand(candidate)) return false;
+    return hasJavaScriptScriptExtension(candidate);
+}
+
+fn isKnownHomeCommand(value: []const u8) bool {
+    const commands = [_][]const u8{
+        "add",
+        "ast",
+        "audit",
+        "build",
+        "check",
+        "ci",
+        "clean",
+        "completions",
+        "create",
+        "dev",
+        "docs",
+        "doctor",
+        "exec",
+        "explain",
+        "fix",
+        "fmt",
+        "help",
+        "init",
+        "install",
+        "lint",
+        "lsp",
+        "outdated",
+        "package",
+        "parse",
+        "pkg",
+        "profile",
+        "remove",
+        "run",
+        "size",
+        "symbols",
+        "t",
+        "test",
+        "update",
+        "watch",
+        "x",
+    };
+    for (commands) |command| {
+        if (std.mem.eql(u8, value, command)) return true;
+    }
+    return false;
+}
+
+fn hasJavaScriptScriptExtension(path: []const u8) bool {
+    const extensions = [_][]const u8{ ".js", ".jsx", ".ts", ".tsx", ".mjs", ".mts", ".cjs", ".cts" };
+    for (extensions) |extension| {
+        if (std.mem.endsWith(u8, path, extension)) return true;
+    }
+    return false;
 }
 
 fn absoluteCorpusPathAlloc(allocator: std.mem.Allocator, relative: []const u8) ![]u8 {
@@ -1433,4 +1538,14 @@ test "adapter recognizes HomeUnsupported exceptions" {
     try std.testing.expect(unsupportedExceptionReason("HomeUnsupportedError: assertion failed") == null);
     try std.testing.expect(unsupportedExceptionReason("Error: __home_unsupported__:assertion failed") == null);
     try std.testing.expect(unsupportedExceptionReason("Error: assertion failed") == null);
+}
+
+test "adapter inserts home run for Bun-style direct script invocations" {
+    const direct = [_][]const u8{ "home", "index.ts" };
+    const test_command = [_][]const u8{ "home", "test", "index.ts" };
+    const flag = [_][]const u8{ "home", "--version" };
+
+    try std.testing.expect(shouldInsertHomeRunForScript(&direct));
+    try std.testing.expect(!shouldInsertHomeRunForScript(&test_command));
+    try std.testing.expect(!shouldInsertHomeRunForScript(&flag));
 }

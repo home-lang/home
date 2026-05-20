@@ -856,10 +856,22 @@ passed, `0` failed, `0` unsupported, `0` todo. The native parity target
 remains Bun's real source-map lifetime behavior and DevTools workspace
 metadata generation.
 
-Latest measured full gate after clearing `bake/dev/html.test.ts`:
-`4,013` files executed, `481` passed, `3,915` failed, `1,469`
-unsupported, `37` todo. First failure:
-`bake/dev/import-meta-inline-negative.test.ts` with `unsupported module syntax`.
+The copied `bake/dev/import-meta-inline-negative.test.ts` fixture now
+passes in Home as `1` passed, `0` failed, `0` unsupported, `0` todo. The
+bootstrap lowers its `bunEnv` / `bunExe` / `tempDirWithFiles` harness
+import, materializes the temp `index.ts`, exposes a narrow async
+`Bun.spawn` wrapper over the existing native spawn bridge, supports
+`new Response(proc.stdout).text()`, and maps Bun-style direct script
+launches (`bun index.ts`) to Home's `home run index.ts` CLI shape so the
+child observes runtime `import.meta.*` values instead of Bake inlining.
+
+Latest full-gate probe after that slice used a 60s timeout. It passed
+the delegated Bake deinitialization child (`9` passed) and did not return
+a complete summary before the timeout, so the last complete full-gate
+count remains the post-HTML run above. The next direct copied Bake
+boundary is `bake/dev/import-meta-inline.test.ts`, currently failing as
+the named unsupported registrar case
+`DEV:import-meta-inline-1: import.meta properties are inlined in bake`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
