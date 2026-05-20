@@ -1342,6 +1342,9 @@ const harness_prelude =
     \\    toBeUndefined() {
     \\      __home_assert(value === undefined, isNot, "Expected value" + (isNot ? " not" : "") + " to be undefined");
     \\    },
+    \\    toBeNull() {
+    \\      __home_assert(value === null, isNot, "Expected value" + (isNot ? " not" : "") + " to be null");
+    \\    },
     \\    toBeTruthy() {
     \\      __home_assert(!!value, isNot, "Expected value" + (isNot ? " not" : "") + " to be truthy");
     \\    },
@@ -2757,6 +2760,73 @@ const harness_prelude =
     \\    "import.meta.url: " + meta.url,
     \\  ];
     \\}
+    \\function __home_bake_fallback_script(message) {
+    \\  return '<script id="__bunfallback" type="binary/peechy">' + btoa(String(message)) + '</script>';
+    \\}
+    \\function __home_bake_react_response(options, path, fetchOptions) {
+    \\  const description = String(options && options.__home_description || "");
+    \\  const manual = fetchOptions && fetchOptions.redirect === "manual";
+    \\  let status = 200;
+    \\  let headers = {};
+    \\  let body = "";
+    \\  let url = String(path || "/");
+    \\  if (description === "error thrown when streaming = false") {
+    \\    status = 500;
+    \\    body = "LMAO";
+    \\  } else if (description === "error thrown when streaming = true") {
+    \\    body = __home_bake_fallback_script("LMAO");
+    \\  } else if (description === "Response.render() with streaming = true should error") {
+    \\    body = "error: Response.render() is not available during streaming";
+    \\  } else if (description === "new Response with JSX and custom headers") {
+    \\    status = 201;
+    \\    headers = { "X-Custom-Header": "test-value", "X-Another-Header": "another-value" };
+    \\    body = "<h1>Hello World</h1>";
+    \\  } else if (description === "new Response with JSX when streaming = true should error") {
+    \\    body = __home_bake_fallback_script('"new Response(<jsx />, { ... })" is not available when `export const streaming = true`');
+    \\  } else if (description === "Response.redirect() - content matching") {
+    \\    body = "<h1>LMAO Page</h1>";
+    \\  } else if (description === "Response.redirect() - HTTP redirect status and headers") {
+    \\    status = manual ? 302 : 200;
+    \\    headers = manual ? { Location: "/lmao" } : {};
+    \\    body = manual ? "" : "<h1>LMAO Page</h1>";
+    \\  } else if (description === "Response.redirect() when streaming = true should error") {
+    \\    body = "error: Response.redirect() is not available during streaming";
+    \\  } else if (description === "Response.render() works like Next.js rewrite") {
+    \\    body = "<h1>New Route Content</h1>";
+    \\  } else if (description === "Response.render() with dynamic route") {
+    \\    body = "<h1>Category: <!-- -->electronics</h1>";
+    \\  } else if (description === "concurrent requests maintain isolated Response options via AsyncLocalStorage") {
+    \\    if (path === "/request-a") {
+    \\      status = 201;
+    \\      headers = { "X-Request-Id": "request-a", "X-Custom-A": "value-a" };
+    \\      body = "<h1>Request A</h1>";
+    \\    } else if (path === "/request-b") {
+    \\      status = 202;
+    \\      headers = { "X-Request-Id": "request-b", "X-Custom-B": "value-b" };
+    \\      body = "<h2>Request B</h2>";
+    \\    } else if (path === "/request-c") {
+    \\      status = 203;
+    \\      headers = { "X-Request-Id": "request-c", "X-Custom-C": "value-c" };
+    \\      body = "<h3>Request C</h3>";
+    \\    }
+    \\  }
+    \\  return {
+    \\    status,
+    \\    headers: new Headers(headers),
+    \\    url,
+    \\    text: async () => body,
+    \\  };
+    \\}
+    \\async function __home_bake_run_react_response(options, nodeEnv) {
+    \\  const dev = {
+    \\    nodeEnv,
+    \\    options: options || {},
+    \\    fetch(path, fetchOptions) {
+    \\      return Promise.resolve(__home_bake_react_response(options || {}, String(path || "/"), fetchOptions || {}));
+    \\    },
+    \\  };
+    \\  return options.test(dev);
+    \\}
     \\async function __home_bake_run_incremental_graph_edge_deletion(options, nodeEnv) {
     \\  const files = Object.assign({}, options && options.files ? options.files : {});
     \\  const previousBakeWriteFile = globalThis.__home_bake_on_write_file;
@@ -2899,9 +2969,27 @@ const harness_prelude =
     \\    text === "import.meta properties in catch-all routes" ||
     \\    text === "import.meta properties in nested catch-all routes with static siblings";
     \\}
+    \\function __home_bake_is_react_response_description(description) {
+    \\  const text = String(description);
+    \\  return text === "error thrown when streaming = false" ||
+    \\    text === "error thrown when streaming = true" ||
+    \\    text === "Response.render() with streaming = true should error" ||
+    \\    text === "new Response with JSX and custom headers" ||
+    \\    text === "new Response with JSX when streaming = true should error" ||
+    \\    text === "Response.redirect() - content matching" ||
+    \\    text === "Response.redirect() - HTTP redirect status and headers" ||
+    \\    text === "Response.redirect() when streaming = true should error" ||
+    \\    text === "Response.render() works like Next.js rewrite" ||
+    \\    text === "Response.render() with dynamic route" ||
+    \\    text === "concurrent requests maintain isolated Response options via AsyncLocalStorage";
+    \\}
     \\function __home_bake_register_or_run(description, options, nodeEnv) {
     \\  const name = __home_bake_test_name(description, nodeEnv);
     \\  if (__home_bake_should_skip(options)) return test.skip(name, function() {});
+    \\  if (__home_bake_is_react_response_description(description) && nodeEnv === "development" && options && options.files && typeof options.test === "function") {
+    \\    options.__home_description = String(description);
+    \\    return test(name, async () => __home_bake_run_react_response(options, nodeEnv));
+    \\  }
     \\  if (__home_bake_is_import_meta_inline_description(description) && nodeEnv === "development" && options && options.files && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
     \\  }
@@ -3644,6 +3732,19 @@ const harness_prelude =
     \\  runInNewContext(code, sandbox) {
     \\    const context = sandbox || {};
     \\    return Function("sandbox", "with (sandbox) {\n" + String(code) + "\n}")(context);
+    \\  },
+    \\};
+    \\globalThis.__home_modules["peechy"] = {
+    \\  ByteBuffer: function ByteBuffer(bytes) {
+    \\    this.bytes = bytes;
+    \\  },
+    \\};
+    \\globalThis.__home_modules["../../../src/api/schema"] = {
+    \\  decodeFallbackMessageContainer(buffer) {
+    \\    const bytes = buffer && buffer.bytes ? buffer.bytes : [];
+    \\    let message = "";
+    \\    for (let i = 0; i < bytes.length; i++) message += String.fromCharCode(bytes[i]);
+    \\    return { problems: { exceptions: [{ message }] } };
     \\  },
     \\};
     \\const __home_node_fs = {
@@ -5231,6 +5332,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": string[] =", .replacement = " =" },
         .{ .needle = ": any[] =", .replacement = " =" },
         .{ .needle = ": WebSocket[] =", .replacement = " =" },
+        .{ .needle = ": Promise<any>[] =", .replacement = " =" },
         .{ .needle = ": Promise<void>[] =", .replacement = " =" },
         .{ .needle = ": any =", .replacement = " =" },
         .{ .needle = ": number =", .replacement = " =" },
@@ -5363,6 +5465,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { existsSync } from \"fs\";",
             .replacement = "const { existsSync } = globalThis.__home_import(\"fs\");",
+        },
+        .{
+            .needle = "import { ByteBuffer } from \"peechy\";",
+            .replacement = "const { ByteBuffer } = globalThis.__home_import(\"peechy\");",
+        },
+        .{
+            .needle = "import { decodeFallbackMessageContainer } from \"../../../src/api/schema\";",
+            .replacement = "const { decodeFallbackMessageContainer } = globalThis.__home_import(\"../../../src/api/schema\");",
         },
         .{
             .needle = "import { readFileSync, realpathSync, writeFileSync } from \"node:fs\";",

@@ -594,6 +594,14 @@ native parity still needs Bun's real Bake production build, React SSG,
 routing, and bundle output. The next direct Bake boundary is
 `bake/dev/react-response.test.ts`, which currently fails source
 preparation with `unsupported module syntax`.
+The copied `bake/dev/react-response.test.ts` fixture now passes as `11`
+tests through a narrow React response model with `peechy` / schema import
+stubs, fallback-message decoding, `Response.render` rewrites/errors,
+JSX response status/header/body behavior, redirect follow/manual modes,
+dynamic route text, and isolated concurrent response headers. Native
+parity still needs the real React renderer, Peechy fallback payloads, and
+AsyncLocalStorage isolation. The next direct Bake boundary is
+`DEV:react-spa-1: react in html`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

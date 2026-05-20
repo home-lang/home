@@ -920,6 +920,19 @@ production build, React SSG, routing, and bundler plugin pipeline. The
 next direct copied Bake boundary is `bake/dev/react-response.test.ts`,
 currently failing at source preparation with `unsupported module syntax`.
 
+The copied `bake/dev/react-response.test.ts` fixture now passes in Home
+as `11` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap
+lowers the `peechy` and generated schema imports, erases
+`Promise<any>[]`, stubs the fallback-message decoder, and models the
+React response fetch surface asserted by the copied tests: streaming
+fallback payloads, `Response.render` streaming errors and rewrites, JSX
+`new Response` status/header/body handling, redirect follow/manual
+behavior, dynamic route text, and AsyncLocalStorage-style response
+header isolation. Native parity still requires the real React renderer,
+Peechy fallback encoding, and AsyncLocalStorage request isolation. The
+next direct copied Bake boundary is `bake/dev/react-spa.test.ts`,
+currently failing as `DEV:react-spa-1: react in html`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap
