@@ -16,6 +16,11 @@ const to_be_nan = @import("bun/expect/toBeNaN.zig");
 const to_be_finite = @import("bun/expect/toBeFinite.zig");
 const to_be_positive = @import("bun/expect/toBePositive.zig");
 const to_be_negative = @import("bun/expect/toBeNegative.zig");
+const to_be_string = @import("bun/expect/toBeString.zig");
+const to_be_function = @import("bun/expect/toBeFunction.zig");
+const to_be_symbol = @import("bun/expect/toBeSymbol.zig");
+const to_be_object = @import("bun/expect/toBeObject.zig");
+const to_be_date = @import("bun/expect/toBeDate.zig");
 
 const Expect = bun.jsc.Expect.Expect;
 const JSValue = bun.jsc.JSValue;
@@ -113,6 +118,28 @@ test "copied Bun truthiness and boolean matchers pass positive cases" {
     try std.testing.expectEqual(JSValue.js_undefined, try to_be_negative.toBeNegative(&expect_negative, globalObject(), &negative_frame));
 }
 
+test "copied Bun tagged primitive matchers pass positive cases" {
+    var expect_string = Expect{ .value = .js_string };
+    var string_frame = frame(.js_string);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_be_string.toBeString(&expect_string, globalObject(), &string_frame));
+
+    var expect_function = Expect{ .value = .js_function };
+    var function_frame = frame(.js_function);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_be_function.toBeFunction(&expect_function, globalObject(), &function_frame));
+
+    var expect_symbol = Expect{ .value = .js_symbol };
+    var symbol_frame = frame(.js_symbol);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_be_symbol.toBeSymbol(&expect_symbol, globalObject(), &symbol_frame));
+
+    var expect_object = Expect{ .value = .js_object };
+    var object_frame = frame(.js_object);
+    try std.testing.expectEqual(JSValue.js_object, try to_be_object.toBeObject(&expect_object, globalObject(), &object_frame));
+
+    var expect_date = Expect{ .value = .js_date };
+    var date_frame = frame(.js_date);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_be_date.toBeDate(&expect_date, globalObject(), &date_frame));
+}
+
 test "copied Bun numeric matchers honor failure signatures" {
     var expect_integer = Expect{ .value = .js_fraction };
     var fraction_frame = frame(.js_fraction);
@@ -165,4 +192,31 @@ test "copied Bun truthiness nil and number matchers honor not flag and failure s
     var finite_frame = frame(.js_number);
     try std.testing.expectError(error.JSException, to_be_finite.toBeFinite(&expect_finite, globalObject(), &finite_frame));
     try std.testing.expectEqualStrings("not.toBeFinite", expect_finite.last_signature.?);
+}
+
+test "copied Bun tagged primitive matchers honor not flag and failure signatures" {
+    var expect_string = Expect{ .value = .js_string, .flags = .{ .not = true } };
+    var string_frame = frame(.js_string);
+    try std.testing.expectError(error.JSException, to_be_string.toBeString(&expect_string, globalObject(), &string_frame));
+    try std.testing.expectEqualStrings("not.toBeString", expect_string.last_signature.?);
+
+    var expect_function = Expect{ .value = .js_function, .flags = .{ .not = true } };
+    var function_frame = frame(.js_function);
+    try std.testing.expectError(error.JSException, to_be_function.toBeFunction(&expect_function, globalObject(), &function_frame));
+    try std.testing.expectEqualStrings("not.toBeFunction", expect_function.last_signature.?);
+
+    var expect_symbol = Expect{ .value = .js_symbol, .flags = .{ .not = true } };
+    var symbol_frame = frame(.js_symbol);
+    try std.testing.expectError(error.JSException, to_be_symbol.toBeSymbol(&expect_symbol, globalObject(), &symbol_frame));
+    try std.testing.expectEqualStrings("not.toBeSymbol", expect_symbol.last_signature.?);
+
+    var expect_object = Expect{ .value = .js_object, .flags = .{ .not = true } };
+    var object_frame = frame(.js_object);
+    try std.testing.expectError(error.JSException, to_be_object.toBeObject(&expect_object, globalObject(), &object_frame));
+    try std.testing.expectEqualStrings("not.toBeObject", expect_object.last_signature.?);
+
+    var expect_date = Expect{ .value = .js_date, .flags = .{ .not = true } };
+    var date_frame = frame(.js_date);
+    try std.testing.expectError(error.JSException, to_be_date.toBeDate(&expect_date, globalObject(), &date_frame));
+    try std.testing.expectEqualStrings("not.toBeDate", expect_date.last_signature.?);
 }

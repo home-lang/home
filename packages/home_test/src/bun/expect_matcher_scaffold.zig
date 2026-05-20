@@ -13,6 +13,11 @@ pub const jsc = struct {
         pub const Tag = enum {
             boolean,
             number,
+            string,
+            function,
+            symbol,
+            object,
+            date,
             null,
             undefined,
             other,
@@ -27,6 +32,11 @@ pub const jsc = struct {
         pub const js_negative = JSValue{ .tag = .number, .number_value = -42 };
         pub const js_nan = JSValue{ .tag = .number, .number_value = std.math.nan(f64) };
         pub const js_inf = JSValue{ .tag = .number, .number_value = std.math.inf(f64) };
+        pub const js_string = JSValue{ .tag = .string };
+        pub const js_function = JSValue{ .tag = .function };
+        pub const js_symbol = JSValue{ .tag = .symbol };
+        pub const js_object = JSValue{ .tag = .object };
+        pub const js_date = JSValue{ .tag = .date };
         pub const js_other = JSValue{ .tag = .other };
 
         pub fn isBoolean(this: JSValue) bool {
@@ -35,6 +45,26 @@ pub const jsc = struct {
 
         pub fn isNumber(this: JSValue) bool {
             return this.tag == .number;
+        }
+
+        pub fn isString(this: JSValue) bool {
+            return this.tag == .string;
+        }
+
+        pub fn isCallable(this: JSValue) bool {
+            return this.tag == .function;
+        }
+
+        pub fn isSymbol(this: JSValue) bool {
+            return this.tag == .symbol;
+        }
+
+        pub fn isObject(this: JSValue) bool {
+            return this.tag == .object;
+        }
+
+        pub fn isDate(this: JSValue) bool {
+            return this.tag == .date;
         }
 
         pub fn asNumber(this: JSValue) f64 {
@@ -73,6 +103,11 @@ pub const jsc = struct {
             try writer.writeAll(switch (this.value.tag) {
                 .boolean => if (this.value.bool_value) "true" else "false",
                 .number => "42",
+                .string => "\"string\"",
+                .function => "[Function]",
+                .symbol => "Symbol()",
+                .object => "{}",
+                .date => "Date",
                 .null => "null",
                 .undefined => "undefined",
                 .other => "value",
