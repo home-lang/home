@@ -191,7 +191,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes one hundred twenty-eight allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes one hundred twenty-nine allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-three
@@ -242,7 +242,8 @@ checks plus the Windows-only POSIX relative path smoke, a
 WHATWG `node:url.format(URL, { auth: false })` coverage, and
 `node:test` skip/todo/null-options registration behavior, and
 `expect.extend` matcher validation plus installed
-expectation-object matchers, plus one snapshot `test.todo` fixture whose
+expectation-object matchers, the Bake deinitialization DevServer teardown
+fixture, plus one snapshot `test.todo` fixture whose
 snapshot body remains intentionally unexecuted. The bootstrap harness is installed once
 per JSC engine, resets counters before each file, lowers supported
 `bun:test` imports through a virtual
@@ -253,7 +254,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `128` files, `581` passed, `0` failed,
+Latest measured subset run: `129` files, `590` passed, `0` failed,
 `37` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now

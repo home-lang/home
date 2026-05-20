@@ -195,6 +195,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/web/websocket/error-event.test.ts",
     "cli/test/test-randomize.fixture.ts",
     "bundler/bun-build-api.test.ts",
+    "bake/fixtures/deinitialization/test.ts",
 };
 
 const harness_prelude =
@@ -5958,7 +5959,7 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     try appendJsStringLiteral(out, allocator, relative_path);
     try out.appendSlice(allocator, ";\nvar __dirname = ");
     try appendJsStringLiteral(out, allocator, dirname);
-    try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\nfunction __home_import_meta_resolve(specifier, parent) { throw new Error(\"Cannot resolve \" + String(specifier) + \" from \" + String(parent)); }\n");
+    try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\nfunction __home_import_meta_resolve(specifier, parent) { throw new Error(\"Cannot resolve \" + String(specifier) + \" from \" + String(parent)); }\n");
     if (std.mem.eql(u8, relative_path, "regression/issue/fix-bindings-stack-trace.test.ts")) {
         try out.appendSlice(allocator,
             \\(function() {
