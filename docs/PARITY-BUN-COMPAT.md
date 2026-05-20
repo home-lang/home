@@ -24,16 +24,18 @@ section.
 
 ## Surface size
 
+Recount with `scripts/measure-parity.sh --values` (the
+`COMPAT_SYMBOLS` row counts every top-level `pub const` / `pub fn`
+in `packages/compat/src/compat.zig`).
+
 | Measurement | Coverage | % |
 |---|---|---|
-| **Tier-0 symbols implemented** | **7 / ~103** | **~6.8%** |
+| **Symbols implemented** | **16 / ~103** | **~15.5%** |
 | Upstream Bun surface (identifiers under `bun.*`) | ~103 | — |
-| Tier breakdown (planned) | Tier 0 — minimal data types; Tier 1 — allocators + helpers; Tier 2 — logger / fs / strings; Tier 3 — JSC bridge stubs | — |
+| Tier breakdown | Tier 0 (data types) + Tier 1 (allocators / Output / strings / Environment) landed | — |
 
 Each subsequent tier opens the door for more vendored Bun files to
-compile. The 7 Tier-0 symbols below are what `IndexStringMap.zig`
-and `PathToSourceIndexMap.zig` (the first two bundler vendors
-brought online) require.
+compile.
 
 Legend:
 
@@ -44,7 +46,7 @@ Legend:
 - 🔴 **Not implemented** — referenced by some upstream file but not
   yet shimmed; that file currently won't compile.
 
-## Tier 0 — the minimum 7 (landed today)
+## Implemented symbols (16)
 
 ### `bun.OOM`
 
@@ -55,14 +57,34 @@ written as `bun.OOM!void` translate verbatim.
 pub const OOM = error{OutOfMemory};
 ```
 
-### `bun.handleOom`
+### `bun.JSError`
 
-🟢 Converts an `error.OutOfMemory` into a panic for call sites that
-can't propagate it. Matches the upstream signature so vendored
-files compile.
+🟢 `error{ JSException, OutOfMemory }` — the combined error union
+that JSC-touching vendored code uses.
 
 ```zig
-pub fn handleOom(err: anyerror) noreturn { … }
+pub const JSError = error{ JSException, OutOfMemory };
+```
+
+### `bun.Environment`
+
+🟢 Build-time environment flags (`isDebug`, `isWindows`, `isMac`,
+`ci_assert`, `enable_logs`). Resolved at compile time from
+`builtin.mode` / `builtin.os.tag`.
+
+### `bun.env_var`
+
+🟢 Run-time env-var namespace. Currently only `WANTS_LOUD.get()`
+(returns `false`) is exposed; grows per vendored caller need.
+
+### `bun.handleOom`
+
+🟢 Unwraps an OOM-returning call or converts an `error.OutOfMemory`
+into a panic for call sites that can't propagate it. Polymorphic
+over error-union and bare-error inputs.
+
+```zig
+pub fn handleOom(result: anytype) HandleOomReturn(@TypeOf(result)) { … }
 ```
 
 ### `bun.default_allocator`
@@ -84,6 +106,68 @@ to a richer in-house assert in the future.
 pub const assert = std.debug.assert;
 ```
 
+### `bun.AllocationScope`
+
+🟢 Allocator-scope wrapper. Holds a backing `std.mem.Allocator` and
+hands out a child allocator via `.allocator()`. Tier-1 callers use
+this for region-style allocation lifetimes.
+
+### `bun.Output`
+
+🟢 Logger / stderr writer namespace. Currently exposes
+`enable_ansi_colors_stderr` and `isAIAgent()`. Grows as bundler-
+diagnostic code lands more output paths.
+
+### `bun.debugAssert`
+
+🟢 Debug-only assert (compiles away outside debug builds).
+
+```zig
+pub fn debugAssert(ok: bool) void {
+    if (builtin.mode == .Debug) std.debug.assert(ok);
+}
+```
+
+### `bun.create`
+
+🟢 Typed allocator helper — allocates one `TArg`, copies `value`
+into it, returns the pointer. OOM panics through `handleOom`.
+
+```zig
+pub fn create(allocator: std.mem.Allocator, comptime TArg: type, value: TArg) *TArg { … }
+```
+
+### `bun.StringHashMapUnmanaged`
+
+🟢 Alias for the std-lib generic. Tier-0 collections (`IndexStringMap`,
+`PathToSourceIndexMap`) use this as their underlying storage.
+
+```zig
+pub const StringHashMapUnmanaged = std.StringHashMapUnmanaged;
+```
+
+### `bun.String`
+
+🟢 Interned-string newtype. Tier-1 callers use the `.static(...)`
+constructor and `.slice()` accessor; the underlying ref-counted
+interner that upstream Bun ships is not yet wired (we hold the
+bytes inline).
+
+```zig
+pub const String = struct {
+    bytes: []const u8,
+    pub const empty: String = .{ .bytes = "" };
+    pub fn static(comptime bytes: []const u8) String { … }
+    pub fn slice(this: String) []const u8 { … }
+};
+```
+
+### `bun.strings`
+
+🟢 String utility namespace. Currently exposes `isValidUTF8` (wraps
+`std.unicode.utf8ValidateSlice`). Grows as more vendored code
+reaches for escape / unescape / convert helpers.
+
 ### `bun.ast.Index`
 
 🟢 Strongly-typed source-file / module index. Upstream Bun stores
@@ -101,15 +185,6 @@ pub const ast = struct {
 };
 ```
 
-### `bun.StringHashMapUnmanaged`
-
-🟢 Alias for the std-lib generic. Tier-0 collections (`IndexStringMap`,
-`PathToSourceIndexMap`) use this as their underlying storage.
-
-```zig
-pub const StringHashMapUnmanaged = std.StringHashMapUnmanaged;
-```
-
 ### `bun.fs.Path`
 
 🟡 Path record. Tier-0 callers read only `.text`; subsequent tiers
@@ -124,7 +199,7 @@ pub const fs = struct {
 };
 ```
 
-## Tier 1+ — not yet shimmed
+## Tier 2+ — not yet shimmed
 
 Anything else in the upstream `bun.*` surface that vendored files
 might reach for is 🔴 right now. As subsequent vendor files come
@@ -136,17 +211,20 @@ with a `blocked` marker.
 
 Known categories the shim will likely need to grow into:
 
-- 🔴 `bun.Output` — logger / stderr writer (used heavily in bundler diagnostics)
-- 🔴 `bun.JSC.*` — JavaScriptCore bridge externs (parked until Phase 12.2 lands JSC)
-- 🔴 `bun.strings` — string utility namespace (escape / unescape / convert)
-- 🔴 `bun.path` — Bun's path module (distinct from `node:path`)
-- 🔴 `bun.options` — bundler / runtime option records
-- 🔴 `bun.resolver` — module resolution surface (separate from Home's `ts_resolver`)
+- 🔴 `bun.JSC.*` — JavaScriptCore bridge externs (Phase 12.2 M1-M6
+  landed inside `packages/runtime/src/jsc/`; the `bun.JSC.*` user-
+  facing shim is the bundler-side handle to those).
+- 🔴 `bun.path` — Bun's path module (distinct from `node:path` —
+  this is the bundler-side path utility).
+- 🔴 `bun.options` — bundler / runtime option records.
+- 🔴 `bun.resolver` — module resolution surface (separate from
+  Home's `ts_resolver`).
 - 🔴 `bun.MutableString` — Bun's interned mutable string type
-- 🔴 `bun.bake` — full-stack bundling primitives
-- 🔴 `bun.css` — CSS parser surface
-- 🔴 `bun.transpiler` — Bun's JS/TS transpiler entrypoints
-- 🔴 `bun.SourceMap` — Bun's source map writer
+  (related to but distinct from the static `String` already shimmed).
+- 🔴 `bun.bake` — full-stack bundling primitives.
+- 🔴 `bun.css` — CSS parser surface.
+- 🔴 `bun.transpiler` — Bun's JS/TS transpiler entrypoints.
+- 🔴 `bun.SourceMap` — Bun's source map writer.
 
 ## Test coverage
 
@@ -154,17 +232,19 @@ Two test surfaces exercise the shim:
 
 1. **In-line tests** in
    [`packages/compat/src/compat.zig`](../packages/compat/src/compat.zig)
-   — 3 unit tests pinning the Tier-0 surface shape (the `OOM` /
-   `assert` / `ast.Index.Int` / `fs.Path` / `default_allocator` /
-   `StringHashMapUnmanaged` checks).
+   — unit tests pinning each symbol's shape (the `OOM` / `JSError` /
+   `assert` / `debugAssert` / `Environment` / `env_var` /
+   `ast.Index.Int` / `fs.Path` / `default_allocator` /
+   `AllocationScope` / `Output` / `StringHashMapUnmanaged` /
+   `String` / `handleOom` / `create` / `strings` checks).
 
 2. **Integration tests** in
    [`packages/bundler/src/compat_tests.zig`](../packages/bundler/src/compat_tests.zig)
-   — 7 tests that build the actual vendored `IndexStringMap.zig`
-   and `PathToSourceIndexMap.zig` files against the shim (round-
-   trip `put` / `get`, `getOrPut`, `removePath`, `getPath` /
-   `putPath` via `fs.Path`). This is the gate that proves the shim
-   shape matches what real Bun code expects.
+   — tests that build the actual vendored `IndexStringMap.zig` and
+   `PathToSourceIndexMap.zig` files against the shim (round-trip
+   `put` / `get`, `getOrPut`, `removePath`, `getPath` / `putPath`
+   via `fs.Path`). This is the gate that proves the shim shape
+   matches what real Bun code expects.
 
 Run them with:
 
@@ -196,15 +276,13 @@ pattern wires it up so `@import("bun")` resolves to the shim.
 
 | Status | Count | % |
 |---|---|---|
-| 🟢 Implemented | 6 | ~5.8% (of ~103 total `bun.*` identifiers) |
+| 🟢 Implemented | 15 | ~14.6% (of ~103 total `bun.*` identifiers) |
 | 🟡 Partial | 1 | ~1.0% (`fs.Path` — `.text` only) |
-| 🔴 Not implemented | ~96 | ~93.2% |
+| 🔴 Not implemented | ~87 | ~84.4% |
 
-**Tier-0 surface (7 symbols):** fully landed, regression-gated by
-two test modules, exercises real vendored Bun code without
-modification. Each subsequent tier follows the same pattern: a
-vendor file lands, the shim grows just enough to make it compile,
-inline + integration tests pin the surface, then the file becomes
-buildable from `./pantry/.bin/zig build`. See
+Each new tier follows the same pattern: a vendor file lands, the
+shim grows just enough to make it compile, inline + integration
+tests pin the surface, then the file becomes buildable from
+`./pantry/.bin/zig build`. See
 [`packages/runtime/PORT_AUDIT_2026-05-20.md`](../packages/runtime/PORT_AUDIT_2026-05-20.md)
 for the next-to-port queue.

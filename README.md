@@ -48,10 +48,10 @@ view; these are the drill-down pages — modeled after Bun's
 | **TypeScript — named-category survey** | **86 / 86 — 100%** | `assignmentCompatibility` + `comparable` + `inOperator` + `stringLiteral` |
 | **TypeScript — diagnostic codes** | **~2,076 entries** | mirrors the full upstream `diag(code, …)` table |
 | **LSP wire methods** | **53 / ~70 — ~76%** | `SUPPORTED_METHODS` in `packages/ts_lsp_server/` |
-| **Bun runtime — source files ported** | **485 / 1,193 — ~40.7%** | substrate + JSC M6 milestone landed |
-| **Bun compat shim — `bun.*` symbols** | **7 / ~103 — ~6.8%** | Tier-0 lets vendored Bun source compile against Home's stdlib |
+| **Bun runtime — source files ported** | **486 / 1,193 — ~40.7%** | substrate + JSC M6 milestone (+ native eval smoke) landed |
+| **Bun compat shim — `bun.*` symbols** | **16 / ~103 — ~15.5%** | Tier-0 + Tier-1 (`Output`, `strings`, `String`, `AllocationScope`, `Environment`, `JSError`, `create`, `debugAssert`, `env_var`) lets vendored Bun source compile against Home's stdlib |
 | **Node.js — `node:*` binding files** | **28 files** | Zig substrate landing module-by-module (buffer / stream / fs / events / util / assert / os / url / querystring / crypto / process / string_decoder / tty) |
-| **JSC bring-up (Phase 12.2)** | **96 files** | M6 milestone — JSON + Promise + Iterator + Global helpers landed |
+| **JSC bring-up (Phase 12.2)** | **97 files** | M6 milestone + native eval smoke landed |
 | **Language features (capability matrix)** | **18 stable / 43 partial / 2 not-yet — 63 total** | ~28.6% stable, ~68.3% in progress, ~3.2% not yet (includes TS frontend + Runtime/Bun rows) |
 | **Total test count** | **3,300+ / 3,300+ — ~100%** | `./pantry/.bin/zig build test --summary all` (pre-existing `d_ts_fast` + `home_rt` env aside) |
 
@@ -143,27 +143,36 @@ imports diff-clean and re-syncable.
 
 | Measurement | Coverage | % |
 |---|---|---|
-| **Tier-0 symbols implemented** | **7 / ~103** | **~6.8%** |
-| Test surfaces | inline (3 tests) + bundler-side integration (7 tests) | regression-gated |
+| **Symbols implemented** | **16 / ~103** | **~15.5%** |
+| Test surfaces | inline (~9 tests) + bundler-side integration (7 tests) | regression-gated |
 
-**Tier-0 surface (landed today, 7 symbols):**
+**Implemented surface (16 symbols across Tier-0 + Tier-1):**
 
 | Symbol | Status | Purpose |
 |---|---|---|
 | `bun.OOM` | 🟢 | `error{OutOfMemory}` alias for explicit error-return signatures (`bun.OOM!void`) |
-| `bun.handleOom` | 🟢 | Convert OOM to panic for call sites that can't propagate |
+| `bun.JSError` | 🟢 | `error{ JSException, OutOfMemory }` union for JSC-touching callers |
+| `bun.Environment` | 🟢 | Build-time flags (`isDebug`, `isWindows`, `isMac`, `ci_assert`, `enable_logs`) |
+| `bun.env_var` | 🟢 | Run-time env-var namespace (`WANTS_LOUD.get()`) |
+| `bun.handleOom` | 🟢 | Unwrap OOM-returning calls or panic on OOM for call sites that can't propagate |
 | `bun.default_allocator` | 🟢 | Process-wide allocator (re-exports `std.heap.smp_allocator`) |
 | `bun.assert` | 🟢 | Alias for `std.debug.assert` |
-| `bun.ast.Index` | 🟢 | Strongly-typed source-file / module index with `.Int = u32` companion |
+| `bun.AllocationScope` | 🟢 | Allocator-scope wrapper for region-style lifetimes |
+| `bun.Output` | 🟢 | Logger / stderr namespace (`enable_ansi_colors_stderr`, `isAIAgent`) |
+| `bun.debugAssert` | 🟢 | Debug-only assert (compiles away in release builds) |
+| `bun.create` | 🟢 | Typed allocator helper: `allocator.create + value` |
 | `bun.StringHashMapUnmanaged` | 🟢 | Alias for the std-lib generic |
+| `bun.String` | 🟢 | Interned-string newtype with `.static(...)` + `.slice()` |
+| `bun.strings` | 🟢 | String utilities (`isValidUTF8` so far) |
+| `bun.ast.Index` | 🟢 | Strongly-typed source-file / module index with `.Int = u32` companion |
 | `bun.fs.Path` | 🟡 | Path record; Tier-0 callers read only `.text` (struct will grow per tier) |
 
 Each subsequent tier opens the door for more vendored Bun files to
 compile. See [`docs/PARITY-BUN-COMPAT.md`](./docs/PARITY-BUN-COMPAT.md)
-for the per-symbol drill-down, planned tier categories
-(`bun.Output`, `bun.JSC.*`, `bun.strings`, `bun.path`,
-`bun.options`, `bun.resolver`, `bun.MutableString`, `bun.bake`,
-`bun.css`, `bun.transpiler`, `bun.SourceMap`), and the test wiring.
+for the per-symbol drill-down, planned Tier-2+ categories
+(`bun.JSC.*`, `bun.path`, `bun.options`, `bun.resolver`,
+`bun.MutableString`, `bun.bake`, `bun.css`, `bun.transpiler`,
+`bun.SourceMap`), and the test wiring.
 
 ### Node.js compatibility (`packages/runtime/src/node/`)
 

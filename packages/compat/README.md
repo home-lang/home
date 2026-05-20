@@ -5,7 +5,7 @@ Bun source needs in order to compile against Home's stdlib without
 modification.
 
 - **Parity status:** [`docs/PARITY-BUN-COMPAT.md`](../../docs/PARITY-BUN-COMPAT.md) (per-symbol drill-down)
-- **Tier-0 surface:** 7 / ~103 `bun.*` identifiers (~6.8%)
+- **Surface size:** 16 / ~103 `bun.*` identifiers (~15.5%) — Tier-0 + Tier-1
 - **Consumers:** [`packages/bundler/`](../bundler/) (Bun bundler vendor), [`packages/runtime/`](../runtime/) (Bun runtime port)
 
 ## Why this exists
@@ -31,21 +31,30 @@ Each tier of vendored code that comes online tells the shim what
 new `bun.*` identifiers it needs. The shim grows just enough to
 satisfy them — no more.
 
-## Tier-0 surface (landed)
+## Implemented surface (16 symbols)
 
-The seven symbols required by `IndexStringMap.zig` and
-`PathToSourceIndexMap.zig`, the first two bundler vendors brought
-online:
+Tier 0 was the minimum set required by `IndexStringMap.zig` and
+`PathToSourceIndexMap.zig`. Tier 1 adds the symbols vendored
+bundler / runtime files reach for once Tier 0 is in place.
 
-| Symbol | Purpose |
-|---|---|
-| `bun.OOM` | `error{OutOfMemory}` alias for explicit error-return signatures (`bun.OOM!void`) |
-| `bun.handleOom` | Convert `error.OutOfMemory` into a panic for call sites that can't propagate |
-| `bun.default_allocator` | Process-wide allocator (re-exports `std.heap.smp_allocator`) |
-| `bun.assert` | Alias for `std.debug.assert` |
-| `bun.ast.Index` | Source-file / module index newtype with `.Int = u32` companion |
-| `bun.StringHashMapUnmanaged` | Alias for the std-lib generic |
-| `bun.fs.Path` | Path record (Tier-0 callers read only `.text`) |
+| Symbol | Tier | Purpose |
+|---|---|---|
+| `bun.OOM` | 0 | `error{OutOfMemory}` alias for explicit error-return signatures (`bun.OOM!void`) |
+| `bun.JSError` | 1 | `error{ JSException, OutOfMemory }` union for JSC-touching callers |
+| `bun.Environment` | 1 | Build-time flags (`isDebug`, `isWindows`, `isMac`, `ci_assert`, `enable_logs`) |
+| `bun.env_var` | 1 | Run-time env-var namespace (`WANTS_LOUD.get()`) |
+| `bun.handleOom` | 0 | Unwrap OOM-returning calls or panic on OOM for call sites that can't propagate |
+| `bun.default_allocator` | 0 | Process-wide allocator (re-exports `std.heap.smp_allocator`) |
+| `bun.assert` | 0 | Alias for `std.debug.assert` |
+| `bun.AllocationScope` | 1 | Allocator-scope wrapper for region-style lifetimes |
+| `bun.Output` | 1 | Logger / stderr namespace (`enable_ansi_colors_stderr`, `isAIAgent`) |
+| `bun.debugAssert` | 1 | Debug-only assert (compiles away in release builds) |
+| `bun.create` | 1 | Typed allocator helper: `allocator.create + value` |
+| `bun.StringHashMapUnmanaged` | 0 | Alias for the std-lib generic |
+| `bun.String` | 1 | Interned-string newtype with `.static(...)` + `.slice()` |
+| `bun.strings` | 1 | String utilities (`isValidUTF8` so far) |
+| `bun.ast.Index` | 0 | Source-file / module index newtype with `.Int = u32` companion |
+| `bun.fs.Path` | 0 | Path record (Tier-0 callers read only `.text`) |
 
 Full source: [`src/compat.zig`](./src/compat.zig).
 
@@ -85,15 +94,15 @@ When a new vendored Bun file lands and the build fails because some
    `scripts/measure-parity.sh` (writes the updated count to stdout)
    and pasting the result into the top-of-README headline table.
 
-## Known Tier-1+ candidates
+## Known Tier-2+ candidates
 
 Upstream `bun.*` identifiers we'll likely need to shim as more
 vendored files come online — currently all 🔴, listed at
 [`docs/PARITY-BUN-COMPAT.md`](../../docs/PARITY-BUN-COMPAT.md):
 
-`bun.Output`, `bun.JSC.*`, `bun.strings`, `bun.path`, `bun.options`,
-`bun.resolver`, `bun.MutableString`, `bun.bake`, `bun.css`,
-`bun.transpiler`, `bun.SourceMap`.
+`bun.JSC.*`, `bun.path` (bundler-side, distinct from `node:path`),
+`bun.options`, `bun.resolver`, `bun.MutableString`, `bun.bake`,
+`bun.css`, `bun.transpiler`, `bun.SourceMap`.
 
 ## Testing
 
