@@ -98,6 +98,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/18820.test.ts",
     "regression/issue/23382.test.js",
     "js/bun/util/escapeRegExp.test.ts",
+    "regression/issue/24045.test.ts",
 };
 
 const harness_prelude =
@@ -407,6 +408,12 @@ const harness_prelude =
     \\  if (strict && Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false;
     \\  if (a instanceof Date || b instanceof Date) return a instanceof Date && b instanceof Date && Object.is(a.getTime(), b.getTime());
     \\  if (a instanceof RegExp || b instanceof RegExp) return a instanceof RegExp && b instanceof RegExp && a.source === b.source && a.flags === b.flags;
+    \\  if (a instanceof Number || b instanceof Number) {
+    \\    if (!(a instanceof Number) || !(b instanceof Number) || !Object.is(a.valueOf(), b.valueOf())) return false;
+    \\  }
+    \\  if (a instanceof Boolean || b instanceof Boolean) {
+    \\    if (!(a instanceof Boolean) || !(b instanceof Boolean) || !Object.is(a.valueOf(), b.valueOf())) return false;
+    \\  }
     \\  if (a instanceof Map || b instanceof Map) {
     \\    if (!(a instanceof Map) || !(b instanceof Map) || a.size !== b.size) return false;
     \\    const previous = seen.get(a);
@@ -860,6 +867,15 @@ const harness_prelude =
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
     \\globalThis.__home_modules["bun"] = { semver: Bun.semver };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
+    \\globalThis.__home_modules["assert/strict"] = {
+    \\  deepStrictEqual(actual, expected) {
+    \\    if (!__home_deep_equal(actual, expected, true, new Map())) {
+    \\      const error = new Error("Expected values to be strictly deep-equal");
+    \\      error.name = "AssertionError";
+    \\      throw error;
+    \\    }
+    \\  },
+    \\};
     \\globalThis.__home_modules["node:vm"] = {
     \\  runInNewContext(code, sandbox) {
     \\    const context = sandbox || {};
@@ -1753,6 +1769,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const testHelpers = globalThis.__home_import(\"bun:internal-for-testing\");",
         },
         .{
+            .needle = "import assert from \"assert/strict\";",
+            .replacement = "const assert = globalThis.__home_import(\"assert/strict\");",
+        },
+        .{
             .needle = "import buffer, { INSPECT_MAX_BYTES } from \"node:buffer\";",
             .replacement = "const __home_node_buffer = globalThis.__home_import(\"node:buffer\");\nconst buffer = __home_node_buffer.default;\nconst { INSPECT_MAX_BYTES } = __home_node_buffer;",
         },
@@ -2038,6 +2058,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/18820.test.ts", filesForSubset(.minimal_js)[44]);
     try std.testing.expectEqualStrings("regression/issue/23382.test.js", filesForSubset(.minimal_js)[45]);
     try std.testing.expectEqualStrings("js/bun/util/escapeRegExp.test.ts", filesForSubset(.minimal_js)[46]);
+    try std.testing.expectEqualStrings("regression/issue/24045.test.ts", filesForSubset(.minimal_js)[47]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -2067,6 +2088,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_expect_any_matches(value, ctor)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeNumber()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "a instanceof Map || b instanceof Map") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "a instanceof Number || b instanceof Number") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "a instanceof Boolean || b instanceof Boolean") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "a instanceof Set || b instanceof Set") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toIncludeRepeated(needle, expectedCount)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function beforeAll(fn, options)") != null);
@@ -2089,6 +2112,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "UnreachableError") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock, onTestFinished, test") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun\"] = { semver: Bun.semver }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"assert/strict\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:vm\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun:internal-for-testing\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "escapeRegExpForPackageNameMatching(value)") != null);
@@ -2175,6 +2199,19 @@ test "Bun internal testing import rewrite lowers default import" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const testHelpers = globalThis.__home_import(\"bun:internal-for-testing\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:internal-for-testing\"") == null);
+}
+
+test "assert strict import rewrite lowers default import" {
+    const source =
+        \\import assert from "assert/strict";
+        \\import { expect, test } from "bun:test";
+        \\test("assert", () => expect(() => assert.deepStrictEqual(new Number(1), new Number(2))).toThrow("Expected values to be strictly deep-equal"));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/24045.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const assert = globalThis.__home_import(\"assert/strict\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"assert/strict\"") == null);
 }
 
 test "Bun test import rewrite lowers mock imports" {
@@ -2690,6 +2727,79 @@ test "bootstrap runner covers Bun internal regexp escaping helpers" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner covers assert strict boxed primitive equality" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import assert from "assert/strict";
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("assert.deepStrictEqual() should compare Number wrapper object values - issue #24045", () => {
+        \\  expect(() => {
+        \\    assert.deepStrictEqual(new Number(1), new Number(2));
+        \\  }).toThrow("Expected values to be strictly deep-equal");
+        \\
+        \\  expect(() => {
+        \\    assert.deepStrictEqual(new Number(1), new Number(1));
+        \\  }).not.toThrow();
+        \\
+        \\  expect(() => {
+        \\    assert.deepStrictEqual(new Number(0), new Number(-0));
+        \\  }).toThrow("Expected values to be strictly deep-equal");
+        \\
+        \\  expect(() => {
+        \\    assert.deepStrictEqual(new Number(NaN), new Number(NaN));
+        \\  }).not.toThrow();
+        \\
+        \\  expect(() => {
+        \\    assert.deepStrictEqual(new Number(Infinity), new Number(-Infinity));
+        \\  }).toThrow("Expected values to be strictly deep-equal");
+        \\});
+        \\
+        \\test("assert.deepStrictEqual() should compare Boolean wrapper object values - issue #24045", () => {
+        \\  expect(() => {
+        \\    assert.deepStrictEqual(new Boolean(true), new Boolean(false));
+        \\  }).toThrow("Expected values to be strictly deep-equal");
+        \\
+        \\  expect(() => {
+        \\    assert.deepStrictEqual(new Boolean(true), new Boolean(true));
+        \\  }).not.toThrow();
+        \\});
+        \\
+        \\test("assert.deepStrictEqual() should not compare Number wrapper with primitive", () => {
+        \\  expect(() => {
+        \\    assert.deepStrictEqual(new Number(1), 1);
+        \\  }).toThrow("Expected values to be strictly deep-equal");
+        \\});
+        \\
+        \\test("assert.deepStrictEqual() should check own properties on wrapper objects", () => {
+        \\  const num1 = new Number(42);
+        \\  const num2 = new Number(42);
+        \\  (num1 as any).customProp = "hello";
+        \\
+        \\  expect(() => {
+        \\    assert.deepStrictEqual(num1, num2);
+        \\  }).toThrow("Expected values to be strictly deep-equal");
+        \\
+        \\  (num2 as any).customProp = "hello";
+        \\  expect(() => {
+        \\    assert.deepStrictEqual(num1, num2);
+        \\  }).not.toThrow();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24045.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap runner reports unsupported thrown by harness as unsupported" {
