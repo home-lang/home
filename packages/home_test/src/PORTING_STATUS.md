@@ -128,7 +128,7 @@ narrow `toMatchInlineSnapshot` object formatting,
 relative CJS fixture require for `regression/issue/013880-fixture.cjs`,
 `node:path` / `path` join and posix/win32 identity smokes,
 isAbsolute / normalize / resolve / relative empty-string smokes,
-basename / extname / normalize / join / dirname / parse / format path
+basename / extname / normalize / join / dirname / parse / format / resolve path
 table smokes, posix/win32 relative path table smokes, and path
 namespace / invalid-argument coverage,
 `node:url` URL.canParse, url.format empty-input, and

@@ -158,6 +158,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/path/relative.test.js",
     "js/node/path/path.test.js",
     "js/node/path/posix-relative-on-windows.test.js",
+    "js/node/path/resolve.test.js",
 };
 
 const harness_prelude =
@@ -1370,10 +1371,84 @@ const harness_prelude =
     \\function __home_path_normalize(value) {
     \\  return __home_path_posix_normalize(value);
     \\}
-    \\function __home_path_resolve() {
-    \\  __home_path_validate_arguments(arguments);
-    \\  const parts = Array.prototype.slice.call(arguments).filter(part => part.length > 0);
-    \\  return parts.length === 0 ? process.cwd() : parts[parts.length - 1];
+    \\function __home_path_resolve_invalid_arg(index, actual) {
+    \\  const error = new TypeError('The "paths[' + index + ']" property must be of type string, got ' + (actual === null ? "null" : typeof actual));
+    \\  error.code = "ERR_INVALID_ARG_TYPE";
+    \\  throw error;
+    \\}
+    \\function __home_path_posix_resolve() {
+    \\  let resolvedPath = "";
+    \\  let resolvedAbsolute = false;
+    \\  for (let i = arguments.length - 1; i >= -1 && !resolvedAbsolute; --i) {
+    \\    let path;
+    \\    if (i >= 0) path = arguments[i];
+    \\    else path = process.cwd();
+    \\    if (typeof path !== "string") __home_path_resolve_invalid_arg(i, path);
+    \\    if (path.length === 0) continue;
+    \\    resolvedPath = path + "/" + resolvedPath;
+    \\    resolvedAbsolute = path.charCodeAt(0) === 47;
+    \\  }
+    \\  const normalized = __home_path_normalize_parts(resolvedPath.split("/"), !resolvedAbsolute).join("/");
+    \\  if (resolvedAbsolute) return "/" + normalized;
+    \\  return normalized.length > 0 ? normalized : ".";
+    \\}
+    \\function __home_path_win32_device_and_root(path) {
+    \\  const len = path.length;
+    \\  if (len === 0) return { device: "", rootEnd: 0, absolute: false };
+    \\  const first = path.charCodeAt(0);
+    \\  if (__home_path_is_win32_separator(first)) {
+    \\    if (len > 1 && __home_path_is_win32_separator(path.charCodeAt(1)) && !(len > 2 && __home_path_is_win32_separator(path.charCodeAt(2)))) {
+    \\      let j = 2;
+    \\      while (j < len && __home_path_is_win32_separator(path.charCodeAt(j))) j++;
+    \\      const serverStart = j;
+    \\      while (j < len && !__home_path_is_win32_separator(path.charCodeAt(j))) j++;
+    \\      const server = path.slice(serverStart, j);
+    \\      while (j < len && __home_path_is_win32_separator(path.charCodeAt(j))) j++;
+    \\      const shareStart = j;
+    \\      while (j < len && !__home_path_is_win32_separator(path.charCodeAt(j))) j++;
+    \\      const share = path.slice(shareStart, j);
+    \\      if (server.length > 0 && share.length > 0) return { device: "\\\\" + server + "\\" + share, rootEnd: j, absolute: true };
+    \\    }
+    \\    return { device: "", rootEnd: 1, absolute: true };
+    \\  }
+    \\  if (len >= 2 && __home_path_is_win32_drive(first) && path.charCodeAt(1) === 58) {
+    \\    const device = path.slice(0, 2);
+    \\    if (len > 2 && __home_path_is_win32_separator(path.charCodeAt(2))) return { device, rootEnd: 3, absolute: true };
+    \\    return { device, rootEnd: 2, absolute: false };
+    \\  }
+    \\  return { device: "", rootEnd: 0, absolute: false };
+    \\}
+    \\function __home_path_win32_resolve() {
+    \\  let resolvedDevice = "";
+    \\  let resolvedTail = "";
+    \\  let resolvedAbsolute = false;
+    \\  for (let i = arguments.length - 1; i >= -1; --i) {
+    \\    let path;
+    \\    if (i >= 0) {
+    \\      path = arguments[i];
+    \\    } else if (resolvedDevice.length > 0) {
+    \\      path = resolvedDevice + "\\";
+    \\    } else {
+    \\      path = process.cwd();
+    \\    }
+    \\    if (typeof path !== "string") __home_path_resolve_invalid_arg(i, path);
+    \\    if (path.length === 0) continue;
+    \\    const parsed = __home_path_win32_device_and_root(path);
+    \\    const device = parsed.device;
+    \\    if (device.length > 0) {
+    \\      if (resolvedDevice.length > 0 && device.toLowerCase() !== resolvedDevice.toLowerCase()) continue;
+    \\      if (resolvedDevice.length === 0) resolvedDevice = device;
+    \\    }
+    \\    if (!resolvedAbsolute) {
+    \\      resolvedTail = path.slice(parsed.rootEnd) + "\\" + resolvedTail;
+    \\      resolvedAbsolute = parsed.absolute;
+    \\    }
+    \\    if (resolvedAbsolute && resolvedDevice.length > 0) break;
+    \\  }
+    \\  const normalized = __home_path_normalize_parts(resolvedTail.split(/[\\/]+/), !resolvedAbsolute).join("\\");
+    \\  if (resolvedAbsolute) return resolvedDevice + "\\" + normalized;
+    \\  const result = resolvedDevice + normalized;
+    \\  return result.length > 0 ? result : ".";
     \\}
     \\function __home_path_posix_relative(from, to) {
     \\  const fromInput = __home_path_validate_string(from, "from");
@@ -1618,8 +1693,8 @@ const harness_prelude =
     \\  }
     \\  return text.slice(0, end);
     \\}
-    \\const __home_path_posix = { join: __home_path_posix_join, dirname: __home_path_posix_dirname, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_posix_normalize, resolve: __home_path_resolve, relative: __home_path_posix_relative, basename: __home_path_posix_basename, extname: __home_path_posix_extname, parse: __home_path_posix_parse, format: __home_path_posix_format, sep: "/", delimiter: ":" };
-    \\const __home_path_win32 = { join: __home_path_win32_join, dirname: __home_path_win32_dirname, isAbsolute: __home_path_win32_is_absolute, normalize: __home_path_win32_normalize, resolve: __home_path_resolve, relative: __home_path_win32_relative, basename: __home_path_win32_basename, extname: __home_path_win32_extname, parse: __home_path_win32_parse, format: __home_path_win32_format, sep: "\\", delimiter: ";" };
+    \\const __home_path_posix = { join: __home_path_posix_join, dirname: __home_path_posix_dirname, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_posix_normalize, resolve: __home_path_posix_resolve, relative: __home_path_posix_relative, basename: __home_path_posix_basename, extname: __home_path_posix_extname, parse: __home_path_posix_parse, format: __home_path_posix_format, sep: "/", delimiter: ":" };
+    \\const __home_path_win32 = { join: __home_path_win32_join, dirname: __home_path_win32_dirname, isAbsolute: __home_path_win32_is_absolute, normalize: __home_path_win32_normalize, resolve: __home_path_win32_resolve, relative: __home_path_win32_relative, basename: __home_path_win32_basename, extname: __home_path_win32_extname, parse: __home_path_win32_parse, format: __home_path_win32_format, sep: "\\", delimiter: ";" };
     \\__home_path_posix.posix = __home_path_posix;
     \\__home_path_posix.win32 = __home_path_win32;
     \\__home_path_win32.posix = __home_path_posix;
@@ -3364,6 +3439,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"path/posix\"] = __home_path_posix") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_path_win32_is_absolute") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_path_relative") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_path_posix_resolve") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_path_win32_resolve") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:url\"] = __home_url_module") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "URL.canParse = function(input, base)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "domainToASCII(value)") != null);
@@ -3479,6 +3556,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/node/path/relative.test.js",
         "js/node/path/path.test.js",
         "js/node/path/posix-relative-on-windows.test.js",
+        "js/node/path/resolve.test.js",
     };
 
     for (expected) |path| {
