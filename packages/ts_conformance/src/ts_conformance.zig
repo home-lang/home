@@ -3467,6 +3467,132 @@ test "conformance: assignObjectToNonPrimitive passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: controlFlowConditionalExpression matches TS2454" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "controlFlowConditionalExpression",
+        .path = "controlFlowConditionalExpression.ts",
+        .source =
+        \\// @target: es2015
+        \\let x: string | number | boolean;
+        \\let cond: boolean;
+        \\
+        \\cond ? x = "" : x = 3;
+        \\x; // string | number
+        ,
+        .expects_error = true,
+        .expected_errors = "controlFlowConditionalExpression.ts(4,1): error TS2454: Variable 'cond' is used before being assigned.",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: controlFlowBinaryAndExpression matches TS2454" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "controlFlowBinaryAndExpression",
+        .path = "controlFlowBinaryAndExpression.ts",
+        .source =
+        \\// @target: es2015
+        \\let x: string | number | boolean;
+        \\let cond: boolean;
+        \\
+        \\(x = "") && (x = 0);
+        \\x; // string | number
+        \\
+        \\x = "";
+        \\cond && (x = 0);
+        \\x; // string | number
+        ,
+        .expects_error = true,
+        .expected_errors = "controlFlowBinaryAndExpression.ts(8,1): error TS2454: Variable 'cond' is used before being assigned.",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: controlFlowForInStatement matches TS2454" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "controlFlowForInStatement",
+        .path = "controlFlowForInStatement.ts",
+        .source =
+        \\// @target: es2015
+        \\let x: string | number | boolean | RegExp | Function;
+        \\let obj: any;
+        \\let cond: boolean;
+        \\
+        \\x = /a/;
+        \\for (let y in obj) {
+        \\    x = y;
+        \\    if (cond) {
+        \\        x = 42;
+        \\        continue;
+        \\    }
+        \\    if (cond) {
+        \\        x = true;
+        \\        break;
+        \\    }
+        \\}
+        \\x; // RegExp | string | number | boolean
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\controlFlowForInStatement.ts(8,9): error TS2454: Variable 'cond' is used before being assigned.
+        \\controlFlowForInStatement.ts(12,9): error TS2454: Variable 'cond' is used before being assigned.
+        ,
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: instanceofOperatorWithLHSIsObject matches TS2454" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "instanceofOperatorWithLHSIsObject",
+        .path = "instanceofOperatorWithLHSIsObject.ts",
+        .source =
+        \\// @target: es2015
+        \\class C { }
+        \\
+        \\var x1: any;
+        \\var x2: Function;
+        \\
+        \\var a: {};
+        \\var b: Object;
+        \\var c: C;
+        \\var d: string | C;
+        \\
+        \\var r1 = a instanceof x1;
+        \\var r2 = b instanceof x2;
+        \\var r3 = c instanceof x1;
+        \\var r4 = d instanceof x1;
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\instanceofOperatorWithLHSIsObject.ts(11,10): error TS2454: Variable 'a' is used before being assigned.
+        \\instanceofOperatorWithLHSIsObject.ts(12,10): error TS2454: Variable 'b' is used before being assigned.
+        \\instanceofOperatorWithLHSIsObject.ts(12,23): error TS2454: Variable 'x2' is used before being assigned.
+        \\instanceofOperatorWithLHSIsObject.ts(13,10): error TS2454: Variable 'c' is used before being assigned.
+        \\instanceofOperatorWithLHSIsObject.ts(14,10): error TS2454: Variable 'd' is used before being assigned.
+        ,
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: additionOperatorWithAnyAndEveryType passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "additionOperatorWithAnyAndEveryType",
