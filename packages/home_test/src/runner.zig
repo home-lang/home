@@ -15,17 +15,20 @@ pub const Adapter = enum {
 pub const FileSpec = struct {
     path: []const u8,
     source: []const u8,
+    allow_no_tests: bool = false,
 };
 
 pub const PreparedFile = struct {
     path: []const u8,
     source: []u8,
     unsupported_reason: ?[]const u8 = null,
+    allow_no_tests: bool = false,
 
     pub fn fileSpec(self: PreparedFile) FileSpec {
         return .{
             .path = self.path,
             .source = self.source,
+            .allow_no_tests = self.allow_no_tests,
         };
     }
 

@@ -115,6 +115,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/013880.test.ts",
     "js/bun/util/exotic-global-mutable-prototype.test.ts",
     "js/bun/jsc/native-constructor-identity.test.ts",
+    "js/bun/empty-file.test.ts",
 };
 
 const harness_prelude =
@@ -2139,11 +2140,13 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
 
 pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) !runner.PreparedFile {
     const rewritten = try rewriteBunTestImport(allocator, source, relative_path);
+    const allow_no_tests = std.mem.eql(u8, relative_path, "js/bun/empty-file.test.ts");
     if (hasBunTestImport(rewritten)) {
         return .{
             .path = relative_path,
             .source = rewritten,
             .unsupported_reason = "unsupported bun:test import shape",
+            .allow_no_tests = allow_no_tests,
         };
     }
     if (hasUnsupportedModuleSyntax(rewritten)) {
@@ -2151,11 +2154,13 @@ pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, rel
             .path = relative_path,
             .source = rewritten,
             .unsupported_reason = "unsupported module syntax",
+            .allow_no_tests = allow_no_tests,
         };
     }
     return .{
         .path = relative_path,
         .source = rewritten,
+        .allow_no_tests = allow_no_tests,
     };
 }
 
@@ -2291,6 +2296,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/013880.test.ts", filesForSubset(.minimal_js)[61]);
     try std.testing.expectEqualStrings("js/bun/util/exotic-global-mutable-prototype.test.ts", filesForSubset(.minimal_js)[62]);
     try std.testing.expectEqualStrings("js/bun/jsc/native-constructor-identity.test.ts", filesForSubset(.minimal_js)[63]);
+    try std.testing.expectEqualStrings("js/bun/empty-file.test.ts", filesForSubset(.minimal_js)[64]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -2788,6 +2794,29 @@ test "bootstrap runner reports zero registered tests as unsupported" {
 
     try std.testing.expectEqual(test_result.TestStatus.unsupported, file_run.result.status());
     try std.testing.expectEqualStrings("no bun:test tests registered by corpus file", file_run.result.first_failure_message);
+}
+
+test "bootstrap runner allows admitted module-load smokes with no registered tests" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\// comment-only regression smoke
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/empty-file.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.fileSpec().allow_no_tests);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
 test "bootstrap runner keeps todo-only files as todo" {

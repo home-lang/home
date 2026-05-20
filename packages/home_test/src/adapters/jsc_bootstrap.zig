@@ -104,6 +104,13 @@ pub const Runtime = struct {
             return runner.FileRun.failBorrowed(spec.path, @errorName(err));
         };
         if (counters.passed + counters.failed + counters.todo == 0) {
+            if (spec.allow_no_tests) {
+                return .{
+                    .result = .{
+                        .path = spec.path,
+                    },
+                };
+            }
             return runner.FileRun.unsupportedBorrowed(spec.path, "no bun:test tests registered by corpus file");
         }
 

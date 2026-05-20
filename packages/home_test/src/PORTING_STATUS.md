@@ -53,7 +53,7 @@ relative CJS fixture require for `regression/issue/013880-fixture.cjs`,
 `jest.fn`, narrow `HTMLRewriter` element callbacks,
 `process.versions.bun`, `process.revision`, `process.on` / `process.emit`,
 `node:vm.runInNewContext`, DOMException, native constructor identity,
-mutable `globalThis` prototype behavior,
+mutable `globalThis` prototype behavior, comment-only module-load smoke,
 Request/Response/Headers/URL, `node-fetch`, `node:buffer`, `deno:harness`,
 Deno `Event` / `CustomEvent` / `AbortController`, a Deno
 `URLSearchParams` bootstrap smoke, EventTarget, AbortSignal, Node
