@@ -412,6 +412,13 @@ executing the client script. The native parity target remains Bun's sync
 `loadModuleSync` failure over async ESM/TLA modules. The next Bake
 boundary is
 `DEV:esm-12: function that is assigned to should become a live binding`.
+The copied assigned-function live-binding case now runs through the Bake
+static client shim. The fixture recognizer simulates the observable
+`live()`/`change()` sequence and the Babel-style default helper chain so
+the client logs `PASS`. The native parity target remains Bun's
+parser-assigned symbol tracking and HMR ESM export lowering that emits
+getter-backed live exports. The next Bake boundary is
+`DEV:esm-13: browser field is used`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

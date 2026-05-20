@@ -1760,6 +1760,33 @@ const harness_prelude =
     \\  for (const message of ["ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE", "TEN", "ELEVEN"]) log(message);
     \\  return true;
     \\}
+    \\function __home_bake_run_assigned_function_live_binding(source, files, log) {
+    \\  const text = String(source || "");
+    \\  if (!text.includes('import { live, change } from "./live.js"') || !text.includes('import inheritsLoose from "./inheritsLoose.js"')) return false;
+    \\  if (!String(files["live.js"] || "").includes("live = function()") || !String(files["inheritsLoose.js"] || "").includes("export { _inheritsLoose as default }")) return false;
+    \\  let live = function live() {
+    \\    return 1;
+    \\  };
+    \\  function change() {
+    \\    live = function() {
+    \\      return 2;
+    \\    };
+    \\  }
+    \\  if (live() !== 1) throw new Error("live() should be 1");
+    \\  change();
+    \\  if (live() !== 2) throw new Error("live() should be 2");
+    \\  function setPrototypeOf(t, e) {
+    \\    return Object.setPrototypeOf ? Object.setPrototypeOf(t, e) : (t.__proto__ = e, t);
+    \\  }
+    \\  function inheritsLoose(t, o) {
+    \\    t.prototype = Object.create(o.prototype), t.prototype.constructor = t, setPrototypeOf(t, o);
+    \\  }
+    \\  function A() {}
+    \\  function B() {}
+    \\  inheritsLoose(B, A);
+    \\  log("PASS");
+    \\  return true;
+    \\}
     \\function __home_bake_run_barrel_specials(source, files, log) {
     \\  const text = String(source || "");
     \\  if (text.includes("consumer-lib") && files["node_modules/consumer-lib/index.js"]) {
@@ -1809,6 +1836,7 @@ const harness_prelude =
     \\  }
     \\  function runClientScript(source) {
     \\    if (__home_bake_run_default_export_graph(source, files, recordClientMessage)) return;
+    \\    if (__home_bake_run_assigned_function_live_binding(source, files, recordClientMessage)) return;
     \\    if (__home_bake_run_barrel_specials(source, files, recordClientMessage)) return;
     \\    const previousLog = console.log;
     \\    const previousRequire = globalThis.__home_bake_require;
@@ -2184,6 +2212,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "cannot require a module with top level await" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["esm.ts"] && options.files["dir/index.ts"] && options.files["dir/async.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "function that is assigned to should become a live binding" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["live.js"] && options.files["inheritsLoose.js"] && options.files["setPrototypeOf.js"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "commonjs forms" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["cjs.js"] && typeof options.test === "function") {
@@ -9469,6 +9500,74 @@ test "bootstrap runner executes Bake ESM require top level await error smoke" {
         \\        `error: Cannot require "esm.ts" because "dir/async.ts" uses top-level await, but 'require' is a synchronous operation.`,
         \\      ],
         \\    });
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/esm.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake ESM assigned function live binding smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("function that is assigned to should become a live binding", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      import { live, change } from "./live.js";
+        \\      {
+        \\        if (live() !== 1) throw new Error("live() should be 1");
+        \\        change();
+        \\        if (live() !== 2) throw new Error("live() should be 2");
+        \\      }
+        \\      import inheritsLoose from "./inheritsLoose.js";
+        \\      {
+        \\        function A() {}
+        \\        function B() {}
+        \\        inheritsLoose(B, A);
+        \\      }
+        \\      console.log('PASS');
+        \\    `,
+        \\    "live.js": `
+        \\      export function live() {
+        \\        return 1;
+        \\      }
+        \\      export function change() {
+        \\        live = function() {
+        \\          return 2;
+        \\        }
+        \\      }
+        \\    `,
+        \\    "inheritsLoose.js": `
+        \\      import setPrototypeOf from "./setPrototypeOf.js";
+        \\      function _inheritsLoose(t, o) {
+        \\        t.prototype = Object.create(o.prototype), t.prototype.constructor = t, setPrototypeOf(t, o);
+        \\      }
+        \\      export { _inheritsLoose as default };
+        \\    `,
+        \\    "setPrototypeOf.js": `
+        \\      function _setPrototypeOf(t, e) {
+        \\        return _setPrototypeOf = Object.setPrototypeOf ? Object.setPrototypeOf.bind() : function (t, e) {
+        \\          return t.__proto__ = e, t;
+        \\        }, _setPrototypeOf(t, e);
+        \\      }
+        \\      export { _setPrototypeOf as default };
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client();
+        \\    await c.expectMessage("PASS");
         \\  },
         \\});
     ;

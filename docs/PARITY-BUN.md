@@ -627,6 +627,18 @@ Latest measured full gate after the Bake ESM require/TLA error slice:
 unsupported, `35` todo. First failure: `bake/dev/esm.test.ts` with
 `DEV:esm-12: function that is assigned to should become a live binding`.
 
+The Bake static client shim now covers the copied assigned-function
+live-binding case. The fixture recognizer simulates the observable
+`live()`/`change()` sequence and the Babel-style default helper chain so
+the client logs `PASS`. This is still a harness ratchet; the native
+parity target remains Bun's parser-assigned symbol tracking and HMR ESM
+export lowering that emits getter-backed live exports.
+
+Latest measured full gate after the Bake assigned-function live-binding
+slice: `4,013` files executed, `454` passed, `3,926` failed, `1,479`
+unsupported, `35` todo. First failure: `bake/dev/esm.test.ts` with
+`DEV:esm-13: browser field is used`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap
