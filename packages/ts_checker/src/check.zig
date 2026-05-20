@@ -13972,6 +13972,25 @@ pub const Checker = struct {
                             }
                         }
                     }
+                    if (fn_p.body == hir_mod.none_node_id and
+                        !is_abstract_method and
+                        !self.classHasLeadingDeclare(node) and
+                        !self.classNodeIsInsideAmbientDeclaredModule(node) and
+                        !self.virtualSectionIsDeclarationFile(node))
+                    {
+                        const opposite_seen = if (fn_p.flags.is_static) &method_seen else &static_method_seen;
+                        if (opposite_seen.getPtr(member_name)) |opposite_info| {
+                            if (opposite_info.bodyless_count > 0 and opposite_info.implementation_count == 0) {
+                                const code = if (fn_p.flags.is_static) TsCodes.overload_must_not_be_static else TsCodes.overload_must_be_static;
+                                const message = if (fn_p.flags.is_static) "Function overload must not be static." else "Function overload must be static.";
+                                try self.report(m, code, message);
+                                // The mismatched opposite-side overload is not the one tsc
+                                // uses for TS2391; the current overload gets the missing
+                                // implementation diagnostic after class member analysis.
+                                opposite_info.implementation_count = 1;
+                            }
+                        }
+                    }
                     try self.checkClassMethodOverloadState(m, member_name, fn_p.flags.is_static, self.methodVisibilityBits(fn_p.flags), fn_p.body != hir_mod.none_node_id, seen);
                     if (fn_p.body == hir_mod.none_node_id and !is_abstract_method) {
                         previous_bodyless_method_name = member_name;
@@ -63644,6 +63663,47 @@ test "checker: static and instance super resolve separate class sides" {
         try T.expect(d.code != TsCodes.overload_must_be_static);
         try T.expect(d.code != TsCodes.overload_must_not_be_static);
         try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: mixed staticness method overloads diagnose second overload" {
+    const s = try newSetup(
+        \\class C {
+        \\  foo();
+        \\  static foo();
+        \\}
+        \\class D {
+        \\  static bar();
+        \\  bar();
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var must_not_static: usize = 0;
+    var must_static: usize = 0;
+    var missing_impl: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.overload_must_not_be_static) must_not_static += 1;
+        if (d.code == TsCodes.overload_must_be_static) must_static += 1;
+        if (d.code == TsCodes.implementation_missing) missing_impl += 1;
+    }
+    try T.expectEqual(@as(usize, 1), must_not_static);
+    try T.expectEqual(@as(usize, 1), must_static);
+    try T.expectEqual(@as(usize, 2), missing_impl);
+}
+
+test "checker: ambient static and instance method declarations do not form overload staticness errors" {
+    const s = try newSetup(
+        \\declare class C {
+        \\  static name(): string;
+        \\  name(): string;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.overload_must_be_static);
+        try T.expect(d.code != TsCodes.overload_must_not_be_static);
     }
 }
 
