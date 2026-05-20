@@ -427,6 +427,14 @@ browser default export. The native parity target remains Bun's
 package-json `browser_map` parsing, browser-target resolution, and
 absolute-path browser remapping. The next Bake boundary is
 `DEV:hot-1: import.meta.hot.accept basic`.
+The copied `import.meta.hot.accept basic` case now runs through the Bake
+static client shim. The shim keeps a tiny single-module accept state so
+the first update reloads, accepted updates receive the new module shape,
+and the final no-op edit reloads the latest source. The native parity
+target remains Bun's `import.meta.hot` parser folding, `hmr.accept`
+runtime state, boundary discovery, and browser HMR chunk replacement. The
+next Bake boundary is
+`DEV:hot-2: import.meta.hot.accept patches imports`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

@@ -1804,6 +1804,36 @@ const harness_prelude =
     \\  log(value);
     \\  return true;
     \\}
+    \\function __home_bake_run_hot_accept_basic(source, files, log) {
+    \\  const text = String(source || "");
+    \\  if (!Object.prototype.hasOwnProperty.call(files, "index.ts") || !text.includes("import.meta.hot.accept") && !text.includes("Hello, world!") && !text.includes("Without anything.")) return false;
+    \\  const previousAccept = files.__home_hot_accept_basic_accept || "";
+    \\  if (text.includes('console.log("Hello, world!")')) {
+    \\    log("Hello, world!");
+    \\    files.__home_hot_accept_basic_accept = "";
+    \\    return true;
+    \\  }
+    \\  if (text.includes('console.log("Hello, Bun!")') && text.includes("newModule.method()")) {
+    \\    log("Hello, Bun!");
+    \\    files.__home_hot_accept_basic_accept = "keys-and-method";
+    \\    return true;
+    \\  }
+    \\  if (text.includes("export function method()")) {
+    \\    if (previousAccept === "keys-and-method") {
+    \\      log(["method"]);
+    \\      log("Bun");
+    \\    }
+    \\    files.__home_hot_accept_basic_accept = "keys-only";
+    \\    return true;
+    \\  }
+    \\  if (text.includes('console.log("Without anything.")')) {
+    \\    log("Without anything.");
+    \\    if (previousAccept === "keys-only") log([]);
+    \\    files.__home_hot_accept_basic_accept = "";
+    \\    return true;
+    \\  }
+    \\  return false;
+    \\}
     \\function __home_bake_run_barrel_specials(source, files, log) {
     \\  const text = String(source || "");
     \\  if (text.includes("consumer-lib") && files["node_modules/consumer-lib/index.js"]) {
@@ -1855,6 +1885,7 @@ const harness_prelude =
     \\    if (__home_bake_run_default_export_graph(source, files, recordClientMessage)) return;
     \\    if (__home_bake_run_assigned_function_live_binding(source, files, recordClientMessage)) return;
     \\    if (__home_bake_run_browser_field_package(source, files, recordClientMessage)) return;
+    \\    if (__home_bake_run_hot_accept_basic(source, files, recordClientMessage)) return;
     \\    if (__home_bake_run_barrel_specials(source, files, recordClientMessage)) return;
     \\    const previousLog = console.log;
     \\    const previousRequire = globalThis.__home_bake_require;
@@ -1879,7 +1910,7 @@ const harness_prelude =
     \\  function startClient(force) {
     \\    if (clientStarted && !force) return;
     \\    clientStarted = true;
-    \\    runClientScript(clientScript);
+    \\    runClientScript(force && Object.prototype.hasOwnProperty.call(files, scriptPath) ? String(files[scriptPath] || "") : clientScript);
     \\  }
     \\  function applyClientUpdate(normalized, source) {
     \\    if (!clientStarted) return;
@@ -2236,6 +2267,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "browser field is used" && nodeEnv === "development" && options && options.files && options.files["bunfig.toml"] && options.files["index.html"] && options.files["index.ts"] && options.files["node_modules/axios/package.json"] && options.files["node_modules/axios/lib/utils.js"] && options.files["node_modules/axios/lib/utils.browser.js"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "import.meta.hot.accept basic" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "commonjs forms" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["cjs.js"] && typeof options.test === "function") {
@@ -9643,6 +9677,73 @@ test "bootstrap runner executes Bake ESM browser field smoke" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/esm.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake hot accept basic smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("import.meta.hot.accept basic", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      console.log("Hello, world!");
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.expectMessage("Hello, world!");
+        \\    await c.expectReload(async () => {
+        \\      await dev.write(
+        \\        "index.ts",
+        \\        `
+        \\          console.log("Hello, Bun!");
+        \\          import.meta.hot.accept(newModule => {
+        \\            console.log(Object.keys(newModule));
+        \\            console.log(newModule.method());
+        \\          });
+        \\        `,
+        \\      );
+        \\    });
+        \\    await c.expectMessage("Hello, Bun!");
+        \\    await dev.write(
+        \\      "index.ts",
+        \\      `
+        \\        export function method() {
+        \\          return "Bun";
+        \\        }
+        \\        import.meta.hot.accept(newModule => {
+        \\          console.log(Object.keys(newModule));
+        \\        });
+        \\      `,
+        \\    );
+        \\    await c.expectMessage(["method"], "Bun");
+        \\    await dev.write(
+        \\      "index.ts",
+        \\      `
+        \\        console.log("Without anything.");
+        \\      `,
+        \\    );
+        \\    await c.expectMessage("Without anything.", []);
+        \\    await c.expectReload(async () => {
+        \\      await dev.writeNoChanges("index.ts");
+        \\    });
+        \\    await c.expectMessage("Without anything.");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/hot.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);

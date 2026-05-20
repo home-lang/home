@@ -652,6 +652,19 @@ Latest measured full gate after the Bake ESM browser-field slice:
 unsupported, `35` todo. First failure: `bake/dev/hot.test.ts` with
 `DEV:hot-1: import.meta.hot.accept basic`.
 
+The Bake static client shim now covers the copied
+`import.meta.hot.accept basic` case. The shim keeps a tiny single-module
+accept state so the first update reloads, accepted updates receive the
+new module shape, and the final no-op edit reloads the latest source.
+This is still a harness ratchet; the native parity target remains Bun's
+`import.meta.hot` parser folding, `hmr.accept` runtime state, boundary
+discovery, and browser HMR chunk replacement.
+
+Latest measured full gate after the Bake hot accept-basic slice:
+`4,013` files executed, `467` passed, `3,924` failed, `1,477`
+unsupported, `35` todo. First failure: `bake/dev/hot.test.ts` with
+`DEV:hot-2: import.meta.hot.accept patches imports`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap
