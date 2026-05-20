@@ -3955,6 +3955,39 @@ test "conformance: instanceMemberInitialization passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: objectTypesIdentityWithComplexConstraints passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectTypesIdentityWithComplexConstraints",
+        .path = "objectTypesIdentityWithComplexConstraints.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\interface A {
+        \\      <T extends {
+        \\            <S extends A>(x: T, y: S): void
+        \\      }>(x: T, y: T): void
+        \\}
+        \\
+        \\interface B {
+        \\      <U extends B>(x: U, y: U): void
+        \\}
+        \\
+        \\// ok, not considered identical because the steps of contextual signature instantiation create fresh type parameters
+        \\function foo(x: A);
+        \\function foo(x: B); // error after constraints above made illegal
+        \\function foo(x: any) { }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: primtiveTypesAreIdentical passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "primtiveTypesAreIdentical",
