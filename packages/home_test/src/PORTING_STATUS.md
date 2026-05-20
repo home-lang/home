@@ -256,7 +256,9 @@ DirectoryWatchStore dependency lifetime cleanup. The free-list deinit
 smoke now models the upstream `batchChanges` shape and final liveness
 fetch, but real failed-import directory watches, sparse dependency slots,
 and graceful DevServer deinit still need Bun's native Zig path ported.
-The next Bake boundary is `DEV:bundle-10: importing html file`.
+The HTML-import startup-error smoke now checks the Bun browser-build
+diagnostic for importing HTML without a loader. The next Bake boundary is
+`DEV:bundle-11: importing html file with text loader (#18154)`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

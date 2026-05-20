@@ -355,13 +355,15 @@ relative imports through real directory watches, sparse dependency slots,
 and graceful DevServer deinit. It should eventually be replaced by the
 native DirectoryWatchStore path copied from Bun's Zig base. Later Bake
 files are still recorded as unsupported until the broader DevServer /
-bundler / browser-client runtime path lands.
+bundler / browser-client runtime path lands. The HTML-import startup
+error smoke now checks the expected Bun diagnostic for browser builds
+that import HTML without a loader.
 
-Latest measured full gate after the Bake directory-watch free-list slice:
-`4,013` files executed, `420` passed, `3,963` failed, `1,516`
+Latest measured full gate after the Bake HTML-import error slice:
+`4,013` files executed, `420` passed, `3,962` failed, `1,515`
 unsupported, `35` todo. First failure: `bake/dev/bundle.test.ts`
 with the named unsupported Bake registration for
-` DEV:bundle-10: importing html file`.
+` DEV:bundle-11: importing html file with text loader (#18154)`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

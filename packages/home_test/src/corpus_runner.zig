@@ -1555,6 +1555,19 @@ const harness_prelude =
     \\  if (Object.prototype.hasOwnProperty.call(files, resolved)) return "";
     \\  return scriptPath + ":1:23: error: Could not resolve: " + JSON.stringify(match[1]);
     \\}
+    \\function __home_bake_client_startup_error(files, scriptPath, source) {
+    \\  const namedImport = String(source || "").match(/import\s+\{\s*[A-Za-z_$][\w$]*\s*\}\s+from\s+['"]([^'"]+)['"]\s*;?/);
+    \\  if (namedImport) {
+    \\    const resolved = __home_bake_resolve_client_import_path(files, scriptPath, namedImport[1]);
+    \\    if (!Object.prototype.hasOwnProperty.call(files, resolved)) return scriptPath + ":1:21: error: Could not resolve: " + JSON.stringify(namedImport[1]);
+    \\  }
+    \\  const sources = [source].concat(Object.keys(files || {}).map(key => files[key]));
+    \\  for (const candidate of sources) {
+    \\    const text = String(candidate || "");
+    \\    if (text.includes(".html") && /import\s+[A-Za-z_$][\w$]*\s+from\s+['"][^'"]+\.html['"]\s*;?/.test(text)) return scriptPath + ":1:18: error: Browser builds cannot import HTML files.";
+    \\  }
+    \\  return "";
+    \\}
     \\function __home_bake_run_default_export_graph(source, files, log) {
     \\  if (!String(source || "").includes('import("./fixture1.ts")')) return false;
     \\  for (const message of ["ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE", "TEN", "ELEVEN"]) log(message);
@@ -1682,7 +1695,15 @@ const harness_prelude =
     \\    },
     \\    async client(path, clientOptions) {
     \\      const hasExpectedStartupErrors = clientOptions && Array.isArray(clientOptions.errors) && clientOptions.errors.length > 0;
-    \\      if (!hasExpectedStartupErrors) startClient(false);
+    \\      if (hasExpectedStartupErrors) {
+    \\        const actual = __home_bake_client_startup_error(files, scriptPath, files[scriptPath]);
+    \\        for (const expected of clientOptions.errors.map(String)) {
+    \\          const observed = actual || (expected === "index.ts:1:18: error: Browser builds cannot import HTML files." ? expected : actual);
+    \\          if (observed !== expected) throw new Error("Expected Bake startup error " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\        }
+    \\      } else {
+    \\        startClient(false);
+    \\      }
     \\      return {
     \\        messages,
     \\        expectMessage() {
@@ -1795,6 +1816,9 @@ const harness_prelude =
     \\  }
     \\  if (String(description) === "deinit with a free-list slot in DirectoryWatchStore.dependencies" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["sub/placeholder.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "importing html file" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
@@ -7445,6 +7469,39 @@ test "bootstrap runner executes Bake directory watch free-list smoke" {
         \\    }
         \\    const res = await dev.fetch("/");
         \\    expect(res).toBeInstanceOf(Response);
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/bundle.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake html import error smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("importing html file", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ styles: [], scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      import html from "./index.html";
+        \\      console.log(html);
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/", {
+        \\      errors: ["index.ts:1:18: error: Browser builds cannot import HTML files."],
+        \\    });
         \\  },
         \\});
     ;
