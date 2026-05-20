@@ -442,6 +442,8 @@ pub const runtime = struct {
         pub const quantize = @import("runtime/image/quantize.zig");
     };
     pub const server = struct {
+        pub const server_module = @import("runtime/server/server.zig");
+        pub const Server = server_module.Server;
         pub const HTTPStatusText = @import("runtime/server/HTTPStatusText.zig");
         // Sixth-wave port batch (2026-05-18):
         pub const RangeRequest = @import("runtime/server/RangeRequest.zig");
@@ -1298,6 +1300,7 @@ test {
     _ = @import("runtime/bake/DevServer/HmrSocket.zig");
     _ = @import("runtime/bake/DevServer/RouteBundle.zig");
     _ = @import("runtime/bake/DevServer/SourceMapStore.zig");
+    _ = @import("runtime/server/server.zig");
     _ = node;
     _ = meta;
     _ = crash_handler;

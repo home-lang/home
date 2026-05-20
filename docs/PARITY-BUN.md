@@ -6,7 +6,7 @@ row is in the
 [README parity status](../README.md#bun-runtime-port-packagesruntime)
 section.
 
-> **Status:** Substrate + JSC M6 landed. 491 / 1,193 Bun source
+> **Status:** Substrate + JSC M6 landed. 492 / 1,193 Bun source
 > files ported (~41.2%); the runtime is not yet JavaScript-callable
 > end-to-end, but Phase 12.2 (JSC bring-up) has reached the M6
 > milestone — JSON + Promise + Iterator + Global helpers — across
@@ -256,6 +256,9 @@ source-map ref, and active-websocket teardown tests. The
 counter through the JSC bootstrap, but it is not yet connected to the
 JS-visible `Bun.serve`/Bake API. Real async `bun:test`, `Bun.serve`,
 fetch, and HMR WebSocket surfaces are still unported.
+The native server lifecycle carrier now mirrors Bun's DevServer detach
+gate: no pending requests, no listener, and no active websockets before
+the Bake DevServer is deinitialized.
 
 Latest measured full gate: `4,013` files executed, `387` passed,
 `3,903` failed, `1,453` unsupported, `33` todo. First failure:
@@ -275,11 +278,12 @@ Substrate file-count progress (the only objective number today):
 | Metric | Count | Notes |
 |---|---|---|
 | Bun upstream files (excluding test/codegen/jsc/macros) | 1,193 | pinned at `fd0b6f1a` |
-| Files ported to `packages/runtime/src/` | 491 | ~41.2% |
-| Files remaining to port | 702 | ~58.8% |
+| Files ported to `packages/runtime/src/` | 492 | ~41.2% |
+| Files remaining to port | 701 | ~58.8% |
 | JSC bring-up (`packages/runtime/src/jsc/`) | 97 files | Phase 12.2 M6 milestone + native eval smoke |
 | Node namespace (`packages/runtime/src/node/`) | 28 files | Phase 12.7 round-15 |
 | Bake lifetime carrier (`packages/runtime/src/runtime/bake/`) | 5 files | DevServer/HmrSocket deinit substrate, JS surface pending |
+| Server lifecycle carrier (`packages/runtime/src/runtime/server/server.zig`) | 1 file | DevServer detach/deinit gate, JS surface pending |
 | Tier-0 leaves (≤100 LOC, zero subsystem coupling) | 30 catalogued | next-to-port pool |
 | Tier-1 leaves (≤300 LOC, light coupling) | 30 catalogued | follow-on pool |
 

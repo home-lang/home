@@ -40,6 +40,7 @@ test {
     _ = @import("runtime/bake/DevServer/HmrSocket.zig");
     _ = @import("runtime/bake/DevServer/RouteBundle.zig");
     _ = @import("runtime/bake/DevServer/SourceMapStore.zig");
+    _ = @import("runtime/server/server.zig");
     _ = @import("runtime/webcore/Body.zig");
     _ = @import("runtime/webcore/FormData.zig");
     _ = @import("runtime/webcore/ObjectURLRegistry.zig");

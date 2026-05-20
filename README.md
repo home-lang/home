@@ -48,7 +48,7 @@ view; these are the drill-down pages — modeled after Bun's
 | **TypeScript — named-category survey** | **86 / 86 — 100%** | `assignmentCompatibility` + `comparable` + `inOperator` + `stringLiteral` |
 | **TypeScript — diagnostic codes** | **~2,076 entries** | mirrors the full upstream `diag(code, …)` table |
 | **LSP wire methods** | **53 / ~70 — ~76%** | `SUPPORTED_METHODS` in `packages/ts_lsp_server/` |
-| **Bun runtime — source files ported** | **491 / 1,193 — ~41.2%** | substrate + JSC M6 milestone (+ native eval smoke) landed |
+| **Bun runtime — source files ported** | **492 / 1,193 — ~41.2%** | substrate + JSC M6 milestone (+ native eval smoke) landed |
 | **Bun compat shim — `bun.*` symbols** | **16 / ~103 — ~15.5%** | Tier-0 + Tier-1 (`Output`, `strings`, `String`, `AllocationScope`, `Environment`, `JSError`, `create`, `debugAssert`, `env_var`) lets vendored Bun source compile against Home's stdlib |
 | **Node.js — `node:*` binding files** | **28 files** | Zig substrate landing module-by-module (buffer / stream / fs / events / util / assert / os / url / querystring / crypto / process / string_decoder / tty) |
 | **JSC bring-up (Phase 12.2)** | **97 files** | M6 milestone + native eval smoke landed |
@@ -102,7 +102,7 @@ to wire up.
 
 | Measurement | Coverage | % |
 |---|---|---|
-| **Bun source files ported** | **491 / 1,193** | **~41.2%** |
+| **Bun source files ported** | **492 / 1,193** | **~41.2%** |
 | Subsystems scaffolded | 60 directories under `packages/runtime/src/` | — |
 | Functional runtime | 🚧 JSC M6 landed; JS-callable bridge pending | — |
 | JSC bring-up (Phase 12.2) | 97 files | M1-M6 landed (Engine stub, exception + coerce + array helpers, call + callback helpers, JSON + Promise + Iterator + Global helpers) |

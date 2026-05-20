@@ -38,7 +38,7 @@ pub const DevServer = struct {
     }
 
     pub fn deinit(this: *DevServer) void {
-        dev_server_deinit_count_for_testing += 1;
+        dev_server_deinit_count_for_testing +|= 1;
 
         var sockets: std.ArrayList(*HmrSocket) = .empty;
         defer sockets.deinit(this.allocator);
@@ -110,4 +110,3 @@ test "DevServer.deinit snapshots HMR sockets before close mutates the map" {
     try std.testing.expect(second.closed);
     try std.testing.expectEqual(@as(usize, 1), getDeinitCountForTesting());
 }
-

@@ -1,6 +1,6 @@
 # Home Runtime (`packages/runtime/`)
 
-> **Status (2026-05-20):** **491 / 1,193 Bun source files ported (~41.2%).**
+> **Status (2026-05-20):** **492 / 1,193 Bun source files ported (~41.2%).**
 > Phase 12.2 (JSC bring-up) has reached the M6 milestone — JSON + Promise
 > + Iterator + Global helpers across 97 files. Phase 12.7 round-15
 > has top-level `node:*` substrate modules for `buffer`, `stream`,
@@ -73,6 +73,10 @@ packages while the execution engine is still blocked.
   active route viewer release, source-map ref release, and active
   websocket snapshot-before-close invariants; the JS-visible
   `Bun.serve`/Bake API is still pending.
+- `src/runtime/server/server.zig` — server lifecycle carrier for the
+  Bun.serve/Bake teardown gate: pending requests, listener state, and
+  active websockets must all clear before a DevServer is detached and
+  deinitialized.
 - `src/install/` — `home <-> pantry` shim. Pantry replaces `bun install` entirely.
 - `src/event_loop/`, `src/io/`, `src/async/`, `src/web/`, `src/http/`, `src/runtime/`, `src/string/`, `src/threading/`, `src/css/`, `src/sql/`, `src/uws_sys/`, … — 60 subsystem directories under `src/`, most populated by wave-19+ grinder rounds (Tier-0 / Tier-1 leaves, no JSC dependency yet).
 

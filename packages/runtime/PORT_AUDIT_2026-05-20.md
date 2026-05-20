@@ -10,8 +10,8 @@
 
 - **Upstream files:** 1,193 `.zig` files under `~/Code/bun/src/`
   (excluding `test/`, `codegen/`, `*_jsc/`, `*_macros/`).
-- **Ported files:** **491** files already in `packages/runtime/src/`.
-- **Unported files:** **702** files remaining to port.
+- **Ported files:** **492** files already in `packages/runtime/src/`.
+- **Unported files:** **701** files remaining to port.
 - **Subsystem directories:** 59 under `packages/runtime/src/`.
 
 Recount in one command:
@@ -96,6 +96,12 @@ Wave-19 through wave-23 dropped Tier-0 / Tier-1 leaves across:
 This is not yet the JS-visible `Bun.serve`/Bake API; it preserves the Bun
 teardown invariants needed by `bake/deinitialization.test.ts` before the
 full DevServer graph is connected.
+
+### Phase 12 server — Bake detach lifecycle carrier (1 file)
+
+- `runtime/server/server.zig` — mirrors Bun's `deinitIfWeCan` gate for
+  detaching and deinitializing a Bake DevServer only after pending
+  requests, the listener, and active websockets are gone.
 
 ## Sub-phase status snapshot
 
