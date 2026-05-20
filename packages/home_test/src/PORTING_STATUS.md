@@ -257,8 +257,10 @@ smoke now models the upstream `batchChanges` shape and final liveness
 fetch, but real failed-import directory watches, sparse dependency slots,
 and graceful DevServer deinit still need Bun's native Zig path ported.
 The HTML-import startup-error smoke now checks the Bun browser-build
-diagnostic for importing HTML without a loader. The next Bake boundary is
-`DEV:bundle-11: importing html file with text loader (#18154)`.
+diagnostic for importing HTML without a loader. The HTML text-loader
+smoke now rewrites `with { type: "text" }` imports to fixture text and
+checks the client log. The next Bake boundary is
+`DEV:bundle-12: importing bun on the client`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

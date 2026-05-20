@@ -1537,7 +1537,11 @@ const harness_prelude =
     \\  return "var hmr = { require: function hmrRequire() {}, importMeta: { require: function importMetaRequire() {} } }; var module = { require: function moduleRequire() {} }; var require = hmr.require;\n" + out;
     \\}
     \\function __home_bake_resolve_client_imports(script, files, scriptPath) {
-    \\  return String(script || "").replace(/import\s+\{\s*([A-Za-z_$][\w$]*)\s*\}\s+from\s+['"]([^'"]+)['"]\s*;?/g, function(_, name, specifier) {
+    \\  let out = String(script || "").replace(/import\s+([A-Za-z_$][\w$]*)\s+from\s+['"]([^'"]+\.html)['"]\s+with\s+\{\s*type\s*:\s*['"]text['"]\s*\}\s*;?/g, function(_, name, specifier) {
+    \\    const resolved = __home_bake_resolve_client_import_path(files, scriptPath, specifier);
+    \\    return "const " + name + " = " + JSON.stringify(String(files[resolved] || "")) + ";";
+    \\  });
+    \\  return out.replace(/import\s+\{\s*([A-Za-z_$][\w$]*)\s*\}\s+from\s+['"]([^'"]+)['"]\s*;?/g, function(_, name, specifier) {
     \\    const resolved = __home_bake_resolve_client_import_path(files, scriptPath, specifier);
     \\    const value = __home_bake_export_const_string(files[resolved], name);
     \\    return "const " + name + " = " + JSON.stringify(value) + ";";
@@ -1818,6 +1822,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
     \\  }
     \\  if (String(description) === "importing html file" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "importing html file with text loader (#18154)" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["app.html"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
@@ -7502,6 +7509,40 @@ test "bootstrap runner executes Bake html import error smoke" {
         \\    await using c = await dev.client("/", {
         \\      errors: ["index.ts:1:18: error: Browser builds cannot import HTML files."],
         \\    });
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/bundle.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake html text loader smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("importing html file with text loader (#18154)", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ styles: [], scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      import html from "./app.html" with { type: "text" };
+        \\      console.log(html);
+        \\    `,
+        \\    "app.html": "<div>hello world</div>",
+        \\  },
+        \\  htmlFiles: ["index.html"],
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/", {});
+        \\    await c.expectMessage("<div>hello world</div>");
         \\  },
         \\});
     ;
