@@ -105,6 +105,9 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/assert/assert.test.cjs",
     "js/node/assert/assert-match.test.cjs",
     "js/node/assert/assert-doesNotMatch.test.cjs",
+    "js/node/path/posix-exists.test.js",
+    "js/node/path/win32-exists.test.js",
+    "js/node/path/15704.test.js",
 };
 
 const harness_prelude =
@@ -904,8 +907,18 @@ const harness_prelude =
     \\  if (typeof value !== "string") throw new TypeError('The "string" argument must be of type string. Received type ' + typeof value);
     \\  if (regexp instanceof RegExp && regexp.test(value)) throw new Error(message || "The input was expected to not match");
     \\};
+    \\function __home_path_join() {
+    \\  return Array.prototype.slice.call(arguments).filter(part => String(part).length > 0).join("/");
+    \\}
+    \\const __home_path_posix = { join: __home_path_join };
+    \\const __home_path_win32 = { join: __home_path_join };
+    \\const __home_path_module = { join: __home_path_join, posix: __home_path_posix, win32: __home_path_win32 };
     \\globalThis.__home_modules["assert"] = __home_assert_module;
     \\globalThis.__home_modules["node:assert"] = __home_assert_module;
+    \\globalThis.__home_modules["path"] = __home_path_module;
+    \\globalThis.__home_modules["node:path"] = __home_path_module;
+    \\globalThis.__home_modules["path/posix"] = __home_path_posix;
+    \\globalThis.__home_modules["path/win32"] = __home_path_win32;
     \\globalThis.__home_modules["assert/strict"] = {
     \\  deepStrictEqual(actual, expected) {
     \\    if (!__home_deep_equal(actual, expected, true, new Map())) {
@@ -1845,6 +1858,18 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const assert = globalThis.__home_import(\"assert/strict\");",
         },
         .{
+            .needle = "import assert from \"node:assert\";",
+            .replacement = "const assert = globalThis.__home_import(\"node:assert\");",
+        },
+        .{
+            .needle = "import assert from \"assert\";",
+            .replacement = "const assert = globalThis.__home_import(\"assert\");",
+        },
+        .{
+            .needle = "import path from \"path\";",
+            .replacement = "const path = globalThis.__home_import(\"path\");",
+        },
+        .{
             .needle = "import buffer, { INSPECT_MAX_BYTES } from \"node:buffer\";",
             .replacement = "const __home_node_buffer = globalThis.__home_import(\"node:buffer\");\nconst buffer = __home_node_buffer.default;\nconst { INSPECT_MAX_BYTES } = __home_node_buffer;",
         },
@@ -1955,6 +1980,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     }{
         .{ .line = "import { expect, it, describe } from \"bun:test\";", .binding = "const { expect, it, describe } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { describe, expect, it } from \"bun:test\";", .binding = "const { describe, expect, it } = globalThis.__home_import(\"bun:test\");\n" },
+        .{ .line = "import { describe, test } from \"bun:test\";", .binding = "const { describe, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { describe, expect, test } from \"bun:test\";", .binding = "const { describe, expect, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeAll, beforeEach, expect, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } = globalThis.__home_import(\"bun:test\");\n" },
@@ -2138,6 +2164,9 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/node/assert/assert.test.cjs", filesForSubset(.minimal_js)[51]);
     try std.testing.expectEqualStrings("js/node/assert/assert-match.test.cjs", filesForSubset(.minimal_js)[52]);
     try std.testing.expectEqualStrings("js/node/assert/assert-doesNotMatch.test.cjs", filesForSubset(.minimal_js)[53]);
+    try std.testing.expectEqualStrings("js/node/path/posix-exists.test.js", filesForSubset(.minimal_js)[54]);
+    try std.testing.expectEqualStrings("js/node/path/win32-exists.test.js", filesForSubset(.minimal_js)[55]);
+    try std.testing.expectEqualStrings("js/node/path/15704.test.js", filesForSubset(.minimal_js)[56]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -2195,6 +2224,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun\"] = { semver: Bun.semver }") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"assert\"] = __home_assert_module") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"assert/strict\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"path\"] = __home_path_module") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"path/posix\"] = __home_path_posix") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:vm\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun:internal-for-testing\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "escapeRegExpForPackageNameMatching(value)") != null);
@@ -2312,6 +2343,36 @@ test "assert strict import rewrite lowers default import" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const assert = globalThis.__home_import(\"assert/strict\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"assert/strict\"") == null);
+}
+
+test "Node path and assert import rewrites lower default imports" {
+    const source =
+        \\import assert from "node:assert";
+        \\import path from "path";
+        \\import { describe, test } from "bun:test";
+        \\describe("path", () => {
+        \\  test("join", () => assert.strictEqual(path.join("x"), "x"));
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/node/path/15704.test.js");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const assert = globalThis.__home_import(\"node:assert\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const path = globalThis.__home_import(\"path\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"node:assert\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"path\"") == null);
+}
+
+test "Bun test import rewrite lowers describe and test imports" {
+    const source =
+        \\import { describe, test } from "bun:test";
+        \\describe("x", () => test("y", () => {}));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/node/path/posix-exists.test.js");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { describe, test } = globalThis.__home_import(\"bun:test\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
 }
 
 test "Bun test import rewrite lowers mock imports" {
@@ -2633,7 +2694,6 @@ test "bootstrap runner covers Deno Event behavior and ignored tests" {
 
     var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
     defer file_run.deinit(std.testing.allocator);
-
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
@@ -3084,6 +3144,47 @@ test "bootstrap runner covers CommonJS assert require helpers" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
+}
+
+test "bootstrap runner covers Node path bootstrap smokes" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import assert from "node:assert";
+        \\import path from "path";
+        \\import { describe, test } from "bun:test";
+        \\
+        \\describe("path.posix", () => {
+        \\  test("exists", () => {
+        \\    assert.strictEqual(require("path/posix"), require("path").posix);
+        \\  });
+        \\});
+        \\
+        \\describe("path.win32", () => {
+        \\  test("exists", () => {
+        \\    assert.strictEqual(require("path/win32"), require("path").win32);
+        \\  });
+        \\});
+        \\
+        \\test("too-long path names do not crash when joined", () => {
+        \\  const length = 4096;
+        \\  const tooLengthyFolderName = Array.from({ length }).fill("b").join("");
+        \\  assert.equal(path.join(tooLengthyFolderName), "b".repeat(length));
+        \\  assert.equal(path.win32.join(tooLengthyFolderName), "b".repeat(length));
+        \\  assert.equal(path.posix.join(tooLengthyFolderName), "b".repeat(length));
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/path/path-bootstrap-smoke.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner reports unsupported thrown by harness as unsupported" {
