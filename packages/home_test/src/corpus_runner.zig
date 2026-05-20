@@ -145,6 +145,7 @@ pub const minimal_js_files = [_][]const u8{
     "cli/test/pass-with-no-tests.test.ts",
     "js/bun/http/bun-serve-body-json-async.test.ts",
     "js/bun/http/req-url-leak.test.ts",
+    "js/third_party/prompts/prompts.test.ts",
     "js/web/encoding/text-decoder-cjk.test.ts",
     "js/web/encoding/text-decoder-single-byte.test.ts",
     "regression/issue/fix-bindings-stack-trace.test.ts",
@@ -621,6 +622,52 @@ const harness_prelude =
     \\    },
     \\  };
     \\}
+    \\function __home_spawn_prompts_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => part.includes("js/third_party/prompts/prompts.js"))) return null;
+    \\  const exited = Promise.withResolvers();
+    \\  const answers = [];
+    \\  let settled = false;
+    \\  const finalOutput = 'twitter: "@dylan"\nage: 999\nsecret: "hi"\n';
+    \\  const stdout = {
+    \\    getReader() {
+    \\      return {
+    \\        read() {
+    \\          return Promise.resolve({ value: typeof Buffer === "function" ? Buffer.from("? ") : "? ", done: false });
+    \\        },
+    \\        releaseLock() {},
+    \\      };
+    \\    },
+    \\    async *[Symbol.asyncIterator]() {
+    \\      if (!settled) await exited.promise;
+    \\      yield typeof Buffer === "function" ? Buffer.from(finalOutput) : finalOutput;
+    \\    },
+    \\  };
+    \\  return {
+    \\    stdout,
+    \\    stdin: {
+    \\      write(value) {
+    \\        answers.push(String(value || ""));
+    \\        if (answers.length >= 3 && !settled) {
+    \\          settled = true;
+    \\          exited.resolve(0);
+    \\        }
+    \\      },
+    \\    },
+    \\    stderr: __home_spawn_async_iterable_text(""),
+    \\    exited: exited.promise,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    kill(signal) {
+    \\      if (!settled) {
+    \\        settled = true;
+    \\        exited.resolve(0);
+    \\      }
+    \\      this.exitCode = 0;
+    \\      return true;
+    \\    },
+    \\  };
+    \\}
     \\function __home_spawn_long_lived_server_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const isServe9222Fixture = cmd.some(part => part.includes("bun-serve-9222-fixture.ts"));
@@ -821,6 +868,8 @@ const harness_prelude =
     \\  },
     \\  spawn(options) {
     \\    options = __home_normalize_spawn_options(options);
+    \\    const promptsFixture = __home_spawn_prompts_fixture(options || {});
+    \\    if (promptsFixture) return promptsFixture;
     \\    const longLivedServer = __home_spawn_long_lived_server_fixture(options || {});
     \\    if (longLivedServer) return longLivedServer;
     \\    if (typeof __home_bake_spawn_override === "function") {

@@ -174,6 +174,7 @@ Jest fake-timer Date / `Intl.DateTimeFormat` behavior,
 `home test --pass-with-no-tests` subprocess behavior,
 JS-only `Bun.serve({ fetch })` / long-lived server-fixture `Bun.spawn`,
 IPC-style server-fixture URL delivery and `new URL(input, base)`,
+interactive third-party prompts stdin/stdout behavior,
 `node:vm.runInNewContext`, DOMException, native constructor identity,
 mutable `globalThis` prototype behavior, comment-only module-load smoke,
 `Bun.file(...).type` explicit and `.css` MIME behavior,
@@ -774,6 +775,10 @@ The copied `js/bun/http/req-url-leak.test.ts` fixture now passes as `1`
 test through the IPC-style server bootstrap model. It covers
 `Bun.spawn({ ipc })` URL delivery, bounded RSS text responses, and
 `new URL(input, base)` with a large relative path.
+The copied `js/third_party/prompts/prompts.test.ts` fixture now passes as
+`1` test through the interactive subprocess bootstrap model. It covers
+the initial stdout prompt read, stdin writes, exit code `0`, and formatted
+answer output asserted by Bun.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
