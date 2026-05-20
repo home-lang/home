@@ -38,6 +38,15 @@ Home smoke root. This tier adds only the compat pieces required by that
 file: Bun-style `handleOom(error_union)` unwrapping and
 `bun.strings.isValidUTF8`.
 
+`zig build test -Dfilter=home_test_bun_tier2_order` build-checks the
+first copied runner scheduling leaf, `bun/Order.zig`, through a small
+Home scaffold that mirrors only the upstream `bun_test` and `Execution`
+types Order touches. This keeps JSC execution out of the tier while
+preserving real scheduling semantics: adjacent concurrent sequences
+merge into one group, `generateAllOrder` resets entry links and creates
+one group per entry, and `generateOrderTest` wraps before/after hooks
+around the test while preserving retry/repeat counts.
+
 The bootstrap harness is intentionally narrow but now installs once per
 JSC engine, resets counters before each allowlisted file, reports a file
 as unsupported if it registers zero `bun:test` tests, and preserves
@@ -128,7 +137,7 @@ shape (each ~30-100 LOC, 7-10 `bun.X` references — almost all
 | debug.zig | 109 | 7 | 1 | 0 | blocked | `bun.JSError`, `bun.md`, `bun.env_var` |
 | harness/recover.zig | 132 | 1 | 0 | 0 | tier0 | `bun.md` |
 | Collection.zig | 171 | 8 | 0 | 0 | blocked | `bun.JSError`, `bun.assert`, `bun.md` |
-| Order.zig | 187 | 16 | 0 | 0 | blocked | `bun.JSError`, `bun.assert`, `bun.Environment` |
+| Order.zig | 187 | 16 | 0 | 0 | tier2-order | `bun.JSError`, `bun.assert`, `bun.Environment` |
 | timers/FakeTimers.zig | 376 | 32 | 0 | 0 | blocked | `bun.JSError`, `bun.timespec`, `bun.assert` |
 | ScopeFunctions.zig | 498 | 64 | 0 | 0 | blocked | `bun.String`, `bun.JSError`, `bun.handleOom` |
 | jest.zig | 520 | 44 | 3 | 1 | blocked | `bun.handleOom`, `bun.default_allocator`, `bun.JSError` |
@@ -259,7 +268,9 @@ These need only `compat` for `OOM`/`handleOom`/`assert`/`md`:
 ### Tier 2 — test scaffolding (need `bun.timespec` + `bun.assert`)
 
 8. `Collection.zig` (171 LOC) — test collection; minimal externs
-9. `Order.zig` (187 LOC) — deterministic ordering
+9. `Order.zig` (187 LOC) — deterministic ordering; compile-checked in
+   the focused `home_test_bun_tier2_order` target with a local scaffold
+   for the small `bun_test` / `Execution` surface it touches
 10. `DoneCallback.zig` (47 LOC) — async test done callback
 11. `Execution.zig` (695 LOC) — scheduler + timeout machinery
 12. `timers/FakeTimers.zig` (376 LOC) — Jest-style fake timers

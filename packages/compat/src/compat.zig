@@ -33,9 +33,18 @@
 //! files come online in `bundler` / `runtime`.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const T = std.testing;
 
 pub const OOM = error{OutOfMemory};
+pub const JSError = error{ JSException, OutOfMemory };
+
+pub const Environment = struct {
+    pub const ci_assert = false;
+    pub const isDebug = builtin.mode == .Debug;
+    pub const isWindows = builtin.os.tag == .windows;
+    pub const isMac = builtin.os.tag == .macos;
+};
 
 fn HandleOomReturn(comptime TArg: type) type {
     return switch (@typeInfo(TArg)) {
@@ -58,6 +67,16 @@ pub fn handleOom(result: anytype) HandleOomReturn(@TypeOf(result)) {
 pub const default_allocator: std.mem.Allocator = std.heap.smp_allocator;
 
 pub const assert = std.debug.assert;
+
+pub fn debugAssert(ok: bool) void {
+    if (builtin.mode == .Debug) std.debug.assert(ok);
+}
+
+pub fn create(allocator: std.mem.Allocator, comptime TArg: type, value: TArg) *TArg {
+    const ptr = handleOom(allocator.create(TArg));
+    ptr.* = value;
+    return ptr;
+}
 
 pub const StringHashMapUnmanaged = std.StringHashMapUnmanaged;
 
@@ -93,7 +112,10 @@ pub const fs = struct {
 
 test "compat: Tier 0 surface is well-shaped" {
     try T.expectEqual(@as(type, error{OutOfMemory}), OOM);
+    try T.expectEqual(@as(type, error{ JSException, OutOfMemory }), JSError);
     assert(true);
+    debugAssert(true);
+    try T.expect(!Environment.ci_assert);
     try T.expectEqual(@as(type, u32), ast.Index.Int);
     const path = fs.Path{ .text = "/x.ts" };
     try T.expectEqualStrings("/x.ts", path.text);
@@ -120,6 +142,12 @@ test "compat: StringHashMapUnmanaged alias works" {
 test "compat: handleOom unwraps successful error unions" {
     const value: OOM!u32 = 42;
     try T.expectEqual(@as(u32, 42), handleOom(value));
+}
+
+test "compat: create allocates and initializes a value" {
+    const ptr = create(T.allocator, u32, 9);
+    defer T.allocator.destroy(ptr);
+    try T.expectEqual(@as(u32, 9), ptr.*);
 }
 
 test "compat: strings validates UTF-8" {
