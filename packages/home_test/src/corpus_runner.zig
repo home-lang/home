@@ -138,6 +138,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/02367.test.ts",
     "js/bun/util/file-type.test.ts",
     "js/node/url/url-pathtofileurl.test.js",
+    "js/bun/util/randomUUIDv7.test.ts",
     "js/web/encoding/text-decoder-cjk.test.ts",
     "js/web/encoding/text-decoder-single-byte.test.ts",
     "regression/issue/fix-bindings-stack-trace.test.ts",
@@ -568,11 +569,76 @@ const harness_prelude =
     \\  if (joined.includes("--smol") && joined.includes("run.ts")) return __home_spawn_completed(JSON.stringify({ before: 0, after: 0, growth: 0 }) + "\n", "", 0);
     \\  return null;
     \\}
+    \\let __home_uuidv7_last_timestamp = -1;
+    \\let __home_uuidv7_sequence = 0;
+    \\function __home_uuidv7_hex_byte(byte) {
+    \\  return (byte & 0xff).toString(16).padStart(2, "0");
+    \\}
+    \\function __home_uuidv7_timestamp(value) {
+    \\  if (value === undefined || value === null) return Date.now();
+    \\  if (value instanceof Date) return value.getTime();
+    \\  return Number(value);
+    \\}
+    \\function __home_uuidv7_bytes(timestampValue) {
+    \\  let timestamp = Math.trunc(__home_uuidv7_timestamp(timestampValue));
+    \\  if (!Number.isFinite(timestamp) || timestamp < 0) timestamp = Date.now();
+    \\  if (timestamp === __home_uuidv7_last_timestamp) __home_uuidv7_sequence++;
+    \\  else {
+    \\    __home_uuidv7_last_timestamp = timestamp;
+    \\    __home_uuidv7_sequence = 0;
+    \\  }
+    \\  const bytes = new Array(16).fill(0);
+    \\  let remaining = timestamp;
+    \\  for (let i = 5; i >= 0; i--) {
+    \\    bytes[i] = remaining & 0xff;
+    \\    remaining = Math.floor(remaining / 256);
+    \\  }
+    \\  const sequence = __home_uuidv7_sequence & 0x0fff;
+    \\  bytes[6] = 0x70 | ((sequence >> 8) & 0x0f);
+    \\  bytes[7] = sequence & 0xff;
+    \\  bytes[8] = 0x80 | ((__home_uuidv7_sequence >> 12) & 0x3f);
+    \\  let seed = (timestamp + __home_uuidv7_sequence * 1103515245) >>> 0;
+    \\  for (let i = 9; i < 16; i++) {
+    \\    seed = (seed * 1664525 + 1013904223) >>> 0;
+    \\    bytes[i] = seed & 0xff;
+    \\  }
+    \\  return bytes;
+    \\}
+    \\function __home_uuidv7_hex(bytes) {
+    \\  const hex = bytes.map(__home_uuidv7_hex_byte).join("");
+    \\  return hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-" + hex.slice(12, 16) + "-" + hex.slice(16, 20) + "-" + hex.slice(20);
+    \\}
+    \\function __home_uuidv7_base64(bytes) {
+    \\  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    \\  let out = "";
+    \\  for (let i = 0; i < bytes.length; i += 3) {
+    \\    const a = bytes[i];
+    \\    const b = i + 1 < bytes.length ? bytes[i + 1] : 0;
+    \\    const c = i + 2 < bytes.length ? bytes[i + 2] : 0;
+    \\    out += alphabet[a >> 2];
+    \\    out += alphabet[((a & 3) << 4) | (b >> 4)];
+    \\    out += i + 1 < bytes.length ? alphabet[((b & 15) << 2) | (c >> 6)] : "=";
+    \\    out += i + 2 < bytes.length ? alphabet[c & 63] : "=";
+    \\  }
+    \\  return out;
+    \\}
+    \\function __home_random_uuidv7(format, timestamp) {
+    \\  const normalized = format === undefined || format === null ? "hex" : String(format);
+    \\  const bytes = __home_uuidv7_bytes(timestamp);
+    \\  if (normalized === "hex") return __home_uuidv7_hex(bytes);
+    \\  if (normalized === "base64") return __home_uuidv7_base64(bytes);
+    \\  if (normalized === "buffer") return Buffer.from(bytes);
+    \\  throw new TypeError("Unsupported randomUUIDv7 format");
+    \\}
     \\var Bun = {
     \\  [Symbol.toStringTag]: "Bun",
     \\  version: "0.0.0-home",
     \\  revision: "home",
     \\  gc(force) {},
+    \\  randomUUIDv7: __home_random_uuidv7,
+    \\  deepEquals(left, right) {
+    \\    return __home_deep_equal(left, right, false, new Map());
+    \\  },
     \\  fileURLToPath(url) {
     \\    const text = String(url || "");
     \\    const path = text.startsWith("file://") ? text.slice("file://".length) : text;
@@ -1730,6 +1796,10 @@ const harness_prelude =
     \\      if (arguments.length < 1) __home_fail("toBeGreaterThanOrEqual() requires 1 argument");
     \\      __home_assert(value >= expected, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be greater than or equal to " + __home_format(expected));
     \\    },
+    \\    toBeLessThanOrEqual(expected) {
+    \\      if (arguments.length < 1) __home_fail("toBeLessThanOrEqual() requires 1 argument");
+    \\      __home_assert(value <= expected, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be less than or equal to " + __home_format(expected));
+    \\    },
     \\    toHaveLength(expected) {
     \\      if (!Number.isInteger(expected) || expected < 0) __home_fail("toHaveLength() requires a non-negative integer");
     \\      if (value == null || typeof value.length !== "number") __home_fail("Expected value must have a length property");
@@ -2093,7 +2163,7 @@ const harness_prelude =
     \\  return globalThis.__home_bun_test;
     \\};
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
-    \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, escapeHTML: Bun.escapeHTML, fileURLToPath: Bun.fileURLToPath, indexOfLine: Bun.indexOfLine, spawn: Bun.spawn, spawnSync: Bun.spawnSync };
+    \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, fileURLToPath: Bun.fileURLToPath, indexOfLine: Bun.indexOfLine, randomUUIDv7: Bun.randomUUIDv7, spawn: Bun.spawn, spawnSync: Bun.spawnSync };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["bun:build"] = { BuildArtifact, BuildMessage };
     \\globalThis.__home_modules["node:test"] = { test };
@@ -9168,6 +9238,33 @@ test "bootstrap matcher toBeEmpty accepts strings and collections" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/run/empty-file.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap Bun.randomUUIDv7 exposes timestamped monotonic ids" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\test("uuidv7", () => {
+        \\  const fixed = Bun.randomUUIDv7("hex", 1625097600000);
+        \\  expect(fixed).toStartWith("017a5f5d-");
+        \\  expect(fixed["017a5f5d-0000-".length]).toBe("7");
+        \\  expect(Bun.randomUUIDv7("base64")).toMatch(/^[0-9a-zA-Z+/=]+$/);
+        \\  expect(Bun.randomUUIDv7("buffer")).toBeInstanceOf(Buffer);
+        \\  const input = Array.from({ length: 8 }, () => Bun.randomUUIDv7("hex", 1625097600000));
+        \\  expect(Bun.deepEquals(input.slice().sort(), input)).toBe(true);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/util/randomUUIDv7.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);

@@ -191,7 +191,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes one hundred thirty-nine allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes one hundred forty allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-four
@@ -206,7 +206,8 @@ bootstrap nucleus (`now`, `timeOrigin`, `toJSON`, marks, measures, and
 entry lookup), WebSocket failed-connect `ErrorEvent` snapshots, JSC
 `ShadowRealm`, native constructor identity, mutable
 `globalThis` prototype behavior, a comment-only module-load smoke, Bun file metadata and
-`Bun.file(...).type` MIME behavior, Node `Buffer`
+`Bun.file(...).type` MIME behavior, `Bun.randomUUIDv7` and
+`Bun.deepEquals`, Node `Buffer`
 binary/UTF-16LE/compare/inspect-limit/isEncoding behavior, `Map`/`Set`
 deep-equality, `Bun.inspect` Set formatting, `MessageEvent` constructor
 behavior, Bun version aliases, lifecycle hooks, own-key matchers, and a
@@ -257,7 +258,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `139` files, `614` passed, `0` failed,
+Latest measured subset run: `140` files, `620` passed, `0` failed,
 `40` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
@@ -1127,6 +1128,13 @@ the reusable `expect().toBeEmpty()` matcher and normalizes
 `home run --bun <file>` to the runtime-compatible `home run <file>`
 subprocess form, matching Bun's force-runtime flag behavior for this
 path.
+
+The copied `js/bun/util/randomUUIDv7.test.ts` fixture now passes in Home
+as `6` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap
+models UUIDv7 timestamp-prefix encoding, version and variant bits,
+`hex` / `base64` / `buffer` output forms, per-timestamp monotonic
+ordering, `Bun.deepEquals`, and `expect().toBeLessThanOrEqual`. Native
+parity still needs Bun's real crypto-backed UUID implementation.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

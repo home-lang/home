@@ -169,6 +169,8 @@ selector / handler validation,
 `node:vm.runInNewContext`, DOMException, native constructor identity,
 mutable `globalThis` prototype behavior, comment-only module-load smoke,
 `Bun.file(...).type` explicit and `.css` MIME behavior,
+`Bun.randomUUIDv7` timestamped / monotonic UUID output plus
+`Bun.deepEquals`,
 Request/Response/Headers/URL, `node-fetch`, `node:buffer`, `deno:harness`
 including Bun-copied Deno `test(options, fn)` / permission skip /
 `test.ignore` / `test.todo` call shapes, Deno `Event` / `CustomEvent` /
@@ -733,6 +735,11 @@ The copied `cli/run/empty-file.test.ts` fixture now passes as `1` test
 through the real subprocess path. The bootstrap adds `expect().toBeEmpty`
 and normalizes `home run --bun <file>` to the runtime-compatible
 `home run <file>` command shape.
+The copied `js/bun/util/randomUUIDv7.test.ts` fixture now passes as `6`
+tests through the `Bun.randomUUIDv7` bootstrap model. It covers
+timestamp-prefix encoding, version/variant bits, `hex` / `base64` /
+`buffer` output forms, per-timestamp monotonic ordering, `Bun.deepEquals`,
+and `expect().toBeLessThanOrEqual`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
