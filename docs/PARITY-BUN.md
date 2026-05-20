@@ -243,9 +243,12 @@ file. The native `Bun.spawnSync` bridge now starts the Bake child
 process, and delegated `home test <fixture>` corpus descendants now route
 back through the same JSC bootstrap instead of Home's parser. The current
 first blocker is that the child fixture still exits `1` while Bun expects
-`0`, because the Bake fixture is reported as `unsupported module syntax`
-until the real async `bun:test`, `bun:internal-for-testing`, `bun:jsc`,
-HTML import, `Bun.serve`, fetch, and HMR WebSocket surfaces are ported.
+`0`, because the Bake fixture now reaches the bootstrap runner's async
+test boundary and reports `Async tests are not supported by the Home Bun
+corpus bootstrap runner yet`. The exact `bun:internal-for-testing`,
+`bun:jsc`, and fixture HTML imports are lowered, but real async
+`bun:test`, `Bun.serve`, fetch, and HMR WebSocket surfaces are still
+unported.
 
 Latest measured full gate: `4,013` files executed, `387` passed,
 `3,903` failed, `1,495` unsupported, `33` todo. First failure:

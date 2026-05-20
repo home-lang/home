@@ -588,7 +588,7 @@ const harness_prelude =
     \\  return true;
     \\};
     \\process.cwd = function() {
-    \\  return "/";
+    \\  return globalThis.__home_current_dirname || "/";
     \\};
     \\globalThis.process = process;
     \\if (typeof structuredClone !== "function") {
@@ -1810,6 +1810,17 @@ const harness_prelude =
     \\  escapePowershell(value) {
     \\    return __home_escape_powershell(value);
     \\  },
+    \\  getDevServerDeinitCount() {
+    \\    __home_unsupported("Bun Bake DevServer deinit counter is not ported into Home yet");
+    \\  },
+    \\};
+    \\globalThis.__home_modules["bun:jsc"] = {
+    \\  fullGC() {
+    \\    return Bun.gc(true);
+    \\  },
+    \\};
+    \\globalThis.__home_modules["bake/fixtures/deinitialization/index.html"] = {
+    \\  default: { __home_bake_html_import: true, path: "bake/fixtures/deinitialization/index.html" },
     \\};
     \\globalThis.__home_modules["deno:harness"] = {
     \\  createDenoTest(path) {
@@ -1856,6 +1867,9 @@ const harness_prelude =
     \\  const name = String(specifier);
     \\  if (name === "./013880-fixture.cjs" && globalThis.__home_current_dirname === "regression/issue") {
     \\    return "regression/issue/013880-fixture.cjs";
+    \\  }
+    \\  if (name === "./index.html" && globalThis.__home_current_dirname === "bake/fixtures/deinitialization") {
+    \\    return "bake/fixtures/deinitialization/index.html";
     \\  }
     \\  return name;
     \\}
@@ -2936,6 +2950,8 @@ fn appendBootstrapTypeScriptReplacement(
     }{
         .{ .needle = ": string[] =", .replacement = " =" },
         .{ .needle = ": any[] =", .replacement = " =" },
+        .{ .needle = ": WebSocket[] =", .replacement = " =" },
+        .{ .needle = ": Promise<void>[] =", .replacement = " =" },
         .{ .needle = ": any =", .replacement = " =" },
         .{ .needle = ": number =", .replacement = " =" },
         .{ .needle = ": string {", .replacement = " {" },
@@ -2956,6 +2972,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": Array<[any, (event: any) => string]>", .replacement = "" },
         .{ .needle = "<{ a: number }>", .replacement = "" },
         .{ .needle = "<{ a: 1 }>", .replacement = "" },
+        .{ .needle = "<void>", .replacement = "" },
         .{ .needle = "<[string]>", .replacement = "" },
         .{ .needle = "<string>", .replacement = "" },
         .{ .needle = " as unknown", .replacement = "" },
@@ -3062,6 +3079,18 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { escapePowershell } from \"bun:internal-for-testing\";",
             .replacement = "const { escapePowershell } = globalThis.__home_import(\"bun:internal-for-testing\");",
+        },
+        .{
+            .needle = "import { getDevServerDeinitCount } from \"bun:internal-for-testing\";",
+            .replacement = "const { getDevServerDeinitCount } = globalThis.__home_import(\"bun:internal-for-testing\");",
+        },
+        .{
+            .needle = "import { fullGC } from \"bun:jsc\";",
+            .replacement = "const { fullGC } = globalThis.__home_import(\"bun:jsc\");",
+        },
+        .{
+            .needle = "import html from \"./index.html\";",
+            .replacement = "const html = globalThis.__home_import(\"./index.html\").default;",
         },
         .{
             .needle = "import assert from \"assert/strict\";",
@@ -3529,6 +3558,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.on = function(name, listener)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.emit = function(name)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.cwd = function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "return globalThis.__home_current_dirname || \"/\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "pass()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeInstanceOf(ctor)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeInstanceOf() requires 1 argument") != null);
@@ -3599,6 +3629,9 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun:internal-for-testing\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "escapeRegExpForPackageNameMatching(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "escapePowershell(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "getDevServerDeinitCount()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun:jsc\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bake/fixtures/deinitialization/index.html\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "createDenoTest(path)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "denoTest.ignore") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_import") != null);
@@ -3812,6 +3845,32 @@ test "Bun internal testing import rewrite lowers named PowerShell import" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { escapePowershell } = globalThis.__home_import(\"bun:internal-for-testing\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:internal-for-testing\"") == null);
+}
+
+test "Bun module import rewrite lowers Bake child imports" {
+    const source =
+        \\import { getDevServerDeinitCount } from "bun:internal-for-testing";
+        \\import html from "./index.html";
+        \\import { expect, test } from "bun:test";
+        \\import { fullGC } from "bun:jsc";
+        \\let sockets: WebSocket[] = [];
+        \\const opens: Promise<void>[] = [];
+        \\const { promise } = Promise.withResolvers<void>();
+        \\test("works", () => expect(html).toBeDefined());
+        \\fullGC();
+        \\getDevServerDeinitCount();
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "bake/fixtures/deinitialization/test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:internal-for-testing\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:jsc\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "import html") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { getDevServerDeinitCount } = globalThis.__home_import(\"bun:internal-for-testing\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { fullGC } = globalThis.__home_import(\"bun:jsc\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const html = globalThis.__home_import(\"./index.html\").default;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "WebSocket[]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Promise<void>") == null);
 }
 
 test "assert strict import rewrite lowers default import" {

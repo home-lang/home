@@ -54,8 +54,10 @@ macOS, Linux, and the WASM target.
   corpus-relative cwd/path resolution, and pipe/inherit/ignore stdio
   modes. The full gate currently reaches the Bake child process and then
   fails because delegated `home test <fixture>` corpus descendants now
-  re-enter the corpus JSC bootstrap and report the Bake fixture as
-  `unsupported module syntax`. Latest measured full gate: `4,013` files
+  re-enter the corpus JSC bootstrap, lower the exact child
+  `bun:internal-for-testing`, `bun:jsc`, and HTML imports, and then report
+  the Bake fixture as `Async tests are not supported by the Home Bun
+  corpus bootstrap runner yet`. Latest measured full gate: `4,013` files
   executed, `387` passed, `3,903` failed, `1,495` unsupported,
   `33` todo. First failure: `bake/deinitialization.test.ts` with
   `Error: Expected 1 to be 0`.
