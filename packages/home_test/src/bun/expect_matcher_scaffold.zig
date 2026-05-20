@@ -38,6 +38,10 @@ pub const jsc = struct {
             return this.tag == .null;
         }
 
+        pub fn isUndefinedOrNull(this: JSValue) bool {
+            return this.isUndefined() or this.isNull();
+        }
+
         pub fn toFmt(this: JSValue, _: *ConsoleObject.Formatter) FormatterValue {
             return .{ .value = this };
         }
