@@ -24032,7 +24032,11 @@ pub const Checker = struct {
         return false;
     }
 
-    fn checkEnumMemberAssignment(self: *Checker, target: NodeId) CheckError!void {
+    /// Returns true when TS2540 was emitted, so the caller can flip
+    /// `readonly_target_fired` and suppress the cascading TS2322
+    /// type-mismatch — tsc reports just the readonly error on
+    /// `E.A = null` (see `validNullAssignments.ts(10,3)`).
+    fn checkEnumMemberAssignment(self: *Checker, target: NodeId) CheckError!bool {
         var enum_name: ?hir_mod.StringId = null;
         var member_name: ?hir_mod.StringId = null;
         switch (self.hir.kindOf(target)) {
@@ -24052,9 +24056,9 @@ pub const Checker = struct {
             },
             else => {},
         }
-        const enum_id = enum_name orelse return;
-        const member_id = member_name orelse return;
-        if (!self.enumHasMember(enum_id, member_id)) return;
+        const enum_id = enum_name orelse return false;
+        const member_id = member_name orelse return false;
+        if (!self.enumHasMember(enum_id, member_id)) return false;
         const member_str = self.string_interner.get(member_id);
         // tsc renders enum-member assignment via the generic read-only
         // property prose (TS2540), anchored at the property-name segment
@@ -24078,6 +24082,7 @@ pub const Checker = struct {
             .code = TsCodes.readonly_property,
             .message = msg,
         });
+        return true;
     }
 
     /// Classify an enum referenced by `obj_name`. Returns `true`
@@ -33974,7 +33979,6 @@ pub const Checker = struct {
                         try self.report(a.target, TsCodes.optional_chain_assignment_target, "The left-hand side of an assignment expression may not be an optional property access.");
                     }
                 }
-                try self.checkEnumMemberAssignment(a.target);
                 // TS2540: assigning to a property declared `readonly`.
                 // Object/interface readonly fields are immutable;
                 // class-field readonly is approximated by the
@@ -33985,9 +33989,14 @@ pub const Checker = struct {
                 // where the intersection `Base & DifferentType`
                 // reduces `value` to `never` but tsc still prints
                 // just TS2540, not an additional TS2322).
-                var readonly_target_fired = false;
+                //
+                // Enum-member assignment fires through a sibling helper
+                // first (`E.A = null` mirrors `validNullAssignments.ts(10,3)`)
+                // — when it emits, we also flip the flag so the
+                // cascading TS2322 stays suppressed.
+                var readonly_target_fired = try self.checkEnumMemberAssignment(a.target);
                 if (self.hir.kindOf(a.target) == .member_access) {
-                    readonly_target_fired = try self.checkReadonlyAssignment(a.target);
+                    readonly_target_fired = (try self.checkReadonlyAssignment(a.target)) or readonly_target_fired;
                     // tsc also emits TS2542 for `C.bar = ...` when the
                     // class has a readonly index signature and no
                     // concrete static member named `bar`. Mirrors
@@ -72258,6 +72267,26 @@ test "checker: subclass constructor cannot assign inherited readonly property" {
         if (d.code == TsCodes.readonly_property) found += 1;
     }
     try T.expectEqual(@as(usize, 1), found);
+}
+
+test "checker: enum member assignment emits TS2540 and suppresses TS2322 cascade" {
+    // Mirrors `validNullAssignments.ts(10,3)` — `E.A = null;` should
+    // report only the readonly-property error, not also the
+    // type-mismatch error for `null` ↛ `E.A`.
+    const s = try newSetup(
+        \\enum E { A }
+        \\E.A = null;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_readonly = false;
+    var saw_type_mismatch = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.readonly_property) saw_readonly = true;
+        if (d.code == TsCodes.type_not_assignable) saw_type_mismatch = true;
+    }
+    try T.expect(saw_readonly);
+    try T.expect(!saw_type_mismatch);
 }
 
 test "checker: constructor parameter property visibility controls access" {
