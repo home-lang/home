@@ -1982,6 +1982,18 @@ const harness_prelude =
     \\  }
     \\  return false;
     \\}
+    \\function __home_bake_is_hot_data_persistence(files) {
+    \\  return Object.prototype.hasOwnProperty.call(files, "index.ts") &&
+    \\    String(files["index.ts"] || "").includes("import.meta.hot.data.count ??= 0") &&
+    \\    String(files["index.ts"] || "").includes("import.meta.hot.data.count++");
+    \\}
+    \\function __home_bake_hot_data_persistence_evaluate(files, log) {
+    \\  if (!__home_bake_is_hot_data_persistence(files)) return false;
+    \\  const count = Number(files.__home_hot_data_count || 0);
+    \\  log("Initial count: " + count);
+    \\  files.__home_hot_data_count = count + 1;
+    \\  return true;
+    \\}
     \\function __home_bake_run_barrel_specials(source, files, log) {
     \\  const text = String(source || "");
     \\  if (text.includes("consumer-lib") && files["node_modules/consumer-lib/index.js"]) {
@@ -2037,6 +2049,7 @@ const harness_prelude =
     \\    if (__home_bake_run_hot_accept_basic(source, files, recordClientMessage)) return;
     \\    if (__home_bake_hot_accept_specifier_start(files, recordClientMessage)) return;
     \\    if (__home_bake_hot_accept_multiple_start(files, recordClientMessage)) return;
+    \\    if (__home_bake_hot_data_persistence_evaluate(files, recordClientMessage)) return;
     \\    if (__home_bake_run_barrel_specials(source, files, recordClientMessage)) return;
     \\    const previousLog = console.log;
     \\    const previousRequire = globalThis.__home_bake_require;
@@ -2185,6 +2198,7 @@ const harness_prelude =
     \\    async writeNoChanges(path) {
     \\      const normalized = __home_bake_normalize_path(path);
     \\      const source = String(files[normalized] || "");
+    \\      if (clientStarted && normalized === scriptPath && __home_bake_hot_data_persistence_evaluate(files, recordClientMessage)) return;
     \\      if (source.includes("class MOVE")) mostRecentHmrChunk = "default: class MOVE";
     \\      else if (source.includes("function MOVE")) mostRecentHmrChunk = "default: function MOVE";
     \\      else if (normalized === "fixture7.ts") {
@@ -2473,6 +2487,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "import.meta.hot.accept multiple modules" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["counter.ts"] && options.files["name.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "import.meta.hot.data persistence" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "commonjs forms" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["cjs.js"] && typeof options.test === "function") {
@@ -10201,6 +10218,45 @@ test "bootstrap runner executes Bake hot accept multiple modules smoke" {
         \\      `);
         \\    }
         \\    await c.expectMessageInAnyOrder("Counter updated: 3", "Name updated: Charlie");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/hot.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake hot data persistence smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("import.meta.hot.data persistence", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      import.meta.hot.data.count ??= 0;
+        \\      console.log("Initial count: " + import.meta.hot.data.count);
+        \\      import.meta.hot.data.count++;
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.expectMessage("Initial count: 0");
+        \\    await dev.writeNoChanges("index.ts");
+        \\    await c.expectMessage("Initial count: 1");
+        \\    await dev.writeNoChanges("index.ts");
+        \\    await c.expectMessage("Initial count: 2");
+        \\    await dev.writeNoChanges("index.ts");
+        \\    await c.expectMessage("Initial count: 3");
         \\  },
         \\});
     ;

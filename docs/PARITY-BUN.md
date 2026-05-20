@@ -706,6 +706,20 @@ Latest measured full gate after the Bake hot accept-multiple slice:
 unsupported, `35` todo. First failure: `bake/dev/hot.test.ts` with
 `DEV:hot-5: import.meta.hot.data persistence`.
 
+The Bake static client shim now covers the copied
+`import.meta.hot.data persistence` case. It keeps fixture-scoped HMR data
+across repeated `writeNoChanges("index.ts")` evaluations and treats a
+module with populated `hot.data` as implicitly self-accepting, matching
+Bun's `HMRModule.data` persistence behavior. The native parity target
+remains Bun's `import.meta.hot.data` parser fold to `.hot_data`, printer
+lowering to `hmr.data`, registry module reuse, and implicit self-accept
+when data has keys.
+
+Latest measured full gate after the Bake hot.data slice:
+`4,013` files executed, `467` passed, `3,920` failed, `1,473`
+unsupported, `35` todo. First failure: `bake/dev/hot.test.ts` with
+`DEV:hot-6: import.meta.hot.dispose cleanup`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

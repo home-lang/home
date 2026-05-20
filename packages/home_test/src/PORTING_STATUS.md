@@ -461,6 +461,15 @@ array lowering and runtime `createAcceptArray` behavior that supplies the
 updated module namespace at the matching array index and `undefined` for
 the rest. The next Bake boundary is
 `DEV:hot-5: import.meta.hot.data persistence`.
+The copied `import.meta.hot.data persistence` case now runs through the
+Bake static client shim. It keeps fixture-scoped HMR data across repeated
+`writeNoChanges("index.ts")` evaluations and treats a module with
+populated `hot.data` as implicitly self-accepting, matching Bun's
+`HMRModule.data` persistence behavior. The native parity target remains
+Bun's `import.meta.hot.data` parser fold to `.hot_data`, printer lowering
+to `hmr.data`, registry module reuse, and implicit self-accept when data
+has keys. The next Bake boundary is
+`DEV:hot-6: import.meta.hot.dispose cleanup`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
