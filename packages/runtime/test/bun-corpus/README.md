@@ -19,7 +19,7 @@ macOS, Linux, and the WASM target.
   `atob`/`btoa` smoke, twenty-one regression smokes, one bundler
   constant-fold smoke, six test-runner expectation smokes, one nested-describe
   smoke, `Bun.stripANSI`, `Bun.wrapAnsi`, `Bun.semver.satisfies`, and
-  `bun:internal-for-testing` regexp escaping smokes, retry/repeats runner
+  `bun:internal-for-testing` regexp / PowerShell escaping smokes, retry/repeats runner
   behavior, `test.concurrent.each`, `expect().pass`, a narrow `mock.clearAllMocks` /
   `toHaveBeenCalledTimes` smoke, a narrow `jest.fn` / `HTMLRewriter`
   element-callback smoke, a narrow TypeScript constructor-modifier

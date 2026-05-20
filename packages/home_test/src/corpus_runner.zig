@@ -101,6 +101,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/24045.test.ts",
     "regression/issue/07324.test.ts",
     "regression/issue/07827.test.ts",
+    "internal/powershell-escape.test.ts",
 };
 
 const harness_prelude =
@@ -378,6 +379,15 @@ const harness_prelude =
     \\    else if (ch === "*" && packageNameMode) output += ".*";
     \\    else if ("|\\{}()[]^$+*?.".includes(ch)) output += "\\" + ch;
     \\    else output += ch;
+    \\  }
+    \\  return output;
+    \\}
+    \\function __home_escape_powershell(value) {
+    \\  let output = "";
+    \\  const text = String(value);
+    \\  for (let i = 0; i < text.length; i++) {
+    \\    const ch = text[i];
+    \\    output += ch === "\"" || ch === "`" ? "`" + ch : ch;
     \\  }
     \\  return output;
     \\}
@@ -895,6 +905,9 @@ const harness_prelude =
     \\  },
     \\  escapeRegExpForPackageNameMatching(value) {
     \\    return __home_escape_regexp(value, true);
+    \\  },
+    \\  escapePowershell(value) {
+    \\    return __home_escape_powershell(value);
     \\  },
     \\};
     \\globalThis.__home_modules["deno:harness"] = {
@@ -1798,6 +1811,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const testHelpers = globalThis.__home_import(\"bun:internal-for-testing\");",
         },
         .{
+            .needle = "import { escapePowershell } from \"bun:internal-for-testing\";",
+            .replacement = "const { escapePowershell } = globalThis.__home_import(\"bun:internal-for-testing\");",
+        },
+        .{
             .needle = "import assert from \"assert/strict\";",
             .replacement = "const assert = globalThis.__home_import(\"assert/strict\");",
         },
@@ -2091,6 +2108,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/24045.test.ts", filesForSubset(.minimal_js)[47]);
     try std.testing.expectEqualStrings("regression/issue/07324.test.ts", filesForSubset(.minimal_js)[48]);
     try std.testing.expectEqualStrings("regression/issue/07827.test.ts", filesForSubset(.minimal_js)[49]);
+    try std.testing.expectEqualStrings("internal/powershell-escape.test.ts", filesForSubset(.minimal_js)[50]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -2150,6 +2168,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:vm\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun:internal-for-testing\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "escapeRegExpForPackageNameMatching(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "escapePowershell(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "createDenoTest(path)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "denoTest.ignore") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_import") != null);
@@ -2234,6 +2253,20 @@ test "Bun internal testing import rewrite lowers default import" {
     defer std.testing.allocator.free(rewritten);
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const testHelpers = globalThis.__home_import(\"bun:internal-for-testing\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:internal-for-testing\"") == null);
+}
+
+test "Bun internal testing import rewrite lowers named PowerShell import" {
+    const source =
+        \\import { escapePowershell } from "bun:internal-for-testing";
+        \\it("powershell escaping rules", () => {
+        \\  expect(escapePowershell('foo" `bar')).toBe('foo`" ``bar');
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "internal/powershell-escape.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { escapePowershell } = globalThis.__home_import(\"bun:internal-for-testing\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:internal-for-testing\"") == null);
 }
 
@@ -2948,6 +2981,33 @@ test "bootstrap runner covers HTMLRewriter element callback smoke" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/07827.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers PowerShell escaping helper" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { escapePowershell } from "bun:internal-for-testing";
+        \\
+        \\it("powershell escaping rules", () => {
+        \\  expect(escapePowershell("foo")).toBe("foo");
+        \\  expect(escapePowershell("foo bar")).toBe("foo bar");
+        \\  expect(escapePowershell('foo" bar')).toBe('foo`" bar');
+        \\  expect(escapePowershell('foo" `bar')).toBe('foo`" ``bar');
+        \\  expect(escapePowershell('foo" ``"bar')).toBe('foo`" `````"bar');
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "internal/powershell-escape.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);

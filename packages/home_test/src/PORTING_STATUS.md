@@ -43,7 +43,7 @@ rejection, `test.concurrent`, `test.each`, `.not`, `toBe`, `toBeDefined`,
 `Bun.wrapAnsi`, `Bun.semver.satisfies`, `Bun.gc`, `mock.clearAllMocks`,
 `toHaveBeenCalledTimes`, `expect().pass`, narrow TypeScript
 constructor-modifier rewrites, narrow `toMatchInlineSnapshot` object formatting,
-`bun:internal-for-testing` regexp escaping helpers,
+`bun:internal-for-testing` regexp and PowerShell escaping helpers,
 `assert/strict.deepStrictEqual` boxed primitive handling,
 `jest.fn`, narrow `HTMLRewriter` element callbacks,
 `process.versions.bun`, `process.revision`, `process.on` / `process.emit`,
