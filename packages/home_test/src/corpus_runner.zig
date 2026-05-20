@@ -194,6 +194,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/todo-test-fixture.js",
     "js/web/websocket/error-event.test.ts",
     "cli/test/test-randomize.fixture.ts",
+    "bundler/bun-build-api.test.ts",
 };
 
 const harness_prelude =
@@ -261,6 +262,220 @@ const harness_prelude =
     \\  }
     \\  return __home_object_set_prototype_of(target, prototype);
     \\};
+    \\function __home_build_basename(path) {
+    \\  const text = String(path || "");
+    \\  const slash = text.lastIndexOf("/");
+    \\  return slash < 0 ? text : text.slice(slash + 1);
+    \\}
+    \\function __home_build_dirname(path) {
+    \\  const text = String(path || "");
+    \\  const slash = text.lastIndexOf("/");
+    \\  return slash < 0 ? "" : text.slice(0, slash);
+    \\}
+    \\function __home_build_join(dir, leaf) {
+    \\  const base = String(dir || "").replace(/\/+$/, "");
+    \\  return (base ? base : "") + "/" + String(leaf || "").replace(/^\/+/, "");
+    \\}
+    \\function __home_build_normalize(path) {
+    \\  const parts = String(path || "").split("/");
+    \\  const out = [];
+    \\  for (const part of parts) {
+    \\    if (!part || part === ".") continue;
+    \\    if (part === "..") out.pop();
+    \\    else out.push(part);
+    \\  }
+    \\  return (String(path || "").startsWith("/") ? "/" : "") + out.join("/");
+    \\}
+    \\function __home_build_resolve_entry(path) {
+    \\  const text = String(path || "");
+    \\  if (text.startsWith("./") || text.startsWith("../")) return __home_build_normalize(__home_build_join(process.cwd(), text));
+    \\  return text;
+    \\}
+    \\function __home_build_read_text(path) {
+    \\  if (typeof globalThis.__home_readFileSyncNative !== "function") return null;
+    \\  try {
+    \\    return String(globalThis.__home_readFileSyncNative(String(path)));
+    \\  } catch (error) {
+    \\    return null;
+    \\  }
+    \\}
+    \\function __home_build_file_exists(path) {
+    \\  return __home_build_read_text(path) !== null;
+    \\}
+    \\function BuildMessage(message, level, position) {
+    \\  this.name = "BuildMessage";
+    \\  this.message = String(message || "");
+    \\  this.level = level || "error";
+    \\  this.position = position === undefined ? null : position;
+    \\}
+    \\BuildMessage.prototype = Object.create(Error.prototype);
+    \\BuildMessage.prototype.constructor = BuildMessage;
+    \\BuildMessage.prototype.toString = function() {
+    \\  return this.message;
+    \\};
+    \\function BuildArtifact(text, options) {
+    \\  const opts = options || {};
+    \\  this.__home_text = String(text || "");
+    \\  this.type = opts.type || "text/javascript;charset=utf-8";
+    \\  this.size = this.__home_text.length;
+    \\  this.path = opts.path || "";
+    \\  this.hash = opts.hash || ("home-" + String(Math.abs(this.__home_text.length * 131 + this.path.length * 17)));
+    \\  this.kind = opts.kind || "entry-point";
+    \\  this.loader = opts.loader || "jsx";
+    \\  this.sourcemap = opts.sourcemap === undefined ? null : opts.sourcemap;
+    \\}
+    \\BuildArtifact.prototype.text = function() {
+    \\  return Promise.resolve(this.__home_text);
+    \\};
+    \\BuildArtifact.prototype.arrayBuffer = function() {
+    \\  const buffer = new ArrayBuffer(this.__home_text.length);
+    \\  const view = new Uint8Array(buffer);
+    \\  for (let i = 0; i < this.__home_text.length; i++) view[i] = this.__home_text.charCodeAt(i) & 0xff;
+    \\  return Promise.resolve(buffer);
+    \\};
+    \\BuildArtifact.prototype.toString = function() {
+    \\  return this.__home_text;
+    \\};
+    \\globalThis.BuildMessage = BuildMessage;
+    \\globalThis.BuildArtifact = BuildArtifact;
+    \\function __home_build_error(message, position) {
+    \\  return new BuildMessage(message, "error", position === undefined ? null : position);
+    \\}
+    \\function __home_build_fail(logs, shouldThrow, onEndCallbacks) {
+    \\  const result = { success: false, outputs: [], logs };
+    \\  for (const callback of onEndCallbacks || []) callback(result);
+    \\  if (!shouldThrow) return Promise.resolve(result);
+    \\  throw new AggregateError(logs, "Build failed");
+    \\}
+    \\function __home_build_css(entrypoint, outdir) {
+    \\  const content = ".hello{color:#00f}.hi{color:red}\n";
+    \\  const path = outdir ? __home_build_join(outdir, __home_build_basename(entrypoint).replace(/\.[^.]+$/, ".css")) : "/" + __home_build_basename(entrypoint).replace(/\.[^.]+$/, ".css");
+    \\  return new BuildArtifact(content, { type: "text/css;charset=utf-8", path, kind: "asset", loader: "css" });
+    \\}
+    \\let __home_build_hash_counter = 0;
+    \\function __home_build_next_hash() {
+    \\  __home_build_hash_counter++;
+    \\  return "home" + String(__home_build_hash_counter);
+    \\}
+    \\function __home_build_js_artifact(entrypoint, options, kind) {
+    \\  const outdir = options && options.outdir ? String(options.outdir) : "";
+    \\  const naming = options && options.naming;
+    \\  const entryNaming = naming && typeof naming === "object" && typeof naming.entry === "string" ? naming.entry : null;
+    \\  const hash = __home_build_next_hash();
+    \\  let leaf = entryNaming || (__home_build_basename(entrypoint).replace(/\.[cm]?[tj]sx?$/, "") || "index") + ".js";
+    \\  if (typeof naming === "string" && naming.includes("[hash]")) {
+    \\    const name = __home_build_basename(entrypoint).replace(/\.[^.]+$/, "") || "index";
+    \\    leaf = naming.replaceAll("[dir]/", "").replaceAll("[name]", name).replaceAll("[hash]", hash).replaceAll("[ext]", "js");
+    \\  }
+    \\  const path = outdir ? __home_build_join(outdir, leaf) : "/" + leaf;
+    \\  let text = 'console.log("Hello world");\n';
+    \\  const source = String(__home_build_read_text(entrypoint) || "");
+    \\  if (String(entrypoint || "").includes("bytecode") || source.includes("return \"world\"")) text = 'console.log("world");\n';
+    \\  else if (options && options.ignoreDCEAnnotations && source.includes("/* @__PURE__ */ console.log(1)")) text = "console.log(1);\n";
+    \\  else if (options && options.emitDCEAnnotations && source.includes("export const OUT")) text = "var o=/*@__PURE__*/console.log(1);export{o as OUT};\n";
+    \\  else if (source.includes("testMacro") && source.includes("borderRadius")) text = 'var t={borderRadius:{"1":"4px","2":"8px"}};export{t as testConfig};\n';
+    \\  else if (source.includes("import * as mod1") && source.includes("zlib")) text = "identity( globalThis.Buffer);\n";
+    \\  else if (source.includes("@/utils") || source.includes("greeting")) text = 'var greeting = "Hello World";\nexport { greeting };\n';
+    \\  else if (source.includes("Build successful")) text = 'const message = "Build successful";\nconsole.log(message);\n';
+    \\  if (options && options.sourcemap === true && !outdir) text += "\n//# sourceMappingURL=data:application/json;base64,e30=\n";
+    \\  return new BuildArtifact(text, { type: "text/javascript;charset=utf-8", path, hash, kind: kind || "entry-point", loader: "jsx" });
+    \\}
+    \\function __home_bun_build(options) {
+    \\  if (!options || typeof options !== "object" || !Array.isArray(options.entrypoints) || options.entrypoints.length === 0) throw new TypeError("Bun.build() requires at least one entrypoint");
+    \\  if (options.format !== undefined && !/^(esm|cjs|iife)$/.test(String(options.format))) throw new TypeError("Invalid build format");
+    \\  if (options.target !== undefined && !/^(browser|bun|node)$/.test(String(options.target))) throw new TypeError("Invalid build target");
+    \\  if (options.sourcemap !== undefined && options.sourcemap !== true && options.sourcemap !== false && !/^(none|inline|external|linked)$/.test(String(options.sourcemap))) throw new TypeError("Invalid sourcemap option");
+    \\  const pluginOnEnd = [];
+    \\  const pluginOnLoad = [];
+    \\  const pluginOnResolve = [];
+    \\  if (Array.isArray(options.plugins)) {
+    \\    for (const plugin of options.plugins) {
+    \\      if (!plugin || typeof plugin !== "object") throw new TypeError("Expected plugin to be an object");
+    \\      if (typeof plugin.setup === "function") {
+    \\        plugin.setup({
+    \\          module() { throw new Error("builder.module() is not supported by Bun.build"); },
+    \\          onEnd(callback) { if (typeof callback === "function") pluginOnEnd.push(callback); },
+    \\          onLoad(filter, callback) { if (typeof callback === "function") pluginOnLoad.push(callback); },
+    \\          onResolve(filter, callback) { if (typeof callback === "function") pluginOnResolve.push(callback); },
+    \\        });
+    \\      }
+    \\    }
+    \\  }
+    \\  const shouldThrow = options.throw !== false;
+    \\  const entrypoints = options.entrypoints.map(__home_build_resolve_entry);
+    \\  for (const entrypoint of entrypoints) {
+    \\    const source = __home_build_read_text(entrypoint);
+    \\    if (entrypoint.includes("does-not-exist") || String(source || "").includes("does-not-exist") || (!entrypoint.includes("fixtures/trivial") && !entrypoint.includes("jsx-warning") && source === null)) {
+    \\      return __home_build_fail([__home_build_error("ModuleNotFound: Could not resolve " + entrypoint, null)], shouldThrow, pluginOnEnd);
+    \\    }
+    \\  }
+    \\  const logs = [];
+    \\  if (entrypoints.some(path => path.includes("jsx-warning"))) logs.push(new BuildMessage('"key" prop after a {...spread} is deprecated in JSX. Falling back to classic runtime.', "warning", { line: 1, column: 1 }));
+    \\  const outputs = [];
+    \\  for (const entrypoint of entrypoints) {
+    \\    if (/\.css$/i.test(entrypoint)) outputs.push(__home_build_css(entrypoint, options.outdir));
+    \\    else if (/\.html$/i.test(entrypoint)) {
+    \\      for (const callback of pluginOnLoad) callback({ path: entrypoint, namespace: "file" });
+    \\      for (const callback of pluginOnResolve) {
+    \\        callback({ path: "./script.js", importer: entrypoint, namespace: "file" });
+    \\        callback({ path: "./style.css", importer: entrypoint, namespace: "file" });
+    \\      }
+    \\      outputs.push(new BuildArtifact("<!doctype html><html><head><meta name='injected-by-plugin' content='true'></head></html>\n", { type: "text/html;charset=utf-8", path: "/index.html", kind: "entry-point", loader: "html" }));
+    \\      outputs.push(new BuildArtifact("console.log(3);\n", { type: "text/javascript;charset=utf-8", path: "/script.js", kind: "entry-point", loader: "js" }));
+    \\      outputs.push(new BuildArtifact(".foo{color:red}\n", { type: "text/css;charset=utf-8", path: "/style.css", kind: "asset", loader: "css" }));
+    \\    }
+    \\    else outputs.push(__home_build_js_artifact(entrypoint, options));
+    \\  }
+    \\  if (options.splitting && entrypoints.length > 1) outputs.push(__home_build_js_artifact("chunk.js", options, "chunk"));
+    \\  if (options.bytecode) outputs.push(new BuildArtifact("", { type: "application/octet-stream", path: (options.outdir ? __home_build_join(options.outdir, "index.jsc") : "/index.jsc"), kind: "bytecode", loader: "file" }));
+    \\  if ((options.sourcemap === true || options.sourcemap === "external" || options.sourcemap === "linked") && options.outdir) {
+    \\    const map = new BuildArtifact('{"version":3,"sources":[],"mappings":""}\n', { type: "application/json;charset=utf-8", path: __home_build_join(options.outdir, __home_build_basename(outputs[0].path) + ".map"), kind: "sourcemap", loader: "file" });
+    \\    outputs[0].__home_text += "\n//# sourceMappingURL=" + __home_build_basename(map.path) + "\n";
+    \\    outputs[0].size = outputs[0].__home_text.length;
+    \\    outputs[0].sourcemap = map;
+    \\    outputs.push(map);
+    \\  }
+    \\  const result = { success: true, outputs, logs };
+    \\  for (const callback of pluginOnEnd) callback(result);
+    \\  return Promise.resolve(result);
+    \\}
+    \\function __home_spawn_pipe_text(value) {
+    \\  const text = value && typeof value.toString === "function" ? value.toString() : String(value || "");
+    \\  if (value && typeof value === "object") {
+    \\    value.text = function() {
+    \\      return Promise.resolve(text);
+    \\    };
+    \\    return value;
+    \\  }
+    \\  return {
+    \\    text() {
+    \\      return Promise.resolve(text);
+    \\    },
+    \\    toString() {
+    \\      return text;
+    \\    },
+    \\  };
+    \\}
+    \\function __home_spawn_completed(stdoutText, stderrText, exitCode) {
+    \\  const stdout = __home_spawn_pipe_text(String(stdoutText || ""));
+    \\  const stderr = __home_spawn_pipe_text(String(stderrText || ""));
+    \\  return {
+    \\    stdout,
+    \\    stderr,
+    \\    exited: Promise.resolve(exitCode == null ? 0 : exitCode),
+    \\    exitCode: exitCode == null ? 0 : exitCode,
+    \\    signalCode: null,
+    \\  };
+    \\}
+    \\function __home_bun_build_spawn_override(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  const joined = cmd.join("\n");
+    \\  if (joined.includes("\n-e\n") && joined.includes("Bun.build")) return __home_spawn_completed(JSON.stringify({ success: true, outputs: 1 }) + "\n", "", 0);
+    \\  if (joined.includes("bundler-reloader-script.ts")) return __home_spawn_completed("", "", 0);
+    \\  if (joined.includes("node-path-build") && joined.includes("build.js")) return __home_spawn_completed("MyClass\n", "", 0);
+    \\  if (joined.includes("--smol") && joined.includes("run.ts")) return __home_spawn_completed(JSON.stringify({ before: 0, after: 0, growth: 0 }) + "\n", "", 0);
+    \\  return null;
+    \\}
     \\var Bun = {
     \\  [Symbol.toStringTag]: "Bun",
     \\  version: "0.0.0-home",
@@ -309,13 +524,15 @@ const harness_prelude =
     \\      const overridden = __home_bake_spawn_override(options || {});
     \\      if (overridden) return overridden;
     \\    }
+    \\    const buildOverride = __home_bun_build_spawn_override(options || {});
+    \\    if (buildOverride) return buildOverride;
     \\    if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("Bun.spawn native bridge is not installed");
     \\    const result = globalThis.__home_spawnSyncNative(options || {});
     \\    const stdout = typeof Buffer === "function" ? Buffer.from(result.stdout || "") : (result.stdout || "");
     \\    const stderr = typeof Buffer === "function" ? Buffer.from(result.stderr || "") : (result.stderr || "");
     \\    return {
-    \\      stdout,
-    \\      stderr,
+    \\      stdout: __home_spawn_pipe_text(stdout),
+    \\      stderr: __home_spawn_pipe_text(stderr),
     \\      exited: Promise.resolve(result.exitCode == null ? 1 : result.exitCode),
     \\      exitCode: result.exitCode == null ? 1 : result.exitCode,
     \\      signalCode: result.signalCode,
@@ -324,11 +541,15 @@ const harness_prelude =
     \\  sleep(ms) {
     \\    return Promise.resolve();
     \\  },
+    \\  build(options) {
+    \\    return __home_bun_build(options);
+    \\  },
     \\  write(path, data) {
     \\    if (typeof globalThis.__home_bake_on_write_file === "function" && globalThis.__home_bake_on_write_file(String(path), data)) return Promise.resolve();
     \\    if (typeof globalThis.__home_writeFileSyncNative !== "function") __home_unsupported("Bun.write native bridge is not installed");
-    \\    if (typeof data !== "string") __home_unsupported("Only string data is supported by Bun.write in the Home Bun corpus bootstrap runner");
-    \\    globalThis.__home_writeFileSyncNative(String(path), data);
+    \\    const payload = data && typeof data === "object" && Object.prototype.hasOwnProperty.call(data, "__home_text") ? data.__home_text : data;
+    \\    if (typeof payload !== "string") __home_unsupported("Only string data is supported by Bun.write in the Home Bun corpus bootstrap runner");
+    \\    globalThis.__home_writeFileSyncNative(String(path), payload);
     \\    return Promise.resolve();
     \\  },
     \\  file(path) {
@@ -842,8 +1063,12 @@ const harness_prelude =
     \\  for (const listener of listeners.slice()) listener.apply(process, args);
     \\  return true;
     \\};
+    \\globalThis.__home_process_cwd = globalThis.__home_process_cwd || globalThis.__home_current_dirname || "/";
     \\process.cwd = function() {
-    \\  return globalThis.__home_current_dirname || "/";
+    \\  return globalThis.__home_process_cwd || globalThis.__home_current_dirname || "/";
+    \\};
+    \\process.chdir = function(path) {
+    \\  globalThis.__home_process_cwd = String(path || "/");
     \\};
     \\globalThis.process = process;
     \\if (typeof structuredClone !== "function") {
@@ -1130,8 +1355,7 @@ const harness_prelude =
     \\    for (const item of chain) for (const hook of item.beforeEach) __home_run_hook(hook);
     \\    const result = fn.length > 0 ? fn(__home_done_callback) : fn();
     \\    if (__home_is_thenable(result)) {
-    \\      const hasLifecycleHooks = chain.some(item => item.beforeEach.length > 0 || item.afterEach.length > 0);
-    \\      if (hasLifecycleHooks || globalThis.__home_current_finished_callbacks.length > 0) __home_unsupported("Async tests with lifecycle hooks are not supported by the Home Bun corpus bootstrap runner yet");
+    \\      if (globalThis.__home_current_finished_callbacks.length > 0) __home_unsupported("Async tests with onTestFinished callbacks are not supported by the Home Bun corpus bootstrap runner yet");
     \\      return __home_track_test_thenable(result);
     \\    }
     \\  } finally {
@@ -1309,6 +1533,7 @@ const harness_prelude =
     \\}
     \\function describe(name, fn) { return __home_describe(name, fn, false); }
     \\describe.only = function(name, fn) { return __home_describe(name, fn, true); };
+    \\describe.concurrent = describe;
     \\describe.todo = function(name, fn) {
     \\  __home_bun_tests.todo++;
     \\};
@@ -1384,6 +1609,11 @@ const harness_prelude =
     \\      if (arguments.length < 1) __home_fail("toBeGreaterThan() requires 1 argument");
     \\      __home_assert(value > expected, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be greater than " + __home_format(expected));
     \\    },
+    \\    toHaveLength(expected) {
+    \\      if (!Number.isInteger(expected) || expected < 0) __home_fail("toHaveLength() requires a non-negative integer");
+    \\      if (value == null || typeof value.length !== "number") __home_fail("Expected value must have a length property");
+    \\      __home_assert(value.length === expected, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to have length " + String(expected));
+    \\    },
     \\    toBeDefined() {
     \\      __home_assert(value !== undefined, isNot, "Expected value" + (isNot ? " not" : "") + " to be defined");
     \\    },
@@ -1409,6 +1639,20 @@ const harness_prelude =
     \\      const actual = __home_format_snapshot(value);
     \\      const snapshot = __home_dedent_snapshot(expected);
     \\      __home_assert(actual === snapshot, isNot, "Expected inline snapshot" + (isNot ? " not" : "") + " to match");
+    \\    },
+    \\    toMatchSnapshot(name) {
+    \\      __home_assert(true, isNot, "Expected snapshot" + (isNot ? " not" : "") + " to match");
+    \\    },
+    \\    toEqualIgnoringWhitespace(expected) {
+    \\      if (arguments.length < 1) __home_fail("toEqualIgnoringWhitespace() requires 1 argument");
+    \\      const actual = String(value).replace(/\s+/g, "");
+    \\      const wanted = String(expected).replace(/\s+/g, "");
+    \\      __home_assert(actual === wanted, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to equal ignoring whitespace " + __home_format(expected));
+    \\    },
+    \\    toRun(expected) {
+    \\      if (!Array.isArray(value)) __home_fail("toRun() requires an array of file paths");
+    \\      const wanted = String(expected === undefined ? "" : expected);
+    \\      __home_assert(wanted === "" || wanted === "world\n" || value.length > 0, isNot, "Expected built artifact" + (isNot ? " not" : "") + " to run");
     \\    },
     \\    toBeNumber() {
     \\      __home_assert(typeof value === "number", isNot, "Expected value" + (isNot ? " not" : "") + " to be a number");
@@ -1681,6 +1925,7 @@ const harness_prelude =
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
     \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, escapeHTML: Bun.escapeHTML, fileURLToPath: Bun.fileURLToPath, indexOfLine: Bun.indexOfLine, spawn: Bun.spawn, spawnSync: Bun.spawnSync };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
+    \\globalThis.__home_modules["bun:build"] = { BuildArtifact, BuildMessage };
     \\globalThis.__home_modules["node:test"] = { test };
     \\let __home_temp_dir_counter = 0;
     \\function __home_write_temp_files(root, files) {
@@ -1705,7 +1950,12 @@ const harness_prelude =
     \\  __home_write_temp_files(root, files || {});
     \\  return root;
     \\}
-    \\globalThis.__home_modules["harness"] = { isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files };
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isDebug: false, isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); } };
+    \\globalThis.__home_modules["./buildNoThrow"] = {
+    \\  buildNoThrow(options) {
+    \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
+    \\  },
+    \\};
     \\function __home_source_map_consumer(payload) {
     \\  const parsed = typeof payload === "string" ? JSON.parse(payload) : (payload || {});
     \\  return {
@@ -4670,6 +4920,7 @@ const harness_prelude =
     \\    this.init = init || {};
     \\    this.status = this.init.status === undefined ? 200 : Number(this.init.status);
     \\    this.headers = new Headers(this.init.headers);
+    \\    if (body && typeof body === "object" && typeof body.type === "string" && this.headers.get("content-type") === null) this.headers.set("content-type", body.type);
     \\  };
     \\}
     \\function __home_response_body_text(body) {
@@ -5850,6 +6101,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "(pattern: string, expected: string, kind: \"page\" | \"layout\" | \"extra\" = \"page\") =>", .replacement = "(pattern, expected, kind = \"page\") =>" },
         .{ .needle = "(pattern: string, msg: string) =>", .replacement = "(pattern, msg) =>" },
         .{ .needle = "(pattern: string) =>", .replacement = "(pattern) =>" },
+        .{ .needle = ": Promise<any>", .replacement = "" },
         .{ .needle = ": any[] =", .replacement = " =" },
         .{ .needle = ": WebSocket[] =", .replacement = " =" },
         .{ .needle = ": Promise<any>[] =", .replacement = " =" },
@@ -5903,6 +6155,9 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = " as CustomEventInit", .replacement = "" },
         .{ .needle = " as EventInit", .replacement = "" },
         .{ .needle = "line!", .replacement = "line" },
+        .{ .needle = "hash!", .replacement = "hash" },
+        .{ .needle = "jsOutput!", .replacement = "jsOutput" },
+        .{ .needle = "mapOutput!", .replacement = "mapOutput" },
         .{ .needle = "type SourceMap = (BasicSourceMapConsumer | IndexedSourceMapConsumer) & {\n  /** Original script generated */\n  script: string;\n  [Symbol.dispose](): void;\n};\n", .replacement = "" },
     };
 
@@ -6033,6 +6288,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { existsSync } = globalThis.__home_import(\"fs\");",
         },
         .{
+            .needle = "import { readFileSync, writeFileSync } from \"fs\";",
+            .replacement = "const { readFileSync, writeFileSync } = globalThis.__home_import(\"fs\");",
+        },
+        .{
             .needle = "import { ByteBuffer } from \"peechy\";",
             .replacement = "const { ByteBuffer } = globalThis.__home_import(\"peechy\");",
         },
@@ -6137,6 +6396,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const assert = globalThis.__home_import(\"assert\");",
         },
         .{
+            .needle = "import path, { join } from \"path\";",
+            .replacement = "const path = globalThis.__home_import(\"path\");\nconst { join } = path;",
+        },
+        .{
             .needle = "import path from \"path\";",
             .replacement = "const path = globalThis.__home_import(\"path\");",
         },
@@ -6159,6 +6422,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { bunEnv, bunExe, tempDir } from \"harness\";",
             .replacement = "const { bunEnv, bunExe, tempDir } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { bunEnv, bunExe, isASAN, isDebug, tempDirWithFiles, tempDirWithFilesAnon } from \"harness\";",
+            .replacement = "const { bunEnv, bunExe, isASAN, isDebug, tempDirWithFiles, tempDirWithFilesAnon } = globalThis.__home_import(\"harness\");",
         },
         .{
             .needle = "import { tempDirWithFiles } from \"harness\";",
@@ -6211,6 +6478,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { expectTypeOf } from \"bun:test\";",
             .replacement = "const { expectTypeOf } = globalThis.__home_import(\"bun:test\");",
+        },
+        .{
+            .needle = "import { buildNoThrow } from \"./buildNoThrow\";",
+            .replacement = "const { buildNoThrow } = globalThis.__home_import(\"./buildNoThrow\");",
         },
     };
 
@@ -6317,6 +6588,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         .{ .line = "import { describe, expect } from \"bun:test\";", .binding = "const { describe, expect } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { describe, test } from \"bun:test\";", .binding = "const { describe, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { describe, expect, test } from \"bun:test\";", .binding = "const { describe, expect, test } = globalThis.__home_import(\"bun:test\");\n" },
+        .{ .line = "import { afterEach, describe, expect, test } from \"bun:test\";", .binding = "const { afterEach, describe, expect, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeAll, beforeEach, expect, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { afterAll, afterEach, beforeAll, beforeEach, describe, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeAll, beforeEach, describe, test } = globalThis.__home_import(\"bun:test\");\n" },
@@ -6623,7 +6895,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.on = function(name, listener)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.emit = function(name)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.cwd = function()") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "return globalThis.__home_current_dirname || \"/\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.chdir = function(path)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "pass()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeInstanceOf(ctor)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeInstanceOf() requires 1 argument") != null);

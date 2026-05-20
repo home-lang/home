@@ -123,8 +123,8 @@ explicit harness unsupported errors across the
 `adapters/jsc_bootstrap.zig` boundary instead of counting them as
 assertion failures. It also accepts microtask-settled returned Promises
 for simple tests, while still reporting pending async work and async
-lifecycle-hook paths as unsupported until the real event-loop runner
-lands. It covers the first real smoke slice: basic
+`onTestFinished` callback paths as unsupported until the real event-loop
+runner lands. It covers the first real smoke slice: basic
 `describe` / `test` / `it`, `it.todo`, `it.failing`, lifecycle hooks,
 retry/repeats runner options, `onTestFinished`, returned-thenable
 rejection, `test.concurrent`, `test.each`, `.not`, `toBe`, `toBeDefined`,
@@ -668,9 +668,17 @@ The copied `bake/serve-plugins-dev-server.test.ts` fixture now passes as
 temp project creation, `Bun.spawn` pipes, plugin rejection stderr,
 non-timeout deferred request release, and plugin-rewritten bundle output.
 Native parity still needs Bun's real ServePlugins state transition and
-DevServer notification logic. The next direct corpus boundary is
-`bundler/bun-build-api.test.ts`, currently blocked as unsupported
-`bun:test` import shape.
+DevServer notification logic. The next direct corpus boundary was
+`bundler/bun-build-api.test.ts`.
+The copied `bundler/bun-build-api.test.ts` fixture now passes as `37`
+tests with `3` upstream todos through a narrow `Bun.build` API model:
+BuildMessage and BuildArtifact-like outputs, validation and
+`throw: false` errors, CSS/JS/HTML artifact shapes, linked and inline
+sourcemap markers, `Bun.write(BuildArtifact)`, plugin callback ordering,
+cwd/tsconfig path mapping, `Bun.spawn` pipe `.text()` helpers, split
+output hash/path identity, and copied memory-growth subprocess smokes.
+Native parity still needs Bun's real bundler, resolver, plugin API,
+source map writer, bytecode output, and BuildArtifact implementation.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

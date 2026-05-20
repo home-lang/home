@@ -191,11 +191,12 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes one hundred twenty-seven allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes one hundred twenty-eight allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-three
-regression smokes, one bundler constant-fold smoke, one bun-types `test.each` type-shape smoke, six test-runner
+regression smokes, one bundler constant-fold smoke, one `Bun.build` API
+smoke, one bun-types `test.each` type-shape smoke, six test-runner
 expectation smokes, one nested-describe smoke, two `expectTypeOf` type-only smokes, a narrow `Bun.TOML.parse` throw smoke, `Bun.stripANSI` and
 `Bun.wrapAnsi`, `Bun.semver.satisfies`, and `bun:internal-for-testing` regexp / PowerShell escaping smokes, retry/repeats runner behavior, `test.concurrent.each`, `expect().pass`, a narrow `mock.clearAllMocks` / `toHaveBeenCalledTimes` smoke, a narrow `jest.fn` / `HTMLRewriter` element-callback smoke, a narrow TypeScript constructor-modifier rewrite smoke, narrow `assert` / `assert/strict`, `node:path`, `node:url`, and relative CJS fixture smokes, a narrow inline-snapshot Unicode object formatting smoke, a `node:vm.runInNewContext` / `process.on` throw propagation smoke, Deno harness `test(options, fn)` / permission skip / `test.ignore` / `test.todo` call-shape parity, Deno `Event` / `CustomEvent` / `AbortController`, and a Deno `URLSearchParams` bootstrap smoke, plus narrow bootstrap coverage for Node `DOMException`, Web
 `Response.json` / `Response.redirect`, Web `Request` cache/mode/clone
@@ -247,13 +248,13 @@ per JSC engine, resets counters before each file, lowers supported
 `bun:test` imports through a virtual
 `globalThis.__home_import("bun:test")` module shim, and fails closed as
 unsupported for unsupported import shapes, unsupported module syntax,
-async tests or hooks, explicit unsupported shim paths, and files that
+pending async work, async `onTestFinished` callbacks, explicit unsupported shim paths, and files that
 register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `127` files, `544` passed, `0` failed,
-`34` todo.
+Latest measured subset run: `128` files, `581` passed, `0` failed,
+`37` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
 uses the same Home-native JSC bootstrap instead of the retired
@@ -1034,8 +1035,19 @@ non-timeout release of the deferred request, and plugin-rewritten bundle
 output. Native parity still requires Bun's real ServePlugins
 handleOnReject/handleOnResolve state transition and DevServer
 notification logic from copied source. The next direct copied corpus
-boundary is `bundler/bun-build-api.test.ts`, currently blocked as
-`unsupported bun:test import shape`.
+boundary was `bundler/bun-build-api.test.ts`.
+
+The copied `bundler/bun-build-api.test.ts` fixture now passes in Home as
+`37` passed, `0` failed, `0` unsupported, `3` todo. The bootstrap models
+the early `Bun.build` API contract: `BuildMessage` and BuildArtifact-like
+outputs, validation and `throw: false` errors, CSS/JS/HTML artifact
+shapes, linked and inline sourcemap markers, `Bun.write(BuildArtifact)`,
+plugin `onLoad` / `onResolve` / `onEnd` callback ordering, simple cwd /
+tsconfig path mapping, `Bun.spawn` pipe `.text()` helpers, split output
+hash/path identity, and the copied memory-growth subprocess smokes.
+Native parity still requires Bun's real bundler, resolver, plugin API,
+source map writer, bytecode output, and BuildArtifact implementation from
+copied source.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
