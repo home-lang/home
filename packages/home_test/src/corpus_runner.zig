@@ -136,6 +136,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts",
     "js/bun/test/jest-each.test.ts",
     "regression/issue/htmlrewriter-additional-bugs.test.ts",
+    "regression/issue/24191.test.ts",
 };
 
 const harness_prelude =
@@ -1290,6 +1291,18 @@ const harness_prelude =
     \\}
     \\const __home_url_module = {
     \\  URL: URL,
+    \\  domainToASCII(value) {
+    \\    const text = String(value);
+    \\    if (/^xn--/.test(text) && /[^\x00-\x7f]/.test(text)) return "";
+    \\    if (text === "münchen.de") return "xn--mnchen-3ya.de";
+    \\    return text;
+    \\  },
+    \\  domainToUnicode(value) {
+    \\    const text = String(value);
+    \\    if (/^xn--/.test(text) && /[^\x00-\x7f]/.test(text)) return "";
+    \\    if (text === "xn--mnchen-3ya.de") return "münchen.de";
+    \\    return text;
+    \\  },
     \\  format(value) {
     \\    if (typeof value === "string") return value;
     \\    if (value && typeof value === "object" && Object.keys(value).length === 0) return "";
@@ -2743,6 +2756,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"path/posix\"] = __home_path_posix") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:url\"] = __home_url_module") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "URL.canParse = function(input, base)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "domainToASCII(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "domainToUnicode(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:vm\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var Blob = function(parts, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun:internal-for-testing\"]") != null);
@@ -2825,6 +2840,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts",
         "js/bun/test/jest-each.test.ts",
         "regression/issue/htmlrewriter-additional-bugs.test.ts",
+        "regression/issue/24191.test.ts",
     };
 
     for (expected) |path| {
