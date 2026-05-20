@@ -170,13 +170,13 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes forty-four allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes forty-five allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
-todo-registration smoke, the Web `atob`/`btoa` smoke, sixteen
+todo-registration smoke, the Web `atob`/`btoa` smoke, seventeen
 regression smokes, one bundler constant-fold smoke, six test-runner
 expectation smokes, one nested-describe smoke, `Bun.stripANSI` and
-`Bun.wrapAnsi` and `Bun.semver.satisfies` smokes, retry/repeats runner behavior, `test.concurrent.each`, a `node:vm.runInNewContext` / `process.on` throw propagation smoke, Deno `Event` / `CustomEvent` / `AbortController` and a Deno `URLSearchParams` bootstrap smoke, plus narrow bootstrap coverage for Node `DOMException`, Web
+`Bun.wrapAnsi` and `Bun.semver.satisfies` smokes, retry/repeats runner behavior, `test.concurrent.each`, a narrow `mock.clearAllMocks` / `toHaveBeenCalledTimes` smoke, a `node:vm.runInNewContext` / `process.on` throw propagation smoke, Deno `Event` / `CustomEvent` / `AbortController` and a Deno `URLSearchParams` bootstrap smoke, plus narrow bootstrap coverage for Node `DOMException`, Web
 `Response.json` / `Response.redirect`, Web `Request` cache/mode/clone,
 JSC `ShadowRealm`, Bun file metadata, Node `Buffer`
 binary/UTF-16LE/compare/inspect-limit/isEncoding behavior, `Map`/`Set`

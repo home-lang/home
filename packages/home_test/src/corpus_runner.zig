@@ -95,6 +95,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/deno/url/urlsearchparams.test.ts",
     "regression/issue/08040.test.ts",
     "regression/issue/09778.test.ts",
+    "regression/issue/18820.test.ts",
 };
 
 const harness_prelude =
@@ -112,6 +113,7 @@ const harness_prelude =
     \\  };
     \\  globalThis.__home_current_scope = globalThis.__home_root_scope;
     \\  globalThis.__home_current_finished_callbacks = null;
+    \\  globalThis.__home_mocks = [];
     \\};
     \\globalThis.__home_reset_tests();
     \\var Bun = {
@@ -582,6 +584,20 @@ const harness_prelude =
     \\  if (!globalThis.__home_current_finished_callbacks) __home_fail("onTestFinished() must be called while a test is running");
     \\  globalThis.__home_current_finished_callbacks.push(fn);
     \\}
+    \\function mock(implementation) {
+    \\  const fn = typeof implementation === "function" ? implementation : function() {};
+    \\  const wrapped = function() {
+    \\    wrapped.mock.calls.push(Array.prototype.slice.call(arguments));
+    \\    return fn.apply(this, arguments);
+    \\  };
+    \\  wrapped.__home_is_mock = true;
+    \\  wrapped.mock = { calls: [] };
+    \\  globalThis.__home_mocks.push(wrapped);
+    \\  return wrapped;
+    \\}
+    \\mock.clearAllMocks = function() {
+    \\  for (const fn of globalThis.__home_mocks) fn.mock.calls = [];
+    \\};
     \\globalThis.__home_finish_tests = function() {
     \\  __home_run_all_after_all(globalThis.__home_root_scope);
     \\};
@@ -608,6 +624,11 @@ const harness_prelude =
     \\    },
     \\    toBeFalse() {
     \\      __home_assert(value === false, isNot, "Expected value" + (isNot ? " not" : "") + " to be false");
+    \\    },
+    \\    toHaveBeenCalledTimes(expected) {
+    \\      if (!Number.isInteger(expected) || expected < 0) __home_fail("toHaveBeenCalledTimes() requires a non-negative integer");
+    \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.calls)) __home_fail("toHaveBeenCalledTimes() value must be a mock function");
+    \\      __home_assert(value.mock.calls.length === expected, isNot, "Expected mock" + (isNot ? " not" : "") + " to have been called " + String(expected) + " times");
     \\    },
     \\    toBeNumber() {
     \\      __home_assert(typeof value === "number", isNot, "Expected value" + (isNot ? " not" : "") + " to be a number");
@@ -792,7 +813,7 @@ const harness_prelude =
     \\    };
     \\  }
     \\};
-    \\globalThis.__home_bun_test = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, test };
+    \\globalThis.__home_bun_test = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock, onTestFinished, test };
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
     \\globalThis.__home_modules["bun"] = { semver: Bun.semver };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
@@ -1791,6 +1812,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         .{ .line = "import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeAll, beforeEach, expect, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, it } from \"bun:test\";", .binding = "const { expect, it } = globalThis.__home_import(\"bun:test\");\n" },
+        .{ .line = "import { expect, mock, test } from \"bun:test\";", .binding = "const { expect, mock, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, test } from \"bun:test\";", .binding = "const { expect, test } = globalThis.__home_import(\"bun:test\");\n" },
     };
 
@@ -1958,6 +1980,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/deno/url/urlsearchparams.test.ts", filesForSubset(.minimal_js)[41]);
     try std.testing.expectEqualStrings("regression/issue/08040.test.ts", filesForSubset(.minimal_js)[42]);
     try std.testing.expectEqualStrings("regression/issue/09778.test.ts", filesForSubset(.minimal_js)[43]);
+    try std.testing.expectEqualStrings("regression/issue/18820.test.ts", filesForSubset(.minimal_js)[44]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -1980,6 +2003,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeUndefined()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTruthy()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeFalse()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toHaveBeenCalledTimes(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeGreaterThan(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_expect_any_matches(value, ctor)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeNumber()") != null);
@@ -1988,6 +2012,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toIncludeRepeated(needle, expectedCount)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function beforeAll(fn, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function onTestFinished(fn)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function mock(implementation)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock.clearAllMocks") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Cannot set both retry and repeats") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.concurrent.each") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_finish_tests") != null);
@@ -2002,7 +2028,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Expected value must be string or Error") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Deep equality for this value type is not supported") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "UnreachableError") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_bun_test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock, onTestFinished, test") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun\"] = { semver: Bun.semver }") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:vm\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "createDenoTest(path)") != null);
@@ -2074,6 +2100,19 @@ test "Node VM import rewrite lowers runInNewContext to the virtual module" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { runInNewContext } = globalThis.__home_import(\"node:vm\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"node:vm\"") == null);
+}
+
+test "Bun test import rewrite lowers mock imports" {
+    const source =
+        \\import { expect, mock, test } from "bun:test";
+        \\const fn = mock(() => 1);
+        \\test("mock", () => expect(fn).toHaveBeenCalledTimes(0));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/18820.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { expect, mock, test } = globalThis.__home_import(\"bun:test\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
 }
 
 test "Bun test import rewrite lowers lifecycle hook imports" {
@@ -2467,6 +2506,47 @@ test "bootstrap runner covers node vm process event throw propagation" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/09778.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers mock clearAllMocks call counts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, mock, test } from "bun:test";
+        \\
+        \\const random1 = mock(() => Math.random());
+        \\const random2 = mock(() => Math.random());
+        \\
+        \\test("clearing all mocks", () => {
+        \\  random1();
+        \\  random2();
+        \\
+        \\  expect(random1).toHaveBeenCalledTimes(1);
+        \\  expect(random2).toHaveBeenCalledTimes(1);
+        \\
+        \\  mock.clearAllMocks();
+        \\
+        \\  expect(random1).toHaveBeenCalledTimes(0);
+        \\  expect(random2).toHaveBeenCalledTimes(0);
+        \\
+        \\  expect(typeof random1()).toBe("number");
+        \\  expect(typeof random2()).toBe("number");
+        \\
+        \\  expect(random1).toHaveBeenCalledTimes(1);
+        \\  expect(random2).toHaveBeenCalledTimes(1);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/18820.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
