@@ -3461,7 +3461,9 @@ fn hasBunTestImport(source: []const u8) bool {
 
 fn hasBakeHarnessImport(source: []const u8) bool {
     return std.mem.indexOf(u8, source, "from \"./bake-harness\"") != null or
-        std.mem.indexOf(u8, source, "from './bake-harness'") != null;
+        std.mem.indexOf(u8, source, "from './bake-harness'") != null or
+        std.mem.indexOf(u8, source, "from \"../bake-harness\"") != null or
+        std.mem.indexOf(u8, source, "from '../bake-harness'") != null;
 }
 
 fn hasUnsupportedModuleSyntax(source: []const u8) bool {
@@ -3523,12 +3525,14 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     }{
         .{ .line = "import { expect, it, describe } from \"bun:test\";", .binding = "const { expect, it, describe } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { describe, expect, it } from \"bun:test\";", .binding = "const { describe, expect, it } = globalThis.__home_import(\"bun:test\");\n" },
+        .{ .line = "import { describe, expect } from \"bun:test\";", .binding = "const { describe, expect } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { describe, test } from \"bun:test\";", .binding = "const { describe, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { describe, expect, test } from \"bun:test\";", .binding = "const { describe, expect, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeAll, beforeEach, expect, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { afterAll, afterEach, beforeAll, beforeEach, describe, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeAll, beforeEach, describe, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, it } from \"bun:test\";", .binding = "const { expect, it } = globalThis.__home_import(\"bun:test\");\n" },
+        .{ .line = "import { expect } from \"bun:test\";", .binding = "const { expect } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expectTypeOf, test } from \"bun:test\";", .binding = "const { expectTypeOf, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { describe, expect, jest, test } from \"bun:test\";", .binding = "const { describe, expect, jest, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, jest, test } from \"bun:test\";", .binding = "const { expect, jest, test } = globalThis.__home_import(\"bun:test\");\n" },
@@ -5674,6 +5678,20 @@ test "Bun corpus rewrite lowers node fs sync imports before Bake harness boundar
     try std.testing.expectEqualStrings("unsupported bake harness module", prepared.unsupported_reason.?);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import { writeFileSync } from \"node:fs\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { writeFileSync } = globalThis.__home_import(\"node:fs\");") != null);
+}
+
+test "Bun corpus rewrite reports parent Bake harness after expect-only bun test import" {
+    const source =
+        \\import { expect } from "bun:test";
+        \\import { devTest, emptyHtmlFile, minimalFramework } from "../bake-harness";
+        \\devTest("smoke", { files: {}, async test() { expect(1).toBe(1); } });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/bundle.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("unsupported bake harness module", prepared.unsupported_reason.?);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import { expect } from \"bun:test\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { expect } = globalThis.__home_import(\"bun:test\");") != null);
 }
 
 test "bootstrap runner supports node fs sync utf8 file methods" {
