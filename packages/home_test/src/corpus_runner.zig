@@ -110,6 +110,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/path/15704.test.js",
     "js/node/url/url-canParse-whatwg.test.js",
     "js/node/url/url-format-invalid-input.test.js",
+    "integration/bun-types/fixture/23347.test.ts",
 };
 
 const harness_prelude =
@@ -2201,6 +2202,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/node/path/15704.test.js", filesForSubset(.minimal_js)[56]);
     try std.testing.expectEqualStrings("js/node/url/url-canParse-whatwg.test.js", filesForSubset(.minimal_js)[57]);
     try std.testing.expectEqualStrings("js/node/url/url-format-invalid-input.test.js", filesForSubset(.minimal_js)[58]);
+    try std.testing.expectEqualStrings("integration/bun-types/fixture/23347.test.ts", filesForSubset(.minimal_js)[59]);
 }
 
 test "harness prelude installs Bun test globals once" {

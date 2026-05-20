@@ -42,7 +42,7 @@ rejection, `test.concurrent`, `test.each`, `.not`, `toBe`, `toBeDefined`,
 `Bun` branding plus `Bun.version`, `Bun.revision`, `Bun.stripANSI`,
 `Bun.wrapAnsi`, `Bun.semver.satisfies`, `Bun.gc`, `mock.clearAllMocks`,
 `toHaveBeenCalledTimes`, `expect().pass`, narrow TypeScript
-constructor-modifier rewrites, narrow `toMatchInlineSnapshot` object formatting,
+constructor-modifier rewrites, bun-types `test.each` type-shape smoke, narrow `toMatchInlineSnapshot` object formatting,
 `bun:internal-for-testing` regexp and PowerShell escaping helpers,
 `assert` CJS require, `assert.match` / `assert.doesNotMatch`,
 `assert/strict.deepStrictEqual` boxed primitive handling,
