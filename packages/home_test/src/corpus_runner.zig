@@ -164,6 +164,10 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/only-flag-fixtures/file0.fixture.ts",
     "js/bun/test/only-flag-fixtures/file2.fixture.ts",
     "js/bun/test/todo-test-fixture-2.js",
+    "js/bun/test/only-fixture-1.ts",
+    "js/bun/test/only-fixture-2.ts",
+    "js/bun/test/only-fixture-3.ts",
+    "js/bun/test/only-flag-fixtures/file1.fixture.ts",
 };
 
 const harness_prelude =
@@ -180,6 +184,8 @@ const harness_prelude =
     \\    afterAllDone: false,
     \\  };
     \\  globalThis.__home_current_scope = globalThis.__home_root_scope;
+    \\  globalThis.__home_scopes = [globalThis.__home_root_scope];
+    \\  globalThis.__home_registered_tests = [];
     \\  globalThis.__home_current_finished_callbacks = null;
     \\  globalThis.__home_mocks = [];
     \\};
@@ -796,10 +802,10 @@ const harness_prelude =
     \\    }
     \\  }
     \\}
-    \\function __home_run_test(name, first, second) {
-    \\  const parsed = __home_parse_test_args(name, first, second);
+    \\function __home_execute_test(parsed) {
     \\  const fn = parsed.fn;
     \\  const options = parsed.options;
+    \\  const scope = parsed.scope;
     \\  if (typeof fn !== "function") {
     \\    __home_bun_tests.todo++;
     \\    return;
@@ -808,7 +814,6 @@ const harness_prelude =
     \\    __home_bun_tests.todo++;
     \\    return;
     \\  }
-    \\  const scope = globalThis.__home_current_scope;
     \\  const repeats = options.repeats === undefined ? 0 : Math.max(0, Math.trunc(Number(options.repeats)));
     \\  const retry = options.retry === undefined ? 0 : Math.max(0, Math.trunc(Number(options.retry)));
     \\  if (options.todo) {
@@ -843,7 +848,26 @@ const harness_prelude =
     \\    throw error;
     \\  }
     \\}
+    \\function __home_register_test(name, first, second, only) {
+    \\  const parsed = __home_parse_test_args(name, first, second);
+    \\  parsed.name = name;
+    \\  parsed.scope = globalThis.__home_current_scope;
+    \\  parsed.only = !!only;
+    \\  globalThis.__home_registered_tests.push(parsed);
+    \\}
+    \\function __home_run_registered_tests() {
+    \\  const queue = globalThis.__home_registered_tests;
+    \\  const hasOnly = queue.some(entry => entry.only);
+    \\  for (const entry of queue) {
+    \\    if (hasOnly && !entry.only) continue;
+    \\    __home_execute_test(entry);
+    \\  }
+    \\  globalThis.__home_registered_tests = [];
+    \\}
+    \\function __home_test_only(name, first, second) { __home_register_test(name, first, second, true); }
     \\function it(name, first, second) { __home_run_test(name, first, second); }
+    \\function __home_run_test(name, first, second) { __home_register_test(name, first, second, false); }
+    \\it.only = __home_test_only;
     \\it.failing = function(name, fn) {
     \\  if (typeof fn !== "function") {
     \\    __home_bun_tests.todo++;
@@ -864,6 +888,7 @@ const harness_prelude =
     \\  __home_bun_tests.todo++;
     \\};
     \\function test(name, first, second) { return it(name, first, second); }
+    \\test.only = __home_test_only;
     \\test.todo = it.todo;
     \\test.skip = it.todo;
     \\test.skipIf = function(condition) {
@@ -902,10 +927,10 @@ const harness_prelude =
     \\    afterAllDone: false,
     \\  };
     \\  globalThis.__home_current_scope = scope;
+    \\  globalThis.__home_scopes.push(scope);
     \\  try {
     \\    fn();
     \\  } finally {
-    \\    __home_run_scoped_after_all(scope);
     \\    globalThis.__home_current_scope = parent;
     \\  }
     \\}
@@ -960,7 +985,8 @@ const harness_prelude =
     \\  },
     \\};
     \\globalThis.__home_finish_tests = function() {
-    \\  __home_run_all_after_all(globalThis.__home_root_scope);
+    \\  __home_run_registered_tests();
+    \\  for (let i = globalThis.__home_scopes.length - 1; i >= 0; --i) __home_run_scoped_after_all(globalThis.__home_scopes[i]);
     \\};
     \\const __home_expect_matchers = Object.create(null);
     \\function __home_make_expectation(value, isNot) {
@@ -3502,6 +3528,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var URLSearchParams = function(init)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.todo = function(name, fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.skip = it.todo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_registered_tests = []") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.only = __home_test_only") != null);
 }
 
 test "Bun test import rewrite lowers to the virtual test module" {
@@ -3581,6 +3609,10 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/test/only-flag-fixtures/file0.fixture.ts",
         "js/bun/test/only-flag-fixtures/file2.fixture.ts",
         "js/bun/test/todo-test-fixture-2.js",
+        "js/bun/test/only-fixture-1.ts",
+        "js/bun/test/only-fixture-2.ts",
+        "js/bun/test/only-fixture-3.ts",
+        "js/bun/test/only-flag-fixtures/file1.fixture.ts",
     };
 
     for (expected) |path| {
