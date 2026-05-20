@@ -945,6 +945,15 @@ next direct copied Bake boundary is `bake/dev/request-cookies.test.ts`,
 currently failing as
 `DEV:request-cookies-1: request.cookies.get() basic functionality`.
 
+The copied `bake/dev/request-cookies.test.ts` fixture now passes in Home
+as `2` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap
+models the SSR fetch surface needed by the fixture: `Cookie` header
+parsing for `request.cookies.get("userName")` and the existence/type of
+the request object passed to the React component. Native parity still
+requires Bun's real SSR request object and cookie API. The next direct
+copied Bake boundary is `bake/dev/response-to-bake-response.test.ts`,
+which now executes and fails on empty virtual build output.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

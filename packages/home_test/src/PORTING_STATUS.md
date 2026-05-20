@@ -609,6 +609,12 @@ messages, and the mutual-recursion render log labels. Native parity still
 needs Bun's real React transform, Fast Refresh registration, hook
 signature hashing, and browser runtime. The next direct Bake boundary is
 `DEV:request-cookies-1: request.cookies.get() basic functionality`.
+The copied `bake/dev/request-cookies.test.ts` fixture now passes as `2`
+tests through a narrow SSR fetch model for `Cookie` header parsing and
+the request object being passed to the component. Native parity still
+needs Bun's real SSR request/cookie API. The next direct Bake boundary is
+`bake/dev/response-to-bake-response.test.ts`, which now executes and
+fails on empty virtual build output.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

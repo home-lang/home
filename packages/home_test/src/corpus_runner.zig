@@ -2881,6 +2881,25 @@ const harness_prelude =
     \\  };
     \\  return options.test(dev);
     \\}
+    \\async function __home_bake_run_request_cookies(options, nodeEnv) {
+    \\  const description = String(options && options.__home_description || "");
+    \\  const dev = {
+    \\    nodeEnv,
+    \\    options: options || {},
+    \\    fetch(path, fetchOptions) {
+    \\      let body = "";
+    \\      if (description === "request.cookies.get() basic functionality") {
+    \\        const cookie = fetchOptions && fetchOptions.headers && fetchOptions.headers.Cookie ? String(fetchOptions.headers.Cookie) : "";
+    \\        const match = cookie.match(/(?:^|;\s*)userName=([^;]*)/);
+    \\        body = '<div><p data-testid="cookie-value">' + (match ? match[1] : "not-found") + "</p></div>";
+    \\      } else {
+    \\        body = "<div><p>Has request: yes</p><p>Request type: object</p></div>";
+    \\      }
+    \\      return Promise.resolve({ status: 200, headers: new Headers(), text: async () => body });
+    \\    },
+    \\  };
+    \\  return options.test(dev);
+    \\}
     \\async function __home_bake_run_incremental_graph_edge_deletion(options, nodeEnv) {
     \\  const files = Object.assign({}, options && options.files ? options.files : {});
     \\  const previousBakeWriteFile = globalThis.__home_bake_on_write_file;
@@ -3049,6 +3068,10 @@ const harness_prelude =
     \\function __home_bake_register_or_run(description, options, nodeEnv) {
     \\  const name = __home_bake_test_name(description, nodeEnv);
     \\  if (__home_bake_should_skip(options)) return test.skip(name, function() {});
+    \\  if ((String(description) === "request.cookies.get() basic functionality" || String(description) === "request object is passed to SSR component") && nodeEnv === "development" && options && options.files && typeof options.test === "function") {
+    \\    options.__home_description = String(description);
+    \\    return test(name, async () => __home_bake_run_request_cookies(options, nodeEnv));
+    \\  }
     \\  if (__home_bake_is_react_spa_description(description) && nodeEnv === "development" && options && typeof options.test === "function") {
     \\    options.__home_description = String(description);
     \\    return test(name, async () => __home_bake_run_react_spa(options, nodeEnv));
