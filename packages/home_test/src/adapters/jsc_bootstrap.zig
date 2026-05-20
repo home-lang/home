@@ -483,17 +483,31 @@ fn buildBakeStaticClientScriptNative(
     }
 
     const allocator = std.heap.smp_allocator;
+    const has_script_path = argument_count >= 4 and arguments[3] != null;
     const html = valueToOwnedString(allocator, actual_ctx, arguments[0].?, exception) catch {
         setException(actual_ctx, exception, "Bake static client script failed to read html");
         return null;
     };
     defer allocator.free(html);
-    const script = valueToOwnedString(allocator, actual_ctx, arguments[1].?, exception) catch {
+    const script_path = if (has_script_path)
+        valueToOwnedString(allocator, actual_ctx, arguments[1].?, exception) catch {
+            setException(actual_ctx, exception, "Bake static client script failed to read script path");
+            return null;
+        }
+    else
+        allocator.dupe(u8, "index.ts") catch {
+            setException(actual_ctx, exception, "Bake static client script failed to index default script path");
+            return null;
+        };
+    defer allocator.free(script_path);
+    const script_source_argument = if (has_script_path) arguments[2].? else arguments[1].?;
+    const script = valueToOwnedString(allocator, actual_ctx, script_source_argument, exception) catch {
         setException(actual_ctx, exception, "Bake static client script failed to read script");
         return null;
     };
     defer allocator.free(script);
-    const bunfig = valueToOwnedString(allocator, actual_ctx, arguments[2].?, exception) catch {
+    const bunfig_argument = if (has_script_path) arguments[3].? else arguments[2].?;
+    const bunfig = valueToOwnedString(allocator, actual_ctx, bunfig_argument, exception) catch {
         setException(actual_ctx, exception, "Bake static client script failed to read bunfig");
         return null;
     };
@@ -507,7 +521,7 @@ fn buildBakeStaticClientScriptNative(
 
     var files = std.StringHashMap([]const u8).init(allocator);
     defer files.deinit();
-    files.put("index.ts", script) catch {
+    files.put(script_path, script) catch {
         setException(actual_ctx, exception, "Bake static client script failed to index script");
         return null;
     };

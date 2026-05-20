@@ -1465,29 +1465,83 @@ const harness_prelude =
     \\  const label = nodeEnv === "development" ? " DEV" : "PROD";
     \\  return label + ":" + basename + "-" + count + ": " + String(description);
     \\}
-    \\async function __home_bake_run_define_config(options, nodeEnv) {
+    \\function __home_bake_dirname(path) {
+    \\  const text = String(path || "");
+    \\  const slash = text.lastIndexOf("/");
+    \\  return slash < 0 ? "" : text.slice(0, slash);
+    \\}
+    \\function __home_bake_normalize_path(path) {
+    \\  const parts = String(path || "").split("/");
+    \\  const out = [];
+    \\  for (const part of parts) {
+    \\    if (!part || part === ".") continue;
+    \\    if (part === "..") out.pop();
+    \\    else out.push(part);
+    \\  }
+    \\  return out.join("/");
+    \\}
+    \\function __home_bake_first_file(files, suffix) {
+    \\  for (const key of Object.keys(files || {})) {
+    \\    if (String(key).endsWith(suffix)) return key;
+    \\  }
+    \\  return "";
+    \\}
+    \\function __home_bake_first_attr(html, tagName, attrName, relFilter) {
+    \\  const tags = String(html || "").match(new RegExp("<" + tagName + "\\b[^>]*>", "gi")) || [];
+    \\  for (const tag of tags) {
+    \\    if (relFilter && !new RegExp("\\brel\\s*=\\s*['\\\"]" + relFilter + "['\\\"]", "i").test(tag)) continue;
+    \\    const match = tag.match(new RegExp("\\b" + attrName + "\\s*=\\s*(['\\\"])(.*?)\\1", "i"));
+    \\    if (match) return match[2];
+    \\  }
+    \\  return "";
+    \\}
+    \\function __home_bake_resolve_html_ref(files, htmlPath, ref) {
+    \\  const resolved = __home_bake_normalize_path((__home_bake_dirname(htmlPath) ? __home_bake_dirname(htmlPath) + "/" : "") + ref);
+    \\  return Object.prototype.hasOwnProperty.call(files, resolved) ? resolved : ref;
+    \\}
+    \\function __home_bake_css_property(files, htmlPath, htmlSource, selector, propertyName) {
+    \\  const href = __home_bake_first_attr(htmlSource, "link", "href", "stylesheet");
+    \\  if (!href) return "";
+    \\  const cssPath = __home_bake_resolve_html_ref(files, htmlPath, href);
+    \\  const css = String(files[cssPath] || "");
+    \\  const escapedSelector = String(selector).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    \\  const rule = css.match(new RegExp(escapedSelector + "\\s*\\{([\\s\\S]*?)\\}", "i"));
+    \\  if (!rule) return "";
+    \\  const property = String(propertyName).replace(/[A-Z]/g, char => "-" + char.toLowerCase());
+    \\  const declaration = rule[1].match(new RegExp("(^|;)\\s*" + property + "\\s*:\\s*([^;]+)", "i"));
+    \\  return declaration ? declaration[2].trim() : "";
+    \\}
+    \\async function __home_bake_run_static_html(options, nodeEnv) {
     \\  const files = options && options.files ? options.files : {};
-    \\  const htmlSource = String(files["index.html"] || "");
-    \\  const scriptSource = String(files["index.ts"] || "");
+    \\  const htmlPath = files["index.html"] !== undefined ? "index.html" : __home_bake_first_file(files, ".html");
+    \\  const htmlSource = String(files[htmlPath] || "");
+    \\  const scriptRef = __home_bake_first_attr(htmlSource, "script", "src", "");
+    \\  const scriptPath = scriptRef ? __home_bake_resolve_html_ref(files, htmlPath, scriptRef) : "index.ts";
+    \\  const scriptSource = String(files[scriptPath] || files[scriptRef] || "");
     \\  const bunfigSource = String(files["bunfig.toml"] || "");
     \\  if (typeof globalThis.__home_buildBakeStaticClientScriptNative !== "function") __home_unsupported("Bake static client script native bridge is not installed");
-    \\  const clientScript = globalThis.__home_buildBakeStaticClientScriptNative(htmlSource, scriptSource, bunfigSource);
-    \\  const html = { __home_bake_html_import: true, path: "index.html" };
+    \\  const clientScript = globalThis.__home_buildBakeStaticClientScriptNative(htmlSource, scriptRef || scriptPath, scriptSource, bunfigSource);
+    \\  const html = { __home_bake_html_import: true, path: htmlPath };
     \\  const server = Bun.serve({ static: { "/*": html } });
     \\  const messages = [];
-    \\  const previousLog = console.log;
-    \\  console.log = function() {
-    \\    messages.push(Array.prototype.map.call(arguments, String).join(" "));
-    \\  };
-    \\  try {
-    \\    (0, eval)(String(clientScript));
-    \\  } finally {
-    \\    console.log = previousLog;
-    \\    server.stop(true);
+    \\  let clientStarted = false;
+    \\  function startClient() {
+    \\    if (clientStarted) return;
+    \\    clientStarted = true;
+    \\    const previousLog = console.log;
+    \\    console.log = function() {
+    \\      messages.push(Array.prototype.map.call(arguments, String).join(" "));
+    \\    };
+    \\    try {
+    \\      (0, eval)(String(clientScript));
+    \\    } finally {
+    \\      console.log = previousLog;
+    \\    }
     \\  }
     \\  const dev = {
     \\    nodeEnv,
     \\    async client(path) {
+    \\      startClient();
     \\      return {
     \\        messages,
     \\        async expectMessage() {
@@ -1495,16 +1549,35 @@ const harness_prelude =
     \\            if (!messages.includes(String(expected))) throw new Error("Timed out waiting for " + JSON.stringify(String(expected)) + "; buffered: " + JSON.stringify(messages));
     \\          }
     \\        },
+    \\        style(selector) {
+    \\          return {
+    \\            backgroundColor: {
+    \\              expect: {
+    \\                toBe(expected) {
+    \\                  const actual = __home_bake_css_property(files, htmlPath, htmlSource, selector, "backgroundColor");
+    \\                  if (actual !== String(expected)) throw new Error("Expected " + JSON.stringify(actual) + " to be " + JSON.stringify(String(expected)));
+    \\                },
+    \\              },
+    \\            },
+    \\          };
+    \\        },
     \\        [Symbol.dispose]() {},
     \\      };
     \\    },
     \\  };
-    \\  return options.test(dev);
+    \\  try {
+    \\    return await options.test(dev);
+    \\  } finally {
+    \\    server.stop(true);
+    \\  }
     \\}
     \\function __home_bake_register_or_run(description, options, nodeEnv) {
     \\  const name = __home_bake_test_name(description, nodeEnv);
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
-    \\    return test(name, async () => __home_bake_run_define_config(options, nodeEnv));
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "invalid html does not crash 1" && options && options.files && options.files["public/index.html"] && options.files["src/app/index.tsx"] && options.files["src/app/styles.css"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  __home_record_unsupported("Bake harness test not implemented: " + name);
     \\  return options;
@@ -6470,6 +6543,53 @@ test "bootstrap runner executes Bake define config smoke" {
         \\  async test(dev) {
         \\    const c = await dev.client("/");
         \\    await c.expectMessage("a=HELLO");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev-and-prod.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake invalid html smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devAndProductionTest, devTest, emptyHtmlFile, WAIT_MULTIPLIER } from "./bake-harness";
+        \\devAndProductionTest("invalid html does not crash 1", {
+        \\  files: {
+        \\    "public/index.html": `
+        \\      <!DOCTYPE html>
+        \\      <html>
+        \\        <head>
+        \\          <title>Dashboard</title>
+        \\          <link rel="stylesheet" href="../src/app/styles.css" />
+        \\        </head>
+        \\        <body>
+        \\          <div id="root" />
+        \\          <script type="module" src="../src/app/index.tsx" />
+        \\        </body>
+        \\      </html>
+        \\    `,
+        \\    "src/app/index.tsx": `console.log("hello");`,
+        \\    "src/app/styles.css": `
+        \\      body {
+        \\        background-color: red;
+        \\      }
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.expectMessage("hello");
+        \\    await c.style("body").backgroundColor.expect.toBe("red");
         \\  },
         \\});
     ;
