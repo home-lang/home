@@ -3955,6 +3955,31 @@ test "conformance: instanceMemberInitialization passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: nonPrimitiveIndexingWithForInNoImplicitAny passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nonPrimitiveIndexingWithForInNoImplicitAny",
+        .path = "nonPrimitiveIndexingWithForInNoImplicitAny.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\var a: object = {};
+        \\
+        \\for (var key in a) {
+        \\    var value = a[key]; // error
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: neverType passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "neverType",
