@@ -32,6 +32,8 @@ const to_be_odd = @import("bun/expect/toBeOdd.zig");
 const to_be_valid_date = @import("bun/expect/toBeValidDate.zig");
 const to_be_empty_object = @import("bun/expect/toBeEmptyObject.zig");
 const to_contain = @import("bun/expect/toContain.zig");
+const to_equal_ignoring_whitespace = @import("bun/expect/toEqualIgnoringWhitespace.zig");
+const to_include = @import("bun/expect/toInclude.zig");
 
 const Expect = bun.jsc.Expect.Expect;
 const JSValue = bun.jsc.JSValue;
@@ -316,6 +318,40 @@ test "copied Bun toContain matcher honors not flag and failure signatures" {
     var not_present_frame = frameWithArgs(array_value, &expected_present);
     try std.testing.expectError(error.JSException, to_contain.toContain(&expect_not_present, globalObject(), &not_present_frame));
     try std.testing.expectEqualStrings("not.toContain", expect_not_present.last_signature.?);
+}
+
+test "copied Bun string inclusion matchers pass positive cases" {
+    const expected_substring = [_]JSValue{JSValue.string("ell")};
+    var expect_include = Expect{ .value = JSValue.string("hello") };
+    var include_frame = frameWithArgs(JSValue.string("hello"), &expected_substring);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_include.toInclude(&expect_include, globalObject(), &include_frame));
+    try std.testing.expectEqual(@as(usize, 1), expect_include.call_count);
+    try std.testing.expectEqual(@as(usize, 1), expect_include.post_count);
+
+    const expected_spaced = [_]JSValue{JSValue.string("hello world")};
+    var expect_whitespace = Expect{ .value = JSValue.string(" hello \n\t world ") };
+    var whitespace_frame = frameWithArgs(JSValue.string(" hello \n\t world "), &expected_spaced);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_equal_ignoring_whitespace.toEqualIgnoringWhitespace(&expect_whitespace, globalObject(), &whitespace_frame));
+}
+
+test "copied Bun string inclusion matchers honor not flag and failure signatures" {
+    const expected_missing = [_]JSValue{JSValue.string("nope")};
+    var expect_missing = Expect{ .value = JSValue.string("hello") };
+    var missing_frame = frameWithArgs(JSValue.string("hello"), &expected_missing);
+    try std.testing.expectError(error.JSException, to_include.toInclude(&expect_missing, globalObject(), &missing_frame));
+    try std.testing.expectEqualStrings("toInclude", expect_missing.last_signature.?);
+
+    const expected_present = [_]JSValue{JSValue.string("ell")};
+    var expect_not_include = Expect{ .value = JSValue.string("hello"), .flags = .{ .not = true } };
+    var not_include_frame = frameWithArgs(JSValue.string("hello"), &expected_present);
+    try std.testing.expectError(error.JSException, to_include.toInclude(&expect_not_include, globalObject(), &not_include_frame));
+    try std.testing.expectEqualStrings("not.toInclude", expect_not_include.last_signature.?);
+
+    const expected_different = [_]JSValue{JSValue.string("goodbye")};
+    var expect_whitespace = Expect{ .value = JSValue.string("hello world") };
+    var whitespace_frame = frameWithArgs(JSValue.string("hello world"), &expected_different);
+    try std.testing.expectError(error.JSException, to_equal_ignoring_whitespace.toEqualIgnoringWhitespace(&expect_whitespace, globalObject(), &whitespace_frame));
+    try std.testing.expectEqualStrings("toEqualIgnoringWhitespace", expect_whitespace.last_signature.?);
 }
 
 test "copied Bun truthiness nil and number matchers honor not flag and failure signatures" {

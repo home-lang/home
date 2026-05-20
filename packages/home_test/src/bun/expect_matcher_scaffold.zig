@@ -187,6 +187,12 @@ pub const jsc = struct {
             return .{ .bytes = bytes, .len = bytes.len };
         }
 
+        pub fn toSliceOrNull(this: JSValue, _: *JSGlobalObject) JSError!Slice {
+            if (!this.isStringLiteral()) return error.JSException;
+            const bytes = this.stringSlice();
+            return .{ .bytes = bytes, .len = bytes.len };
+        }
+
         pub fn isSameValue(this: JSValue, other: JSValue, _: *JSGlobalObject) JSError!bool {
             if (this.tag != other.tag) return false;
             return switch (this.tag) {

@@ -102,8 +102,8 @@ build-checks the copied primitive matcher leaves `toBeTrue.zig`,
 `toBeString.zig`, `toBeFunction.zig`, `toBeSymbol.zig`,
 `toBeObject.zig`, `toBeDate.zig`, `toBeValidDate.zig`,
 `toBeArray.zig`, `toBeEven.zig`, `toBeOdd.zig`,
-`toBeEmptyObject.zig`, and `toContain.zig` through a small Home
-scaffold for the upstream
+`toBeEmptyObject.zig`, `toContain.zig`, `toInclude.zig`, and
+`toEqualIgnoringWhitespace.zig` through a small Home scaffold for the upstream
 Expect/JSC/formatter surface. The copied matcher files stay unchanged
 apart from the Home license header; the target proves positive matches,
 `.not` failure signatures, post-match cleanup, and expect-call counting.
