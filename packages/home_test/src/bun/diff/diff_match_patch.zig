@@ -123,7 +123,7 @@ pub fn DMP(comptime Unit: type) type {
             const deadline = if (dmp.config.diff_timeout == 0)
                 std.math.maxInt(u64)
             else
-                @as(u64, @intCast(std.time.milliTimestamp())) + dmp.config.diff_timeout;
+                @as(u64, @intCast(milliTimestamp())) + dmp.config.diff_timeout;
             return dmp.diffInternal(allocator, before, after, check_lines, deadline);
         }
 
@@ -214,6 +214,21 @@ pub fn DMP(comptime Unit: type) type {
                 if (a_char != b_char) return index;
             }
             return if (a.len == b.len) null else shortest;
+        }
+
+        fn repeatString(comptime text: []const u8, comptime count: usize) []const u8 {
+            const repeated = comptime blk: {
+                var buf: [text.len * count]u8 = undefined;
+                for (0..count) |i| @memcpy(buf[i * text.len ..][0..text.len], text);
+                break :blk buf;
+            };
+            return &repeated;
+        }
+
+        fn milliTimestamp() i64 {
+            var tv: std.c.timeval = undefined;
+            if (std.c.gettimeofday(&tv, null) != 0) return 0;
+            return @as(i64, @intCast(tv.sec)) * std.time.ms_per_s + @divTrunc(@as(i64, @intCast(tv.usec)), std.time.us_per_ms);
         }
 
         fn diffCommonPrefix(before: []const Unit, after: []const Unit) usize {
@@ -567,7 +582,7 @@ pub fn DMP(comptime Unit: type) type {
             var d: isize = 0;
             while (d < max_d) : (d += 1) {
                 // Bail out if deadline is reached.
-                if (@as(u64, @intCast(std.time.milliTimestamp())) > deadline) {
+                if (@as(u64, @intCast(milliTimestamp())) > deadline) {
                     break;
                 }
 
@@ -1736,8 +1751,8 @@ pub fn DMP(comptime Unit: type) type {
             try tmp_array_list.append(allocator, "beta\n");
 
             var result = try diffLinesToChars(allocator, "alpha\nbeta\nalpha\n", "beta\nalpha\nbeta\n");
-            try testing.expectEqualStrings("\u{0001}\u{0002}\u{0001}", result.chars_1); // Shared lines #1
-            try testing.expectEqualStrings("\u{0002}\u{0001}\u{0002}", result.chars_2); // Shared lines #2
+            try testing.expectEqualSlices(usize, &.{ 1, 2, 1 }, result.chars_1); // Shared lines #1
+            try testing.expectEqualSlices(usize, &.{ 2, 1, 2 }, result.chars_2); // Shared lines #2
             try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // Shared lines #3
 
             tmp_array_list.clearRetainingCapacity();
@@ -1748,8 +1763,8 @@ pub fn DMP(comptime Unit: type) type {
             result.deinit(allocator);
 
             result = try diffLinesToChars(allocator, "", "alpha\r\nbeta\r\n\r\n\r\n");
-            try testing.expectEqualStrings("", result.chars_1); // Empty string and blank lines #1
-            try testing.expectEqualStrings("\u{0001}\u{0002}\u{0003}\u{0003}", result.chars_2); // Empty string and blank lines #2
+            try testing.expectEqualSlices(usize, &.{}, result.chars_1); // Empty string and blank lines #1
+            try testing.expectEqualSlices(usize, &.{ 1, 2, 3, 3 }, result.chars_2); // Empty string and blank lines #2
             try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // Empty string and blank lines #3
 
             tmp_array_list.clearRetainingCapacity();
@@ -1759,8 +1774,8 @@ pub fn DMP(comptime Unit: type) type {
             result.deinit(allocator);
 
             result = try diffLinesToChars(allocator, "a", "b");
-            try testing.expectEqualStrings("\u{0001}", result.chars_1); // No linebreaks #1.
-            try testing.expectEqualStrings("\u{0002}", result.chars_2); // No linebreaks #2.
+            try testing.expectEqualSlices(usize, &.{1}, result.chars_1); // No linebreaks #1.
+            try testing.expectEqualSlices(usize, &.{2}, result.chars_2); // No linebreaks #2.
             try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // No linebreaks #3.
             result.deinit(allocator);
 
@@ -2525,19 +2540,19 @@ pub fn DMP(comptime Unit: type) type {
 
             // Increase the text lengths by 1024 times to ensure a timeout.
             {
-                const a = "`Twas brillig, and the slithy toves\nDid gyre and gimble in the wabe:\nAll mimsy were the borogoves,\nAnd the mome raths outgrabe.\n" ** 1024;
-                const b = "I am the very model of a modern major general,\nI've information vegetable, animal, and mineral,\nI know the kings of England, and I quote the fights historical,\nFrom Marathon to Waterloo, in order categorical.\n" ** 1024;
+                const a = repeatString("`Twas brillig, and the slithy toves\nDid gyre and gimble in the wabe:\nAll mimsy were the borogoves,\nAnd the mome raths outgrabe.\n", 1024);
+                const b = repeatString("I am the very model of a modern major general,\nI've information vegetable, animal, and mineral,\nI know the kings of England, and I quote the fights historical,\nFrom Marathon to Waterloo, in order categorical.\n", 1024);
 
                 const with_timout: DiffMatchPatch = .{
                     .config = .{ .diff_timeout = 100 }, // 100ms
                 };
 
-                const start_time = std.time.milliTimestamp();
+                const start_time = milliTimestamp();
                 {
                     var time_diff = try with_timout.diff(allocator, a, b, false);
                     defer deinitDiffList(allocator, &time_diff);
                 }
-                const end_time = std.time.milliTimestamp();
+                const end_time = milliTimestamp();
 
                 // Test that we took at least the timeout period.
                 try testing.expect(with_timout.config.diff_timeout <= end_time - start_time); // diff: Timeout min.
@@ -2976,14 +2991,11 @@ pub fn DMP(comptime Unit: type) type {
                 @compileError("The provided function must have an " ++ @typeName(std.mem.Allocator) ++ " as its first argument");
             }
 
-            // remove the first tuple field (`std.mem.Allocator`)
-            var extra_args_tuple_info = @typeInfo(ArgsTuple);
-            var extra_args_fields = extra_args_tuple_info.@"struct".fields[1..].*;
-            for (&extra_args_fields, 0..) |*extra_field, i| {
-                extra_field.name = fn_args_fields[i].name;
+            var extra_arg_types: [fn_args_fields.len - 1]type = undefined;
+            for (&extra_arg_types, fn_args_fields[1..]) |*arg, field| {
+                arg.* = field.type;
             }
-            extra_args_tuple_info.@"struct".fields = &extra_args_fields;
-            const ExtraArgsTuple = @Type(extra_args_tuple_info);
+            const ExtraArgsTuple = @Tuple(&extra_arg_types);
 
             return .{
                 .ArgsTuple = ArgsTuple,

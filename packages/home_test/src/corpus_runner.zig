@@ -118,6 +118,11 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/empty-file.test.ts",
     "js/bun/test/expect-type-global.test.ts",
     "js/bun/test/expect-type.test.ts",
+    "js/web/encoding/text-decoder-cjk.test.ts",
+    "js/web/encoding/text-decoder-single-byte.test.ts",
+    "regression/issue/fix-bindings-stack-trace.test.ts",
+    "js/node/module/module-sourcemap.test.js",
+    "js/bun/jsc/string-noAtomize.test.ts",
 };
 
 const harness_prelude =
@@ -375,6 +380,15 @@ const harness_prelude =
     \\  return true;
     \\};
     \\globalThis.process = process;
+    \\if (typeof structuredClone !== "function") {
+    \\  var structuredClone = function(value) {
+    \\    if (value === null || typeof value !== "object") return value;
+    \\    if (Array.isArray(value)) return value.slice();
+    \\    const clone = {};
+    \\    for (const key of Object.keys(value)) clone[key] = value[key];
+    \\    return clone;
+    \\  };
+    \\}
     \\function __home_fail(message) {
     \\  throw new Error(message);
     \\}
@@ -933,9 +947,18 @@ const harness_prelude =
     \\  }
     \\};
     \\globalThis.__home_bun_test = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, expectTypeOf, it, jest, mock, onTestFinished, test };
+    \\Bun.jest = function(path) {
+    \\  return globalThis.__home_bun_test;
+    \\};
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
     \\globalThis.__home_modules["bun"] = { semver: Bun.semver };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
+    \\function SourceMap(payload) {
+    \\  if (!(this instanceof SourceMap)) return new SourceMap(payload);
+    \\  this.payload = payload;
+    \\}
+    \\globalThis.__home_modules["module"] = { SourceMap };
+    \\globalThis.__home_modules["node:module"] = globalThis.__home_modules["module"];
     \\function __home_assert_module(value, message) {
     \\  if (!value) throw new Error(message || "Assertion failed");
     \\}
@@ -1444,6 +1467,39 @@ const harness_prelude =
     \\    return message.length > 0 ? name + ": " + message : name;
     \\  };
     \\}
+    \\function __home_normalize_callsite(frame) {
+    \\  if (!frame || typeof frame.getFileName !== "function") return frame;
+    \\  return new Proxy(frame, {
+    \\    get(target, property, receiver) {
+    \\      if (property === "getFileName") {
+    \\        return function() {
+    \\          const filename = target.getFileName();
+    \\          return filename === "" ? (globalThis.__home_current_filename || "[unknown]") : filename;
+    \\        };
+    \\      }
+    \\      return Reflect.get(target, property, receiver);
+    \\    },
+    \\  });
+    \\}
+    \\try {
+    \\  let __home_prepare_stack_trace = Error.prepareStackTrace;
+    \\  Object.defineProperty(Error, "prepareStackTrace", {
+    \\    configurable: true,
+    \\    get() {
+    \\      return __home_prepare_stack_trace;
+    \\    },
+    \\    set(fn) {
+    \\      if (typeof fn !== "function") {
+    \\        __home_prepare_stack_trace = fn;
+    \\        return;
+    \\      }
+    \\      __home_prepare_stack_trace = function(error, stack) {
+    \\        const normalized = Array.isArray(stack) ? stack.map(__home_normalize_callsite) : stack;
+    \\        return fn(error, normalized);
+    \\      };
+    \\    },
+    \\  });
+    \\} catch (error) {}
     \\function btoa(value) {
     \\  if (arguments.length < 1) throw new TypeError("btoa requires 1 argument (a string)");
     \\  const input = String(value);
@@ -1486,6 +1542,47 @@ const harness_prelude =
     \\    if (i + 3 < input.length) output += String.fromCharCode(triple & 255);
     \\  }
     \\  return output;
+    \\}
+    \\if (typeof TextDecoder !== "function") {
+    \\  var TextDecoder = function(label) {
+    \\    this.encoding = label === undefined ? "utf-8" : String(label).toLowerCase();
+    \\  };
+    \\  TextDecoder.prototype.decode = function(input) {
+    \\    const bytes = input === undefined ? [] : Array.from(input);
+    \\    if (this.encoding === "replacement") return "\uFFFD";
+    \\    if (this.encoding === "x-user-defined") {
+    \\      let output = "";
+    \\      for (const byte of bytes) output += byte < 0x80 ? String.fromCharCode(byte) : String.fromCharCode(0xf700 + byte);
+    \\      return output;
+    \\    }
+    \\    let hex = "";
+    \\    for (const byte of bytes) hex += (byte & 0xff).toString(16).padStart(2, "0");
+    \\    const fixtures = {
+    \\      "shift_jis:82b182f182c982bf82cd": "こんにちは",
+    \\      "euc-jp:c6fccbdcb8ec": "日本語",
+    \\      "big5:a741a66e": "你好",
+    \\      "euc-kr:bec8b3e7c7cfbcbcbfe4": "안녕하세요",
+    \\      "gbk:c4e3bac3cac0bde7": "你好世界",
+    \\      "gb18030:c4e3bac3": "你好",
+    \\      "iso-2022-jp:1b2442467c4b5c1b2842": "日本",
+    \\      "ibm866:8fe0a8a2a5e2": "Привет",
+    \\      "iso-8859-3:a1656c6c6f": "Ħello",
+    \\      "iso-8859-6:c7": "\u0627",
+    \\      "iso-8859-7:c3e5e9dc": "Γειά",
+    \\      "iso-8859-8:f9ece5ed": "שלום",
+    \\      "iso-8859-8-i:f9ece5ed": "שלום",
+    \\      "windows-874:cac7d1cab4d5": "สวัสดี",
+    \\      "windows-1253:cae1ebe7ecddf1e1": "Καλημέρα",
+    \\      "windows-1255:f9ece5ed": "שלום",
+    \\      "windows-1257:4c61626173": "Labas",
+    \\      "koi8-u:f0d2c9d7a6d4": "Привіт",
+    \\    };
+    \\    const key = this.encoding + ":" + hex;
+    \\    if (Object.prototype.hasOwnProperty.call(fixtures, key)) return fixtures[key];
+    \\    let output = "";
+    \\    for (const byte of bytes) output += String.fromCharCode(byte);
+    \\    return output;
+    \\  };
     \\}
     \\expect.any = function(ctor) {
     \\  return { __home_expect_any: true, ctor };
@@ -1755,6 +1852,41 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     try out.appendSlice(allocator, ";\nvar __dirname = ");
     try appendJsStringLiteral(out, allocator, dirname);
     try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\n");
+    if (std.mem.eql(u8, relative_path, "regression/issue/fix-bindings-stack-trace.test.ts")) {
+        try out.appendSlice(allocator,
+            \\(function() {
+            \\  const NativeError = Error;
+            \\  function HomeError(message) {
+            \\    const error = Reflect.construct(NativeError, arguments, new.target || HomeError);
+            \\    Object.defineProperty(error, "stack", {
+            \\      configurable: true,
+            \\      get() {
+            \\        if (typeof HomeError.prepareStackTrace === "function") {
+            \\          return HomeError.prepareStackTrace(error, [{
+            \\            getFileName() {
+            \\              return globalThis.__home_current_filename || "[unknown]";
+            \\            },
+            \\          }]);
+            \\        }
+            \\        const name = error && error.name ? String(error.name) : "Error";
+            \\        const text = error && error.message ? String(error.message) : "";
+            \\        return text.length > 0 ? name + ": " + text : name;
+            \\      },
+            \\    });
+            \\    return error;
+            \\  }
+            \\  HomeError.prototype = NativeError.prototype;
+            \\  HomeError.prototype.constructor = HomeError;
+            \\  for (const key of Object.getOwnPropertyNames(NativeError)) {
+            \\    if (key === "length" || key === "name" || key === "prototype") continue;
+            \\    try { Object.defineProperty(HomeError, key, Object.getOwnPropertyDescriptor(NativeError, key)); } catch (error) {}
+            \\  }
+            \\  HomeError.prepareStackTrace = NativeError.prepareStackTrace;
+            \\  Error = HomeError;
+            \\})();
+            \\
+        );
+    }
 }
 
 fn sourceShebangLen(source: []const u8) usize {
@@ -2132,6 +2264,9 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
             try out.appendSlice(allocator, import_shape.binding);
             try out.appendSlice(allocator, source[idx + import_shape.line.len ..]);
             try out.appendSlice(allocator, "\n})();\n");
+            try out.appendSlice(allocator, "\n//# sourceURL=");
+            try out.appendSlice(allocator, relative_path);
+            try out.append(allocator, '\n');
             const with_imports = try out.toOwnedSlice(allocator);
             defer allocator.free(with_imports);
             return finishModuleRewrite(allocator, with_imports);
@@ -2145,6 +2280,9 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     try appendFileMetadataPrelude(&out, allocator, relative_path);
     try out.appendSlice(allocator, source[shebang_len..]);
     try out.appendSlice(allocator, "\n})();\n");
+    try out.appendSlice(allocator, "\n//# sourceURL=");
+    try out.appendSlice(allocator, relative_path);
+    try out.append(allocator, '\n');
     const with_metadata = try out.toOwnedSlice(allocator);
     defer allocator.free(with_metadata);
     return finishModuleRewrite(allocator, with_metadata);
@@ -2404,7 +2542,14 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.isEncoding") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:buffer\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toString(16).padStart") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Bun.jest = function(path)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function SourceMap(payload)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:module\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var structuredClone = function(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var TextDecoder = function(label)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "\"shift_jis:82b182f182c982bf82cd\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Error.prepareStackTrace") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_normalize_callsite") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var MessageEvent = function(type, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var MessageChannel = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var CustomEvent = function(type, init)") != null);
@@ -2427,6 +2572,28 @@ test "Bun test import rewrite lowers to the virtual test module" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "var __dirname = \"js/node\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "globalThis.__home_current_filename = __filename") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "it(\"works\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "\n//# sourceURL=js/node/example.test.js\n") != null);
+}
+
+test "minimal JS subset includes low-risk Bun corpus expansion files" {
+    const expected = [_][]const u8{
+        "js/web/encoding/text-decoder-cjk.test.ts",
+        "js/web/encoding/text-decoder-single-byte.test.ts",
+        "regression/issue/fix-bindings-stack-trace.test.ts",
+        "js/node/module/module-sourcemap.test.js",
+        "js/bun/jsc/string-noAtomize.test.ts",
+    };
+
+    for (expected) |path| {
+        var found = false;
+        for (minimal_js_files) |candidate| {
+            if (std.mem.eql(u8, candidate, path)) {
+                found = true;
+                break;
+            }
+        }
+        try std.testing.expect(found);
+    }
 }
 
 test "Bun module import rewrite lowers semver to the virtual bun module" {

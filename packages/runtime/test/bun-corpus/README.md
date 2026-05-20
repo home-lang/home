@@ -17,7 +17,7 @@ macOS, Linux, and the WASM target.
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
   That subset currently executes the todo-registration smoke, three Node
   `assert` CommonJS smokes, three Node `path` smokes, two Node `url` smokes, the Web
-  `atob`/`btoa` smoke, twenty-two regression smokes, one bundler
+  `atob`/`btoa` smoke, twenty-three regression smokes, one bundler
   constant-fold smoke, one bun-types `test.each` type-shape smoke, six test-runner expectation smokes, one nested-describe
   smoke, two `expectTypeOf` type-only smokes, a narrow `Bun.TOML.parse` throw smoke, `Bun.stripANSI`, `Bun.wrapAnsi`, `Bun.semver.satisfies`, and
   `bun:internal-for-testing` regexp / PowerShell escaping smokes, retry/repeats runner
@@ -33,8 +33,10 @@ macOS, Linux, and the WASM target.
   `globalThis` prototype behavior, a comment-only module-load smoke, Bun file metadata, Node `Buffer`
   binary/UTF-16LE/compare/inspect-limit/isEncoding behavior, `Map`/`Set` deep-equality,
   lifecycle hooks, `Bun.inspect` Set formatting, `MessageEvent` constructor
-  behavior, Bun version aliases, own-key matchers, and a `prepareStackTrace`
-  crash smoke. It is only a smoke path for JSC + `home_test`; it is not the
+  behavior, Bun version aliases, own-key matchers, a `prepareStackTrace`
+  crash smoke plus a non-empty filename regression, Web `TextDecoder`
+  CJK and single-byte encoding smokes, Node `module.SourceMap`, and a JSC string atomization smoke through
+  `Bun.jest(import.meta.path)` plus a narrow `structuredClone` fallback. It is only a smoke path for JSC + `home_test`; it is not the
   release gate. The bootstrap harness is installed once per JSC engine, resets
   counters before each file, lowers supported `bun:test` imports through a
   virtual `globalThis.__home_import("bun:test")` module shim, and fails closed

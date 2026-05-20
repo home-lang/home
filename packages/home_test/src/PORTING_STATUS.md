@@ -8,8 +8,9 @@ Zig source (`bun/src/runtime/test_runner/*.zig` plus
 (`describe` / `test` / `expect` / lifecycle hooks / snapshot APIs)
 that editors and existing test suites already understand.
 
-The code as copied does **not** compile in this repo — every file
-imports `bun` (Bun's stdlib aggregator), which doesn't exist here.
+Most copied runner files still do **not** compile in this repo — every
+deep runner file imports `bun` (Bun's stdlib aggregator), and only the
+first compatibility slice is mapped to Home's `packages/compat` shim.
 Each file is annotated with a header pointing back to its upstream
 source. The plan below tracks adaptation status file-by-file.
 
@@ -23,6 +24,13 @@ the current JSC bootstrap execution adapter; `corpus_runner.zig` owns the
 explicit `--bun-corpus-native-subset=minimal-js` allowlist, source
 preparation, and summary aggregation. The full runner remains blocked on
 the native `bun:test` port and JSC host-call bridge.
+
+`zig build test -Dfilter=home_test_bun_tier0` now build-checks the first
+copied Bun Zig tier under pantry-provided Zig 0.17-dev:
+`bun/diff/diff_match_patch.zig`, `bun/harness/fixtures.zig`, and
+`bun/harness/recover.zig`. This target is deliberately filtered to the
+Home-owned smoke tests so the full upstream `diff_match_patch` test suite
+does not become a false runner-parity gate.
 
 The bootstrap harness is intentionally narrow but now installs once per
 JSC engine, resets counters before each allowlisted file, reports a file
@@ -58,9 +66,13 @@ Request/Response/Headers/URL, `node-fetch`, `node:buffer`, `deno:harness`,
 Deno `Event` / `CustomEvent` / `AbortController`, a Deno
 `URLSearchParams` bootstrap smoke, EventTarget, AbortSignal, Node
 `Buffer.alloc` / fill / `Buffer.from(..., "utf-16le")` / compare /
-write / toString / inspect-limit / isEncoding subsets, Event / MessageChannel /
-MessagePort / MessageEvent constructor shims, `Bun.inspect({ key:
-Set<string> })`, and a narrow `ShadowRealm.evaluate` shim. The source
+write / toString / inspect-limit / isEncoding subsets, Node
+`module.SourceMap`, Event / MessageChannel / MessagePort / MessageEvent
+constructor shims, Web `TextDecoder` CJK and single-byte encoding smokes,
+a primitive/object `structuredClone` fallback for the string atomization
+smoke, `Bun.inspect({ key: Set<string> })`, `Bun.jest(import.meta.path)`
+as an alias to the existing bootstrap `bun:test` facade, and a narrow
+`ShadowRealm.evaluate` shim. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
 `import.meta.dir/path` to the same per-file metadata used for the
@@ -99,13 +111,13 @@ shape (each ~30-100 LOC, 7-10 `bun.X` references — almost all
 | DoneCallback.zig | 47 | 5 | 0 | 0 | blocked | `bun.md`, `bun.handleOom`, `bun.JSError` |
 | diff_format.zig | 85 | 5 | 2 | 0 | blocked | `bun.md`, `bun.AllocationScope`, `bun.Output` |
 | debug.zig | 109 | 7 | 1 | 0 | blocked | `bun.JSError`, `bun.md`, `bun.env_var` |
-| harness/recover.zig | 132 | 1 | 0 | 0 | blocked | `bun.md` |
+| harness/recover.zig | 132 | 1 | 0 | 0 | tier0 | `bun.md` |
 | Collection.zig | 171 | 8 | 0 | 0 | blocked | `bun.JSError`, `bun.assert`, `bun.md` |
 | Order.zig | 187 | 16 | 0 | 0 | blocked | `bun.JSError`, `bun.assert`, `bun.Environment` |
 | timers/FakeTimers.zig | 376 | 32 | 0 | 0 | blocked | `bun.JSError`, `bun.timespec`, `bun.assert` |
 | ScopeFunctions.zig | 498 | 64 | 0 | 0 | blocked | `bun.String`, `bun.JSError`, `bun.handleOom` |
 | jest.zig | 520 | 44 | 3 | 1 | blocked | `bun.handleOom`, `bun.default_allocator`, `bun.JSError` |
-| harness/fixtures.zig | 575 | 1 | 0 | 0 | blocked | `bun.md` |
+| harness/fixtures.zig | 575 | 1 | 0 | 0 | tier0 | `bun.md` |
 | snapshot.zig | 582 | 49 | 3 | 0 | blocked | `bun.copy`, `bun.logger`, `bun.sys` |
 | diff/printDiff.zig | 586 | 12 | 1 | 0 | blocked | `bun.handleOom`, `bun.md`, `bun.strings` |
 | Execution.zig | 695 | 35 | 0 | 1 | blocked | `bun.timespec`, `bun.assert`, `bun.JSError` |
@@ -113,7 +125,7 @@ shape (each ~30-100 LOC, 7-10 `bun.X` references — almost all
 | pretty_format.zig | 2 145 | 33 | 1 | 1 | blocked | `bun.JSError`, `bun.fmt`, `bun.default_allocator` |
 | expect.zig | 2 272 | 144 | 76 | 0 | blocked | `bun.JSError`, `bun.String`, `bun.jsc` |
 | cli/test_command.zig | 2 277 | 239 | 4 | 9 | blocked | `bun.default_allocator`, `bun.handleOom`, `bun.jsc` |
-| diff/diff_match_patch.zig | 2 995 | 2 | 0 | 0 | blocked | `bun.md`, `bun.StringHashMapUnmanaged` |
+| diff/diff_match_patch.zig | 2 995 | 2 | 0 | 0 | tier0 | `bun.md`, `bun.StringHashMapUnmanaged` |
 | **expect/*.zig** (70 matchers) | ~2 800 total | 7-10 each | 0 | 0-1 | blocked | `bun.jsc`, `bun.md`, `bun.JSError` |
 
 Legend:

@@ -170,10 +170,10 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes sixty-seven allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes seventy-two allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
-todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-two
+todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-three
 regression smokes, one bundler constant-fold smoke, one bun-types `test.each` type-shape smoke, six test-runner
 expectation smokes, one nested-describe smoke, two `expectTypeOf` type-only smokes, a narrow `Bun.TOML.parse` throw smoke, `Bun.stripANSI` and
 `Bun.wrapAnsi`, `Bun.semver.satisfies`, and `bun:internal-for-testing` regexp / PowerShell escaping smokes, retry/repeats runner behavior, `test.concurrent.each`, `expect().pass`, a narrow `mock.clearAllMocks` / `toHaveBeenCalledTimes` smoke, a narrow `jest.fn` / `HTMLRewriter` element-callback smoke, a narrow TypeScript constructor-modifier rewrite smoke, narrow `assert` / `assert/strict`, `node:path`, `node:url`, and relative CJS fixture smokes, a narrow inline-snapshot Unicode object formatting smoke, a `node:vm.runInNewContext` / `process.on` throw propagation smoke, Deno `Event` / `CustomEvent` / `AbortController` and a Deno `URLSearchParams` bootstrap smoke, plus narrow bootstrap coverage for Node `DOMException`, Web
@@ -182,7 +182,11 @@ JSC `ShadowRealm`, native constructor identity, mutable `globalThis` prototype b
 binary/UTF-16LE/compare/inspect-limit/isEncoding behavior, `Map`/`Set`
 deep-equality, `Bun.inspect` Set formatting, `MessageEvent` constructor
 behavior, Bun version aliases, lifecycle hooks, own-key matchers, and a
-`prepareStackTrace` crash smoke. The bootstrap harness is installed once
+`prepareStackTrace` crash smoke, Web `TextDecoder` CJK and single-byte
+encoding smokes, a `prepareStackTrace` non-empty filename regression,
+Node `module.SourceMap`, and a JSC string atomization smoke through the
+`Bun.jest(import.meta.path)` alias plus a narrow `structuredClone`
+fallback. The bootstrap harness is installed once
 per JSC engine, resets counters before each file, lowers supported
 `bun:test` imports through a virtual
 `globalThis.__home_import("bun:test")` module shim, and fails closed as

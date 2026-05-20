@@ -140,9 +140,11 @@ pub const adapters = struct {
 /// wiring can compile this package without dragging in the
 /// not-yet-portable `src/bun/*.zig` tree.
 pub const version = "0.0.0";
+pub const bun_tier0_active = true;
 
 test "home_test facade compiles" {
     try std.testing.expectEqualStrings("0.0.0", version);
+    try std.testing.expect(bun_tier0_active);
 }
 
 test "home_test corpus discovery is linked" {

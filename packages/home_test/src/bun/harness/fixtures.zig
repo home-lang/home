@@ -1,7 +1,7 @@
 // Copied from Bun (https://github.com/oven-sh/bun) — MIT-licensed.
 // Original: src/runtime/test_runner/harness/fixtures.zig
 // See LICENSE.bun.md for full license text.
-pub const fixtures = std.ComptimeStringMap([]u8, .{
+pub const fixtures = std.StaticStringMap([]const u8).initComptime(.{
     .{ "package.json", @embedFile("./fixtures/package.json") },
     .{ "tsconfig.json", @embedFile("./fixtures/tsconfig.json") },
     .{ "simple-component.js", @embedFile("./fixtures/simple-component.js") },

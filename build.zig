@@ -366,6 +366,9 @@ pub fn build(b: *std.Build) void {
     // artifact; the vendored Bun runtime port lives at
     // packages/runtime/ where Chris's third-wave port batches land.
     const home_test_pkg = createPackage(b, "packages/home_test/src/home_test.zig", target, optimize, zig_test_framework);
+    home_test_pkg.addImport("bun", compat_pkg);
+    const home_test_bun_tier0_pkg = createPackage(b, "packages/home_test/src/bun_tier0_tests.zig", target, optimize, zig_test_framework);
+    home_test_bun_tier0_pkg.addImport("bun", compat_pkg);
 
     // ====================================================================
     // TS-parity binaries: `home-tsc` (compiler driver) + `home-lsp`
@@ -1167,6 +1170,13 @@ pub fn build(b: *std.Build) void {
     }
     const run_home_test_tests = b.addRunArtifact(home_test_tests);
     dependOnTest(test_step, &run_home_test_tests.step, test_filter, "home_test");
+
+    const home_test_bun_tier0_tests = b.addTest(.{
+        .root_module = home_test_bun_tier0_pkg,
+        .filters = &.{"copied Bun"},
+    });
+    const run_home_test_bun_tier0_tests = b.addRunArtifact(home_test_bun_tier0_tests);
+    dependOnTest(test_step, &run_home_test_bun_tier0_tests.step, test_filter, "home_test_bun_tier0");
 
     // Volatile operations tests
     const volatile_tests = b.addTest(.{ .root_module = volatile_pkg });
