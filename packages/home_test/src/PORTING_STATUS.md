@@ -364,6 +364,13 @@ button click state, and hot edits to `pages/index.svelte` and
 Bake framework/plugin/server-component/HMR implementation, not this
 observable fixture shim. The next Bake boundary is
 `DEV:esm-1: live bindings with var`.
+The first Bake ESM live-binding smoke now keeps an exported `var` binding
+alive across repeated route fetches, preserves module state after a route
+patch, resets state when `state.ts` is rewritten, and makes the minimal
+bundle response lazy so one `.equals(...)` assertion maps to one route
+execution. Real parity for this area lives in Bun's ESM export HMR
+lowering and runtime module registry. The next Bake boundary is
+`DEV:esm-2: live bindings through export clause`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

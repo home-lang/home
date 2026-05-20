@@ -544,6 +544,18 @@ Latest measured full gate after the Bake Svelte ecosystem slice:
 unsupported, `35` todo. First failure: `bake/dev/esm.test.ts` with
 `DEV:esm-1: live bindings with var`.
 
+The first Bake ESM live-binding smoke now keeps an exported `var` binding
+alive across repeated route fetches, preserves module state after a route
+patch, resets state when `state.ts` is rewritten, and makes the minimal
+bundle response lazy so one `.equals(...)` assertion maps to one route
+execution. Real parity for this area lives in Bun's ESM export HMR
+lowering and runtime module registry.
+
+Latest measured full gate after the Bake ESM live-var slice: `4,013`
+files executed, `454` passed, `3,937` failed, `1,490` unsupported, `35`
+todo. First failure: `bake/dev/esm.test.ts` with
+`DEV:esm-2: live bindings through export clause`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

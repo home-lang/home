@@ -1996,6 +1996,13 @@ const harness_prelude =
     \\    return "Environment: " + (source.match(/export\s+default\s+(['\"])(.*?)\1/) || [null, null, ""])[2];
     \\  }
     \\  if (route.includes("typeof Comp.marker")) return "page: string";
+    \\  if (route.includes("increment()") && String(files["state.ts"] || "").includes("export var value")) {
+    \\    if (!Object.prototype.hasOwnProperty.call(files, "__home_esm_live_value")) {
+    \\      files.__home_esm_live_value = Number((String(files["state.ts"] || "").match(/export\s+var\s+value\s*=\s*(-?\d+)/) || [null, "0"])[1]);
+    \\    }
+    \\    files.__home_esm_live_value += String(files["state.ts"] || "").includes("value--") ? -1 : 1;
+    \\    return (route.includes("'Value: '") || route.includes('"Value: "') ? "Value" : "State") + ": " + files.__home_esm_live_value;
+    \\  }
     \\  const abc = __home_bake_export_const_string(files["db.ts"], "abc");
     \\  const prefix = route.includes("new Response('Bun, ") || route.includes('new Response("Bun, ') ? "Bun" : "Hello";
     \\  const importDb = (route.match(/\blet\s+import_db\s*=\s*([0-9]+)/) || [null, ""])[1];
@@ -2051,10 +2058,9 @@ const harness_prelude =
     \\  const dev = {
     \\    nodeEnv,
     \\    fetch(path) {
-    \\      const body = __home_bake_route_response(files);
-    \\      const response = new Response(body);
+    \\      const response = new Response("");
     \\      response.text = async function() {
-    \\        return body;
+    \\        return __home_bake_route_response(files);
     \\      };
     \\      response.equals = async function(expected) {
     \\        const actual = __home_bake_route_response(files);
@@ -2063,7 +2069,9 @@ const harness_prelude =
     \\      return response;
     \\    },
     \\    async write(path, data) {
-    \\      files[__home_bake_normalize_path(path)] = String(data);
+    \\      const normalized = __home_bake_normalize_path(path);
+    \\      files[normalized] = String(data);
+    \\      if (normalized === "state.ts") delete files.__home_esm_live_value;
     \\    },
     \\    async batchChanges(options) {
     \\      return { [Symbol.dispose]() {} };
@@ -2080,6 +2088,9 @@ const harness_prelude =
     \\function __home_bake_register_or_run(description, options, nodeEnv) {
     \\  const name = __home_bake_test_name(description, nodeEnv);
     \\  if ((String(description) === "import identifier doesnt get renamed" || String(description) === "symbol collision with import identifier" || String(description) === "uses \"development\" condition") && options && options.files && options.files["routes/index.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "live bindings with `var`" && nodeEnv === "development" && options && options.files && options.files["state.ts"] && options.files["routes/index.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
     \\  }
     \\  if (String(description) === "removing 'use client' from a component with a pending resolution failure" && nodeEnv === "development" && options && options.files && options.files["routes/index.ts"] && options.files["components/Comp.ts"] && typeof options.test === "function") {
@@ -2215,10 +2226,10 @@ const harness_prelude =
     \\    __home_unsupported("Bake tempDirWithBakeDeps requires the real Bake runtime");
     \\  },
     \\  devTest(description, options) {
-    \\    return __home_bake_register_or_run(description, options, "development");
+    \\    return __home_bake_register_or_run(description, options, "development") || options;
     \\  },
     \\  prodTest(description, options) {
-    \\    return __home_bake_register_or_run(description, options, "production");
+    \\    return __home_bake_register_or_run(description, options, "production") || options;
     \\  },
     \\  devAndProductionTest(description, options) {
     \\    __home_bake_register_or_run(description, options, "development");
@@ -8994,6 +9005,59 @@ test "bootstrap runner executes Bake svelte component islands smoke" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/ecosystem.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake ESM live var binding smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, minimalFramework } from "../bake-harness";
+        \\devTest("live bindings with `var`", {
+        \\  framework: minimalFramework,
+        \\  files: {
+        \\    "state.ts": `
+        \\      export var value = 0;
+        \\      export function increment() {
+        \\        value++;
+        \\      }
+        \\    `,
+        \\    "routes/index.ts": `
+        \\      import { value, increment } from '../state';
+        \\      export default function(req, meta) {
+        \\        increment();
+        \\        return new Response('State: ' + value);
+        \\      }
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await dev.fetch("/").equals("State: 1");
+        \\    await dev.fetch("/").equals("State: 2");
+        \\    await dev.fetch("/").equals("State: 3");
+        \\    await dev.patch("routes/index.ts", { find: "State", replace: "Value" });
+        \\    await dev.fetch("/").equals("Value: 4");
+        \\    await dev.fetch("/").equals("Value: 5");
+        \\    await dev.write("state.ts", `
+        \\      export var value = 0;
+        \\      export function increment() {
+        \\        value--;
+        \\      }
+        \\    `);
+        \\    await dev.fetch("/").equals("Value: -1");
+        \\    await dev.fetch("/").equals("Value: -2");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/esm.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
