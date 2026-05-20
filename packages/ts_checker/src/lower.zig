@@ -143,7 +143,12 @@ pub const Lowerer = struct {
             try self.lower(ft.return_type)
         else
             types.Primitive.void_t;
-        return self.interner.internSignature(param_types.items, ret, ft.is_constructor) catch error.OutOfMemory;
+        return self.interner.internSignatureWithAbstract(
+            param_types.items,
+            ret,
+            ft.is_constructor,
+            ft.is_abstract_constructor,
+        ) catch error.OutOfMemory;
     }
 
     fn lowerTypeRef(self: *Lowerer, node: NodeId) LowerError!TypeId {

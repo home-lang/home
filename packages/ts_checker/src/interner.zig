@@ -134,6 +134,7 @@ pub const TypeKey = union(Kind) {
         params: []const TypeId,
         return_type: TypeId,
         is_construct: bool,
+        is_abstract_construct: bool = false,
     },
 
     pub const Kind = enum(u8) {
@@ -215,6 +216,7 @@ pub const TypeKey = union(Kind) {
                 for (sig.params) |p| hasher.update(std.mem.asBytes(&p));
                 hasher.update(std.mem.asBytes(&sig.return_type));
                 hasher.update(&[_]u8{@intFromBool(sig.is_construct)});
+                hasher.update(&[_]u8{@intFromBool(sig.is_abstract_construct)});
             },
         }
         return hasher.final();
@@ -282,6 +284,7 @@ pub const TypeKey = union(Kind) {
             .signature => |a| {
                 const b = other.signature;
                 return a.is_construct == b.is_construct and
+                    a.is_abstract_construct == b.is_abstract_construct and
                     a.return_type == b.return_type and
                     std.mem.eql(TypeId, a.params, b.params);
             },
@@ -662,10 +665,21 @@ pub const Interner = struct {
     /// `param_types` is consumed via dupe; caller may free its
     /// original copy.
     pub fn internSignature(self: *Interner, param_types: []const TypeId, return_type: TypeId, is_construct: bool) !TypeId {
+        return try self.internSignatureWithAbstract(param_types, return_type, is_construct, false);
+    }
+
+    pub fn internSignatureWithAbstract(
+        self: *Interner,
+        param_types: []const TypeId,
+        return_type: TypeId,
+        is_construct: bool,
+        is_abstract_construct: bool,
+    ) !TypeId {
         const probe: TypeKey = .{ .signature = .{
             .params = param_types,
             .return_type = return_type,
             .is_construct = is_construct,
+            .is_abstract_construct = is_abstract_construct and is_construct,
         } };
         const h = probe.hash();
         const shard_idx = shardIndexFor(h);
@@ -687,6 +701,7 @@ pub const Interner = struct {
             .params = owned,
             .return_type = return_type,
             .is_construct = is_construct,
+            .is_abstract_construct = is_abstract_construct and is_construct,
         } };
         return try self.publishKeyLocked(shard, owned_key, .{ .is_signature = true });
     }
@@ -1072,6 +1087,7 @@ pub const Interner = struct {
                     .params_len = @intCast(sig.params.len),
                     .return_type = sig.return_type,
                     .is_construct = sig.is_construct,
+                    .is_abstract_construct = sig.is_abstract_construct,
                     .has_this_type = false,
                 });
                 break :blk idx;

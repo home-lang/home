@@ -652,6 +652,9 @@ pub const TsCodes = struct {
     pub const abstract_members_missing_class_expr_aggregate: u32 = 2656;
     /// TS2650 — class-expression variant of TS2655 (truncated list).
     pub const abstract_members_missing_class_expr_truncated: u32 = 2650;
+    /// TS2797 — a non-abstract mixin class extends a type variable
+    /// whose constraint contains an abstract construct signature.
+    pub const non_abstract_mixin_extends_abstract_constructor: u32 = 2797;
     /// TS2553 — `enum E { A = "x", B }`. Once an enum member has a
     /// string initializer, every subsequent member must have an
     /// explicit initializer (or be string-valued); plain
@@ -13742,6 +13745,16 @@ pub const Checker = struct {
             (self.classExtendsStaticType(c.extends) catch null) orelse types.Primitive.any
         else
             null;
+        if (!c.is_abstract and c.extends != hir_mod.none_node_id and
+            try self.classExtendsAbstractConstructTypeVariable(c.extends))
+        {
+            const anchor = if (c.name != hir_mod.none_node_id) c.name else node;
+            try self.report(
+                anchor,
+                TsCodes.non_abstract_mixin_extends_abstract_constructor,
+                "A mixin class that extends from a type variable containing an abstract construct signature must also be declared 'abstract'.",
+            );
+        }
         const no_extends_class_name: ?[]const u8 = if (c.extends == hir_mod.none_node_id)
             if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier)
                 self.string_interner.get(hir_mod.identifierOf(self.hir, c.name).name)
@@ -15203,7 +15216,7 @@ pub const Checker = struct {
                 self.interner.signatureParams(parent_sig)
             else
                 empty_params[0..];
-            static_ctor_sig = self.interner.internSignature(ctor_params, instance_t, true) catch return error.OutOfMemory;
+            static_ctor_sig = self.interner.internSignatureWithAbstract(ctor_params, instance_t, true, c.is_abstract) catch return error.OutOfMemory;
             try self.recordGenericSignatureParams(static_ctor_sig, class_param_ids.items);
             if (has_explicit_ctor and self.rest_signatures.contains(ctor_sig)) {
                 try self.rest_signatures.put(self.gpa, static_ctor_sig, {});
@@ -15275,7 +15288,7 @@ pub const Checker = struct {
                 errdefer converted.deinit(self.gpa);
                 for (ctor_overload_sigs.items) |ovl_sig| {
                     const ovl_params = self.interner.signatureParams(ovl_sig);
-                    const new_sig = self.interner.internSignature(ovl_params, instance_t, true) catch return error.OutOfMemory;
+                    const new_sig = self.interner.internSignatureWithAbstract(ovl_params, instance_t, true, c.is_abstract) catch return error.OutOfMemory;
                     if (self.rest_signatures.contains(ovl_sig)) {
                         try self.rest_signatures.put(self.gpa, new_sig, {});
                     }
@@ -15591,6 +15604,65 @@ pub const Checker = struct {
                     }
                 }
             }
+            if (!c.is_abstract and c.extends != hir_mod.none_node_id) {
+                const parent_has_name_key = if (parent_class_name) |ext_name|
+                    self.class_abstract_members.contains(ext_name)
+                else
+                    false;
+                if (!parent_has_name_key) {
+                    if (parent_instance_t) |pit| {
+                        var missing_from_type: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+                        defer missing_from_type.deinit(self.gpa);
+                        try self.collectMissingAbstractMembersFromInstanceType(pit, &concrete_names, &missing_from_type);
+                        if (missing_from_type.items.len > 0) {
+                            const child_str = try self.renderClassNameWithTypeParams(cid.name, c.type_params_start, c.type_params_len);
+                            const parent_str = (try self.allocAbstractParentTypeName(pit)) orelse
+                                (if (parent_class_name) |ext_name| try self.renderExtendsExpression(c.extends, ext_name) else "base class");
+                            if (missing_from_type.items.len == 1 and self.hir.kindOf(node) != .class_expr) {
+                                const member_str = self.string_interner.get(missing_from_type.items[0]);
+                                const msg = try std.fmt.allocPrint(
+                                    self.diag_arena.allocator(),
+                                    "Non-abstract class '{s}' does not implement inherited abstract member {s} from class '{s}'.",
+                                    .{ child_str, member_str, parent_str },
+                                );
+                                try self.diagnostics.append(self.gpa, .{
+                                    .node = c.name,
+                                    .code = TsCodes.abstract_member_not_implemented,
+                                    .message = msg,
+                                });
+                            } else {
+                                var names_buf: std.ArrayListUnmanaged(u8) = .empty;
+                                defer names_buf.deinit(self.diag_arena.allocator());
+                                for (missing_from_type.items, 0..) |mn, i| {
+                                    if (i != 0) try names_buf.appendSlice(self.diag_arena.allocator(), ", ");
+                                    try names_buf.append(self.diag_arena.allocator(), '\'');
+                                    try names_buf.appendSlice(self.diag_arena.allocator(), self.string_interner.get(mn));
+                                    try names_buf.append(self.diag_arena.allocator(), '\'');
+                                }
+                                const names_str = try names_buf.toOwnedSlice(self.diag_arena.allocator());
+                                const is_class_expr = self.hir.kindOf(node) == .class_expr;
+                                const msg = if (is_class_expr)
+                                    try std.fmt.allocPrint(
+                                        self.diag_arena.allocator(),
+                                        "Non-abstract class expression is missing implementations for the following members of '{s}': {s}.",
+                                        .{ parent_str, names_str },
+                                    )
+                                else
+                                    try std.fmt.allocPrint(
+                                        self.diag_arena.allocator(),
+                                        "Non-abstract class '{s}' is missing implementations for the following members of '{s}': {s}.",
+                                        .{ child_str, parent_str, names_str },
+                                    );
+                                try self.diagnostics.append(self.gpa, .{
+                                    .node = if (is_class_expr) self.classExpressionBindingAnchor(node) else c.name,
+                                    .code = if (is_class_expr) TsCodes.abstract_members_missing_class_expr_aggregate else TsCodes.abstract_members_missing_aggregate,
+                                    .message = msg,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
             // The class name as a value is the constructor — we don't
             // have a dedicated constructor signature TypeId yet, so
             // record the instance type on the name node. `new Foo()`
@@ -15739,7 +15811,7 @@ pub const Checker = struct {
             const construct_name = self.string_interner.intern("__construct") catch return error.OutOfMemory;
             const empty_params: [0]TypeId = .{};
             const ctor_params: []const TypeId = if (has_explicit_ctor) self.interner.signatureParams(ctor_sig) else empty_params[0..];
-            static_ctor_sig = self.interner.internSignature(ctor_params, instance_t, true) catch return error.OutOfMemory;
+            static_ctor_sig = self.interner.internSignatureWithAbstract(ctor_params, instance_t, true, c.is_abstract) catch return error.OutOfMemory;
             try self.recordGenericSignatureParams(static_ctor_sig, class_param_ids.items);
             if (has_explicit_ctor and self.rest_signatures.contains(ctor_sig)) {
                 try self.rest_signatures.put(self.gpa, static_ctor_sig, {});
@@ -15868,7 +15940,12 @@ pub const Checker = struct {
         try any_params.ensureTotalCapacity(self.gpa, params.len);
         for (params) |_| any_params.appendAssumeCapacity(types.Primitive.any);
         const ret_t = self.interner.signatureReturn(sig) orelse types.Primitive.any;
-        const erased = self.interner.internSignature(any_params.items, ret_t, is_construct) catch return error.OutOfMemory;
+        const erased = self.interner.internSignatureWithAbstract(
+            any_params.items,
+            ret_t,
+            is_construct,
+            self.signatureIsAbstractConstruct(sig),
+        ) catch return error.OutOfMemory;
         if (self.signature_min_args.get(sig)) |min_required| {
             try self.signature_min_args.put(self.gpa, erased, min_required);
         }
@@ -19888,6 +19965,120 @@ pub const Checker = struct {
         return self.string_interner.get(fallback_name);
     }
 
+    fn stringIdListContains(list: []const hir_mod.StringId, name: hir_mod.StringId) bool {
+        for (list) |item| if (item == name) return true;
+        return false;
+    }
+
+    fn collectMissingAbstractMembersFromInstanceType(
+        self: *Checker,
+        instance_t: TypeId,
+        concrete_names: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+        missing: *std.ArrayListUnmanaged(hir_mod.StringId),
+    ) CheckError!void {
+        if (instance_t >= self.interner.pool.typeCount()) return;
+        const flags = self.interner.pool.flagsOf(instance_t);
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(instance_t)) |member| {
+                try self.collectMissingAbstractMembersFromInstanceType(member, concrete_names, missing);
+            }
+            return;
+        }
+        const class_name = self.classNameForInstanceType(instance_t) orelse return;
+        if (self.class_abstract_members_order.getPtr(class_name)) |order| {
+            for (order.items) |member_name| {
+                if (concrete_names.contains(member_name)) continue;
+                if (stringIdListContains(missing.items, member_name)) continue;
+                try missing.append(self.gpa, member_name);
+            }
+            return;
+        }
+        if (self.class_abstract_members.getPtr(class_name)) |members| {
+            var it = members.keyIterator();
+            while (it.next()) |name_ptr| {
+                const member_name = name_ptr.*;
+                if (concrete_names.contains(member_name)) continue;
+                if (stringIdListContains(missing.items, member_name)) continue;
+                try missing.append(self.gpa, member_name);
+            }
+        }
+    }
+
+    fn knownTypeDisplayName(self: *Checker, t: TypeId) ?[]const u8 {
+        if (self.alias_display_names.get(t)) |display| return display;
+        if (self.objectTypeHasNamedShape(t, true)) |name| return self.string_interner.get(name);
+        if (self.namedTypeForId(t)) |name| return self.string_interner.get(name);
+        var it = self.type_names.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.* == t) return self.string_interner.get(entry.key_ptr.*);
+        }
+        if (self.objectTypeHasNamedShape(t, false)) |name| return self.string_interner.get(name);
+        return null;
+    }
+
+    fn objectTypeHasNamedShape(self: *Checker, t: TypeId, prefer_non_class: bool) ?hir_mod.StringId {
+        if (t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_object_type) return null;
+        if (self.interner.objectMembers(t).len == 0) return null;
+        var it = self.type_names.iterator();
+        while (it.next()) |entry| {
+            if (prefer_non_class and self.class_instance_types.contains(entry.key_ptr.*)) continue;
+            const named_t = entry.value_ptr.*;
+            if (named_t == t or named_t >= self.interner.pool.typeCount()) continue;
+            const named_flags = self.interner.pool.flagsOf(named_t);
+            if (!named_flags.is_object_type) continue;
+            if (self.objectTypesSameDisplayShape(t, named_t)) return entry.key_ptr.*;
+        }
+        return null;
+    }
+
+    fn objectTypesSameDisplayShape(self: *Checker, a: TypeId, b: TypeId) bool {
+        if (self.interner.objectStringIndex(a) != self.interner.objectStringIndex(b) or
+            self.interner.objectNumberIndex(a) != self.interner.objectNumberIndex(b) or
+            self.interner.objectSymbolIndex(a) != self.interner.objectSymbolIndex(b))
+        {
+            return false;
+        }
+        const a_members = self.interner.objectMembers(a);
+        const b_members = self.interner.objectMembers(b);
+        if (a_members.len != b_members.len) return false;
+        for (a_members) |am| {
+            var found = false;
+            for (b_members) |bm| {
+                if (am.name == bm.name and
+                    am.type == bm.type and
+                    am.is_optional == bm.is_optional and
+                    am.is_readonly == bm.is_readonly and
+                    am.is_method == bm.is_method)
+                {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) return false;
+        }
+        return true;
+    }
+
+    fn allocAbstractParentTypeName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
+        if (self.knownTypeDisplayName(t)) |name| return name;
+        if (t >= self.interner.pool.typeCount()) return try self.allocSimpleTypeName(t);
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_intersection) return try self.allocSimpleTypeName(t);
+
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        for (self.interner.intersectionMembers(t), 0..) |member, i| {
+            const member_name = self.knownTypeDisplayName(member) orelse
+                (try self.allocSimpleTypeName(member)) orelse return null;
+            if (i != 0) try buf.appendSlice(arena, " & ");
+            try buf.appendSlice(arena, member_name);
+        }
+        if (buf.items.len == 0) return null;
+        return try buf.toOwnedSlice(arena);
+    }
+
     /// Walk a `Qualifier.Path.Name` member-access chain and return the
     /// trailing identifier name. Mirrors `classExtendsName` for the
     /// qualified form. Returns null when the chain isn't a pure
@@ -19934,12 +20125,42 @@ pub const Checker = struct {
         };
     }
 
+    fn classExtendsAbstractConstructTypeVariable(self: *Checker, extends_expr: NodeId) CheckError!bool {
+        if (self.hir.kindOf(extends_expr) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, extends_expr);
+        const value_t = (try self.heritageValueType(extends_expr, id.name)) orelse return false;
+        if (value_t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(value_t).is_type_parameter)
+        {
+            return false;
+        }
+        return try self.typeContainsAbstractConstructSignature(value_t);
+    }
+
+    fn typeContainsAbstractConstructSignature(self: *Checker, t: TypeId) CheckError!bool {
+        var construct_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer construct_sigs.deinit(self.gpa);
+        try self.collectConstructSignatures(t, &construct_sigs);
+        for (construct_sigs.items) |sig| {
+            if (self.signatureIsAbstractConstruct(sig)) return true;
+        }
+        return false;
+    }
+
     fn constructReturnType(self: *Checker, t: TypeId) CheckError!?TypeId {
         var construct_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
         defer construct_sigs.deinit(self.gpa);
         try self.collectConstructSignatures(t, &construct_sigs);
         if (construct_sigs.items.len == 0) return null;
-        return self.interner.signatureReturn(construct_sigs.items[0]) orelse types.Primitive.any;
+        if (construct_sigs.items.len == 1) {
+            return self.interner.signatureReturn(construct_sigs.items[0]) orelse types.Primitive.any;
+        }
+        var returns: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer returns.deinit(self.gpa);
+        for (construct_sigs.items) |sig| {
+            try returns.append(self.gpa, self.interner.signatureReturn(sig) orelse types.Primitive.any);
+        }
+        return self.interner.internIntersection(returns.items) catch return types.Primitive.any;
     }
 
     fn applyClassJsDocExtendsSubstitution(
@@ -20033,10 +20254,12 @@ pub const Checker = struct {
                 try self.substituteTypeNoCyclesInner(ret_t, subs, visited)
             else
                 types.Primitive.void_t;
-            const new_sig = self.interner.internSignature(
+            const sig_payload = self.interner.pool.signature_payloads.items[payload_idx];
+            const new_sig = self.interner.internSignatureWithAbstract(
                 new_params.items,
                 ret,
-                self.interner.pool.signature_payloads.items[payload_idx].is_construct,
+                sig_payload.is_construct,
+                sig_payload.is_abstract_construct,
             ) catch return t;
             try self.copySignatureParamNames(new_sig, t);
             try self.copySignatureNullishArrayDefaults(new_sig, t);
@@ -27208,7 +27431,13 @@ pub const Checker = struct {
                 else
                     types.Primitive.void_t;
                 const is_construct = self.hir.kindOf(type_node) == .constructor_type;
-                const sig = self.interner.internSignature(fn_param_ts.items, ret_t, is_construct) catch return error.OutOfMemory;
+                const ft_payload = hir_mod.fnTypeOf(self.hir, type_node);
+                const sig = self.interner.internSignatureWithAbstract(
+                    fn_param_ts.items,
+                    ret_t,
+                    is_construct,
+                    ft_payload.is_abstract_constructor,
+                ) catch return error.OutOfMemory;
                 try self.recordSignatureMinArgs(sig, fn_param_omittable.items);
                 try self.recordSignatureParamNames(sig, fn_params);
                 if (fn_param_ts.items.len == 1 and fn_params.len == 1 and self.hir.kindOf(fn_params[0]) == .parameter) {
@@ -39520,6 +39749,14 @@ pub const Checker = struct {
         return self.interner.pool.signature_payloads.items[payload_idx].is_construct;
     }
 
+    fn signatureIsAbstractConstruct(self: *Checker, sig: TypeId) bool {
+        if (!self.interner.isSignature(sig)) return false;
+        const payload_idx = self.interner.pool.payloadOf(sig);
+        if (payload_idx >= self.interner.pool.signature_payloads.items.len) return false;
+        const payload = self.interner.pool.signature_payloads.items[payload_idx];
+        return payload.is_construct and payload.is_abstract_construct;
+    }
+
     fn collectConstructSignatures(
         self: *Checker,
         t: TypeId,
@@ -39615,6 +39852,14 @@ pub const Checker = struct {
             }
             if (selected_sig == construct_sigs.items[0]) selected_sig = effective_sig;
         }
+        const selected_is_abstract_construct = self.signatureIsAbstractConstruct(selected_sig);
+        if (selected_is_abstract_construct and !self.newCalleeIsAbstractClass(callee_node)) {
+            try self.report(
+                node,
+                TsCodes.abstract_class_instantiation,
+                "Cannot create an instance of an abstract class.",
+            );
+        }
 
         if (type_arg_nodes.len > 0 and !saw_generic_record and !self.newCalleeAcceptsTypeArguments(callee_node)) {
             const msg = try std.fmt.allocPrint(
@@ -39631,7 +39876,7 @@ pub const Checker = struct {
 
         if (!found_applicable and construct_sigs.items.len > 1) {
             try self.report(node, TsCodes.no_overload_matches, "No overload matches this call.");
-        } else if (!self.newCalleeIsAbstractClass(callee_node)) {
+        } else if (!self.newCalleeIsAbstractClass(callee_node) and !selected_is_abstract_construct) {
             // Skip arg-arity / arg-type checks (TS2554/TS2345) when
             // constructing an abstract class — tsc reports only
             // TS2511 in that case. See `classAbstractInstantiations1`.
@@ -49673,8 +49918,13 @@ pub const Checker = struct {
                 try self.substituteType(r, subs)
             else
                 types.Primitive.void_t;
-            const is_construct = self.interner.pool.signature_payloads.items[payload_idx].is_construct;
-            const new_sig = self.interner.internSignature(new.items, ret, is_construct) catch return t;
+            const sig_payload = self.interner.pool.signature_payloads.items[payload_idx];
+            const new_sig = self.interner.internSignatureWithAbstract(
+                new.items,
+                ret,
+                sig_payload.is_construct,
+                sig_payload.is_abstract_construct,
+            ) catch return t;
             try self.copySignatureParamNames(new_sig, t);
             try self.copySignatureNullishArrayDefaults(new_sig, t);
             if (self.rest_signatures.contains(t)) {

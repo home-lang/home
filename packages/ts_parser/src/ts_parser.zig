@@ -7544,11 +7544,11 @@ pub const Parser = struct {
                 const id = self.interner.intern("unknown") catch return error.OutOfMemory;
                 break :blk try self.builder.addTypeRef(.{ .start = t.span.start, .end = t.span.start }, id, &.{}, &.{});
             },
-            .kw_new => try self.parseConstructorType(),
+            .kw_new => try self.parseConstructorType(false),
             .kw_abstract => blk: {
                 if (self.peekAt(1).kind == .kw_new) {
                     _ = self.advance();
-                    break :blk try self.parseConstructorType();
+                    break :blk try self.parseConstructorType(true);
                 }
                 _ = self.advance();
                 const id = self.interner.intern("unknown") catch return error.OutOfMemory;
@@ -7778,6 +7778,7 @@ pub const Parser = struct {
             params.items,
             ret,
             is_constructor,
+            false,
         );
     }
 
@@ -7841,7 +7842,7 @@ pub const Parser = struct {
         _ = try self.expect(.arrow, "'=>' in function type");
         const ret = try self.parseReturnTypeAnnotation(params);
         const sp: Span = .{ .start = start.span.start, .end = self.hir.spanOf(ret).end };
-        return try self.builder.addFnType(sp, &.{}, params, ret, is_constructor);
+        return try self.builder.addFnType(sp, &.{}, params, ret, is_constructor, false);
     }
 
     /// Parse `(p1: T1, p2: T2)` and return parameter HIR nodes.
@@ -8465,6 +8466,7 @@ pub const Parser = struct {
                     params,
                     ret,
                     false,
+                    false,
                 );
                 _ = self.match(.semicolon);
                 _ = self.match(.comma);
@@ -8548,6 +8550,7 @@ pub const Parser = struct {
             params,
             ret,
             is_constructor,
+            false,
         );
         _ = self.match(.semicolon);
         _ = self.match(.comma);
@@ -8683,6 +8686,7 @@ pub const Parser = struct {
                 type_params,
                 params,
                 ret,
+                false,
                 false,
             );
             _ = self.match(.semicolon);
@@ -9015,10 +9019,10 @@ pub const Parser = struct {
         _ = try self.expect(.arrow, "'=>' in generic fn type");
         const ret = try self.parseReturnTypeAnnotation(params);
         const sp: Span = .{ .start = start.span.start, .end = self.hir.spanOf(ret).end };
-        return try self.builder.addFnType(sp, tps, params, ret, false);
+        return try self.builder.addFnType(sp, tps, params, ret, false, false);
     }
 
-    fn parseConstructorType(self: *Parser) ParseError!NodeId {
+    fn parseConstructorType(self: *Parser, is_abstract_constructor: bool) ParseError!NodeId {
         const start = self.advance(); // new
         var tps: []NodeId = &.{};
         var owns_tps = false;
@@ -9032,7 +9036,7 @@ pub const Parser = struct {
         _ = try self.expect(.arrow, "'=>' in constructor type");
         const ret = try self.parseReturnTypeAnnotation(params);
         const sp: Span = .{ .start = start.span.start, .end = self.hir.spanOf(ret).end };
-        return try self.builder.addFnType(sp, tps, params, ret, true);
+        return try self.builder.addFnType(sp, tps, params, ret, true, is_abstract_constructor);
     }
 
     /// Parse `<T, U extends V = D>`. Returns owned slice of
