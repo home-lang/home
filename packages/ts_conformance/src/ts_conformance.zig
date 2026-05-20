@@ -3444,6 +3444,46 @@ test "conformance: sub-strict directive without @strict keeps inferred strict-on
     try T.expect(merged_with_strict_on.use_unknown_in_catch_variables);
 }
 
+test "conformance: redeclaredProperty diagnoses TS2729 on `this.b` access" {
+    // Mirrors `redeclaredProperty.ts(7,12)` — when a derived class
+    // redeclares a base field `b;` with no initializer under
+    // `useDefineForClassFields: true`, the inherited value is
+    // clobbered to undefined by the field declaration, so a sibling
+    // initializer's `this.b` access reads undefined. Tsc reports
+    // TS2729 anchored at the property-name segment.
+    const result = try runOneEntry(T.allocator, .{
+        .name = "redeclaredProperty",
+        .path = "redeclaredProperty.ts",
+        .source =
+        \\// @noTypesAndSymbols: true
+        \\// @strictNullChecks: true
+        \\// @target: esnext
+        \\// @useDefineForClassFields: true
+        \\class Base {
+        \\  b = 1;
+        \\}
+        \\
+        \\class Derived extends Base {
+        \\  b;
+        \\  d = this.b;
+        \\
+        \\  constructor() {
+        \\    super();
+        \\    this.b = 2;
+        \\  }
+        \\}
+        ,
+        .expects_error = true,
+        .expected_errors = "redeclaredProperty.ts(7,12): error TS2729: Property 'b' is used before its initialization.",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: enum member assignment fixture matches TS2540 baseline" {
     // Mirrors `validNullAssignments.ts(10,3)` — the enum-member
     // assignment `E.A = null;` should report only TS2540, not the

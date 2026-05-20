@@ -13813,6 +13813,15 @@ pub const Checker = struct {
         defer property_names.deinit(self.gpa);
         var parameter_property_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
         defer parameter_property_names.deinit(self.gpa);
+        // Instance class fields declared with neither an initializer
+        // nor a `!` definite-assignment assertion, in declaration
+        // order. Under `useDefineForClassFields: true` these clobber
+        // any inherited value to `undefined` at construction time, so
+        // a sibling field's initializer reading `this.<name>` reads
+        // `undefined` — tsc reports TS2729 at the property-name
+        // segment (see `redeclaredProperty.ts(7,12)`).
+        var uninit_instance_field_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer uninit_instance_field_names.deinit(self.gpa);
         // Names of instance methods declared by this class. Moved into
         // `class_method_members` once the class name is known. Used by
         // TS2423 when a subclass redeclares one of these as an accessor.
@@ -14612,6 +14621,16 @@ pub const Checker = struct {
                             try self.checkPropertyOverridesAccessor(m, parent_class_name, member_name);
                         }
                         try self.checkFieldInitializerParameterPropertyOrder(m, op.value, &parameter_property_names);
+                        try self.checkFieldInitializerRedeclaredFieldOrder(op.value, &uninit_instance_field_names);
+                        // Record fields with no initializer (and no
+                        // `!` definite-assignment — our HIR doesn't
+                        // track `!` yet, so we accept the rare
+                        // over-fire) so later sibling initializers
+                        // can match `this.<name>` access against this
+                        // set. Methods/auto-accessors are excluded.
+                        if (!op_is_method and !is_auto_accessor and op.value == hir_mod.none_node_id) {
+                            try uninit_instance_field_names.put(self.gpa, member_name, {});
+                        }
                         if (is_abstract_property and op.value != hir_mod.none_node_id) {
                             const field_name = self.string_interner.get(member_name);
                             const msg = try std.fmt.allocPrint(
@@ -18273,6 +18292,41 @@ pub const Checker = struct {
             .code = TsCodes.method_overridden_by_accessor,
             .message = msg,
         });
+    }
+
+    /// Under `useDefineForClassFields: true`, a class field declared
+    /// without an initializer (`b;`) emits
+    /// `Object.defineProperty(this, "b", { value: undefined })` at
+    /// construction time, clobbering any inherited value. Sibling
+    /// fields that read `this.<name>` therefore see `undefined`, so
+    /// tsc reports TS2729 anchored at the property-name segment.
+    /// Mirrors `redeclaredProperty.ts(7,12)`.
+    fn checkFieldInitializerRedeclaredFieldOrder(
+        self: *Checker,
+        init_node: NodeId,
+        uninit_field_names: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) CheckError!void {
+        if (init_node == hir_mod.none_node_id or uninit_field_names.count() == 0) return;
+        if (!self.sourceHasUseDefineForClassFieldsTrueDirective()) return;
+        var it = uninit_field_names.keyIterator();
+        while (it.next()) |name_ptr| {
+            const access_node = self.findThisMemberAccess(init_node, name_ptr.*);
+            if (access_node == hir_mod.none_node_id) continue;
+            const name_text = self.string_interner.get(name_ptr.*);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Property '{s}' is used before its initialization.",
+                .{name_text},
+            );
+            const property_name_pos = self.memberAccessPropertyNamePos(access_node);
+            try self.diagnostics.append(self.gpa, .{
+                .node = access_node,
+                .pos = property_name_pos,
+                .code = TsCodes.property_used_before_initialization,
+                .message = msg,
+            });
+            return;
+        }
     }
 
     fn checkFieldInitializerParameterPropertyOrder(
