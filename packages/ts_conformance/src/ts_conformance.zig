@@ -3444,6 +3444,46 @@ test "conformance: sub-strict directive without @strict keeps inferred strict-on
     try T.expect(merged_with_strict_on.use_unknown_in_catch_variables);
 }
 
+test "conformance: derivedTypeAccessesHiddenBaseCallViaSuperPropertyAccess triage" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "derivedTypeAccessesHiddenBaseCallViaSuperPropertyAccess",
+        .path = "derivedTypeAccessesHiddenBaseCallViaSuperPropertyAccess.ts",
+        .source =
+        \\// @target: es2015
+        \\class Base {
+        \\    foo(x: { a: number }): { a: number } {
+        \\        return null;
+        \\    }
+        \\}
+        \\
+        \\class Derived extends Base {
+        \\    foo(x: { a: number; b: number }): { a: number; b: number } {
+        \\        return null;
+        \\    }
+        \\
+        \\    bar() {
+        \\        var r = super.foo({ a: 1 }); // { a: number }
+        \\        var r2 = super.foo({ a: 1, b: 2 }); // { a: number }
+        \\        var r3 = this.foo({ a: 1, b: 2 }); // { a: number; b: number; }
+        \\    }
+        \\}
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\derivedTypeAccessesHiddenBaseCallViaSuperPropertyAccess.ts(3,9): error TS2322: Type 'null' is not assignable to type '{ a: number; }'.
+        \\derivedTypeAccessesHiddenBaseCallViaSuperPropertyAccess.ts(9,9): error TS2322: Type 'null' is not assignable to type '{ a: number; b: number; }'.
+        \\derivedTypeAccessesHiddenBaseCallViaSuperPropertyAccess.ts(14,36): error TS2353: Object literal may only specify known properties, and 'b' does not exist in type '{ a: number; }'.
+        ,
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: redefinedPararameterProperty diagnoses TS2729 on `this.a`" {
     // Mirrors `redefinedPararameterProperty.ts(6,14)` — a parameter
     // property declared via `constructor(public a: number)` is

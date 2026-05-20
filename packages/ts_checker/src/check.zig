@@ -2114,7 +2114,8 @@ pub const Checker = struct {
                         self.returnValueIsNullishLiteral(r.value) and
                         self.declaredReturnRejectsNullish(declared, ret_t))
                     {
-                        const target_name = self.simpleDiagnosticTypeName(declared) catch null;
+                        const target_name = (self.simpleDiagnosticTypeName(declared) catch null) orelse
+                            (self.allocObjectTypeShape(declared) catch null);
                         const arena = self.diag_arena.allocator();
                         const msg = blk: {
                             const tname = target_name orelse break :blk try arena.dupe(u8, "Type is not assignable to function return type.");
@@ -50364,17 +50365,17 @@ pub const Checker = struct {
         if (flags.is_type_parameter and ret_t == types.Primitive.undefined_t) {
             return true;
         }
-        if (ret_t == types.Primitive.null_t) {
-            return declared == types.Primitive.string_t or
+        if (ret_t == types.Primitive.null_t or ret_t == types.Primitive.undefined_t) {
+            if (declared == types.Primitive.string_t or
                 declared == types.Primitive.number_t or
                 declared == types.Primitive.boolean_t or
-                declared == types.Primitive.bigint_t;
-        }
-        if (ret_t == types.Primitive.undefined_t) {
-            return declared == types.Primitive.string_t or
-                declared == types.Primitive.number_t or
-                declared == types.Primitive.boolean_t or
-                declared == types.Primitive.bigint_t;
+                declared == types.Primitive.bigint_t) return true;
+            // Structural object return types like `{ a: number }` also
+            // reject `null` / `undefined` under strictNullChecks —
+            // mirrors `derivedTypeAccessesHiddenBaseCallViaSuperPropertyAccess.ts(3,9)`.
+            // Signatures and tuples sit under `is_object_type` too;
+            // those legitimately reject null returns the same way.
+            if (flags.is_object_type) return true;
         }
         return false;
     }
