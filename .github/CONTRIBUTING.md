@@ -17,7 +17,7 @@ Thank you for your interest in contributing to Home! This document provides guid
 
 ### Prerequisites
 
-- **Zig**: Version 0.16-dev (run `pantry install` to get the pinned version)
+- **Zig**: Pantry-pinned `0.17.0-dev.263+0add2dfc4` (run `pantry install`)
 - **Git**: For version control
 - **A text editor**: VS Code with Zig extension recommended
 
@@ -28,14 +28,17 @@ Thank you for your interest in contributing to Home! This document provides guid
 git clone https://github.com/home-lang/home.git
 cd home
 
+# Install the pinned toolchain
+pantry install
+
 # Build the compiler
-zig build
+./pantry/.bin/zig build
 
 # Run tests
-zig build test
+./pantry/.bin/zig build test
 
 # Run with debug logging
-zig build -Ddebug-log=true
+./pantry/.bin/zig build -Ddebug-log=true
 ```
 
 ---
@@ -204,16 +207,16 @@ test "module - specific behavior" {
 
 ```bash
 # All tests
-zig build test
+./pantry/.bin/zig build test
 
 # Specific package
-zig build test-parser
+./pantry/.bin/zig build test-parser
 
 # With verbose output
-zig build test -- --verbose
+./pantry/.bin/zig build test -- --verbose
 
 # Filter tests
-zig build test -- --test-filter="lexer"
+./pantry/.bin/zig build test -- --test-filter="lexer"
 ```
 
 ---
@@ -227,7 +230,7 @@ zig build test -- --test-filter="lexer"
 3. **Create a feature branch**: `git checkout -b feature/my-feature`
 4. **Write tests** for new functionality
 5. **Update documentation** if needed
-6. **Run all tests**: `zig build test`
+6. **Run all tests**: `./pantry/.bin/zig build test`
 7. **Format code**: Follow style guide
 
 ### PR Checklist

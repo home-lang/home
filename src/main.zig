@@ -2548,6 +2548,16 @@ fn runMonorepoTests(allocator: std.mem.Allocator, options: TestOptions) !void {
 
 /// Runs Zig unit tests for a package
 fn runZigTests(allocator: std.mem.Allocator, test_dir: []const u8, verbose: bool) !void {
+    const pantry_zig_rel = if (comptime native_os == .windows) "pantry/.bin/zig.exe" else "pantry/.bin/zig";
+    const pantry_zig = Io.Dir.cwd().realPathFileAlloc(g_io, pantry_zig_rel, allocator) catch |err| {
+        std.debug.print("Pantry Zig not found at ./{s}; run `pantry install` first ({})\n", .{
+            pantry_zig_rel,
+            err,
+        });
+        return err;
+    };
+    defer allocator.free(pantry_zig);
+
     // Extract package name from path (packages/<name>/tests)
     var path_parts = std.mem.splitScalar(u8, test_dir, '/');
     var pkg_name: []const u8 = "unknown";
@@ -2571,7 +2581,7 @@ fn runZigTests(allocator: std.mem.Allocator, test_dir: []const u8, verbose: bool
         defer allocator.free(pkg_dir);
 
         var child = std.process.spawn(g_io, .{
-            .argv = &.{ "zig", "build", "test" },
+            .argv = &.{ pantry_zig, "build", "test" },
             .cwd = .{ .path = pkg_dir },
             .stdout = if (!verbose) .ignore else .inherit,
             .stderr = if (!verbose) .ignore else .inherit,
@@ -2632,7 +2642,7 @@ fn runZigTests(allocator: std.mem.Allocator, test_dir: []const u8, verbose: bool
                 defer allocator.free(test_file);
 
                 var child = std.process.spawn(g_io, .{
-                    .argv = &.{ "zig", "test", test_file },
+                    .argv = &.{ pantry_zig, "test", test_file },
                     .stdout = if (!verbose) .ignore else .inherit,
                     .stderr = if (!verbose) .ignore else .inherit,
                 }) catch {

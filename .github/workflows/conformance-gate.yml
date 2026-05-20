@@ -30,13 +30,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Match the Zig version every other workflow pins to. The Pantry
-      # toolchain in pantry/.bin is local-dev convenience; CI uses
-      # mlugg/setup-zig so the runner gets a known-good prebuilt.
+      # Match the Pantry-pinned Zig version from package.json/pantry.lock.
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: '0.17.0-dev.56+a8226cd53'
+          version: '0.17.0-dev.263+0add2dfc4'
 
       - name: Verify Zig installation
         run: zig version
