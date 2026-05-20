@@ -613,8 +613,15 @@ The copied `bake/dev/request-cookies.test.ts` fixture now passes as `2`
 tests through a narrow SSR fetch model for `Cookie` header parsing and
 the request object being passed to the component. Native parity still
 needs Bun's real SSR request/cookie API. The next direct Bake boundary is
-`bake/dev/response-to-bake-response.test.ts`, which now executes and
-fails on empty virtual build output.
+`bake/dev/response-to-bake-response.test.ts`.
+The copied `bake/dev/response-to-bake-response.test.ts` fixture now
+passes as `5` tests through a narrow build-output model for server
+component `Response` imports, browser-target no-transform behavior,
+local/import shadowing, and static `Response` method/property contexts.
+Native parity still needs Bun's real Bake transform and scope-aware
+Response rewrite from copied Zig source. The next direct Bake boundary is
+`DEV:server-sourcemap-1: server-side source maps show correct error lines`,
+with the rest of `bake/dev/server-sourcemap.test.ts` still unsupported.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

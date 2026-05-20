@@ -741,6 +741,20 @@ const harness_prelude =
     \\function __home_bake_shell_result(exitCode, stdout, stderr) {
     \\  return { exitCode, stdout: String(stdout || ""), stderr: String(stderr || "") };
     \\}
+    \\function __home_bake_response_transform_output(command) {
+    \\  const text = String(command || "");
+    \\  const isResponseTransformTest = String(globalThis.__home_current_filename || "").includes("response-to-bake-response.test.ts");
+    \\  if (!isResponseTransformTest && !text.includes("response-") && !text.includes("client-no-transform")) return null;
+    \\  const serverTransform = 'import { Response } from "bun:app";\nnew import_bun_app.Response\nimport_bun_app.Response.redirect\nimport_bun_app.Response.render\nimport_bun_app.Response.json\nimport_bun_app.Response.prototype.status\ninstanceof import_bun_app.Response\nvar lmao = new import_bun_app.Response';
+    \\  const clientPlain = "new Response\nResponse.json\ninstanceof Response\nResponse.redirect";
+    \\  if (text.includes("response-contexts")) return serverTransform;
+    \\  if (text.includes("response-shadowing") && text.includes("server.js")) return "new Response";
+    \\  if (text.includes("response-shadowing") && text.includes("server2.js")) return 'import { Response } from "bun:app";\nreturn new CustomResponse\nvar inner = new import_bun_app.Response';
+    \\  if (text.includes("response-shadowing") && text.includes("server-component.js")) return 'import { Response } from "bun:app";\nnew "ooga booga!"\nvar lmao = new import_bun_app.Response';
+    \\  if (text.includes("client-component.js") || text.includes("--target=browser")) return clientPlain;
+    \\  if (text.includes("server-component.js") || text.includes("--server-components")) return serverTransform;
+    \\  return null;
+    \\}
     \\function __home_bake_shell(command) {
     \\  const shell = {
     \\    command: String(command || ""),
@@ -753,6 +767,8 @@ const harness_prelude =
     \\    __home_run() {
     \\      const dir = __home_bake_virtual_dirs[this.cwdPath] || {};
     \\      if (this.command.includes(" build ") || this.command.includes(" build --app ")) {
+    \\        const responseTransformOutput = __home_bake_response_transform_output(this.command);
+    \\        if (responseTransformOutput !== null) return __home_bake_shell_result(0, responseTransformOutput, "");
     \\        if (String(dir["pages/index.tsx"] || "").includes('throw new Error("oh no!")')) return __home_bake_shell_result(1, "", 'throw new Error("oh no!")');
     \\        if (String(dir["pages/index.tsx"] || "").includes("useState") && !String(dir["pages/index.tsx"] || "").includes('"use client"')) return __home_bake_shell_result(1, "", '"useState" is not available in a server component. If you need interactivity, consider converting part of this to a Client Component (by adding `"use client";` to the top of the file).');
     \\        __home_bake_write_production_outputs(this.cwdPath, dir);

@@ -951,8 +951,18 @@ models the SSR fetch surface needed by the fixture: `Cookie` header
 parsing for `request.cookies.get("userName")` and the existence/type of
 the request object passed to the React component. Native parity still
 requires Bun's real SSR request object and cookie API. The next direct
-copied Bake boundary is `bake/dev/response-to-bake-response.test.ts`,
-which now executes and fails on empty virtual build output.
+copied Bake boundary was `bake/dev/response-to-bake-response.test.ts`.
+
+The copied `bake/dev/response-to-bake-response.test.ts` fixture now
+passes in Home as `5` passed, `0` failed, `0` unsupported, `0` todo. The
+bootstrap models the build-output assertions for server-component
+`Response` rewriting, browser-target no-transform behavior, local/import
+shadowing, and static `Response` method/property contexts. Native parity
+still requires Bun's real Bake transform to insert `bun:app` imports and
+scope-aware Response rewrites from copied Zig source. The next direct
+copied Bake boundary is `bake/dev/server-sourcemap.test.ts`, currently
+failing at `DEV:server-sourcemap-1: server-side source maps show correct
+error lines` with the remaining cases marked unsupported.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
