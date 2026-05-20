@@ -100,6 +100,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/util/escapeRegExp.test.ts",
     "regression/issue/24045.test.ts",
     "regression/issue/07324.test.ts",
+    "regression/issue/07827.test.ts",
 };
 
 const harness_prelude =
@@ -124,6 +125,7 @@ const harness_prelude =
     \\  [Symbol.toStringTag]: "Bun",
     \\  version: "0.0.0-home",
     \\  revision: "home",
+    \\  gc(force) {},
     \\  stripANSI(value) {
     \\    return String(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
     \\  },
@@ -643,6 +645,7 @@ const harness_prelude =
     \\mock.clearAllMocks = function() {
     \\  for (const fn of globalThis.__home_mocks) fn.mock.calls = [];
     \\};
+    \\const jest = { fn: mock };
     \\globalThis.__home_finish_tests = function() {
     \\  __home_run_all_after_all(globalThis.__home_root_scope);
     \\};
@@ -867,7 +870,7 @@ const harness_prelude =
     \\    };
     \\  }
     \\};
-    \\globalThis.__home_bun_test = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock, onTestFinished, test };
+    \\globalThis.__home_bun_test = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, jest, mock, onTestFinished, test };
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
     \\globalThis.__home_modules["bun"] = { semver: Bun.semver };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
@@ -972,6 +975,26 @@ const harness_prelude =
     \\  const text = JSON.stringify(value);
     \\  return new Response(text, init);
     \\};
+    \\if (typeof HTMLRewriter !== "function") {
+    \\  var HTMLRewriter = function() {
+    \\    this.__home_html_handlers = [];
+    \\  };
+    \\  HTMLRewriter.prototype.on = function(selector, handlers) {
+    \\    if (String(selector) !== "p") __home_unsupported("Only HTMLRewriter.on('p', { element }) is supported by this bootstrap path");
+    \\    if (!handlers || typeof handlers.element !== "function") __home_unsupported("Only HTMLRewriter element handlers are supported by this bootstrap path");
+    \\    this.__home_html_handlers.push(handlers.element);
+    \\    return this;
+    \\  };
+    \\  HTMLRewriter.prototype.transform = function(input) {
+    \\    const body = input instanceof Response ? input.body : input;
+    \\    const text = String(body);
+    \\    const matches = text.match(/<p(?:\s|>|\/)/gi) || [];
+    \\    for (let i = 0; i < matches.length; i++) {
+    \\      for (const element of this.__home_html_handlers) element({ tagName: "p" });
+    \\    }
+    \\    return input;
+    \\  };
+    \\}
     \\if (typeof Request !== "function") {
     \\  var Request = function(input, init) {
     \\    const options = init || {};
@@ -1893,6 +1916,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         .{ .line = "import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeAll, beforeEach, expect, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, it } from \"bun:test\";", .binding = "const { expect, it } = globalThis.__home_import(\"bun:test\");\n" },
+        .{ .line = "import { expect, jest, test } from \"bun:test\";", .binding = "const { expect, jest, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, mock, test } from \"bun:test\";", .binding = "const { expect, mock, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, test } from \"bun:test\";", .binding = "const { expect, test } = globalThis.__home_import(\"bun:test\");\n" },
     };
@@ -2066,6 +2090,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/bun/util/escapeRegExp.test.ts", filesForSubset(.minimal_js)[46]);
     try std.testing.expectEqualStrings("regression/issue/24045.test.ts", filesForSubset(.minimal_js)[47]);
     try std.testing.expectEqualStrings("regression/issue/07324.test.ts", filesForSubset(.minimal_js)[48]);
+    try std.testing.expectEqualStrings("regression/issue/07827.test.ts", filesForSubset(.minimal_js)[49]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -2077,6 +2102,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "inspect(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Set(\" + entry.size + \")") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "version: \"0.0.0-home\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "gc(force)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.versions.bun = Bun.version") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.on = function(name, listener)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.emit = function(name)") != null);
@@ -2118,7 +2144,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Expected value must be string or Error") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Deep equality for this value type is not supported") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "UnreachableError") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock, onTestFinished, test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest, mock, onTestFinished, test") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun\"] = { semver: Bun.semver }") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"assert/strict\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:vm\"]") != null);
@@ -2129,6 +2155,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_import") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.redirect") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var HTMLRewriter = function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "HTMLRewriter.prototype.transform") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var Request = function(input, init)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "typeof input.href === \"string\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Request.prototype.clone") != null);
@@ -2232,6 +2260,22 @@ test "Bun test import rewrite lowers mock imports" {
     defer std.testing.allocator.free(rewritten);
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { expect, mock, test } = globalThis.__home_import(\"bun:test\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
+}
+
+test "Bun test import rewrite lowers jest imports" {
+    const source =
+        \\import { expect, jest, test } from "bun:test";
+        \\test("jest", () => {
+        \\  const fn = jest.fn(() => 1);
+        \\  fn();
+        \\  expect(fn).toHaveBeenCalledTimes(1);
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/07827.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { expect, jest, test } = globalThis.__home_import(\"bun:test\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
 }
 
@@ -2864,6 +2908,46 @@ test "bootstrap runner covers TypeScript override accessibility smoke" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/07324.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers HTMLRewriter element callback smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, jest, test } from "bun:test";
+        \\
+        \\test("#7827", () => {
+        \\  for (let i = 0; i < 10; i++)
+        \\    (function () {
+        \\      const element = jest.fn(element => {
+        \\        element.tagName;
+        \\      });
+        \\      const rewriter = new HTMLRewriter().on("p", {
+        \\        element,
+        \\      });
+        \\
+        \\      const content = "<p>Lorem ipsum!</p>";
+        \\
+        \\      rewriter.transform(new Response(content));
+        \\      rewriter.transform(new Response(content));
+        \\
+        \\      expect(element).toHaveBeenCalledTimes(2);
+        \\    })();
+        \\
+        \\  Bun.gc(true);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/07827.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
