@@ -158,6 +158,7 @@ pub fn countLeadingDirectiveLines(source: []const u8) u32 {
     var count: u32 = 0;
     var directive_seen = false;
     var skipped_preamble_comment = false;
+    var stopped_on_post_directive_comment = false;
     var pending_blanks: u32 = 0;
     // Strip a leading UTF-8 BOM (`\xEF\xBB\xBF`) before scanning —
     // many upstream fixtures start with a BOM that otherwise prevents
@@ -187,6 +188,13 @@ pub fn countLeadingDirectiveLines(source: []const u8) u32 {
                 skipped_preamble_comment = true;
                 continue;
             }
+            // A post-directive non-directive comment terminates the
+            // strip block. Trailing blanks BEFORE this comment must
+            // NOT be stripped because tsc keeps them visible in the
+            // baseline's line numbering (see
+            // `strictPropertyInitialization.ts` baseline (5,5) vs
+            // source line 8 — only the 3 directives strip).
+            stopped_on_post_directive_comment = true;
             break;
         }
         const body = after_slashes[1..];
@@ -206,8 +214,10 @@ pub fn countLeadingDirectiveLines(source: []const u8) u32 {
         pending_blanks = 0;
         directive_seen = true;
     }
-    // Trailing blanks immediately after the last directive also strip.
-    if (!skipped_preamble_comment) count += pending_blanks;
+    // Trailing blanks immediately after the last directive also strip
+    // — UNLESS the directive block was terminated by a non-directive
+    // comment, in which case tsc preserves the blank + comment.
+    if (!skipped_preamble_comment and !stopped_on_post_directive_comment) count += pending_blanks;
     return count;
 }
 
@@ -3941,6 +3951,71 @@ test "conformance: instanceMemberInitialization passes clean" {
     defer {
         T.allocator.free(result.name);
         if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: strictPropertyInitialization full fixture triage" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "strictPropertyInitialization",
+        .path = "strictPropertyInitialization.ts",
+        .source =
+        \\// @strict: true
+        \\// @target: es2015
+        \\// @declaration: true
+        \\
+        \\// Properties with non-undefined types require initialization
+        \\
+        \\class C1 {
+        \\    a: number;
+        \\    b: number | undefined;
+        \\    c: number | null;
+        \\    d?: number;
+        \\    #f: number;
+        \\    #g: number | undefined;
+        \\    #h: number | null;
+        \\    #i?: number;
+        \\}
+        \\
+        \\// No strict initialization checks in ambient contexts
+        \\
+        \\declare class C2 {
+        \\    a: number;
+        \\    b: number | undefined;
+        \\    c: number | null;
+        \\    d?: number;
+        \\
+        \\    #f: number;
+        \\    #g: number | undefined;
+        \\    #h: number | null;
+        \\    #i?: number;
+        \\}
+        \\
+        \\// No strict initialization checks for static members
+        \\
+        \\class C3 {
+        \\    static a: number;
+        \\    static b: number | undefined;
+        \\    static c: number | null;
+        \\    static d?: number;
+        \\}
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\strictPropertyInitialization.ts(5,5): error TS2564: Property 'a' has no initializer and is not definitely assigned in the constructor.
+        \\strictPropertyInitialization.ts(7,5): error TS2564: Property 'c' has no initializer and is not definitely assigned in the constructor.
+        \\strictPropertyInitialization.ts(9,5): error TS2564: Property '#f' has no initializer and is not definitely assigned in the constructor.
+        \\strictPropertyInitialization.ts(11,5): error TS2564: Property '#h' has no initializer and is not definitely assigned in the constructor.
+        ,
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_property_initialization = true, .strict_null_checks = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    if (result.outcome != .passed) {
+        std.debug.print("strictPropertyInitialization full detail:\n{s}\n", .{result.detail});
     }
     try T.expectEqual(Outcome.passed, result.outcome);
 }
