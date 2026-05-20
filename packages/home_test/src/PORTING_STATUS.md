@@ -172,7 +172,9 @@ Request/Response/Headers/URL, `node-fetch`, `node:buffer`, `deno:harness`
 including Bun-copied Deno `test(options, fn)` / permission skip /
 `test.ignore` / `test.todo` call shapes, Deno `Event` / `CustomEvent` /
 `AbortController`, a Deno Request string body / `text()` / clone nucleus,
-a Deno `URLSearchParams` bootstrap smoke, EventTarget, AbortSignal,
+a Deno `URLSearchParams` bootstrap smoke, async-function `toThrow`
+matching for empty-body `Response.json()` / `Request.json()` SyntaxError
+rejections, EventTarget, AbortSignal,
 narrow Deno URL authority/hash/origin parsing, a Deno `performance`
 bootstrap nucleus, WebSocket failed-connect `ErrorEvent` snapshots, Node
 `Buffer.alloc` / fill / `Buffer.from(..., "utf-16le")` / compare /
@@ -711,6 +713,13 @@ unsupported, and `1` todo/skipped. The bootstrap lowers its harness,
 `fs.promises`, `node:fs`, and `child_process` imports and preserves
 `describe.skipIf(!isWindows).concurrent`; native parity still needs
 Bun's real Windows executable metadata embedding and verification path.
+The copied `regression/issue/02367.test.ts` fixture now passes as `1`
+test through the Web Body + matcher bootstrap model. It covers Bun's
+empty `Response.json()` / `Request.json()` rejection shape and the async
+function form of `expect(...).toThrow(SyntaxError)`.
+The copied `cli/run/commonjs-invalid.test.ts` fixture now passes as `1`
+test through the real subprocess path, including piped stderr and the
+malformed CommonJS wrapper diagnostic.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

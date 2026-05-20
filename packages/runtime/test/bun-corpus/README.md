@@ -17,10 +17,10 @@ macOS, Linux, and the WASM target.
   bootstrap path exists for the current allowlist:
   `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
-  Latest measured subset run: `125` files, `537` passed, `0` failed,
-  `32` todo. That subset currently executes the todo-registration smoke, three Node
+  Latest measured subset run: `136` files, `609` passed, `0` failed,
+  `38` todo. That subset currently executes the todo-registration smoke, three Node
   `assert` CommonJS smokes, three Node `path` smokes, two Node `url` smokes, the Web
-  `atob`/`btoa` smoke, twenty-three regression smokes, one bundler
+  `atob`/`btoa` smoke, twenty-four regression smokes, one bundler
   constant-fold smoke, one bun-types `test.each` type-shape smoke, six test-runner expectation smokes, one nested-describe
   smoke, two `expectTypeOf` type-only smokes, a narrow `Bun.TOML.parse` throw smoke, `Bun.stripANSI`, `Bun.wrapAnsi`, `Bun.semver.satisfies`, and
   `bun:internal-for-testing` regexp / PowerShell escaping smokes, retry/repeats runner
@@ -39,11 +39,14 @@ macOS, Linux, and the WASM target.
   doctests, and additional sync fixture lifecycle smokes,
   `Bun.inspect` Set formatting, `MessageEvent` constructor
   behavior, Bun version aliases, own-key matchers, a `prepareStackTrace`
-  crash smoke plus a non-empty filename regression, four sync runner
+  crash smoke plus a non-empty filename regression, Web empty-body
+  `Response.json()` / `Request.json()` SyntaxError matching, four sync runner
   fixture smokes (`only-fixture-4`, `21177`, `5738`, and printing dots),
   Web `TextDecoder`
   CJK and single-byte encoding smokes, Node `module.SourceMap`, and a JSC string atomization smoke through
-  `Bun.jest(import.meta.path)` plus a narrow `structuredClone` fallback. It is only a smoke path for JSC + `home_test`; it is not the
+  `Bun.jest(import.meta.path)` plus a narrow `structuredClone` fallback,
+  a CommonJS invalid-wrapper subprocess smoke, and current compile-mode
+  Bun.build smokes. It is only a smoke path for JSC + `home_test`; it is not the
   release gate. The bootstrap harness is installed once per JSC engine, resets
   counters before each file, lowers supported `bun:test` imports through a
   virtual `globalThis.__home_import("bun:test")` module shim, and fails closed

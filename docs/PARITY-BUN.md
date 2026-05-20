@@ -191,10 +191,10 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes one hundred thirty-four allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes one hundred thirty-six allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
-todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-three
+todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-four
 regression smokes, one bundler constant-fold smoke, two `Bun.build` API
 smokes, one bun-types `test.each` type-shape smoke, six test-runner
 expectation smokes, one nested-describe smoke, two `expectTypeOf` type-only smokes, a narrow `Bun.TOML.parse` throw smoke, `Bun.stripANSI` and
@@ -243,7 +243,7 @@ WHATWG `node:url.format(URL, { auth: false })` coverage, and
 `node:test` skip/todo/null-options registration behavior, and
 `expect.extend` matcher validation plus installed
 expectation-object matchers, the Bake deinitialization DevServer teardown
-fixture, plus one snapshot `test.todo` fixture whose
+fixture, a CommonJS invalid-wrapper CLI subprocess smoke, plus one snapshot `test.todo` fixture whose
 snapshot body remains intentionally unexecuted. The bootstrap harness is installed once
 per JSC engine, resets counters before each file, lowers supported
 `bun:test` imports through a virtual
@@ -254,7 +254,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `134` files, `607` passed, `0` failed,
+Latest measured subset run: `136` files, `609` passed, `0` failed,
 `38` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
@@ -1092,6 +1092,18 @@ registers faithfully on this non-Windows host as `0` passed, `0` failed,
 `describe.skipIf(!isWindows).concurrent`; native parity still requires
 Bun's real Windows executable metadata embedding and verification path
 from copied compile source.
+
+The copied `regression/issue/02367.test.ts` fixture now passes in Home
+as `1` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap
+models Bun's async-function `expect(...).toThrow(SyntaxError)` matcher
+path and Web empty-body `Response.json()` / `Request.json()` rejection
+shape by rejecting with `SyntaxError`. Native parity still requires the
+real Body mixin implementation from the runtime port.
+
+The copied `cli/run/commonjs-invalid.test.ts` fixture now passes in Home
+as `1` passed, `0` failed, `0` unsupported, `0` todo. It exercises the
+real subprocess path through `Bun.spawn`, piped stderr, and malformed CJS
+wrapper diagnostics instead of a bootstrap-only shortcut.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

@@ -135,6 +135,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/empty-file.test.ts",
     "js/bun/test/expect-type-global.test.ts",
     "js/bun/test/expect-type.test.ts",
+    "regression/issue/02367.test.ts",
     "js/web/encoding/text-decoder-cjk.test.ts",
     "js/web/encoding/text-decoder-single-byte.test.ts",
     "regression/issue/fix-bindings-stack-trace.test.ts",
@@ -188,6 +189,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/only-inside-only.fixture.ts",
     "js/bun/test/concurrent_immediate.fixture.ts",
     "js/bun/test/failure-skip.fixture.ts",
+    "cli/run/commonjs-invalid.test.ts",
     "js/bun/test/test-fixture-preload-global-lifecycle-hook-test.js",
     "js/bun/test/skip-test-fixture.js",
     "js/bun/test/expect-type-doctest.test.ts",
@@ -1787,38 +1789,70 @@ const harness_prelude =
     \\        __home_fail("Expected value must be string or Error: " + __home_format(expected));
     \\      }
     \\      let thrown = null;
+    \\      let returned = undefined;
     \\      try {
-    \\        value();
+    \\        returned = value();
     \\      } catch (error) {
     \\        thrown = error;
+    \\      }
+    \\      const assertThrownMatches = (actual) => {
+    \\        if (isNot && expected === undefined) __home_fail("Expected function not to throw");
+    \\        if (expected && expected.__home_expect_any) {
+    \\          __home_assert(actual instanceof expected.ctor, isNot, "Expected thrown value" + (isNot ? " not" : "") + " to be instance of " + expected.ctor.name);
+    \\          return;
+    \\        }
+    \\        if (typeof expected === "function") {
+    \\          __home_assert(actual instanceof expected, isNot, "Expected thrown value" + (isNot ? " not" : "") + " to be instance of " + expected.name);
+    \\          return;
+    \\        }
+    \\        if (expected instanceof RegExp) {
+    \\          __home_assert(expected.test(String(actual && actual.message)), isNot, "Expected thrown message" + (isNot ? " not" : "") + " to match " + String(expected));
+    \\          return;
+    \\        }
+    \\        if (expected && typeof expected === "object" && ("message" in expected || "name" in expected)) {
+    \\          let pass = true;
+    \\          if ("message" in expected) pass = pass && Object.is(actual && actual.message, expected.message);
+    \\          if ("name" in expected) pass = pass && Object.is(actual && actual.name, expected.name);
+    \\          __home_assert(pass, isNot, "Expected thrown error" + (isNot ? " not" : "") + " to match " + __home_format(expected));
+    \\          return;
+    \\        }
+    \\        if (expected !== undefined) {
+    \\          __home_assert(String(actual && actual.message).includes(String(expected)), isNot, "Expected thrown message" + (isNot ? " not" : "") + " to include " + String(expected));
+    \\        }
+    \\      };
+    \\      if (thrown === null && __home_is_thenable(returned)) {
+    \\        __home_bun_tests.pending++;
+    \\        Promise.resolve(returned).then(
+    \\          function() {
+    \\            try {
+    \\              __home_assert(false, isNot, "Expected function" + (isNot ? " not" : "") + " to throw");
+    \\            } catch (error) {
+    \\              __home_record_async_failure(error);
+    \\            }
+    \\          },
+    \\          function(error) {
+    \\            try {
+    \\              assertThrownMatches(error);
+    \\            } catch (assertionError) {
+    \\              __home_record_async_failure(assertionError);
+    \\            }
+    \\          },
+    \\        ).then(
+    \\          function() {
+    \\            __home_bun_tests.pending--;
+    \\          },
+    \\          function(error) {
+    \\            __home_bun_tests.pending--;
+    \\            __home_record_async_failure(error);
+    \\          },
+    \\        );
+    \\        return;
     \\      }
     \\      if (thrown === null) {
     \\        __home_assert(false, isNot, "Expected function" + (isNot ? " not" : "") + " to throw");
     \\        return;
     \\      }
-    \\      if (isNot && expected === undefined) __home_fail("Expected function not to throw");
-    \\      if (expected && expected.__home_expect_any) {
-    \\        __home_assert(thrown instanceof expected.ctor, isNot, "Expected thrown value" + (isNot ? " not" : "") + " to be instance of " + expected.ctor.name);
-    \\        return;
-    \\      }
-    \\      if (typeof expected === "function") {
-    \\        __home_assert(thrown instanceof expected, isNot, "Expected thrown value" + (isNot ? " not" : "") + " to be instance of " + expected.name);
-    \\        return;
-    \\      }
-    \\      if (expected instanceof RegExp) {
-    \\        __home_assert(expected.test(String(thrown && thrown.message)), isNot, "Expected thrown message" + (isNot ? " not" : "") + " to match " + String(expected));
-    \\        return;
-    \\      }
-    \\      if (expected && typeof expected === "object" && ("message" in expected || "name" in expected)) {
-    \\        let pass = true;
-    \\        if ("message" in expected) pass = pass && Object.is(thrown && thrown.message, expected.message);
-    \\        if ("name" in expected) pass = pass && Object.is(thrown && thrown.name, expected.name);
-    \\        __home_assert(pass, isNot, "Expected thrown error" + (isNot ? " not" : "") + " to match " + __home_format(expected));
-    \\        return;
-    \\      }
-    \\      if (expected !== undefined) {
-    \\        __home_assert(String(thrown && thrown.message).includes(String(expected)), isNot, "Expected thrown message" + (isNot ? " not" : "") + " to include " + String(expected));
-    \\      }
+    \\      assertThrownMatches(thrown);
     \\    },
     \\    get rejects() {
     \\      return {
@@ -5048,11 +5082,16 @@ const harness_prelude =
     \\  if (typeof body.toString === "function") return body.toString();
     \\  return String(body);
     \\}
+    \\function __home_parse_json_body_text(text) {
+    \\  const body = String(text);
+    \\  if (body.length === 0) throw new SyntaxError("Unexpected end of JSON input");
+    \\  return JSON.parse(body);
+    \\}
     \\Response.prototype.text = function() {
     \\  return Promise.resolve(__home_response_body_text(this.body));
     \\};
     \\Response.prototype.json = function() {
-    \\  return Promise.resolve(JSON.parse(__home_response_body_text(this.body) || "null"));
+    \\  return Promise.resolve().then(() => __home_parse_json_body_text(__home_response_body_text(this.body)));
     \\};
     \\Response.redirect = function(url, status) {
     \\  return new Response(null, { status: status || 302, headers: { Location: String(url) } });
@@ -5264,6 +5303,9 @@ const harness_prelude =
     \\    return new Request(this);
     \\  };
     \\}
+    \\Request.prototype.json = function() {
+    \\  return Promise.resolve(this.text()).then(text => __home_parse_json_body_text(text));
+    \\};
     \\globalThis.__home_modules["node-fetch"] = { Request };
     \\if (typeof URLSearchParams !== "function") {
     \\  function __home_url_hex(byte) {
@@ -8985,6 +9027,27 @@ test "bootstrap runner accepts microtask-settled returned promises" {
         \\}));
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/async-resolved.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap matcher toThrow accepts async rejection functions" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\test("async throw matcher", () => {
+        \\  expect(async () => { throw new SyntaxError("bad body"); }).toThrow(SyntaxError);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/02367.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
