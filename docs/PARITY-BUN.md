@@ -578,6 +578,18 @@ Latest measured full gate after the Bake ESM alias/default export slice:
 unsupported, `35` todo. First failure: `bake/dev/esm.test.ts` with
 `DEV:esm-8: export * as namespace`.
 
+The Bake static client shim now covers the copied
+`export * as namespace` ESM case. It lowers aliased named imports such as
+`import { ns as renamed }` and resolves `export * as ns from "./module2"`
+as a namespace object for the target module. This preserves the Bun
+fixture's observable behavior where the namespace object is used instead
+of the target module's own `ns = "FAIL"` export.
+
+Latest measured full gate after the Bake ESM export-star namespace slice:
+`4,013` files executed, `454` passed, `3,930` failed, `1,483`
+unsupported, `35` todo. First failure: `bake/dev/esm.test.ts` with
+`DEV:esm-9: ESM <-> CJS sync`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

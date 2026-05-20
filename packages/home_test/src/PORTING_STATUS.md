@@ -383,6 +383,13 @@ The ESM alias/default export cluster now covers `export { x as y }`,
 This is still modeled in the minimal Bake harness; the real parity target
 is Bun's ESM lowering and HMR reload semantics. The next Bake boundary is
 `DEV:esm-8: export * as namespace`.
+The Bake static client shim now covers the copied `export * as namespace`
+ESM case. It lowers aliased named imports such as
+`import { ns as renamed }` and resolves
+`export * as ns from "./module2"` as a namespace object for the target
+module. This keeps the Bun fixture's observable behavior where the
+namespace object wins over the target module's own `ns = "FAIL"` export.
+The next Bake boundary is `DEV:esm-9: ESM <-> CJS sync`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

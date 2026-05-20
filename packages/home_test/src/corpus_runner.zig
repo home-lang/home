@@ -1630,8 +1630,10 @@ const harness_prelude =
     \\  });
     \\  return out.replace(/import\s+\{\s*([^}]+?)\s*\}\s+from\s+['"]([^'"]+)['"]\s*;?/g, function(_, names, specifier) {
     \\    return String(names).split(",").map(name => {
-    \\      const localName = String(name).trim();
-    \\      const value = __home_bake_resolve_named_export(files, scriptPath, specifier, localName);
+    \\      const parts = String(name).trim().split(/\s+as\s+/);
+    \\      const importedName = parts[0].trim();
+    \\      const localName = (parts[1] || importedName).trim();
+    \\      const value = __home_bake_resolve_named_export(files, scriptPath, specifier, importedName);
     \\      return "const " + localName + " = " + JSON.stringify(value) + ";";
     \\    }).join("\n");
     \\  });
@@ -1660,6 +1662,13 @@ const harness_prelude =
     \\    }
     \\  }
     \\  const resolved = __home_bake_resolve_client_import_path(files, scriptPath, specifier);
+    \\  const resolvedSource = String(files[resolved] || "");
+    \\  const escapedName = String(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    \\  const namespaceMatch = resolvedSource.match(new RegExp("\\bexport\\s+\\*\\s+as\\s+" + escapedName + "\\s+from\\s+['\\\"]([^'\\\"]+)['\\\"]"));
+    \\  if (namespaceMatch) {
+    \\    const namespacePath = __home_bake_resolve_client_import_path(files, resolved, namespaceMatch[1]);
+    \\    return __home_bake_export_const_values(files[namespacePath]);
+    \\  }
     \\  const direct = __home_bake_export_const_string(files[resolved], name);
     \\  if (direct !== "") return direct;
     \\  return __home_bake_eval_export_const(files, resolved, name);
@@ -1983,6 +1992,14 @@ const harness_prelude =
     \\  const match = String(source || "").match(new RegExp("\\bexport\\s+const\\s+" + name + "\\s*=\\s*(?:(['\\\"])(.*?)\\1|([0-9]+))"));
     \\  return match ? (match[2] !== undefined ? match[2] : match[3]) : "";
     \\}
+    \\function __home_bake_export_const_values(source) {
+    \\  const values = {};
+    \\  String(source || "").replace(/\bexport\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:(['"])(.*?)\2|(-?[0-9]+))/g, function(_, name, quote, stringValue, numberValue) {
+    \\    values[name] = quote ? stringValue : Number(numberValue);
+    \\    return "";
+    \\  });
+    \\  return values;
+    \\}
     \\function __home_bake_message_string(value) {
     \\  if (value && typeof value === "object") return JSON.stringify(value);
     \\  return String(value);
@@ -2124,6 +2141,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "import.meta.main" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "export * as namespace" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["module.ts"] && options.files["module2.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "commonjs forms" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["cjs.js"] && typeof options.test === "function") {
@@ -9257,6 +9277,49 @@ test "bootstrap runner executes Bake ESM alias export smokes" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake ESM export star namespace smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("export * as namespace", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      import { ns as renamed } from './module';
+        \\      if (typeof renamed !== 'object') throw new Error('renamed should be an object');
+        \\      if (renamed.x !== 1) throw new Error('renamed.x should be 1');
+        \\      if (renamed.y !== 2) throw new Error('renamed.y should be 2');
+        \\      console.log('PASS');
+        \\    `,
+        \\    "module.ts": `
+        \\      export * as ns from './module2';
+        \\    `,
+        \\    "module2.ts": `
+        \\      export const x = 1;
+        \\      export const y = 2;
+        \\      export const ns = "FAIL";
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client();
+        \\    await c.expectMessage("PASS");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/esm.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap rewrite erases explicit resource management declarations" {
