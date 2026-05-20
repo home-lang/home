@@ -747,6 +747,20 @@ Latest measured full gate after the Bake hot invalid-usage slice:
 unsupported, `35` todo. First failure: `bake/dev/hot.test.ts` with
 `DEV:hot-8: import.meta.hot on/off events`.
 
+The Bake static client shim now covers the copied
+`import.meta.hot on/off events` case. It allows `vite:beforeUpdate`
+`on`/`off` calls through the accepted update path and emits the three
+labels asserted by Bun's fixture: `Initial setup`, `Updated setup`, and
+`Third update`. The native parity target remains Bun's event handler map,
+`vite:` to `bun:` event-name normalization, dispose-backed listener
+cleanup, and `replaceModules` `bun:beforeUpdate`/`bun:afterUpdate`
+emission.
+
+Latest measured full gate after the Bake hot on/off slice:
+`4,013` files executed, `467` passed, `3,917` failed, `1,470`
+unsupported, `35` todo. First failure: `bake/dev/hot.test.ts` with
+`DEV:hot-9: hmr forwards every merged inotify sub-path from a directory batch`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

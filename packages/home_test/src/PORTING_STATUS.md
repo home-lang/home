@@ -487,6 +487,15 @@ parser/printer rewrite to `hmr.indirectHot`, the `importMeta.hot` throwing
 getter, and the `accept` fallback diagnostic for call sites the bundler did
 not pre-process. The next Bake boundary is
 `DEV:hot-8: import.meta.hot on/off events`.
+The copied `import.meta.hot on/off events` case now runs through the Bake
+static client shim. It allows `vite:beforeUpdate` `on`/`off` calls through
+the accepted update path and emits the three labels asserted by Bun's
+fixture: `Initial setup`, `Updated setup`, and `Third update`. The native
+parity target remains Bun's event handler map, `vite:` to `bun:`
+event-name normalization, dispose-backed listener cleanup, and
+`replaceModules` `bun:beforeUpdate`/`bun:afterUpdate` emission. The next
+Bake boundary is
+`DEV:hot-9: hmr forwards every merged inotify sub-path from a directory batch`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
