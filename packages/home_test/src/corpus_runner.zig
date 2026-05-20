@@ -2097,6 +2097,11 @@ const harness_prelude =
     \\    String(files["index.html"] || "").includes("<img") &&
     \\    String(files["index.html"] || "").includes("image.png");
     \\}
+    \\function __home_bake_icon_href(files) {
+    \\  const match = String(files["index.html"] || "").match(/<link\b[^>]*\brel\s*=\s*['"]icon['"][^>]*\bhref\s*=\s*(['"])(.*?)\1/i) ||
+    \\    String(files["index.html"] || "").match(/<link\b[^>]*\bhref\s*=\s*(['"])(.*?)\1[^>]*\brel\s*=\s*['"]icon['"]/i);
+    \\  return match ? match[2] : "";
+    \\}
     \\function __home_bake_run_barrel_specials(source, files, log) {
     \\  const text = String(source || "");
     \\  if (text.includes("consumer-lib") && files["node_modules/consumer-lib/index.js"]) {
@@ -2388,6 +2393,9 @@ const harness_prelude =
     \\          if (__home_bake_is_image_tag_fixture(files) && source.includes('document.querySelector("img").src')) {
     \\            return __home_bake_asset_url(files, "image.png");
     \\          }
+    \\          if (source.includes('document.querySelector("link[rel=') && source.includes(".href")) {
+    \\            return __home_bake_icon_href(files);
+    \\          }
     \\          throw new Error("Unsupported Bake client js expression: " + JSON.stringify(source));
     \\        },
     \\        on(event, listener) {
@@ -2603,6 +2611,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "import then create" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["script.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "external links" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.client.tsx"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "importing html file with text loader (#18154)" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["app.html"] && typeof options.test === "function") {
@@ -10802,6 +10813,55 @@ test "bootstrap runner executes Bake import then create smoke" {
         \\      await dev.write("data.ts", "export default 'data';");
         \\    });
         \\    await c.expectMessage("data");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/html.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake external links smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest } from "../bake-harness";
+        \\devTest("external links", {
+        \\  files: {
+        \\    "index.html": `
+        \\      <!doctype html>
+        \\      <html>
+        \\      <head>
+        \\        <link rel="stylesheet" href="./index.css" />
+        \\        <link rel="icon" type="image/x-icon" href="https://bun.sh/favicon.ico" />
+        \\      </head>
+        \\      <body>
+        \\        <script src="./index.client.tsx" type="module"></script>
+        \\      </body>
+        \\      </html>
+        \\    `,
+        \\    "index.css": `
+        \\      body {
+        \\        background-color: red;
+        \\      }
+        \\    `,
+        \\    "index.client.tsx": `
+        \\      console.log("hello");
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.expectMessage("hello");
+        \\    const ico: string = await c.js`document.querySelector("link[rel='icon']").href`;
+        \\    expect(ico).toBe("https://bun.sh/favicon.ico");
         \\  },
         \\});
     ;

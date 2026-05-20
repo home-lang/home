@@ -836,6 +836,18 @@ Latest measured full gate after the HTML import-then-create slice:
 unsupported, `37` todo. First failure: `bake/dev/html.test.ts` with
 `DEV:html-5: external links`.
 
+The Bake static HTML shim now covers the copied `external links` case. It
+runs the local module script and preserves the external favicon URL through
+`document.querySelector("link[rel='icon']").href` without trying to rewrite
+or fetch the external link. The native parity target remains Bun's HTML
+link scanner preserving external URLs while still bundling local CSS and
+module scripts.
+
+Latest measured full gate after the HTML external-links slice:
+`4,013` files executed, `474` passed, `3,917` failed, `1,471`
+unsupported, `37` todo. First failure: `bake/dev/html.test.ts` with
+`DEV:html-6: memory leak case 1`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

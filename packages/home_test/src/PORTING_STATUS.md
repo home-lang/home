@@ -540,6 +540,13 @@ from the new module so the script logs `data`. The native parity target
 remains Bun's missing import diagnostics, file watcher recovery, and ESM
 default binding update path. The next Bake boundary is
 `DEV:html-5: external links`.
+The copied `external links` case now runs through the Bake static HTML
+shim. It runs the local module script and preserves the external favicon
+URL through `document.querySelector("link[rel='icon']").href` without
+trying to rewrite or fetch the external link. The native parity target
+remains Bun's HTML link scanner preserving external URLs while still
+bundling local CSS and module scripts. The next Bake boundary is
+`DEV:html-6: memory leak case 1`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
