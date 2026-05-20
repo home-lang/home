@@ -381,6 +381,8 @@ pub fn build(b: *std.Build) void {
     home_test_bun_tier2_debug_pkg.addImport("bun", compat_pkg);
     const home_test_bun_tier2_diff_format_pkg = createPackage(b, "packages/home_test/src/bun_tier2_diff_format_tests.zig", target, optimize, zig_test_framework);
     home_test_bun_tier2_diff_format_pkg.addImport("bun", compat_pkg);
+    const home_test_bun_tier2_execution_pkg = createPackage(b, "packages/home_test/src/bun_tier2_execution_tests.zig", target, optimize, zig_test_framework);
+    home_test_bun_tier2_execution_pkg.addImport("bun", compat_pkg);
 
     // ====================================================================
     // TS-parity binaries: `home-tsc` (compiler driver) + `home-lsp`
@@ -1231,6 +1233,13 @@ pub fn build(b: *std.Build) void {
     });
     const run_home_test_bun_tier2_diff_format_tests = b.addRunArtifact(home_test_bun_tier2_diff_format_tests);
     dependOnTest(test_step, &run_home_test_bun_tier2_diff_format_tests.step, test_filter, "home_test_bun_tier2_diff_format");
+
+    const home_test_bun_tier2_execution_tests = b.addTest(.{
+        .root_module = home_test_bun_tier2_execution_pkg,
+        .filters = &.{"copied Bun"},
+    });
+    const run_home_test_bun_tier2_execution_tests = b.addRunArtifact(home_test_bun_tier2_execution_tests);
+    dependOnTest(test_step, &run_home_test_bun_tier2_execution_tests.step, test_filter, "home_test_bun_tier2_execution");
 
     // Volatile operations tests
     const volatile_tests = b.addTest(.{ .root_module = volatile_pkg });

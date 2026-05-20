@@ -76,6 +76,15 @@ for describe/test schedule entries and execution groups. Compat keeps
 by normal builds while proving the copied dump functions accept the
 runner shapes they inspect.
 
+`zig build test -Dfilter=home_test_bun_tier2_execution` build-checks
+the copied scheduler leaf, `bun/Execution.zig`, through a small Home
+scaffold for the upstream BunTest/JSC/reporter/timespec surface. The
+source compatibility changes are the Zig 0.17-dev field spelling rename
+from Bun's private `#sequences` field to Home's `sequences` field and
+the footer import redirection to the Home-local scaffold. The target
+proves empty scheduler initialization, grouped sequence windows, result
+classification, and retry/reset cleanup of execution-phase entries.
+
 The facade also includes a compile-only native ESM smoke for the exact
 static source `import { test, expect } from "bun:test";`. It verifies that
 this source intentionally stays outside the bootstrap rewrite path and
@@ -193,7 +202,7 @@ shape (each ~30-100 LOC, 7-10 `bun.X` references — almost all
 | harness/fixtures.zig | 575 | 1 | 0 | 0 | tier0 | `bun.md` |
 | snapshot.zig | 582 | 49 | 3 | 0 | blocked | `bun.copy`, `bun.logger`, `bun.sys` |
 | diff/printDiff.zig | 586 | 12 | 1 | 0 | tier1 | `bun.handleOom`, `bun.md`, `bun.strings` |
-| Execution.zig | 695 | 35 | 0 | 1 | blocked | `bun.timespec`, `bun.assert`, `bun.JSError` |
+| Execution.zig | 695 | 35 | 0 | 1 | tier2-execution | `bun.timespec`, `bun.assert`, `bun.JSError` |
 | bun_test.zig | 1 073 | 64 | 7 | 1 | blocked | `bun.JSError`, `bun.timespec`, `bun.jsc` |
 | pretty_format.zig | 2 145 | 33 | 1 | 1 | blocked | `bun.JSError`, `bun.fmt`, `bun.default_allocator` |
 | expect.zig | 2 272 | 144 | 76 | 0 | blocked | `bun.JSError`, `bun.String`, `bun.jsc` |
@@ -329,7 +338,10 @@ These need only `compat` for `OOM`/`handleOom`/`assert`/`md`:
     target with a local scaffold for create/bind/finalize behavior
 11. `debug.zig` (109 LOC) — runner debug dumping; compile-checked in
     the focused `home_test_bun_tier2_debug` target with logging disabled
-12. `Execution.zig` (695 LOC) — scheduler + timeout machinery
+12. `Execution.zig` (695 LOC) — scheduler + timeout machinery;
+    compile-checked in the focused `home_test_bun_tier2_execution`
+    target with a local scaffold for BunTest/JSC/reporter/timespec
+    surfaces
 13. `timers/FakeTimers.zig` (376 LOC) — Jest-style fake timers
 14. `snapshot.zig` (582 LOC) — snapshot persistence (touches
     `bun.sys`/`bun.logger`)

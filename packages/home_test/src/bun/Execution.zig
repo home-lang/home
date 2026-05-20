@@ -39,7 +39,7 @@
 //! ```
 
 groups: []ConcurrentGroup,
-#sequences: []ExecutionSequence,
+sequences: []ExecutionSequence,
 /// the entries themselves are owned by BunTest, which owns Execution.
 group_index: usize,
 
@@ -71,7 +71,7 @@ pub const ConcurrentGroup = struct {
     }
 
     pub fn sequences(this: ConcurrentGroup, execution: *Execution) []ExecutionSequence {
-        return execution.#sequences[this.sequence_start..this.sequence_end];
+        return execution.sequences[this.sequence_start..this.sequence_end];
     }
 };
 pub const ExecutionSequence = struct {
@@ -174,22 +174,22 @@ pub const Result = enum {
 pub fn init(_: std.mem.Allocator) Execution {
     return .{
         .groups = &.{},
-        .#sequences = &.{},
+        .sequences = &.{},
         .group_index = 0,
     };
 }
 pub fn deinit(this: *Execution) void {
     this.bunTest().gpa.free(this.groups);
-    this.bunTest().gpa.free(this.#sequences);
+    this.bunTest().gpa.free(this.sequences);
 }
 pub fn loadFromOrder(this: *Execution, order: *Order) bun.JSError!void {
     bun.assert(this.groups.len == 0);
-    bun.assert(this.#sequences.len == 0);
+    bun.assert(this.sequences.len == 0);
     var alloc_safety = bun.safety.CheckedAllocator.init(this.bunTest().gpa);
     alloc_safety.assertEq(order.groups.allocator);
     alloc_safety.assertEq(order.sequences.allocator);
     this.groups = try order.groups.toOwnedSlice();
-    this.#sequences = try order.sequences.toOwnedSlice();
+    this.sequences = try order.sequences.toOwnedSlice();
 }
 
 fn bunTest(this: *Execution) *BunTest {
@@ -684,13 +684,14 @@ pub fn handleUncaughtException(this: *Execution, user_data: bun_test.BunTest.Ref
 const log = bun.Output.scoped(.jest, .visible);
 
 const std = @import("std");
-const test_command = @import("../cli/test_command.zig");
+const execution_scaffold = @import("execution_scaffold.zig");
+const test_command = execution_scaffold.test_command;
 
-const bun = @import("bun");
-const jsc = bun.jsc;
+const bun = execution_scaffold.bun;
+const jsc = execution_scaffold.jsc;
 
-const bun_test = jsc.Jest.bun_test;
-const BunTest = bun_test.BunTest;
+const bun_test = execution_scaffold;
+const BunTest = execution_scaffold.BunTest;
 const Execution = bun_test.Execution;
 const ExecutionEntry = bun_test.ExecutionEntry;
 const Order = bun_test.Order;
