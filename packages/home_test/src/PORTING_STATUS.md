@@ -77,8 +77,11 @@ write / toString / inspect-limit / isEncoding subsets, Node
 constructor shims, Web `TextDecoder` CJK and single-byte encoding smokes,
 a primitive/object `structuredClone` fallback for the string atomization
 smoke, `Bun.inspect({ key: Set<string> })`, `Bun.jest(import.meta.path)`
-as an alias to the existing bootstrap `bun:test` facade, and a narrow
-`ShadowRealm.evaluate` shim. Four sync runner fixtures
+as an alias to the existing bootstrap `bun:test` facade, `jest.mock`
+argument validation, `expect.extend` matcher validation plus installed
+expectation-object matchers, validation-only `Bun.S3Client.write`
+numeric path errors, and a narrow `ShadowRealm.evaluate` shim. Four sync
+runner fixtures
 (`only-fixture-4`, `21177`, `5738`, and printing dots) are also
 allowlisted, with `console.warn` falling back to `console.log` for the
 printing fixture. The source
@@ -87,8 +90,11 @@ rewrite lowers supported `bun:test` imports to a virtual
 `import.meta.dir/path` to the same per-file metadata used for the
 directory and filename globals. Unsupported deep-equality types such as
 typed arrays, `ArrayBuffer`, and `Error` now fail closed instead of
-silently comparing as empty-key objects. It is a stepping stone for
-corpus bring-up, not a substitute for the vendored Zig runner below.
+silently comparing as empty-key objects. Native ESM `bun:test`
+registration still requires a narrow JSC module-loader bridge because
+system JavaScriptCore's public C API does not expose Bun's synthetic
+module hooks directly. This is a stepping stone for corpus bring-up, not
+a substitute for the vendored Zig runner below.
 
 > **Why a verbatim copy?** Per direction 2026-05-14: Bun is shifting
 > its core to Rust; we want to continue maintaining the Zig portion

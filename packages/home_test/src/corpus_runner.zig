@@ -127,6 +127,9 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/21177.fixture.ts",
     "regression/issue/5738.fixture.ts",
     "js/bun/test/printing/dots/dots1.fixture.ts",
+    "js/bun/s3/s3-fd-validation.test.ts",
+    "regression/issue/ENG-24434.test.ts",
+    "regression/issue/fuzzer-ENG-22942.test.ts",
 };
 
 const harness_prelude =
@@ -282,6 +285,16 @@ const harness_prelude =
     \\      for (const chunk of lineChunks) chunks.push(chunk);
     \\    }
     \\    return joinChunks(chunks);
+    \\  },
+    \\  S3Client: {
+    \\    write(path, data) {
+    \\      if (typeof path === "number") {
+    \\        if (!Number.isSafeInteger(path) || path < 0) throw new RangeError("S3Client.write path must be a valid file descriptor or path string");
+    \\        __home_unsupported("Only Bun.S3Client.write invalid numeric path validation is supported by this bootstrap path");
+    \\      }
+    \\      if (typeof path !== "string") throw new TypeError("S3Client.write path must be a string or file descriptor");
+    \\      __home_unsupported("Only Bun.S3Client.write invalid path validation is supported by this bootstrap path");
+    \\    },
     \\  },
     \\  TOML: {
     \\    parse(value) {
@@ -719,10 +732,21 @@ const harness_prelude =
     \\mock.clearAllMocks = function() {
     \\  for (const fn of globalThis.__home_mocks) fn.mock.calls = [];
     \\};
-    \\const jest = { fn: mock };
+    \\const jest = {
+    \\  __home_is_jest_object: true,
+    \\  fn: mock,
+    \\  mock(moduleName, factory) {
+    \\    if (typeof moduleName !== "string") throw new TypeError("jest.mock() module name must be a string");
+    \\    if (typeof factory !== "function") throw new TypeError("jest.mock() requires a factory callback");
+    \\    globalThis.__home_mocked_modules = globalThis.__home_mocked_modules || Object.create(null);
+    \\    globalThis.__home_mocked_modules[moduleName] = factory;
+    \\    return jest;
+    \\  },
+    \\};
     \\globalThis.__home_finish_tests = function() {
     \\  __home_run_all_after_all(globalThis.__home_root_scope);
     \\};
+    \\const __home_expect_matchers = Object.create(null);
     \\function __home_make_expectation(value, isNot) {
     \\  const expectation = {
     \\    get not() {
@@ -912,6 +936,18 @@ const harness_prelude =
     \\      __home_assert(pass, isNot, "Expected value" + (isNot ? " not" : "") + " to contain any keys " + __home_format(expected));
     \\    }
     \\  };
+    \\  for (const name of Object.keys(__home_expect_matchers)) {
+    \\    if (Object.prototype.hasOwnProperty.call(expectation, name)) continue;
+    \\    expectation[name] = function() {
+    \\      const matcher = __home_expect_matchers[name];
+    \\      const args = Array.prototype.slice.call(arguments);
+    \\      const result = matcher.apply({ isNot, promise: "", equals: __home_deep_equal }, [value].concat(args));
+    \\      const pass = result && typeof result === "object" && Object.prototype.hasOwnProperty.call(result, "pass") ? !!result.pass : !!result;
+    \\      let message = "Expected " + __home_format(value) + (isNot ? " not" : "") + " to match " + name;
+    \\      if (result && typeof result === "object" && typeof result.message === "function") message = result.message();
+    \\      __home_assert(pass, isNot, message);
+    \\    };
+    \\  }
     \\  return expectation;
     \\}
     \\function expect(value) {
@@ -933,10 +969,11 @@ const harness_prelude =
     \\  throw reason;
     \\};
     \\expect.extend = function(matchers) {
-    \\  if (matchers === null || typeof matchers !== "object") __home_fail("expect.extend() expected an object containing matchers");
+    \\  if (matchers === null || typeof matchers !== "object" || matchers.__home_is_jest_object === true) throw new TypeError("expect.extend() expected an object containing matchers");
     \\  for (const name of Object.keys(matchers)) {
     \\    const matcher = matchers[name];
-    \\    if (typeof matcher !== "function") __home_fail("expect.extend: `" + name + "` is not a valid matcher");
+    \\    if (typeof matcher !== "function") throw new TypeError("expect.extend: `" + name + "` is not a valid matcher");
+    \\    __home_expect_matchers[name] = matcher;
     \\    expect[name] = function() {
     \\      const captured = Array.prototype.slice.call(arguments);
     \\      return {
@@ -1996,6 +2033,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": any[] =", .replacement = " =" },
         .{ .needle = ": any =", .replacement = " =" },
         .{ .needle = ": number =", .replacement = " =" },
+        .{ .needle = ": number)", .replacement = ")" },
         .{ .needle = ": string)=>", .replacement = ")=>" },
         .{ .needle = ": string, value: string)", .replacement = ", value)" },
         .{ .needle = "readonly foo: FooParent", .replacement = "foo" },
@@ -2466,6 +2504,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapAnsi(value, columns, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "TOML: {") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Bun.TOML.parse expects a string") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "S3Client: {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "S3Client.write path must be a valid file descriptor or path string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "satisfies(version, range)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "inspect(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Set(\" + entry.size + \")") != null);
@@ -2498,6 +2538,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function onTestFinished(fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function mock(implementation)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock.clearAllMocks") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest.mock() module name must be a string") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest.mock() requires a factory callback") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Cannot set both retry and repeats") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.concurrent.each") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_finish_tests") != null);
@@ -2510,6 +2552,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toMatchObjectType()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "expect.unreachable") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "expect.extend") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_expect_matchers") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "asymmetricMatch(received)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Expected value must be string or Error") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Deep equality for this value type is not supported") != null);
@@ -2592,6 +2635,9 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "regression/issue/21177.fixture.ts",
         "regression/issue/5738.fixture.ts",
         "js/bun/test/printing/dots/dots1.fixture.ts",
+        "js/bun/s3/s3-fd-validation.test.ts",
+        "regression/issue/ENG-24434.test.ts",
+        "regression/issue/fuzzer-ENG-22942.test.ts",
     };
 
     for (expected) |path| {
@@ -2914,6 +2960,25 @@ test "bootstrap rewrite erases TypeScript constructor accessibility modifiers" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "readonly foo") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "override foo") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, ": Foo") == null);
+}
+
+test "bootstrap rewrite erases typed matcher parameters" {
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("matcher", () => {
+        \\  expect.extend({
+        \\    toBeEven(received: number) {
+        \\      return { pass: received % 2 === 0 };
+        \\    },
+        \\  });
+        \\  expect(4).toBeEven();
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/fuzzer-ENG-22942.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeEven(received)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "received: number") == null);
 }
 
 test "bootstrap rewrite erases const assertions" {
