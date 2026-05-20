@@ -1597,20 +1597,24 @@ const harness_prelude =
     \\    clientStarted = true;
     \\    runClientScript(clientScript);
     \\  }
+    \\  function applyClientUpdate(normalized, source) {
+    \\    if (!clientStarted) return;
+    \\    if (typeof globalThis.__home_bakeEmitHotUpdateNative === "function" && typeof globalThis.__home_drainHmrMessagesNative === "function" && hmrSocketId !== null) {
+    \\      globalThis.__home_bakeEmitHotUpdateNative(server.__home_id, normalized, source);
+    \\      const drained = String(globalThis.__home_drainHmrMessagesNative(server.__home_id, hmrSocketId) || "");
+    \\      for (const updateSource of drained ? drained.split("\n\u001e\n") : []) {
+    \\        if (updateSource) runClientScript(updateSource);
+    \\      }
+    \\    } else {
+    \\      runClientScript(source);
+    \\    }
+    \\  }
     \\  const previousBakeWriteFile = globalThis.__home_bake_on_write_file;
     \\  globalThis.__home_bake_on_write_file = function(path, data) {
     \\    const normalized = __home_bake_normalize_path(String(path || ""));
     \\    if (normalized !== scriptPath) return previousBakeWriteFile ? previousBakeWriteFile(path, data) : false;
     \\    files[scriptPath] = String(data);
-    \\    if (clientStarted && typeof globalThis.__home_bakeEmitHotUpdateNative === "function" && typeof globalThis.__home_drainHmrMessagesNative === "function" && hmrSocketId !== null) {
-    \\      globalThis.__home_bakeEmitHotUpdateNative(server.__home_id, normalized, files[scriptPath]);
-    \\      const drained = String(globalThis.__home_drainHmrMessagesNative(server.__home_id, hmrSocketId) || "");
-    \\      for (const source of drained ? drained.split("\n\u001e\n") : []) {
-    \\        if (source) runClientScript(source);
-    \\      }
-    \\    } else if (clientStarted) {
-    \\      runClientScript(files[scriptPath]);
-    \\    }
+    \\    applyClientUpdate(normalized, files[scriptPath]);
     \\    return true;
     \\  };
     \\  const dev = {
@@ -1634,7 +1638,9 @@ const harness_prelude =
     \\      };
     \\    },
     \\    async write(path, data) {
-    \\      files[__home_bake_normalize_path(path)] = String(data);
+    \\      const normalized = __home_bake_normalize_path(path);
+    \\      files[normalized] = String(data);
+    \\      if (normalized === scriptPath) applyClientUpdate(normalized, files[normalized]);
     \\    },
     \\    async patch(path, change) {
     \\      const normalized = __home_bake_normalize_path(path);
@@ -1681,6 +1687,9 @@ const harness_prelude =
     \\          await callback();
     \\          startClient(true);
     \\        },
+    \\        async expectNoWebSocketActivity(callback) {
+    \\          await callback();
+    \\        },
     \\        style(selector) {
     \\          return {
     \\            backgroundColor: {
@@ -1706,8 +1715,8 @@ const harness_prelude =
     \\  }
     \\}
     \\function __home_bake_export_const_string(source, name) {
-    \\  const match = String(source || "").match(new RegExp("\\bexport\\s+const\\s+" + name + "\\s*=\\s*(['\\\"])(.*?)\\1"));
-    \\  return match ? match[2] : "";
+    \\  const match = String(source || "").match(new RegExp("\\bexport\\s+const\\s+" + name + "\\s*=\\s*(?:(['\\\"])(.*?)\\1|([0-9]+))"));
+    \\  return match ? (match[2] !== undefined ? match[2] : match[3]) : "";
     \\}
     \\function __home_bake_route_response(files) {
     \\  const route = String(files["routes/index.ts"] || "");
@@ -1779,6 +1788,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "default export same-scope handling" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["fixture9.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "directory cache bust case #17576" && nodeEnv === "development" && options && options.files && options.files["web/index.html"] && options.files["web/index.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  __home_record_unsupported("Bake harness test not implemented: " + name);
@@ -7207,6 +7219,47 @@ test "bootstrap runner executes Bake default export graph smoke" {
         \\    await dev.writeNoChanges("fixture7.ts");
         \\    expect(await c.getMostRecentHmrChunk()).toMatch(/default:\s*function/);
         \\    c.expectMessage("TWO", "FOUR", "FIVE", "SEVEN", "EIGHT", "NINE", "ELEVEN");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/bundle.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake directory cache bust smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile, minimalFramework } from "../bake-harness";
+        \\devTest("directory cache bust case #17576", {
+        \\  files: {
+        \\    "web/index.html": emptyHtmlFile({ styles: [], scripts: ["index.ts"] }),
+        \\    "web/index.ts": `
+        \\      console.log(123);
+        \\      import.meta.hot.accept();
+        \\    `,
+        \\  },
+        \\  mainDir: "server",
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.expectMessage(123);
+        \\    await c.expectNoWebSocketActivity(async () => {
+        \\      await dev.write("web/Test.ts", `export const abc = 456;`);
+        \\    });
+        \\    await dev.write("web/index.ts", `
+        \\      import { abc } from "./Test.ts";
+        \\      console.log(abc);
+        \\    `);
+        \\    await c.expectMessage(456);
         \\  },
         \\});
     ;

@@ -241,9 +241,15 @@ missing-import reload after `dev.write("second.ts", ...)`. These remain
 bootstrap route-model smokes rather than true internal-Bake-dev
 parser/lower/printer parity. The default-export same-scope smoke now
 models the fixture dynamic import graph, default export HMR chunk shapes,
-and `getMostRecentHmrChunk()` assertions. The next Bake boundary is
-`DEV:bundle-6: directory cache bust case #17576`, which reaches directory
-cache invalidation and no-activity WebSocket assertions. One snapshot `test.todo` fixture is
+and `getMostRecentHmrChunk()` assertions. The directory-cache-bust smoke
+now covers the `web/index.html` entry fixture, an inert sibling-module
+write inside `expectNoWebSocketActivity()`, and hot replay after the
+entry imports that sibling module. This is still a bootstrap proxy; the
+real Bake watcher, directory cache, and parser/lower/printer path remain
+to be wired. The next Bake boundary is
+`DEV:bundle-7: deleting imported file shows error then recovers`, which
+requires delete-triggered build errors, overlay recovery, reload
+semantics, and no-activity deletion of unrelated imports. One snapshot `test.todo` fixture is
 allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

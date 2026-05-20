@@ -334,16 +334,20 @@ missing-import reload after `dev.write("second.ts", ...)`. These are
 bootstrap route smokes, not full internal-Bake-dev parser/printer parity.
 The default-export same-scope client graph smoke also runs through a
 narrow fixture graph model for dynamic imports, default export chunk
-formatting, and HMR chunk inspection. The real Bun path still needs the
-vendored parser/lower/printer pipeline wired into Home. Later Bake files
-are still recorded as unsupported until the broader DevServer / bundler /
-browser-client runtime path lands.
+formatting, and HMR chunk inspection. The directory-cache-bust smoke now
+executes the `web/index.html` fixture path, writes an inert sibling module
+inside `expectNoWebSocketActivity()`, then hot-replays the entry module
+after it imports that new file. This keeps the corpus boundary moving,
+but it is still a bootstrap model: it does not prove the real Bake
+watcher, directory cache invalidation, or internal parser/lower/printer
+pipeline yet. Later Bake files are still recorded as unsupported until
+the broader DevServer / bundler / browser-client runtime path lands.
 
-Latest measured full gate after the Bake default-export graph slice:
-`4,013` files executed, `420` passed, `3,967` failed, `1,520`
+Latest measured full gate after the Bake directory-cache-bust slice:
+`4,013` files executed, `420` passed, `3,966` failed, `1,519`
 unsupported, `35` todo. First failure: `bake/dev/bundle.test.ts`
 with the named unsupported Bake registration for
-` DEV:bundle-6: directory cache bust case #17576`.
+` DEV:bundle-7: deleting imported file shows error then recovers`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
