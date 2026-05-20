@@ -13161,9 +13161,6 @@ pub const Checker = struct {
         const decorators = hir_mod.parameterDecorators(self.hir, param_node);
         if (decorators.len == 0) return;
         if (is_this_param) {
-            for (decorators) |decorator_node| {
-                try self.report(decorator_node, TsCodes.decorator_or_modifier_on_this_parameter, "Neither decorators nor modifiers may be applied to 'this' parameters.");
-            }
             return;
         }
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
@@ -61550,7 +61547,7 @@ test "checker: await still allowed inside async function parameter default" {
     }
 }
 
-test "checker: decorators are not valid on this parameters" {
+test "checker: this parameter decorator TS1433 is parser-owned" {
     const s = try newSetup(
         \\// @experimentalDecorators: true
         \\declare var dec: any;
@@ -61560,11 +61557,9 @@ test "checker: decorators are not valid on this parameters" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.decorator_or_modifier_on_this_parameter) found = true;
+        try T.expect(d.code != TsCodes.decorator_or_modifier_on_this_parameter);
     }
-    try T.expect(found);
 }
 
 test "checker: this parameter must be first" {

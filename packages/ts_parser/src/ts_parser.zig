@@ -3431,12 +3431,24 @@ pub const Parser = struct {
                 // any parameter named "this" before lowering.
                 if (self.peek().kind == .kw_this) {
                     const this_tok = self.advance();
+                    const this_param_start = if (param_decorators.items.len > 0)
+                        self.hir.spanOf(param_decorators.items[0]).start
+                    else
+                        this_tok.span.start;
+                    if (param_decorators.items.len > 0) {
+                        try self.reportCodeAt(
+                            self.decoratedThisParameterDiagnosticStart(this_param_start),
+                            self.lineAt(this_param_start),
+                            1433,
+                            "Neither decorators nor modifiers may be applied to 'this' parameters.",
+                        );
+                    }
                     var this_ann: NodeId = hir_mod.none_node_id;
                     if (self.match(.colon)) this_ann = try self.parseTypeAnnotation();
                     const this_name_id = self.interner.intern("this") catch return error.OutOfMemory;
                     const this_ident = try self.builder.addIdentifier(tokenSpan(this_tok), this_name_id);
                     const this_param = try self.builder.addParameterWithDecorators(
-                        .{ .start = this_tok.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                        .{ .start = this_param_start, .end = self.tokens[self.cursor - 1].span.end },
                         this_ident,
                         this_ann,
                         hir_mod.none_node_id,
@@ -3667,6 +3679,18 @@ pub const Parser = struct {
         }
         if (!missing_close_reported) _ = try self.expect(.close_paren, "')' to close parameter list");
         return try params.toOwnedSlice(self.gpa);
+    }
+
+    fn decoratedThisParameterDiagnosticStart(self: *const Parser, at_pos: u32) u32 {
+        if (at_pos == 0) return at_pos;
+        var i: usize = at_pos;
+        while (i > 0) {
+            const c = self.source[i - 1];
+            if (c != ' ' and c != '\t') break;
+            i -= 1;
+        }
+        if (i < at_pos and i > 0 and self.source[i - 1] == ',') return @intCast(i);
+        return at_pos;
     }
 
     fn validateAccessorSignature(
@@ -16471,6 +16495,29 @@ test "parser: this parameter preserves decorators" {
     const members = hir_mod.classMembers(&s.hir, top);
     const params = hir_mod.fnParams(&s.hir, members[0]);
     try T.expectEqual(@as(usize, 1), hir_mod.parameterDecorators(&s.hir, params[0]).len);
+}
+
+test "parser: decorated this parameter reports TS1433 at full-start" {
+    const src =
+        \\class C2 {
+        \\    method(@dec allowed: C2, @dec this: C2) {}
+        \\}
+    ;
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.classMembers(&s.hir, top);
+    const params = hir_mod.fnParams(&s.hir, members[0]);
+    const expected_param_start: u32 = @intCast(std.mem.indexOf(u8, src, "@dec this").?);
+    try T.expectEqual(expected_param_start, s.hir.spanOf(params[1]).start);
+
+    const expected_ts1433_pos: u32 = @intCast(std.mem.indexOf(u8, src, ", @dec this").? + 1);
+    var saw_ts1433 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1433 and d.pos == expected_ts1433_pos) saw_ts1433 = true;
+    }
+    try T.expect(saw_ts1433);
 }
 
 test "parser: parameter property decorator after modifier reports comma expected" {
