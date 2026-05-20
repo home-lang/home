@@ -104,7 +104,7 @@ pub const group = struct {
 const bun = @import("bun");
 const std = @import("std");
 
-const bun_test = @import("./bun_test.zig");
+const bun_test = @import("debug_scaffold.zig");
 const DescribeScope = bun_test.DescribeScope;
 const Execution = bun_test.Execution;
 const ExecutionEntry = bun_test.ExecutionEntry;

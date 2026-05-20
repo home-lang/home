@@ -63,6 +63,13 @@ allocator access, `VirtualMachine.get().allocator`, `RefData.deref`, and
 proving create/bind/finalize semantics under pantry-provided Zig
 0.17-dev.
 
+`zig build test -Dfilter=home_test_bun_tier2_debug` build-checks the
+copied runner debug leaf, `bun/debug.zig`, through a small Home scaffold
+for describe/test schedule entries and execution groups. Compat keeps
+`bun.Environment.enable_logs = false`, matching the no-op behavior used
+by normal builds while proving the copied dump functions accept the
+runner shapes they inspect.
+
 The bootstrap harness is intentionally narrow but now installs once per
 JSC engine, resets counters before each allowlisted file, reports a file
 as unsupported if it registers zero `bun:test` tests, and preserves
@@ -162,7 +169,7 @@ shape (each ~30-100 LOC, 7-10 `bun.X` references — almost all
 |---|---:|---:|---:|---:|---|---|
 | DoneCallback.zig | 47 | 5 | 0 | 0 | tier2-done-callback | `bun.md`, `bun.handleOom`, `bun.JSError` |
 | diff_format.zig | 85 | 5 | 2 | 0 | blocked | `bun.md`, `bun.AllocationScope`, `bun.Output` |
-| debug.zig | 109 | 7 | 1 | 0 | blocked | `bun.JSError`, `bun.md`, `bun.env_var` |
+| debug.zig | 109 | 7 | 1 | 0 | tier2-debug | `bun.JSError`, `bun.md`, `bun.env_var` |
 | harness/recover.zig | 132 | 1 | 0 | 0 | tier0 | `bun.md` |
 | Collection.zig | 171 | 8 | 0 | 0 | tier2-collection | `bun.JSError`, `bun.assert`, `bun.md` |
 | Order.zig | 187 | 16 | 0 | 0 | tier2-order | `bun.JSError`, `bun.assert`, `bun.Environment` |
@@ -304,9 +311,11 @@ These need only `compat` for `OOM`/`handleOom`/`assert`/`md`:
 10. `DoneCallback.zig` (47 LOC) — async test done callback;
     compile-checked in the focused `home_test_bun_tier2_done_callback`
     target with a local scaffold for create/bind/finalize behavior
-11. `Execution.zig` (695 LOC) — scheduler + timeout machinery
-12. `timers/FakeTimers.zig` (376 LOC) — Jest-style fake timers
-13. `snapshot.zig` (582 LOC) — snapshot persistence (touches
+11. `debug.zig` (109 LOC) — runner debug dumping; compile-checked in
+    the focused `home_test_bun_tier2_debug` target with logging disabled
+12. `Execution.zig` (695 LOC) — scheduler + timeout machinery
+13. `timers/FakeTimers.zig` (376 LOC) — Jest-style fake timers
+14. `snapshot.zig` (582 LOC) — snapshot persistence (touches
     `bun.sys`/`bun.logger`)
 
 ### Tier 3 — JSC-bound surface (gate behind `enable_jsc`)
@@ -314,8 +323,8 @@ These need only `compat` for `OOM`/`handleOom`/`assert`/`md`:
 These cannot meaningfully run until Home's JS runtime is wired up;
 they are the entire `expect`/`describe` surface.
 
-14. `expect.zig` (2 272 LOC) — `expect()` harness, all asymmetric matchers
-15. `expect/*.zig` (70 files, ~2 800 LOC) — individual matchers
+15. `expect.zig` (2 272 LOC) — `expect()` harness, all asymmetric matchers
+16. `expect/*.zig` (70 files, ~2 800 LOC) — individual matchers
 16. `ScopeFunctions.zig` (498 LOC) — `describe`/`test`/hook factories
 17. `jest.zig` (520 LOC) — scope tree + lifecycle
 18. `bun_test.zig` (1 073 LOC) — top-level entrypoint

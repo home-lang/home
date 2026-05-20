@@ -41,9 +41,18 @@ pub const JSError = error{ JSException, OutOfMemory };
 
 pub const Environment = struct {
     pub const ci_assert = false;
+    pub const enable_logs = false;
     pub const isDebug = builtin.mode == .Debug;
     pub const isWindows = builtin.os.tag == .windows;
     pub const isMac = builtin.os.tag == .macos;
+};
+
+pub const env_var = struct {
+    pub const WANTS_LOUD = struct {
+        pub fn get() bool {
+            return false;
+        }
+    };
 };
 
 fn HandleOomReturn(comptime TArg: type) type {
@@ -130,6 +139,8 @@ test "compat: Tier 0 surface is well-shaped" {
     assert(true);
     debugAssert(true);
     try T.expect(!Environment.ci_assert);
+    try T.expect(!Environment.enable_logs);
+    try T.expect(!env_var.WANTS_LOUD.get());
     try T.expectEqual(@as(type, u32), ast.Index.Int);
     const path = fs.Path{ .text = "/x.ts" };
     try T.expectEqualStrings("/x.ts", path.text);
