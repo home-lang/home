@@ -3444,6 +3444,79 @@ test "conformance: sub-strict directive without @strict keeps inferred strict-on
     try T.expect(merged_with_strict_on.use_unknown_in_catch_variables);
 }
 
+test "conformance: nonPrimitiveInFunction matches TS2345/TS2322/TS2454 baseline" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nonPrimitiveInFunction",
+        .path = "nonPrimitiveInFunction.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\function takeObject(o: object) {}
+        \\function returnObject(): object {
+        \\    return {};
+        \\}
+        \\
+        \\var nonPrimitive: object = {};
+        \\var primitive: boolean;
+        \\
+        \\takeObject(nonPrimitive);
+        \\nonPrimitive = returnObject();
+        \\
+        \\takeObject(primitive); // expect error
+        \\primitive = returnObject(); // expect error
+        \\
+        \\function returnError(): object {
+        \\    var ret = 123;
+        \\    return ret; // expect error
+        \\}
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\nonPrimitiveInFunction.ts(12,12): error TS2345: Argument of type 'boolean' is not assignable to parameter of type 'object'.
+        \\nonPrimitiveInFunction.ts(12,12): error TS2454: Variable 'primitive' is used before being assigned.
+        \\nonPrimitiveInFunction.ts(13,1): error TS2322: Type 'object' is not assignable to type 'boolean'.
+        \\nonPrimitiveInFunction.ts(17,5): error TS2322: Type 'number' is not assignable to type 'object'.
+        ,
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    if (result.outcome != .passed) {
+        std.debug.print("nonPrimitiveInFunction detail:\n{s}\n", .{result.detail});
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: nonPrimitiveAccessProperty matches TS2339 baseline" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nonPrimitiveAccessProperty",
+        .path = "nonPrimitiveAccessProperty.ts",
+        .source =
+        \\// @target: es2015
+        \\var a: object = {};
+        \\a.toString();
+        \\a.nonExist(); // error
+        \\
+        \\var { destructuring } = a; // error
+        \\var { ...rest } = a; // ok
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\nonPrimitiveAccessProperty.ts(3,3): error TS2339: Property 'nonExist' does not exist on type 'object'.
+        \\nonPrimitiveAccessProperty.ts(5,7): error TS2339: Property 'destructuring' does not exist on type '{}'.
+        ,
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: initializerReferencingConstructorLocals value-position slice" {
     // Slice of `initializerReferencingConstructorLocals.ts` covering
     // the value-position references — `c = this.z` (TS2339 with the
