@@ -3444,6 +3444,62 @@ test "conformance: sub-strict directive without @strict keeps inferred strict-on
     try T.expect(merged_with_strict_on.use_unknown_in_catch_variables);
 }
 
+test "conformance: nonPrimitiveAssignError matches TS2322/TS2741 baseline" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nonPrimitiveAssignError",
+        .path = "nonPrimitiveAssignError.ts",
+        .source =
+        \\// @target: es2015
+        \\var x = {};
+        \\var y = {foo: "bar"};
+        \\var a: object = {};
+        \\x = a;
+        \\y = a; // expect error
+        \\a = x;
+        \\a = y;
+        \\
+        \\var n = 123;
+        \\var b = true;
+        \\var s = "fooo";
+        \\
+        \\a = n; // expect error
+        \\a = b; // expect error
+        \\a = s; // expect error
+        \\
+        \\n = a; // expect error
+        \\b = a; // expect error
+        \\s = a; // expect error
+        \\
+        \\var numObj: Number = 123;
+        \\var boolObj: Boolean = true;
+        \\var strObj: String = "string";
+        \\
+        \\a = numObj; // ok
+        \\a = boolObj; // ok
+        \\a = strObj; // ok
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\nonPrimitiveAssignError.ts(5,1): error TS2741: Property 'foo' is missing in type '{}' but required in type '{ foo: string; }'.
+        \\nonPrimitiveAssignError.ts(13,1): error TS2322: Type 'number' is not assignable to type 'object'.
+        \\nonPrimitiveAssignError.ts(14,1): error TS2322: Type 'boolean' is not assignable to type 'object'.
+        \\nonPrimitiveAssignError.ts(15,1): error TS2322: Type 'string' is not assignable to type 'object'.
+        \\nonPrimitiveAssignError.ts(17,1): error TS2322: Type 'object' is not assignable to type 'number'.
+        \\nonPrimitiveAssignError.ts(18,1): error TS2322: Type 'object' is not assignable to type 'boolean'.
+        \\nonPrimitiveAssignError.ts(19,1): error TS2322: Type 'object' is not assignable to type 'string'.
+        ,
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    if (result.outcome != .passed) {
+        std.debug.print("nonPrimitiveAssignError detail:\n{s}\n", .{result.detail});
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: nonPrimitiveAsProperty matches TS2322 baseline" {
     const result = try runOneEntry(T.allocator, .{
         .name = "nonPrimitiveAsProperty",
