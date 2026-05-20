@@ -20,6 +20,7 @@ const to_be_greater_than = @import("bun/expect/toBeGreaterThan.zig");
 const to_be_greater_than_or_equal = @import("bun/expect/toBeGreaterThanOrEqual.zig");
 const to_be_less_than = @import("bun/expect/toBeLessThan.zig");
 const to_be_less_than_or_equal = @import("bun/expect/toBeLessThanOrEqual.zig");
+const to_be_within = @import("bun/expect/toBeWithin.zig");
 const to_be_string = @import("bun/expect/toBeString.zig");
 const to_be_function = @import("bun/expect/toBeFunction.zig");
 const to_be_symbol = @import("bun/expect/toBeSymbol.zig");
@@ -251,6 +252,30 @@ test "copied Bun numeric comparison matchers honor failure signatures" {
     var not_less_than_frame = frameWithArgs(.js_number, &greater_than_42);
     try std.testing.expectError(error.JSException, to_be_less_than.toBeLessThan(&expect_not_less_than, globalObject(), &not_less_than_frame));
     try std.testing.expectEqualStrings("not.toBeLessThan", expect_not_less_than.last_signature.?);
+}
+
+test "copied Bun toBeWithin matcher passes and honors failure signatures" {
+    const in_range = [_]JSValue{
+        .{ .tag = .number, .number_value = 40 },
+        .{ .tag = .number, .number_value = 43 },
+    };
+    var expect_within = Expect{ .value = .js_number };
+    var within_frame = frameWithArgs(.js_number, &in_range);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_be_within.toBeWithin(&expect_within, globalObject(), &within_frame));
+
+    const out_of_range = [_]JSValue{
+        .{ .tag = .number, .number_value = 43 },
+        .{ .tag = .number, .number_value = 50 },
+    };
+    var expect_outside = Expect{ .value = .js_number };
+    var outside_frame = frameWithArgs(.js_number, &out_of_range);
+    try std.testing.expectError(error.JSException, to_be_within.toBeWithin(&expect_outside, globalObject(), &outside_frame));
+    try std.testing.expectEqualStrings("toBeWithin", expect_outside.last_signature.?);
+
+    var expect_not_within = Expect{ .value = .js_number, .flags = .{ .not = true } };
+    var not_within_frame = frameWithArgs(.js_number, &in_range);
+    try std.testing.expectError(error.JSException, to_be_within.toBeWithin(&expect_not_within, globalObject(), &not_within_frame));
+    try std.testing.expectEqualStrings("not.toBeWithin", expect_not_within.last_signature.?);
 }
 
 test "copied Bun truthiness nil and number matchers honor not flag and failure signatures" {

@@ -98,7 +98,7 @@ build-checks the copied primitive matcher leaves `toBeTrue.zig`,
 `toBeNil.zig`, `toBeNumber.zig`, `toBeInteger.zig`, `toBeNaN.zig`,
 `toBeFinite.zig`, `toBePositive.zig`, `toBeNegative.zig`,
 `toBeGreaterThan.zig`, `toBeGreaterThanOrEqual.zig`,
-`toBeLessThan.zig`, `toBeLessThanOrEqual.zig`,
+`toBeLessThan.zig`, `toBeLessThanOrEqual.zig`, `toBeWithin.zig`,
 `toBeString.zig`, `toBeFunction.zig`, `toBeSymbol.zig`,
 `toBeObject.zig`, `toBeDate.zig`, `toBeValidDate.zig`,
 `toBeArray.zig`, `toBeEven.zig`, `toBeOdd.zig`, and
@@ -187,8 +187,10 @@ printing fixture. The full-gate rewriter also lowers the Bake harness
 now delegates real OS subprocesses, and delegated corpus file paths route
 through the corpus JSC bootstrap. The full gate reaches the Bake child
 process before failing `bake/deinitialization.test.ts` with
-`Error: Expected 1 to be 0`; the child fixture currently reports
-`unsupported module syntax`. One snapshot `test.todo` fixture is
+`Error: Expected 1 to be 0`; the child fixture now lowers the exact
+`bun:internal-for-testing`, `bun:jsc`, and HTML imports before reporting
+`Async tests are not supported by the Home Bun corpus bootstrap runner
+yet`. One snapshot `test.todo` fixture is
 allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
@@ -235,7 +237,7 @@ shape (each ~30-100 LOC, 7-10 `bun.X` references — almost all
 | Collection.zig | 171 | 8 | 0 | 0 | tier2-collection | `bun.JSError`, `bun.assert`, `bun.md` |
 | Order.zig | 187 | 16 | 0 | 0 | tier2-order | `bun.JSError`, `bun.assert`, `bun.Environment` |
 | timers/FakeTimers.zig | 376 | 32 | 0 | 0 | blocked | `bun.JSError`, `bun.timespec`, `bun.assert` |
-| expect/toBeTrue.zig + 28 primitive/truthiness/number/comparison/tag/array/object matchers | ~1 140 | 7-10 each | 0 | 0 | tier2-expect-matchers | `bun.jsc`, `bun.JSError`, `Expect` |
+| expect/toBeTrue.zig + 29 primitive/truthiness/number/comparison/tag/array/object matchers | ~1 200 | 7-10 each | 0 | 0 | tier2-expect-matchers | `bun.jsc`, `bun.JSError`, `Expect` |
 | ScopeFunctions.zig | 498 | 64 | 0 | 0 | blocked | `bun.String`, `bun.JSError`, `bun.handleOom` |
 | jest.zig | 520 | 44 | 3 | 1 | blocked | `bun.handleOom`, `bun.default_allocator`, `bun.JSError` |
 | harness/fixtures.zig | 575 | 1 | 0 | 0 | tier0 | `bun.md` |
@@ -381,7 +383,7 @@ These need only `compat` for `OOM`/`handleOom`/`assert`/`md`:
     compile-checked in the focused `home_test_bun_tier2_execution`
     target with a local scaffold for BunTest/JSC/reporter/timespec
     surfaces
-13. `expect/toBeTrue.zig` + twenty-eight matcher leaves — primitive,
+13. `expect/toBeTrue.zig` + twenty-nine matcher leaves — primitive,
     truthiness, number, comparison, tag, array, object-empty, even/odd, and valid-date expect
     matchers; compile-checked in the focused
     `home_test_bun_tier2_expect_matchers` target with a local
