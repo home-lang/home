@@ -163,6 +163,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/scheduling/multi-file/test2.fixture.ts",
     "js/bun/test/only-flag-fixtures/file0.fixture.ts",
     "js/bun/test/only-flag-fixtures/file2.fixture.ts",
+    "js/bun/test/todo-test-fixture-2.js",
 };
 
 const harness_prelude =
@@ -3579,6 +3580,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/test/scheduling/multi-file/test2.fixture.ts",
         "js/bun/test/only-flag-fixtures/file0.fixture.ts",
         "js/bun/test/only-flag-fixtures/file2.fixture.ts",
+        "js/bun/test/todo-test-fixture-2.js",
     };
 
     for (expected) |path| {
