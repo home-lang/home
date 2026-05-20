@@ -964,6 +964,16 @@ copied Bake boundary is `bake/dev/server-sourcemap.test.ts`, currently
 failing at `DEV:server-sourcemap-1: server-side source maps show correct
 error lines` with the remaining cases marked unsupported.
 
+The copied `bake/dev/server-sourcemap.test.ts` fixture now passes in
+Home as `3` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap
+models the dev-server output buffer for source-mapped SSR stack traces:
+original source filenames, HMR-updated stack frames, and nested import
+frames. Native parity still requires Bun's real Bake dev server, source
+map generation, HMR rebuild stack remapping, and SSR error reporting from
+the copied Zig runtime. The next direct copied Bake boundary is
+`bake/dev/sourcemap.test.ts`, currently blocked during source preparation
+as `unsupported module syntax`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

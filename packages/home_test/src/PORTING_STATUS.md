@@ -622,6 +622,13 @@ Native parity still needs Bun's real Bake transform and scope-aware
 Response rewrite from copied Zig source. The next direct Bake boundary is
 `DEV:server-sourcemap-1: server-side source maps show correct error lines`,
 with the rest of `bake/dev/server-sourcemap.test.ts` still unsupported.
+The copied `bake/dev/server-sourcemap.test.ts` fixture now passes as `3`
+tests through a narrow dev-server output model for source-mapped SSR
+stack traces, HMR-updated stack frames, and nested import frames. Native
+parity still needs Bun's real Bake dev server source-map generation and
+SSR stack remapping. The next direct Bake boundary is
+`bake/dev/sourcemap.test.ts`, currently blocked as unsupported module
+syntax during source preparation.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

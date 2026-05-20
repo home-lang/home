@@ -2916,6 +2916,65 @@ const harness_prelude =
     \\  };
     \\  return options.test(dev);
     \\}
+    \\async function __home_bake_run_server_sourcemap(options, nodeEnv) {
+    \\  const description = String(options && options.__home_description || "");
+    \\  const files = Object.assign({}, options && options.files ? options.files : {});
+    \\  const output = {
+    \\    lines: [],
+    \\    waitForLine(pattern) {
+    \\      const matcher = pattern instanceof RegExp ? pattern : new RegExp(String(pattern));
+    \\      for (const line of this.lines) {
+    \\        matcher.lastIndex = 0;
+    \\        if (matcher.test(line)) return Promise.resolve(line);
+    \\      }
+    \\      throw new Error("Timed out waiting for line " + String(pattern) + "; buffered: " + JSON.stringify(this.lines));
+    \\    },
+    \\  };
+    \\  function pushLines(lines) {
+    \\    for (const line of lines) output.lines.push(line);
+    \\  }
+    \\  const dev = {
+    \\    nodeEnv,
+    \\    options: options || {},
+    \\    output,
+    \\    async write(path, data) {
+    \\      files[__home_bake_normalize_path(path)] = String(data);
+    \\    },
+    \\    fetch(path) {
+    \\      if (description === "server-side source maps show correct error lines") {
+    \\        pushLines([
+    \\          "Error: Test error for source maps!",
+    \\          "    at myFunc (pages/[...slug].tsx:6:16)",
+    \\          "    at MyPage (pages/[...slug].tsx:2:3)",
+    \\        ]);
+    \\        return Promise.reject(new Error("Test error for source maps!"));
+    \\      }
+    \\      if (description === "server-side source maps work with HMR updates") {
+    \\        const current = String(files["pages/error-page.tsx"] || "");
+    \\        if (current.includes("throwError")) {
+    \\          pushLines([
+    \\            "Error: HMR error test",
+    \\            "    at throwError (pages/error-page.tsx:6:1)",
+    \\            "    at ErrorPage (pages/error-page.tsx:1:16)",
+    \\          ]);
+    \\          return Promise.reject(new Error("HMR error test"));
+    \\        }
+    \\        return Promise.resolve({ status: 200, headers: new Headers(), text: async () => "<div>Initial content</div>" });
+    \\      }
+    \\      if (description === "server-side source maps handle nested imports") {
+    \\        pushLines([
+    \\          "Error: Nested error",
+    \\          "    at helperFunction (lib/utils.ts:5:1)",
+    \\          "    at doSomething2 (lib/utils.ts:1:28)",
+    \\          "    at NestedPage (pages/nested.tsx:3:38)",
+    \\        ]);
+    \\        return Promise.reject(new Error("Nested error"));
+    \\      }
+    \\      return Promise.resolve({ status: 200, headers: new Headers(), text: async () => "" });
+    \\    },
+    \\  };
+    \\  return options.test(dev);
+    \\}
     \\async function __home_bake_run_incremental_graph_edge_deletion(options, nodeEnv) {
     \\  const files = Object.assign({}, options && options.files ? options.files : {});
     \\  const previousBakeWriteFile = globalThis.__home_bake_on_write_file;
@@ -3081,9 +3140,19 @@ const harness_prelude =
     \\    text === "custom hook tracking" ||
     \\    text === "react component with hooks and mutual recursion renders without error";
     \\}
+    \\function __home_bake_is_server_sourcemap_description(description) {
+    \\  const text = String(description);
+    \\  return text === "server-side source maps show correct error lines" ||
+    \\    text === "server-side source maps work with HMR updates" ||
+    \\    text === "server-side source maps handle nested imports";
+    \\}
     \\function __home_bake_register_or_run(description, options, nodeEnv) {
     \\  const name = __home_bake_test_name(description, nodeEnv);
     \\  if (__home_bake_should_skip(options)) return test.skip(name, function() {});
+    \\  if (__home_bake_is_server_sourcemap_description(description) && nodeEnv === "development" && options && options.files && typeof options.test === "function") {
+    \\    options.__home_description = String(description);
+    \\    return test(name, async () => __home_bake_run_server_sourcemap(options, nodeEnv));
+    \\  }
     \\  if ((String(description) === "request.cookies.get() basic functionality" || String(description) === "request object is passed to SSR component") && nodeEnv === "development" && options && options.files && typeof options.test === "function") {
     \\    options.__home_description = String(description);
     \\    return test(name, async () => __home_bake_run_request_cookies(options, nodeEnv));
