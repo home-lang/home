@@ -10,6 +10,7 @@ const to_be_truthy = @import("bun/expect/toBeTruthy.zig");
 const to_be_falsy = @import("bun/expect/toBeFalsy.zig");
 const to_be_boolean = @import("bun/expect/toBeBoolean.zig");
 const to_be_nil = @import("bun/expect/toBeNil.zig");
+const to_be_number = @import("bun/expect/toBeNumber.zig");
 
 const Expect = bun.jsc.Expect.Expect;
 const JSValue = bun.jsc.JSValue;
@@ -81,9 +82,13 @@ test "copied Bun truthiness and boolean matchers pass positive cases" {
     var expect_nil = Expect{ .value = .js_undefined };
     var nil_frame = frame(.js_undefined);
     try std.testing.expectEqual(JSValue.js_undefined, try to_be_nil.toBeNil(&expect_nil, globalObject(), &nil_frame));
+
+    var expect_number = Expect{ .value = .js_number };
+    var number_frame = frame(.js_number);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_be_number.toBeNumber(&expect_number, globalObject(), &number_frame));
 }
 
-test "copied Bun truthiness and nil matchers honor not flag and failure signatures" {
+test "copied Bun truthiness nil and number matchers honor not flag and failure signatures" {
     var expect_truthy = Expect{ .value = .js_true, .flags = .{ .not = true } };
     var true_frame = frame(.js_true);
     try std.testing.expectError(error.JSException, to_be_truthy.toBeTruthy(&expect_truthy, globalObject(), &true_frame));
@@ -93,4 +98,9 @@ test "copied Bun truthiness and nil matchers honor not flag and failure signatur
     var null_frame = frame(.js_null);
     try std.testing.expectError(error.JSException, to_be_nil.toBeNil(&expect_nil, globalObject(), &null_frame));
     try std.testing.expectEqualStrings("not.toBeNil", expect_nil.last_signature.?);
+
+    var expect_number = Expect{ .value = .js_number, .flags = .{ .not = true } };
+    var number_frame = frame(.js_number);
+    try std.testing.expectError(error.JSException, to_be_number.toBeNumber(&expect_number, globalObject(), &number_frame));
+    try std.testing.expectEqualStrings("not.toBeNumber", expect_number.last_signature.?);
 }

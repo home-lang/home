@@ -8,9 +8,11 @@ pub const jsc = struct {
     pub const JSValue = struct {
         tag: Tag,
         bool_value: bool = false,
+        number_value: f64 = 0,
 
         pub const Tag = enum {
             boolean,
+            number,
             null,
             undefined,
             other,
@@ -20,10 +22,15 @@ pub const jsc = struct {
         pub const js_null = JSValue{ .tag = .null };
         pub const js_true = JSValue{ .tag = .boolean, .bool_value = true };
         pub const js_false = JSValue{ .tag = .boolean, .bool_value = false };
+        pub const js_number = JSValue{ .tag = .number, .number_value = 42 };
         pub const js_other = JSValue{ .tag = .other };
 
         pub fn isBoolean(this: JSValue) bool {
             return this.tag == .boolean;
+        }
+
+        pub fn isNumber(this: JSValue) bool {
+            return this.tag == .number;
         }
 
         pub fn toBoolean(this: JSValue) bool {
@@ -53,6 +60,7 @@ pub const jsc = struct {
         pub fn format(this: FormatterValue, writer: *std.Io.Writer) !void {
             try writer.writeAll(switch (this.value.tag) {
                 .boolean => if (this.value.bool_value) "true" else "false",
+                .number => "42",
                 .null => "null",
                 .undefined => "undefined",
                 .other => "value",
