@@ -121,7 +121,7 @@ relative CJS fixture require for `regression/issue/013880-fixture.cjs`,
 `node:path` / `path` join and posix/win32 identity smokes,
 isAbsolute / normalize / resolve / relative empty-string smokes,
 basename / extname / normalize / join / dirname / parse / format path
-table smokes,
+table smokes, plus posix/win32 relative path table smokes,
 `node:url` URL.canParse, url.format empty-input, and
 WHATWG URL auth stripping plus domainToASCII/domainToUnicode smokes,
 skipped Node URL null-character / internal URL smokes,

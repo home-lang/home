@@ -155,6 +155,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/path/join.test.js",
     "js/node/path/dirname.test.js",
     "js/node/path/parse-format.test.js",
+    "js/node/path/relative.test.js",
 };
 
 const harness_prelude =
@@ -1216,6 +1217,9 @@ const harness_prelude =
     \\__home_assert_module.strictEqual = function(actual, expected, message) {
     \\  if (!Object.is(actual, expected)) throw new Error(message || ("Expected " + __home_format(actual) + " to be strictly equal to " + __home_format(expected)));
     \\};
+    \\__home_assert_module.ok = function(value, message) {
+    \\  if (!value) throw new Error(message || "Expected value to be truthy");
+    \\};
     \\__home_assert_module.deepStrictEqual = function(actual, expected, message) {
     \\  if (!__home_deep_equal(actual, expected, true, new Map())) throw new Error(message || ("Expected " + __home_format(actual) + " to deeply equal " + __home_format(expected)));
     \\};
@@ -1360,8 +1364,46 @@ const harness_prelude =
     \\  const parts = Array.prototype.slice.call(arguments).filter(part => String(part).length > 0);
     \\  return parts.length === 0 ? process.cwd() : String(parts[parts.length - 1]);
     \\}
+    \\function __home_path_posix_relative(from, to) {
+    \\  const fromInput = __home_path_validate_string(from, "from");
+    \\  const toInput = __home_path_validate_string(to, "to");
+    \\  const fromText = __home_path_posix_normalize(fromInput.length === 0 ? process.cwd() : fromInput);
+    \\  const toText = __home_path_posix_normalize(toInput.length === 0 ? process.cwd() : toInput);
+    \\  if (fromText === toText) return "";
+    \\  const fromParts = fromText.replace(/^\/+/, "").split("/").filter(Boolean);
+    \\  const toParts = toText.replace(/^\/+/, "").split("/").filter(Boolean);
+    \\  let same = 0;
+    \\  while (same < fromParts.length && same < toParts.length && fromParts[same] === toParts[same]) same++;
+    \\  const up = new Array(fromParts.length - same).fill("..");
+    \\  return up.concat(toParts.slice(same)).join("/");
+    \\}
+    \\function __home_path_win32_relative(from, to) {
+    \\  const fromInput = __home_path_validate_string(from, "from");
+    \\  const toInput = __home_path_validate_string(to, "to");
+    \\  const fromText = __home_path_win32_normalize(fromInput.length === 0 ? process.cwd() : fromInput);
+    \\  const toText = __home_path_win32_normalize(toInput.length === 0 ? process.cwd() : toInput);
+    \\  if (fromText.toLowerCase() === toText.toLowerCase()) return "";
+    \\  const fromRoot = __home_path_win32_root(fromText).toLowerCase();
+    \\  const toRoot = __home_path_win32_root(toText).toLowerCase();
+    \\  let fromParts;
+    \\  let toParts;
+    \\  if (fromRoot !== toRoot) {
+    \\    const fromUnc = fromText.match(/^\\\\([^\\]+)\\(.*)$/);
+    \\    const toUnc = toText.match(/^\\\\([^\\]+)\\(.*)$/);
+    \\    if (!fromUnc || !toUnc || fromUnc[1].toLowerCase() !== toUnc[1].toLowerCase()) return toText;
+    \\    fromParts = fromUnc[2].split("\\").filter(Boolean);
+    \\    toParts = toUnc[2].split("\\").filter(Boolean);
+    \\  } else {
+    \\    fromParts = fromText.slice(__home_path_win32_root(fromText).length).split("\\").filter(Boolean);
+    \\    toParts = toText.slice(__home_path_win32_root(toText).length).split("\\").filter(Boolean);
+    \\  }
+    \\  let same = 0;
+    \\  while (same < fromParts.length && same < toParts.length && fromParts[same].toLowerCase() === toParts[same].toLowerCase()) same++;
+    \\  const up = new Array(fromParts.length - same).fill("..");
+    \\  return up.concat(toParts.slice(same)).join("\\");
+    \\}
     \\function __home_path_relative(from, to) {
-    \\  return __home_path_resolve(from) === __home_path_resolve(to) ? "" : String(to);
+    \\  return __home_path_posix_relative(from, to);
     \\}
     \\function __home_path_trim_trailing_separators(text, isSep) {
     \\  let end = text.length;
@@ -1564,8 +1606,8 @@ const harness_prelude =
     \\  }
     \\  return text.slice(0, end);
     \\}
-    \\const __home_path_posix = { join: __home_path_posix_join, dirname: __home_path_posix_dirname, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_posix_normalize, basename: __home_path_posix_basename, extname: __home_path_posix_extname, parse: __home_path_posix_parse, format: __home_path_posix_format };
-    \\const __home_path_win32 = { join: __home_path_win32_join, dirname: __home_path_win32_dirname, isAbsolute: __home_path_win32_is_absolute, normalize: __home_path_win32_normalize, basename: __home_path_win32_basename, extname: __home_path_win32_extname, parse: __home_path_win32_parse, format: __home_path_win32_format };
+    \\const __home_path_posix = { join: __home_path_posix_join, dirname: __home_path_posix_dirname, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_posix_normalize, resolve: __home_path_resolve, relative: __home_path_posix_relative, basename: __home_path_posix_basename, extname: __home_path_posix_extname, parse: __home_path_posix_parse, format: __home_path_posix_format };
+    \\const __home_path_win32 = { join: __home_path_win32_join, dirname: __home_path_win32_dirname, isAbsolute: __home_path_win32_is_absolute, normalize: __home_path_win32_normalize, resolve: __home_path_resolve, relative: __home_path_win32_relative, basename: __home_path_win32_basename, extname: __home_path_win32_extname, parse: __home_path_win32_parse, format: __home_path_win32_format };
     \\const __home_path_module = { join: __home_path_join, dirname: __home_path_posix_dirname, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_normalize, resolve: __home_path_resolve, relative: __home_path_relative, basename: __home_path_posix_basename, extname: __home_path_posix_extname, parse: __home_path_posix_parse, format: __home_path_posix_format, posix: __home_path_posix, win32: __home_path_win32 };
     \\globalThis.__home_modules["assert"] = __home_assert_module;
     \\globalThis.__home_modules["node:assert"] = __home_assert_module;
@@ -3418,6 +3460,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/node/path/join.test.js",
         "js/node/path/dirname.test.js",
         "js/node/path/parse-format.test.js",
+        "js/node/path/relative.test.js",
     };
 
     for (expected) |path| {
