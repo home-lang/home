@@ -34,6 +34,14 @@ const JSTypedArrayType = types.JSTypedArrayType;
 /// `ExceptionRef` is a sink for thrown values; C callers pass a
 /// `JSValueRef*` and JSC writes back through the indirection.
 pub const ExceptionRef = [*c]?*JSValue;
+pub const JSObjectCallAsFunctionCallback = *const fn (
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this_object: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: ExceptionRef,
+) callconv(.c) ?*JSValue;
 
 // ---- VM lifecycle -------------------------------------------------------
 
@@ -83,6 +91,10 @@ pub extern "c" fn JSObjectGetProperty(ctx: ?*JSContextRef, object: ?*JSObject, n
 pub extern "c" fn JSObjectSetProperty(ctx: ?*JSContextRef, object: ?*JSObject, name: ?*JSString, value: ?*JSValue, attrs: c_uint, exception: ExceptionRef) void;
 pub extern "c" fn JSObjectGetPropertyAtIndex(ctx: ?*JSContextRef, object: ?*JSObject, index: c_uint, exception: ExceptionRef) ?*JSValue;
 pub extern "c" fn JSObjectCallAsFunction(ctx: ?*JSContextRef, fun: ?*JSObject, this: ?*JSObject, argc: usize, argv: [*c]const ?*JSValue, exception: ExceptionRef) ?*JSValue;
+pub extern "c" fn JSObjectMakeFunctionWithCallback(ctx: ?*JSContextRef, name: ?*JSString, callback: JSObjectCallAsFunctionCallback) ?*JSObject;
+pub extern "c" fn JSObjectCallAsConstructor(ctx: ?*JSContextRef, constructor: ?*JSObject, argc: usize, argv: [*c]const ?*JSValue, exception: ExceptionRef) ?*JSObject;
+pub extern "c" fn JSObjectIsFunction(ctx: ?*JSContextRef, object: ?*JSObject) bool;
+pub extern "c" fn JSObjectIsConstructor(ctx: ?*JSContextRef, object: ?*JSObject) bool;
 
 // ---- JSString lifecycle ----------------------------------------------
 
@@ -103,6 +115,9 @@ test "extern fn type signatures are well-formed" {
     try std.testing.expect(@typeInfo(@TypeOf(JSValueMakeNull)) == .@"fn");
     try std.testing.expect(@typeInfo(@TypeOf(JSEvaluateScript)) == .@"fn");
     try std.testing.expect(@typeInfo(@TypeOf(JSObjectMake)) == .@"fn");
+    try std.testing.expect(@typeInfo(@TypeOf(JSObjectMakeFunctionWithCallback)) == .@"fn");
+    try std.testing.expect(@typeInfo(@TypeOf(JSObjectCallAsConstructor)) == .@"fn");
+    try std.testing.expect(@typeInfo(@TypeOf(JSObjectIsFunction)) == .@"fn");
     try std.testing.expect(@typeInfo(@TypeOf(JSStringRelease)) == .@"fn");
     try std.testing.expect(@TypeOf(JSGarbageCollect) != @TypeOf(JSValueMakeNull));
 }

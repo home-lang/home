@@ -1,6 +1,6 @@
 # Phase 12.2 JSC Bridge Bring-Up: Technical Roadmap
 
-**Status:** Blocked on C++ engine availability  
+**Status:** MacOS system-JSC bridge active for core eval/call/callback smoke tests
 **Target completion:** End of Q2 2026  
 **Unports enabled:** ~813 Bun files (anything that touches JSC)
 
@@ -10,7 +10,9 @@
 
 **Recommended strategy: Real-first bindings (stub-layer-as-fallback)**
 
-Phase 12.2 should land complete Zig↔JavaScriptCore C++ FFI bindings in a single push, enabling downstream phases (12.3–12.8) to unblock in parallel. Bun's 113 JSC Zig files define a ~30 extern-fn + ~37 opaque-struct surface; 82 files already ported to Home with jsc/. The remaining ~20 critical JSC-dependent files (BunObject, Archive, test_runner, AsyncModule, bun.js) require these bindings.
+Phase 12.2 should land complete Zig↔JavaScriptCore C++ FFI bindings, enabling downstream phases (12.3–12.8) to unblock in parallel. Bun's 113 JSC Zig files define a ~30 extern-fn + ~37 opaque-struct surface; 82 files already ported to Home with jsc/. The remaining ~20 critical JSC-dependent files (BunObject, Archive, test_runner, AsyncModule, bun.js) require these bindings.
+
+As of the current Home tree, the macOS `-Denable_jsc=true` path can create a JSC context, evaluate scripts, call JS functions/methods/constructors from Zig, and register Zig host functions that JavaScript can invoke through `JSObjectMakeFunctionWithCallback`. The full Bun test runner is still blocked on adapting Bun's runner objects and module loader, but the core host-call bridge is no longer panic-only.
 
 A stub-first approach delays unblocking by requiring two sweeps; the real-first approach is faster and safer for test-suite validation (Settlers III gate).
 

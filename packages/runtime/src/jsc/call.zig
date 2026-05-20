@@ -22,22 +22,16 @@
 // property name is taken as a Zig `[]const u8` — the helper does the
 // `JSStringCreateWithUTF8CString` wrap + release internally.
 //
-// `JSObjectCallAsConstructor`, `JSObjectIsFunction`, and `JSObjectIsConstructor`
-// are not yet declared in `jsc/extern_fns.zig` (M1 scoped its initial 30-fn
-// surface to the most-used inspect/coerce/property entries). They will be
-// added alongside the M3 C++ wiring; until then the bodies here panic with
-// `TODO(phase-12.2-M3)` so downstream call sites compile against the M5
-// signature without forcing the linker to resolve those symbols early.
-//
 // Bun upstream parity:
 //   - `~/Code/bun/src/jsc/JSValue.zig` L2407 (`call`)
 //   - `~/Code/bun/src/jsc/JSValue.zig` L2455 (`construct`)
 //   - `~/Code/bun/src/jsc/JSValue.zig` L2280 (`isCallable` / `isConstructor`)
-//
-// All bodies panic with `TODO(phase-12.2-M3)`; the M5 contract is the
-// shape of the surface, not its semantics.
 
 const std = @import("std");
+const build_options = @import("build_options");
+const Engine = @import("engine.zig").Engine;
+const evaluate = @import("evaluate.zig");
+const extern_fns = @import("extern_fns.zig");
 const opaques = @import("opaques.zig");
 
 const JSValue = opaques.JSValue;
@@ -49,7 +43,7 @@ const JSString = opaques.JSString;
 /// nullable out-pointer JSC writes the thrown value through. Callers
 /// pass `null` to discard the thrown value (the return is `undefined`
 /// on failure).
-pub const ExceptionRef = [*c]?*JSValue;
+pub const ExceptionRef = extern_fns.ExceptionRef;
 
 /// `Call(fn_value, this_arg, argumentsList)`. Invokes `fn_value` as a
 /// JavaScript function with `this_arg` bound as the receiver and `args`
@@ -65,12 +59,18 @@ pub fn callFunction(
     args: []const *JSValue,
     exception: ?ExceptionRef,
 ) *JSValue {
-    _ = ctx;
-    _ = fn_value;
-    _ = this_arg;
-    _ = args;
-    _ = exception;
-    @panic("TODO(phase-12.2-M3): JSC C++ engine wiring");
+    var argv = argvFromSlice(args);
+    defer argv.deinit();
+    const exception_ref = exception orelse null;
+    const result = extern_fns.JSObjectCallAsFunction(
+        ctx,
+        @ptrCast(fn_value),
+        if (this_arg) |value| @ptrCast(value) else null,
+        argv.len(),
+        argv.ptr(),
+        exception_ref,
+    );
+    return result orelse makeUndefined(ctx);
 }
 
 /// `GetV(obj, method_name)` followed by `Call(method, obj, args)`. The
@@ -87,12 +87,13 @@ pub fn callMethod(
     args: []const *JSValue,
     exception: ?ExceptionRef,
 ) *JSValue {
-    _ = ctx;
-    _ = obj;
-    _ = method_name;
-    _ = args;
-    _ = exception;
-    @panic("TODO(phase-12.2-M3): JSC C++ engine wiring");
+    const name_string = makeNameString(method_name);
+    defer extern_fns.JSStringRelease(name_string);
+
+    const exception_ref = exception orelse null;
+    const method = extern_fns.JSObjectGetProperty(ctx, @ptrCast(obj), name_string, exception_ref) orelse
+        return makeUndefined(ctx);
+    return callFunction(ctx, method, obj, args, exception);
 }
 
 /// `Construct(F, argumentsList)`. Invokes `constructor` as a `new` call
@@ -107,11 +108,16 @@ pub fn constructObject(
     args: []const *JSValue,
     exception: ?ExceptionRef,
 ) *JSValue {
-    _ = ctx;
-    _ = constructor;
-    _ = args;
-    _ = exception;
-    @panic("TODO(phase-12.2-M3): JSC C++ engine wiring");
+    var argv = argvFromSlice(args);
+    defer argv.deinit();
+    const result = extern_fns.JSObjectCallAsConstructor(
+        ctx,
+        @ptrCast(constructor),
+        argv.len(),
+        argv.ptr(),
+        exception orelse null,
+    );
+    return @ptrCast(result orelse return makeUndefined(ctx));
 }
 
 /// `IsCallable(v)`. Returns `true` iff `v` is a callable function-like
@@ -120,9 +126,8 @@ pub fn constructObject(
 ///
 /// Forwards (M3) to `JSObjectIsFunction`.
 pub fn isCallable(ctx: *JSContextRef, value: *JSValue) bool {
-    _ = ctx;
-    _ = value;
-    @panic("TODO(phase-12.2-M3): JSC C++ engine wiring");
+    if (!extern_fns.JSValueIsObject(ctx, value)) return false;
+    return extern_fns.JSObjectIsFunction(ctx, @ptrCast(value));
 }
 
 /// `IsConstructor(v)`. Returns `true` iff `v` carries the `[[Construct]]`
@@ -131,9 +136,47 @@ pub fn isCallable(ctx: *JSContextRef, value: *JSValue) bool {
 ///
 /// Forwards (M3) to `JSObjectIsConstructor`.
 pub fn isConstructor(ctx: *JSContextRef, value: *JSValue) bool {
-    _ = ctx;
-    _ = value;
-    @panic("TODO(phase-12.2-M3): JSC C++ engine wiring");
+    if (!extern_fns.JSValueIsObject(ctx, value)) return false;
+    return extern_fns.JSObjectIsConstructor(ctx, @ptrCast(value));
+}
+
+const Argv = struct {
+    values: []?*JSValue,
+
+    pub fn deinit(self: *Argv) void {
+        if (self.values.len > 0) std.heap.smp_allocator.free(self.values);
+        self.values = &.{};
+    }
+
+    pub fn ptr(self: *const Argv) [*c]const ?*JSValue {
+        return if (self.values.len == 0) null else self.values.ptr;
+    }
+
+    pub fn len(self: *const Argv) usize {
+        return self.values.len;
+    }
+};
+
+fn argvFromSlice(args: []const *JSValue) Argv {
+    if (args.len == 0) return .{ .values = &.{} };
+    const values = std.heap.smp_allocator.alloc(?*JSValue, args.len) catch
+        @panic("JSC: failed to allocate call argv");
+    for (args, values) |arg, *slot| slot.* = arg;
+    return .{ .values = values };
+}
+
+fn makeUndefined(ctx: *JSContextRef) *JSValue {
+    return extern_fns.JSValueMakeUndefined(ctx) orelse
+        @panic("JSC: failed to create undefined");
+}
+
+fn makeNameString(method_name: []const u8) *JSString {
+    const allocator = std.heap.smp_allocator;
+    const name_z = allocator.dupeZ(u8, method_name) catch @panic("JSC: failed to allocate method name");
+    defer allocator.free(name_z);
+
+    return extern_fns.JSStringCreateWithUTF8CString(name_z.ptr) orelse
+        @panic("JSC: failed to create method name string");
 }
 
 test "call helpers expose the expected M5 signatures" {
@@ -168,12 +211,51 @@ test "call return types match the M5 contract" {
     try std.testing.expect(@TypeOf(isCallable) == @TypeOf(isConstructor));
 }
 
-// Silence unused-import lints — `JSObject` and `JSString` are reserved
-// for the M3 wiring where the extern fn signatures take `*JSObject` and
-// `*JSString` directly (the helpers above accept `*JSValue` and downcast
-// internally). Keeping the aliases keeps the diff against the M3 batch
-// minimal.
+test "call helpers invoke functions and methods when JSC is enabled" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    const fn_value = (try evaluate.evaluateUtf8(std.testing.allocator, ctx, "(function(value) { return value + 1; })", "home:jsc-call-fn", 1, null)) orelse
+        return error.JSEvaluateReturnedNull;
+    const arg = extern_fns.JSValueMakeNumber(ctx, 41) orelse return error.JSValueMakeFailed;
+    const result = callFunction(ctx, fn_value, null, &.{arg}, null);
+    try std.testing.expectEqual(@as(f64, 42), extern_fns.JSValueToNumber(ctx, result, null));
+
+    const obj = (try evaluate.evaluateUtf8(std.testing.allocator, ctx, "({ plusTwo(value) { return value + 2; } })", "home:jsc-call-method", 1, null)) orelse
+        return error.JSEvaluateReturnedNull;
+    const method_result = callMethod(ctx, obj, "plusTwo", &.{arg}, null);
+    try std.testing.expectEqual(@as(f64, 43), extern_fns.JSValueToNumber(ctx, method_result, null));
+}
+
+test "call helpers detect constructors when JSC is enabled" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    const constructor = (try evaluate.evaluateUtf8(std.testing.allocator, ctx, "(function Box(value) { this.value = value; })", "home:jsc-ctor", 1, null)) orelse
+        return error.JSEvaluateReturnedNull;
+    const arrow = (try evaluate.evaluateUtf8(std.testing.allocator, ctx, "(() => 1)", "home:jsc-arrow", 1, null)) orelse
+        return error.JSEvaluateReturnedNull;
+
+    try std.testing.expect(isCallable(ctx, constructor));
+    try std.testing.expect(isConstructor(ctx, constructor));
+    try std.testing.expect(isCallable(ctx, arrow));
+    try std.testing.expect(!isConstructor(ctx, arrow));
+
+    const arg = extern_fns.JSValueMakeNumber(ctx, 42) orelse return error.JSValueMakeFailed;
+    const instance = constructObject(ctx, constructor, &.{arg}, null);
+    const value_name = extern_fns.JSStringCreateWithUTF8CString("value") orelse return error.StringInitFailed;
+    defer extern_fns.JSStringRelease(value_name);
+    const value = extern_fns.JSObjectGetProperty(ctx, @ptrCast(instance), value_name, null) orelse
+        return error.JSPropertyGetFailed;
+    try std.testing.expectEqual(@as(f64, 42), extern_fns.JSValueToNumber(ctx, value, null));
+}
+
 comptime {
     _ = JSObject;
-    _ = JSString;
 }

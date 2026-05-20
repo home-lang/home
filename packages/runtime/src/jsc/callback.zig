@@ -11,12 +11,11 @@
 // The `Callback` struct here is the Zig-shaped record we hand to
 // `registerCallback` / `registerHostFunction`: it pairs the host fn ptr
 // with the JS-visible name (used both as the property key on the global
-// and as the function's `.name`). Once M3 lands the C++ wiring, the
-// register helpers will (a) build a `*JSString` from `name`, (b) call
+// and as the function's `.name`). The register helpers (a) build a
+// `*JSString` from `name`, (b) call
 // `JSObjectMakeFunctionWithCallback(ctx, name_str, fn_ptr)`, (c) attach
 // the result to `global` via `JSObjectSetProperty`, and (d) release the
-// transient `*JSString`. Until then, both register helpers panic with
-// `TODO(phase-12.2-M3)`.
+// transient `*JSString`.
 //
 // `registerHostFunction` is the lower-level entry: it returns the freshly
 // constructed `*JSValue` without attaching it anywhere, so callers can do
@@ -30,10 +29,11 @@
 //   - `~/Code/bun/src/jsc/CallFrame.zig` (the symmetric "called from JS"
 //     side that unpacks `argc`/`argv` for the host fn).
 //
-// All bodies panic with `TODO(phase-12.2-M3)`; the M5 contract is the
-// shape of the surface, not its semantics.
-
 const std = @import("std");
+const build_options = @import("build_options");
+const Engine = @import("engine.zig").Engine;
+const evaluate = @import("evaluate.zig");
+const extern_fns = @import("extern_fns.zig");
 const opaques = @import("opaques.zig");
 
 const JSValue = opaques.JSValue;
@@ -42,10 +42,7 @@ const JSGlobalObject = opaques.JSGlobalObject;
 const JSObject = opaques.JSObject;
 const JSString = opaques.JSString;
 
-/// `ExceptionRef` mirrors the M2 declaration in `extern_fns.zig` — a
-/// nullable out-pointer JSC writes the thrown value through. Host
-/// callbacks set `exception.*` to deliver an error to the JS caller.
-pub const ExceptionRef = [*c]?*JSValue;
+pub const ExceptionRef = extern_fns.ExceptionRef;
 
 /// The C-ABI shape JSC expects for host-supplied callbacks. The signature
 /// mirrors Apple's `JSObjectCallAsFunctionCallback` typedef in
@@ -53,17 +50,10 @@ pub const ExceptionRef = [*c]?*JSValue;
 /// is required because JSC stores the pointer in the function object and
 /// dispatches it without any host-side trampoline.
 ///
-/// The `args` parameter is a C-style pointer + length pair (`argc`,
-/// `argv[]`) so the C-API can pass JSC's internal `JSValueRef[]` buffer
-/// directly. Hosts that prefer a slice should reslice via
-/// `args[0..args_count]` at the top of their body.
-pub const HostCallbackFn = *const fn (
-    ctx: *JSContextRef,
-    this: ?*JSValue,
-    args_count: usize,
-    args: [*c]const ?*JSValue,
-    exception: ExceptionRef,
-) callconv(.c) *JSValue;
+/// The `arguments` parameter is a C-style pointer + length pair
+/// (`argument_count`, `arguments[]`) so the C-API can pass JSC's
+/// internal `JSValueRef[]` buffer directly.
+pub const HostCallbackFn = extern_fns.JSObjectCallAsFunctionCallback;
 
 /// Host-callback descriptor. Pairs a Zig fn ptr with the JS-visible name
 /// JSC will install on the function object (`.name` property + property
@@ -93,11 +83,18 @@ pub fn registerCallback(
     name: []const u8,
     fn_ptr: HostCallbackFn,
 ) void {
-    _ = ctx;
-    _ = global;
-    _ = name;
-    _ = fn_ptr;
-    @panic("TODO(phase-12.2-M3): JSC C++ engine wiring");
+    const function = registerHostFunctionObject(ctx, name, fn_ptr);
+    const name_string = makeNameString(name);
+    defer extern_fns.JSStringRelease(name_string);
+
+    extern_fns.JSObjectSetProperty(
+        ctx,
+        @ptrCast(global),
+        name_string,
+        @ptrCast(function),
+        0,
+        null,
+    );
 }
 
 /// Build a host function from `fn_ptr` and return it as a `*JSValue`
@@ -111,10 +108,24 @@ pub fn registerHostFunction(
     name: []const u8,
     fn_ptr: HostCallbackFn,
 ) *JSValue {
-    _ = ctx;
-    _ = name;
-    _ = fn_ptr;
-    @panic("TODO(phase-12.2-M3): JSC C++ engine wiring");
+    return @ptrCast(registerHostFunctionObject(ctx, name, fn_ptr));
+}
+
+fn registerHostFunctionObject(ctx: *JSContextRef, name: []const u8, fn_ptr: HostCallbackFn) *JSObject {
+    const name_string = makeNameString(name);
+    defer extern_fns.JSStringRelease(name_string);
+
+    return extern_fns.JSObjectMakeFunctionWithCallback(ctx, name_string, fn_ptr) orelse
+        @panic("JSC: failed to create host function");
+}
+
+fn makeNameString(name: []const u8) *JSString {
+    const allocator = std.heap.smp_allocator;
+    const name_z = allocator.dupeZ(u8, name) catch @panic("JSC: failed to allocate host function name");
+    defer allocator.free(name_z);
+
+    return extern_fns.JSStringCreateWithUTF8CString(name_z.ptr) orelse
+        @panic("JSC: failed to create host function name string");
 }
 
 // ---- inline tests -------------------------------------------------------
@@ -123,13 +134,15 @@ pub fn registerHostFunction(
 // dispatched — the register helpers panic under M5 — but the tests need
 // a concrete `HostCallbackFn`-shaped pointer to take its address.
 fn sample_host_fn(
-    ctx: *JSContextRef,
-    this: ?*JSValue,
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
     args_count: usize,
     args: [*c]const ?*JSValue,
     exception: ExceptionRef,
-) callconv(.c) *JSValue {
+) callconv(.c) ?*JSValue {
     _ = ctx;
+    _ = function;
     _ = this;
     _ = args_count;
     _ = args;
@@ -175,11 +188,43 @@ test "Callback struct and HostCallbackFn round-trip a fn ptr" {
     try std.testing.expect(reg_cb_info.return_type.? == void);
 }
 
-// Silence unused-import lints — `JSObject` and `JSString` are reserved
-// for the M3 wiring where `JSObjectMakeFunctionWithCallback` produces a
-// `*JSObject` and consumes a `*JSString` name. Keeping the aliases here
-// keeps the M3 diff against this file minimal.
+fn add_one_host_fn(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    args_count: usize,
+    args: [*c]const ?*JSValue,
+    exception: ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    _ = exception;
+    const actual_ctx = ctx.?;
+    const first_arg = if (args_count > 0) args[0] else null;
+    const value = if (first_arg) |arg| extern_fns.JSValueToNumber(actual_ctx, arg, null) else 0;
+    return extern_fns.JSValueMakeNumber(actual_ctx, value + 1);
+}
+
+test "callback helper installs a JS-callable native function" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    registerCallback(engine.currentContext(), engine.currentGlobalObject(), "homeAddOne", add_one_host_fn);
+
+    const value = (try evaluate.evaluateUtf8(
+        std.testing.allocator,
+        engine.currentContext(),
+        "homeAddOne(41)",
+        "home:jsc-callback-smoke",
+        1,
+        null,
+    )) orelse return error.JSEvaluateReturnedNull;
+    const number = extern_fns.JSValueToNumber(engine.currentContext(), value, null);
+    try std.testing.expectEqual(@as(f64, 42), number);
+}
+
 comptime {
-    _ = JSObject;
-    _ = JSString;
+    _ = JSValue;
 }
