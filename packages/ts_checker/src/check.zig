@@ -40978,6 +40978,7 @@ pub const Checker = struct {
                     } else if (sk == .import_decl) {
                         if (self.importDeclBindsLocal(s, id.name)) {
                             if (self.moduleNamespaceTypeForLocalImport(id.name, node) catch null) |ns_t| return ns_t;
+                            if (self.virtualImportTypeForLocal(id.name, node) catch null) |import_t| return import_t;
                             return types.Primitive.any;
                         }
                     }
@@ -41076,6 +41077,7 @@ pub const Checker = struct {
                     } else if (sk == .import_decl) {
                         if (self.importDeclBindsLocal(s, id.name)) {
                             if (self.moduleNamespaceTypeForLocalImport(id.name, node) catch null) |ns_t| return ns_t;
+                            if (self.virtualImportTypeForLocal(id.name, node) catch null) |import_t| return import_t;
                             return types.Primitive.any;
                         }
                     }
@@ -61441,6 +61443,32 @@ test "checker: constructor parameter decorator property key may be undefined" {
         \\declare function dec(target: Function, propertyKey: string | symbol, parameterIndex: number): void;
         \\class C {
         \\  constructor(@dec value: number) {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.parameter_decorator_signature_unresolved) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: imported constructor parameter decorator keeps signature" {
+    const s = try newSetup(
+        \\// @target: es5, es2015
+        \\// @module: commonjs
+        \\// @experimentalDecorators: true
+        \\// @filename: 0.ts
+        \\export class base { }
+        \\export function foo(target: Object, propertyKey: string | symbol, parameterIndex: number) { }
+        \\// @filename: 2.ts
+        \\import {base} from "./0.ts";
+        \\import {foo} from "./0.ts";
+        \\export class C extends base {
+        \\  constructor(@foo prop: any) {
+        \\    super();
+        \\  }
         \\}
     );
     defer destroySetup(s);
