@@ -10,8 +10,10 @@
 // shape — see comments at each stub.
 //
 // Behavior preserved verbatim from upstream: WTF-8 decoding, line-break
-// recognition (\r, \n, \r\n, U+2028, U+2029), the stack-fallback first
-// `columns_for_non_ascii` slab, and the final flush after the last codepoint.
+// recognition (\r, \n, \r\n, U+2028, U+2029), and the final flush after the
+// last codepoint. Zig 0.17-dev removed the stdlib `stackFallback` helper used
+// upstream, so Home keeps the same owned-slice behavior through the caller's
+// allocator until a new stdlib stack fallback lands.
 
 const LineOffsetTable = @This();
 
@@ -96,18 +98,7 @@ pub fn generate(allocator: std.mem.Allocator, contents: []const u8, approximate_
     var column_byte_offset: u32 = 0;
     var line_byte_offset: u32 = 0;
 
-    // the idea here is:
-    // we want to avoid re-allocating this array _most_ of the time
-    // when lines _do_ have unicode characters, they probably still won't be longer than 255 much
-    //
-    // `std.heap.stackFallback` owns a `[size]u8` buffer internally;
-    // `.get()` returns the `Allocator` interface and resets the
-    // backing `fixed_buffer_allocator`, whose `ownsSlice` / `end_index`
-    // / `reset()` accesses below mirror the upstream Bun source.
-    var stack_fallback = std.heap.stackFallback(@sizeOf(i32) * 256, allocator);
-    var columns_for_non_ascii = std.array_list.Managed(i32).initCapacity(stack_fallback.get(), 120) catch unreachable;
-    const reset_end_index = stack_fallback.fixed_buffer_allocator.end_index;
-    const initial_columns_for_non_ascii = columns_for_non_ascii;
+    var columns_for_non_ascii = std.array_list.Managed(i32).initCapacity(allocator, 120) catch unreachable;
 
     var remaining = contents;
     while (remaining.len > 0) {
@@ -183,10 +174,7 @@ pub fn generate(allocator: std.mem.Allocator, contents: []const u8, approximate_
                 // We don't call .toOwnedSlice() because it is expensive to
                 // reallocate the array AND when inside an Arena, it's
                 // hideously expensive
-                var owned = columns_for_non_ascii.items;
-                if (stack_fallback.fixed_buffer_allocator.ownsSlice(std.mem.sliceAsBytes(owned))) {
-                    owned = allocator.dupe(i32, owned) catch unreachable;
-                }
+                const owned = columns_for_non_ascii.toOwnedSlice() catch unreachable;
 
                 list.append(allocator, .{
                     .byte_offset_to_start_of_line = line_byte_offset,
@@ -198,11 +186,6 @@ pub fn generate(allocator: std.mem.Allocator, contents: []const u8, approximate_
                 byte_offset_to_first_non_ascii = 0;
                 column_byte_offset = 0;
                 line_byte_offset = 0;
-
-                // reset the list to use the stack-allocated memory
-                stack_fallback.fixed_buffer_allocator.reset();
-                stack_fallback.fixed_buffer_allocator.end_index = reset_end_index;
-                columns_for_non_ascii = initial_columns_for_non_ascii;
             },
             else => {
                 // Mozilla's "source-map" library counts columns using UTF-16 code units
@@ -226,10 +209,7 @@ pub fn generate(allocator: std.mem.Allocator, contents: []const u8, approximate_
         }
     }
     {
-        var owned = columns_for_non_ascii.toOwnedSlice() catch unreachable;
-        if (stack_fallback.fixed_buffer_allocator.ownsSlice(std.mem.sliceAsBytes(owned))) {
-            owned = allocator.dupe(i32, owned) catch unreachable;
-        }
+        const owned = columns_for_non_ascii.toOwnedSlice() catch unreachable;
         list.append(allocator, .{
             .byte_offset_to_start_of_line = line_byte_offset,
             .byte_offset_to_first_non_ascii = byte_offset_to_first_non_ascii,
