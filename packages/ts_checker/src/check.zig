@@ -818,6 +818,21 @@ const ClassMethodSeen = struct {
     /// diagnostics at *every* declaration of the overload group).
     /// See symbolProperty39 baseline.
     prior_nodes: std.ArrayListUnmanaged(NodeId) = .empty,
+    /// Parallel to `prior_nodes` — each entry's visibility modifier.
+    /// Used by the post-loop visibility-mismatch pass to compare
+    /// every overload against the implementation's visibility, which
+    /// tsc treats as canonical (TS2385). Mirrors
+    /// `memberFunctionsWithPublicPrivateOverloads.ts(15,15)`/`(16,15)`
+    /// where both protected overloads get flagged because the impl
+    /// is private.
+    prior_visibilities: std.ArrayListUnmanaged(u2) = .empty,
+    /// Visibility of the first implementation signature observed.
+    /// `null` for declare/ambient overload groups with no impl.
+    impl_visibility: ?u2 = null,
+    /// Node id of the first implementation signature observed —
+    /// excluded from the post-loop visibility-mismatch pass so we
+    /// don't double-report at the impl itself.
+    impl_node: NodeId = hir_mod.none_node_id,
 };
 
 const IndexKind = enum { string, number, symbol };
@@ -13841,13 +13856,19 @@ pub const Checker = struct {
         var method_seen: std.AutoHashMapUnmanaged(hir_mod.StringId, ClassMethodSeen) = .empty;
         defer {
             var msit = method_seen.iterator();
-            while (msit.next()) |e| e.value_ptr.prior_nodes.deinit(self.gpa);
+            while (msit.next()) |e| {
+                e.value_ptr.prior_nodes.deinit(self.gpa);
+                e.value_ptr.prior_visibilities.deinit(self.gpa);
+            }
             method_seen.deinit(self.gpa);
         }
         var static_method_seen: std.AutoHashMapUnmanaged(hir_mod.StringId, ClassMethodSeen) = .empty;
         defer {
             var sit = static_method_seen.iterator();
-            while (sit.next()) |e| e.value_ptr.prior_nodes.deinit(self.gpa);
+            while (sit.next()) |e| {
+                e.value_ptr.prior_nodes.deinit(self.gpa);
+                e.value_ptr.prior_visibilities.deinit(self.gpa);
+            }
             static_method_seen.deinit(self.gpa);
         }
         var previous_bodyless_method_name: ?hir_mod.StringId = null;
@@ -14858,6 +14879,8 @@ pub const Checker = struct {
         }
         try self.checkClassMethodMissingImplementations(node, &method_seen);
         try self.checkClassMethodMissingImplementations(node, &static_method_seen);
+        try self.checkClassMethodOverloadVisibilityMismatch(&method_seen);
+        try self.checkClassMethodOverloadVisibilityMismatch(&static_method_seen);
         // §6.A 2000-3000 ratchet: tsc fires TS2390 when a class has
         // one or more `constructor(): T;` overload signatures but no
         // implementation `constructor(...) { … }`. Skip in ambient
@@ -17440,16 +17463,17 @@ pub const Checker = struct {
                 .bodyless_count = if (has_body) 0 else 1,
                 .implementation_count = if (has_body) 1 else 0,
                 .prior_nodes = .empty,
+                .prior_visibilities = .empty,
+                .impl_visibility = if (has_body) visibility else null,
+                .impl_node = if (has_body) node else hir_mod.none_node_id,
             };
             try gop.value_ptr.prior_nodes.append(self.gpa, node);
+            try gop.value_ptr.prior_visibilities.append(self.gpa, visibility);
             return;
         }
         if (gop.value_ptr.first_static != is_static) {
             const code = if (is_static) TsCodes.overload_must_not_be_static else TsCodes.overload_must_be_static;
             try self.report(node, code, "Overload signatures must all be static or non-static.");
-        }
-        if (gop.value_ptr.first_visibility != visibility) {
-            try self.report(node, TsCodes.overloads_must_all_have_same_visibility, "Overload signatures must all be public, private or protected.");
         }
         if (has_body) {
             gop.value_ptr.implementation_count += 1;
@@ -17468,11 +17492,42 @@ pub const Checker = struct {
                 }
                 try self.reportDuplicateFunctionImplementation(node);
             }
+            if (gop.value_ptr.impl_visibility == null) {
+                gop.value_ptr.impl_visibility = visibility;
+                gop.value_ptr.impl_node = node;
+            }
         } else {
             gop.value_ptr.bodyless_count += 1;
             gop.value_ptr.last_bodyless_node = node;
         }
         try gop.value_ptr.prior_nodes.append(self.gpa, node);
+        try gop.value_ptr.prior_visibilities.append(self.gpa, visibility);
+    }
+
+    /// Post-pass over `method_seen` / `static_method_seen` — emit
+    /// TS2385 on each overload whose visibility doesn't match the
+    /// implementation signature's visibility (the canonical one).
+    /// When no impl signature was observed (declare/ambient class),
+    /// fall back to the first overload's visibility so mismatches
+    /// among bodyless overloads still surface. Mirrors
+    /// `memberFunctionsWithPublicPrivateOverloads.ts(15,15)`/`(16,15)`.
+    fn checkClassMethodOverloadVisibilityMismatch(
+        self: *Checker,
+        seen: *const std.AutoHashMapUnmanaged(hir_mod.StringId, ClassMethodSeen),
+    ) CheckError!void {
+        var it = seen.iterator();
+        while (it.next()) |entry| {
+            const group = entry.value_ptr.*;
+            if (group.prior_nodes.items.len <= 1) continue;
+            const canonical_vis: u2 = group.impl_visibility orelse group.first_visibility;
+            const skip_node: NodeId = group.impl_node;
+            for (group.prior_nodes.items, 0..) |n, idx| {
+                if (n == skip_node) continue;
+                const vis = group.prior_visibilities.items[idx];
+                if (vis == canonical_vis) continue;
+                try self.report(n, TsCodes.overloads_must_all_have_same_visibility, "Overload signatures must all be public, private or protected.");
+            }
+        }
     }
 
     fn reportClassMethodImplementationNameMismatch(
@@ -19433,6 +19488,14 @@ pub const Checker = struct {
                 self.interner.internObjectTypeWithIndexAndSymbol(new_members.items, new_str, new_num, new_sym) catch return t;
             if (self.alias_display_names.get(t)) |display| {
                 try self.alias_display_names.put(self.gpa, new_obj, display);
+            }
+            // Propagate the class-instance origin so member-access
+            // privacy checks (TS2341) can map an instantiated generic
+            // (`D<number>`) back to its declaring class (`D`).
+            // Mirrors `memberFunctionsWithPrivateOverloads.ts(46,12)`
+            // / `memberFunctionsWithPublicPrivateOverloads.ts(62,12)`.
+            if (self.class_name_by_instance.get(t)) |cname| {
+                try self.class_name_by_instance.put(self.gpa, new_obj, cname);
             }
             return new_obj;
         }
@@ -49120,6 +49183,20 @@ pub const Checker = struct {
                     next_pred.target_type = self.substituteType(pred.target_type, subs) catch pred.target_type;
                     try self.recordMemberPredicate(new_obj, om.name, next_pred);
                 }
+            }
+            // Propagate the class-instance origin so member-access
+            // privacy checks (TS2341) can map an instantiated generic
+            // (`D<number>`) back to its declaring class (`D`).
+            // Mirrors `memberFunctionsWithPublicPrivateOverloads.ts(62,12)`.
+            if (self.class_name_by_instance.get(t)) |cname| {
+                try self.class_name_by_instance.put(self.gpa, new_obj, cname);
+            }
+            // Mirror `class_private_members` lookup against the instance:
+            // privacy checks look up the class's private set via the
+            // declaring class name, which is now reachable via the
+            // propagated `class_name_by_instance` entry.
+            if (self.alias_display_names.get(t)) |display| {
+                try self.alias_display_names.put(self.gpa, new_obj, display);
             }
             return new_obj;
         }

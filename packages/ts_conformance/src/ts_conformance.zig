@@ -3444,6 +3444,176 @@ test "conformance: sub-strict directive without @strict keeps inferred strict-on
     try T.expect(merged_with_strict_on.use_unknown_in_catch_variables);
 }
 
+test "conformance: memberFunctionsWithPrivateOverloads matches TS2341 baseline" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "memberFunctionsWithPrivateOverloads",
+        .path = "memberFunctionsWithPrivateOverloads.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\class C {
+        \\    private foo(x: number);
+        \\    private foo(x: number, y: string);
+        \\    private foo(x: any, y?: any) { }
+        \\
+        \\    private bar(x: 'hi');
+        \\    private bar(x: string);
+        \\    private bar(x: number, y: string);
+        \\    private bar(x: any, y?: any) { }
+        \\
+        \\    private static foo(x: number);
+        \\    private static foo(x: number, y: string);
+        \\    private static foo(x: any, y?: any) { }
+        \\
+        \\    private static bar(x: 'hi');
+        \\    private static bar(x: string);
+        \\    private static bar(x: number, y: string);
+        \\    private static bar(x: any, y?: any) { }
+        \\}
+        \\
+        \\class D<T> {
+        \\    private foo(x: number);
+        \\    private foo(x: T, y: T);
+        \\    private foo(x: any, y?: any) { }
+        \\
+        \\    private bar(x: 'hi');
+        \\    private bar(x: string);
+        \\    private bar(x: T, y: T);
+        \\    private bar(x: any, y?: any) { }
+        \\
+        \\    private static foo(x: number);
+        \\    private static foo(x: number, y: number);
+        \\    private static foo(x: any, y?: any) { }
+        \\
+        \\    private static bar(x: 'hi');
+        \\    private static bar(x: string);
+        \\    private static bar(x: number, y: number);
+        \\    private static bar(x: any, y?: any) { }
+        \\
+        \\}
+        \\
+        \\declare var c: C;
+        \\var r = c.foo(1); // error
+        \\
+        \\declare var d: D<number>;
+        \\var r2 = d.foo(2); // error
+        \\
+        \\var r3 = C.foo(1); // error
+        \\var r4 = D.bar(''); // error
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\memberFunctionsWithPrivateOverloads.ts(43,11): error TS2341: Property 'foo' is private and only accessible within class 'C'.
+        \\memberFunctionsWithPrivateOverloads.ts(46,12): error TS2341: Property 'foo' is private and only accessible within class 'D<T>'.
+        \\memberFunctionsWithPrivateOverloads.ts(48,12): error TS2341: Property 'foo' is private and only accessible within class 'C'.
+        \\memberFunctionsWithPrivateOverloads.ts(49,12): error TS2341: Property 'bar' is private and only accessible within class 'D<T>'.
+        ,
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: memberFunctionsWithPublicPrivateOverloads matches baseline" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "memberFunctionsWithPublicPrivateOverloads",
+        .path = "memberFunctionsWithPublicPrivateOverloads.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\class C {
+        \\    private foo(x: number);
+        \\    public foo(x: number, y: string); // error
+        \\    private foo(x: any, y?: any) { }
+        \\
+        \\    private bar(x: 'hi');
+        \\    public bar(x: string); // error
+        \\    private bar(x: number, y: string);
+        \\    private bar(x: any, y?: any) { }
+        \\
+        \\    private static foo(x: number);
+        \\    public static foo(x: number, y: string); // error
+        \\    private static foo(x: any, y?: any) { }
+        \\
+        \\    protected baz(x: string); // error
+        \\    protected baz(x: number, y: string); // error
+        \\    private baz(x: any, y?: any) { }
+        \\
+        \\    private static bar(x: 'hi');
+        \\    public static bar(x: string); // error
+        \\    private static bar(x: number, y: string);
+        \\    private static bar(x: any, y?: any) { }
+        \\
+        \\    protected static baz(x: 'hi');
+        \\    public static baz(x: string); // error
+        \\    protected static baz(x: number, y: string);
+        \\    protected static baz(x: any, y?: any) { }
+        \\}
+        \\
+        \\class D<T> {
+        \\    private foo(x: number);
+        \\    public foo(x: T, y: T); // error
+        \\    private foo(x: any, y?: any) { }
+        \\
+        \\    private bar(x: 'hi');
+        \\    public bar(x: string); // error
+        \\    private bar(x: T, y: T);
+        \\    private bar(x: any, y?: any) { }
+        \\
+        \\    private baz(x: string);
+        \\    protected baz(x: number, y: string); // error
+        \\    private baz(x: any, y?: any) { }
+        \\
+        \\    private static foo(x: number);
+        \\    public static foo(x: number, y: string); // error
+        \\    private static foo(x: any, y?: any) { }
+        \\
+        \\    private static bar(x: 'hi');
+        \\    public static bar(x: string); // error
+        \\    private static bar(x: number, y: string);
+        \\    private static bar(x: any, y?: any) { }
+        \\
+        \\    public static baz(x: string); // error
+        \\    protected static baz(x: number, y: string);
+        \\    protected static baz(x: any, y?: any) { }
+        \\}
+        \\
+        \\declare var c: C;
+        \\var r = c.foo(1); // error
+        \\
+        \\declare var d: D<number>;
+        \\var r2 = d.foo(2); // error
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\memberFunctionsWithPublicPrivateOverloads.ts(3,12): error TS2385: Overload signatures must all be public, private or protected.
+        \\memberFunctionsWithPublicPrivateOverloads.ts(7,12): error TS2385: Overload signatures must all be public, private or protected.
+        \\memberFunctionsWithPublicPrivateOverloads.ts(12,19): error TS2385: Overload signatures must all be public, private or protected.
+        \\memberFunctionsWithPublicPrivateOverloads.ts(15,15): error TS2385: Overload signatures must all be public, private or protected.
+        \\memberFunctionsWithPublicPrivateOverloads.ts(16,15): error TS2385: Overload signatures must all be public, private or protected.
+        \\memberFunctionsWithPublicPrivateOverloads.ts(20,19): error TS2385: Overload signatures must all be public, private or protected.
+        \\memberFunctionsWithPublicPrivateOverloads.ts(25,19): error TS2385: Overload signatures must all be public, private or protected.
+        \\memberFunctionsWithPublicPrivateOverloads.ts(32,12): error TS2385: Overload signatures must all be public, private or protected.
+        \\memberFunctionsWithPublicPrivateOverloads.ts(36,12): error TS2385: Overload signatures must all be public, private or protected.
+        \\memberFunctionsWithPublicPrivateOverloads.ts(41,15): error TS2385: Overload signatures must all be public, private or protected.
+        \\memberFunctionsWithPublicPrivateOverloads.ts(45,19): error TS2385: Overload signatures must all be public, private or protected.
+        \\memberFunctionsWithPublicPrivateOverloads.ts(49,19): error TS2385: Overload signatures must all be public, private or protected.
+        \\memberFunctionsWithPublicPrivateOverloads.ts(53,19): error TS2385: Overload signatures must all be public, private or protected.
+        \\memberFunctionsWithPublicPrivateOverloads.ts(59,11): error TS2341: Property 'foo' is private and only accessible within class 'C'.
+        \\memberFunctionsWithPublicPrivateOverloads.ts(62,12): error TS2341: Property 'foo' is private and only accessible within class 'D<T>'.
+        ,
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: derivedTypeAccessesHiddenBaseCallViaSuperPropertyAccess triage" {
     const result = try runOneEntry(T.allocator, .{
         .name = "derivedTypeAccessesHiddenBaseCallViaSuperPropertyAccess",
