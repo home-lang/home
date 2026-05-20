@@ -3955,6 +3955,68 @@ test "conformance: instanceMemberInitialization passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: privateInstanceVisibility matches TS2564 baseline" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "privateInstanceVisibility",
+        .path = "privateInstanceVisibility.ts",
+        .source =
+        \\// @target: es2015
+        \\namespace Test {
+        \\
+        \\    export class Example {
+        \\
+        \\        private someNumber: number;
+        \\
+        \\
+        \\
+        \\        public doSomething() {
+        \\
+        \\            var that = this;
+        \\
+        \\            function innerFunction() {
+        \\
+        \\                var num = that.someNumber;
+        \\
+        \\            }
+        \\
+        \\        }
+        \\
+        \\    }
+        \\
+        \\}
+        \\
+        \\
+        \\
+        \\class C {
+        \\
+        \\    private x: number;
+        \\
+        \\    getX() { return this.x; }
+        \\
+        \\    clone(other: C) {
+        \\        this.x = other.x;
+        \\
+        \\    }
+        \\}
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\privateInstanceVisibility.ts(5,17): error TS2564: Property 'someNumber' has no initializer and is not definitely assigned in the constructor.
+        \\privateInstanceVisibility.ts(29,13): error TS2564: Property 'x' has no initializer and is not definitely assigned in the constructor.
+        ,
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_property_initialization = true, .strict_null_checks = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    if (result.outcome != .passed) {
+        std.debug.print("privateInstanceVisibility detail:\n{s}\n", .{result.detail});
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: strictPropertyInitialization full fixture triage" {
     const result = try runOneEntry(T.allocator, .{
         .name = "strictPropertyInitialization",
