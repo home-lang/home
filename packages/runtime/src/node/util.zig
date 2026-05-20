@@ -153,7 +153,7 @@ pub fn inspect(value: anytype, options: ?InspectOptions) []const u8 {
     const opts = options orelse InspectOptions{};
     clearLastOutput();
     const cap_depth: u32 = if (opts.depth) |d| @min(d, max_inspect_depth) else max_inspect_depth;
-    inspectInto(@TypeOf(value), value, cap_depth);
+    inspectInto(@TypeOf(value), value, cap_depth + 1);
     return inspect_buf[0..inspect_len];
 }
 

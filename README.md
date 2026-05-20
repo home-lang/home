@@ -36,7 +36,7 @@ view; these are the drill-down pages — modeled after Bun's
 - [`docs/CAPABILITY_MATRIX.md`](./docs/CAPABILITY_MATRIX.md) — full language / codegen / tooling / stdlib matrix
 - [`docs/TS_PARITY_PLAN.md`](./docs/TS_PARITY_PLAN.md) — parity plan + dated journal entries
 - [`docs/CONFORMANCE_CATEGORIES.md`](./docs/CONFORMANCE_CATEGORIES.md) — per-category TS conformance breakdown
-- [`packages/runtime/PORT_AUDIT_2026-05-20.md`](./packages/runtime/PORT_AUDIT_2026-05-20.md) — Bun runtime port audit (471 / 1,193 ported, supersedes the 2026-05-18 audit)
+- [`packages/runtime/PORT_AUDIT_2026-05-20.md`](./packages/runtime/PORT_AUDIT_2026-05-20.md) — Bun runtime port audit; live counts come from `scripts/measure-parity.sh --values`
 
 ### Headline numbers
 
@@ -46,14 +46,14 @@ view; these are the drill-down pages — modeled after Bun's
 | **TypeScript — exact (byte-for-byte)** | **~4,060 / 5,907 — ~68.7%** | `HOME_TS_CONFORMANCE_FULL=1 HOME_TS_CONFORMANCE_EXACT=1` |
 | **TypeScript — baseline-aware (19 folders)** | **586 / 586 — 100%** | per-fixture `.errors.txt` byte comparison |
 | **TypeScript — named-category survey** | **86 / 86 — 100%** | `assignmentCompatibility` + `comparable` + `inOperator` + `stringLiteral` |
-| **TypeScript — diagnostic codes** | **~2,000 entries** | mirrors the full upstream `diag(code, …)` table |
+| **TypeScript — diagnostic codes** | **~2,076 entries** | mirrors the full upstream `diag(code, …)` table |
 | **LSP wire methods** | **53 / ~70 — ~76%** | `SUPPORTED_METHODS` in `packages/ts_lsp_server/` |
-| **Bun runtime — source files ported** | **472 / 1,193 — ~39.6%** | substrate + JSC M6 milestone landed |
+| **Bun runtime — source files ported** | **485 / 1,193 — ~40.7%** | substrate + JSC M6 milestone landed |
 | **Bun compat shim — `bun.*` symbols** | **7 / ~103 — ~6.8%** | Tier-0 lets vendored Bun source compile against Home's stdlib |
-| **Node.js — `node:*` binding files** | **22 files** | Zig substrate landing module-by-module (buffer / stream / fs / events / util / assert / os) |
-| **JSC bring-up (Phase 12.2)** | **95 files** | M6 milestone — JSON + Promise + Iterator + Global helpers landed |
+| **Node.js — `node:*` binding files** | **28 files** | Zig substrate landing module-by-module (buffer / stream / fs / events / util / assert / os / url / querystring / crypto / process / string_decoder / tty) |
+| **JSC bring-up (Phase 12.2)** | **96 files** | M6 milestone — JSON + Promise + Iterator + Global helpers landed |
 | **Language features (capability matrix)** | **18 stable / 43 partial / 2 not-yet — 63 total** | ~28.6% stable, ~68.3% in progress, ~3.2% not yet (includes TS frontend + Runtime/Bun rows) |
-| **Total test count** | **3,300+ / 3,300+ — ~100%** | `zig build test --summary all` (pre-existing `d_ts_fast` + `home_rt` env aside) |
+| **Total test count** | **3,300+ / 3,300+ — ~100%** | `./pantry/.bin/zig build test --summary all` (pre-existing `d_ts_fast` + `home_rt` env aside) |
 
 ### TypeScript parity — `home tsc` vs `tsc` / `tsgo`
 
@@ -90,7 +90,7 @@ HOME_TS_CONFORMANCE_FULL=1 \
 HOME_TS_CONFORMANCE_EXACT=1 \
 HOME_TS_CONFORMANCE_START=2000 \
 HOME_TS_CONFORMANCE_LIMIT=1000 \
-zig build test -Dfilter=ts_conformance
+./pantry/.bin/zig build test -Dfilter=ts_conformance
 ```
 
 ### Bun runtime port (`packages/runtime/`)
@@ -102,11 +102,11 @@ to wire up.
 
 | Measurement | Coverage | % |
 |---|---|---|
-| **Bun source files ported** | **472 / 1,193** | **~39.6%** |
-| Subsystems scaffolded | 59 directories under `packages/runtime/src/` | — |
+| **Bun source files ported** | **485 / 1,193** | **~40.7%** |
+| Subsystems scaffolded | 60 directories under `packages/runtime/src/` | — |
 | Functional runtime | 🚧 JSC M6 landed; JS-callable bridge pending | — |
-| JSC bring-up (Phase 12.2) | 95 files | M1-M6 landed (Engine stub, exception + coerce + array helpers, call + callback helpers, JSON + Promise + Iterator + Global helpers) |
-| `node:*` substrate (Phase 12.7) | 22 files | round-10 landed (buffer, stream, fs, events, util, assert, os + 15 binding files) |
+| JSC bring-up (Phase 12.2) | 96 files | M1-M6 landed (Engine stub, exception + coerce + array helpers, call + callback helpers, JSON + Promise + Iterator + Global helpers) |
+| `node:*` substrate (Phase 12.7) | 28 files | round-15 landed (buffer, stream, fs, events, util, assert, os, url, querystring, crypto, process, string_decoder, tty + binding files) |
 
 Upstream pinned at `fd0b6f1a` (see
 [`packages/runtime/UPSTREAM_SHA.txt`](./packages/runtime/UPSTREAM_SHA.txt));
@@ -120,12 +120,12 @@ Bun's `test/` corpus must pass **100% with no skips** once feature-complete.
 | Sub-phase | Source under `~/Code/bun/src/` | Status |
 |---|---|---|
 | 12.1 — CLI | `cli/` | 🚧 scaffold landed |
-| 12.2 — JSC bring-up | `jsc/`, `bun.js.zig` | 🟡 M6 milestone landed (95 files: JSON + Promise + Iterator + Global helpers); JS-callable bridge pending |
+| 12.2 — JSC bring-up | `jsc/`, `bun.js.zig` | 🟡 M6 milestone landed (96 files: JSON + Promise + Iterator + Global helpers); JS-callable bridge pending |
 | 12.3 — Event loop / IO / async | `event_loop/`, `io/`, `async/` | 🟡 substrate landing (~30+ leaves ported via wave-19+ grinders) |
 | 12.4 — Module loader | `resolver/`, `module_loader.zig` | 🚧 blocked on 12.2 |
 | 12.5 — Web / HTTP / DNS | `web/`, `http/`, `csrf/`, `dns/` | 🚧 blocked on 12.3 |
 | 12.6 — Home.* JS surface | `bun.zig` (renamed to `Home.*`) | 🚧 blocked on 12.2 |
-| 12.7 — `node:*` shims | `node/` | 🟡 substrate landing module-by-module (22 files: buffer, stream, fs, events, util, assert, os) |
+| 12.7 — `node:*` shims | `node/` | 🟡 substrate landing module-by-module (28 files: buffer, stream, fs, events, util, assert, os, url, querystring, crypto, process, string_decoder, tty) |
 | 12.8 — `home test` runner | `test/` | 🚧 blocked on 12.2 |
 | 12.9 — Pantry integration | `install/` | 🚧 scaffold in progress |
 | 12.10 — CLI surface | `cli/` | 🚧 scaffold landed |
@@ -171,11 +171,11 @@ Node's `node:*` namespace lands as part of the Bun runtime port (Bun
 ships `node:*` shims natively, which we vendor verbatim). Numbers
 below are Zig-side only; the JS-visible `node:*` surface attaches once
 JSC's JS-callable bridge ships (Phase 12.2 has reached M6 — JSON +
-Promise + Iterator + Global helpers — across 95 files).
+Promise + Iterator + Global helpers — across 96 files).
 
 | Measurement | Coverage | Notes |
 |---|---|---|
-| Node binding files ported | 22 files | `path`, `Stat`, `StatFS`, `dir_iterator`, `time_like`, `fs_events`, `os_constants`, `nodejs_error_code`, `node_fs_constant`, `node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`, `types`, `util/parse_args_utils`, `assert/myers_diff`, plus top-level `buffer.zig`, `stream.zig`, `fs.zig`, `events.zig`, `util.zig`, `assert.zig`, `os.zig` (Phase 12.7 round-10). |
+| Node binding files ported | 28 files | `path`, `Stat`, `StatFS`, `dir_iterator`, `time_like`, `fs_events`, `os_constants`, `nodejs_error_code`, `node_fs_constant`, `node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`, `types`, `util/parse_args_utils`, `assert/myers_diff`, plus top-level `buffer.zig`, `stream.zig`, `fs.zig`, `events.zig`, `util.zig`, `assert.zig`, `os.zig`, `url.zig`, `querystring.zig`, `crypto.zig`, `process.zig`, `string_decoder.zig`, `tty.zig` (Phase 12.7 round-15). |
 | Functional `node:*` modules | 🚧 Awaiting JSC JS-callable bridge | Pantry CLI replaces `npm install` / `bun install`; everything else routes through the Bun runtime port once JSC ships its JS bridge (Phase 12.2 milestones M3-M6 are in; the JS-callable wire-up is the remaining piece). |
 
 ### LSP / IDE coverage — `home-lsp` vs `tsserver`
@@ -356,7 +356,7 @@ Top-level shape (each link is a Zig package with its own tests):
 - [`pantry/zig-dtsx`](https://github.com/stacksjs/dtsx/tree/main/packages/zig-dtsx) — vendored as a pantry dep; powers the `.d.ts` fast path (15-19× faster than tsgo per published benchmarks)
 
 `home-tsc` and `home-lsp` ship as standalone binaries — see the
-[`zig build` invocation](#build-commands) to compile them; they
+[`./pantry/.bin/zig build` invocation](#build-commands) to compile them; they
 install into `zig-out/bin/`.
 
 ## Install
@@ -379,11 +379,10 @@ Useful environment variables:
 ## Build from Source
 
 ```bash
-# Clone and build
 git clone https://github.com/home-lang/home.git
 cd home
-pantry install        # pulls zig 0.16-dev from pantry
-zig build             # build the compiler
+pantry install        # installs the pinned Zig 0.17 dev toolchain
+./pantry/ziglang.org/v0.17.0-dev.263+0add2dfc4/zig build
 
 # Run an example
 ./zig-out/bin/home build examples/fibonacci.home
@@ -392,12 +391,12 @@ zig build             # build the compiler
 
 Useful commands:
 
-- `zig build` &mdash; build the compiler
-- `zig build test` &mdash; run the unit-test suite
-- `zig build examples` &mdash; run the native example executables (http_router, craft, fullstack, queue)
-- `zig build run -- examples/fibonacci.home` &mdash; build, then run a file
+- `./pantry/.bin/zig build` &mdash; build the compiler
+- `./pantry/.bin/zig build test` &mdash; run the unit-test suite
+- `./pantry/.bin/zig build examples` &mdash; run the native example executables (http_router, craft, fullstack, queue)
+- `./pantry/.bin/zig build run -- examples/fibonacci.home` &mdash; build, then run a file
 - `scripts/check-examples.sh` &mdash; `home check` every `.home` example
-- `zig build -Dgenerals=true generals` &mdash; opt in to the C&C Generals example (needs Xcode frameworks)
+- `./pantry/.bin/zig build -Dgenerals=true generals` &mdash; opt in to the C&C Generals example (needs Xcode frameworks)
 
 ## Hello World
 
@@ -806,10 +805,10 @@ home/
 
 ### Prerequisites
 
-- Zig 0.16-dev (for building the compiler)
+- Pantry-installed Zig 0.17 dev (for building the compiler)
 
 ```bash
-# Pulls the pinned zig dev build from pantry into ./pantry/zig/
+# Pulls the pinned Zig 0.17 dev build from Pantry.
 pantry install
 ```
 
@@ -817,16 +816,16 @@ pantry install
 
 ```bash
 # Build the compiler
-zig build
+./pantry/.bin/zig build
 
 # Run tests
-zig build test
+./pantry/.bin/zig build test
 
 # Check all .home examples through `home check`
 scripts/check-examples.sh
 
 # Build and run an example
-zig build run -- examples/fibonacci.home
+./pantry/.bin/zig build run -- examples/fibonacci.home
 ```
 
 ## File Extensions

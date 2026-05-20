@@ -38,8 +38,8 @@
 //     `deinit` / `fromString` / `toString` / `get` / `getAll` / `has`
 //     / `set` / `append` / `delete` / `keys` / `values`. Encoding /
 //     decoding uses the standard `x-www-form-urlencoded` rules
-//     (percent-encode every byte outside the unreserved set; `+`
-//     decodes to space).
+//     (percent-encode every byte outside the form encode passthrough
+//     set; `+` decodes to space).
 //
 //   * `url.parse(allocator, input)` — legacy alias of `URL.parse`
 //     with no base.
@@ -92,7 +92,7 @@ pub const URLSearchParams = struct {
     pub fn init(allocator: std.mem.Allocator) URLSearchParams {
         return .{
             .allocator = allocator,
-            .entries = std.ArrayList(SearchEntry){},
+            .entries = std.ArrayList(SearchEntry).empty,
         };
     }
 
@@ -132,7 +132,7 @@ pub const URLSearchParams = struct {
     /// Returns a freshly-allocated `application/x-www-form-urlencoded`
     /// serialization of every entry.
     pub fn toString(self: *const URLSearchParams, allocator: std.mem.Allocator) ![]u8 {
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
 
         var first = true;
@@ -158,7 +158,7 @@ pub const URLSearchParams = struct {
     /// returned slice (but not its elements, which alias the
     /// `URLSearchParams`-owned entries).
     pub fn getAll(self: *const URLSearchParams, allocator: std.mem.Allocator, key: []const u8) ![][]const u8 {
-        var out = std.ArrayList([]const u8){};
+        var out = std.ArrayList([]const u8).empty;
         errdefer out.deinit(allocator);
         for (self.entries.items) |e| {
             if (std.mem.eql(u8, e.key, key)) try out.append(allocator, e.value);
@@ -422,7 +422,7 @@ pub fn parse(allocator: std.mem.Allocator, input: []const u8) !URL {
 /// Legacy `url.format(parsed)` — joins the parsed components back into
 /// a normalized string. Returns a freshly-allocated owned slice.
 pub fn format(parsed: *const URL, allocator: std.mem.Allocator) ![]u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
 
     try buf.appendSlice(allocator, parsed.protocol);
@@ -482,7 +482,7 @@ pub fn resolve(allocator: std.mem.Allocator, base: []const u8, ref: []const u8) 
         b_path = after_slashes[auth_end..];
     }
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
     try buf.appendSlice(allocator, b_scheme);
     try buf.appendSlice(allocator, b_authority);
@@ -516,7 +516,7 @@ pub fn resolve(allocator: std.mem.Allocator, base: []const u8, ref: []const u8) 
 /// `deinit`. On Unix `path` must be absolute; on Windows we preserve
 /// the drive letter.
 pub fn pathToFileURL(allocator: std.mem.Allocator, path: []const u8) !URL {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
     try buf.appendSlice(allocator, "file://");
 
@@ -602,6 +602,10 @@ fn isUnreserved(c: u8) bool {
     return isAsciiAlpha(c) or isAsciiDigit(c) or c == '-' or c == '_' or c == '.' or c == '~';
 }
 
+fn isFormEncodePassthrough(c: u8) bool {
+    return isAsciiAlpha(c) or isAsciiDigit(c) or c == '-' or c == '_' or c == '.';
+}
+
 /// Bytes that may appear in a URL path segment without escaping.
 /// Mirrors RFC 3986 `pchar` minus the percent escape itself.
 fn isPathPassthrough(c: u8) bool {
@@ -635,7 +639,7 @@ fn percentEncodeByte(allocator: std.mem.Allocator, out: *std.ArrayList(u8), c: u
 /// followed by invalid hex is passed through verbatim (Node's
 /// behavior).
 fn percentDecode(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    var out = std.ArrayList(u8){};
+    var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
     var i: usize = 0;
     while (i < input.len) {
@@ -656,13 +660,13 @@ fn percentDecode(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
 }
 
 /// `application/x-www-form-urlencoded` encoder. Spaces are encoded as
-/// `+`; every other byte outside the unreserved set is percent-
-/// encoded.
+/// `+`; every other byte outside the URLSearchParams form encode
+/// passthrough set is percent-encoded.
 fn encodeFormComponent(allocator: std.mem.Allocator, out: *std.ArrayList(u8), input: []const u8) !void {
     for (input) |c| {
         if (c == ' ') {
             try out.append(allocator, '+');
-        } else if (isUnreserved(c)) {
+        } else if (isFormEncodePassthrough(c)) {
             try out.append(allocator, c);
         } else {
             try percentEncodeByte(allocator, out, c);
@@ -674,7 +678,7 @@ fn encodeFormComponent(allocator: std.mem.Allocator, out: *std.ArrayList(u8), in
 /// space, `%xx` to the corresponding byte; everything else is passed
 /// through.
 fn decodeFormComponent(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    var out = std.ArrayList(u8){};
+    var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
     var i: usize = 0;
     while (i < input.len) {
@@ -772,14 +776,37 @@ test "URLSearchParams: toString round-trip + spaces encode as +" {
     defer p.deinit();
     try p.append("hello", "world");
     try p.append("greeting", "hi there");
+    try p.append("str", "hello~world");
 
     const s = try p.toString(testing.allocator);
     defer testing.allocator.free(s);
-    try testing.expectEqualStrings("hello=world&greeting=hi+there", s);
+    try testing.expectEqualStrings("hello=world&greeting=hi+there&str=hello%7Eworld", s);
 
     var parsed = try URLSearchParams.fromString(testing.allocator, s);
     defer parsed.deinit();
     try testing.expectEqualStrings("hi there", parsed.get("greeting").?);
+    try testing.expectEqualStrings("hello~world", parsed.get("str").?);
+}
+
+test "URLSearchParams: malformed percent escapes match Deno corpus behavior" {
+    var params = try URLSearchParams.fromString(testing.allocator, "id=0&value=%");
+    defer params.deinit();
+    try testing.expect(params.has("id"));
+    try testing.expect(params.has("value"));
+    try testing.expectEqualStrings("0", params.get("id").?);
+    try testing.expectEqualStrings("%", params.get("value").?);
+
+    var invalid_hex = try URLSearchParams.fromString(testing.allocator, "b=%2sf%2a");
+    defer invalid_hex.deinit();
+    try testing.expectEqualStrings("%2sf*", invalid_hex.get("b").?);
+
+    var short_escape = try URLSearchParams.fromString(testing.allocator, "b=%2%2af%2a");
+    defer short_escape.deinit();
+    try testing.expectEqualStrings("%2*f*", short_escape.get("b").?);
+
+    var escaped_percent = try URLSearchParams.fromString(testing.allocator, "b=%%2a");
+    defer escaped_percent.deinit();
+    try testing.expectEqualStrings("%*", escaped_percent.get("b").?);
 }
 
 test "fileURLToPath: decodes percent escapes" {

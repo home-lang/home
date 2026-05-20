@@ -35,11 +35,11 @@
 //! "catches obvious panics/hangs" budget the issue calls for.
 //!
 //! Usage (via build.zig):
-//!   zig build fuzz                 # run both targets, default 60s budget
-//!   zig build fuzz-lexer           # only lexer
-//!   zig build fuzz-parser          # only parser
-//!   zig build fuzz -- --seconds 30 # custom budget per target
-//!   zig build fuzz -- --seed 42    # deterministic
+//!   ./pantry/.bin/zig build fuzz                 # run both targets, default 60s budget
+//!   ./pantry/.bin/zig build fuzz-lexer           # only lexer
+//!   ./pantry/.bin/zig build fuzz-parser          # only parser
+//!   ./pantry/.bin/zig build fuzz -- --seconds 30 # custom budget per target
+//!   ./pantry/.bin/zig build fuzz -- --seed 42    # deterministic
 //!
 //! Direct invocation:
 //!   fuzz-harness <repo-root> <home-binary> <target> [flags]

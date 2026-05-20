@@ -593,7 +593,8 @@ test "randomBytes returns slice of requested length" {
 }
 
 test "randomFillSync writes into caller buffer" {
-    var buf: [16]u8 = .{0} ** 16;
+    var buf: [16]u8 = undefined;
+    @memset(&buf, 0);
     randomFillSync(&buf);
     // The probability of 16 consecutive zero bytes from a CSPRNG is
     // ~2^-128; treat all-zero as failure.
@@ -630,7 +631,12 @@ test "createHash md5 matches RFC-1321 vector for 'abc'" {
 
 test "createHmac sha256 matches RFC-4231 'Hi There' vector" {
     // Test case 1: key = 20 bytes of 0x0b, data = "Hi There".
-    const key = [_]u8{0x0b} ** 20;
+    const key = [_]u8{
+        0x0b, 0x0b, 0x0b, 0x0b, 0x0b,
+        0x0b, 0x0b, 0x0b, 0x0b, 0x0b,
+        0x0b, 0x0b, 0x0b, 0x0b, 0x0b,
+        0x0b, 0x0b, 0x0b, 0x0b, 0x0b,
+    };
     var h = try createHmac("sha256", &key);
     h.update("Hi There");
     var hex_buf: [64]u8 = undefined;

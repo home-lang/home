@@ -361,19 +361,19 @@ Each component has comprehensive tests:
 
 ```bash
 # Test macro expansion
-zig test packages/macros/tests/macro_test.zig
+./pantry/.bin/zig test packages/macros/tests/macro_test.zig
 
 # Test comptime evaluation
-zig test packages/comptime/tests/comptime_test.zig
+./pantry/.bin/zig test packages/comptime/tests/comptime_test.zig
 
 # Test borrow checker
-zig test packages/compiler/tests/borrow_check_test.zig
+./pantry/.bin/zig test packages/compiler/tests/borrow_check_test.zig
 
 # Test diagnostics
-zig test packages/diagnostics/tests/enhanced_reporter_test.zig
+./pantry/.bin/zig test packages/diagnostics/tests/enhanced_reporter_test.zig
 
 # Test incremental compilation
-zig test packages/cache/tests/incremental_test.zig
+./pantry/.bin/zig test packages/cache/tests/incremental_test.zig
 
 # Full integration test
 home build examples/test_borrow_checking.home

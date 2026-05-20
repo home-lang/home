@@ -679,7 +679,7 @@ Located in `packages/parser/src/error_recovery.zig` tests:
 
 Run tests with:
 ```bash
-zig build test
+./pantry/.bin/zig build test
 ```
 
 ## Future Enhancements

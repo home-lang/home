@@ -6,11 +6,12 @@ row is in the
 [README parity status](../README.md#bun-runtime-port-packagesruntime)
 section.
 
-> **Status:** Substrate + JSC M6 landed. **472 / 1,193 Bun source
-> files ported** (~39.6%); the runtime is not yet JavaScript-callable
+> **Status:** Substrate + JSC M6 landed. 486 / 1,193 Bun source
+> files ported (~40.7%); the runtime is not yet JavaScript-callable
 > end-to-end, but Phase 12.2 (JSC bring-up) has reached the M6
 > milestone — JSON + Promise + Iterator + Global helpers — across
-> 95 files in `packages/runtime/src/jsc/`. Full audit:
+> 97 files in `packages/runtime/src/jsc/`, including a live
+> `JSEvaluateScript` smoke. Full audit:
 > [`packages/runtime/PORT_AUDIT_2026-05-20.md`](../packages/runtime/PORT_AUDIT_2026-05-20.md).
 
 Legend:
@@ -24,12 +25,12 @@ Legend:
 | Sub-phase | Source under `~/Code/bun/src/` | Destination | Status |
 |---|---|---|---|
 | 12.1 | `cli/` | `src/cli/` | 🟡 scaffold landed (CLI flag parsing partial) |
-| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone landed (95 files: JSON + Promise + Iterator + Global helpers) |
+| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone + native eval smoke landed (97 files: JSON + Promise + Iterator + Global helpers + `JSEvaluateScript`) |
 | 12.3 | `event_loop/`, `io/`, `async/` | `src/event_loop/` | 🟡 substrate landing (~30+ leaves ported) |
 | 12.4 | `resolver/`, `module_loader.zig` | `src/module_loader/` | 🔴 blocked on 12.2 |
 | 12.5 | `web/`, `http/`, `csrf/`, `dns/` | `src/web/` | 🔴 blocked on 12.3 |
 | 12.6 | `bun.zig` (Home.* surface) | `src/home/` | 🔴 blocked on 12.2 |
-| 12.7 | `node/` namespace shims | `src/node/` | 🟡 round-10 landed (22 files: path / Stat / buffer / stream / fs / events / util / assert / os + bindings) |
+| 12.7 | `node/` namespace shims | `src/node/` | 🟡 round-15 landed (28 files: path / Stat / buffer / stream / fs / events / util / assert / os / url / querystring / crypto / process / string_decoder / tty + bindings) |
 | 12.8 | `test/` runner | `src/test/` | 🔴 blocked on 12.2 |
 | 12.9 | Pantry CLI integration | `src/install/pantry.zig` | 🟡 scaffold in progress |
 | 12.10 | CLI surface | `src/cli/` | 🟡 scaffold landed |
@@ -74,7 +75,8 @@ ported as Tier-0 leaves).
 
 ### `Bun.semver`
 
-🔴 Not implemented.
+🔴 Not implemented beyond the narrow Bun corpus bootstrap
+`semver.satisfies` comparator-list smoke.
 
 ### `Bun.color`
 
@@ -94,7 +96,9 @@ ported as Tier-0 leaves).
 
 ### `Bun.inspect`
 
-🔴 Not implemented.
+🔴 Not implemented. The Bun corpus bootstrap has a narrow
+`Bun.inspect({ key: Set<string> })` shim for one allowlisted smoke; this
+is not a JS-callable runtime API.
 
 ### `Bun.peek`
 
@@ -135,7 +139,9 @@ ported as Tier-0 leaves).
 
 ### `Bun.version` / `Bun.revision`
 
-🔴 Not implemented.
+🔴 Not implemented. The Bun corpus bootstrap exposes smoke-test aliases
+for allowlisted files only; the runtime namespace does not yet provide
+these as real APIs.
 
 ## Bundler (`packages/bundler/`)
 
@@ -163,6 +169,27 @@ manager.
 feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
+Bootstrap smoke: `home test packages/runtime/test/bun-corpus
+--bun-corpus-native-subset=minimal-js` executes sixty-five allowlisted JS
+or plain-syntax TS corpus files through Home's JSC evaluator when
+`home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
+todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-two
+regression smokes, one bundler constant-fold smoke, one bun-types `test.each` type-shape smoke, six test-runner
+expectation smokes, one nested-describe smoke, a narrow `Bun.TOML.parse` throw smoke, `Bun.stripANSI` and
+`Bun.wrapAnsi`, `Bun.semver.satisfies`, and `bun:internal-for-testing` regexp / PowerShell escaping smokes, retry/repeats runner behavior, `test.concurrent.each`, `expect().pass`, a narrow `mock.clearAllMocks` / `toHaveBeenCalledTimes` smoke, a narrow `jest.fn` / `HTMLRewriter` element-callback smoke, a narrow TypeScript constructor-modifier rewrite smoke, narrow `assert` / `assert/strict`, `node:path`, `node:url`, and relative CJS fixture smokes, a narrow inline-snapshot Unicode object formatting smoke, a `node:vm.runInNewContext` / `process.on` throw propagation smoke, Deno `Event` / `CustomEvent` / `AbortController` and a Deno `URLSearchParams` bootstrap smoke, plus narrow bootstrap coverage for Node `DOMException`, Web
+`Response.json` / `Response.redirect`, Web `Request` cache/mode/clone,
+JSC `ShadowRealm`, native constructor identity, mutable `globalThis` prototype behavior, a comment-only module-load smoke, Bun file metadata, Node `Buffer`
+binary/UTF-16LE/compare/inspect-limit/isEncoding behavior, `Map`/`Set`
+deep-equality, `Bun.inspect` Set formatting, `MessageEvent` constructor
+behavior, Bun version aliases, lifecycle hooks, own-key matchers, and a
+`prepareStackTrace` crash smoke. The bootstrap harness is installed once
+per JSC engine, resets counters before each file, lowers supported
+`bun:test` imports through a virtual
+`globalThis.__home_import("bun:test")` module shim, and fails closed as
+unsupported for unsupported import shapes, unsupported module syntax,
+async tests or hooks, explicit unsupported shim paths, and files that
+register zero tests. This is deliberately not the acceptance gate.
+
 ## Summary
 
 Substrate file-count progress (the only objective number today):
@@ -170,10 +197,10 @@ Substrate file-count progress (the only objective number today):
 | Metric | Count | Notes |
 |---|---|---|
 | Bun upstream files (excluding test/codegen/jsc/macros) | 1,193 | pinned at `fd0b6f1a` |
-| Files ported to `packages/runtime/src/` | 472 | ~39.6% |
-| Files remaining to port | 721 | ~60.4% |
-| JSC bring-up (`packages/runtime/src/jsc/`) | 95 files | Phase 12.2 M6 milestone |
-| Node namespace (`packages/runtime/src/node/`) | 22 files | Phase 12.7 round-10 |
+| Files ported to `packages/runtime/src/` | 486 | ~40.7% |
+| Files remaining to port | 707 | ~59.3% |
+| JSC bring-up (`packages/runtime/src/jsc/`) | 97 files | Phase 12.2 M6 milestone + native eval smoke |
+| Node namespace (`packages/runtime/src/node/`) | 28 files | Phase 12.7 round-15 |
 | Tier-0 leaves (≤100 LOC, zero subsystem coupling) | 30 catalogued | next-to-port pool |
 | Tier-1 leaves (≤300 LOC, light coupling) | 30 catalogued | follow-on pool |
 

@@ -8,7 +8,7 @@ section is in the
 > **Headline:** 5,907 / 5,907 (100%) coarse, ~4,060 / 5,907 (~68.7%)
 > exact byte-for-byte against upstream conformance baselines.
 > Reproduce: `HOME_TS_CONFORMANCE_FULL=1 HOME_TS_CONFORMANCE_EXACT=1
-> zig build test -Dfilter=ts_conformance`.
+> ./pantry/.bin/zig build test -Dfilter=ts_conformance`.
 
 Legend:
 

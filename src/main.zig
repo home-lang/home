@@ -35,11 +35,12 @@ const AllocationProfiler = profiler_mod.AllocationProfiler;
 const repl = @import("repl.zig");
 const lint_cmd = @import("lint_command.zig");
 const package_cmd = @import("package_command.zig");
+const home_test = @import("home_test");
 
 const Io = std.Io;
 var g_io: Io = undefined;
 
-/// Get monotonic timestamp in nanoseconds (Zig 0.16 compatible)
+/// Get monotonic timestamp in nanoseconds (Zig 0.17 compatible)
 fn getMonotonicNs() u64 {
     if (comptime native_os == .windows) {
         const ntdll = std.os.windows.ntdll;
@@ -2073,6 +2074,8 @@ fn printTestUsage() void {
         \\  -p, --package <name>    Run tests only for a specific package
         \\  --zig                   Run only Zig unit tests
         \\  --home                  Run only Home integration tests
+        \\  --bun-corpus-native-subset <name>
+        \\                          Run an explicit native Bun-corpus bootstrap subset
         \\  -h, --help              Show this help message
         \\
         \\{s}Examples:{s}
@@ -2095,8 +2098,16 @@ fn printTestUsage() void {
         \\  *.test.hm                       Home test files (short ext)
         \\  *_test.zig                      Zig unit test files
         \\
+        \\{s}Bun Corpus Bootstrap:{s}
+        \\  home test packages/runtime/test/bun-corpus
+        \\                                  Full corpus gate; intentionally blocked until 100% native parity
+        \\  home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js
+        \\                                  Run the current allowlisted native JSC smoke subset
+        \\
     , .{
         Color.Blue.code(),
+        Color.Reset.code(),
+        Color.Green.code(),
         Color.Reset.code(),
         Color.Green.code(),
         Color.Reset.code(),
@@ -2878,7 +2889,193 @@ fn isJsLikeTestProject() bool {
     return true;
 }
 
+fn isBunCorpusPath(path: []const u8) bool {
+    const normalized = std.mem.trim(u8, path, "/");
+    return std.mem.eql(u8, normalized, "packages/runtime/test/bun-corpus") or
+        std.mem.endsWith(u8, normalized, "/packages/runtime/test/bun-corpus");
+}
+
+fn isBunCorpusSubsetFlag(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--bun-corpus-native-subset") or
+        std.mem.eql(u8, arg, "--bun-corpus-subset");
+}
+
+fn argTargetsBunCorpus(args: []const [:0]const u8) ?[]const u8 {
+    var skip_next = false;
+    for (args) |arg| {
+        if (skip_next) {
+            skip_next = false;
+            continue;
+        }
+        if (isBunCorpusSubsetFlag(arg)) {
+            skip_next = true;
+            continue;
+        }
+        if (arg.len == 0 or arg[0] == '-') continue;
+        if (isBunCorpusPath(arg)) return arg;
+    }
+    return null;
+}
+
+const BunCorpusSubsetArg = union(enum) {
+    none,
+    ok: home_test.corpus_runner.Subset,
+    missing_value: []const u8,
+    unknown_value: []const u8,
+};
+
+fn argBunCorpusSubset(args: []const [:0]const u8) BunCorpusSubsetArg {
+    for (args, 0..) |arg, i| {
+        if (isBunCorpusSubsetFlag(arg)) {
+            if (i + 1 >= args.len or args[i + 1].len == 0 or args[i + 1][0] == '-') {
+                return .{ .missing_value = arg };
+            }
+            const value = args[i + 1];
+            if (home_test.corpus_runner.parseSubsetFlagValue(value)) |subset| {
+                return .{ .ok = subset };
+            }
+            return .{ .unknown_value = value };
+        }
+        const prefixes = [_][]const u8{
+            "--bun-corpus-native-subset=",
+            "--bun-corpus-subset=",
+        };
+        for (prefixes) |prefix| {
+            if (std.mem.startsWith(u8, arg, prefix)) {
+                const value = arg[prefix.len..];
+                if (value.len == 0) return .{ .missing_value = arg };
+                if (home_test.corpus_runner.parseSubsetFlagValue(value)) |subset| {
+                    return .{ .ok = subset };
+                }
+                return .{ .unknown_value = value };
+            }
+        }
+    }
+    return .none;
+}
+
+fn failBunCorpusSubsetArg(reason: []const u8, value: []const u8) noreturn {
+    std.debug.print("\n{s}Bun Corpus Native Subset: INVALID{s}\n", .{ Color.Red.code(), Color.Reset.code() });
+    std.debug.print("{s}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
+    std.debug.print("reason: {s}\n", .{reason});
+    if (value.len != 0) std.debug.print("value: {s}\n", .{value});
+    std.debug.print("supported subsets: minimal-js\n\n", .{});
+    std.process.exit(1);
+}
+
+test "bun corpus target parser skips subset flag values" {
+    const args = [_][:0]const u8{ "--bun-corpus-native-subset", "packages/runtime/test/bun-corpus" };
+    try std.testing.expect(argTargetsBunCorpus(&args) == null);
+}
+
+test "bun corpus subset parser reports missing and unknown values" {
+    const missing = [_][:0]const u8{"--bun-corpus-native-subset"};
+    switch (argBunCorpusSubset(&missing)) {
+        .missing_value => |flag| try std.testing.expectEqualStrings("--bun-corpus-native-subset", flag),
+        else => return error.ExpectedMissingSubsetValue,
+    }
+
+    const unknown = [_][:0]const u8{"--bun-corpus-native-subset=all"};
+    switch (argBunCorpusSubset(&unknown)) {
+        .unknown_value => |value| try std.testing.expectEqualStrings("all", value),
+        else => return error.ExpectedUnknownSubsetValue,
+    }
+}
+
+test "bun corpus subset parser accepts minimal js" {
+    const args = [_][:0]const u8{ "packages/runtime/test/bun-corpus", "--bun-corpus-native-subset=minimal-js" };
+    switch (argBunCorpusSubset(&args)) {
+        .ok => |subset| try std.testing.expectEqual(home_test.corpus_runner.Subset.minimal_js, subset),
+        else => return error.ExpectedSubset,
+    }
+}
+
+fn runBunCorpusNativeSubset(allocator: std.mem.Allocator, corpus_path: []const u8, subset: home_test.corpus_runner.Subset) !void {
+    var summary = try home_test.corpus_runner.runSubset(g_io, allocator, corpus_path, subset);
+
+    if (summary.blocked) {
+        std.debug.print("\n{s}Bun Corpus Native Subset: BLOCKED{s}\n", .{ Color.Yellow.code(), Color.Reset.code() });
+        std.debug.print("{s}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
+        std.debug.print("path: {s}\n", .{corpus_path});
+        std.debug.print("subset: {s}\n", .{subset.label()});
+        std.debug.print("files selected: {d}\n", .{summary.files});
+        std.debug.print("runner package: packages/home_test\n", .{});
+        std.debug.print("reason: {s}\n\n", .{summary.reason});
+        std.debug.print("Build `home` with `./pantry/.bin/zig build -Denable_jsc=true` to execute this native subset.\n", .{});
+        std.debug.print("This bootstrap subset is not the full Bun corpus acceptance gate.\n\n", .{});
+        std.process.exit(1);
+    }
+
+    const tests_observed = summary.passed + summary.failed + summary.todo;
+    const failed = summary.failed != 0 or summary.files == 0 or tests_observed == 0;
+    std.debug.print("\n{s}Bun Corpus Native Subset: {s}{s}\n", .{
+        if (!failed) Color.Green.code() else Color.Red.code(),
+        if (!failed) "PASS" else "FAIL",
+        Color.Reset.code(),
+    });
+    std.debug.print("{s}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
+    std.debug.print("path: {s}\n", .{corpus_path});
+    std.debug.print("subset: {s}\n", .{subset.label()});
+    std.debug.print("files executed: {d}\n", .{summary.files});
+    std.debug.print("tests passed: {d}\n", .{summary.passed});
+    std.debug.print("tests failed: {d}\n", .{summary.failed});
+    std.debug.print("tests todo: {d}\n\n", .{summary.todo});
+    if (summary.first_failure_file.len != 0) {
+        std.debug.print("first failure: {s}\n", .{summary.first_failure_file});
+        std.debug.print("message: {s}\n\n", .{summary.first_failure_message});
+    }
+    if (tests_observed == 0) {
+        std.debug.print("reason: no-tests-observed\n\n", .{});
+    }
+
+    if (failed) {
+        summary.deinit(allocator);
+        std.process.exit(1);
+    }
+    summary.deinit(allocator);
+}
+
+fn runBunCorpusNativeGate(allocator: std.mem.Allocator, corpus_path: []const u8) !void {
+    const counts = home_test.corpus.countPath(g_io, corpus_path) catch |err| switch (err) {
+        error.FileNotFound => home_test.corpus.Counts{},
+        else => return err,
+    };
+
+    const sha_path = try std.fs.path.join(allocator, &.{ corpus_path, "UPSTREAM_SHA.txt" });
+    defer allocator.free(sha_path);
+    const sha = Io.Dir.cwd().readFileAlloc(g_io, sha_path, allocator, std.Io.Limit.limited(256)) catch "unknown";
+    defer if (!std.mem.eql(u8, sha, "unknown")) allocator.free(sha);
+
+    std.debug.print("\n{s}Bun Corpus Native Gate: BLOCKED{s}\n", .{ Color.Yellow.code(), Color.Reset.code() });
+    std.debug.print("{s}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
+    std.debug.print("path: {s}\n", .{corpus_path});
+    std.debug.print("upstream: {s}\n", .{std.mem.trim(u8, sha, " \t\r\n")});
+    std.debug.print("corpus files discovered: {d}\n", .{counts.files});
+    std.debug.print("test files discovered: {d}\n", .{counts.tests});
+    std.debug.print("runner package: packages/home_test\n", .{});
+    std.debug.print("reason: native-js-test-runner-missing\n\n", .{});
+    std.debug.print("This gate intentionally fails until Phase 12.2 (JSC JS-callable bridge)\n", .{});
+    std.debug.print("and Phase 12.8 (Bun test runner port) replace system-Bun delegation.\n", .{});
+    std.debug.print("A delegated `bun test` result is not accepted as Home runtime parity.\n\n", .{});
+    std.process.exit(1);
+}
+
 fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
+    const bun_corpus_subset_arg = argBunCorpusSubset(args);
+    if (argTargetsBunCorpus(args)) |corpus_path| {
+        switch (bun_corpus_subset_arg) {
+            .none => return runBunCorpusNativeGate(allocator, corpus_path),
+            .ok => |subset| return runBunCorpusNativeSubset(allocator, corpus_path, subset),
+            .missing_value => |flag| failBunCorpusSubsetArg("missing-subset-value", flag),
+            .unknown_value => |value| failBunCorpusSubsetArg("unknown-subset", value),
+        }
+    } else switch (bun_corpus_subset_arg) {
+        .none => {},
+        .ok => |subset| failBunCorpusSubsetArg("subset-requires-bun-corpus-path", subset.label()),
+        .missing_value => |flag| failBunCorpusSubsetArg("missing-subset-value", flag),
+        .unknown_value => |value| failBunCorpusSubsetArg("unknown-subset", value),
+    }
+
     // Phase 12 routing: if the cwd looks like a JS/TS project, delegate
     // `home test` to the bun-compatible runtime path. `--home` or `--zig`
     // overrides forces the native Home/Zig runner.
@@ -3560,7 +3757,7 @@ fn initCommand(allocator: std.mem.Allocator, project_name: ?[]const u8) !void {
         \\# Project toolchain managed by pantry.
         \\# Run: home pkg tools
         \\dependencies:
-        \\  - zig@0.16
+        \\  - ziglang.org@0.17.0-dev.263+0add2dfc4
         \\  - bun
         \\
     ;
@@ -3770,7 +3967,7 @@ fn pkgInit(allocator: std.mem.Allocator) !void {
         \\# Project toolchain managed by pantry.
         \\# Run: home pkg tools
         \\dependencies:
-        \\  - zig@0.16
+        \\  - ziglang.org@0.17.0-dev.263+0add2dfc4
         \\  - bun
         \\
     ;

@@ -42,6 +42,7 @@ pub extern "c" fn JSGlobalContextCreate(global_class: ?*anyopaque) ?*JSContextRe
 pub extern "c" fn JSGlobalContextRelease(ctx: ?*JSContextRef) void;
 pub extern "c" fn JSGlobalContextRetain(ctx: ?*JSContextRef) ?*JSContextRef;
 pub extern "c" fn JSContextGetGlobalObject(ctx: ?*JSContextRef) ?*JSObject;
+pub extern "c" fn JSEvaluateScript(ctx: ?*JSContextRef, script: ?*JSString, this_object: ?*JSObject, source_url: ?*JSString, starting_line_number: c_int, exception: ExceptionRef) ?*JSValue;
 
 // ---- JSValue inspection ------------------------------------------------
 
@@ -100,6 +101,7 @@ test "extern fn type signatures are well-formed" {
     try std.testing.expect(@typeInfo(@TypeOf(JSGarbageCollect)) == .@"fn");
     try std.testing.expect(@typeInfo(@TypeOf(JSValueGetType)) == .@"fn");
     try std.testing.expect(@typeInfo(@TypeOf(JSValueMakeNull)) == .@"fn");
+    try std.testing.expect(@typeInfo(@TypeOf(JSEvaluateScript)) == .@"fn");
     try std.testing.expect(@typeInfo(@TypeOf(JSObjectMake)) == .@"fn");
     try std.testing.expect(@typeInfo(@TypeOf(JSStringRelease)) == .@"fn");
     try std.testing.expect(@TypeOf(JSGarbageCollect) != @TypeOf(JSValueMakeNull));

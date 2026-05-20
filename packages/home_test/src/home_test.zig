@@ -126,6 +126,14 @@
 
 const std = @import("std");
 
+pub const corpus = @import("corpus.zig");
+pub const corpus_runner = @import("corpus_runner.zig");
+pub const result = @import("result.zig");
+pub const runner = @import("runner.zig");
+pub const adapters = struct {
+    pub const jsc_bootstrap = @import("adapters/jsc_bootstrap.zig");
+};
+
 /// Stub. Once the `compat` shim is in place, this module will
 /// re-export `bun_test`, `jest`, `expect`, and the rest of the surface
 /// listed above. For now it's intentionally empty so the build-system
@@ -135,4 +143,26 @@ pub const version = "0.0.0";
 
 test "home_test facade compiles" {
     try std.testing.expectEqualStrings("0.0.0", version);
+}
+
+test "home_test corpus discovery is linked" {
+    try std.testing.expect(corpus.isTestFile("sample.test.ts"));
+}
+
+test "home_test corpus runner is linked" {
+    try std.testing.expectEqual(corpus_runner.Subset.minimal_js, corpus_runner.parseSubsetFlagValue("minimal-js").?);
+}
+
+test "home_test result model is linked" {
+    var summary = result.RunSummary{};
+    summary.addFile(.{ .path = "sample.test.ts", .passed = 1 });
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+}
+
+test "home_test runner contract is linked" {
+    try std.testing.expectEqualStrings("jsc-bootstrap", runner.Adapter.jsc_bootstrap.label());
+}
+
+test "home_test jsc bootstrap adapter is linked" {
+    try std.testing.expect(@hasDecl(adapters.jsc_bootstrap, "Runtime"));
 }

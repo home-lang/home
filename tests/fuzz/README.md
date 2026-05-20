@@ -21,30 +21,30 @@ Crash and timeout reproducers are written to
 
 ```sh
 # Default: both targets, 30 seconds budget each
-zig build fuzz
+./pantry/.bin/zig build fuzz
 
 # Single target
-zig build fuzz-lexer
-zig build fuzz-parser
+./pantry/.bin/zig build fuzz-lexer
+./pantry/.bin/zig build fuzz-parser
 
 # Tune the budget. Pass-through args go after `--`
-zig build fuzz -- --seconds 120
+./pantry/.bin/zig build fuzz -- --seconds 120
 
 # Reproduce a specific run
-zig build fuzz-parser -- --seed 42 --seconds 10
+./pantry/.bin/zig build fuzz-parser -- --seed 42 --seconds 10
 
 # Hard cap on iterations (useful for smoke tests)
-zig build fuzz -- --max-iters 50
+./pantry/.bin/zig build fuzz -- --max-iters 50
 
 # Custom findings directory
-zig build fuzz -- --findings /tmp/home-fuzz-out
+./pantry/.bin/zig build fuzz -- --findings /tmp/home-fuzz-out
 ```
 
 Pass `--help` to the harness to see every flag:
 
 ```sh
 ./zig-out/bin/home --help        # not the fuzzer
-zig build fuzz -- --help         # the fuzzer
+./pantry/.bin/zig build fuzz -- --help         # the fuzzer
 ```
 
 ## How it works

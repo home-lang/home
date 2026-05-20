@@ -188,6 +188,7 @@ pub const jsc = struct {
     // Phase 12.2 M3 prep (2026-05-19) — Engine stub. Bodies panic with
     // TODO(phase-12.2-M3) until the C++ engine wiring lands.
     pub const engine = @import("jsc/engine.zig");
+    pub const evaluate = @import("jsc/evaluate.zig");
     // Phase 12.2 M4 (2026-05-19) — exception + coerce + array helpers
     // per `JSC_BRIDGE_SCOPE_2026-05-19.md` §M4. Each namespace exposes
     // a uniform Zig-shaped surface on top of the M1 extern fn set;
@@ -635,6 +636,19 @@ pub const node = struct {
     // sign/verify, ECDH, X509, KeyObject) stub-panic with TODO until
     // the BoringSSL bindings port.
     pub const crypto = @import("node/crypto.zig");
+    // Phase 12.7 round-13 — `node:process` host-fact substrate.
+    // JSC exports and EventEmitter/nextTick semantics still attach in
+    // Phase 12.2, but cwd/chdir, env, pid/ppid, platform/arch,
+    // hrtime, uptime, memoryUsage, and cpuUsage are native today.
+    pub const process = @import("node/process.zig");
+    // Phase 12.7 round-14 — `node:string_decoder` stateful byte decoder.
+    // Preserves incomplete UTF-8 / UTF-16LE / base64 groups across writes
+    // with the same public shape the JS shim will expose as StringDecoder.
+    pub const string_decoder = @import("node/string_decoder.zig");
+    // Phase 12.7 round-15 — `node:tty` native terminal facts. Provides
+    // isatty/window-size/raw-mode/color-depth substrate for future
+    // ReadStream/WriteStream JS wrappers.
+    pub const tty = @import("node/tty.zig");
 };
 
 // ---- src/core/ + src/alloc/ + src/safety/ ----------------------
@@ -1601,7 +1615,11 @@ test {
     _ = @import("node/buffer.zig");
     _ = @import("node/fs.zig");
     _ = @import("node/url.zig");
+    _ = @import("node/querystring.zig");
     _ = @import("node/crypto.zig");
+    _ = @import("node/process.zig");
+    _ = @import("node/string_decoder.zig");
+    _ = @import("node/tty.zig");
     _ = @import("jsc/generated_classes_list.zig");
     _ = @import("runtime/api/bun/Terminal.zig");
     _ = @import("runtime/api/bun/spawn.zig");
@@ -1641,6 +1659,8 @@ test {
     _ = @import("jsc/opaques.zig");
     _ = @import("jsc/extern_fns.zig");
     _ = @import("jsc/types.zig");
+    _ = @import("jsc/engine.zig");
+    _ = @import("jsc/evaluate.zig");
     // Wave-18 Tier-0 grinder (2026-05-18) — sql wire-protocol leaves.
     _ = @import("sql/shared/Data.zig");
     _ = @import("sql/mysql/protocol/NewReader.zig");

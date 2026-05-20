@@ -3,7 +3,7 @@
 
 Two modes:
 
-  generate   Run `zig build test -Dfilter=ts_conformance`, parse the
+  generate   Run Pantry-pinned `zig build test -Dfilter=ts_conformance`, parse the
              structured "[ts_conformance ...]" lines, and write a
              deterministic JSON snapshot to stdout (or --out <file>).
 
@@ -51,6 +51,7 @@ from typing import Dict, Optional, Tuple
 # Sections we recognise. Order matters only for the human-readable diff
 # output; the JSON itself is sorted alphabetically per section.
 SECTIONS = ("smoke", "category", "baseline-aware")
+EXPECTED_ZIG_VERSION = "0.17.0-dev.263+0add2dfc4"
 
 # Lines look like:
 #   [ts_conformance smoke] comparable: total=13 passed=13 failed=0 skipped=0 pass_rate=1.00
@@ -79,7 +80,26 @@ def run_conformance(cwd: str) -> str:
     fine here, we just want the structured lines. The caller decides
     whether a regression is present.
     """
-    cmd = ["zig", "build", "test", "-Dfilter=ts_conformance"]
+    zig_bin = os.path.join(cwd, "pantry", ".bin", "zig")
+    version_proc = subprocess.run(
+        [zig_bin, "version"],
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    if version_proc.returncode != 0:
+        message = (version_proc.stdout or "").strip()
+        raise RuntimeError(message or f"Pantry Zig not found at {zig_bin}")
+    actual_version = (version_proc.stdout or "").strip()
+    if actual_version != EXPECTED_ZIG_VERSION:
+        raise RuntimeError(
+            f"unsupported Zig version: {actual_version}\n"
+            f"expected Pantry Zig {EXPECTED_ZIG_VERSION} at {zig_bin}"
+        )
+
+    cmd = [zig_bin, "build", "test", "-Dfilter=ts_conformance"]
     proc = subprocess.run(
         cmd,
         cwd=cwd,
@@ -199,7 +219,10 @@ def cmd_generate(args: argparse.Namespace) -> int:
         with open(args.from_log, "r", encoding="utf-8") as fh:
             text = fh.read()
     else:
-        print(f"running: zig build test -Dfilter=ts_conformance (cwd={cwd})", file=sys.stderr)
+        print(
+            f"running: ./pantry/.bin/zig build test -Dfilter=ts_conformance (cwd={cwd})",
+            file=sys.stderr,
+        )
         text = run_conformance(cwd)
     snapshot = parse_log(text)
     rendered = to_json(snapshot)
@@ -219,7 +242,10 @@ def cmd_compare(args: argparse.Namespace) -> int:
         with open(args.from_log, "r", encoding="utf-8") as fh:
             text = fh.read()
     else:
-        print(f"running: zig build test -Dfilter=ts_conformance (cwd={cwd})", file=sys.stderr)
+        print(
+            f"running: ./pantry/.bin/zig build test -Dfilter=ts_conformance (cwd={cwd})",
+            file=sys.stderr,
+        )
         text = run_conformance(cwd)
     current = parse_log(text)
 

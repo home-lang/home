@@ -1,6 +1,6 @@
 const std = @import("std");
 
-/// Resolve the active Xcode macOS SDK path. Panics if it can't be found —
+/// Resolve the active Xcode macOS SDK path. Panics if it can't be found -
 /// only called from macOS-only branches.
 fn macosSdkPath(b: *std.Build, target: std.Build.ResolvedTarget) []const u8 {
     return std.zig.system.darwin.getSdk(b.allocator, b.graph.io, &target.result) orelse
@@ -435,6 +435,7 @@ pub fn build(b: *std.Build) void {
     // resolve `home_rt` symbolically rather than via relative paths.
     const home_rt_pkg = createPackage(b, "packages/runtime/src/home_rt.zig", target, optimize, zig_test_framework);
     home_rt_pkg.addImport("home_rt", home_rt_pkg);
+    home_test_pkg.addImport("home_rt", home_rt_pkg);
 
     // Game development packages (order matters for dependencies)
     const game_assets_pkg = createPackage(b, "packages/game/src/assets.zig", target, optimize, zig_test_framework);
@@ -536,6 +537,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("network", network_pkg);
     exe.root_module.addImport("http", http_pkg);
     exe.root_module.addImport("cloud", cloud_pkg);
+    exe.root_module.addImport("home_test", home_test_pkg);
 
     // Create build options module for conditional compilation
     const build_options = b.addOptions();
@@ -550,9 +552,17 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "enable_sanitize_address", enable_sanitize_address);
     build_options.addOption(bool, "enable_sanitize_undefined", enable_sanitize_undefined);
     build_options.addOption(bool, "enable_sanitize_thread", enable_sanitize_thread);
+    build_options.addOption(bool, "enable_jsc", enable_jsc);
+    const build_options_module = build_options.createModule();
 
     // Add build options to executable
-    exe.root_module.addImport("build_options", build_options.createModule());
+    exe.root_module.addImport("build_options", build_options_module);
+    home_rt_pkg.addImport("build_options", build_options_module);
+    home_test_pkg.addImport("build_options", build_options_module);
+    if (enable_jsc) {
+        exe.root_module.linkSystemLibrary("c++", .{});
+        if (target.result.os.tag == .macos) exe.root_module.linkFramework("JavaScriptCore", .{});
+    }
 
     // Link Craft if enabled
     if (enable_craft) {
@@ -1151,6 +1161,10 @@ pub fn build(b: *std.Build) void {
 
     // home_test: only the public facade is wired in.
     const home_test_tests = b.addTest(.{ .root_module = home_test_pkg });
+    if (enable_jsc) {
+        home_test_tests.root_module.linkSystemLibrary("c++", .{});
+        if (target.result.os.tag == .macos) home_test_tests.root_module.linkFramework("JavaScriptCore", .{});
+    }
     const run_home_test_tests = b.addRunArtifact(home_test_tests);
     dependOnTest(test_step, &run_home_test_tests.step, test_filter, "home_test");
 
@@ -1496,7 +1510,7 @@ pub fn build(b: *std.Build) void {
         generals_example.root_module.addImport("w3d_loader", w3d_loader_pkg);
 
         // Resolve Xcode SDK so frameworks like Cocoa/OpenGL/OpenAL/AudioToolbox
-        // are findable. zig 0.16-dev no longer auto-imports the SDK from xcrun.
+        // are findable under the Pantry-pinned Zig 0.17 dev toolchain.
         const sdk_path = macosSdkPath(b, target);
         const fw_path = b.fmt("{s}/System/Library/Frameworks", .{sdk_path});
         const lib_path = b.fmt("{s}/usr/lib", .{sdk_path});

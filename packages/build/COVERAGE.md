@@ -534,14 +534,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y kcov
 
-      - name: Setup Zig
-        uses: goto-bus-stop/setup-zig@v2
-        with:
-          version: 0.15.0
+      - name: Install Pantry toolchain
+        run: pantry install
 
       - name: Run tests with coverage
         run: |
-          zig build test-coverage
+          ./pantry/.bin/zig build test-coverage
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@v3
@@ -556,11 +554,11 @@ jobs:
 ```yaml
 coverage:
   stage: test
-  image: ziglang/zig:0.15.0
   before_script:
     - apt-get update && apt-get install -y kcov
+    - pantry install
   script:
-    - zig build test-coverage
+    - ./pantry/.bin/zig build test-coverage
   coverage: '/Lines:\s+\d+\/\d+\s+\((\d+\.\d+)%\)/'
   artifacts:
     reports:
@@ -578,7 +576,7 @@ pipeline {
     stages {
         stage('Test with Coverage') {
             steps {
-                sh 'zig build test-coverage'
+                sh 'pantry install && ./pantry/.bin/zig build test-coverage'
             }
         }
 
@@ -677,13 +675,13 @@ test "good test" {
 
 ```bash
 # Quick local coverage check
-zig build test-coverage
+./pantry/.bin/zig build test-coverage
 
 # Open HTML report
 open coverage/index.html
 
 # Check specific thresholds
-zig build test-coverage --min-coverage=80
+./pantry/.bin/zig build test-coverage --min-coverage=80
 ```
 
 ### 6. Track Coverage Trends

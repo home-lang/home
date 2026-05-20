@@ -56,12 +56,12 @@ packages = [
 ]
 
 [scripts]
-build = "zig build"
-test = "zig build test"
-bench = "zig build bench"
-format = "find src packages -name '*.zig' -exec zig fmt {} +"
-run = "zig build run"
-dev = "zig build run -- run examples/hello.home"
+build = "./pantry/.bin/zig build"
+test = "./pantry/.bin/zig build test"
+bench = "./pantry/.bin/zig build bench"
+format = "find src packages -name '*.zig' -exec ./pantry/.bin/zig fmt {} +"
+run = "./pantry/.bin/zig build run"
+dev = "./pantry/.bin/zig build run -- run examples/hello.home"
 ```
 
 ## Package Structure
@@ -82,7 +82,7 @@ license = "MIT"
 # No external dependencies
 
 [scripts]
-test = "zig test src/lexer.zig"
+test = "../../pantry/.bin/zig test src/lexer.zig"
 ```
 
 ### Example: Parser Package (with dependencies)
@@ -100,7 +100,7 @@ home-lexer = { path = "../lexer" }
 home-ast = { path = "../ast" }
 
 [scripts]
-test = "zig test src/parser.zig"
+test = "../../pantry/.bin/zig test src/parser.zig"
 ```
 
 ## Package Dependencies
@@ -141,7 +141,7 @@ Each package has a single, well-defined responsibility:
 ### 2. **Independent Development**
 
 - Each package can be developed independently
-- Run tests for a single package: `cd packages/lexer && zig test src/lexer.zig`
+- Run tests for a single package: `./pantry/.bin/zig test packages/lexer/src/lexer.zig`
 - Packages can have their own versioning
 
 ### 3. **Reusability**
@@ -189,7 +189,7 @@ ion pkg scripts
 # Add dependencies here
 
    [scripts]
-   test = "zig test src/main.zig"
+   test = "../../pantry/.bin/zig test src/main.zig"
    ```
 
 3. Add your code to `packages/my-package/src/`
@@ -209,7 +209,7 @@ ion pkg scripts
 From within a package:
 ```bash
 cd packages/lexer
-zig test src/lexer.zig
+../../pantry/.bin/zig test src/lexer.zig
 ```
 
 ### Managing Dependencies

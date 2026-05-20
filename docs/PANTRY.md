@@ -50,7 +50,7 @@ Keeping them separate means:
 
 ## For Home Development
 
-The `pantry.json` file declares what Home itself needs to build (currently just Zig 0.16.0).
+The Pantry lockfile pins what Home itself needs to build: Zig 0.17 dev, installed through Pantry.
 
 ## For Home-OS
 

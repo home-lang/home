@@ -7,6 +7,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+ZIG="$PROJECT_ROOT/pantry/.bin/zig"
 
 echo "🏃 Home vs Zig Benchmark Suite"
 echo "================================"
@@ -197,7 +198,7 @@ for prog in "${PROGRAMS[@]}"; do
 
     # Zig compilation time
     ZIG_TIME=$(hyperfine --warmup 3 --runs 10 \
-        "zig build-exe $SCRIPT_DIR/programs/${prog}.zig -femit-bin=/tmp/zig_${prog} -O ReleaseFast" \
+        "$ZIG build-exe $SCRIPT_DIR/programs/${prog}.zig -femit-bin=/tmp/zig_${prog} -O ReleaseFast" \
         --style none --export-json /tmp/zig_bench.json 2>/dev/null | \
         jq -r '.results[0].mean * 1000' || echo "N/A")
 
@@ -221,7 +222,7 @@ echo "|---------|----------|----------|-------|"
 for prog in "${PROGRAMS[@]}"; do
     # Build first
     "$PROJECT_ROOT/zig-out/bin/ion" build "$SCRIPT_DIR/programs/${prog}.home" -o "/tmp/ion_${prog}" 2>/dev/null || true
-    zig build-exe "$SCRIPT_DIR/programs/${prog}.zig" -femit-bin="/tmp/zig_${prog}" -O ReleaseFast 2>/dev/null || true
+    "$ZIG" build-exe "$SCRIPT_DIR/programs/${prog}.zig" -femit-bin="/tmp/zig_${prog}" -O ReleaseFast 2>/dev/null || true
 
     # Home runtime
     if [ -f "/tmp/ion_${prog}" ]; then

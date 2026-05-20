@@ -57,7 +57,10 @@ pub inline fn readCounter() u64 {
 /// couldn't be resolved without measuring it.
 pub inline fn nowNs() u64 {
     if (comptime is_supported) {
-        calibrate_once.call();
+        if (!calibrated.load(.acquire)) {
+            calibrate();
+            calibrated.store(true, .release);
+        }
         if (calibration.mult != 0) {
             const ticks = readCounter() -% calibration.start_counter;
             // u64×u64→u128 widening mul + shift: 2 insns on x64 (`mul`+`shrd`),
@@ -84,7 +87,7 @@ const Calibration = struct {
     mult: u64 = 0,
 };
 var calibration: Calibration = .{};
-var calibrate_once = std.once(calibrate);
+var calibrated = std.atomic.Value(bool).init(false);
 
 fn calibrate() void {
     const freq = readFrequency();
