@@ -157,6 +157,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/path/parse-format.test.js",
     "js/node/path/relative.test.js",
     "js/node/path/path.test.js",
+    "js/node/path/posix-relative-on-windows.test.js",
 };
 
 const harness_prelude =
@@ -859,6 +860,9 @@ const harness_prelude =
     \\function test(name, first, second) { return it(name, first, second); }
     \\test.todo = it.todo;
     \\test.skip = it.todo;
+    \\test.skipIf = function(condition) {
+    \\  return condition ? test.skip : test;
+    \\};
     \\test.failing = it.failing;
     \\test.concurrent = test;
     \\function __home_each(rows) {
@@ -3474,6 +3478,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/node/path/parse-format.test.js",
         "js/node/path/relative.test.js",
         "js/node/path/path.test.js",
+        "js/node/path/posix-relative-on-windows.test.js",
     };
 
     for (expected) |path| {

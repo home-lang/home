@@ -134,6 +134,7 @@ namespace / invalid-argument coverage,
 `node:url` URL.canParse, url.format empty-input, and
 WHATWG URL auth stripping plus domainToASCII/domainToUnicode smokes,
 skipped Node URL null-character / internal URL smokes,
+`test.skipIf` registration for the Windows-only POSIX relative path smoke,
 `node:test` skip/todo/null-options smokes,
 `import.meta.resolve` / `resolveSync` bad-parent throw smokes,
 `jest.fn`, narrow `HTMLRewriter` element and doctype callbacks plus
