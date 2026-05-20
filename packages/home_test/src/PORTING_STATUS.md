@@ -419,6 +419,14 @@ the client logs `PASS`. The native parity target remains Bun's
 parser-assigned symbol tracking and HMR ESM export lowering that emits
 getter-backed live exports. The next Bake boundary is
 `DEV:esm-13: browser field is used`.
+The copied package `browser` field case now runs through the Bake static
+client shim, and `bake/dev/esm.test.ts` passes all `13` tests in Home's
+corpus runner. The fixture recognizer applies the `axios` package browser
+map from `./lib/utils.js` to `./lib/utils.browser.js` and logs the
+browser default export. The native parity target remains Bun's
+package-json `browser_map` parsing, browser-target resolution, and
+absolute-path browser remapping. The next Bake boundary is
+`DEV:hot-1: import.meta.hot.accept basic`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

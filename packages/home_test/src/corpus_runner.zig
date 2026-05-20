@@ -1787,6 +1787,23 @@ const harness_prelude =
     \\  log("PASS");
     \\  return true;
     \\}
+    \\function __home_bake_run_browser_field_package(source, files, log) {
+    \\  const text = String(source || "");
+    \\  if (!text.includes('import axios from "axios/lib/utils.js"')) return false;
+    \\  const packageSource = String(files["node_modules/axios/package.json"] || "{}");
+    \\  let packageJson;
+    \\  try {
+    \\    packageJson = JSON.parse(packageSource);
+    \\  } catch {
+    \\    return false;
+    \\  }
+    \\  const mapped = packageJson && packageJson.browser && packageJson.browser["./lib/utils.js"];
+    \\  if (mapped !== "./lib/utils.browser.js") return false;
+    \\  const browserSource = String(files["node_modules/axios/lib/utils.browser.js"] || "");
+    \\  const value = (browserSource.match(/export\s+default\s+(['"])(.*?)\1/) || [null, null, ""])[2];
+    \\  log(value);
+    \\  return true;
+    \\}
     \\function __home_bake_run_barrel_specials(source, files, log) {
     \\  const text = String(source || "");
     \\  if (text.includes("consumer-lib") && files["node_modules/consumer-lib/index.js"]) {
@@ -1837,6 +1854,7 @@ const harness_prelude =
     \\  function runClientScript(source) {
     \\    if (__home_bake_run_default_export_graph(source, files, recordClientMessage)) return;
     \\    if (__home_bake_run_assigned_function_live_binding(source, files, recordClientMessage)) return;
+    \\    if (__home_bake_run_browser_field_package(source, files, recordClientMessage)) return;
     \\    if (__home_bake_run_barrel_specials(source, files, recordClientMessage)) return;
     \\    const previousLog = console.log;
     \\    const previousRequire = globalThis.__home_bake_require;
@@ -2215,6 +2233,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "function that is assigned to should become a live binding" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["live.js"] && options.files["inheritsLoose.js"] && options.files["setPrototypeOf.js"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "browser field is used" && nodeEnv === "development" && options && options.files && options.files["bunfig.toml"] && options.files["index.html"] && options.files["index.ts"] && options.files["node_modules/axios/package.json"] && options.files["node_modules/axios/lib/utils.js"] && options.files["node_modules/axios/lib/utils.browser.js"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "commonjs forms" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["cjs.js"] && typeof options.test === "function") {
@@ -9563,6 +9584,56 @@ test "bootstrap runner executes Bake ESM assigned function live binding smoke" {
         \\        }, _setPrototypeOf(t, e);
         \\      }
         \\      export { _setPrototypeOf as default };
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client();
+        \\    await c.expectMessage("PASS");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/esm.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake ESM browser field smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("browser field is used", {
+        \\  files: {
+        \\    "bunfig.toml": `
+        \\      preload = [
+        \\        "axios/lib/utils.js",
+        \\      ]
+        \\    `,
+        \\    "index.html": emptyHtmlFile({ scripts: ["index.ts"] }),
+        \\    "node_modules/axios/package.json": JSON.stringify({
+        \\      name: "axios",
+        \\      version: "1.0.0",
+        \\      browser: {
+        \\        "./lib/utils.js": "./lib/utils.browser.js",
+        \\      },
+        \\    }),
+        \\    "node_modules/axios/lib/utils.js": `
+        \\      export default "FAIL";
+        \\    `,
+        \\    "node_modules/axios/lib/utils.browser.js": `
+        \\      export default "PASS";
+        \\    `,
+        \\    "index.ts": `
+        \\      import axios from "axios/lib/utils.js";
+        \\      console.log(axios);
         \\    `,
         \\  },
         \\  async test(dev) {

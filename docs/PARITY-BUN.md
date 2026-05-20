@@ -639,6 +639,19 @@ slice: `4,013` files executed, `454` passed, `3,926` failed, `1,479`
 unsupported, `35` todo. First failure: `bake/dev/esm.test.ts` with
 `DEV:esm-13: browser field is used`.
 
+The Bake static client shim now covers the copied package `browser` field
+case and `bake/dev/esm.test.ts` passes all `13` tests in Home's corpus
+runner. The fixture recognizer applies the `axios` package browser map
+from `./lib/utils.js` to `./lib/utils.browser.js` and logs the browser
+default export. The native parity target remains Bun's resolver:
+package-json `browser_map` parsing, browser-target resolution, and
+absolute-path browser remapping.
+
+Latest measured full gate after the Bake ESM browser-field slice:
+`4,013` files executed, `467` passed, `3,925` failed, `1,478`
+unsupported, `35` todo. First failure: `bake/dev/hot.test.ts` with
+`DEV:hot-1: import.meta.hot.accept basic`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap
