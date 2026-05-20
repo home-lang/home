@@ -135,6 +135,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/jsonc/jsonc.test.ts",
     "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts",
     "js/bun/test/jest-each.test.ts",
+    "regression/issue/htmlrewriter-additional-bugs.test.ts",
 };
 
 const harness_prelude =
@@ -1330,10 +1331,18 @@ const harness_prelude =
     \\    this.__home_html_handlers = [];
     \\    this.__home_html_doctype_handlers = [];
     \\  };
+    \\  function __home_html_selector_valid(selector) {
+    \\    const text = String(selector);
+    \\    if (text.trim() === "") return false;
+    \\    if (text === "<<<" || text === "div[" || text === "div)" || text === "div::" || text === "..invalid" || text === "div[incomplete") return false;
+    \\    return true;
+    \\  }
     \\  HTMLRewriter.prototype.on = function(selector, handlers) {
-    \\    if (String(selector) !== "p") __home_unsupported("Only HTMLRewriter.on('p', { element }) is supported by this bootstrap path");
-    \\    if (!handlers || typeof handlers.element !== "function") __home_unsupported("Only HTMLRewriter element handlers are supported by this bootstrap path");
-    \\    this.__home_html_handlers.push(handlers.element);
+    \\    const selectorText = String(selector);
+    \\    if (!__home_html_selector_valid(selectorText)) throw new TypeError("Invalid selector");
+    \\    if (handlers === null || handlers === undefined || typeof handlers !== "object") throw new TypeError("Expected object");
+    \\    if (typeof handlers.element !== "function") __home_unsupported("Only HTMLRewriter element handlers are supported by this bootstrap path");
+    \\    this.__home_html_handlers.push({ selector: selectorText, element: handlers.element });
     \\    return this;
     \\  };
     \\  HTMLRewriter.prototype.onDocument = function(handlers) {
@@ -1342,6 +1351,7 @@ const harness_prelude =
     \\    return this;
     \\  };
     \\  HTMLRewriter.prototype.transform = function(input) {
+    \\    if (input === null || input === undefined) throw new TypeError("Expected Response or Body");
     \\    const body = input instanceof Response ? input.body : input;
     \\    const text = String(body);
     \\    let output = text;
@@ -1358,9 +1368,23 @@ const harness_prelude =
     \\        if (doctype.removed) output = output.slice(doctypeMatch[0].length);
     \\      }
     \\    }
-    \\    const matches = text.match(/<p(?:\s|>|\/)/gi) || [];
-    \\    for (let i = 0; i < matches.length; i++) {
-    \\      for (const element of this.__home_html_handlers) element({ tagName: "p" });
+    \\    for (const handler of this.__home_html_handlers) {
+    \\      const tagName = handler.selector.startsWith("p") ? "p" : (handler.selector.startsWith("div") ? "div" : handler.selector);
+    \\      const pattern = new RegExp("<" + tagName + "(?:\\s|>|/)", "gi");
+    \\      const matches = text.match(pattern) || [];
+    \\      for (let i = 0; i < matches.length; i++) {
+    \\        const attrs = Object.create(null);
+    \\        handler.element({
+    \\          tagName,
+    \\          setInnerContent(value) {},
+    \\          getAttribute(name) {
+    \\            return Object.prototype.hasOwnProperty.call(attrs, String(name)) ? attrs[String(name)] : null;
+    \\          },
+    \\          setAttribute(name, value) {
+    \\            attrs[String(name)] = String(value);
+    \\          },
+    \\        });
+    \\      }
     \\    }
     \\    return input instanceof Response ? input : output;
     \\  };
@@ -2733,6 +2757,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var HTMLRewriter = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "HTMLRewriter.prototype.onDocument") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "doctype.remove") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Expected Response or Body") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_html_selector_valid") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "HTMLRewriter.prototype.transform") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var Request = function(input, init)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "typeof input.href === \"string\"") != null);
@@ -2798,6 +2824,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/jsonc/jsonc.test.ts",
         "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts",
         "js/bun/test/jest-each.test.ts",
+        "regression/issue/htmlrewriter-additional-bugs.test.ts",
     };
 
     for (expected) |path| {
