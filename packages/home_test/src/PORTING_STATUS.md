@@ -304,6 +304,13 @@ the initial malformed `background-image: url` stylesheet fetchable with a
 status model, not the real Bun CSS parser/asset lifetime behavior. The
 next Bake boundary is
 `DEV:css-7: circular css imports handle hot reload`.
+The circular CSS-import smoke now keeps recursive `@import` expansion from
+looping, preserves both sides of an `a.css`/`b.css` cycle, and reflects a
+hot edit to `.a` while `.b` stays browser-normalized blue. This continues
+to exercise the harness CSS graph model while the real Bun
+`IncrementalGraph.zig` CSS import processing remains the source parity
+target. The next Bake boundary is
+`DEV:css-8: asset index stays valid after another css root is freed`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

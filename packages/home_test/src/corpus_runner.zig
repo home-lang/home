@@ -2014,6 +2014,9 @@ const harness_prelude =
     \\  if (String(description) === "syntax error crash" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["styles.css"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
+    \\  if (String(description) === "circular css imports handle hot reload" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["a.css"] && options.files["b.css"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
@@ -8369,6 +8372,55 @@ test "bootstrap runner executes Bake css syntax crash smoke" {
         \\    expect((await dev.fetch("/")).status).toBe(200);
         \\    await dev.patch("styles.css", { find: "url\n", replace: "url(\n" });
         \\    expect((await dev.fetch("/")).status).toBe(500);
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/css.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake circular css imports smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("circular css imports handle hot reload", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({
+        \\      styles: ["a.css"],
+        \\      body: `
+        \\        <div class="a">hello</div>
+        \\        <div class="b">hello</div>
+        \\      `,
+        \\    }),
+        \\    "a.css": `
+        \\      @import "./b.css";
+        \\      .a { color: red; }
+        \\    `,
+        \\    "b.css": `
+        \\      @import "./a.css";
+        \\      .b { color: blue; }
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using client = await dev.client("/");
+        \\    await client.style(".a").color.expect.toBe("red");
+        \\    await client.style(".b").color.expect.toBe("#00f");
+        \\    await dev.write("a.css", `
+        \\      @import "./b.css";
+        \\      .a { color: green; }
+        \\    `);
+        \\    await client.style(".a").color.expect.toBe("green");
+        \\    await client.style(".b").color.expect.toBe("#00f");
         \\  },
         \\});
     ;

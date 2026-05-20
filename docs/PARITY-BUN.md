@@ -446,6 +446,18 @@ files executed, `440` passed, `3,946` failed, `1,499` unsupported, `35`
 todo. First failure: `bake/dev/css.test.ts` with
 ` DEV:css-7: circular css imports handle hot reload`.
 
+The circular CSS-import smoke now keeps recursive `@import` expansion from
+looping, preserves both sides of an `a.css`/`b.css` cycle, and reflects a
+hot edit to `.a` while `.b` stays browser-normalized blue. This continues
+to exercise the harness CSS graph model while the real Bun
+`IncrementalGraph.zig` CSS import processing remains the source parity
+target.
+
+Latest measured full gate after the Bake circular CSS-import slice:
+`4,013` files executed, `440` passed, `3,945` failed, `1,498`
+unsupported, `35` todo. First failure: `bake/dev/css.test.ts` with
+` DEV:css-8: asset index stays valid after another css root is freed`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap
