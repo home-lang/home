@@ -371,6 +371,12 @@ bundle response lazy so one `.equals(...)` assertion maps to one route
 execution. Real parity for this area lives in Bun's ESM export HMR
 lowering and runtime module registry. The next Bake boundary is
 `DEV:esm-2: live bindings through export clause`.
+The next two Bake ESM live-binding smokes now exercise the same mutable
+`state.ts` sequence through `export { value as live }` and
+`export { value as live } from "./state"`. The harness keeps the observed
+binding sequence intact while the source parity target remains Bun's
+getter-based live export lowering and HMR module registry. The next Bake
+boundary is `DEV:esm-4: export { x as y }`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

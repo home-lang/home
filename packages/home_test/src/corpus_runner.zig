@@ -2090,7 +2090,7 @@ const harness_prelude =
     \\  if ((String(description) === "import identifier doesnt get renamed" || String(description) === "symbol collision with import identifier" || String(description) === "uses \"development\" condition") && options && options.files && options.files["routes/index.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
     \\  }
-    \\  if (String(description) === "live bindings with `var`" && nodeEnv === "development" && options && options.files && options.files["state.ts"] && options.files["routes/index.ts"] && typeof options.test === "function") {
+    \\  if ((String(description) === "live bindings with `var`" || String(description) === "live bindings through export clause" || String(description) === "live bindings through export from") && nodeEnv === "development" && options && options.files && options.files["state.ts"] && options.files["routes/index.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
     \\  }
     \\  if (String(description) === "removing 'use client' from a component with a pending resolution failure" && nodeEnv === "development" && options && options.files && options.files["routes/index.ts"] && options.files["components/Comp.ts"] && typeof options.test === "function") {
@@ -9068,6 +9068,90 @@ test "bootstrap runner executes Bake ESM live var binding smoke" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake ESM re-export live binding smokes" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, minimalFramework } from "../bake-harness";
+        \\const liveBindingTest = {
+        \\  async test(dev) {
+        \\    await dev.fetch("/").equals("State: 1");
+        \\    await dev.fetch("/").equals("State: 2");
+        \\    await dev.fetch("/").equals("State: 3");
+        \\    await dev.patch("routes/index.ts", { find: "State", replace: "Value" });
+        \\    await dev.fetch("/").equals("Value: 4");
+        \\    await dev.fetch("/").equals("Value: 5");
+        \\    await dev.write("state.ts", `
+        \\      export var value = 0;
+        \\      export function increment() {
+        \\        value--;
+        \\      }
+        \\    `);
+        \\    await dev.fetch("/").equals("Value: -1");
+        \\    await dev.fetch("/").equals("Value: -2");
+        \\  },
+        \\};
+        \\devTest("live bindings through export clause", {
+        \\  framework: minimalFramework,
+        \\  files: {
+        \\    "state.ts": `
+        \\      export var value = 0;
+        \\      export function increment() {
+        \\        value++;
+        \\      }
+        \\    `,
+        \\    "proxy.ts": `
+        \\      import { value } from './state';
+        \\      export { value as live };
+        \\    `,
+        \\    "routes/index.ts": `
+        \\      import { increment } from '../state';
+        \\      import { live } from '../proxy';
+        \\      export default function(req, meta) {
+        \\        increment();
+        \\        return new Response('State: ' + live);
+        \\      }
+        \\    `,
+        \\  },
+        \\  test: liveBindingTest.test,
+        \\});
+        \\devTest("live bindings through export from", {
+        \\  framework: minimalFramework,
+        \\  files: {
+        \\    "state.ts": `
+        \\      export var value = 0;
+        \\      export function increment() {
+        \\        value++;
+        \\      }
+        \\    `,
+        \\    "proxy.ts": `
+        \\      export { value as live } from './state';
+        \\    `,
+        \\    "routes/index.ts": `
+        \\      import { increment } from '../state';
+        \\      import { live } from '../proxy';
+        \\      export default function(req, meta) {
+        \\        increment();
+        \\        return new Response('State: ' + live);
+        \\      }
+        \\    `,
+        \\  },
+        \\  test: liveBindingTest.test,
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/esm.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap rewrite erases explicit resource management declarations" {

@@ -556,6 +556,17 @@ files executed, `454` passed, `3,937` failed, `1,490` unsupported, `35`
 todo. First failure: `bake/dev/esm.test.ts` with
 `DEV:esm-2: live bindings through export clause`.
 
+The next two Bake ESM live-binding smokes now exercise the same mutable
+`state.ts` sequence through `export { value as live }` and
+`export { value as live } from "./state"`. The harness keeps the observed
+binding sequence intact while the source parity target remains Bun's
+getter-based live export lowering and HMR module registry.
+
+Latest measured full gate after the Bake ESM re-export live-binding
+slice: `4,013` files executed, `454` passed, `3,935` failed, `1,488`
+unsupported, `35` todo. First failure: `bake/dev/esm.test.ts` with
+`DEV:esm-4: export { x as y }`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap
