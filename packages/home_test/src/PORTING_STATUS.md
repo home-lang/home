@@ -67,12 +67,12 @@ rejection, `test.concurrent`, `test.each`, `.not`, `toBe`, `toBeDefined`,
 `toBeUndefined`, `toBeTruthy`, `toBeNumber`, `toBeTypeOf`,
 `toBeInstanceOf`, `toMatchObject`, object-form error matching in
 `toThrow`, small `toEqual` / `toStrictEqual` deep equality including
-`Map` / `Set` / byte-wise ArrayBuffer and typed arrays, `expect.any`, `expect.unreachable`, a small
+`Map` / `Set` / byte-wise ArrayBuffer and typed arrays, `expect.any`, `expect.unreachable`, `describe.todo`, a small
 `expect.extend` asymmetric matcher path, `toIncludeRepeated`,
 `toContainKey`, `toContainKeys`, `toContainAnyKeys`, `atob` / `btoa`,
 `Bun` branding plus `Bun.version`, `Bun.revision`, `Bun.stripANSI`,
 `Bun.wrapAnsi`, `Bun.semver.satisfies`, `Bun.concatArrayBuffers`,
-`Bun.TOML.parse` non-string input errors,
+`Bun.escapeHTML`, `Bun.TOML.parse` non-string input errors,
 `Bun.gc`, `mock.clearAllMocks`,
 `toHaveBeenCalledTimes`, `expect().pass`, `expectTypeOf` type-only no-op checks, narrow TypeScript
 constructor-modifier rewrites, bun-types `test.each` type-shape smoke, synchronous `it.each` / `describe.each` table expansion,

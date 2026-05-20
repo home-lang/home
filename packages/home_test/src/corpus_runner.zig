@@ -142,6 +142,8 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/path/is-absolute.test.js",
     "js/node/path/zero-length-strings.test.js",
     "js/bun/util/concat.test.js",
+    "js/bun/util/escapeHTML.test.js",
+    "js/node/url/url-revokeobjecturl.test.js",
 };
 
 const harness_prelude =
@@ -193,6 +195,15 @@ const harness_prelude =
     \\  gc(force) {},
     \\  stripANSI(value) {
     \\    return String(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+    \\  },
+    \\  escapeHTML(value) {
+    \\    return String(value).replace(/[&<>"']/g, ch => {
+    \\      if (ch === "&") return "&amp;";
+    \\      if (ch === "<") return "&lt;";
+    \\      if (ch === ">") return "&gt;";
+    \\      if (ch === "\"") return "&quot;";
+    \\      return "&#x27;";
+    \\    });
     \\  },
     \\  wrapAnsi(value, columns, options) {
     \\    const input = String(value);
@@ -837,6 +848,9 @@ const harness_prelude =
     \\    globalThis.__home_current_scope = parent;
     \\  }
     \\}
+    \\describe.todo = function(name, fn) {
+    \\  __home_bun_tests.todo++;
+    \\};
     \\describe.each = function(rows) {
     \\  return function(name, fn) {
     \\    for (const row of rows) {
@@ -1134,7 +1148,7 @@ const harness_prelude =
     \\  return globalThis.__home_bun_test;
     \\};
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
-    \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers };
+    \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, escapeHTML: Bun.escapeHTML };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\function SourceMap(payload) {
     \\  if (!(this instanceof SourceMap)) return new SourceMap(payload);
@@ -1630,6 +1644,11 @@ const harness_prelude =
     \\      for (let i = 0; i < value.length; i++) buffer[i] = Number(value[i]) & 0xff;
     \\      return buffer;
     \\    }
+    \\    if (ArrayBuffer.isView(value)) {
+    \\      const buffer = new Buffer(value.length);
+    \\      for (let i = 0; i < value.length; i++) buffer[i] = Number(value[i]) & 0xff;
+    \\      return buffer;
+    \\    }
     \\    const normalized = encoding === undefined ? "utf8" : String(encoding).toLowerCase();
     \\    if (typeof value === "string" && (normalized === "utf-16le" || normalized === "utf16le" || normalized === "ucs2" || normalized === "ucs-2")) {
     \\      const buffer = new Buffer(value.length * 2);
@@ -1680,6 +1699,11 @@ const harness_prelude =
     \\    if (normalized === "utf8" || normalized === "utf-8") {
     \\      let output = "";
     \\      for (let i = 0; i < this.length; i++) output += String.fromCharCode(this[i]);
+    \\      return output;
+    \\    }
+    \\    if (normalized === "utf16le" || normalized === "utf-16le" || normalized === "ucs2" || normalized === "ucs-2") {
+    \\      let output = "";
+    \\      for (let i = 0; i < this.length; i += 2) output += String.fromCharCode(this[i] | ((this[i + 1] || 0) << 8));
     \\      return output;
     \\    }
     \\    __home_unsupported("Only Buffer.toString('hex'/'utf8') is supported by the Home Bun corpus bootstrap runner");
@@ -2439,6 +2463,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { concatArrayBuffers } = globalThis.__home_import(\"bun\");",
         },
         .{
+            .needle = "import { escapeHTML } from \"bun\";",
+            .replacement = "const { escapeHTML } = globalThis.__home_import(\"bun\");",
+        },
+        .{
             .needle = "import { Buffer } from \"node:buffer\";",
             .replacement = "const { Buffer } = globalThis.__home_import(\"node:buffer\");",
         },
@@ -2871,6 +2899,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:buffer\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toString(16).padStart") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Bun.jest = function(path)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "escapeHTML(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function SourceMap(payload)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:module\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var structuredClone = function(value)") != null);
@@ -2885,6 +2914,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var AbortController = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "AbortSignal.abort = function(reason)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var URLSearchParams = function(init)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.todo = function(name, fn)") != null);
 }
 
 test "Bun test import rewrite lowers to the virtual test module" {
@@ -2929,6 +2959,8 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/node/path/is-absolute.test.js",
         "js/node/path/zero-length-strings.test.js",
         "js/bun/util/concat.test.js",
+        "js/bun/util/escapeHTML.test.js",
+        "js/node/url/url-revokeobjecturl.test.js",
     };
 
     for (expected) |path| {
