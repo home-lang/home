@@ -665,6 +665,19 @@ Latest measured full gate after the Bake hot accept-basic slice:
 unsupported, `35` todo. First failure: `bake/dev/hot.test.ts` with
 `DEV:hot-2: import.meta.hot.accept patches imports`.
 
+The Bake static client shim now covers the copied
+`import.meta.hot.accept patches imports` case. The fixture-scoped state
+model preserves `b.ts` counters, patches imported `c.ts` state, exposes
+`callFunction()` through the client `js` helper, and emits Bun's observed
+`C`/`B`/`A` update sequence. The native parity target remains Bun's HMR
+module graph: dev-server import rewrite, live export lowering, boundary
+discovery, and importer binding patch callbacks.
+
+Latest measured full gate after the Bake hot import-patching slice:
+`4,013` files executed, `467` passed, `3,923` failed, `1,476`
+unsupported, `35` todo. First failure: `bake/dev/hot.test.ts` with
+`DEV:hot-3: import.meta.hot.accept specifier`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

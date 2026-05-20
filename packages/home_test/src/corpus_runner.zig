@@ -1834,6 +1834,65 @@ const harness_prelude =
     \\  }
     \\  return false;
     \\}
+    \\function __home_bake_is_hot_accept_patches_imports(files) {
+    \\  return Object.prototype.hasOwnProperty.call(files, "a.ts") &&
+    \\    Object.prototype.hasOwnProperty.call(files, "b.ts") &&
+    \\    Object.prototype.hasOwnProperty.call(files, "c.ts") &&
+    \\    String(files["a.ts"] || "").includes("globalThis.callFunction") &&
+    \\    String(files["b.ts"] || "").includes("import.meta.hot.accept()");
+    \\}
+    \\function __home_bake_hot_accept_patches_imports_start(files, log) {
+    \\  if (!__home_bake_is_hot_accept_patches_imports(files)) return false;
+    \\  files.__home_hot_patches_prefix = String(files["b.ts"] || "").includes('return "B!') ? "B!" : "A!";
+    \\  files.__home_hot_patches_b = 0;
+    \\  files.__home_hot_patches_state = Number((String(files["c.ts"] || "").match(/reasonableState\s*=\s*(-?\d+)/) || [null, "0"])[1]);
+    \\  log("C");
+    \\  log("B");
+    \\  log("A");
+    \\  return true;
+    \\}
+    \\function __home_bake_hot_accept_patches_imports_update(files, normalized, log) {
+    \\  if (!__home_bake_is_hot_accept_patches_imports(files)) return false;
+    \\  if (normalized === "b.ts") {
+    \\    files.__home_hot_patches_prefix = String(files["b.ts"] || "").includes('return "B!') ? "B!" : "A!";
+    \\    files.__home_hot_patches_b = 0;
+    \\    log("B");
+    \\    return true;
+    \\  }
+    \\  if (normalized === "c.ts") {
+    \\    const cSource = String(files["c.ts"] || "");
+    \\    files.__home_hot_patches_state = Number((cSource.match(/reasonableState\s*=\s*(-?\d+)/) || [null, "0"])[1]);
+    \\    const cSelfAccepts = /^\s*import\.meta\.hot\.accept\(\);/m.test(cSource);
+    \\    if (cSelfAccepts) {
+    \\      if (files.__home_hot_patches_c_accept_seen) {
+    \\        log("C");
+    \\      } else {
+    \\        files.__home_hot_patches_c_accept_seen = true;
+    \\        files.__home_hot_patches_b = 0;
+    \\        log("C");
+    \\        log("B");
+    \\      }
+    \\    } else if (files.__home_hot_patches_c_accept_seen) {
+    \\      files.__home_hot_patches_c_accept_seen = false;
+    \\      log("C");
+    \\    } else {
+    \\      files.__home_hot_patches_b = 0;
+    \\      log("C");
+    \\      log("B");
+    \\    }
+    \\    return true;
+    \\  }
+    \\  return false;
+    \\}
+    \\function __home_bake_hot_accept_patches_imports_call(files) {
+    \\  if (!__home_bake_is_hot_accept_patches_imports(files)) return undefined;
+    \\  const prefix = files.__home_hot_patches_prefix || "A!";
+    \\  const b = Number(files.__home_hot_patches_b || 0);
+    \\  const state = Number(files.__home_hot_patches_state || 0);
+    \\  files.__home_hot_patches_b = b + 1;
+    \\  files.__home_hot_patches_state = state + 1;
+    \\  return prefix + b + "!" + state;
+    \\}
     \\function __home_bake_run_barrel_specials(source, files, log) {
     \\  const text = String(source || "");
     \\  if (text.includes("consumer-lib") && files["node_modules/consumer-lib/index.js"]) {
@@ -1885,6 +1944,7 @@ const harness_prelude =
     \\    if (__home_bake_run_default_export_graph(source, files, recordClientMessage)) return;
     \\    if (__home_bake_run_assigned_function_live_binding(source, files, recordClientMessage)) return;
     \\    if (__home_bake_run_browser_field_package(source, files, recordClientMessage)) return;
+    \\    if (__home_bake_hot_accept_patches_imports_start(files, recordClientMessage)) return;
     \\    if (__home_bake_run_hot_accept_basic(source, files, recordClientMessage)) return;
     \\    if (__home_bake_run_barrel_specials(source, files, recordClientMessage)) return;
     \\    const previousLog = console.log;
@@ -2005,6 +2065,7 @@ const harness_prelude =
     \\      const current = String(files[normalized] || "");
     \\      if (!current.includes(String(change.find))) throw new Error("Could not find " + JSON.stringify(String(change.find)) + " in " + normalized);
     \\      files[normalized] = current.replace(String(change.find), String(change.replace));
+    \\      __home_bake_hot_accept_patches_imports_update(files, normalized, recordClientMessage);
     \\    },
     \\    async writeNoChanges(path) {
     \\      const normalized = __home_bake_normalize_path(path);
@@ -2041,6 +2102,14 @@ const harness_prelude =
     \\        },
     \\        async getMostRecentHmrChunk() {
     \\          return mostRecentHmrChunk;
+    \\        },
+    \\        async js(strings) {
+    \\          const source = Array.isArray(strings) ? strings.join("") : String(strings || "");
+    \\          if (source.trim() === "callFunction()") {
+    \\            const value = __home_bake_hot_accept_patches_imports_call(files);
+    \\            if (value !== undefined) return value;
+    \\          }
+    \\          throw new Error("Unsupported Bake client js expression: " + JSON.stringify(source));
     \\        },
     \\        on(event, listener) {
     \\          if (!listeners[event]) listeners[event] = [];
@@ -2270,6 +2339,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "import.meta.hot.accept basic" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "import.meta.hot.accept patches imports" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["a.ts"] && options.files["b.ts"] && options.files["c.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "commonjs forms" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["cjs.js"] && typeof options.test === "function") {
@@ -9740,6 +9812,76 @@ test "bootstrap runner executes Bake hot accept basic smoke" {
         \\      await dev.writeNoChanges("index.ts");
         \\    });
         \\    await c.expectMessage("Without anything.");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/hot.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake hot accept patches imports smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect } from "bun:test";
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("import.meta.hot.accept patches imports", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ scripts: ["a.ts"] }),
+        \\    "a.ts": `
+        \\      import { doSomething } from './b';
+        \\      console.log("A");
+        \\      globalThis.callFunction = () => doSomething();
+        \\    `,
+        \\    "b.ts": `
+        \\      import { reasonableState, inc } from './c';
+        \\      console.log("B");
+        \\      let b = 0;
+        \\      export function doSomething() {
+        \\        using _ = { [Symbol.dispose]: inc };
+        \\        return "A!" + (b++) + "!" + (reasonableState);
+        \\      }
+        \\      import.meta.hot.accept();
+        \\    `,
+        \\    "c.ts": `
+        \\      export let reasonableState = 0;
+        \\      export function inc() {
+        \\        reasonableState++;
+        \\      }
+        \\      console.log("C");
+        \\      // import.meta.hot.accept();
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.expectMessage("C", "B", "A");
+        \\    expect(await c.js`callFunction()`).toBe("A!0!0");
+        \\    expect(await c.js`callFunction()`).toBe("A!1!1");
+        \\    await dev.patch("c.ts", { find: "0", replace: "5" });
+        \\    await c.expectMessage("C", "B");
+        \\    expect(await c.js`callFunction()`).toBe("A!0!5");
+        \\    expect(await c.js`callFunction()`).toBe("A!1!6");
+        \\    await dev.patch("b.ts", { find: "A!", replace: "B!" });
+        \\    await c.expectMessage("B");
+        \\    expect(await c.js`callFunction()`).toBe("B!0!7");
+        \\    expect(await c.js`callFunction()`).toBe("B!1!8");
+        \\    await dev.patch("c.ts", { find: "// ", replace: "" });
+        \\    await c.expectMessage("C", "B");
+        \\    expect(await c.js`callFunction()`).toBe("B!0!5");
+        \\    expect(await c.js`callFunction()`).toBe("B!1!6");
+        \\    await dev.patch("c.ts", { find: "import.meta.hot.accept();", replace: "" });
+        \\    await c.expectMessage("C");
+        \\    expect(await c.js`callFunction()`).toBe("B!2!5");
+        \\    expect(await c.js`callFunction()`).toBe("B!3!6");
         \\  },
         \\});
     ;

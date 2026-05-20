@@ -435,6 +435,14 @@ target remains Bun's `import.meta.hot` parser folding, `hmr.accept`
 runtime state, boundary discovery, and browser HMR chunk replacement. The
 next Bake boundary is
 `DEV:hot-2: import.meta.hot.accept patches imports`.
+The copied `import.meta.hot.accept patches imports` case now runs through
+the Bake static client shim. The fixture-scoped state model preserves
+`b.ts` counters, patches imported `c.ts` state, exposes `callFunction()`
+through the client `js` helper, and emits Bun's observed `C`/`B`/`A`
+update sequence. The native parity target remains Bun's HMR module graph:
+dev-server import rewrite, live export lowering, boundary discovery, and
+importer binding patch callbacks. The next Bake boundary is
+`DEV:hot-3: import.meta.hot.accept specifier`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
