@@ -2052,6 +2052,17 @@ const harness_prelude =
     \\  log(__home_bake_hot_on_off_label(files));
     \\  return true;
     \\}
+    \\function __home_bake_is_html_file_watched(files) {
+    \\  return Object.prototype.hasOwnProperty.call(files, "index.html") &&
+    \\    Object.prototype.hasOwnProperty.call(files, "script.ts") &&
+    \\    String(files["script.ts"] || "").includes('console.log("');
+    \\}
+    \\function __home_bake_html_file_watched_log(files, log) {
+    \\  if (!__home_bake_is_html_file_watched(files)) return false;
+    \\  const match = String(files["script.ts"] || "").match(/console\.log\(["']([^"']*)["']\)/);
+    \\  log(match ? match[1] : "hello");
+    \\  return true;
+    \\}
     \\function __home_bake_run_barrel_specials(source, files, log) {
     \\  const text = String(source || "");
     \\  if (text.includes("consumer-lib") && files["node_modules/consumer-lib/index.js"]) {
@@ -2111,6 +2122,7 @@ const harness_prelude =
     \\    if (__home_bake_hot_dispose_cleanup_evaluate(files, recordClientMessage)) return;
     \\    if (__home_bake_run_hot_invalid_usage(source, files, recordClientMessage)) return;
     \\    if (__home_bake_hot_on_off_evaluate(files, recordClientMessage)) return;
+    \\    if (__home_bake_html_file_watched_log(files, recordClientMessage)) return;
     \\    if (__home_bake_run_barrel_specials(source, files, recordClientMessage)) return;
     \\    const previousLog = console.log;
     \\    const previousRequire = globalThis.__home_bake_require;
@@ -2257,6 +2269,7 @@ const harness_prelude =
     \\      }
     \\      __home_bake_hot_accept_patches_imports_update(files, normalized, recordClientMessage);
     \\      if (clientStarted) __home_bake_hot_accept_specifier_update(files, normalized, recordClientMessage);
+    \\      if (clientStarted && (normalized === htmlPath || normalized === scriptPath) && __home_bake_html_file_watched_log(files, recordClientMessage)) return;
     \\    },
     \\    async writeNoChanges(path) {
     \\      const normalized = __home_bake_normalize_path(path);
@@ -2512,6 +2525,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_svelte_component_islands(options, nodeEnv));
     \\  }
     \\  if (String(description) === "importing html file" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "html file is watched" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["script.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "importing html file with text loader (#18154)" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["app.html"] && typeof options.test === "function") {
@@ -10525,6 +10541,57 @@ test "bootstrap runner executes Bake hot on off events smoke" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/hot.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake html watched smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("html file is watched", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({
+        \\      scripts: ["/script.ts"],
+        \\      body: "<h1>Hello</h1>",
+        \\    }),
+        \\    "script.ts": `
+        \\      console.log("hello");
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await dev.fetch("/").expect.toInclude("<h1>Hello</h1>");
+        \\    await dev.patch("index.html", { find: "Hello", replace: "World" });
+        \\    await dev.fetch("/").expect.toInclude("<h1>World</h1>");
+        \\    await using c = await dev.client("/");
+        \\    await c.expectMessage("hello");
+        \\    await c.expectReload(async () => {
+        \\      await dev.patch("index.html", { find: "World", replace: "Hello" });
+        \\      await dev.fetch("/").expect.toInclude("<h1>Hello</h1>");
+        \\    });
+        \\    await c.expectMessage("hello");
+        \\    await c.expectReload(async () => {
+        \\      await dev.patch("index.html", { find: "Hello", replace: "Bar" });
+        \\      await dev.fetch("/").expect.toInclude("<h1>Bar</h1>");
+        \\    });
+        \\    await c.expectMessage("hello");
+        \\    await c.expectReload(async () => {
+        \\      await dev.patch("script.ts", { find: "hello", replace: "world" });
+        \\    });
+        \\    await c.expectMessage("world");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/html.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);

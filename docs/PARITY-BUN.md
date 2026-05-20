@@ -788,6 +788,18 @@ Latest measured full gate after the HTML TypeScript rewrite slice:
 unsupported, `37` todo. First failure: `bake/dev/html.test.ts` with
 `DEV:html-1: html file is watched`.
 
+The Bake static HTML shim now covers the copied `html file is watched`
+case. It serves patched `index.html`, starts the `/script.ts` client,
+models HTML-triggered reloads, and re-runs the script after both HTML and
+script edits so the fixture observes `hello`, `hello`, `hello`, and
+`world`. The native parity target remains Bun's file watcher to dev server
+reload path for HTML entrypoints and their module scripts.
+
+Latest measured full gate after the HTML watched-file slice:
+`4,013` files executed, `474` passed, `3,921` failed, `1,475`
+unsupported, `37` todo. First failure: `bake/dev/html.test.ts` with
+`DEV:html-2: image tag`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

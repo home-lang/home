@@ -512,6 +512,13 @@ similar HTML tests. The file now reaches real Bake harness registration
 instead of failing before execution. The native parity target remains a
 proper TypeScript parse/lower path rather than this narrow bootstrap token
 rewrite. The next Bake boundary is `DEV:html-1: html file is watched`.
+The copied `html file is watched` case now runs through the Bake static
+HTML shim. It serves patched `index.html`, starts the `/script.ts` client,
+models HTML-triggered reloads, and re-runs the script after both HTML and
+script edits so the fixture observes `hello`, `hello`, `hello`, and
+`world`. The native parity target remains Bun's file watcher to dev server
+reload path for HTML entrypoints and their module scripts. The next Bake
+boundary is `DEV:html-2: image tag`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
