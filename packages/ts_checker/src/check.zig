@@ -14004,7 +14004,6 @@ pub const Checker = struct {
                 for (self.interner.objectMembers(pt)) |inherited| {
                     if (preseeded_field_indices.contains(inherited.name)) continue;
                     try preseeded_field_indices.put(self.gpa, inherited.name, instance_members.items.len);
-                    try instance_member_names_local.put(self.gpa, inherited.name, {});
                     try instance_members.append(self.gpa, inherited);
                 }
             }
@@ -14277,6 +14276,7 @@ pub const Checker = struct {
                     } else {
                         try instance_member_names_local.put(self.gpa, member_name, {});
                     }
+                    const own_already_before = !fn_p.flags.is_static and own_member_names.contains(member_name);
                     if (!fn_p.flags.is_static) try own_member_names.put(self.gpa, member_name, {});
 
                     // Accessor (get/set): the property type is the
@@ -14333,8 +14333,7 @@ pub const Checker = struct {
                             // member has already been registered
                             // by a PRIOR loop iteration.
                             const is_preseeded_stub = !fn_p.flags.is_static and preseeded_field_indices.contains(member_name);
-                            const own_already = own_member_names.contains(member_name);
-                            if (is_preseeded_stub and !own_already) {
+                            if (is_preseeded_stub and !own_already_before) {
                                 // Replace the stub with the accessor
                                 // entry below; do not treat as a
                                 // duplicate.
@@ -72794,6 +72793,30 @@ test "checker: redeclaring inherited private member emits TS2415" {
         if (d.code == TsCodes.class_incorrectly_extends_base) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: inherited private members alone do not emit TS2415" {
+    const s = try newSetup(
+        \\class Base { private x: number = 0; }
+        \\class Derived extends Base {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.class_incorrectly_extends_base);
+    }
+}
+
+test "checker: generic inherited private members alone do not emit TS2415" {
+    const s = try newSetup(
+        \\class Base<T> { private x: T; }
+        \\class Derived<T> extends Base<T> {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.class_incorrectly_extends_base);
+    }
 }
 
 test "checker: child narrows public to private static — TS2417" {
