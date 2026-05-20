@@ -426,6 +426,15 @@ files executed, `440` passed, `3,948` failed, `1,501` unsupported, `35`
 todo. First failure: `bake/dev/css.test.ts` with
 ` DEV:css-5: asset referenced in css`.
 
+The CSS asset-reference smoke now exposes `background-image` URLs,
+supports `dev.fetch(url).expectFile(...)`, and reflects asset rewrites in
+the in-memory fixture model.
+
+Latest measured full gate after the Bake CSS asset-reference slice:
+`4,013` files executed, `440` passed, `3,947` failed, `1,500`
+unsupported, `35` todo. First failure: `bake/dev/css.test.ts` with
+` DEV:css-6: syntax error crash`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

@@ -293,6 +293,10 @@ The CSS `@import` smoke now recursively expands imported stylesheets,
 checks hot edits to the imported file, and preserves the result across a
 hard reload in the harness model. The next Bake boundary is
 `DEV:css-5: asset referenced in css`.
+The CSS asset-reference smoke now exposes `background-image` URLs,
+supports `dev.fetch(url).expectFile(...)`, and reflects asset rewrites in
+the in-memory fixture model. The next Bake boundary is
+`DEV:css-6: syntax error crash`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

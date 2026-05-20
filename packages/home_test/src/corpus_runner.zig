@@ -1528,6 +1528,8 @@ const harness_prelude =
     \\function __home_bake_normalize_css_value(value) {
     \\  const text = String(value || "").trim();
     \\  if (text === "blue") return "#00f";
+    \\  const url = text.match(/^url\((['"]?)(.*?)\1\)$/);
+    \\  if (url) return "url(\"" + url[2] + "\")";
     \\  return text;
     \\}
     \\function __home_bake_css_selector_found(files, htmlPath, htmlSource, selector) {
@@ -1763,8 +1765,13 @@ const harness_prelude =
     \\      return __home_bake_normalize_path(Array.prototype.map.call(arguments, String).join("/"));
     \\    },
     \\    fetch(path) {
+    \\      const normalizedFetchPath = __home_bake_normalize_path(String(path || "").replace(/^\//, ""));
     \\      return {
-    \\        text: async () => htmlSource,
+    \\        text: async () => Object.prototype.hasOwnProperty.call(files, normalizedFetchPath) ? String(files[normalizedFetchPath] || "") : htmlSource,
+    \\        async expectFile(expected) {
+    \\          const actual = files[normalizedFetchPath];
+    \\          if (actual !== expected) throw new Error("Expected file " + JSON.stringify(normalizedFetchPath) + " to equal fixture");
+    \\        },
     \\        expect: {
     \\          toInclude(expected) {
     \\            if (!String(htmlSource).includes(String(expected))) throw new Error("Expected HTML to include " + JSON.stringify(String(expected)));
@@ -1992,6 +1999,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "css import another css file" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["styles.css"] && options.files["second.css"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "asset referenced in css" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["styles.css"] && options.files["bun.png"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
@@ -8265,6 +8275,54 @@ test "bootstrap runner executes Bake css import another file smoke" {
         \\    await c.style("body").color.expect.toBe("red");
         \\  },
         \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/css.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake css asset reference smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import assert from "node:assert";
+        \\import { devTest, emptyHtmlFile, imageFixtures } from "../bake-harness";
+        \\devTest("asset referenced in css", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({
+        \\      styles: ["styles.css"],
+        \\    }),
+        \\    "styles.css": `
+        \\      body {
+        \\        background-image: url(./bun.png);
+        \\      }
+        \\    `,
+        \\    "bun.png": imageFixtures.bun,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    let backgroundImage = await c.style("body").backgroundImage;
+        \\    assert(backgroundImage);
+        \\    await dev.fetch(extractCssUrl(backgroundImage)).expectFile(imageFixtures.bun);
+        \\    await dev.write("bun.png", imageFixtures.bun2);
+        \\    backgroundImage = await c.style("body").backgroundImage;
+        \\    assert(backgroundImage);
+        \\    await dev.fetch(extractCssUrl(backgroundImage)).expectFile(imageFixtures.bun2);
+        \\  },
+        \\});
+        \\function extractCssUrl(backgroundImage: string): string {
+        \\  const url = backgroundImage.match(/url\((['"])(.*?)\1\)/);
+        \\  if (!url) throw new Error("No url found in background-image: " + backgroundImage);
+        \\  return url[2];
+        \\}
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/css.test.ts");
     defer prepared.deinit(std.testing.allocator);
