@@ -775,6 +775,19 @@ Latest measured full gate after clearing `bake/dev/hot.test.ts` on macOS:
 unsupported, `37` todo. First failure: `bake/dev/html.test.ts` with
 `SyntaxError: Unexpected token ':'. const declared variable 'url' must have an initializer.`
 
+The bootstrap TypeScript rewrite now strips scalar variable annotations of
+the form `: string =`, unblocking the copied `bake/dev/html.test.ts`
+parser path for the `image tag` fixture's `const url: string = ...` and
+similar HTML tests. The file now reaches real Bake harness registration
+instead of failing before execution. The native parity target remains a
+proper TypeScript parse/lower path rather than this narrow bootstrap
+token rewrite.
+
+Latest measured full gate after the HTML TypeScript rewrite slice:
+`4,013` files executed, `474` passed, `3,922` failed, `1,476`
+unsupported, `37` todo. First failure: `bake/dev/html.test.ts` with
+`DEV:html-1: html file is watched`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

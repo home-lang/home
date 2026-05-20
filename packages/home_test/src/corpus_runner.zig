@@ -4776,6 +4776,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": Promise<void>[] =", .replacement = " =" },
         .{ .needle = ": any =", .replacement = " =" },
         .{ .needle = ": number =", .replacement = " =" },
+        .{ .needle = ": string =", .replacement = " =" },
         .{ .needle = ": string {", .replacement = " {" },
         .{ .needle = ": number)", .replacement = ")" },
         .{ .needle = ": string)", .replacement = ")" },
@@ -10561,6 +10562,7 @@ test "bootstrap rewrite erases Bake TypeScript-only syntax" {
         \\test("syntax", () => {
         \\  const hmrSelfAcceptingModule = (label: string) => String(label);
         \\  const waitForMessage = (value: string) => value;
+        \\  const url: string = "https://example.test/image.png";
         \\  let timer: ReturnType<typeof setTimeout> | null = setTimeout(() => {}, 1);
         \\  client.on("message", (m: unknown) => expect(m).toBeDefined());
         \\  const framework = { serverComponents: { ...minimalFramework.serverComponents!, separateSSRGraph: true } };
@@ -10571,6 +10573,7 @@ test "bootstrap rewrite erases Bake TypeScript-only syntax" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, ": string") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const url =") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, ": unknown") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "ReturnType") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "serverComponents!") == null);

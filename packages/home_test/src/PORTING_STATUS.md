@@ -505,6 +505,13 @@ file now runs in Home as `8` passed, `0` failed, `0` unsupported, and
 case remains Bun's directory watcher merge path and `DevServer.onFileUpdate`
 forwarding of every coalesced sub-path. The next corpus boundary is
 `bake/dev/html.test.ts`.
+The bootstrap TypeScript rewrite now strips scalar variable annotations of
+the form `: string =`, unblocking the copied `bake/dev/html.test.ts`
+parser path for the `image tag` fixture's `const url: string = ...` and
+similar HTML tests. The file now reaches real Bake harness registration
+instead of failing before execution. The native parity target remains a
+proper TypeScript parse/lower path rather than this narrow bootstrap token
+rewrite. The next Bake boundary is `DEV:html-1: html file is watched`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
