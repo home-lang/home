@@ -656,6 +656,13 @@ depends on `process`. Native parity still needs Bun's real
 server-component bundling of node builtins through package exports. The
 next direct Bake boundary is `bake/framework-router.test.ts`, currently
 blocked as unsupported module syntax during source preparation.
+The copied `bake/framework-router.test.ts` fixture now passes as `35`
+tests through a narrow internal framework-router model for copied route
+parser results, parser error messages, and filesystem discovery from
+nested `tempDirWithFiles` paths. Native parity still needs Bun's real
+`frameworkRouterInternals` parser and router filesystem discovery. The
+next direct Bake boundary is `bake/serve-plugins-dev-server.test.ts`,
+currently blocked as unsupported module syntax during source preparation.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

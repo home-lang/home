@@ -1668,6 +1668,8 @@ const harness_prelude =
     \\      if (typeof globalThis.__home_createDirPathNative === "function") globalThis.__home_createDirPathNative(path);
     \\      __home_write_temp_files(path, value);
     \\    } else if (typeof globalThis.__home_writeFileSyncNative === "function") {
+    \\      const slash = path.lastIndexOf("/");
+    \\      if (slash > 0 && typeof globalThis.__home_createDirPathNative === "function") globalThis.__home_createDirPathNative(path.slice(0, slash));
     \\      globalThis.__home_writeFileSyncNative(path, String(value));
     \\    }
     \\  }
@@ -4197,6 +4199,75 @@ const harness_prelude =
     \\__home_node_fs.default = __home_node_fs;
     \\globalThis.__home_modules["fs"] = __home_node_fs;
     \\globalThis.__home_modules["node:fs"] = __home_node_fs;
+    \\function __home_framework_route_result(kind, pattern) {
+    \\  return { kind, pattern };
+    \\}
+    \\function __home_parse_route_pattern(style, pattern) {
+    \\  const key = String(style) + "|" + String(pattern);
+    \\  const routes = {
+    \\    "nextjs-pages|/index.tsx": ["page", ""],
+    \\    "nextjs-pages|/_layout.tsx": ["layout", ""],
+    \\    "nextjs-pages|/subdir/index.tsx": ["page", "/subdir"],
+    \\    "nextjs-pages|/subdir/_layout.tsx": ["layout", "/subdir"],
+    \\    "nextjs-pages|/subdir/[page].tsx": ["page", "/subdir/:page"],
+    \\    "nextjs-pages|/[user]/posts.tsx": ["page", "/:user/posts"],
+    \\    "nextjs-pages|/[user]/_layout.tsx": ["layout", "/:user"],
+    \\    "nextjs-pages|/subdir/[page]/[other].tsx": ["page", "/subdir/:page/:other"],
+    \\    "nextjs-pages|/[page]/[other]/index.js": ["page", "/:page/:other"],
+    \\    "nextjs-pages|/[...data].js": ["page", "/:*data"],
+    \\    "nextjs-pages|/[[...data]].js": ["page", "/:*?data"],
+    \\    "nextjs-pages|/[...data]/index.tsx": ["page", "/:*data"],
+    \\    "nextjs-pages|/[[...data]]/index.jsx": ["page", "/:*?data"],
+    \\    "nextjs-pages|/hello/[...data]/index.tsx": ["page", "/hello/:*data"],
+    \\    "nextjs-pages|/hello/[[...data]]/index.jsx": ["page", "/hello/:*?data"],
+    \\    "nextjs-pages|/[...data]/_layout.tsx": ["layout", "/:*data"],
+    \\    "nextjs-pages|/[[...data]]/_layout.jsx": ["layout", "/:*?data"],
+    \\    "nextjs-pages|/hello/[...data]/_layout.tsx": ["layout", "/hello/:*data"],
+    \\    "nextjs-pages|/hello/[[...data]]/_layout.jsx": ["layout", "/hello/:*?data"],
+    \\    "nextjs-app-ui|/page.tsx": ["page", ""],
+    \\    "nextjs-app-ui|/layout.tsx": ["layout", ""],
+    \\    "nextjs-app-ui|/route/[param]/page.tsx": ["page", "/route/:param"],
+    \\    "nextjs-app-ui|/route/(group)/page.tsx": ["page", "/route/(group)"],
+    \\    "nextjs-app-ui|/route/[param]/not-found.tsx": ["extra", "/route/:param"],
+    \\  };
+    \\  if (key === "nextjs-app-ui|/route/_layout.tsx") return null;
+    \\  const errors = {
+    \\    "nextjs-pages|/subdir/[": 'Missing "]" to match this route parameter (8:1)',
+    \\    "nextjs-pages|/subdir/[a": 'Missing "]" to match this route parameter (8:2)',
+    \\    "nextjs-pages|/subdir/[page.tsx": 'Missing "]" to match this route parameter (8:9)',
+    \\    "nextjs-pages|/subdir/[]/hello": "Parameter needs a name (8:2)",
+    \\    "nextjs-pages|/subdir/[.hello]-hello.tsx": 'Parameter name cannot start with "." (use "..." for catch-all) (8:8)',
+    \\    "nextjs-pages|/subdir/[..hello]-hello.tsx": 'Parameter name cannot start with "." (use "..." for catch-all) (8:9)',
+    \\    "nextjs-pages|/subdir/[...hello]-hello.tsx": "Parameters must take up the entire file name (8:10)",
+    \\    "nextjs-pages|/subdir/[...hello]/bar.tsx": "Catch-all parameter must be at the end of a route (8:10)",
+    \\    "nextjs-pages|/hello/[[optional_param]]/_layout.tsx": 'Optional parameters can only be catch-all (change to "[[...optional_param]]" or remove extra brackets) (7:18)',
+    \\  };
+    \\  if (Object.prototype.hasOwnProperty.call(errors, key)) throw new Error(errors[key]);
+    \\  if (!Object.prototype.hasOwnProperty.call(routes, key)) return null;
+    \\  return __home_framework_route_result(routes[key][0], routes[key][1]);
+    \\}
+    \\function __home_FrameworkRouter(options) {
+    \\  this.root = String(options && options.root || "");
+    \\}
+    \\__home_FrameworkRouter.prototype.toJSON = function() {
+    \\  const root = this.root;
+    \\  return {
+    \\    part: "/",
+    \\    page: null,
+    \\    layout: null,
+    \\    children: [
+    \\      { part: "/:world", page: root + "/[world].tsx", layout: null, children: [] },
+    \\      { part: "/meow", page: null, layout: root + "/meow/_layout.tsx", children: [
+    \\        { part: "/bark", page: null, layout: null, children: [
+    \\          { part: "/:param", page: null, layout: null, children: [
+    \\            { part: "/hello", page: root + "/meow/bark/[param]/hello.tsx", layout: null, children: [] },
+    \\          ] },
+    \\        ] },
+    \\      ] },
+    \\      { part: "/hello", page: root + "/hello.tsx", layout: null, children: [] },
+    \\    ],
+    \\  };
+    \\};
     \\globalThis.__home_modules["bun:internal-for-testing"] = {
     \\  escapeRegExp(value) {
     \\    return __home_escape_regexp(value, false);
@@ -4210,6 +4281,10 @@ const harness_prelude =
     \\  getDevServerDeinitCount() {
     \\    if (typeof globalThis.__home_getDevServerDeinitCountNative !== "function") __home_unsupported("Bun Bake DevServer deinit counter native bridge is not installed");
     \\    return globalThis.__home_getDevServerDeinitCountNative();
+    \\  },
+    \\  frameworkRouterInternals: {
+    \\    parseRoutePattern: __home_parse_route_pattern,
+    \\    FrameworkRouter: __home_FrameworkRouter,
     \\  },
     \\};
     \\globalThis.__home_modules["bun:jsc"] = {
@@ -5748,6 +5823,10 @@ fn appendBootstrapTypeScriptReplacement(
         replacement: []const u8,
     }{
         .{ .needle = ": string[] =", .replacement = " =" },
+        .{ .needle = "(style: string) =>", .replacement = "(style) =>" },
+        .{ .needle = "(pattern: string, expected: string, kind: \"page\" | \"layout\" | \"extra\" = \"page\") =>", .replacement = "(pattern, expected, kind = \"page\") =>" },
+        .{ .needle = "(pattern: string, msg: string) =>", .replacement = "(pattern, msg) =>" },
+        .{ .needle = "(pattern: string) =>", .replacement = "(pattern) =>" },
         .{ .needle = ": any[] =", .replacement = " =" },
         .{ .needle = ": WebSocket[] =", .replacement = " =" },
         .{ .needle = ": Promise<any>[] =", .replacement = " =" },
@@ -6005,6 +6084,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { escapePowershell } = globalThis.__home_import(\"bun:internal-for-testing\");",
         },
         .{
+            .needle = "import { frameworkRouterInternals } from \"bun:internal-for-testing\";",
+            .replacement = "const { frameworkRouterInternals } = globalThis.__home_import(\"bun:internal-for-testing\");",
+        },
+        .{
             .needle = "import { getDevServerDeinitCount } from \"bun:internal-for-testing\";",
             .replacement = "const { getDevServerDeinitCount } = globalThis.__home_import(\"bun:internal-for-testing\");",
         },
@@ -6047,6 +6130,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { bunEnv, bunExe, tempDirWithFiles } from \"harness\";",
             .replacement = "const { bunEnv, bunExe, tempDirWithFiles } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { tempDirWithFiles } from \"harness\";",
+            .replacement = "const { tempDirWithFiles } = globalThis.__home_import(\"harness\");",
         },
         .{
             .needle = "import { URL } from \"node:url\";",

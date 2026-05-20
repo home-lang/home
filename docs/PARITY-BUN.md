@@ -1016,6 +1016,16 @@ node builtins through package exports. The next direct copied Bake
 boundary is `bake/framework-router.test.ts`, currently blocked during
 source preparation as `unsupported module syntax`.
 
+The copied `bake/framework-router.test.ts` fixture now passes in Home as
+`35` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap models
+the internal framework-router parser results and error messages for the
+copied Next.js pages/app route patterns, plus the filesystem discovery
+tree built from nested `tempDirWithFiles` paths. Native parity still
+requires Bun's real `frameworkRouterInternals` parser and router
+filesystem discovery from copied source. The next direct copied Bake
+boundary is `bake/serve-plugins-dev-server.test.ts`, currently blocked
+during source preparation as `unsupported module syntax`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap
