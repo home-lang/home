@@ -1617,7 +1617,7 @@ const harness_prelude =
     \\  out = out.replaceAll("import.meta.hot.accept();", "void 0;");
     \\  out = out.replaceAll("import.meta.hot", "true");
     \\  out = out.replaceAll("import.meta.require", "hmr.importMeta.require");
-    \\  return "var hmr = { require: function hmrRequire() {}, importMeta: { require: function importMetaRequire() {} } }; var module = { require: function moduleRequire() {} }; var require = hmr.require;\n" + out;
+    \\  return "var hmr = { require: function hmrRequire(specifier) { return globalThis.__home_bake_require ? globalThis.__home_bake_require(specifier) : undefined; }, importMeta: { require: function importMetaRequire(specifier) { return globalThis.__home_bake_require ? globalThis.__home_bake_require(specifier) : undefined; } } }; var module = { require: function moduleRequire(specifier) { return globalThis.__home_bake_require ? globalThis.__home_bake_require(specifier) : undefined; } }; var require = hmr.require;\n" + out;
     \\}
     \\function __home_bake_resolve_client_imports(script, files, scriptPath) {
     \\  let out = String(script || "").replace(/import\s+([A-Za-z_$][\w$]*)\s+from\s+['"]([^'"]+\.html)['"]\s+with\s+\{\s*type\s*:\s*['"]text['"]\s*\}\s*;?/g, function(_, name, specifier) {
@@ -1649,6 +1649,17 @@ const harness_prelude =
     \\  const require = function require() {};
     \\  Function("module", "exports", "require", "{\n" + String(source || "") + "\n}")(module, exports, require);
     \\  return module.exports;
+    \\}
+    \\function __home_bake_require_client_module(files, scriptPath, specifier) {
+    \\  const resolved = __home_bake_resolve_client_import_path(files, scriptPath, specifier);
+    \\  const source = String(files[resolved] || "");
+    \\  if (/\.js$/.test(resolved)) return __home_bake_run_commonjs_module(source);
+    \\  const exports = __home_bake_export_const_values(source);
+    \\  if (Object.keys(exports).length > 0 || /\bexport\s+/.test(source)) {
+    \\    exports.__esModule = true;
+    \\    return exports;
+    \\  }
+    \\  return {};
     \\}
     \\function __home_bake_resolve_named_export(files, scriptPath, specifier, name) {
     \\  if (!String(specifier || "").startsWith(".")) {
@@ -1790,12 +1801,17 @@ const harness_prelude =
     \\    if (__home_bake_run_default_export_graph(source, files, recordClientMessage)) return;
     \\    if (__home_bake_run_barrel_specials(source, files, recordClientMessage)) return;
     \\    const previousLog = console.log;
+    \\    const previousRequire = globalThis.__home_bake_require;
     \\    console.log = function() {
     \\      recordClientMessage.apply(null, arguments);
+    \\    };
+    \\    globalThis.__home_bake_require = function(specifier) {
+    \\      return __home_bake_require_client_module(files, scriptPath, specifier);
     \\    };
     \\    try {
     \\      Function(__home_bake_transpile_client_script(__home_bake_resolve_client_imports(source, files, scriptPath)))();
     \\    } finally {
+    \\      globalThis.__home_bake_require = previousRequire;
     \\      console.log = previousLog;
     \\    }
     \\  }
@@ -2144,6 +2160,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "export * as namespace" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["module.ts"] && options.files["module2.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "ESM <-> CJS sync" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["esm.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "commonjs forms" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["cjs.js"] && typeof options.test === "function") {
@@ -9301,6 +9320,42 @@ test "bootstrap runner executes Bake ESM export star namespace smoke" {
         \\      export const x = 1;
         \\      export const y = 2;
         \\      export const ns = "FAIL";
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client();
+        \\    await c.expectMessage("PASS");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/esm.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake ESM CJS sync smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("ESM <-> CJS sync", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      const mod = require('./esm');
+        \\      if (!mod.__esModule) throw new Error('mod.__esModule should be set');
+        \\      console.log('PASS');
+        \\    `,
+        \\    "esm.ts": `
+        \\      export const x = 1;
         \\    `,
         \\  },
         \\  async test(dev) {

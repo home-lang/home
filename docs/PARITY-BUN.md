@@ -590,6 +590,19 @@ Latest measured full gate after the Bake ESM export-star namespace slice:
 unsupported, `35` todo. First failure: `bake/dev/esm.test.ts` with
 `DEV:esm-9: ESM <-> CJS sync`.
 
+The Bake static client shim now covers the copied synchronous
+`ESM <-> CJS sync` case. The shim resolves a relative `require("./esm")`
+against the in-memory Bake file graph and returns a CommonJS-facing view
+of ESM `export const` values with `__esModule: true`. This mirrors the
+fixture's observable assertion while the native parity target remains
+Bun's Bake HMR `require()` path, `toCommonJS`, and dev-server printer
+lowering.
+
+Latest measured full gate after the Bake ESM/CJS sync slice: `4,013`
+files executed, `454` passed, `3,929` failed, `1,482` unsupported, `35`
+todo. First failure: `bake/dev/esm.test.ts` with
+`DEV:esm-10: ESM <-> CJS (async)`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

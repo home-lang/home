@@ -390,6 +390,13 @@ ESM case. It lowers aliased named imports such as
 module. This keeps the Bun fixture's observable behavior where the
 namespace object wins over the target module's own `ns = "FAIL"` export.
 The next Bake boundary is `DEV:esm-9: ESM <-> CJS sync`.
+The copied synchronous `ESM <-> CJS sync` case now runs through the Bake
+static client shim. Relative `require("./esm")` resolves against the
+in-memory Bake file graph and returns a CommonJS-facing view of ESM
+`export const` values with `__esModule: true`. The native parity target
+remains Bun's Bake HMR `require()` path, `toCommonJS`, and dev-server
+printer lowering. The next Bake boundary is
+`DEV:esm-10: ESM <-> CJS (async)`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
