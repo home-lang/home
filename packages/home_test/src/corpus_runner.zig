@@ -1506,10 +1506,18 @@ const harness_prelude =
     \\  return Object.prototype.hasOwnProperty.call(files, resolved) ? resolved : ref;
     \\}
     \\function __home_bake_css_property(files, htmlPath, htmlSource, selector, propertyName) {
+    \\  let css = "";
     \\  const href = __home_bake_first_attr(htmlSource, "link", "href", "stylesheet");
-    \\  const css = href
-    \\    ? String(files[__home_bake_resolve_html_ref(files, htmlPath, href)] || "")
-    \\    : ((String(htmlSource || "").match(/<style\b[^>]*>([\s\S]*?)<\/style>/i) || [])[1] || "");
+    \\  if (href) css += String(files[__home_bake_resolve_html_ref(files, htmlPath, href)] || "");
+    \\  else css += ((String(htmlSource || "").match(/<style\b[^>]*>([\s\S]*?)<\/style>/i) || [])[1] || "");
+    \\  const scriptRef = __home_bake_first_attr(htmlSource, "script", "src", "");
+    \\  const scriptPath = scriptRef ? __home_bake_resolve_html_ref(files, htmlPath, scriptRef) : "";
+    \\  const scriptSource = String(files[scriptPath] || "");
+    \\  scriptSource.replace(/(^|[\n\r])\s*import\s+['"]([^'"]+\.css)['"]\s*;?/g, function(_, _prefix, specifier) {
+    \\    const resolved = __home_bake_resolve_html_ref(files, scriptPath || htmlPath, specifier);
+    \\    css += "\n" + String(files[resolved] || "");
+    \\    return "";
+    \\  });
     \\  const escapedSelector = String(selector).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     \\  const rule = css.match(new RegExp(escapedSelector + "\\s*\\{([\\s\\S]*?)\\}", "i"));
     \\  if (!rule) return "";
@@ -1541,6 +1549,7 @@ const harness_prelude =
     \\  out = out.replace("const A = () => require;", "const A = () => hmr.require;");
     \\  out = out.replace("const B = () => module.require;", "const B = () => module.require;");
     \\  out = out.replace("const C = () => import.meta.require;", "const C = () => hmr.importMeta.require;");
+    \\  out = out.replace(/export\s+default\s+function\s*\(/g, "function __home_bake_default(");
     \\  out = out.replaceAll("import.meta.main", "false");
     \\  out = out.replaceAll("import.meta.hot.accept();", "void 0;");
     \\  out = out.replaceAll("import.meta.hot", "true");
@@ -1964,6 +1973,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "css file with initial syntax error gets recovered" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["styles.css"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "add new css import later" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["styles.css"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
@@ -8136,6 +8148,53 @@ test "bootstrap runner executes Bake css initial syntax recovery smoke" {
         \\        color: blue;
         \\      }}
         \\    `, { errors: ["styles.css:3:3: error: Unexpected end of input"] });
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/css.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake add css import later smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("add new css import later", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({
+        \\      scripts: ["index.ts"],
+        \\      body: `hello world`,
+        \\    }),
+        \\    "index.ts": `
+        \\      // import "./styles.css";
+        \\      export default function () {
+        \\        return "hello world";
+        \\      }
+        \\      import.meta.hot.accept();
+        \\    `,
+        \\    "styles.css": `
+        \\      body {
+        \\        color: red;
+        \\      }
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.style("body").notFound();
+        \\    await dev.patch("index.ts", { find: "// import", replace: "import" });
+        \\    await c.style("body").color.expect.toBe("red");
+        \\    await dev.patch("index.ts", { find: "import", replace: "// import" });
+        \\    await c.style("body").notFound();
         \\  },
         \\});
     ;

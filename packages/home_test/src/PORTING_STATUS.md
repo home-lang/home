@@ -286,6 +286,9 @@ initial-error CSS recovery smoke now validates startup overlay text,
 reloads after a valid stylesheet write, observes `red`, hot-replaces to
 browser-normalized blue, and validates the later syntax-error overlay.
 The next Bake boundary is `DEV:css-3: add new css import later`.
+The dynamic CSS import smoke now attaches and detaches `styles.css` based
+on an `index.ts` import being uncommented and re-commented. The next Bake
+boundary is `DEV:css-4: css import another css file`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
