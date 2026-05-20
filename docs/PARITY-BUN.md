@@ -986,6 +986,18 @@ The next direct copied Bake boundary is
 `DEV:ssg-pages-router-1: SSG pages router - multiple static pages` with
 the remaining cases marked unsupported.
 
+The copied `bake/dev/ssg-pages-router.test.ts` fixture now passes in
+Home as `9` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap
+models the pages-router client assertions for static pages, `[slug]`
+routes, nested routes, hot-updated page text and console message, async
+data lists, multi-segment params, file-backed post content, named import
+tolerance, and catch-all param serialization. Native parity still
+requires Bun's real pages router, SSG path generation, React rendering,
+fixture filesystem, Bun.file/Bun.Glob routing, and HMR client behavior
+from copied runtime code. The next direct copied Bake boundary is
+`bake/dev/stress.test.ts`, currently failing at
+`DEV:stress-1: crash #18910`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

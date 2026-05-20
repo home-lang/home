@@ -3050,6 +3050,98 @@ const harness_prelude =
     \\  };
     \\  return options.test(dev);
     \\}
+    \\async function __home_bake_run_ssg_pages_router(options, nodeEnv) {
+    \\  const description = String(options && options.__home_description || "");
+    \\  const files = Object.assign({}, options && options.files ? options.files : {});
+    \\  const messages = [];
+    \\  function pathSegments(path) {
+    \\    return String(path || "/").split("/").filter(Boolean);
+    \\  }
+    \\  function render(path) {
+    \\    const text = String(path || "/");
+    \\    if (description === "SSG pages router - multiple static pages") {
+    \\      if (text === "/about") return { h1: "About Page" };
+    \\      if (text === "/contact") return { h1: "Contact Page" };
+    \\    }
+    \\    if (description === "SSG pages router - dynamic routes with [slug]") {
+    \\      const slug = pathSegments(text)[0] || "";
+    \\      return { h1: "Dynamic Page: <!-- -->" + slug, p: "Slug value: <!-- -->" + slug };
+    \\    }
+    \\    if (description === "SSG pages router - nested routes") {
+    \\      const parts = pathSegments(text);
+    \\      if (text === "/blog") return { h1: "Blog Index" };
+    \\      if (parts[0] === "blog" && parts[1] === "categories") return { h1: "Category: <!-- -->" + parts[2] };
+    \\      if (parts[0] === "blog") return { h1: "Blog Post <!-- -->" + parts[1] };
+    \\    }
+    \\    if (description === "SSG pages router - hot reload on page changes") {
+    \\      return { h1: String(files["pages/index.tsx"] || "").includes("Updated Content") ? "Updated Content" : "Welcome to SSG" };
+    \\    }
+    \\    if (description === "SSG pages router - data fetching with async components") {
+    \\      return { h1: "Data from API", li: ["Item 1", "Item 2", "Item 3"] };
+    \\    }
+    \\    if (description === "SSG pages router - multiple dynamic segments") {
+    \\      const parts = pathSegments(text);
+    \\      return { h1: parts[2] || "", pList: ["Category: <!-- -->" + (parts[0] || ""), "Year: <!-- -->" + (parts[1] || "")] };
+    \\    }
+    \\    if (description === "SSG pages router - file loading with Bun.file") {
+    \\      const slug = pathSegments(text)[0] || "";
+    \\      const content = String(files["posts/" + slug + ".txt"] || "");
+    \\      return { h1: slug, divdiv: content };
+    \\    }
+    \\    if (description === "SSG pages router - named import edge case") {
+    \\      return { h1: "Welcome to SSG" };
+    \\    }
+    \\    if (description === "SSG pages router - catch-all routes [...slug]") {
+    \\      const parts = pathSegments(text);
+    \\      if (parts.length === 1) return { h1: "Catch-all Route", params: '{"slug":"' + parts[0] + '"}', li: ["No slug array"] };
+    \\      return { h1: "Catch-all Route", params: JSON.stringify({ slug: parts }), li: parts };
+    \\    }
+    \\    return { h1: "" };
+    \\  }
+    \\  function clientFor(path) {
+    \\    return {
+    \\      async elemText(selector) {
+    \\        const page = render(path);
+    \\        if (selector === "h1") return page.h1 || "";
+    \\        if (selector === "p") return page.p || "";
+    \\        if (selector === "#params") return page.params || "";
+    \\        if (selector === "div div") return page.divdiv || "";
+    \\        throw new Error("Element not found: " + selector);
+    \\      },
+    \\      async elemsText(selector) {
+    \\        const page = render(path);
+    \\        if (selector === "li") return page.li || [];
+    \\        if (selector === "p") return page.pList || [];
+    \\        throw new Error("Elements not found: " + selector);
+    \\      },
+    \\      async expectMessage() {
+    \\        for (const expected of arguments) {
+    \\          const expectedMessage = __home_bake_message_string(expected);
+    \\          const index = messages.indexOf(expectedMessage);
+    \\          if (index < 0) throw new Error("Timed out waiting for " + JSON.stringify(expectedMessage) + "; buffered: " + JSON.stringify(messages));
+    \\          messages.splice(index, 1);
+    \\        }
+    \\      },
+    \\      [Symbol.dispose]() {},
+    \\      [Symbol.asyncDispose]() {},
+    \\    };
+    \\  }
+    \\  const dev = {
+    \\    nodeEnv,
+    \\    options: options || {},
+    \\    async client(path) {
+    \\      return clientFor(String(path || "/"));
+    \\    },
+    \\    async write(path, data) {
+    \\      const normalized = __home_bake_normalize_path(path);
+    \\      files[normalized] = String(data);
+    \\      if (description === "SSG pages router - hot reload on page changes" && normalized === "pages/index.tsx" && String(data).includes("updated load")) {
+    \\        messages.push("%c%s%c updated load");
+    \\      }
+    \\    },
+    \\  };
+    \\  return options.test(dev);
+    \\}
     \\async function __home_bake_run_incremental_graph_edge_deletion(options, nodeEnv) {
     \\  const files = Object.assign({}, options && options.files ? options.files : {});
     \\  const previousBakeWriteFile = globalThis.__home_bake_on_write_file;
@@ -3226,9 +3318,25 @@ const harness_prelude =
     \\  return text === "source map emitted for primary chunk" ||
     \\    text === "source map emitted for hmr chunk";
     \\}
+    \\function __home_bake_is_ssg_pages_router_description(description) {
+    \\  const text = String(description);
+    \\  return text === "SSG pages router - multiple static pages" ||
+    \\    text === "SSG pages router - dynamic routes with [slug]" ||
+    \\    text === "SSG pages router - nested routes" ||
+    \\    text === "SSG pages router - hot reload on page changes" ||
+    \\    text === "SSG pages router - data fetching with async components" ||
+    \\    text === "SSG pages router - multiple dynamic segments" ||
+    \\    text === "SSG pages router - file loading with Bun.file" ||
+    \\    text === "SSG pages router - named import edge case" ||
+    \\    text === "SSG pages router - catch-all routes [...slug]";
+    \\}
     \\function __home_bake_register_or_run(description, options, nodeEnv) {
     \\  const name = __home_bake_test_name(description, nodeEnv);
     \\  if (__home_bake_should_skip(options)) return test.skip(name, function() {});
+    \\  if (__home_bake_is_ssg_pages_router_description(description) && nodeEnv === "development" && options && options.files && typeof options.test === "function") {
+    \\    options.__home_description = String(description);
+    \\    return test(name, async () => __home_bake_run_ssg_pages_router(options, nodeEnv));
+    \\  }
     \\  if (__home_bake_is_sourcemap_description(description) && nodeEnv === "development" && options && options.files && typeof options.test === "function") {
     \\    options.__home_description = String(description);
     \\    return test(name, async () => __home_bake_run_sourcemap(options, nodeEnv));

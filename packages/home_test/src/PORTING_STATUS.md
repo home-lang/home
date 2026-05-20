@@ -637,6 +637,13 @@ emission, and source-map consumer integration. The next direct Bake
 boundary is
 `DEV:ssg-pages-router-1: SSG pages router - multiple static pages`, with
 the rest of `bake/dev/ssg-pages-router.test.ts` still unsupported.
+The copied `bake/dev/ssg-pages-router.test.ts` fixture now passes as `9`
+tests through a narrow pages-router client model for static pages,
+dynamic and catch-all params, nested routes, hot update messages, async
+data lists, file-backed post content, and named import tolerance. Native
+parity still needs Bun's real pages router, SSG path generation, React
+rendering, filesystem fixture integration, and HMR client behavior. The
+next direct Bake boundary is `DEV:stress-1: crash #18910`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
