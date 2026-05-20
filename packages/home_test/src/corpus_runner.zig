@@ -152,6 +152,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/url/url-format-whatwg.test.js",
     "regression/issue/19412.test.ts",
     "js/node/path/normalize.test.js",
+    "js/node/path/join.test.js",
 };
 
 const harness_prelude =
@@ -1223,9 +1224,20 @@ const harness_prelude =
     \\  if (typeof value !== "string") throw new TypeError('The "string" argument must be of type string. Received type ' + typeof value);
     \\  if (regexp instanceof RegExp && regexp.test(value)) throw new Error(message || "The input was expected to not match");
     \\};
-    \\function __home_path_join() {
+    \\function __home_path_posix_join() {
     \\  const joined = Array.prototype.slice.call(arguments).filter(part => String(part).length > 0).join("/");
-    \\  return joined.length === 0 ? "." : joined;
+    \\  return joined.length === 0 ? "." : __home_path_posix_normalize(joined);
+    \\}
+    \\function __home_path_win32_join() {
+    \\  const parts = Array.prototype.slice.call(arguments).filter(part => String(part).length > 0);
+    \\  if (parts.length === 0) return ".";
+    \\  if ((parts[0] === "/" || parts[0] === "\\") && !/^[\\/]{2}/.test(parts[0])) {
+    \\    return __home_path_win32_normalize("\\" + parts.slice(1).join("\\").replace(/^[\\/]+/, ""));
+    \\  }
+    \\  return __home_path_win32_normalize(parts.join("\\"));
+    \\}
+    \\function __home_path_join() {
+    \\  return __home_path_posix_join.apply(null, arguments);
     \\}
     \\function __home_path_posix_is_absolute(value) {
     \\  return String(value).startsWith("/");
@@ -1350,8 +1362,8 @@ const harness_prelude =
     \\function __home_path_win32_extname(value) {
     \\  return __home_path_extname_impl(value, true);
     \\}
-    \\const __home_path_posix = { join: __home_path_join, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_posix_normalize, basename: __home_path_posix_basename, extname: __home_path_posix_extname };
-    \\const __home_path_win32 = { join: __home_path_join, isAbsolute: __home_path_win32_is_absolute, normalize: __home_path_win32_normalize, basename: __home_path_win32_basename, extname: __home_path_win32_extname };
+    \\const __home_path_posix = { join: __home_path_posix_join, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_posix_normalize, basename: __home_path_posix_basename, extname: __home_path_posix_extname };
+    \\const __home_path_win32 = { join: __home_path_win32_join, isAbsolute: __home_path_win32_is_absolute, normalize: __home_path_win32_normalize, basename: __home_path_win32_basename, extname: __home_path_win32_extname };
     \\const __home_path_module = { join: __home_path_join, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_normalize, resolve: __home_path_resolve, relative: __home_path_relative, basename: __home_path_posix_basename, extname: __home_path_posix_extname, posix: __home_path_posix, win32: __home_path_win32 };
     \\globalThis.__home_modules["assert"] = __home_assert_module;
     \\globalThis.__home_modules["node:assert"] = __home_assert_module;
@@ -3197,6 +3209,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/node/url/url-format-whatwg.test.js",
         "regression/issue/19412.test.ts",
         "js/node/path/normalize.test.js",
+        "js/node/path/join.test.js",
     };
 
     for (expected) |path| {
