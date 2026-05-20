@@ -458,6 +458,21 @@ Latest measured full gate after the Bake circular CSS-import slice:
 unsupported, `35` todo. First failure: `bake/dev/css.test.ts` with
 ` DEV:css-8: asset index stays valid after another css root is freed`.
 
+The CSS asset-index smoke now routes `dev.client("/first")` and
+`dev.client("/second")` through their matching HTML roots, keeps each
+client's style lookup tied to that root, verifies `second.css` still hot
+updates after invalidating `first.css`, and normalizes the repaired
+`yellow` style to `#ff0`. This is still an observable harness model; true
+source parity for this case lives in Bun's `DevServer/Assets.zig`
+`path_map`/`files`/`refs` table and its `swapRemoveAt` index repair, plus
+the `DevServer.zig` CSS HMR payload that indexes through the stored asset
+entry id.
+
+Latest measured full gate after the Bake CSS asset-index slice: `4,013`
+files executed, `440` passed, `3,944` failed, `1,497` unsupported, `35`
+todo. First failure: `bake/dev/css.test.ts` with
+` DEV:css-9: multiple stylesheets importing same dependency`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

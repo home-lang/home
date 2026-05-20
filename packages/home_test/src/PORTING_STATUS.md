@@ -311,6 +311,16 @@ to exercise the harness CSS graph model while the real Bun
 `IncrementalGraph.zig` CSS import processing remains the source parity
 target. The next Bake boundary is
 `DEV:css-8: asset index stays valid after another css root is freed`.
+The CSS asset-index smoke now routes `dev.client("/first")` and
+`dev.client("/second")` through their matching HTML roots, keeps each
+client's style lookup tied to that root, verifies `second.css` still hot
+updates after invalidating `first.css`, and normalizes the repaired
+`yellow` style to `#ff0`. This is still an observable harness model; true
+source parity for this case lives in Bun's `DevServer/Assets.zig`
+`path_map`/`files`/`refs` table and its `swapRemoveAt` index repair, plus
+the `DevServer.zig` CSS HMR payload that indexes through the stored asset
+entry id. The next Bake boundary is
+`DEV:css-9: multiple stylesheets importing same dependency`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

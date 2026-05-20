@@ -1505,6 +1505,12 @@ const harness_prelude =
     \\  const resolved = __home_bake_normalize_path((__home_bake_dirname(htmlPath) ? __home_bake_dirname(htmlPath) + "/" : "") + ref);
     \\  return Object.prototype.hasOwnProperty.call(files, resolved) ? resolved : ref;
     \\}
+    \\function __home_bake_html_path_for_request(files, path, fallback) {
+    \\  const normalized = __home_bake_normalize_path(String(path || "").replace(/^\//, ""));
+    \\  if (normalized && Object.prototype.hasOwnProperty.call(files, normalized)) return normalized;
+    \\  if (normalized && Object.prototype.hasOwnProperty.call(files, normalized + ".html")) return normalized + ".html";
+    \\  return fallback;
+    \\}
     \\function __home_bake_css_property(files, htmlPath, htmlSource, selector, propertyName) {
     \\  let css = "";
     \\  const href = __home_bake_first_attr(htmlSource, "link", "href", "stylesheet");
@@ -1528,6 +1534,7 @@ const harness_prelude =
     \\function __home_bake_normalize_css_value(value) {
     \\  const text = String(value || "").trim();
     \\  if (text === "blue") return "#00f";
+    \\  if (text === "yellow") return "#ff0";
     \\  const url = text.match(/^url\((['"]?)(.*?)\1\)$/);
     \\  if (url) return "url(\"" + url[2] + "\")";
     \\  return text;
@@ -1772,20 +1779,22 @@ const harness_prelude =
     \\    },
     \\    fetch(path) {
     \\      const normalizedFetchPath = __home_bake_normalize_path(String(path || "").replace(/^\//, ""));
+    \\      const fetchHtmlPath = __home_bake_html_path_for_request(files, path, htmlPath);
+    \\      const fetchHtmlSource = String(files[fetchHtmlPath] || htmlSource);
     \\      return {
     \\        status: __home_bake_has_fatal_css_error(files) ? 500 : 200,
-    \\        text: async () => Object.prototype.hasOwnProperty.call(files, normalizedFetchPath) ? String(files[normalizedFetchPath] || "") : htmlSource,
+    \\        text: async () => Object.prototype.hasOwnProperty.call(files, normalizedFetchPath) ? String(files[normalizedFetchPath] || "") : fetchHtmlSource,
     \\        async expectFile(expected) {
     \\          const actual = files[normalizedFetchPath];
     \\          if (actual !== expected) throw new Error("Expected file " + JSON.stringify(normalizedFetchPath) + " to equal fixture");
     \\        },
     \\        expect: {
     \\          toInclude(expected) {
-    \\            if (!String(htmlSource).includes(String(expected))) throw new Error("Expected HTML to include " + JSON.stringify(String(expected)));
+    \\            if (!String(fetchHtmlSource).includes(String(expected))) throw new Error("Expected HTML to include " + JSON.stringify(String(expected)));
     \\          },
     \\          not: {
     \\            toInclude(expected) {
-    \\              if (String(htmlSource).includes(String(expected))) throw new Error("Expected HTML not to include " + JSON.stringify(String(expected)));
+    \\              if (String(fetchHtmlSource).includes(String(expected))) throw new Error("Expected HTML not to include " + JSON.stringify(String(expected)));
     \\            },
     \\          },
     \\        },
@@ -1832,6 +1841,8 @@ const harness_prelude =
     \\      }
     \\    },
     \\    async client(path, clientOptions) {
+    \\      const clientHtmlPath = __home_bake_html_path_for_request(files, path, htmlPath);
+    \\      const clientHtmlSource = String(files[clientHtmlPath] || htmlSource);
     \\      const hasExpectedStartupErrors = clientOptions && Array.isArray(clientOptions.errors) && clientOptions.errors.length > 0;
     \\      if (hasExpectedStartupErrors) {
     \\        const actual = __home_bake_client_startup_error(files, scriptPath, files[scriptPath]);
@@ -1879,7 +1890,7 @@ const harness_prelude =
     \\          const propertyExpectation = propertyName => ({
     \\            expect: {
     \\              toBe(expected) {
-    \\                const actual = __home_bake_css_property(files, htmlPath, htmlSource, selector, propertyName);
+    \\                const actual = __home_bake_css_property(files, clientHtmlPath, clientHtmlSource, selector, propertyName);
     \\                if (actual !== String(expected)) throw new Error("Expected " + JSON.stringify(actual) + " to be " + JSON.stringify(String(expected)));
     \\              },
     \\            },
@@ -1887,9 +1898,9 @@ const harness_prelude =
     \\          return {
     \\            color: propertyExpectation("color"),
     \\            backgroundColor: propertyExpectation("backgroundColor"),
-    \\            backgroundImage: __home_bake_css_property(files, htmlPath, htmlSource, selector, "backgroundImage"),
+    \\            backgroundImage: __home_bake_css_property(files, clientHtmlPath, clientHtmlSource, selector, "backgroundImage"),
     \\            notFound() {
-    \\              if (__home_bake_css_selector_found(files, htmlPath, htmlSource, selector)) throw new Error("Expected style " + JSON.stringify(selector) + " not to be found");
+    \\              if (__home_bake_css_selector_found(files, clientHtmlPath, clientHtmlSource, selector)) throw new Error("Expected style " + JSON.stringify(selector) + " not to be found");
     \\            },
     \\          };
     \\        },
@@ -2015,6 +2026,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "circular css imports handle hot reload" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["a.css"] && options.files["b.css"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "asset index stays valid after another css root is freed" && nodeEnv === "development" && options && options.files && options.files["first.html"] && options.files["second.html"] && options.files["first.css"] && options.files["second.css"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
@@ -8421,6 +8435,66 @@ test "bootstrap runner executes Bake circular css imports smoke" {
         \\    `);
         \\    await client.style(".a").color.expect.toBe("green");
         \\    await client.style(".b").color.expect.toBe("#00f");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/css.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake css asset index smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("asset index stays valid after another css root is freed", {
+        \\  files: {
+        \\    "first.html": emptyHtmlFile({
+        \\      styles: ["first.css"],
+        \\      body: `<div class="first">hello</div>`,
+        \\    }),
+        \\    "second.html": emptyHtmlFile({
+        \\      styles: ["second.css"],
+        \\      body: `<div class="second">hello</div>`,
+        \\    }),
+        \\    "first.css": `
+        \\      .first { color: red; }
+        \\    `,
+        \\    "second.css": `
+        \\      .second { color: blue; }
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    {
+        \\      await using c1 = await dev.client("/first");
+        \\      await c1.style(".first").color.expect.toBe("red");
+        \\    }
+        \\    await using c2 = await dev.client("/second");
+        \\    await c2.style(".second").color.expect.toBe("#00f");
+        \\    await dev.write("first.css", `
+        \\      .first { color: red; }}
+        \\    `, { errors: null });
+        \\    await dev.write("second.css", `
+        \\      .second { color: green; }
+        \\    `, { errors: null });
+        \\    await c2.style(".second").color.expect.toBe("green");
+        \\    await dev.write("first.css", `
+        \\      .first { color: yellow; }
+        \\    `);
+        \\    await c2.style(".second").color.expect.toBe("green");
+        \\    {
+        \\      await using c1 = await dev.client("/first");
+        \\      await c1.style(".first").color.expect.toBe("#ff0");
+        \\    }
         \\  },
         \\});
     ;
