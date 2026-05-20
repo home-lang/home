@@ -1570,6 +1570,10 @@ const harness_prelude =
     \\    const text = String(candidate || "");
     \\    if (text.includes(".html") && /import\s+[A-Za-z_$][\w$]*\s+from\s+['"][^'"]+\.html['"]\s*;?/.test(text)) return scriptPath + ":1:18: error: Browser builds cannot import HTML files.";
     \\  }
+    \\  for (const candidate of sources) {
+    \\    const text = String(candidate || "");
+    \\    if (/import\s+[A-Za-z_$][\w$]*\s+from\s+['"]bun['"]\s*;?/.test(text)) return scriptPath + ":1:17: error: Browser build cannot import Bun builtin: \"bun\"";
+    \\  }
     \\  return "";
     \\}
     \\function __home_bake_run_default_export_graph(source, files, log) {
@@ -1825,6 +1829,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "importing html file with text loader (#18154)" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["app.html"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "importing bun on the client" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
@@ -7543,6 +7550,39 @@ test "bootstrap runner executes Bake html text loader smoke" {
         \\  async test(dev) {
         \\    await using c = await dev.client("/", {});
         \\    await c.expectMessage("<div>hello world</div>");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/bundle.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake bun client import error smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("importing bun on the client", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ styles: [], scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      import bun from "bun";
+        \\      console.log(bun);
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/", {
+        \\      errors: ['index.ts:1:17: error: Browser build cannot import Bun builtin: "bun"'],
+        \\    });
         \\  },
         \\});
     ;
