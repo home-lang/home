@@ -38,6 +38,12 @@ Home smoke root. This tier adds only the compat pieces required by that
 file: Bun-style `handleOom(error_union)` unwrapping and
 `bun.strings.isValidUTF8`.
 
+`zig build test -Dfilter=home_test_bun_tier2_diff_format` build-checks
+the copied `bun/diff_format.zig` wrapper through a focused string-diff
+smoke root. It reuses the real copied `diff/printDiff.zig` implementation
+and a local pretty-format scaffold for the JS-value fallback path, while
+adding narrow `bun.AllocationScope` and `bun.Output` compat shims.
+
 `zig build test -Dfilter=home_test_bun_tier2_order` build-checks the
 first copied runner scheduling leaf, `bun/Order.zig`, through a small
 Home scaffold that mirrors only the upstream `bun_test` and `Execution`
@@ -169,7 +175,7 @@ shape (each ~30-100 LOC, 7-10 `bun.X` references — almost all
 | File | LOC | bun | rel | ext | Compile | Top 3 Externs Needed |
 |---|---:|---:|---:|---:|---|---|
 | DoneCallback.zig | 47 | 5 | 0 | 0 | tier2-done-callback | `bun.md`, `bun.handleOom`, `bun.JSError` |
-| diff_format.zig | 85 | 5 | 2 | 0 | blocked | `bun.md`, `bun.AllocationScope`, `bun.Output` |
+| diff_format.zig | 85 | 5 | 2 | 0 | tier2-diff-format | `bun.md`, `bun.AllocationScope`, `bun.Output` |
 | debug.zig | 109 | 7 | 1 | 0 | tier2-debug | `bun.JSError`, `bun.md`, `bun.env_var` |
 | harness/recover.zig | 132 | 1 | 0 | 0 | tier0 | `bun.md` |
 | Collection.zig | 171 | 8 | 0 | 0 | tier2-collection | `bun.JSError`, `bun.assert`, `bun.md` |
@@ -295,7 +301,9 @@ These need only `compat` for `OOM`/`handleOom`/`assert`/`md`:
 
 ### Tier 1 — diagnostics & formatters (depend on `bun.Output` shim)
 
-4. `diff_format.zig` (85 LOC) — `bun.Output`, `bun.AllocationScope`
+4. `diff_format.zig` (85 LOC) — `bun.Output`, `bun.AllocationScope`;
+   compile-checked in the focused `home_test_bun_tier2_diff_format`
+   target for string-diff formatting
 5. `debug.zig` (109 LOC) — env-var debug switches
 6. `pretty_format.zig` (2 145 LOC) — Jest's value pretty-printer;
    touches `bun.fmt` heavily but no JSC required at the top level

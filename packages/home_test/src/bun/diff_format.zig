@@ -72,7 +72,8 @@ pub const DiffFormatter = struct {
 const string = []const u8;
 
 const std = @import("std");
-const JestPrettyFormat = @import("./pretty_format.zig").JestPrettyFormat;
+const diff_format_scaffold = @import("diff_format_scaffold.zig");
+const JestPrettyFormat = diff_format_scaffold.JestPrettyFormat;
 
 const printDiffFile = @import("./diff/printDiff.zig");
 const DiffConfig = printDiffFile.DiffConfig;
@@ -82,6 +83,6 @@ const bun = @import("bun");
 const Output = bun.Output;
 const default_allocator = bun.default_allocator;
 
-const jsc = bun.jsc;
+const jsc = diff_format_scaffold.jsc;
 const JSGlobalObject = jsc.JSGlobalObject;
 const JSValue = jsc.JSValue;

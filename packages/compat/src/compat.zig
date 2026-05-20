@@ -77,6 +77,26 @@ pub const default_allocator: std.mem.Allocator = std.heap.smp_allocator;
 
 pub const assert = std.debug.assert;
 
+pub const AllocationScope = struct {
+    backing_allocator: std.mem.Allocator,
+
+    pub fn init(backing_allocator: std.mem.Allocator) AllocationScope {
+        return .{ .backing_allocator = backing_allocator };
+    }
+
+    pub fn allocator(this: *AllocationScope) std.mem.Allocator {
+        return this.backing_allocator;
+    }
+};
+
+pub const Output = struct {
+    pub const enable_ansi_colors_stderr = false;
+
+    pub fn isAIAgent() bool {
+        return false;
+    }
+};
+
 pub fn debugAssert(ok: bool) void {
     if (builtin.mode == .Debug) std.debug.assert(ok);
 }
@@ -147,6 +167,13 @@ test "compat: Tier 0 surface is well-shaped" {
     const slice = try default_allocator.alloc(u8, 4);
     defer default_allocator.free(slice);
     try T.expectEqual(@as(usize, 4), slice.len);
+    var scope = AllocationScope.init(T.allocator);
+    const scoped = scope.allocator();
+    const scoped_slice = try scoped.alloc(u8, 2);
+    defer scoped.free(scoped_slice);
+    try T.expectEqual(@as(usize, 2), scoped_slice.len);
+    try T.expect(!Output.enable_ansi_colors_stderr);
+    try T.expect(!Output.isAIAgent());
 }
 
 test "compat: ast.Index.init wraps + reads u32" {
