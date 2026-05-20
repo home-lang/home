@@ -14926,6 +14926,9 @@ pub const Checker = struct {
                                     try self.class_name_by_static.put(self.gpa, partial_this_t, class_name_id);
                                 } else {
                                     try self.class_name_by_instance.put(self.gpa, partial_this_t, class_name_id);
+                                    if (!self.class_instance_types.contains(class_name_id)) {
+                                        try self.class_instance_types.put(self.gpa, class_name_id, partial_this_t);
+                                    }
                                 }
                                 // For generic classes, also register
                                 // an `alias_display_name` carrying
@@ -71046,6 +71049,28 @@ test "checker: class field initializers bind this from prior instance members" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.this_implicitly_any);
         try T.expect(d.code != TsCodes.subsequent_var_type_mismatch);
+    }
+}
+
+test "checker: nested class heritage sees enclosing partial instance members" {
+    const s = try newSetup(
+        \\class F {
+        \\  Inner = class extends F {
+        \\    p2 = this.p1;
+        \\  }
+        \\  p1 = 0;
+        \\}
+        \\class G {
+        \\  Inner = class extends G {
+        \\    p2 = this.p1;
+        \\  }
+        \\  constructor(public p1: number) {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
     }
 }
 
