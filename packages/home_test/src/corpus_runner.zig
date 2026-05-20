@@ -168,6 +168,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/only-fixture-2.ts",
     "js/bun/test/only-fixture-3.ts",
     "js/bun/test/only-flag-fixtures/file1.fixture.ts",
+    "js/bun/test/only-inside-only.fixture.ts",
 };
 
 const harness_prelude =
@@ -180,6 +181,7 @@ const harness_prelude =
     \\    beforeEach: [],
     \\    afterEach: [],
     \\    afterAll: [],
+    \\    only: false,
     \\    beforeAllDone: false,
     \\    afterAllDone: false,
     \\  };
@@ -853,13 +855,16 @@ const harness_prelude =
     \\  parsed.name = name;
     \\  parsed.scope = globalThis.__home_current_scope;
     \\  parsed.only = !!only;
+    \\  parsed.scopeOnly = __home_scope_chain(parsed.scope).some(scope => scope.only);
     \\  globalThis.__home_registered_tests.push(parsed);
     \\}
     \\function __home_run_registered_tests() {
     \\  const queue = globalThis.__home_registered_tests;
     \\  const hasOnly = queue.some(entry => entry.only);
+    \\  const hasScopeOnly = queue.some(entry => entry.scopeOnly);
     \\  for (const entry of queue) {
     \\    if (hasOnly && !entry.only) continue;
+    \\    if (!hasOnly && hasScopeOnly && !entry.scopeOnly) continue;
     \\    __home_execute_test(entry);
     \\  }
     \\  globalThis.__home_registered_tests = [];
@@ -914,7 +919,7 @@ const harness_prelude =
     \\test.ignore = function(nameOrFn, maybeFn) {
     \\  __home_bun_tests.todo++;
     \\};
-    \\function describe(name, fn) {
+    \\function __home_describe(name, fn, only) {
     \\  if (typeof fn !== "function") return;
     \\  const parent = globalThis.__home_current_scope;
     \\  const scope = {
@@ -923,6 +928,7 @@ const harness_prelude =
     \\    beforeEach: [],
     \\    afterEach: [],
     \\    afterAll: [],
+    \\    only: !!only,
     \\    beforeAllDone: false,
     \\    afterAllDone: false,
     \\  };
@@ -934,6 +940,8 @@ const harness_prelude =
     \\    globalThis.__home_current_scope = parent;
     \\  }
     \\}
+    \\function describe(name, fn) { return __home_describe(name, fn, false); }
+    \\describe.only = function(name, fn) { return __home_describe(name, fn, true); };
     \\describe.todo = function(name, fn) {
     \\  __home_bun_tests.todo++;
     \\};
@@ -3530,6 +3538,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.skip = it.todo") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_registered_tests = []") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.only = __home_test_only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.only = function(name, fn)") != null);
 }
 
 test "Bun test import rewrite lowers to the virtual test module" {
@@ -3613,6 +3622,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/test/only-fixture-2.ts",
         "js/bun/test/only-fixture-3.ts",
         "js/bun/test/only-flag-fixtures/file1.fixture.ts",
+        "js/bun/test/only-inside-only.fixture.ts",
     };
 
     for (expected) |path| {
@@ -4140,6 +4150,31 @@ test "bootstrap runner keeps todo-only files as todo" {
 
     try std.testing.expectEqual(test_result.TestStatus.todo, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
+}
+
+test "bootstrap runner gives test.only precedence over describe.only" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\describe.only("outer", () => {
+        \\  test("skipped by inner only", () => expect.unreachable());
+        \\  describe("inner", () => {
+        \\    test.only("selected", () => expect().pass());
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/only-inside-only.fixture.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
 }
 
 test "bootstrap runner covers Deno Event behavior and ignored tests" {
