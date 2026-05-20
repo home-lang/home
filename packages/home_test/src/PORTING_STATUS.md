@@ -85,6 +85,14 @@ the footer import redirection to the Home-local scaffold. The target
 proves empty scheduler initialization, grouped sequence windows, result
 classification, and retry/reset cleanup of execution-phase entries.
 
+`zig build test -Dfilter=home_test_bun_tier2_expect_matchers`
+build-checks the copied primitive matcher leaves `toBeTrue.zig`,
+`toBeFalse.zig`, `toBeDefined.zig`, `toBeUndefined.zig`, and
+`toBeNull.zig` through a small Home scaffold for the upstream
+Expect/JSC/formatter surface. The copied matcher files stay unchanged
+apart from the Home license header; the target proves positive matches,
+`.not` failure signatures, post-match cleanup, and expect-call counting.
+
 The facade also includes a compile-only native ESM smoke for the exact
 static source `import { test, expect } from "bun:test";`. It verifies that
 this source intentionally stays outside the bootstrap rewrite path and
@@ -199,6 +207,7 @@ shape (each ~30-100 LOC, 7-10 `bun.X` references — almost all
 | Collection.zig | 171 | 8 | 0 | 0 | tier2-collection | `bun.JSError`, `bun.assert`, `bun.md` |
 | Order.zig | 187 | 16 | 0 | 0 | tier2-order | `bun.JSError`, `bun.assert`, `bun.Environment` |
 | timers/FakeTimers.zig | 376 | 32 | 0 | 0 | blocked | `bun.JSError`, `bun.timespec`, `bun.assert` |
+| expect/toBeTrue.zig + 4 primitive matchers | ~190 | 7-10 each | 0 | 0 | tier2-expect-matchers | `bun.jsc`, `bun.JSError`, `Expect` |
 | ScopeFunctions.zig | 498 | 64 | 0 | 0 | blocked | `bun.String`, `bun.JSError`, `bun.handleOom` |
 | jest.zig | 520 | 44 | 3 | 1 | blocked | `bun.handleOom`, `bun.default_allocator`, `bun.JSError` |
 | harness/fixtures.zig | 575 | 1 | 0 | 0 | tier0 | `bun.md` |
@@ -344,8 +353,12 @@ These need only `compat` for `OOM`/`handleOom`/`assert`/`md`:
     compile-checked in the focused `home_test_bun_tier2_execution`
     target with a local scaffold for BunTest/JSC/reporter/timespec
     surfaces
-13. `timers/FakeTimers.zig` (376 LOC) — Jest-style fake timers
-14. `snapshot.zig` (582 LOC) — snapshot persistence (touches
+13. `expect/toBeTrue.zig` + four primitive matcher leaves — primitive
+    expect matchers; compile-checked in the focused
+    `home_test_bun_tier2_expect_matchers` target with a local
+    Expect/JSC/formatter scaffold
+14. `timers/FakeTimers.zig` (376 LOC) — Jest-style fake timers
+15. `snapshot.zig` (582 LOC) — snapshot persistence (touches
     `bun.sys`/`bun.logger`)
 
 ### Tier 3 — JSC-bound surface (gate behind `enable_jsc`)
