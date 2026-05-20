@@ -12843,10 +12843,10 @@ pub const Checker = struct {
             // interfaces, vars, functions, modules, or import-equals
             // must surface TS1206. Mirrors the `decoratorOn*` fixtures
             // under `conformance/decorators/invalid/`.
-            const target_invalid = i >= stmts.len or blk: {
-                const target = self.unwrapExportDecl(stmts[i]);
-                if (target == hir_mod.none_node_id) break :blk true;
-                const tk = self.hir.kindOf(target);
+            const target_node = if (i < stmts.len) self.unwrapExportDecl(stmts[i]) else hir_mod.none_node_id;
+            const target_invalid = blk: {
+                if (target_node == hir_mod.none_node_id) break :blk true;
+                const tk = self.hir.kindOf(target_node);
                 break :blk tk != .class_decl and tk != .class_expr;
             };
             if (target_invalid) {
@@ -12871,12 +12871,12 @@ pub const Checker = struct {
                 continue;
             }
             for (stmts[start..i]) |decorator_node| {
-                try self.checkClassDecoratorDiagnostic(decorator_node);
+                try self.checkClassDecoratorDiagnostic(decorator_node, target_node);
             }
         }
     }
 
-    fn checkClassDecoratorDiagnostic(self: *Checker, decorator_node: NodeId) CheckError!void {
+    fn checkClassDecoratorDiagnostic(self: *Checker, decorator_node: NodeId, target_class: NodeId) CheckError!void {
         if (self.hir.kindOf(decorator_node) != .decorator) return;
         const d = hir_mod.decoratorOf(self.hir, decorator_node);
         if (d.expression == hir_mod.none_node_id) return;
@@ -12905,13 +12905,168 @@ pub const Checker = struct {
             });
             return;
         }
+        const class_runtime_arg_count: usize = if (self.sourceUsesLegacyDecorators()) 1 else 2;
+        const class_runtime_arity_ok = self.decoratorRuntimeAritySatisfied(dec_t, class_runtime_arg_count, "class");
         try self.checkDecoratorRuntimeArity(
             decorator_node,
             dec_t,
-            if (self.sourceUsesLegacyDecorators()) 1 else 2,
+            class_runtime_arg_count,
             TsCodes.class_decorator_signature_unresolved,
             "class",
         );
+        if (class_runtime_arity_ok) {
+            try self.checkLegacyClassDecoratorTargetAssignable(decorator_node, dec_t, target_class);
+        }
+    }
+
+    fn checkLegacyClassDecoratorTargetAssignable(self: *Checker, decorator_node: NodeId, dec_t: TypeId, target_class: NodeId) CheckError!void {
+        if (!self.sourceUsesLegacyDecorators()) return;
+        if (target_class == hir_mod.none_node_id) return;
+        if (dec_t >= self.interner.pool.typeCount()) return;
+        if (!self.interner.pool.flagsOf(dec_t).is_signature) return;
+        const params = self.interner.signatureParams(dec_t);
+        if (params.len == 0) return;
+        const class_arg_t = try self.legacyClassDecoratorArgumentType(target_class);
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        try self.inferLegacyClassDecoratorPrototype(params[0], class_arg_t, &subs);
+        try self.inferFromPair(params[0], class_arg_t, &subs);
+        const expected_t = try self.substituteType(params[0], &subs);
+        if (try self.legacyDecoratorTargetAssignable(class_arg_t, expected_t)) return;
+        try self.reportAt(
+            decorator_node,
+            self.decoratorExpressionPos(decorator_node),
+            TsCodes.class_decorator_signature_unresolved,
+            "Unable to resolve signature of class decorator when called as an expression.",
+        );
+    }
+
+    fn inferLegacyClassDecoratorPrototype(
+        self: *Checker,
+        param_t: TypeId,
+        class_arg_t: TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!void {
+        if (param_t >= self.interner.pool.typeCount() or class_arg_t >= self.interner.pool.typeCount()) return;
+        const param_flags = self.interner.pool.flagsOf(param_t);
+        const class_flags = self.interner.pool.flagsOf(class_arg_t);
+        if (!param_flags.is_object_type or !class_flags.is_object_type) return;
+        const prototype_name = self.string_interner.intern("prototype") catch return error.OutOfMemory;
+        const param_proto_t = self.interner.objectMember(param_t, prototype_name) orelse return;
+        const class_proto_t = self.interner.objectMember(class_arg_t, prototype_name) orelse return;
+        try self.inferFromPair(param_proto_t, class_proto_t, subs);
+    }
+
+    fn legacyClassDecoratorArgumentType(self: *Checker, target_class: NodeId) CheckError!TypeId {
+        const static_t = self.class_static_type_by_node.get(target_class) orelse return types.Primitive.none;
+        const instance_t = self.classDecoratorTargetInstanceType(target_class) orelse return static_t;
+        if (static_t >= self.interner.pool.typeCount()) return static_t;
+        if (!self.interner.pool.flagsOf(static_t).is_object_type) return static_t;
+        const prototype_name = self.string_interner.intern("prototype") catch return error.OutOfMemory;
+        if (self.interner.objectMember(static_t, prototype_name) != null) return static_t;
+
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        try members.appendSlice(self.gpa, self.interner.objectMembers(static_t));
+        try self.refineLegacyClassDecoratorStaticMembers(target_class, &members);
+        try members.append(self.gpa, .{
+            .name = prototype_name,
+            .type = instance_t,
+            .is_optional = false,
+            .is_readonly = true,
+            .is_method = false,
+        });
+        return self.interner.internObjectTypeWithIndexAndSymbol(
+            members.items,
+            self.interner.objectStringIndex(static_t),
+            self.interner.objectNumberIndex(static_t),
+            self.interner.objectSymbolIndex(static_t),
+        ) catch return error.OutOfMemory;
+    }
+
+    fn refineLegacyClassDecoratorStaticMembers(self: *Checker, target_class: NodeId, members: *std.ArrayListUnmanaged(types.ObjectMember)) CheckError!void {
+        if (target_class == hir_mod.none_node_id) return;
+        for (hir_mod.classMembers(self.hir, target_class)) |member_node| {
+            switch (self.hir.kindOf(member_node)) {
+                .fn_decl, .fn_expr, .arrow_fn => {
+                    const fn_p = hir_mod.fnDeclOf(self.hir, member_node);
+                    if (!fn_p.flags.is_static) continue;
+                    const member_name = (try self.classMemberNameFromFunctionName(fn_p.name)) orelse continue;
+                    const refined_t = self.hir.typeOf(member_node);
+                    if (refined_t == types.Primitive.none) continue;
+                    for (members.items) |*member| {
+                        if (member.name == member_name) {
+                            member.type = refined_t;
+                            break;
+                        }
+                    }
+                },
+                .object_property => {
+                    const op = hir_mod.objectPropertyOf(self.hir, member_node);
+                    if (!op.is_static or op.value == hir_mod.none_node_id) continue;
+                    const value_kind = self.hir.kindOf(op.value);
+                    if (value_kind != .fn_decl and value_kind != .fn_expr and value_kind != .arrow_fn) continue;
+                    const member_name = (try self.classMemberNameFromPropertyKey(op.key, op.is_computed)) orelse continue;
+                    const refined_t = self.hir.typeOf(op.value);
+                    if (refined_t == types.Primitive.none) continue;
+                    for (members.items) |*member| {
+                        if (member.name == member_name) {
+                            member.type = refined_t;
+                            break;
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
+    fn classDecoratorTargetInstanceType(self: *Checker, target_class: NodeId) ?TypeId {
+        if (target_class == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(target_class) != .class_decl and self.hir.kindOf(target_class) != .class_expr) return null;
+        const c = hir_mod.classOf(self.hir, target_class);
+        if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
+            const name = hir_mod.identifierOf(self.hir, c.name).name;
+            if (self.class_instance_types.get(name)) |instance_t| return instance_t;
+        }
+        const t = self.hir.typeOf(target_class);
+        if (t == types.Primitive.none or t == types.Primitive.unknown) return null;
+        return t;
+    }
+
+    fn legacyDecoratorTargetAssignable(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
+        if (!(self.engine.isAssignableTo(source_t, target_t) catch false)) return false;
+        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return true;
+        const source_flags = self.interner.pool.flagsOf(source_t);
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (source_flags.is_object_type and target_flags.is_object_type) {
+            for (self.interner.objectMembers(target_t)) |target_member| {
+                const source_member_t = self.interner.objectMember(source_t, target_member.name) orelse return false;
+                if (!(try self.legacyDecoratorMemberAssignable(source_member_t, target_member.type))) return false;
+            }
+        }
+        return true;
+    }
+
+    fn legacyDecoratorMemberAssignable(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
+        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) {
+            return self.engine.isAssignableTo(source_t, target_t) catch false;
+        }
+        const source_flags = self.interner.pool.flagsOf(source_t);
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (source_flags.is_signature and target_flags.is_signature) {
+            const source_ret = self.interner.signatureReturn(source_t) orelse types.Primitive.void_t;
+            const target_ret = self.interner.signatureReturn(target_t) orelse types.Primitive.void_t;
+            if (source_ret == types.Primitive.void_t and
+                target_ret != types.Primitive.void_t and
+                target_ret != types.Primitive.any and
+                target_ret != types.Primitive.unknown)
+            {
+                return false;
+            }
+            return self.engine.isAssignableTo(source_ret, target_ret) catch false;
+        }
+        return self.engine.isAssignableTo(source_t, target_t) catch false;
     }
 
     fn decoratorExpressionIsClassIdentifier(self: *Checker, expr_node: NodeId) bool {
@@ -13319,12 +13474,9 @@ pub const Checker = struct {
         code: u32,
         kind: []const u8,
     ) CheckError!void {
-        if (sig >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(sig).is_signature) return;
+        if (self.decoratorRuntimeAritySatisfied(sig, runtime_arg_count, kind)) return;
         const params = self.interner.signatureParams(sig);
         const min_required = self.signatureMinRequiredArgs(sig, params);
-        const has_unbounded_rest = self.rest_signatures.contains(sig) and params.len > 0 and self.fixedTupleLength(params[params.len - 1]) == null;
-        if (runtime_arg_count > params.len and self.decoratorSignatureAllowsExtraRuntimeArgs(kind, params)) return;
-        if (runtime_arg_count >= min_required and (has_unbounded_rest or runtime_arg_count <= params.len)) return;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Unable to resolve signature of {s} decorator when called as an expression.",
@@ -13348,6 +13500,15 @@ pub const Checker = struct {
             .code = code,
             .message = msg,
         });
+    }
+
+    fn decoratorRuntimeAritySatisfied(self: *Checker, sig: TypeId, runtime_arg_count: usize, kind: []const u8) bool {
+        if (sig >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(sig).is_signature) return true;
+        const params = self.interner.signatureParams(sig);
+        const min_required = self.signatureMinRequiredArgs(sig, params);
+        const has_unbounded_rest = self.rest_signatures.contains(sig) and params.len > 0 and self.fixedTupleLength(params[params.len - 1]) == null;
+        if (runtime_arg_count > params.len and self.decoratorSignatureAllowsExtraRuntimeArgs(kind, params)) return true;
+        return runtime_arg_count >= min_required and (has_unbounded_rest or runtime_arg_count <= params.len);
     }
 
     fn decoratorAtPos(self: *Checker, decorator_node: NodeId) ?u32 {
@@ -61348,6 +61509,37 @@ test "checker: class decorator signature must accept runtime arity" {
         if (d.code == TsCodes.class_decorator_signature_unresolved) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: generic class decorator checks target static side" {
+    const src =
+        \\// @experimentalDecorators: true
+        \\interface I<T> {
+        \\  prototype: T,
+        \\  m: () => T
+        \\}
+        \\function dec<T>(c: I<T>) { }
+        \\@dec
+        \\class C {
+        \\  _brand: any;
+        \\  static m() {}
+        \\}
+    ;
+    const s = try newSetup(src);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    var pos_ok = false;
+    const at_offset = std.mem.indexOf(u8, src, "@dec").?;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.class_decorator_signature_unresolved) continue;
+        found = true;
+        if (d.pos) |p| {
+            if (p == at_offset + 1) pos_ok = true;
+        }
+    }
+    try T.expect(found);
+    try T.expect(pos_ok);
 }
 
 test "checker: method decorator signature must accept runtime arity" {
