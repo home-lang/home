@@ -146,6 +146,8 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/url/url-revokeobjecturl.test.js",
     "js/node/url/url-null-char.test.js",
     "js/node/url/url-is-url.test.js",
+    "js/node/path/basename.test.js",
+    "js/node/path/extname.test.js",
 };
 
 const harness_prelude =
@@ -1198,9 +1200,54 @@ const harness_prelude =
     \\function __home_path_relative(from, to) {
     \\  return __home_path_resolve(from) === __home_path_resolve(to) ? "" : String(to);
     \\}
-    \\const __home_path_posix = { join: __home_path_join, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_normalize };
-    \\const __home_path_win32 = { join: __home_path_join, isAbsolute: __home_path_win32_is_absolute, normalize: __home_path_normalize };
-    \\const __home_path_module = { join: __home_path_join, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_normalize, resolve: __home_path_resolve, relative: __home_path_relative, posix: __home_path_posix, win32: __home_path_win32 };
+    \\function __home_path_trim_trailing_separators(text, isSep) {
+    \\  let end = text.length;
+    \\  while (end > 0 && isSep(text.charCodeAt(end - 1))) end--;
+    \\  return text.slice(0, end);
+    \\}
+    \\function __home_path_basename_impl(value, suffix, win32) {
+    \\  let text = String(value);
+    \\  if (text.length === 0) return "";
+    \\  if (win32 && /^[A-Za-z]:/.test(text)) text = text.slice(2);
+    \\  const isSep = win32 ? code => code === 47 || code === 92 : code => code === 47;
+    \\  text = __home_path_trim_trailing_separators(text, isSep);
+    \\  if (text.length === 0) return "";
+    \\  let start = 0;
+    \\  for (let i = text.length - 1; i >= 0; i--) {
+    \\    if (isSep(text.charCodeAt(i))) {
+    \\      start = i + 1;
+    \\      break;
+    \\    }
+    \\  }
+    \\  let base = text.slice(start);
+    \\  if (suffix !== undefined) {
+    \\    const suffixText = String(suffix);
+    \\    if (suffixText.length > 0 && base.endsWith(suffixText) && (suffixText.length < base.length || start === 0)) base = base.slice(0, base.length - suffixText.length);
+    \\  }
+    \\  return base;
+    \\}
+    \\function __home_path_posix_basename(value, suffix) {
+    \\  return __home_path_basename_impl(value, suffix, false);
+    \\}
+    \\function __home_path_win32_basename(value, suffix) {
+    \\  return __home_path_basename_impl(value, suffix, true);
+    \\}
+    \\function __home_path_extname_impl(value, win32) {
+    \\  const base = __home_path_basename_impl(value, undefined, win32);
+    \\  if (base === "" || base === "." || base === "..") return "";
+    \\  const lastDot = base.lastIndexOf(".");
+    \\  if (lastDot === -1 || lastDot === 0) return "";
+    \\  return base.slice(lastDot);
+    \\}
+    \\function __home_path_posix_extname(value) {
+    \\  return __home_path_extname_impl(value, false);
+    \\}
+    \\function __home_path_win32_extname(value) {
+    \\  return __home_path_extname_impl(value, true);
+    \\}
+    \\const __home_path_posix = { join: __home_path_join, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_normalize, basename: __home_path_posix_basename, extname: __home_path_posix_extname };
+    \\const __home_path_win32 = { join: __home_path_join, isAbsolute: __home_path_win32_is_absolute, normalize: __home_path_normalize, basename: __home_path_win32_basename, extname: __home_path_win32_extname };
+    \\const __home_path_module = { join: __home_path_join, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_normalize, resolve: __home_path_resolve, relative: __home_path_relative, basename: __home_path_posix_basename, extname: __home_path_posix_extname, posix: __home_path_posix, win32: __home_path_win32 };
     \\globalThis.__home_modules["assert"] = __home_assert_module;
     \\globalThis.__home_modules["node:assert"] = __home_assert_module;
     \\globalThis.__home_modules["path"] = __home_path_module;
@@ -2907,6 +2954,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.INSPECT_MAX_BYTES") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.isEncoding") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:buffer\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_path_posix_basename") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_path_win32_extname") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toString(16).padStart") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Bun.jest = function(path)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "escapeHTML(value)") != null);
@@ -2974,6 +3023,8 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/node/url/url-revokeobjecturl.test.js",
         "js/node/url/url-null-char.test.js",
         "js/node/url/url-is-url.test.js",
+        "js/node/path/basename.test.js",
+        "js/node/path/extname.test.js",
     };
 
     for (expected) |path| {
