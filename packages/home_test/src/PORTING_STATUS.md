@@ -346,6 +346,16 @@ Bun-shaped missing asset diagnostics, and recovers once `bun.png` is
 created so the image fixture can be fetched through the CSS URL. The next
 Bake boundary is
 `DEV:css-13: css import before create project relative`.
+The project-relative CSS import-before-create smoke completes
+`bake/dev/css.test.ts`: all `13` upstream CSS dev tests now execute in
+the Home corpus runner. The harness now covers `/style/styles.css`,
+`dev.mkdir(...)`, absolute and relative missing asset diagnostics, hidden
+HTML while CSS assets are unresolved, and recovery after creating
+`assets/bun.png`. This is still a harness-level model; true Bun parity
+continues to require porting the actual Bake CSS asset graph and HMR
+runtime from the Zig source under `/Users/chrisbreuer/Code/bun`. The next
+Bake boundary is
+`DEV:ecosystem-1: svelte component islands example`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

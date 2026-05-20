@@ -517,6 +517,20 @@ Latest measured full gate after the Bake CSS import-before-create slice:
 unsupported, `35` todo. First failure: `bake/dev/css.test.ts` with
 ` DEV:css-13: css import before create project relative`.
 
+The project-relative CSS import-before-create smoke completes
+`bake/dev/css.test.ts`: all `13` upstream CSS dev tests now execute in
+the Home corpus runner. The harness now covers `/style/styles.css`,
+`dev.mkdir(...)`, absolute and relative missing asset diagnostics, hidden
+HTML while CSS assets are unresolved, and recovery after creating
+`assets/bun.png`. This is still a harness-level model; true Bun parity
+continues to require porting the actual Bake CSS asset graph and HMR
+runtime from the Zig source under `/Users/chrisbreuer/Code/bun`.
+
+Latest measured full gate after completing the Bake CSS dev file:
+`4,013` files executed, `453` passed, `3,939` failed, `1,492`
+unsupported, `35` todo. First failure: `bake/dev/ecosystem.test.ts` with
+` DEV:ecosystem-1: svelte component islands example`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

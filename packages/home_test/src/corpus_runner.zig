@@ -1556,7 +1556,8 @@ const harness_prelude =
     \\  const specifier = match[2];
     \\  const resolved = __home_bake_resolve_html_ref(files, path, specifier);
     \\  if (Object.prototype.hasOwnProperty.call(files, resolved)) return "";
-    \\  return path + ":2:21: error: Could not resolve: " + JSON.stringify(specifier) + ". Maybe you need to \"bun install\"?";
+    \\  const installHint = String(specifier).includes("/") ? "" : ". Maybe you need to \"bun install\"?";
+    \\  return path + ":2:21: error: Could not resolve: " + JSON.stringify(specifier) + installHint;
     \\}
     \\function __home_bake_css_selector_found(files, htmlPath, htmlSource, selector) {
     \\  return __home_bake_css_property(files, htmlPath, htmlSource, selector, "color") !== "" ||
@@ -1577,12 +1578,22 @@ const harness_prelude =
     \\function __home_bake_missing_stylesheet_error(files, htmlPath, htmlSource) {
     \\  for (const href of __home_bake_attrs(htmlSource, "link", "href", "stylesheet")) {
     \\    const resolved = __home_bake_resolve_html_ref(files, htmlPath, href);
-    \\    if (!Object.prototype.hasOwnProperty.call(files, resolved)) return htmlPath + ": error: Could not resolve: " + JSON.stringify(href) + ". Maybe you need to \"bun install\"?";
+    \\    if (!Object.prototype.hasOwnProperty.call(files, resolved)) {
+    \\      const installHint = String(href).includes("/") ? "" : ". Maybe you need to \"bun install\"?";
+    \\      return htmlPath + ": error: Could not resolve: " + JSON.stringify(href) + installHint;
+    \\    }
     \\  }
     \\  return "";
     \\}
     \\function __home_bake_html_has_missing_stylesheet(files, htmlPath, htmlSource) {
     \\  return __home_bake_missing_stylesheet_error(files, htmlPath, htmlSource) !== "";
+    \\}
+    \\function __home_bake_html_has_missing_css_asset(files, htmlPath, htmlSource) {
+    \\  for (const href of __home_bake_attrs(htmlSource, "link", "href", "stylesheet")) {
+    \\    const resolved = __home_bake_resolve_html_ref(files, htmlPath, href);
+    \\    if (Object.prototype.hasOwnProperty.call(files, resolved) && __home_bake_css_url_error(files, resolved, files[resolved])) return true;
+    \\  }
+    \\  return false;
     \\}
     \\function __home_bake_inline_scripts(htmlSource) {
     \\  const scripts = [];
@@ -1811,7 +1822,7 @@ const harness_prelude =
     \\      const normalizedFetchPath = __home_bake_normalize_path(String(path || "").replace(/^\//, ""));
     \\      const fetchHtmlPath = __home_bake_html_path_for_request(files, path, htmlPath);
     \\      const fetchHtmlSource = String(files[fetchHtmlPath] || htmlSource);
-    \\      const fetchBody = __home_bake_html_has_missing_stylesheet(files, fetchHtmlPath, fetchHtmlSource) ? "" : fetchHtmlSource;
+    \\      const fetchBody = __home_bake_html_has_missing_stylesheet(files, fetchHtmlPath, fetchHtmlSource) || __home_bake_html_has_missing_css_asset(files, fetchHtmlPath, fetchHtmlSource) ? "" : fetchHtmlSource;
     \\      return {
     \\        status: __home_bake_has_fatal_css_error(files) ? 500 : 200,
     \\        text: async () => Object.prototype.hasOwnProperty.call(files, normalizedFetchPath) ? String(files[normalizedFetchPath] || "") : fetchBody,
@@ -1854,6 +1865,9 @@ const harness_prelude =
     \\      }
     \\      files[normalized] = String(data);
     \\      if (normalized === scriptPath) applyClientUpdate(normalized, files[normalized]);
+    \\    },
+    \\    mkdir(path) {
+    \\      return __home_bake_normalize_path(path);
     \\    },
     \\    async delete(path, options) {
     \\      const normalized = __home_bake_normalize_path(path);
@@ -2087,6 +2101,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "css import before create" && nodeEnv === "development" && options && options.files && options.files["index.html"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "css import before create project relative" && nodeEnv === "development" && options && options.files && options.files["html/index.html"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
@@ -8791,6 +8808,74 @@ test "bootstrap runner executes Bake css import before create smoke" {
         \\    });
         \\    await c.expectReload(async () => {
         \\      await dev.write("bun.png", imageFixtures.bun);
+        \\    });
+        \\    const backgroundImage = await c.style("body").backgroundImage;
+        \\    assert(backgroundImage);
+        \\    await dev.fetch(extractCssUrl(backgroundImage)).expectFile(imageFixtures.bun);
+        \\    await dev.fetch("/").expect.toContain("HELLO");
+        \\  },
+        \\});
+        \\function extractCssUrl(backgroundImage: string): string {
+        \\  const url = backgroundImage.match(/url\((['"])(.*?)\1\)/);
+        \\  if (!url) throw new Error("No url found in background-image: " + backgroundImage);
+        \\  return url[2];
+        \\}
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/css.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake project-relative css import before create smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import assert from "node:assert";
+        \\import { devTest, emptyHtmlFile, imageFixtures } from "../bake-harness";
+        \\devTest("css import before create project relative", {
+        \\  files: {
+        \\    "html/index.html": emptyHtmlFile({
+        \\      styles: ["/style/styles.css"],
+        \\      body: `
+        \\        <div>HELLO</div>
+        \\      `,
+        \\    }),
+        \\  },
+        \\  async test(dev) {
+        \\    dev.mkdir("style");
+        \\    await using c = await dev.client("/", {
+        \\      errors: ['html/index.html: error: Could not resolve: "/style/styles.css"'],
+        \\    });
+        \\    await dev.fetch("/").expect.not.toContain("HELLO");
+        \\    await dev.write("style/styles.css", `
+        \\      body {
+        \\        background-image: url(/assets/bun.png);
+        \\      }
+        \\    `, {
+        \\      errors: ['style/styles.css:2:21: error: Could not resolve: "/assets/bun.png"'],
+        \\    });
+        \\    await c.expectNoWebSocketActivity(async () => {
+        \\      await dev.write("assets/bun.png", imageFixtures.bun, { errors: null });
+        \\      await dev.delete("assets/bun.png", { errors: null });
+        \\    });
+        \\    await dev.fetch("/").expect.not.toContain("HELLO");
+        \\    await dev.write("style/styles.css", `
+        \\      body {
+        \\        background-image: url(../assets/bun.png);
+        \\      }
+        \\    `, {
+        \\      errors: ['style/styles.css:2:21: error: Could not resolve: "../assets/bun.png"'],
+        \\    });
+        \\    await c.expectReload(async () => {
+        \\      await dev.write("assets/bun.png", imageFixtures.bun);
         \\    });
         \\    const backgroundImage = await c.style("body").backgroundImage;
         \\    assert(backgroundImage);
