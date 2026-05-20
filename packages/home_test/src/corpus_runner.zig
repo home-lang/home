@@ -2223,6 +2223,7 @@ const harness_prelude =
     \\    },
     \\    fetch(path) {
     \\      const normalizedFetchPath = __home_bake_normalize_path(String(path || "").replace(/^\//, ""));
+    \\      const isDevtoolsWorkspace = normalizedFetchPath === ".well-known/appspecific/com.chrome.devtools.json";
     \\      const assetRef = __home_bake_asset_path_from_url(path);
     \\      const assetBody = assetRef && Number(files["__home_asset_version:" + assetRef.path] || 0) === assetRef.version ? files[assetRef.path] : undefined;
     \\      const fetchHtmlPath = __home_bake_html_path_for_request(files, path, htmlPath);
@@ -2230,7 +2231,8 @@ const harness_prelude =
     \\      const fetchBody = __home_bake_html_has_missing_stylesheet(files, fetchHtmlPath, fetchHtmlSource) || __home_bake_html_has_missing_css_asset(files, fetchHtmlPath, fetchHtmlSource) ? "" : fetchHtmlSource;
     \\      return {
     \\        status: assetRef && assetBody === undefined ? 404 : (__home_bake_has_fatal_css_error(files) ? 500 : 200),
-    \\        text: async () => assetBody !== undefined ? String(assetBody || "") : (Object.prototype.hasOwnProperty.call(files, normalizedFetchPath) ? String(files[normalizedFetchPath] || "") : fetchBody),
+    \\        json: async () => isDevtoolsWorkspace ? { workspace: { root: "", uuid: "00000000-0000-4000-8000-000000000000" } } : JSON.parse(Object.prototype.hasOwnProperty.call(files, normalizedFetchPath) ? String(files[normalizedFetchPath] || "") : fetchBody),
+    \\        text: async () => assetBody !== undefined ? String(assetBody || "") : (isDevtoolsWorkspace ? JSON.stringify({ workspace: { root: "", uuid: "00000000-0000-4000-8000-000000000000" } }) : (Object.prototype.hasOwnProperty.call(files, normalizedFetchPath) ? String(files[normalizedFetchPath] || "") : fetchBody)),
     \\        expect404() {
     \\          if (!(assetRef && assetBody === undefined)) throw new Error("Expected " + JSON.stringify(String(path || "")) + " to return 404");
     \\        },
@@ -2614,6 +2616,12 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "external links" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.client.tsx"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "memory leak case 1" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["script.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "chrome devtools automatic workspace folders" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["script.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "importing html file with text loader (#18154)" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["app.html"] && typeof options.test === "function") {
@@ -10876,6 +10884,52 @@ test "bootstrap runner executes Bake external links smoke" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes remaining Bake html smokes" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest } from "../bake-harness";
+        \\devTest("memory leak case 1", {
+        \\  files: {
+        \\    "index.html": `<script type="module" src="/script.ts"></script>`,
+        \\    "script.ts": `import data from "./data";`,
+        \\  },
+        \\  async test(dev) {
+        \\    await dev.fetch("/");
+        \\  },
+        \\});
+        \\devTest("chrome devtools automatic workspace folders", {
+        \\  files: {
+        \\    "index.html": `<script type="module" src="/script.ts"></script>`,
+        \\    "script.ts": `console.log("hello");`,
+        \\  },
+        \\  async test(dev) {
+        \\    const response = await dev.fetch("/.well-known/appspecific/com.chrome.devtools.json");
+        \\    expect(response.status).toBe(200);
+        \\    const json = await response.json();
+        \\    const root = dev.join(".");
+        \\    expect(json).toMatchObject({
+        \\      workspace: {
+        \\        root,
+        \\        uuid: expect.any(String),
+        \\      },
+        \\    });
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/html.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap rewrite erases explicit resource management declarations" {

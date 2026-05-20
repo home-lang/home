@@ -848,6 +848,19 @@ Latest measured full gate after the HTML external-links slice:
 unsupported, `37` todo. First failure: `bake/dev/html.test.ts` with
 `DEV:html-6: memory leak case 1`.
 
+The Bake static HTML shim now covers the remaining copied
+`bake/dev/html.test.ts` cases. It allows the fetch-only memory-leak smoke
+and serves the Chrome DevTools workspace discovery JSON with the root shape
+expected by the fixture. The copied HTML file now runs in Home as `7`
+passed, `0` failed, `0` unsupported, `0` todo. The native parity target
+remains Bun's real source-map lifetime behavior and DevTools workspace
+metadata generation.
+
+Latest measured full gate after clearing `bake/dev/html.test.ts`:
+`4,013` files executed, `481` passed, `3,915` failed, `1,469`
+unsupported, `37` todo. First failure:
+`bake/dev/import-meta-inline-negative.test.ts` with `unsupported module syntax`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

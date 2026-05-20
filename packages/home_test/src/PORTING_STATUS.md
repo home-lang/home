@@ -547,6 +547,14 @@ trying to rewrite or fetch the external link. The native parity target
 remains Bun's HTML link scanner preserving external URLs while still
 bundling local CSS and module scripts. The next Bake boundary is
 `DEV:html-6: memory leak case 1`.
+The remaining copied `bake/dev/html.test.ts` cases now run through the
+Bake static HTML shim. It allows the fetch-only memory-leak smoke and
+serves the Chrome DevTools workspace discovery JSON with the root shape
+expected by the fixture. The copied HTML file now runs in Home as `7`
+passed, `0` failed, `0` unsupported, `0` todo. The native parity target
+remains Bun's real source-map lifetime behavior and DevTools workspace
+metadata generation. The next corpus boundary is
+`bake/dev/import-meta-inline-negative.test.ts`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
