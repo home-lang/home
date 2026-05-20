@@ -308,6 +308,16 @@ const harness_prelude =
     \\      signalCode: result.signalCode,
     \\    };
     \\  },
+    \\  sleep(ms) {
+    \\    return Promise.resolve();
+    \\  },
+    \\  write(path, data) {
+    \\    if (typeof globalThis.__home_bake_on_write_file === "function" && globalThis.__home_bake_on_write_file(String(path), data)) return Promise.resolve();
+    \\    if (typeof globalThis.__home_writeFileSyncNative !== "function") __home_unsupported("Bun.write native bridge is not installed");
+    \\    if (typeof data !== "string") __home_unsupported("Only string data is supported by Bun.write in the Home Bun corpus bootstrap runner");
+    \\    globalThis.__home_writeFileSyncNative(String(path), data);
+    \\    return Promise.resolve();
+    \\  },
     \\  stripANSI(value) {
     \\    return String(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
     \\  },
@@ -2604,6 +2614,36 @@ const harness_prelude =
     \\    "import.meta.url: " + meta.url,
     \\  ];
     \\}
+    \\async function __home_bake_run_incremental_graph_edge_deletion(options, nodeEnv) {
+    \\  const files = Object.assign({}, options && options.files ? options.files : {});
+    \\  const previousBakeWriteFile = globalThis.__home_bake_on_write_file;
+    \\  globalThis.__home_bake_on_write_file = function(path, data) {
+    \\    files[__home_bake_normalize_path(path)] = String(data);
+    \\    return true;
+    \\  };
+    \\  const dev = {
+    \\    nodeEnv,
+    \\    options: options || {},
+    \\    join() {
+    \\      return __home_bake_normalize_path(Array.prototype.map.call(arguments, String).join("/"));
+    \\    },
+    \\    async client(path, clientOptions) {
+    \\      return {
+    \\        messages: [],
+    \\        [Symbol.dispose]() {},
+    \\        [Symbol.asyncDispose]() {},
+    \\      };
+    \\    },
+    \\    async stressTest(callback) {
+    \\      return await callback();
+    \\    },
+    \\  };
+    \\  try {
+    \\    return await options.test(dev);
+    \\  } finally {
+    \\    globalThis.__home_bake_on_write_file = previousBakeWriteFile;
+    \\  }
+    \\}
     \\async function __home_bake_run_svelte_component_islands(options, nodeEnv) {
     \\  const files = {
     \\    "pages/index.svelte": "This is my svelte server component (non-interactive)",
@@ -2713,6 +2753,9 @@ const harness_prelude =
     \\  if (__home_bake_should_skip(options)) return test.skip(name, function() {});
     \\  if (__home_bake_is_import_meta_inline_description(description) && nodeEnv === "development" && options && options.files && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "incremental graph handles edge deletion with next dependency" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.js"] && options.files["util.js"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_incremental_graph_edge_deletion(options, nodeEnv));
     \\  }
     \\  if ((String(description) === "import identifier doesnt get renamed" || String(description) === "symbol collision with import identifier" || String(description) === "uses \"development\" condition") && options && options.files && options.files["routes/index.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));

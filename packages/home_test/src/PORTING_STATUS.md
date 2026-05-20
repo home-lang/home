@@ -569,6 +569,13 @@ update, and client-side runtime import-meta console messages. This is
 still a focused harness model, not the real Bun parser/lower/printer
 path. The next direct Bake boundary is
 `DEV:incremental-graph-edge-deletion-1: incremental graph handles edge deletion with next dependency`.
+The copied `bake/dev/incremental-graph-edge-deletion.test.ts` fixture now
+passes as `1` test through a narrow in-memory stress runner with
+`Bun.write`, `Bun.sleep`, `dev.join`, `dev.client().messages`, and
+`dev.stressTest` support. It proves the upstream no-crash write-loop
+shape inside Home's corpus harness; native parity still requires the real
+Bake `IncrementalGraph` edge-deletion implementation. The next direct
+Bake boundary is `DEV:plugins-1: onResolve`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

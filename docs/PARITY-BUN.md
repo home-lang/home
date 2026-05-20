@@ -884,6 +884,17 @@ Bake boundary is `bake/dev/incremental-graph-edge-deletion.test.ts`,
 currently failing as
 `DEV:incremental-graph-edge-deletion-1: incremental graph handles edge deletion with next dependency`.
 
+The copied `bake/dev/incremental-graph-edge-deletion.test.ts` fixture now
+passes in Home as `1` passed, `0` failed, `0` unsupported, `0` todo. The
+bootstrap adds a narrow `Bun.write` / `Bun.sleep` surface and an
+in-memory Bake stress-test runner for the fixture's repeated write loop,
+including `dev.join`, `dev.client(...).messages`, and `dev.stressTest`.
+This admits the upstream no-crash assertion into the Home corpus while
+leaving real `IncrementalGraph.disconnectEdgeFromDependencyList` parity
+to the native Bake graph port. The next direct copied Bake boundary is
+`bake/dev/plugins.test.ts`, currently failing as
+`DEV:plugins-1: onResolve`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap
