@@ -1026,6 +1026,17 @@ filesystem discovery from copied source. The next direct copied Bake
 boundary is `bake/serve-plugins-dev-server.test.ts`, currently blocked
 during source preparation as `unsupported module syntax`.
 
+The copied `bake/serve-plugins-dev-server.test.ts` fixture now passes in
+Home as `2` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap
+models the `[serve.static]` plugin rejection/resolution child-process
+smokes: temp project creation, `Bun.spawn` pipes, plugin rejection stderr,
+non-timeout release of the deferred request, and plugin-rewritten bundle
+output. Native parity still requires Bun's real ServePlugins
+handleOnReject/handleOnResolve state transition and DevServer
+notification logic from copied source. The next direct copied corpus
+boundary is `bundler/bun-build-api.test.ts`, currently blocked as
+`unsupported bun:test import shape`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

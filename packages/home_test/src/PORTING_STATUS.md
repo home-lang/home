@@ -663,6 +663,14 @@ nested `tempDirWithFiles` paths. Native parity still needs Bun's real
 `frameworkRouterInternals` parser and router filesystem discovery. The
 next direct Bake boundary is `bake/serve-plugins-dev-server.test.ts`,
 currently blocked as unsupported module syntax during source preparation.
+The copied `bake/serve-plugins-dev-server.test.ts` fixture now passes as
+`2` tests through a narrow `[serve.static]` plugin child-process model for
+temp project creation, `Bun.spawn` pipes, plugin rejection stderr,
+non-timeout deferred request release, and plugin-rewritten bundle output.
+Native parity still needs Bun's real ServePlugins state transition and
+DevServer notification logic. The next direct corpus boundary is
+`bundler/bun-build-api.test.ts`, currently blocked as unsupported
+`bun:test` import shape.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

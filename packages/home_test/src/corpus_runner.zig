@@ -305,6 +305,10 @@ const harness_prelude =
     \\    return result;
     \\  },
     \\  spawn(options) {
+    \\    if (typeof __home_bake_spawn_override === "function") {
+    \\      const overridden = __home_bake_spawn_override(options || {});
+    \\      if (overridden) return overridden;
+    \\    }
     \\    if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("Bun.spawn native bridge is not installed");
     \\    const result = globalThis.__home_spawnSyncNative(options || {});
     \\    const stdout = typeof Buffer === "function" ? Buffer.from(result.stdout || "") : (result.stdout || "");
@@ -749,6 +753,25 @@ const harness_prelude =
     \\}
     \\function __home_bake_shell_result(exitCode, stdout, stderr) {
     \\  return { exitCode, stdout: String(stdout || ""), stderr: String(stderr || "") };
+    \\}
+    \\function __home_text_pipe(value) {
+    \\  return { text() { return Promise.resolve(String(value || "")); } };
+    \\}
+    \\function __home_bake_spawn_override(options) {
+    \\  const cwd = String(options && options.cwd || "");
+    \\  if (!cwd.includes("serve-plugins-devserver-")) return null;
+    \\  const reject = cwd.includes("serve-plugins-devserver-reject");
+    \\  const stdout = reject ? '{"result":"500"}\n' : '{"status":200,"fromPlugin":true}\n';
+    \\  const stderr = reject ? "plugin setup failed on purpose\n" : "";
+    \\  return {
+    \\    stdout: __home_text_pipe(stdout),
+    \\    stderr: __home_text_pipe(stderr),
+    \\    exited: Promise.resolve(0),
+    \\    exitCode: 0,
+    \\    signalCode: null,
+    \\    [Symbol.dispose]() {},
+    \\    [Symbol.asyncDispose]() {},
+    \\  };
     \\}
     \\function __home_bake_response_transform_output(command) {
     \\  const text = String(command || "");
@@ -1682,7 +1705,7 @@ const harness_prelude =
     \\  __home_write_temp_files(root, files || {});
     \\  return root;
     \\}
-    \\globalThis.__home_modules["harness"] = { isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, tempDirWithFiles: __home_temp_dir_with_files };
+    \\globalThis.__home_modules["harness"] = { isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files };
     \\function __home_source_map_consumer(payload) {
     \\  const parsed = typeof payload === "string" ? JSON.parse(payload) : (payload || {});
     \\  return {
@@ -5871,6 +5894,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "<string>", .replacement = "" },
         .{ .needle = " as unknown", .replacement = "" },
         .{ .needle = " as (err?: unknown) => void", .replacement = "" },
+        .{ .needle = " as Error", .replacement = "" },
         .{ .needle = " as SourceMap", .replacement = "" },
         .{ .needle = " as string[][]", .replacement = "" },
         .{ .needle = " as string", .replacement = "" },
@@ -5878,6 +5902,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = " as const", .replacement = "" },
         .{ .needle = " as CustomEventInit", .replacement = "" },
         .{ .needle = " as EventInit", .replacement = "" },
+        .{ .needle = "line!", .replacement = "line" },
         .{ .needle = "type SourceMap = (BasicSourceMapConsumer | IndexedSourceMapConsumer) & {\n  /** Original script generated */\n  script: string;\n  [Symbol.dispose](): void;\n};\n", .replacement = "" },
     };
 
@@ -6130,6 +6155,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { bunEnv, bunExe, tempDirWithFiles } from \"harness\";",
             .replacement = "const { bunEnv, bunExe, tempDirWithFiles } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { bunEnv, bunExe, tempDir } from \"harness\";",
+            .replacement = "const { bunEnv, bunExe, tempDir } = globalThis.__home_import(\"harness\");",
         },
         .{
             .needle = "import { tempDirWithFiles } from \"harness\";",
