@@ -134,6 +134,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/web/html/html-rewriter-doctype.test.ts",
     "js/bun/jsonc/jsonc.test.ts",
     "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts",
+    "js/bun/test/jest-each.test.ts",
 };
 
 const harness_prelude =
@@ -691,6 +692,9 @@ const harness_prelude =
     \\function __home_run_finished_callbacks(callbacks) {
     \\  for (let i = callbacks.length - 1; i >= 0; i--) __home_run_hook(callbacks[i]);
     \\}
+    \\function __home_done_callback(error) {
+    \\  if (error) throw error;
+    \\}
     \\function __home_run_test_attempt(scope, fn) {
     \\  const chain = __home_scope_chain(scope);
     \\  const afterAllLengths = chain.map(item => item.afterAll.length);
@@ -699,7 +703,7 @@ const harness_prelude =
     \\  try {
     \\    __home_run_before_all_hooks(scope);
     \\    for (const item of chain) for (const hook of item.beforeEach) __home_run_hook(hook);
-    \\    const result = fn();
+    \\    const result = fn.length > 0 ? fn(__home_done_callback) : fn();
     \\    if (__home_is_thenable(result)) __home_unsupported("Async tests are not supported by the Home Bun corpus bootstrap runner yet");
     \\  } finally {
     \\    const callbacks = globalThis.__home_current_finished_callbacks;
@@ -777,10 +781,15 @@ const harness_prelude =
     \\  return function(name, fn) {
     \\    for (const row of rows) {
     \\      const args = Array.isArray(row) ? row : [row];
-    \\      test(name, () => fn.apply(null, args));
+    \\      test(name, () => {
+    \\        const callArgs = args.slice();
+    \\        if (typeof fn === "function" && fn.length > callArgs.length) callArgs.push(__home_done_callback);
+    \\        return fn.apply(null, callArgs);
+    \\      });
     \\    }
     \\  };
     \\}
+    \\it.each = __home_each;
     \\test.each = __home_each;
     \\test.concurrent.each = __home_each;
     \\test.ignore = function(nameOrFn, maybeFn) {
@@ -806,6 +815,14 @@ const harness_prelude =
     \\    globalThis.__home_current_scope = parent;
     \\  }
     \\}
+    \\describe.each = function(rows) {
+    \\  return function(name, fn) {
+    \\    for (const row of rows) {
+    \\      const args = Array.isArray(row) ? row : [row];
+    \\      describe(name, () => fn.apply(null, args));
+    \\    }
+    \\  };
+    \\};
     \\function beforeAll(fn, options) { __home_register_hook(globalThis.__home_current_scope.beforeAll, fn); }
     \\function beforeEach(fn, options) { __home_register_hook(globalThis.__home_current_scope.beforeEach, fn); }
     \\function afterEach(fn, options) { __home_register_hook(globalThis.__home_current_scope.afterEach, fn); }
@@ -2177,6 +2194,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "<{ a: number }>", .replacement = "" },
         .{ .needle = "<{ a: 1 }>", .replacement = "" },
         .{ .needle = " as unknown", .replacement = "" },
+        .{ .needle = " as (err?: unknown) => void", .replacement = "" },
         .{ .needle = " as string[][]", .replacement = "" },
         .{ .needle = " as string", .replacement = "" },
         .{ .needle = " as any", .replacement = "" },
@@ -2625,6 +2643,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function it(name, first, second)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "console.warn = console.log") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_is_thenable(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_done_callback(error)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.setPrototypeOf = function(target, prototype)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_global_virtual_prototype_keys") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "stripANSI(value)") != null);
@@ -2672,7 +2691,9 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest.mock() module name must be a string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest.mock() requires a factory callback") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Cannot set both retry and repeats") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "it.each = __home_each") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.concurrent.each") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.each = function(rows)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_finish_tests") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContain(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toMatchObject(expected)") != null);
@@ -2776,6 +2797,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/web/html/html-rewriter-doctype.test.ts",
         "js/bun/jsonc/jsonc.test.ts",
         "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts",
+        "js/bun/test/jest-each.test.ts",
     };
 
     for (expected) |path| {
@@ -3117,6 +3139,21 @@ test "bootstrap rewrite erases typed matcher parameters" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeEven(received)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "received: number") == null);
+}
+
+test "bootstrap rewrite erases done callback cast" {
+    const source =
+        \\import { it } from "bun:test";
+        \\it("works", done => {
+        \\  (done as unknown as (err?: unknown) => void)();
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/bun/test/jest-each.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "(done)();") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, " as ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "err?: unknown") == null);
 }
 
 test "bootstrap rewrite erases const assertions" {
