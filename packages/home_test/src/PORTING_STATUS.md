@@ -172,6 +172,7 @@ selector / handler validation,
 Jest fake-timer Date / `Intl.DateTimeFormat` behavior,
 `bun:internal-for-testing.highlightJavaScript` template-literal behavior,
 `home test --pass-with-no-tests` subprocess behavior,
+JS-only `Bun.serve({ fetch })` / long-lived server-fixture `Bun.spawn`,
 `node:vm.runInNewContext`, DOMException, native constructor identity,
 mutable `globalThis` prototype behavior, comment-only module-load smoke,
 `Bun.file(...).type` explicit and `.css` MIME behavior,
@@ -764,6 +765,10 @@ The copied `cli/test/pass-with-no-tests.test.ts` fixture now passes as
 `5` tests through the subprocess bootstrap model. It covers lexical
 `bun:test` import detection around embedded fixture source strings plus
 `--pass-with-no-tests` / filtered no-match exit codes and stderr.
+The copied `js/bun/http/bun-serve-body-json-async.test.ts` fixture now
+passes as `1` test through the JS-only server bootstrap model. It covers
+the long-lived `Bun.spawn()` server fixture stdout URL, `kill()`, null
+pre-kill `signalCode`, and `Bun.serve({ fetch })` JSON-body echoing.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

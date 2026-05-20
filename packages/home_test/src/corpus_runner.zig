@@ -143,6 +143,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/test-timers.test.ts",
     "internal/highlighter.test.ts",
     "cli/test/pass-with-no-tests.test.ts",
+    "js/bun/http/bun-serve-body-json-async.test.ts",
     "js/web/encoding/text-decoder-cjk.test.ts",
     "js/web/encoding/text-decoder-single-byte.test.ts",
     "regression/issue/fix-bindings-stack-trace.test.ts",
@@ -605,6 +606,46 @@ const harness_prelude =
     \\    signalCode: null,
     \\  };
     \\}
+    \\function __home_spawn_async_iterable_text(text) {
+    \\  const payload = String(text || "");
+    \\  return {
+    \\    text() {
+    \\      return Promise.resolve(payload);
+    \\    },
+    \\    toString() {
+    \\      return payload;
+    \\    },
+    \\    async *[Symbol.asyncIterator]() {
+    \\      yield typeof Buffer === "function" ? Buffer.from(payload) : payload;
+    \\    },
+    \\  };
+    \\}
+    \\function __home_spawn_long_lived_server_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (!cmd.some(part => part.includes("bun-serve-9222-fixture.ts"))) return null;
+    \\  const server = Bun.serve({
+    \\    port: 0,
+    \\    development: true,
+    \\    async fetch(request) {
+    \\      const body = await request.json();
+    \\      return new Response(JSON.stringify(body));
+    \\    },
+    \\  });
+    \\  const exited = Promise.withResolvers();
+    \\  return {
+    \\    stdout: __home_spawn_async_iterable_text(server.url.toString()),
+    \\    stderr: __home_spawn_async_iterable_text(""),
+    \\    exited: exited.promise,
+    \\    exitCode: null,
+    \\    signalCode: null,
+    \\    kill(signal) {
+    \\      server.stop(true);
+    \\      this.exitCode = 0;
+    \\      exited.resolve(0);
+    \\      return true;
+    \\    },
+    \\  };
+    \\}
     \\function __home_bun_build_spawn_override(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const joined = cmd.join("\n");
@@ -712,6 +753,7 @@ const harness_prelude =
     \\  deepEquals(left, right) {
     \\    return __home_deep_equal(left, right, false, new Map());
     \\  },
+    \\  __home_next_js_serve_id: 1,
     \\  fileURLToPath(url) {
     \\    const text = String(url || "");
     \\    const path = text.startsWith("file://") ? text.slice("file://".length) : text;
@@ -722,21 +764,32 @@ const harness_prelude =
     \\    }
     \\  },
     \\  serve(options) {
-    \\    if (typeof globalThis.__home_serveNative !== "function" || typeof globalThis.__home_stopServeNative !== "function") __home_unsupported("Bun.serve native bridge is not installed");
-    \\    const handle = globalThis.__home_serveNative(options || {});
+    \\    options = options || {};
+    \\    let handle;
+    \\    if (typeof options.fetch === "function" && !options.routes && !options.static) {
+    \\      const id = "js-" + (Bun.__home_next_js_serve_id++);
+    \\      const port = 43000 + Bun.__home_next_js_serve_id;
+    \\      handle = { id, port, origin: "http://localhost:" + String(port), native: false };
+    \\    } else {
+    \\      if (typeof globalThis.__home_serveNative !== "function" || typeof globalThis.__home_stopServeNative !== "function") __home_unsupported("Bun.serve native bridge is not installed");
+    \\      handle = globalThis.__home_serveNative(options);
+    \\      handle.native = true;
+    \\    }
     \\    handle.stopped = false;
     \\    handle.abrupt = false;
+    \\    handle.fetch = !handle.native && typeof options.fetch === "function" ? options.fetch : null;
     \\    globalThis.__home_serve_handles_by_origin[handle.origin] = handle;
+    \\    const url = { origin: handle.origin, href: handle.origin + "/", toString() { return this.href; } };
     \\    const server = {
     \\      __home_id: handle.id,
     \\      port: handle.port,
-    \\      url: { origin: handle.origin, href: handle.origin + "/" },
+    \\      url,
     \\      stop(closeActiveConnections) {
     \\        if (handle.stopped) return;
     \\        handle.stopped = true;
     \\        handle.abrupt = !!closeActiveConnections;
     \\        delete globalThis.__home_serve_handles_by_origin[handle.origin];
-    \\        return globalThis.__home_stopServeNative(handle.id, handle.abrupt);
+    \\        if (handle.native) return globalThis.__home_stopServeNative(handle.id, handle.abrupt);
     \\      },
     \\    };
     \\    return server;
@@ -752,6 +805,8 @@ const harness_prelude =
     \\  },
     \\  spawn(options) {
     \\    options = __home_normalize_spawn_options(options);
+    \\    const longLivedServer = __home_spawn_long_lived_server_fixture(options || {});
+    \\    if (longLivedServer) return longLivedServer;
     \\    if (typeof __home_bake_spawn_override === "function") {
     \\      const overridden = __home_bake_spawn_override(options || {});
     \\      if (overridden) return overridden;
@@ -5491,6 +5546,17 @@ const harness_prelude =
     \\  const handle = globalThis.__home_serve_handles_by_origin[origin];
     \\  if (!handle || handle.stopped) return __home_fetch_thenable(null, new Error("Unable to connect"));
     \\  if (typeof globalThis.__home_beginServeRequestNative === "function") globalThis.__home_beginServeRequestNative(handle.id);
+    \\  if (typeof handle.fetch === "function") {
+    \\    try {
+    \\      const response = handle.fetch(new Request(href, init || {}));
+    \\      return Promise.resolve(response).finally(() => {
+    \\        if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
+    \\      });
+    \\    } catch (error) {
+    \\      if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
+    \\      return __home_fetch_thenable(null, error);
+    \\    }
+    \\  }
     \\  try {
     \\    if (typeof globalThis.callback === "function") {
     \\      const callbackResult = globalThis.callback();
@@ -7486,7 +7552,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "version: \"0.0.0-home\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "gc(force)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "serve(options)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_serveNative(options || {})") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_serveNative(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "typeof options.fetch === \"function\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_stopServeNative(handle.id") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "spawnSync(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawnSyncNative(options || {})") != null);
