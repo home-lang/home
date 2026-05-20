@@ -221,6 +221,12 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
+The `home_test` facade now carries a compile-only native ESM smoke for
+the canonical source `import { test, expect } from "bun:test";`. That
+smoke verifies the source is not lowered through the bootstrap
+`globalThis.__home_import("bun:test")` rewrite path and records the
+runtime blocker as `native-esm-loader-missing`.
+
 ## Summary
 
 Substrate file-count progress (the only objective number today):

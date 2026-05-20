@@ -76,6 +76,13 @@ for describe/test schedule entries and execution groups. Compat keeps
 by normal builds while proving the copied dump functions accept the
 runner shapes they inspect.
 
+The facade also includes a compile-only native ESM smoke for the exact
+static source `import { test, expect } from "bun:test";`. It verifies that
+this source intentionally stays outside the bootstrap rewrite path and
+that Home's Bun-derived `JSModuleLoader` bridge shape is visible. Runtime
+execution remains blocked as `native-esm-loader-missing` until Home grows
+the JavaScriptCore C++ module bridge and synthetic `bun:test` module.
+
 The bootstrap harness is intentionally narrow but now installs once per
 JSC engine, resets counters before each allowlisted file, reports a file
 as unsupported if it registers zero `bun:test` tests, and preserves

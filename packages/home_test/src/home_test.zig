@@ -132,6 +132,7 @@ pub const result = @import("result.zig");
 pub const runner = @import("runner.zig");
 pub const adapters = struct {
     pub const jsc_bootstrap = @import("adapters/jsc_bootstrap.zig");
+    pub const jsc_esm_smoke = @import("adapters/jsc_esm_smoke.zig");
 };
 
 /// Stub. Once the `compat` shim is in place, this module will
@@ -167,4 +168,8 @@ test "home_test runner contract is linked" {
 
 test "home_test jsc bootstrap adapter is linked" {
     try std.testing.expect(@hasDecl(adapters.jsc_bootstrap, "Runtime"));
+}
+
+test "home_test native ESM smoke adapter is linked" {
+    try std.testing.expectEqualStrings("native-esm-loader-missing", adapters.jsc_esm_smoke.blocked_reason);
 }
