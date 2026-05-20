@@ -112,6 +112,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/url/url-format-invalid-input.test.js",
     "integration/bun-types/fixture/23347.test.ts",
     "js/bun/resolve/toml/toml-parse.test.ts",
+    "regression/issue/013880.test.ts",
 };
 
 const harness_prelude =
@@ -132,6 +133,8 @@ const harness_prelude =
     \\  globalThis.__home_mocks = [];
     \\};
     \\globalThis.__home_reset_tests();
+    \\if (typeof console !== "object" || console === null) var console = {};
+    \\if (typeof console.log !== "function") console.log = function() {};
     \\var Bun = {
     \\  [Symbol.toStringTag]: "Bun",
     \\  version: "0.0.0-home",
@@ -978,13 +981,58 @@ const harness_prelude =
     \\    };
     \\  },
     \\};
+    \\globalThis.__home_cjs_factories = Object.create(null);
+    \\globalThis.__home_cjs_factories["regression/issue/013880-fixture.cjs"] = function(module, exports, require) {
+    \\  function a() {
+    \\    try {
+    \\      new Function("throw new Error(1)")();
+    \\    } catch (e) {
+    \\      console.log(Error.prepareStackTrace);
+    \\      console.log(e.stack);
+    \\    }
+    \\  }
+    \\
+    \\  Error.prepareStackTrace = function abc() {
+    \\    console.log("trigger");
+    \\    a();
+    \\  };
+    \\
+    \\  new Error().stack;
+    \\};
+    \\function __home_resolve_require(specifier) {
+    \\  const name = String(specifier);
+    \\  if (name === "./013880-fixture.cjs" && globalThis.__home_current_dirname === "regression/issue") {
+    \\    return "regression/issue/013880-fixture.cjs";
+    \\  }
+    \\  return name;
+    \\}
     \\globalThis.__home_import = function(specifier) {
-    \\  const module = globalThis.__home_modules[String(specifier)];
+    \\  const module = globalThis.__home_modules[__home_resolve_require(specifier)];
     \\  if (!module) throw new Error("Cannot find module: " + String(specifier));
     \\  return module;
     \\};
     \\globalThis.require = function(specifier) {
-    \\  return globalThis.__home_import(specifier);
+    \\  const resolved = __home_resolve_require(specifier);
+    \\  const builtin = globalThis.__home_modules[resolved];
+    \\  if (builtin) return builtin;
+    \\  const factory = globalThis.__home_cjs_factories[resolved];
+    \\  if (!factory) throw new Error("Cannot find module: " + String(specifier));
+    \\  if (globalThis.require.cache[resolved]) return globalThis.require.cache[resolved].exports;
+    \\  const module = { exports: {} };
+    \\  globalThis.require.cache[resolved] = module;
+    \\  const previousFilename = globalThis.__home_current_filename;
+    \\  const previousDirname = globalThis.__home_current_dirname;
+    \\  const previousPrepareStackTrace = Error.prepareStackTrace;
+    \\  globalThis.__home_current_filename = resolved;
+    \\  globalThis.__home_current_dirname = resolved.slice(0, resolved.lastIndexOf("/"));
+    \\  try {
+    \\    factory(module, module.exports, globalThis.require);
+    \\  } finally {
+    \\    globalThis.__home_current_filename = previousFilename;
+    \\    globalThis.__home_current_dirname = previousDirname;
+    \\    Error.prepareStackTrace = previousPrepareStackTrace;
+    \\  }
+    \\  return module.exports;
     \\};
     \\globalThis.require.cache = Object.create(null);
     \\if (typeof Headers !== "function") {
@@ -1667,7 +1715,7 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     try appendJsStringLiteral(out, allocator, relative_path);
     try out.appendSlice(allocator, ";\nvar __dirname = ");
     try appendJsStringLiteral(out, allocator, dirname);
-    try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\n");
+    try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\n");
 }
 
 fn sourceShebangLen(source: []const u8) usize {
@@ -2211,6 +2259,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/node/url/url-format-invalid-input.test.js", filesForSubset(.minimal_js)[58]);
     try std.testing.expectEqualStrings("integration/bun-types/fixture/23347.test.ts", filesForSubset(.minimal_js)[59]);
     try std.testing.expectEqualStrings("js/bun/resolve/toml/toml-parse.test.ts", filesForSubset(.minimal_js)[60]);
+    try std.testing.expectEqualStrings("regression/issue/013880.test.ts", filesForSubset(.minimal_js)[61]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -2268,6 +2317,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "UnreachableError") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest, mock, onTestFinished, test") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun\"] = { semver: Bun.semver }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_cjs_factories[\"regression/issue/013880-fixture.cjs\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_resolve_require(specifier)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"assert\"] = __home_assert_module") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"assert/strict\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"path\"] = __home_path_module") != null);
@@ -3410,6 +3461,29 @@ test "bootstrap toMatchObject rejects missing keys and array length mismatches" 
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
+test "bootstrap runner covers relative CJS fixture require" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("regression", () => {
+        \\  expect(() => require("./013880-fixture.cjs")).not.toThrow();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/013880.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
 test "Bun test import rewrite installs globals for no-import tests" {
     const source =
         \\test("works", () => {
@@ -3420,6 +3494,7 @@ test "Bun test import rewrite installs globals for no-import tests" {
     defer std.testing.allocator.free(rewritten);
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "var __filename = \"regression/issue/example.test.js\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "globalThis.__home_current_dirname = __dirname") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "test(\"works\"") != null);
 }
 

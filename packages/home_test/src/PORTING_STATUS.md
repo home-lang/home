@@ -47,6 +47,7 @@ constructor-modifier rewrites, bun-types `test.each` type-shape smoke, narrow `t
 `bun:internal-for-testing` regexp and PowerShell escaping helpers,
 `assert` CJS require, `assert.match` / `assert.doesNotMatch`,
 `assert/strict.deepStrictEqual` boxed primitive handling,
+relative CJS fixture require for `regression/issue/013880-fixture.cjs`,
 `node:path` / `path` join and posix/win32 identity smokes,
 `node:url` URL.canParse and url.format empty-input smokes,
 `jest.fn`, narrow `HTMLRewriter` element callbacks,

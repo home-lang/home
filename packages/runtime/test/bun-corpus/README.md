@@ -17,14 +17,14 @@ macOS, Linux, and the WASM target.
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
   That subset currently executes the todo-registration smoke, three Node
   `assert` CommonJS smokes, three Node `path` smokes, two Node `url` smokes, the Web
-  `atob`/`btoa` smoke, twenty-one regression smokes, one bundler
+  `atob`/`btoa` smoke, twenty-two regression smokes, one bundler
   constant-fold smoke, one bun-types `test.each` type-shape smoke, six test-runner expectation smokes, one nested-describe
   smoke, a narrow `Bun.TOML.parse` throw smoke, `Bun.stripANSI`, `Bun.wrapAnsi`, `Bun.semver.satisfies`, and
   `bun:internal-for-testing` regexp / PowerShell escaping smokes, retry/repeats runner
   behavior, `test.concurrent.each`, `expect().pass`, a narrow `mock.clearAllMocks` /
   `toHaveBeenCalledTimes` smoke, a narrow `jest.fn` / `HTMLRewriter`
   element-callback smoke, a narrow TypeScript constructor-modifier
-  rewrite smoke, narrow `assert` / `assert/strict`, `node:path`, and `node:url` smokes, a narrow inline-snapshot Unicode object
+  rewrite smoke, narrow `assert` / `assert/strict`, `node:path`, `node:url`, and relative CJS fixture smokes, a narrow inline-snapshot Unicode object
   formatting smoke, a `node:vm.runInNewContext` / `process.on` throw
   propagation smoke, Deno `Event` / `CustomEvent` /
   `AbortController`, a Deno `URLSearchParams` bootstrap smoke, and narrow bootstrap coverage for Node
