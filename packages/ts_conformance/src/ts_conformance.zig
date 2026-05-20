@@ -3444,6 +3444,86 @@ test "conformance: sub-strict directive without @strict keeps inferred strict-on
     try T.expect(merged_with_strict_on.use_unknown_in_catch_variables);
 }
 
+test "conformance: privateStaticMemberAccessibility matches TS2341 baseline" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "privateStaticMemberAccessibility",
+        .path = "privateStaticMemberAccessibility.ts",
+        .source =
+        \\// @target: es2015
+        \\class Base {
+        \\    private static foo: string;
+        \\}
+        \\
+        \\class Derived extends Base {
+        \\    static bar = Base.foo; // error
+        \\    bing = () => Base.foo; // error
+        \\}
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\privateStaticMemberAccessibility.ts(6,23): error TS2341: Property 'foo' is private and only accessible within class 'Base'.
+        \\privateStaticMemberAccessibility.ts(7,23): error TS2341: Property 'foo' is private and only accessible within class 'Base'.
+        ,
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: classPropertyAsPrivate matches TS2341 baseline" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "classPropertyAsPrivate",
+        .path = "classPropertyAsPrivate.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\class C {
+        \\    private x: string;
+        \\    private get y() { return null; }
+        \\    private set y(x) { }
+        \\    private foo() { }
+        \\
+        \\    private static a: string;
+        \\    private static get b() { return null; }
+        \\    private static set b(x) { }
+        \\    private static foo() { }
+        \\}
+        \\
+        \\declare var c: C;
+        \\// all errors
+        \\c.x;
+        \\c.y;
+        \\c.y = 1;
+        \\c.foo();
+        \\
+        \\C.a;
+        \\C.b();
+        \\C.b = 1;
+        \\C.foo();
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\classPropertyAsPrivate.ts(15,3): error TS2341: Property 'x' is private and only accessible within class 'C'.
+        \\classPropertyAsPrivate.ts(16,3): error TS2341: Property 'y' is private and only accessible within class 'C'.
+        \\classPropertyAsPrivate.ts(17,3): error TS2341: Property 'y' is private and only accessible within class 'C'.
+        \\classPropertyAsPrivate.ts(18,3): error TS2341: Property 'foo' is private and only accessible within class 'C'.
+        \\classPropertyAsPrivate.ts(20,3): error TS2341: Property 'a' is private and only accessible within class 'C'.
+        \\classPropertyAsPrivate.ts(21,3): error TS2341: Property 'b' is private and only accessible within class 'C'.
+        \\classPropertyAsPrivate.ts(22,3): error TS2341: Property 'b' is private and only accessible within class 'C'.
+        \\classPropertyAsPrivate.ts(23,3): error TS2341: Property 'foo' is private and only accessible within class 'C'.
+        ,
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: memberFunctionsWithPrivateOverloads matches TS2341 baseline" {
     const result = try runOneEntry(T.allocator, .{
         .name = "memberFunctionsWithPrivateOverloads",
