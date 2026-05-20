@@ -484,6 +484,18 @@ Latest measured full gate after the Bake shared CSS dependency slice:
 unsupported, `35` todo. First failure: `bake/dev/css.test.ts` with
 ` DEV:css-10: removing and re-adding css import`.
 
+The remove/re-add CSS import smoke now strips CSS comments before
+collecting recursive `@import` rules, so a commented-out import removes
+the dependent `.colored` rule. It also models `background` as a
+`backgroundColor` fallback and normalizes `white` to `#fff` when the
+import is restored. WebSocket silence is still a callback-level harness
+model rather than real dependency-edge notification tracking.
+
+Latest measured full gate after the Bake remove/re-add CSS import slice:
+`4,013` files executed, `440` passed, `3,942` failed, `1,495`
+unsupported, `35` todo. First failure: `bake/dev/css.test.ts` with
+` DEV:css-11: changing html file with link tag works`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

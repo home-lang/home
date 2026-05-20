@@ -327,6 +327,13 @@ different stylesheet roots, both of which recursively import
 normalizes the resulting `yellow` style to `#ff0` through the harness CSS
 model. The next Bake boundary is
 `DEV:css-10: removing and re-adding css import`.
+The remove/re-add CSS import smoke now strips CSS comments before
+collecting recursive `@import` rules, so a commented-out import removes
+the dependent `.colored` rule. It also models `background` as a
+`backgroundColor` fallback and normalizes `white` to `#fff` when the
+import is restored. WebSocket silence is still a callback-level harness
+model rather than real dependency-edge notification tracking. The next
+Bake boundary is `DEV:css-11: changing html file with link tag works`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

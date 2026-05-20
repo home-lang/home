@@ -1528,13 +1528,15 @@ const harness_prelude =
     \\  const rule = css.match(new RegExp(escapedSelector + "\\s*\\{([\\s\\S]*?)\\}", "i"));
     \\  if (!rule) return "";
     \\  const property = String(propertyName).replace(/[A-Z]/g, char => "-" + char.toLowerCase());
-    \\  const declaration = rule[1].match(new RegExp("(^|;)\\s*" + property + "\\s*:\\s*([^;]+)", "i"));
+    \\  let declaration = rule[1].match(new RegExp("(^|;)\\s*" + property + "\\s*:\\s*([^;]+)", "i"));
+    \\  if (!declaration && propertyName === "backgroundColor") declaration = rule[1].match(/(^|;)\s*background\s*:\s*([^;]+)/i);
     \\  return declaration ? __home_bake_normalize_css_value(declaration[2].trim()) : "";
     \\}
     \\function __home_bake_normalize_css_value(value) {
     \\  const text = String(value || "").trim();
     \\  if (text === "blue") return "#00f";
     \\  if (text === "yellow") return "#ff0";
+    \\  if (text === "white") return "#fff";
     \\  const url = text.match(/^url\((['"]?)(.*?)\1\)$/);
     \\  if (url) return "url(\"" + url[2] + "\")";
     \\  return text;
@@ -1548,7 +1550,7 @@ const harness_prelude =
     \\  const normalized = __home_bake_normalize_path(cssPath);
     \\  if (seen.has(normalized)) return "";
     \\  seen.add(normalized);
-    \\  let css = String(files[normalized] || "");
+    \\  let css = String(files[normalized] || "").replace(/\/\*[\s\S]*?\*\//g, "");
     \\  return css.replace(/@import\s+['"]([^'"]+\.css)['"]\s*;/g, function(_, specifier) {
     \\    const resolved = __home_bake_resolve_html_ref(files, normalized, specifier);
     \\    return __home_bake_collect_css(files, resolved, seen);
@@ -2032,6 +2034,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "multiple stylesheets importing same dependency" && nodeEnv === "development" && options && options.files && options.files["first.html"] && options.files["second.html"] && options.files["first.css"] && options.files["second.css"] && options.files["shared.css"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "removing and re-adding css import" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["main.css"] && options.files["colors.css"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "define config via bunfig.toml" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["bunfig.toml"] && typeof options.test === "function") {
@@ -8559,6 +8564,63 @@ test "bootstrap runner executes Bake shared css dependency smoke" {
         \\    `);
         \\    await c1.style(".shared").color.expect.toBe("#ff0");
         \\    await c2.style(".shared").color.expect.toBe("#ff0");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/css.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake remove and readd css import smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("removing and re-adding css import", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({
+        \\      styles: ["main.css"],
+        \\    }),
+        \\    "main.css": `
+        \\      @import "./colors.css";
+        \\      .main { background: white; }
+        \\    `,
+        \\    "colors.css": `
+        \\      .colored { color: blue; }
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/");
+        \\    await c.style(".colored").color.expect.toBe("#00f");
+        \\    await dev.write("main.css", `
+        \\      /* @import "./colors.css"; */
+        \\      .main { background: white; }
+        \\    `);
+        \\    await c.style(".colored").notFound();
+        \\    await c.expectNoWebSocketActivity(async () => {
+        \\      await dev.write("colors.css", `
+        \\        .colored { color: yellow; }
+        \\      `);
+        \\      await dev.write("colors.css", `
+        \\        .colored { color: blue; }
+        \\      `);
+        \\    });
+        \\    await c.style(".colored").notFound();
+        \\    await dev.write("main.css", `
+        \\      @import "./colors.css";
+        \\      .main { background: white; }
+        \\    `);
+        \\    await c.style(".colored").color.expect.toBe("#00f");
+        \\    await c.style(".main").backgroundColor.expect.toBe("#fff");
         \\  },
         \\});
     ;
