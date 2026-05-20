@@ -299,6 +299,9 @@ pub const TsCodes = struct {
     /// Emitted on the second (or later) declaration of a property with
     /// the same name but a different type when interfaces merge.
     pub const subsequent_property_declaration_same_type: u32 = 2717;
+    /// TS2804 — emitted when static and instance elements share the same
+    /// ECMAScript private name.
+    pub const private_static_instance_duplicate: u32 = 2804;
     pub const property_not_assignable_to_base: u32 = 2416;
     pub const class_incorrectly_extends_base: u32 = 2415;
     /// TS2417 — emitted when a derived class narrows the
@@ -15684,7 +15687,9 @@ pub const Checker = struct {
             name_node: NodeId,
             canonical: hir_mod.StringId,
             display: []const u8,
+            type_display: []const u8,
             is_static: bool,
+            is_private: bool,
             kind: Kind,
         };
 
@@ -15702,8 +15707,8 @@ pub const Checker = struct {
                     // canonicalized for collision detection in v0.
                     if (self.nodeIsBracketedComputedName(name_node)) continue;
                     const canonical = (try self.classMemberCanonicalNameForKey(name_node)) orelse continue;
-                    if (self.memberNameIsEcmaPrivate(canonical)) continue;
                     const display = self.classMemberDisplayTextForKey(name_node) orelse continue;
+                    const type_display = try self.classMemberDuplicateFnTypeDisplay(fn_p);
                     const k: Kind = if (fn_p.flags.is_getter)
                         .getter
                     else if (fn_p.flags.is_setter)
@@ -15714,7 +15719,9 @@ pub const Checker = struct {
                         .name_node = name_node,
                         .canonical = canonical,
                         .display = display,
+                        .type_display = type_display,
                         .is_static = fn_p.flags.is_static,
+                        .is_private = self.memberNameIsEcmaPrivate(canonical),
                         .kind = k,
                     });
                 },
@@ -15724,8 +15731,8 @@ pub const Checker = struct {
                         self.nodeIsBracketedComputedName(op.key) or
                         self.memberSourceLooksComputed(m)) continue;
                     const canonical = (try self.classMemberCanonicalNameForKey(op.key)) orelse continue;
-                    if (self.memberNameIsEcmaPrivate(canonical)) continue;
                     const display = self.classMemberDisplayTextForKey(op.key) orelse continue;
+                    const type_display = self.classMemberDuplicateFieldTypeDisplay(op);
                     const op_is_method = op.is_method or
                         (op.value != hir_mod.none_node_id and
                             (self.hir.kindOf(op.value) == .fn_decl or
@@ -15737,7 +15744,9 @@ pub const Checker = struct {
                         .name_node = op.key,
                         .canonical = canonical,
                         .display = display,
+                        .type_display = type_display,
                         .is_static = op.is_static,
+                        .is_private = self.memberNameIsEcmaPrivate(canonical),
                         .kind = k,
                     });
                 },
@@ -15746,6 +15755,21 @@ pub const Checker = struct {
         }
 
         if (entries.items.len < 2) return;
+
+        var private_idx: usize = 0;
+        while (private_idx < entries.items.len) : (private_idx += 1) {
+            const current = entries.items[private_idx];
+            if (!current.is_private) continue;
+            var prior_idx: usize = 0;
+            while (prior_idx < private_idx) : (prior_idx += 1) {
+                const prior = entries.items[prior_idx];
+                if (!prior.is_private) continue;
+                if (prior.canonical != current.canonical) continue;
+                if (prior.is_static == current.is_static) continue;
+                try self.reportPrivateStaticInstanceDuplicate(current.name_node, current.display);
+                break;
+            }
+        }
 
         // Walk groups by (canonical, is_static). For each group with
         // count >= 2, decide whether to emit, and where, mirroring
@@ -15779,6 +15803,10 @@ pub const Checker = struct {
             }
             for (group_idx.items) |idx| try processed.put(self.gpa, idx, {});
             if (group_idx.items.len < 2) continue;
+            if (a.is_private) {
+                try self.reportPrivateDuplicateGroup(Entry, entries.items, group_idx.items);
+                continue;
+            }
 
             // getter+setter exact pair: not a duplicate.
             if (group_idx.items.len == 2) {
@@ -15850,6 +15878,153 @@ pub const Checker = struct {
             const second = entries.items[group_idx.items[1]];
             try self.reportDuplicateIdentifierWithDisplay(second.name_node, second.display);
         }
+    }
+
+    fn reportPrivateDuplicateGroup(
+        self: *Checker,
+        comptime Entry: type,
+        entries: []const Entry,
+        group_idx: []const usize,
+    ) CheckError!void {
+        if (group_idx.len == 2) {
+            const e0 = entries[group_idx[0]];
+            const e1 = entries[group_idx[1]];
+            if ((e0.kind == .getter and e1.kind == .setter) or
+                (e0.kind == .setter and e1.kind == .getter)) return;
+        }
+
+        var all_methods = true;
+        var has_field = false;
+        var has_non_field = false;
+        for (group_idx) |idx| {
+            const e = entries[idx];
+            if (e.kind != .method) all_methods = false;
+            if (e.kind == .field) {
+                has_field = true;
+            } else {
+                has_non_field = true;
+            }
+        }
+        if (all_methods) return;
+
+        var same_kind_accessors = true;
+        for (group_idx) |idx| {
+            const e = entries[idx];
+            if (e.kind != .getter and e.kind != .setter) {
+                same_kind_accessors = false;
+                break;
+            }
+            if (e.kind != entries[group_idx[0]].kind) {
+                same_kind_accessors = false;
+                break;
+            }
+        }
+        if (same_kind_accessors) {
+            for (group_idx) |idx| {
+                const e = entries[idx];
+                try self.reportDuplicateIdentifierWithDisplay(e.name_node, e.display);
+            }
+            return;
+        }
+
+        if (has_field and has_non_field) {
+            const first = entries[group_idx[0]];
+            for (group_idx) |idx| {
+                const e = entries[idx];
+                if (e.kind == .field) {
+                    try self.reportDuplicateIdentifierWithDisplay(e.name_node, e.display);
+                    if (first.kind == .method and idx != group_idx[0]) {
+                        try self.reportPrivateMethodFieldTypeMismatch(e.name_node, e.display, first.type_display, e.type_display);
+                    }
+                    continue;
+                }
+                if (first.kind == .field) {
+                    try self.reportDuplicateIdentifierWithDisplay(e.name_node, e.display);
+                }
+            }
+            return;
+        }
+
+        if (has_field) {
+            const second = entries[group_idx[1]];
+            try self.reportDuplicateIdentifierWithDisplay(second.name_node, second.display);
+            return;
+        }
+
+        for (group_idx) |idx| {
+            const e = entries[idx];
+            try self.reportDuplicateIdentifierWithDisplay(e.name_node, e.display);
+        }
+    }
+
+    fn reportPrivateStaticInstanceDuplicate(
+        self: *Checker,
+        node: NodeId,
+        display: []const u8,
+    ) CheckError!void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Duplicate identifier '{s}'. Static and instance elements cannot share the same private name.",
+            .{display},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.private_static_instance_duplicate,
+            .message = msg,
+        });
+    }
+
+    fn reportPrivateMethodFieldTypeMismatch(
+        self: *Checker,
+        node: NodeId,
+        display: []const u8,
+        expected_type: []const u8,
+        current_type: []const u8,
+    ) CheckError!void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Subsequent property declarations must have the same type.  Property '{s}' must be of type '{s}', but here has type '{s}'.",
+            .{ display, expected_type, current_type },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.subsequent_property_declaration_same_type,
+            .message = msg,
+        });
+    }
+
+    fn classMemberDuplicateFnTypeDisplay(self: *Checker, fn_p: hir_mod.FnDeclPayload) CheckError![]const u8 {
+        if (fn_p.flags.is_getter) {
+            if (fn_p.return_type != hir_mod.none_node_id) {
+                const ret = self.nodeSourceTextOrEmpty(fn_p.return_type);
+                if (ret.len > 0) return ret;
+            }
+            return "any";
+        }
+        if (fn_p.return_type != hir_mod.none_node_id) {
+            const ret = self.nodeSourceTextOrEmpty(fn_p.return_type);
+            if (ret.len > 0) {
+                return try std.fmt.allocPrint(self.diag_arena.allocator(), "() => {s}", .{ret});
+            }
+        }
+        return "() => void";
+    }
+
+    fn classMemberDuplicateFieldTypeDisplay(self: *Checker, op: hir_mod.ObjectPropertyPayload) []const u8 {
+        if (op.type_annotation != hir_mod.none_node_id) {
+            const ann = self.nodeSourceTextOrEmpty(op.type_annotation);
+            if (ann.len > 0) return ann;
+        }
+        if (op.value == hir_mod.none_node_id) return "any";
+        return switch (self.hir.kindOf(op.value)) {
+            .literal_string => "string",
+            .literal_number => "number",
+            .literal_bigint => "bigint",
+            .literal_bool => "boolean",
+            .literal_null => "null",
+            .literal_undefined => "undefined",
+            else => "any",
+        };
     }
 
     /// Canonical-name resolver for class-member key nodes used by
@@ -40482,7 +40657,7 @@ pub const Checker = struct {
         if (std.mem.eql(u8, name_str, "this")) {
             if (self.isDeclNameSlot(node) or self.nodeIsThisParameterName(node) or self.thisInsideDecoratorInitializerCallback(node)) return types.Primitive.any;
             if (self.nodeInsideAmbientVarInitializer(node)) return types.Primitive.any;
-            if (self.nodeHasAncestorKind(node, .decorator)) return types.Primitive.any;
+            const inside_decorator = self.nodeHasAncestorKind(node, .decorator);
             if (self.thisInsideCheckJsConstructorFunction(node)) return types.Primitive.any;
             if (self.checkJsPrototypeAssignmentThisType(node)) |this_t| return this_t;
             if (self.thisInsideCheckJsPrototypeAssignmentFunction(node)) return types.Primitive.any;
@@ -40507,6 +40682,7 @@ pub const Checker = struct {
             if (directly_in_namespace) {
                 self.report(node, TsCodes.this_in_namespace_body, "'this' cannot be referenced in a module or namespace body.") catch {};
             }
+            if (!directly_in_namespace and inside_decorator) return types.Primitive.any;
             // `this` inside a namespace body must still surface the
             // implicit-any TS2683 — tsc reports both TS2331 + TS2683
             // (`thisTypeErrors.ts(36,20)`). Skip the global-script
@@ -44998,11 +45174,12 @@ pub const Checker = struct {
     /// function-like or class frame. Used by TS2331 / `this` checks
     /// to mirror upstream `isInsideStaticOrModule`.
     fn thisDirectlyInsideNamespaceBody(self: *Checker, node: NodeId) bool {
+        const inside_decorator = self.nodeHasAncestorKind(node, .decorator);
         var cur = self.hir.parentOf(node);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             const k = self.hir.kindOf(cur);
             if (k == .fn_decl or k == .fn_expr or k == .arrow_fn or
-                k == .class_decl or k == .class_expr) return false;
+                ((!inside_decorator) and (k == .class_decl or k == .class_expr))) return false;
             if (k == .namespace_decl or k == .module_decl) return true;
         }
         return false;
@@ -48158,7 +48335,9 @@ pub const Checker = struct {
         subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) !void {
         if (!self.interner.isSignature(sig)) return;
-        const param_ts = self.interner.signatureParams(sig);
+        const borrowed_param_ts = self.interner.signatureParams(sig);
+        const param_ts = try self.gpa.dupe(TypeId, borrowed_param_ts);
+        defer self.gpa.free(param_ts);
         if (self.rest_signatures.contains(sig) and param_ts.len > 0) {
             const fixed_count: usize = param_ts.len - 1;
             const n = @min(fixed_count, arg_types.len);
@@ -48171,13 +48350,16 @@ pub const Checker = struct {
                 // inferFromPair). Previously this branch skipped
                 // signature-typed params entirely, losing the higher-
                 // order rest-tuple inference.
-                if (self.interner.pool.flagsOf(param_ts[i]).is_signature) {
-                    if (self.interner.pool.flagsOf(arg_types[i]).is_signature) {
+                const param_t = param_ts[i];
+                const arg_t = arg_types[i];
+                if (param_t >= self.interner.pool.typeCount() or arg_t >= self.interner.pool.typeCount()) continue;
+                if (self.interner.pool.flagsOf(param_t).is_signature) {
+                    if (self.interner.pool.flagsOf(arg_t).is_signature) {
                         try self.inferFromPair(param_ts[i], arg_types[i], subs);
                     }
                     continue;
                 }
-                try self.inferFromArgument(param_ts[i], arg_types[i], args[i], subs);
+                try self.inferFromArgument(param_t, arg_t, args[i], subs);
             }
             const rest_arr_t = param_ts[param_ts.len - 1];
             if (rest_arr_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(rest_arr_t).is_type_parameter) {
@@ -48201,13 +48383,16 @@ pub const Checker = struct {
                 // §4.A.X TS 4.0 — signature-vs-signature inference for
                 // variadic rest type-params. See the rest-signature
                 // branch above for the rationale.
-                if (self.interner.pool.flagsOf(param_ts[i]).is_signature) {
-                    if (self.interner.pool.flagsOf(arg_types[i]).is_signature) {
-                        try self.inferFromPair(param_ts[i], arg_types[i], subs);
+                const param_t = param_ts[i];
+                const arg_t = arg_types[i];
+                if (param_t >= self.interner.pool.typeCount() or arg_t >= self.interner.pool.typeCount()) continue;
+                if (self.interner.pool.flagsOf(param_t).is_signature) {
+                    if (self.interner.pool.flagsOf(arg_t).is_signature) {
+                        try self.inferFromPair(param_t, arg_t, subs);
                     }
                     continue;
                 }
-                try self.inferFromArgument(param_ts[i], arg_types[i], args[i], subs);
+                try self.inferFromArgument(param_t, arg_t, args[i], subs);
             }
         }
     }
@@ -72779,6 +72964,28 @@ test "checker: this in namespace body emits both TS2331 and TS2683" {
     try T.expect(saw_2683);
 }
 
+test "checker: this in namespace decorator emits TS2331 and TS2683" {
+    const s = try newSetup(
+        \\namespace M {
+        \\    class C {
+        \\        decorator(target: Object, key: string): void { }
+        \\        @(this.decorator)
+        \\        method() { }
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_2331 = false;
+    var saw_2683 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.this_in_namespace_body) saw_2331 = true;
+        if (d.code == TsCodes.this_implicitly_any) saw_2683 = true;
+    }
+    try T.expect(saw_2331);
+    try T.expect(saw_2683);
+}
+
 test "checker: namespace computed object key rejects this" {
     const s = try newSetup(
         \\namespace M {
@@ -77503,6 +77710,41 @@ test "checker: string-named class fields collide with TS2300" {
         if (d.code == TsCodes.duplicate_identifier) dup_count += 1;
     }
     try T.expect(dup_count >= 1);
+}
+
+test "checker: private static and instance names emit TS2804" {
+    const s = try newSetup(
+        \\class C {
+        \\  #foo = "foo";
+        \\  static #foo = "foo";
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.private_static_instance_duplicate) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: private method then field emits TS2300 and TS2717" {
+    const s = try newSetup(
+        \\class C {
+        \\  #foo() { }
+        \\  #foo = "foo";
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_2300 = false;
+    var saw_2717 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.duplicate_identifier) saw_2300 = true;
+        if (d.code == TsCodes.subsequent_property_declaration_same_type) saw_2717 = true;
+    }
+    try T.expect(saw_2300);
+    try T.expect(saw_2717);
 }
 
 // =============================================================================
