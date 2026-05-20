@@ -679,6 +679,14 @@ cwd/tsconfig path mapping, `Bun.spawn` pipe `.text()` helpers, split
 output hash/path identity, and copied memory-growth subprocess smokes.
 Native parity still needs Bun's real bundler, resolver, plugin API,
 source map writer, bytecode output, and BuildArtifact implementation.
+The copied `bundler/bun-build-compile-sourcemap.test.ts` fixture now
+passes as `9` tests through a narrow compile-mode model for build output
+paths, filesystem-backed `Bun.file().exists()` / `.text()`,
+compiled-artifact `Bun.spawn`, inline/external sourcemap stack-path
+behavior, split compile maps, and the CLI
+`bun build --compile --outfile ... --sourcemap=external` path. Native
+parity still needs Bun's real compile pipeline, executable embedding,
+source-map writer, and runtime stack remapping.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

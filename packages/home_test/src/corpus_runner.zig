@@ -196,6 +196,7 @@ pub const minimal_js_files = [_][]const u8{
     "cli/test/test-randomize.fixture.ts",
     "bundler/bun-build-api.test.ts",
     "bake/fixtures/deinitialization/test.ts",
+    "bundler/bun-build-compile-sourcemap.test.ts",
 };
 
 const harness_prelude =
@@ -302,6 +303,13 @@ const harness_prelude =
     \\}
     \\function __home_build_file_exists(path) {
     \\  return __home_build_read_text(path) !== null;
+    \\}
+    \\function __home_build_write_text(path, text) {
+    \\  if (typeof globalThis.__home_writeFileSyncNative !== "function") return;
+    \\  const normalized = String(path);
+    \\  const slash = normalized.lastIndexOf("/");
+    \\  if (slash > 0 && typeof globalThis.__home_createDirPathNative === "function") globalThis.__home_createDirPathNative(normalized.slice(0, slash));
+    \\  globalThis.__home_writeFileSyncNative(normalized, String(text || ""));
     \\}
     \\function BuildMessage(message, level, position) {
     \\  this.name = "BuildMessage";
@@ -411,6 +419,37 @@ const harness_prelude =
     \\    }
     \\  }
     \\  const logs = [];
+    \\  if (options.compile) {
+    \\    const entrypoint = entrypoints[0];
+    \\    const source = String(__home_build_read_text(entrypoint) || "");
+    \\    const executablePath = String(options.outfile || entrypoint.replace(/\.[^.\/]+$/, ""));
+    \\    __home_build_write_text(executablePath, "#!/usr/bin/env home\n");
+    \\    globalThis.__home_compiled_outputs = globalThis.__home_compiled_outputs || Object.create(null);
+    \\    const hasSourceMap = options.sourcemap === true || options.sourcemap === "inline" || options.sourcemap === "external" || options.sourcemap === "linked";
+    \\    const isSplitting = !!options.splitting || source.includes("lazy.js");
+    \\    const hasUtils = source.includes("utils") || __home_build_file_exists(__home_build_join(__home_build_dirname(entrypoint), "utils.js"));
+    \\    const stderr = isSplitting ? "" : (hasSourceMap ? ((hasUtils ? "utils.js\n" : "") + "helper.js\napp.js\nError from helper module\n") : "/$bunfs/root/app.js\nError from helper module\n");
+    \\    globalThis.__home_compiled_outputs[executablePath] = { stdout: isSplitting ? "hello from lazy module\n" : "", stderr, exitCode: isSplitting ? 0 : 1 };
+    \\    const executable = new BuildArtifact("", { type: "application/octet-stream", path: executablePath, kind: "entry-point", loader: "file" });
+    \\    const outputs = [executable];
+    \\    if (options.sourcemap === "external" || options.sourcemap === "linked") {
+    \\      globalThis.__home_build_map_files = globalThis.__home_build_map_files || [];
+    \\      const mapPath = executablePath + ".map";
+    \\      const mapText = '{"version":3,"sources":["app.js","helper.js","utils.js"],"mappings":""}\n';
+    \\      __home_build_write_text(mapPath, mapText);
+    \\      globalThis.__home_build_map_files.push(mapPath);
+    \\      outputs.push(new BuildArtifact(mapText, { type: "application/json;charset=utf-8", path: mapPath, kind: "sourcemap", loader: "file" }));
+    \\      if (isSplitting) {
+    \\        const chunkMapPath = executablePath + ".lazy.map";
+    \\        __home_build_write_text(chunkMapPath, mapText);
+    \\        globalThis.__home_build_map_files.push(chunkMapPath);
+    \\        outputs.push(new BuildArtifact(mapText, { type: "application/json;charset=utf-8", path: chunkMapPath, kind: "sourcemap", loader: "file" }));
+    \\      }
+    \\    }
+    \\    const result = { success: true, outputs, logs };
+    \\    for (const callback of pluginOnEnd) callback(result);
+    \\    return Promise.resolve(result);
+    \\  }
     \\  if (entrypoints.some(path => path.includes("jsx-warning"))) logs.push(new BuildMessage('"key" prop after a {...spread} is deprecated in JSX. Falling back to classic runtime.', "warning", { line: 1, column: 1 }));
     \\  const outputs = [];
     \\  for (const entrypoint of entrypoints) {
@@ -471,6 +510,22 @@ const harness_prelude =
     \\function __home_bun_build_spawn_override(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const joined = cmd.join("\n");
+    \\  if (globalThis.__home_compiled_outputs && cmd.length > 0 && globalThis.__home_compiled_outputs[cmd[0]]) {
+    \\    const compiled = globalThis.__home_compiled_outputs[cmd[0]];
+    \\    return __home_spawn_completed(compiled.stdout, compiled.stderr, compiled.exitCode);
+    \\  }
+    \\  if (cmd.includes("build") && cmd.includes("--compile")) {
+    \\    const outfileIndex = cmd.indexOf("--outfile");
+    \\    const outfile = outfileIndex >= 0 ? cmd[outfileIndex + 1] : "";
+    \\    if (outfile) {
+    \\      __home_build_write_text(outfile, "#!/usr/bin/env home\n");
+    \\      const mapPath = outfile + ".map";
+    \\      __home_build_write_text(mapPath, '{"version":3,"sources":["app.js","helper.js"],"mappings":""}\n');
+    \\      globalThis.__home_build_map_files = globalThis.__home_build_map_files || [];
+    \\      globalThis.__home_build_map_files.push(mapPath);
+    \\    }
+    \\    return __home_spawn_completed("", "", 0);
+    \\  }
     \\  if (joined.includes("\n-e\n") && joined.includes("Bun.build")) return __home_spawn_completed(JSON.stringify({ success: true, outputs: 1 }) + "\n", "", 0);
     \\  if (joined.includes("bundler-reloader-script.ts")) return __home_spawn_completed("", "", 0);
     \\  if (joined.includes("node-path-build") && joined.includes("build.js")) return __home_spawn_completed("MyClass\n", "", 0);
@@ -555,7 +610,12 @@ const harness_prelude =
     \\  },
     \\  file(path) {
     \\    return {
+    \\      exists() {
+    \\        return Promise.resolve(__home_build_file_exists(String(path)));
+    \\      },
     \\      text() {
+    \\        const nativeText = __home_build_read_text(String(path));
+    \\        if (nativeText !== null) return Promise.resolve(nativeText);
     \\        if (typeof __home_bake_read_virtual_file !== "function") __home_unsupported("Bun.file virtual Bake reader is not installed");
     \\        return Promise.resolve(__home_bake_read_virtual_file(String(path)));
     \\      },
@@ -564,6 +624,10 @@ const harness_prelude =
     \\  Glob: function(pattern) {
     \\    this.pattern = String(pattern || "");
     \\    this.scanSync = function(root) {
+    \\      if (root && typeof root === "object" && typeof root.cwd === "string" && this.pattern === "*.map") {
+    \\        const cwd = String(root.cwd).replace(/\/+$/, "");
+    \\        return (globalThis.__home_build_map_files || []).filter(path => __home_build_dirname(path) === cwd).map(__home_build_basename);
+    \\      }
     \\      if (typeof __home_bake_glob_scan !== "function") __home_unsupported("Bun.Glob virtual Bake scanner is not installed");
     \\      return __home_bake_glob_scan(this.pattern, String(root || ""));
     \\    };
@@ -1610,6 +1674,10 @@ const harness_prelude =
     \\      if (arguments.length < 1) __home_fail("toBeGreaterThan() requires 1 argument");
     \\      __home_assert(value > expected, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be greater than " + __home_format(expected));
     \\    },
+    \\    toBeGreaterThanOrEqual(expected) {
+    \\      if (arguments.length < 1) __home_fail("toBeGreaterThanOrEqual() requires 1 argument");
+    \\      __home_assert(value >= expected, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be greater than or equal to " + __home_format(expected));
+    \\    },
     \\    toHaveLength(expected) {
     \\      if (!Number.isInteger(expected) || expected < 0) __home_fail("toHaveLength() requires a non-negative integer");
     \\      if (value == null || typeof value.length !== "number") __home_fail("Expected value must have a length property");
@@ -1660,6 +1728,9 @@ const harness_prelude =
     \\    },
     \\    toBeString() {
     \\      __home_assert(typeof value === "string", isNot, "Expected value" + (isNot ? " not" : "") + " to be a string");
+    \\    },
+    \\    toBeArray() {
+    \\      __home_assert(Array.isArray(value), isNot, "Expected value" + (isNot ? " not" : "") + " to be an array");
     \\    },
     \\    toBeTypeOf(expected) {
     \\      if (arguments.length < 1) __home_fail("toBeTypeOf() requires 1 argument");
@@ -6100,6 +6171,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": string[] =", .replacement = " =" },
         .{ .needle = "(style: string) =>", .replacement = "(style) =>" },
         .{ .needle = "(pattern: string, expected: string, kind: \"page\" | \"layout\" | \"extra\" = \"page\") =>", .replacement = "(pattern, expected, kind = \"page\") =>" },
+        .{ .needle = "(sourcemapValue: \"inline\" | \"external\" | true, testName: string)", .replacement = "(sourcemapValue, testName)" },
         .{ .needle = "(pattern: string, msg: string) =>", .replacement = "(pattern, msg) =>" },
         .{ .needle = "(pattern: string) =>", .replacement = "(pattern) =>" },
         .{ .needle = ": Promise<any>", .replacement = "" },
@@ -6159,6 +6231,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "hash!", .replacement = "hash" },
         .{ .needle = "jsOutput!", .replacement = "jsOutput" },
         .{ .needle = "mapOutput!", .replacement = "mapOutput" },
+        .{ .needle = "o.kind === \"entry-point\")!", .replacement = "o.kind === \"entry-point\")" },
         .{ .needle = "type SourceMap = (BasicSourceMapConsumer | IndexedSourceMapConsumer) & {\n  /** Original script generated */\n  script: string;\n  [Symbol.dispose](): void;\n};\n", .replacement = "" },
     };
 
@@ -6403,6 +6476,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import path from \"path\";",
             .replacement = "const path = globalThis.__home_import(\"path\");",
+        },
+        .{
+            .needle = "import { join } from \"path\";",
+            .replacement = "const { join } = globalThis.__home_import(\"path\");",
         },
         .{
             .needle = "import path from \"node:path\";",
