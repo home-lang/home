@@ -1,8 +1,21 @@
 const std = @import("std");
 
 pub const JSError = error{ JSException, OutOfMemory };
+pub const default_allocator = std.testing.allocator;
+
+pub const strings = struct {
+    pub fn contains(haystack: []const u8, needle: []const u8) bool {
+        return std.mem.indexOf(u8, haystack, needle) != null;
+    }
+};
+
+pub fn cast(comptime T: type, ptr: anytype) T {
+    return @ptrCast(@alignCast(ptr));
+}
 
 pub const jsc = struct {
+    pub const VM = opaque {};
+
     pub const JSGlobalObject = struct {
         pub fn throwInvalidArguments(_: *JSGlobalObject, comptime _: []const u8, _: anytype) JSError!JSValue {
             return error.JSException;
@@ -13,12 +26,16 @@ pub const jsc = struct {
         }
     };
 
-    pub const JSValue = struct {
+    pub const JSValue = extern struct {
         tag: Tag,
         bool_value: bool = false,
         number_value: f64 = 0,
+        string_ptr: ?[*]const u8 = null,
+        string_len: usize = 0,
+        array_ptr: ?[*]const JSValue = null,
+        array_len: usize = 0,
 
-        pub const Tag = enum {
+        pub const Tag = enum(u8) {
             boolean,
             number,
             string,
@@ -42,7 +59,7 @@ pub const jsc = struct {
         pub const js_negative = JSValue{ .tag = .number, .number_value = -42 };
         pub const js_nan = JSValue{ .tag = .number, .number_value = std.math.nan(f64) };
         pub const js_inf = JSValue{ .tag = .number, .number_value = std.math.inf(f64) };
-        pub const js_string = JSValue{ .tag = .string };
+        pub const js_string = JSValue.string("string");
         pub const js_function = JSValue{ .tag = .function };
         pub const js_symbol = JSValue{ .tag = .symbol };
         pub const js_object = JSValue{ .tag = .object };
@@ -53,6 +70,24 @@ pub const jsc = struct {
         pub const js_even = JSValue{ .tag = .number, .number_value = 42 };
         pub const js_odd = JSValue{ .tag = .number, .number_value = 41 };
         pub const js_other = JSValue{ .tag = .other };
+
+        pub fn string(value: []const u8) JSValue {
+            return .{ .tag = .string, .string_ptr = value.ptr, .string_len = value.len };
+        }
+
+        pub fn array(items: []const JSValue) JSValue {
+            return .{ .tag = .array, .array_ptr = items.ptr, .array_len = items.len };
+        }
+
+        fn stringSlice(this: JSValue) []const u8 {
+            const ptr = this.string_ptr orelse return "";
+            return ptr[0..this.string_len];
+        }
+
+        fn arraySlice(this: JSValue) []const JSValue {
+            const ptr = this.array_ptr orelse return &.{};
+            return ptr[0..this.array_len];
+        }
 
         pub fn isBoolean(this: JSValue) bool {
             return this.tag == .boolean;
@@ -127,6 +162,73 @@ pub const jsc = struct {
             return .{ .tag = this.tag };
         }
 
+        pub fn jsTypeLoose(this: JSValue) JSType {
+            return this.jsType();
+        }
+
+        pub fn isStringLiteral(this: JSValue) bool {
+            return this.isString();
+        }
+
+        pub const Slice = struct {
+            bytes: []const u8,
+            len: usize,
+
+            pub fn slice(this: Slice) []const u8 {
+                return this.bytes;
+            }
+
+            pub fn deinit(_: Slice) void {}
+        };
+
+        pub fn toSlice(this: JSValue, _: *JSGlobalObject, _: std.mem.Allocator) JSError!Slice {
+            if (!this.isStringLiteral()) return error.JSException;
+            const bytes = this.stringSlice();
+            return .{ .bytes = bytes, .len = bytes.len };
+        }
+
+        pub fn isSameValue(this: JSValue, other: JSValue, _: *JSGlobalObject) JSError!bool {
+            if (this.tag != other.tag) return false;
+            return switch (this.tag) {
+                .boolean => this.bool_value == other.bool_value,
+                .number => this.number_value == other.number_value,
+                .string => std.mem.eql(u8, this.stringSlice(), other.stringSlice()),
+                else => true,
+            };
+        }
+
+        pub const ArrayIterator = struct {
+            items: []const JSValue,
+            index: usize = 0,
+
+            pub fn next(this: *ArrayIterator) JSError!?JSValue {
+                if (this.index >= this.items.len) return null;
+                const item = this.items[this.index];
+                this.index += 1;
+                return item;
+            }
+        };
+
+        pub fn arrayIterator(this: JSValue, _: *JSGlobalObject) JSError!ArrayIterator {
+            if (this.tag != .array) return error.JSException;
+            return .{ .items = this.arraySlice() };
+        }
+
+        pub fn isIterable(this: JSValue, _: *JSGlobalObject) JSError!bool {
+            return this.tag == .array;
+        }
+
+        pub fn forEach(
+            this: JSValue,
+            globalThis: *JSGlobalObject,
+            ctx: ?*anyopaque,
+            callback: *const fn (*VM, *JSGlobalObject, ?*anyopaque, JSValue) callconv(.c) void,
+        ) JSError!void {
+            if (this.tag != .array) return error.JSException;
+            const vm: *VM = @ptrFromInt(0x2);
+            for (this.arraySlice()) |item| callback(vm, globalThis, ctx, item);
+        }
+
         pub fn isObjectEmpty(this: JSValue, _: *JSGlobalObject) JSError!bool {
             return switch (this.tag) {
                 .object => true,
@@ -187,6 +289,10 @@ pub const jsc = struct {
         pub fn isArray(this: JSType) bool {
             return this.tag == .array;
         }
+
+        pub fn isArrayLike(this: JSType) bool {
+            return this.isArray();
+        }
     };
 
     pub const CallFrame = struct {
@@ -196,6 +302,10 @@ pub const jsc = struct {
         const Arguments = struct {
             ptr: [*]const JSValue,
             len: usize,
+
+            pub fn slice(args: Arguments) []const JSValue {
+                return args.ptr[0..args.len];
+            }
         };
 
         pub fn this(this_frame: *CallFrame) JSValue {

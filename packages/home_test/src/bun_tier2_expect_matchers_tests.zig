@@ -31,6 +31,7 @@ const to_be_even = @import("bun/expect/toBeEven.zig");
 const to_be_odd = @import("bun/expect/toBeOdd.zig");
 const to_be_valid_date = @import("bun/expect/toBeValidDate.zig");
 const to_be_empty_object = @import("bun/expect/toBeEmptyObject.zig");
+const to_contain = @import("bun/expect/toContain.zig");
 
 const Expect = bun.jsc.Expect.Expect;
 const JSValue = bun.jsc.JSValue;
@@ -276,6 +277,45 @@ test "copied Bun toBeWithin matcher passes and honors failure signatures" {
     var not_within_frame = frameWithArgs(.js_number, &in_range);
     try std.testing.expectError(error.JSException, to_be_within.toBeWithin(&expect_not_within, globalObject(), &not_within_frame));
     try std.testing.expectEqualStrings("not.toBeWithin", expect_not_within.last_signature.?);
+}
+
+test "copied Bun toContain matcher passes for arrays and strings" {
+    const array_items = [_]JSValue{ .js_false, .js_number, JSValue.string("needle") };
+    const array_value = JSValue.array(&array_items);
+    const expected_number = [_]JSValue{.js_number};
+
+    var expect_array = Expect{ .value = array_value };
+    var array_frame = frameWithArgs(array_value, &expected_number);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_contain.toContain(&expect_array, globalObject(), &array_frame));
+    try std.testing.expectEqual(@as(usize, 1), expect_array.call_count);
+    try std.testing.expectEqual(@as(usize, 1), expect_array.post_count);
+
+    const expected_substring = [_]JSValue{JSValue.string("ell")};
+    var expect_string = Expect{ .value = JSValue.string("hello") };
+    var string_frame = frameWithArgs(JSValue.string("hello"), &expected_substring);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_contain.toContain(&expect_string, globalObject(), &string_frame));
+
+    const expected_empty = [_]JSValue{JSValue.string("")};
+    var expect_empty_string = Expect{ .value = JSValue.string(" ") };
+    var empty_string_frame = frameWithArgs(JSValue.string(" "), &expected_empty);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_contain.toContain(&expect_empty_string, globalObject(), &empty_string_frame));
+}
+
+test "copied Bun toContain matcher honors not flag and failure signatures" {
+    const array_items = [_]JSValue{ .js_false, .js_number };
+    const array_value = JSValue.array(&array_items);
+    const expected_missing = [_]JSValue{JSValue.string("missing")};
+
+    var expect_missing = Expect{ .value = array_value };
+    var missing_frame = frameWithArgs(array_value, &expected_missing);
+    try std.testing.expectError(error.JSException, to_contain.toContain(&expect_missing, globalObject(), &missing_frame));
+    try std.testing.expectEqualStrings("toContain", expect_missing.last_signature.?);
+
+    const expected_present = [_]JSValue{.js_number};
+    var expect_not_present = Expect{ .value = array_value, .flags = .{ .not = true } };
+    var not_present_frame = frameWithArgs(array_value, &expected_present);
+    try std.testing.expectError(error.JSException, to_contain.toContain(&expect_not_present, globalObject(), &not_present_frame));
+    try std.testing.expectEqualStrings("not.toContain", expect_not_present.last_signature.?);
 }
 
 test "copied Bun truthiness nil and number matchers honor not flag and failure signatures" {
