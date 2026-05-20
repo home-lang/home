@@ -34505,6 +34505,8 @@ pub const Checker = struct {
                         if (self.superReferenceLexicalChainIsBroken(m.object)) {
                             try self.report(m.object, TsCodes.super_not_in_derived_member, "'super' can only be referenced in members of derived classes or object literal expressions.");
                             obj_t = types.Primitive.any;
+                        } else if (try self.checkSuperPropertyBeforeSuperInConstructor(m.object)) {
+                            obj_t = types.Primitive.any;
                         } else {
                             obj_t = st;
                             try self.reportSuperPropertyNotMethodInStatic(m.object, st, node, m.name);
@@ -44623,6 +44625,22 @@ pub const Checker = struct {
         if (this_start < super_end) {
             try self.report(this_node, TsCodes.this_before_super_call, "'super' must be called before accessing 'this' in the constructor of a derived class.");
         }
+    }
+
+    fn checkSuperPropertyBeforeSuperInConstructor(self: *Checker, super_node: NodeId) CheckError!bool {
+        const ctor = self.enclosingConstructorNode(super_node);
+        if (ctor == hir_mod.none_node_id) return false;
+        const class_node = self.enclosingClassNode(ctor);
+        if (class_node == hir_mod.none_node_id) return false;
+        const c = hir_mod.classOf(self.hir, class_node);
+        if (c.extends == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(c.extends) == .literal_null) return false;
+        const fn_p = hir_mod.fnDeclOf(self.hir, ctor);
+        if (fn_p.body == hir_mod.none_node_id) return false;
+        const super_end = self.firstSuperCallEndPos(fn_p.body) orelse return false;
+        if (self.hir.spanOf(super_node).start >= super_end) return false;
+        try self.report(super_node, TsCodes.super_before_super_call, "'super' must be called before accessing a property of 'super' in the constructor of a derived class.");
+        return true;
     }
 
     /// True when `super_callee` is a `super` identifier directly
