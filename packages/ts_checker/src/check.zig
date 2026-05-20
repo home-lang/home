@@ -3885,7 +3885,7 @@ pub const Checker = struct {
     }
 
     fn syntheticSignatureMemberName(self: *Checker, name: hir_mod.StringId) bool {
-        const raw = self.string_interner.get(name);
+        const raw = self.string_interner.getOptional(name) orelse return false;
         return std.mem.eql(u8, raw, "__call") or std.mem.eql(u8, raw, "__construct");
     }
 
@@ -14665,6 +14665,9 @@ pub const Checker = struct {
                     if (op.is_static) {
                         try static_names.put(self.gpa, member_name, m);
                     }
+                    const redeclares_inherited_instance_field = !op.is_static and
+                        preseeded_field_indices.contains(member_name) and
+                        !instance_member_names_local.contains(member_name);
                     try self.checkOverrideModifierWithContext(m, if (op.is_static) parent_static_t else parent_instance_t, member_name, op.is_override, false, no_extends_class_name, override_base_class_name);
                     if (op.visibility == .private) try private_names.put(self.gpa, member_name, {});
                     if (op.visibility == .protected) try protected_names.put(self.gpa, member_name, {});
@@ -14853,6 +14856,39 @@ pub const Checker = struct {
                     const field_t: TypeId = blk: {
                         if (op.type_annotation != hir_mod.none_node_id) {
                             try self.reportUnresolvedBareTypeRefsInAnnotation(op.type_annotation);
+                            const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
+                            const partial_this_t = if (op.is_static)
+                                self.interner.internObjectTypeWithIndexAndSymbol(
+                                    static_members.items,
+                                    static_string_idx,
+                                    static_number_idx,
+                                    static_symbol_idx,
+                                ) catch return error.OutOfMemory
+                            else
+                                self.interner.internObjectTypeWithIndexAndSymbol(
+                                    instance_members.items,
+                                    string_idx,
+                                    number_idx,
+                                    symbol_idx,
+                                ) catch return error.OutOfMemory;
+                            if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
+                                const class_name_id = hir_mod.identifierOf(self.hir, c.name).name;
+                                if (op.is_static) {
+                                    try self.class_name_by_static.put(self.gpa, partial_this_t, class_name_id);
+                                } else {
+                                    try self.class_name_by_instance.put(self.gpa, partial_this_t, class_name_id);
+                                }
+                                if (c.type_params_len > 0 and !self.alias_display_names.contains(partial_this_t)) {
+                                    if (self.classDisplayName(node, class_name_id) catch null) |display| {
+                                        defer self.gpa.free(display);
+                                        const stored = try self.diag_arena.allocator().dupe(u8, display);
+                                        try self.alias_display_names.put(self.gpa, partial_this_t, stored);
+                                    }
+                                }
+                            }
+                            try self.pushNarrowScope();
+                            defer self.popNarrowScope();
+                            try self.recordNarrow(this_id, partial_this_t);
                             break :blk try self.lowererLowerWithTypeParams(op.type_annotation);
                         }
                         if (op.value != hir_mod.none_node_id) {
@@ -14916,6 +14952,11 @@ pub const Checker = struct {
                             if (field_super_t) |st| try self.recordNarrow(super_id, st);
                             break :blk try self.checkExpression(op.value);
                         }
+                        if (redeclares_inherited_instance_field) {
+                            if (preseeded_field_indices.get(member_name)) |idx| {
+                                if (idx < instance_members.items.len) break :blk instance_members.items[idx].type;
+                            }
+                        }
                         break :blk types.Primitive.any;
                     };
                     // TS7008 only fires for class members in a checked
@@ -14928,6 +14969,7 @@ pub const Checker = struct {
                         op.type_annotation == hir_mod.none_node_id and
                         op.value == hir_mod.none_node_id and
                         !(op.is_static and static_block_this_assigned_names.contains(member_name)) and
+                        !redeclares_inherited_instance_field and
                         !is_declared_property and
                         !self.classHasLeadingDeclare(node) and
                         !self.classNodeIsInsideAmbientDeclaredModule(node) and
@@ -18018,7 +18060,7 @@ pub const Checker = struct {
     }
 
     fn isSymbolNamedMember(self: *Checker, name: hir_mod.StringId) bool {
-        const raw = self.string_interner.get(name);
+        const raw = self.string_interner.getOptional(name) orelse return false;
         if (std.mem.startsWith(u8, raw, "Symbol.")) return true;
         if (self.computedMemberNameInner(raw)) |inner| {
             return self.sourceHasUniqueSymbolDeclaration(inner) or self.sourceHasDirectConstSymbolInit(inner);
@@ -33798,7 +33840,25 @@ pub const Checker = struct {
                     continue;
                 }
             }
-            current = (try self.lookupObjectMember(current, prop_name)) orelse return null;
+            current = (try self.lookupObjectMember(current, prop_name)) orelse blk: {
+                if (std.mem.eql(u8, root_raw, "this") and self.class_name_by_instance.get(current) != null) {
+                    if (try self.allocPropertyMissingTargetTypeName(current)) |target_text| {
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Property '{s}' does not exist on type '{s}'.",
+                            .{ part, target_text },
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = at_node,
+                            .pos = self.qualifiedTypeRefLeafNamePos(at_node),
+                            .code = TsCodes.property_does_not_exist,
+                            .message = msg,
+                        });
+                        break :blk types.Primitive.any;
+                    }
+                }
+                return null;
+            };
             root_for_narrow = null;
         }
         return current;
@@ -64607,6 +64667,30 @@ test "checker: typeof this dotted query falls back to any when implicit this is 
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
+test "checker: typeof this dotted class field annotation reports missing member" {
+    const s = try newSetup(
+        \\class C {
+        \\  a = 1;
+        \\  d: typeof this.z;
+        \\}
+        \\class D<T> {
+        \\  a!: T;
+        \\  d: typeof this.z;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_c = false;
+    var saw_d = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.property_does_not_exist) continue;
+        if (std.mem.eql(u8, d.message, "Property 'z' does not exist on type 'C'.")) saw_c = true;
+        if (std.mem.eql(u8, d.message, "Property 'z' does not exist on type 'D<T>'.")) saw_d = true;
+    }
+    try T.expect(saw_c);
+    try T.expect(saw_d);
+}
+
 test "checker: self-referential typeof var query does not recurse" {
     const s = try newSetup("export var r12: typeof r12;");
     defer destroySetup(s);
@@ -65068,6 +65152,29 @@ test "checker: noImplicitAny emits TS7008 for bare class and interface members" 
         if (d.code == TsCodes.member_implicitly_any) count += 1;
     }
     try T.expectEqual(@as(usize, 2), count);
+}
+
+test "checker: bare derived field redeclaring inherited field skips TS7008" {
+    const s = try newSetup(
+        \\// @strictNullChecks: true
+        \\// @useDefineForClassFields: true
+        \\class Base { b = 1; }
+        \\class Derived extends Base {
+        \\  b;
+        \\  d = this.b;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var implicit_any_count: usize = 0;
+    var used_before_init_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.member_implicitly_any) implicit_any_count += 1;
+        if (d.code == TsCodes.property_used_before_initialization) used_before_init_count += 1;
+    }
+    try T.expectEqual(@as(usize, 0), implicit_any_count);
+    try T.expectEqual(@as(usize, 1), used_before_init_count);
 }
 
 test "checker: TS2564 fires on uninitialized private (#name) fields" {
