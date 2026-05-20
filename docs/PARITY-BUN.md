@@ -603,6 +603,18 @@ files executed, `454` passed, `3,929` failed, `1,482` unsupported, `35`
 todo. First failure: `bake/dev/esm.test.ts` with
 `DEV:esm-10: ESM <-> CJS (async)`.
 
+The Bake static client shim now covers the copied async
+`ESM <-> CJS (async)` case. The shim resolves `await import("./esm")` as
+the plain ESM namespace and keeps `require("./esm")` on the separate
+CommonJS-facing wrapper with `__esModule: true`, matching Bun's observed
+split between `loadModuleAsync`/raw ESM exports and sync
+`toCommonJS(...)` interop.
+
+Latest measured full gate after the Bake ESM/CJS async slice: `4,013`
+files executed, `454` passed, `3,928` failed, `1,481` unsupported, `35`
+todo. First failure: `bake/dev/esm.test.ts` with
+`DEV:esm-11: cannot require a module with top level await`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

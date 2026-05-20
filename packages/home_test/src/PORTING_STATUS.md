@@ -397,6 +397,13 @@ in-memory Bake file graph and returns a CommonJS-facing view of ESM
 remains Bun's Bake HMR `require()` path, `toCommonJS`, and dev-server
 printer lowering. The next Bake boundary is
 `DEV:esm-10: ESM <-> CJS (async)`.
+The copied async `ESM <-> CJS (async)` case now runs through the Bake
+static client shim. `await import("./esm")` resolves as the plain ESM
+namespace while `require("./esm")` keeps the separate CommonJS-facing
+wrapper with `__esModule: true`. The native parity target remains Bun's
+Bake HMR split between `loadModuleAsync` raw ESM exports and sync
+`toCommonJS(...)` interop. The next Bake boundary is
+`DEV:esm-11: cannot require a module with top level await`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
