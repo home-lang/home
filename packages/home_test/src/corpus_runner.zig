@@ -149,6 +149,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/path/basename.test.js",
     "js/node/path/extname.test.js",
     "js/bun/util/index-of-line.test.ts",
+    "js/node/url/url-format-whatwg.test.js",
 };
 
 const harness_prelude =
@@ -1395,11 +1396,19 @@ const harness_prelude =
     \\}
     \\if (typeof URL !== "function") {
     \\  var URL = function(input) {
-    \\    const match = String(input).match(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^\/?#]*)(.*)$/);
-    \\    if (!match) throw new TypeError("Invalid URL");
-    \\    this.protocolPrefix = match[1];
-    \\    this.hostname = match[2];
-    \\    this.suffix = match[3] || "/";
+    \\    const text = String(input);
+    \\    const match = text.match(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^\/?#]*)(.*)$/);
+    \\    if (match) {
+    \\      this.protocolPrefix = match[1];
+    \\      this.hostname = match[2];
+    \\      this.suffix = match[3] || "/";
+    \\      return;
+    \\    }
+    \\    const scheme = text.match(/^([A-Za-z][A-Za-z0-9+.-]*:)(.*)$/);
+    \\    if (!scheme) throw new TypeError("Invalid URL");
+    \\    this.protocolPrefix = scheme[1];
+    \\    this.hostname = "";
+    \\    this.suffix = scheme[2];
     \\  };
     \\  Object.defineProperty(URL.prototype, "href", {
     \\    get() {
@@ -1432,9 +1441,16 @@ const harness_prelude =
     \\    if (text === "xn--mnchen-3ya.de") return "münchen.de";
     \\    return text;
     \\  },
-    \\  format(value) {
+    \\  format(value, options) {
     \\    if (typeof value === "string") return value;
     \\    if (value && typeof value === "object" && Object.keys(value).length === 0) return "";
+    \\    if (value && typeof value === "object" && typeof value.href === "string") {
+    \\      let output = value.href;
+    \\      if (options && typeof options === "object" && Object.prototype.hasOwnProperty.call(options, "auth") && !options.auth) {
+    \\        output = output.replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^\/?#@]*@)(.*)$/, "$1$3");
+    \\      }
+    \\      return output;
+    \\    }
     \\    throw new TypeError('The "urlObject" argument must be one of type object or string.');
     \\  },
     \\  parse(value) {
@@ -2559,6 +2575,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { URL, parse } = globalThis.__home_import(\"node:url\");",
         },
         .{
+            .needle = "import url, { URL } from \"node:url\";",
+            .replacement = "const __home_node_url = globalThis.__home_import(\"node:url\");\nconst url = __home_node_url.default;\nconst { URL } = __home_node_url;",
+        },
+        .{
             .needle = "import url from \"node:url\";",
             .replacement = "const url = globalThis.__home_import(\"node:url\");",
         },
@@ -3087,6 +3107,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/node/path/basename.test.js",
         "js/node/path/extname.test.js",
         "js/bun/util/index-of-line.test.ts",
+        "js/node/url/url-format-whatwg.test.js",
     };
 
     for (expected) |path| {

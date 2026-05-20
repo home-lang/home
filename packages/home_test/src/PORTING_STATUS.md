@@ -100,7 +100,7 @@ relative CJS fixture require for `regression/issue/013880-fixture.cjs`,
 isAbsolute / normalize / resolve / relative empty-string smokes,
 basename / extname path table smokes,
 `node:url` URL.canParse, url.format empty-input, and
-domainToASCII/domainToUnicode smokes,
+WHATWG URL auth stripping plus domainToASCII/domainToUnicode smokes,
 skipped Node URL null-character / internal URL smokes,
 `import.meta.resolve` / `resolveSync` bad-parent throw smokes,
 `jest.fn`, narrow `HTMLRewriter` element and doctype callbacks plus
