@@ -3593,6 +3593,67 @@ test "conformance: instanceofOperatorWithLHSIsObject matches TS2454" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: additionOperatorWithNumberAndEnum matches TS2454 baseline" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "additionOperatorWithNumberAndEnum",
+        .path = "additionOperatorWithNumberAndEnum.ts",
+        .source =
+        \\// @target: es2015
+        \\enum E { a, b }
+        \\enum F { c, d }
+        \\
+        \\var a: number;
+        \\var b: E;
+        \\var c: E | F;
+        \\
+        \\var r1 = a + a;
+        \\var r2 = a + b;
+        \\var r3 = b + a;
+        \\var r4 = b + b;
+        \\
+        \\var r5 = 0 + a;
+        \\var r6 = E.a + 0;
+        \\var r7 = E.a + E.b;
+        \\var r8 = E['a'] + E['b'];
+        \\var r9 = E['a'] + F['c'];
+        \\
+        \\var r10 = a + c;
+        \\var r11 = c + a;
+        \\var r12 = b + c;
+        \\var r13 = c + b;
+        \\var r14 = c + c;
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\additionOperatorWithNumberAndEnum.ts(8,10): error TS2454: Variable 'a' is used before being assigned.
+        \\additionOperatorWithNumberAndEnum.ts(8,14): error TS2454: Variable 'a' is used before being assigned.
+        \\additionOperatorWithNumberAndEnum.ts(9,10): error TS2454: Variable 'a' is used before being assigned.
+        \\additionOperatorWithNumberAndEnum.ts(9,14): error TS2454: Variable 'b' is used before being assigned.
+        \\additionOperatorWithNumberAndEnum.ts(10,10): error TS2454: Variable 'b' is used before being assigned.
+        \\additionOperatorWithNumberAndEnum.ts(10,14): error TS2454: Variable 'a' is used before being assigned.
+        \\additionOperatorWithNumberAndEnum.ts(11,10): error TS2454: Variable 'b' is used before being assigned.
+        \\additionOperatorWithNumberAndEnum.ts(11,14): error TS2454: Variable 'b' is used before being assigned.
+        \\additionOperatorWithNumberAndEnum.ts(13,14): error TS2454: Variable 'a' is used before being assigned.
+        \\additionOperatorWithNumberAndEnum.ts(19,11): error TS2454: Variable 'a' is used before being assigned.
+        \\additionOperatorWithNumberAndEnum.ts(19,15): error TS2454: Variable 'c' is used before being assigned.
+        \\additionOperatorWithNumberAndEnum.ts(20,11): error TS2454: Variable 'c' is used before being assigned.
+        \\additionOperatorWithNumberAndEnum.ts(20,15): error TS2454: Variable 'a' is used before being assigned.
+        \\additionOperatorWithNumberAndEnum.ts(21,11): error TS2454: Variable 'b' is used before being assigned.
+        \\additionOperatorWithNumberAndEnum.ts(21,15): error TS2454: Variable 'c' is used before being assigned.
+        \\additionOperatorWithNumberAndEnum.ts(22,11): error TS2454: Variable 'c' is used before being assigned.
+        \\additionOperatorWithNumberAndEnum.ts(22,15): error TS2454: Variable 'b' is used before being assigned.
+        \\additionOperatorWithNumberAndEnum.ts(23,11): error TS2454: Variable 'c' is used before being assigned.
+        \\additionOperatorWithNumberAndEnum.ts(23,15): error TS2454: Variable 'c' is used before being assigned.
+        ,
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: additionOperatorWithAnyAndEveryType passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "additionOperatorWithAnyAndEveryType",
