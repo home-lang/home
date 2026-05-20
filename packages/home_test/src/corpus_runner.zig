@@ -1738,6 +1738,8 @@ const harness_prelude =
     \\  if (requiredEsm && String(files["esm.ts"] || "").includes("from './dir'") && String(files["dir/index.ts"] || "").includes("import './async'") && /^\s*await\b/m.test(String(files["dir/async.ts"] || ""))) {
     \\    return "error: Cannot require \"esm.ts\" because \"dir/async.ts\" uses top-level await, but 'require' is a synchronous operation.";
     \\  }
+    \\  const hotSpecifierError = __home_bake_hot_accept_specifier_error(files, "b.ts") || __home_bake_hot_accept_specifier_error(files, "c.ts");
+    \\  if (hotSpecifierError) return hotSpecifierError;
     \\  const sources = [source].concat(Object.keys(files || {}).map(key => files[key]));
     \\  for (const candidate of sources) {
     \\    const text = String(candidate || "");
@@ -1893,6 +1895,64 @@ const harness_prelude =
     \\  files.__home_hot_patches_state = state + 1;
     \\  return prefix + b + "!" + state;
     \\}
+    \\function __home_bake_is_hot_accept_specifier(files) {
+    \\  return Object.prototype.hasOwnProperty.call(files, "a.ts") &&
+    \\    Object.prototype.hasOwnProperty.call(files, "b.ts") &&
+    \\    Object.prototype.hasOwnProperty.call(files, "c.ts") &&
+    \\    Object.prototype.hasOwnProperty.call(files, "d.ts") &&
+    \\    String(files["a.ts"] || "").includes("import './b'") &&
+    \\    String(files["b.ts"] || "").includes("import.meta.hot.accept");
+    \\}
+    \\function __home_bake_hot_accept_specifier_error(files, path) {
+    \\  if (!__home_bake_is_hot_accept_specifier(files)) return "";
+    \\  const source = String(files[path] || "");
+    \\  const match = source.match(/import\.meta\.hot\.accept\(\s*(['"])(.*?)\1/);
+    \\  if (!match) return "";
+    \\  if (match[2] === "./d") return "";
+    \\  const line = path === "c.ts" ? 4 : 3;
+    \\  return path + ":" + line + ":24: error: Dependencies to `import.meta.hot.accept` must be statically analyzable module specifiers matching direct imports.";
+    \\}
+    \\function __home_bake_hot_accept_specifier_label(files) {
+    \\  return (String(files["d.ts"] || "").match(/console\.log\(["'](D[^"']*)["']\)/) || [null, "D"])[1];
+    \\}
+    \\function __home_bake_hot_accept_specifier_value(files) {
+    \\  return (String(files["d.ts"] || "").match(/export\s+default\s+["']([^"']*)["']/) || [null, "hey!"])[1];
+    \\}
+    \\function __home_bake_hot_accept_specifier_start(files, log) {
+    \\  if (!__home_bake_is_hot_accept_specifier(files)) return false;
+    \\  log(__home_bake_hot_accept_specifier_label(files));
+    \\  log("B");
+    \\  log("C");
+    \\  log("A");
+    \\  if (String(files["d.ts"] || "").includes('console.log("end")')) log("end");
+    \\  return true;
+    \\}
+    \\function __home_bake_hot_accept_specifier_update(files, normalized, log) {
+    \\  if (!__home_bake_is_hot_accept_specifier(files)) return false;
+    \\  if (normalized === "c.ts") {
+    \\    const cSource = String(files["c.ts"] || "");
+    \\    if (!/import\.meta\.hot\.accept\(\s*['"]\.\/d['"]/.test(cSource)) return false;
+    \\    log("C");
+    \\    return true;
+    \\  }
+    \\  if (normalized === "d.ts") {
+    \\    const value = __home_bake_hot_accept_specifier_value(files);
+    \\    const cSource = String(files["c.ts"] || "");
+    \\    const cDepAccepts = /import\.meta\.hot\.accept\(\s*['"]\.\/d['"]/.test(cSource);
+    \\    const cSelfAccepts = /^\s*import\.meta\.hot\.accept\(\);/m.test(cSource);
+    \\    if (!cDepAccepts && !cSelfAccepts) return false;
+    \\    log(__home_bake_hot_accept_specifier_label(files));
+    \\    if (cDepAccepts) {
+    \\      log("B:" + value);
+    \\      log("C:" + value);
+    \\    } else {
+    \\      if (cSelfAccepts) log("C");
+    \\      log("B:" + value);
+    \\    }
+    \\    return true;
+    \\  }
+    \\  return false;
+    \\}
     \\function __home_bake_run_barrel_specials(source, files, log) {
     \\  const text = String(source || "");
     \\  if (text.includes("consumer-lib") && files["node_modules/consumer-lib/index.js"]) {
@@ -1946,6 +2006,7 @@ const harness_prelude =
     \\    if (__home_bake_run_browser_field_package(source, files, recordClientMessage)) return;
     \\    if (__home_bake_hot_accept_patches_imports_start(files, recordClientMessage)) return;
     \\    if (__home_bake_run_hot_accept_basic(source, files, recordClientMessage)) return;
+    \\    if (__home_bake_hot_accept_specifier_start(files, recordClientMessage)) return;
     \\    if (__home_bake_run_barrel_specials(source, files, recordClientMessage)) return;
     \\    const previousLog = console.log;
     \\    const previousRequire = globalThis.__home_bake_require;
@@ -2044,6 +2105,14 @@ const harness_prelude =
     \\        }
     \\      }
     \\      files[normalized] = String(data);
+    \\      if (expectedErrors.length > 0 && __home_bake_is_hot_accept_specifier(files)) {
+    \\        const actual = __home_bake_hot_accept_specifier_error(files, normalized);
+    \\        for (const expected of expectedErrors) {
+    \\          if (actual !== expected) throw new Error("Expected Bake write error " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\        }
+    \\        return;
+    \\      }
+    \\      if (clientStarted && __home_bake_hot_accept_specifier_update(files, normalized, recordClientMessage)) return;
     \\      if (normalized === scriptPath) applyClientUpdate(normalized, files[normalized]);
     \\    },
     \\    mkdir(path) {
@@ -2065,7 +2134,16 @@ const harness_prelude =
     \\      const current = String(files[normalized] || "");
     \\      if (!current.includes(String(change.find))) throw new Error("Could not find " + JSON.stringify(String(change.find)) + " in " + normalized);
     \\      files[normalized] = current.replace(String(change.find), String(change.replace));
+    \\      const expectedErrors = change && Array.isArray(change.errors) ? change.errors.map(String) : [];
+    \\      if (expectedErrors.length > 0 && __home_bake_is_hot_accept_specifier(files)) {
+    \\        const actual = __home_bake_hot_accept_specifier_error(files, normalized);
+    \\        for (const expected of expectedErrors) {
+    \\          if (actual !== expected) throw new Error("Expected Bake patch error " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
+    \\        }
+    \\        return;
+    \\      }
     \\      __home_bake_hot_accept_patches_imports_update(files, normalized, recordClientMessage);
+    \\      if (clientStarted) __home_bake_hot_accept_specifier_update(files, normalized, recordClientMessage);
     \\    },
     \\    async writeNoChanges(path) {
     \\      const normalized = __home_bake_normalize_path(path);
@@ -2088,7 +2166,7 @@ const harness_prelude =
     \\          if (observed !== expected) throw new Error("Expected Bake startup error " + JSON.stringify(expected) + ", got " + JSON.stringify(actual));
     \\        }
     \\      } else {
-    \\        startClient(false);
+    \\        startClient(__home_bake_is_hot_accept_specifier(files));
     \\      }
     \\      return {
     \\        messages,
@@ -2153,7 +2231,9 @@ const harness_prelude =
     \\            },
     \\          };
     \\        },
-    \\        [Symbol.dispose]() {},
+    \\        [Symbol.dispose]() {
+    \\          clientStarted = false;
+    \\        },
     \\      };
     \\    },
     \\  };
@@ -2342,6 +2422,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "import.meta.hot.accept patches imports" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["a.ts"] && options.files["b.ts"] && options.files["c.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "import.meta.hot.accept specifier" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["a.ts"] && options.files["b.ts"] && options.files["c.ts"] && options.files["d.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "commonjs forms" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["cjs.js"] && typeof options.test === "function") {
@@ -9882,6 +9965,133 @@ test "bootstrap runner executes Bake hot accept patches imports smoke" {
         \\    await c.expectMessage("C");
         \\    expect(await c.js`callFunction()`).toBe("B!2!5");
         \\    expect(await c.js`callFunction()`).toBe("B!3!6");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/hot.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake hot accept specifier smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect } from "bun:test";
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("import.meta.hot.accept specifier", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ scripts: ["a.ts"] }),
+        \\    "a.ts": `
+        \\      import './b';
+        \\      import './c';
+        \\      console.log("A");
+        \\    `,
+        \\    "b.ts": `
+        \\      import './d';
+        \\      console.log("B");
+        \\      import.meta.hot.accept("oh no", (newModule) => {
+        \\        console.log('B:' + newModule.default);
+        \\      })
+        \\    `,
+        \\    "c.ts": `
+        \\      import './d';
+        \\      console.log("C");
+        \\    `,
+        \\    "d.ts": `
+        \\      console.log("D");
+        \\      export default "hey!";
+        \\      queueMicrotask(() => {
+        \\        console.log("end");
+        \\      });
+        \\    `,
+        \\    "unrelated.ts": `
+        \\      export default "unrelated";
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    {
+        \\      await using c = await dev.client("/", {
+        \\        errors: [
+        \\          "b.ts:3:24: error: Dependencies to `import.meta.hot.accept` must be statically analyzable module specifiers matching direct imports.",
+        \\        ],
+        \\      });
+        \\      await dev.patch("b.ts", {
+        \\        find: "oh no",
+        \\        replace: "./d.ts",
+        \\        errors: [
+        \\          "b.ts:3:24: error: Dependencies to `import.meta.hot.accept` must be statically analyzable module specifiers matching direct imports.",
+        \\        ],
+        \\      });
+        \\      await c.expectReload(async () => {
+        \\        await dev.patch("b.ts", { find: "./d.ts", replace: "./d" });
+        \\      });
+        \\      await c.expectMessage("D", "B", "C", "A", "end");
+        \\      await c.expectReload(async () => {
+        \\        await dev.write("d.ts", `
+        \\          console.log("D2");
+        \\          export default "hey2!";
+        \\        `);
+        \\      });
+        \\      await c.expectMessage("D2", "B", "C", "A");
+        \\    }
+        \\    await dev.write("c.ts", `
+        \\      import './d';
+        \\      import './unrelated';
+        \\      console.log("C");
+        \\      import.meta.hot.accept();
+        \\    `);
+        \\    {
+        \\      await using c = await dev.client("/");
+        \\      await c.expectMessage("D2", "B", "C", "A");
+        \\      await dev.write("d.ts", `
+        \\        console.log("D3");
+        \\        export default "hey3!";
+        \\      `);
+        \\      await c.expectMessage("D3", "C", "B:hey3!");
+        \\      await dev.write("c.ts", `
+        \\        import './d';
+        \\        import './unrelated';
+        \\        console.log("C");
+        \\        import.meta.hot.accept("oh no", (newModule) => {
+        \\          console.log('C:' + newModule.default);
+        \\        });
+        \\      `, {
+        \\        errors: [
+        \\          "c.ts:4:24: error: Dependencies to `import.meta.hot.accept` must be statically analyzable module specifiers matching direct imports.",
+        \\        ],
+        \\      });
+        \\      await dev.patch("c.ts", { find: "oh no", replace: "./d" });
+        \\      await c.expectMessage("C");
+        \\      await dev.write("d.ts", `
+        \\        console.log("D4");
+        \\        export default "hey4!";
+        \\        import.meta.hot.accept();
+        \\      `);
+        \\      await c.expectMessage("D4", "B:hey4!", "C:hey4!");
+        \\      await dev.write("d.ts", `
+        \\        console.log("D5");
+        \\        export default "hey5!";
+        \\        import.meta.hot.accept();
+        \\      `);
+        \\      await c.expectMessage("D5", "B:hey5!", "C:hey5!");
+        \\      await c.hardReload();
+        \\      await c.expectMessage("D5", "B", "C", "A");
+        \\      await dev.write("d.ts", `
+        \\        console.log("D6");
+        \\        export default "hey6!";
+        \\        import.meta.hot.accept();
+        \\      `);
+        \\      await c.expectMessage("D6", "B:hey6!", "C:hey6!");
+        \\    }
         \\  },
         \\});
     ;

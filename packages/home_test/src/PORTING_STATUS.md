@@ -443,6 +443,15 @@ update sequence. The native parity target remains Bun's HMR module graph:
 dev-server import rewrite, live export lowering, boundary discovery, and
 importer binding patch callbacks. The next Bake boundary is
 `DEV:hot-3: import.meta.hot.accept specifier`.
+The copied `import.meta.hot.accept specifier` case now runs through the
+Bake static client shim. The shim validates the exact direct-import
+specifier error for `b.ts` and `c.ts`, reloads after invalid-to-valid
+specifier patches, and emits the accepted dependency callback sequence for
+`d.ts` updates. The native parity target remains Bun's parser validation
+and HMR runtime path: `handleImportMetaHotAcceptCall`, resolved specifier
+lowering, `hmr.acceptSpecifiers`, dependency accept arrays, and importer
+boundary replacement. The next Bake boundary is
+`DEV:hot-4: import.meta.hot.accept multiple modules`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

@@ -678,6 +678,20 @@ Latest measured full gate after the Bake hot import-patching slice:
 unsupported, `35` todo. First failure: `bake/dev/hot.test.ts` with
 `DEV:hot-3: import.meta.hot.accept specifier`.
 
+The Bake static client shim now covers the copied
+`import.meta.hot.accept specifier` case. It validates Bun's exact
+direct-import specifier error for `b.ts` and `c.ts`, models reloads after
+invalid-to-valid specifier patches, and emits the accepted dependency
+callback sequence for `d.ts` updates. The native parity target remains
+Bun's parser validation and HMR runtime path: `handleImportMetaHotAcceptCall`,
+resolved specifier lowering, `hmr.acceptSpecifiers`, dependency accept arrays,
+and importer boundary replacement.
+
+Latest measured full gate after the Bake hot accept-specifier slice:
+`4,013` files executed, `467` passed, `3,922` failed, `1,475`
+unsupported, `35` todo. First failure: `bake/dev/hot.test.ts` with
+`DEV:hot-4: import.meta.hot.accept multiple modules`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap
