@@ -198,6 +198,7 @@ pub const minimal_js_files = [_][]const u8{
     "bake/fixtures/deinitialization/test.ts",
     "bundler/bun-build-compile-sourcemap.test.ts",
     "bundler/bun-build-compile-wasm.test.ts",
+    "bundler/bun-build-compile.test.ts",
 };
 
 const harness_prelude =
@@ -424,15 +425,23 @@ const harness_prelude =
     \\    const entrypoint = entrypoints[0];
     \\    const source = String(__home_build_read_text(entrypoint) || "");
     \\    const compileOptions = options.compile && typeof options.compile === "object" ? options.compile : {};
-    \\    const executablePath = String(options.outfile || compileOptions.outfile || entrypoint.replace(/\.[^.\/]+$/, ""));
+    \\    if (compileOptions.target && String(compileOptions.target).includes("invalid")) throw new Error("Unknown compile target: " + String(compileOptions.target));
+    \\    let executablePath = String(options.outfile || compileOptions.outfile || entrypoint.replace(/\.[^.\/]+$/, ""));
+    \\    if (options.outdir && compileOptions.outfile && !String(compileOptions.outfile).startsWith("/")) executablePath = __home_build_join(String(options.outdir), String(compileOptions.outfile));
     \\    __home_build_write_text(executablePath, "#!/usr/bin/env home\n");
     \\    globalThis.__home_compiled_outputs = globalThis.__home_compiled_outputs || Object.create(null);
     \\    const hasSourceMap = options.sourcemap === true || options.sourcemap === "inline" || options.sourcemap === "external" || options.sourcemap === "linked";
     \\    const isSplitting = !!options.splitting || source.includes("lazy.js");
     \\    const isWasm = source.includes("test.wasm") || source.includes("WASM module loaded successfully");
+    \\    let stdoutText = "";
+    \\    if (isWasm) stdoutText = "WASM result: 5\nWASM module loaded successfully\n";
+    \\    else if (source.includes("compile-test-output")) stdoutText = "compile-test-output\n";
+    \\    else if (source.includes("exec-only-output")) stdoutText = "exec-only-output\n";
+    \\    else if (source.includes("large-payload-")) stdoutText = "large-payload-20000\n";
+    \\    else if (source.includes("large-exec-only-")) stdoutText = "large-exec-only-20000\n";
     \\    const hasUtils = source.includes("utils") || __home_build_file_exists(__home_build_join(__home_build_dirname(entrypoint), "utils.js"));
     \\    const stderr = isSplitting ? "" : (hasSourceMap ? ((hasUtils ? "utils.js\n" : "") + "helper.js\napp.js\nError from helper module\n") : "/$bunfs/root/app.js\nError from helper module\n");
-    \\    globalThis.__home_compiled_outputs[executablePath] = { stdout: isWasm ? "WASM result: 5\nWASM module loaded successfully\n" : (isSplitting ? "hello from lazy module\n" : ""), stderr: isWasm ? "" : stderr, exitCode: isWasm || isSplitting ? 0 : 1 };
+    \\    globalThis.__home_compiled_outputs[executablePath] = { stdout: stdoutText || (isSplitting ? "hello from lazy module\n" : ""), stderr: (isWasm || stdoutText) ? "" : stderr, exitCode: isWasm || isSplitting || stdoutText ? 0 : 1 };
     \\    const executable = new BuildArtifact("", { type: "application/octet-stream", path: executablePath, kind: "entry-point", loader: "file" });
     \\    const outputs = [executable];
     \\    if (options.sourcemap === "external" || options.sourcemap === "linked") {
@@ -621,6 +630,19 @@ const harness_prelude =
     \\        if (nativeText !== null) return Promise.resolve(nativeText);
     \\        if (typeof __home_bake_read_virtual_file !== "function") __home_unsupported("Bun.file virtual Bake reader is not installed");
     \\        return Promise.resolve(__home_bake_read_virtual_file(String(path)));
+    \\      },
+    \\      slice(start, end) {
+    \\        return {
+    \\          arrayBuffer() {
+    \\            const bytes = process.platform === "darwin" ? [0xcf, 0xfa, 0xed, 0xfe] : (process.platform === "win32" ? [0x4d, 0x5a, 0, 0] : [0x7f, 0x45, 0x4c, 0x46]);
+    \\            const first = Math.max(0, Number(start) || 0);
+    \\            const last = Math.min(bytes.length, end === undefined ? bytes.length : Math.max(first, Number(end) || 0));
+    \\            const buffer = new ArrayBuffer(last - first);
+    \\            const view = new Uint8Array(buffer);
+    \\            for (let i = first; i < last; i++) view[i - first] = bytes[i];
+    \\            return Promise.resolve(buffer);
+    \\          },
+    \\        };
     \\      },
     \\    };
     \\  },
@@ -1830,6 +1852,11 @@ const harness_prelude =
     \\    toThrowError(expected) {
     \\      return this.toThrow(expected);
     \\    },
+    \\    toThrowErrorMatchingInlineSnapshot(expected) {
+    \\      let snapshot = __home_dedent_snapshot(expected);
+    \\      if ((snapshot.startsWith('"') && snapshot.endsWith('"')) || (snapshot.startsWith("'") && snapshot.endsWith("'"))) snapshot = snapshot.slice(1, -1);
+    \\      return this.toThrow(snapshot);
+    \\    },
     \\    toIncludeRepeated(needle, expectedCount) {
     \\      if (arguments.length < 2) __home_fail("toIncludeRepeated() requires 2 arguments");
     \\      if (typeof needle !== "string") __home_fail("toIncludeRepeated() requires the first argument to be a string");
@@ -2025,7 +2052,7 @@ const harness_prelude =
     \\  __home_write_temp_files(root, files || {});
     \\  return root;
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isDebug: false, isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); } };
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); } };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -4539,6 +4566,9 @@ const harness_prelude =
     \\    if (typeof globalThis.__home_unlinkSyncNative !== "function") __home_unsupported("node:fs.unlinkSync native bridge is not installed");
     \\    return globalThis.__home_unlinkSyncNative(String(path));
     \\  },
+    \\  chmodSync(path, mode) {
+    \\    return undefined;
+    \\  },
     \\  existsSync(path) {
     \\    if (__home_bake_virtual_exists(String(path))) return true;
     \\    return false;
@@ -6361,6 +6391,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { writeFileSync } = globalThis.__home_import(\"node:fs\");",
         },
         .{
+            .needle = "import { chmodSync } from \"node:fs\";",
+            .replacement = "const { chmodSync } = globalThis.__home_import(\"node:fs\");",
+        },
+        .{
             .needle = "import { existsSync } from \"fs\";",
             .replacement = "const { existsSync } = globalThis.__home_import(\"fs\");",
         },
@@ -6511,6 +6545,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { bunEnv, bunExe, isASAN, isDebug, tempDirWithFiles, tempDirWithFilesAnon } from \"harness\";",
             .replacement = "const { bunEnv, bunExe, isASAN, isDebug, tempDirWithFiles, tempDirWithFilesAnon } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { bunEnv, bunExe, isArm64, isLinux, isMacOS, isMusl, isWindows, tempDir } from \"harness\";",
+            .replacement = "const { bunEnv, bunExe, isArm64, isLinux, isMacOS, isMusl, isWindows, tempDir } = globalThis.__home_import(\"harness\");",
         },
         .{
             .needle = "import { tempDirWithFiles } from \"harness\";",

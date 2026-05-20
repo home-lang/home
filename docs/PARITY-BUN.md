@@ -191,7 +191,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes one hundred thirty-one allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes one hundred thirty-two allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-three
@@ -254,7 +254,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `131` files, `600` passed, `0` failed,
+Latest measured subset run: `132` files, `606` passed, `0` failed,
 `37` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
@@ -1067,6 +1067,16 @@ compiled output path and routing its `Bun.spawn` execution to the
 expected `WASM result: 5` stdout. Native parity still requires Bun's
 real embedded resource module-prefix handling and WebAssembly runtime
 loading from copied compile source.
+
+The copied `bundler/bun-build-compile.test.ts` fixture now passes in
+Home as `6` passed, `0` failed, `0` unsupported, `0` todo for the
+current-platform slice. The bootstrap models compile target string
+validation, invalid-target errors, `outdir` plus relative outfile paths,
+embedded-resource success, executable header bytes, generated executable
+`Bun.spawn` output, and execute-only permission no-ops. Native parity
+still requires Bun's real cross-target compiler, executable section
+layout, embedded payload expansion, permission-sensitive execution, and
+platform-specific binary writer from copied Zig source.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

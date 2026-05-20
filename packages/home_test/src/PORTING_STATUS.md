@@ -692,6 +692,14 @@ as `1` test through the same compile-mode model, with compiled-artifact
 execution returning the expected WASM stdout. Native parity still needs
 Bun's real embedded WASM resource handling and WebAssembly runtime
 loading.
+The copied `bundler/bun-build-compile.test.ts` fixture now passes as `6`
+tests for the current-platform slice through the compile-mode model:
+target string validation, invalid target errors, `outdir` plus relative
+outfile paths, embedded-resource success, executable header bytes,
+generated executable output, and execute-only permission no-ops. Native
+parity still needs Bun's real cross-target compiler, executable section
+layout, embedded payload expansion, permission-sensitive execution, and
+platform-specific binary writer.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
