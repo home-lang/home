@@ -3444,6 +3444,56 @@ test "conformance: sub-strict directive without @strict keeps inferred strict-on
     try T.expect(merged_with_strict_on.use_unknown_in_catch_variables);
 }
 
+test "conformance: nonPrimitiveAsProperty matches TS2322 baseline" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nonPrimitiveAsProperty",
+        .path = "nonPrimitiveAsProperty.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\interface WithNonPrimitive {
+        \\    foo: object
+        \\}
+        \\
+        \\var a: WithNonPrimitive = { foo: {bar: "bar"} };
+        \\
+        \\var b: WithNonPrimitive = {foo: "bar"}; // expect error
+        ,
+        .expects_error = true,
+        .expected_errors = "nonPrimitiveAsProperty.ts(7,28): error TS2322: Type 'string' is not assignable to type 'object'.",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: nonPrimitiveIndexingWithForIn passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nonPrimitiveIndexingWithForIn",
+        .path = "nonPrimitiveIndexingWithForIn.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\var a: object;
+        \\
+        \\for (var key in a) {
+        \\    var value = a[key];
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: nonPrimitiveInFunction matches TS2345/TS2322/TS2454 baseline" {
     const result = try runOneEntry(T.allocator, .{
         .name = "nonPrimitiveInFunction",
