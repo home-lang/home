@@ -22,12 +22,14 @@ file/run result model; `runner.zig` owns the adapter-neutral
 prepared-file and file-run contracts; `adapters/jsc_bootstrap.zig` owns
 the current JSC bootstrap execution adapter plus the native host-call
 bridge used by bootstrap `Bun.spawnSync`; `corpus_runner.zig` owns the
-explicit `--bun-corpus-native-subset=minimal-js` allowlist, source
-preparation, and summary aggregation. The full corpus gate now walks all
-discovered Bun test files through the Home JSC bootstrap and fails on
-real unsupported/failing files instead of the old synthetic
-`native-js-test-runner-missing` blocker; it remains red until the native
-`bun:test` port and JSC host-call bridge close the unsupported surface.
+explicit `--bun-corpus-native-subset=minimal-js` allowlist, single-file
+corpus execution, source preparation, and summary aggregation. The full
+corpus gate now walks all discovered Bun test files through the Home JSC
+bootstrap and fails on real unsupported/failing files instead of the old
+synthetic `native-js-test-runner-missing` blocker; delegated
+`home test <fixture>` corpus descendants also re-enter that bootstrap
+instead of Home's parser. It remains red until the native `bun:test` port
+and JSC host-call bridge close the unsupported surface.
 
 `zig build test -Dfilter=home_test_bun_tier0` now build-checks the first
 copied Bun Zig tier under pantry-provided Zig 0.17-dev:
@@ -180,9 +182,11 @@ fixtures
 allowlisted, with `console.warn` falling back to `console.log` for the
 printing fixture. The full-gate rewriter also lowers the Bake harness
 `bunEnv` / `bunExe` import. The native `Bun.spawnSync` object-form bridge
-now delegates real OS subprocesses, and the full gate reaches the Bake
-child process before failing `bake/deinitialization.test.ts` with
-`Error: Expected 1 to be 0`. One snapshot `test.todo` fixture is
+now delegates real OS subprocesses, and delegated corpus file paths route
+through the corpus JSC bootstrap. The full gate reaches the Bake child
+process before failing `bake/deinitialization.test.ts` with
+`Error: Expected 1 to be 0`; the child fixture currently reports
+`unsupported module syntax`. One snapshot `test.todo` fixture is
 allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

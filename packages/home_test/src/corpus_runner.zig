@@ -3353,6 +3353,23 @@ pub fn runGate(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8) !S
     return summary;
 }
 
+pub fn runFile(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, relative: []const u8) !Summary {
+    if (!build_options.enable_jsc) {
+        return .{
+            .files = 1,
+            .blocked = true,
+            .reason = "jsc-disabled",
+        };
+    }
+
+    var runtime = try jsc_bootstrap.Runtime.init(allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var summary = Summary{};
+    try runRelativeFile(io, allocator, &runtime, corpus_path, relative, &summary);
+    return summary;
+}
+
 fn runRelativeFile(
     io: Io,
     allocator: std.mem.Allocator,

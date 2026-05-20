@@ -240,10 +240,12 @@ uses the same Home-native JSC bootstrap instead of the retired
 `native-js-test-runner-missing` placeholder. It currently executes all
 4,013 discovered Bun test files and fails on the first real failing
 file. The native `Bun.spawnSync` bridge now starts the Bake child
-process; the current first blocker is that the delegated
-`home test <fixture>` child exits `1` while Bun expects `0`, because that
-child path still enters Home's parser/runtime directly instead of the
-corpus JSC bootstrap with the needed Bun module shims.
+process, and delegated `home test <fixture>` corpus descendants now route
+back through the same JSC bootstrap instead of Home's parser. The current
+first blocker is that the child fixture still exits `1` while Bun expects
+`0`, because the Bake fixture is reported as `unsupported module syntax`
+until the real async `bun:test`, `bun:internal-for-testing`, `bun:jsc`,
+HTML import, `Bun.serve`, fetch, and HMR WebSocket surfaces are ported.
 
 Latest measured full gate: `4,013` files executed, `387` passed,
 `3,903` failed, `1,495` unsupported, `33` todo. First failure:

@@ -53,9 +53,9 @@ macOS, Linux, and the WASM target.
   `Bun.spawnSync({ cmd, cwd, stdio })` bridge for real OS subprocesses,
   corpus-relative cwd/path resolution, and pipe/inherit/ignore stdio
   modes. The full gate currently reaches the Bake child process and then
-  fails because delegated `home test <fixture>` still enters Home's
-  parser/runtime directly instead of the corpus JSC bootstrap with the
-  needed Bun module shims. Latest measured full gate: `4,013` files
+  fails because delegated `home test <fixture>` corpus descendants now
+  re-enter the corpus JSC bootstrap and report the Bake fixture as
+  `unsupported module syntax`. Latest measured full gate: `4,013` files
   executed, `387` passed, `3,903` failed, `1,495` unsupported,
   `33` todo. First failure: `bake/deinitialization.test.ts` with
   `Error: Expected 1 to be 0`.

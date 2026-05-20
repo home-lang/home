@@ -2889,10 +2889,60 @@ fn isJsLikeTestProject() bool {
     return true;
 }
 
-fn isBunCorpusPath(path: []const u8) bool {
-    const normalized = std.mem.trim(u8, path, "/");
-    return std.mem.eql(u8, normalized, "packages/runtime/test/bun-corpus") or
-        std.mem.endsWith(u8, normalized, "/packages/runtime/test/bun-corpus");
+const bun_corpus_marker = "packages/runtime/test/bun-corpus";
+const bun_corpus_marker_child = "packages/runtime/test/bun-corpus/";
+const bun_corpus_marker_embedded_child = "/packages/runtime/test/bun-corpus/";
+
+const BunCorpusTarget = union(enum) {
+    root: []const u8,
+    file: struct {
+        corpus_path: []const u8,
+        relative_path: []const u8,
+    },
+};
+
+fn isJsLikeCorpusFile(path: []const u8) bool {
+    const exts = [_][]const u8{ ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs" };
+    for (exts) |ext| {
+        if (std.mem.endsWith(u8, path, ext)) return true;
+    }
+    return false;
+}
+
+fn resolveBunCorpusTarget(path: []const u8) ?BunCorpusTarget {
+    const without_dot = if (std.mem.startsWith(u8, path, "./")) path[2..] else path;
+    var end = without_dot.len;
+    while (end > 0 and without_dot[end - 1] == '/') end -= 1;
+    const normalized = without_dot[0..end];
+    if (normalized.len == 0) return null;
+
+    const root_match = std.mem.eql(u8, normalized, bun_corpus_marker) or
+        std.mem.endsWith(u8, normalized, "/" ++ bun_corpus_marker);
+    if (root_match) return .{ .root = normalized };
+
+    if (std.mem.startsWith(u8, normalized, bun_corpus_marker_child)) {
+        const relative = normalized[bun_corpus_marker_child.len..];
+        if (relative.len != 0 and isJsLikeCorpusFile(relative)) {
+            return .{ .file = .{
+                .corpus_path = bun_corpus_marker,
+                .relative_path = relative,
+            } };
+        }
+    }
+
+    if (std.mem.indexOf(u8, normalized, bun_corpus_marker_embedded_child)) |index| {
+        const marker_start = index + 1;
+        const corpus_end = marker_start + bun_corpus_marker.len;
+        const relative = normalized[corpus_end + 1 ..];
+        if (relative.len != 0 and isJsLikeCorpusFile(relative)) {
+            return .{ .file = .{
+                .corpus_path = normalized[0..corpus_end],
+                .relative_path = relative,
+            } };
+        }
+    }
+
+    return null;
 }
 
 fn isBunCorpusSubsetFlag(arg: []const u8) bool {
@@ -2900,7 +2950,7 @@ fn isBunCorpusSubsetFlag(arg: []const u8) bool {
         std.mem.eql(u8, arg, "--bun-corpus-subset");
 }
 
-fn argTargetsBunCorpus(args: []const [:0]const u8) ?[]const u8 {
+fn argTargetsBunCorpus(args: []const [:0]const u8) ?BunCorpusTarget {
     var skip_next = false;
     for (args) |arg| {
         if (skip_next) {
@@ -2912,7 +2962,7 @@ fn argTargetsBunCorpus(args: []const [:0]const u8) ?[]const u8 {
             continue;
         }
         if (arg.len == 0 or arg[0] == '-') continue;
-        if (isBunCorpusPath(arg)) return arg;
+        if (resolveBunCorpusTarget(arg)) |target| return target;
     }
     return null;
 }
@@ -2966,6 +3016,41 @@ fn failBunCorpusSubsetArg(reason: []const u8, value: []const u8) noreturn {
 test "bun corpus target parser skips subset flag values" {
     const args = [_][:0]const u8{ "--bun-corpus-native-subset", "packages/runtime/test/bun-corpus" };
     try std.testing.expect(argTargetsBunCorpus(&args) == null);
+}
+
+test "bun corpus target parser resolves roots and descendant files" {
+    const relative_root = [_][:0]const u8{"packages/runtime/test/bun-corpus"};
+    switch (argTargetsBunCorpus(&relative_root).?) {
+        .root => |path| try std.testing.expectEqualStrings("packages/runtime/test/bun-corpus", path),
+        else => return error.ExpectedBunCorpusRoot,
+    }
+
+    const absolute_root = [_][:0]const u8{"/tmp/home/packages/runtime/test/bun-corpus/"};
+    switch (argTargetsBunCorpus(&absolute_root).?) {
+        .root => |path| try std.testing.expectEqualStrings("/tmp/home/packages/runtime/test/bun-corpus", path),
+        else => return error.ExpectedBunCorpusRoot,
+    }
+
+    const relative_file = [_][:0]const u8{"packages/runtime/test/bun-corpus/js/node/path/join.test.js"};
+    switch (argTargetsBunCorpus(&relative_file).?) {
+        .file => |target| {
+            try std.testing.expectEqualStrings("packages/runtime/test/bun-corpus", target.corpus_path);
+            try std.testing.expectEqualStrings("js/node/path/join.test.js", target.relative_path);
+        },
+        else => return error.ExpectedBunCorpusFile,
+    }
+
+    const absolute_file = [_][:0]const u8{"/tmp/home/packages/runtime/test/bun-corpus/bake/fixtures/deinitialization/test.ts"};
+    switch (argTargetsBunCorpus(&absolute_file).?) {
+        .file => |target| {
+            try std.testing.expectEqualStrings("/tmp/home/packages/runtime/test/bun-corpus", target.corpus_path);
+            try std.testing.expectEqualStrings("bake/fixtures/deinitialization/test.ts", target.relative_path);
+        },
+        else => return error.ExpectedBunCorpusFile,
+    }
+
+    const non_corpus = [_][:0]const u8{"packages/runtime/test/bun-corpus-old/foo.test.js"};
+    try std.testing.expect(argTargetsBunCorpus(&non_corpus) == null);
 }
 
 test "bun corpus subset parser reports missing and unknown values" {
@@ -3092,14 +3177,64 @@ fn runBunCorpusNativeGate(allocator: std.mem.Allocator, corpus_path: []const u8)
     if (failed) std.process.exit(1);
 }
 
+fn runBunCorpusNativeFile(allocator: std.mem.Allocator, corpus_path: []const u8, relative_path: []const u8) !void {
+    var summary = try home_test.corpus_runner.runFile(g_io, allocator, corpus_path, relative_path);
+    defer summary.deinit(allocator);
+
+    if (summary.blocked) {
+        std.debug.print("\n{s}Bun Corpus Native File: BLOCKED{s}\n", .{ Color.Yellow.code(), Color.Reset.code() });
+        std.debug.print("{s}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
+        std.debug.print("path: {s}\n", .{corpus_path});
+        std.debug.print("file: {s}\n", .{relative_path});
+        std.debug.print("runner package: packages/home_test\n", .{});
+        std.debug.print("reason: {s}\n\n", .{summary.reason});
+        std.debug.print("Build `home` with `./pantry/.bin/zig build -Denable_jsc=true` to execute native Bun corpus files.\n\n", .{});
+        std.process.exit(1);
+    }
+
+    const tests_observed = summary.passed + summary.failed + summary.todo;
+    const failed = summary.failed != 0 or summary.files == 0 or tests_observed == 0;
+    std.debug.print("\n{s}Bun Corpus Native File: {s}{s}\n", .{
+        if (!failed) Color.Green.code() else Color.Red.code(),
+        if (!failed) "PASS" else "FAIL",
+        Color.Reset.code(),
+    });
+    std.debug.print("{s}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
+    std.debug.print("path: {s}\n", .{corpus_path});
+    std.debug.print("file: {s}\n", .{relative_path});
+    std.debug.print("runner package: packages/home_test\n", .{});
+    std.debug.print("files executed: {d}\n", .{summary.files});
+    std.debug.print("tests passed: {d}\n", .{summary.passed});
+    std.debug.print("tests failed: {d}\n", .{summary.failed});
+    std.debug.print("tests unsupported: {d}\n", .{summary.unsupported});
+    std.debug.print("tests todo: {d}\n\n", .{summary.todo});
+    if (summary.first_failure_file.len != 0) {
+        std.debug.print("first failure: {s}\n", .{summary.first_failure_file});
+        std.debug.print("message: {s}\n\n", .{summary.first_failure_message});
+    }
+    if (tests_observed == 0) {
+        std.debug.print("reason: no-tests-observed\n\n", .{});
+    }
+
+    if (failed) std.process.exit(1);
+}
+
 fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
     const bun_corpus_subset_arg = argBunCorpusSubset(args);
-    if (argTargetsBunCorpus(args)) |corpus_path| {
-        switch (bun_corpus_subset_arg) {
-            .none => return runBunCorpusNativeGate(allocator, corpus_path),
-            .ok => |subset| return runBunCorpusNativeSubset(allocator, corpus_path, subset),
-            .missing_value => |flag| failBunCorpusSubsetArg("missing-subset-value", flag),
-            .unknown_value => |value| failBunCorpusSubsetArg("unknown-subset", value),
+    if (argTargetsBunCorpus(args)) |target| {
+        switch (target) {
+            .root => |corpus_path| switch (bun_corpus_subset_arg) {
+                .none => return runBunCorpusNativeGate(allocator, corpus_path),
+                .ok => |subset| return runBunCorpusNativeSubset(allocator, corpus_path, subset),
+                .missing_value => |flag| failBunCorpusSubsetArg("missing-subset-value", flag),
+                .unknown_value => |value| failBunCorpusSubsetArg("unknown-subset", value),
+            },
+            .file => |file| switch (bun_corpus_subset_arg) {
+                .none => return runBunCorpusNativeFile(allocator, file.corpus_path, file.relative_path),
+                .ok => failBunCorpusSubsetArg("subset-requires-bun-corpus-root", file.relative_path),
+                .missing_value => |flag| failBunCorpusSubsetArg("missing-subset-value", flag),
+                .unknown_value => |value| failBunCorpusSubsetArg("unknown-subset", value),
+            },
         }
     } else switch (bun_corpus_subset_arg) {
         .none => {},
