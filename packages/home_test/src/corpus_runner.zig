@@ -156,6 +156,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/path/dirname.test.js",
     "js/node/path/parse-format.test.js",
     "js/node/path/relative.test.js",
+    "js/node/path/path.test.js",
 };
 
 const harness_prelude =
@@ -1268,12 +1269,17 @@ const harness_prelude =
     \\  }
     \\  return value;
     \\}
+    \\function __home_path_validate_arguments(args) {
+    \\  for (let i = 0; i < args.length; i++) __home_path_validate_string(args[i], "path");
+    \\}
     \\function __home_path_posix_join() {
-    \\  const joined = Array.prototype.slice.call(arguments).filter(part => String(part).length > 0).join("/");
+    \\  __home_path_validate_arguments(arguments);
+    \\  const joined = Array.prototype.slice.call(arguments).filter(part => part.length > 0).join("/");
     \\  return joined.length === 0 ? "." : __home_path_posix_normalize(joined);
     \\}
     \\function __home_path_win32_join() {
-    \\  const parts = Array.prototype.slice.call(arguments).filter(part => String(part).length > 0);
+    \\  __home_path_validate_arguments(arguments);
+    \\  const parts = Array.prototype.slice.call(arguments).filter(part => part.length > 0);
     \\  if (parts.length === 0) return ".";
     \\  if ((parts[0] === "/" || parts[0] === "\\") && !/^[\\/]{2}/.test(parts[0])) {
     \\    return __home_path_win32_normalize("\\" + parts.slice(1).join("\\").replace(/^[\\/]+/, ""));
@@ -1290,10 +1296,10 @@ const harness_prelude =
     \\  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
     \\}
     \\function __home_path_posix_is_absolute(value) {
-    \\  return String(value).startsWith("/");
+    \\  return __home_path_validate_string(value, "path").startsWith("/");
     \\}
     \\function __home_path_win32_is_absolute(value) {
-    \\  const text = String(value);
+    \\  const text = __home_path_validate_string(value, "path");
     \\  return text.startsWith("/") || text.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(text);
     \\}
     \\function __home_path_normalize_parts(parts, allowAboveRoot) {
@@ -1310,7 +1316,7 @@ const harness_prelude =
     \\  return out;
     \\}
     \\function __home_path_posix_normalize(value) {
-    \\  const text = String(value);
+    \\  const text = __home_path_validate_string(value, "path");
     \\  if (text.length === 0) return ".";
     \\  const absolute = text.charCodeAt(0) === 47;
     \\  const trailing = text.endsWith("/");
@@ -1321,7 +1327,7 @@ const harness_prelude =
     \\  return absolute ? "/" + result : result;
     \\}
     \\function __home_path_win32_normalize(value) {
-    \\  let text = String(value);
+    \\  let text = __home_path_validate_string(value, "path");
     \\  if (text.length === 0) return ".";
     \\  const trailing = /[\\/]$/.test(text);
     \\  let root = "";
@@ -1361,8 +1367,9 @@ const harness_prelude =
     \\  return __home_path_posix_normalize(value);
     \\}
     \\function __home_path_resolve() {
-    \\  const parts = Array.prototype.slice.call(arguments).filter(part => String(part).length > 0);
-    \\  return parts.length === 0 ? process.cwd() : String(parts[parts.length - 1]);
+    \\  __home_path_validate_arguments(arguments);
+    \\  const parts = Array.prototype.slice.call(arguments).filter(part => part.length > 0);
+    \\  return parts.length === 0 ? process.cwd() : parts[parts.length - 1];
     \\}
     \\function __home_path_posix_relative(from, to) {
     \\  const fromInput = __home_path_validate_string(from, "from");
@@ -1411,7 +1418,8 @@ const harness_prelude =
     \\  return text.slice(0, end);
     \\}
     \\function __home_path_basename_impl(value, suffix, win32) {
-    \\  let text = String(value);
+    \\  let text = __home_path_validate_string(value, "path");
+    \\  if (suffix !== undefined) __home_path_validate_string(suffix, "suffix");
     \\  if (text.length === 0) return "";
     \\  if (win32 && /^[A-Za-z]:/.test(text)) text = text.slice(2);
     \\  const isSep = win32 ? code => code === 47 || code === 92 : code => code === 47;
@@ -1529,7 +1537,7 @@ const harness_prelude =
     \\  return __home_path_format_impl(value, true);
     \\}
     \\function __home_path_posix_dirname(value) {
-    \\  const text = String(value);
+    \\  const text = __home_path_validate_string(value, "path");
     \\  if (text.length === 0) return ".";
     \\  const hasRoot = text.charCodeAt(0) === 47;
     \\  let end = -1;
@@ -1550,7 +1558,7 @@ const harness_prelude =
     \\  return text.slice(0, end);
     \\}
     \\function __home_path_win32_dirname(value) {
-    \\  const text = String(value);
+    \\  const text = __home_path_validate_string(value, "path");
     \\  const len = text.length;
     \\  if (len === 0) return ".";
     \\  const first = text.charCodeAt(0);
@@ -1606,9 +1614,13 @@ const harness_prelude =
     \\  }
     \\  return text.slice(0, end);
     \\}
-    \\const __home_path_posix = { join: __home_path_posix_join, dirname: __home_path_posix_dirname, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_posix_normalize, resolve: __home_path_resolve, relative: __home_path_posix_relative, basename: __home_path_posix_basename, extname: __home_path_posix_extname, parse: __home_path_posix_parse, format: __home_path_posix_format };
-    \\const __home_path_win32 = { join: __home_path_win32_join, dirname: __home_path_win32_dirname, isAbsolute: __home_path_win32_is_absolute, normalize: __home_path_win32_normalize, resolve: __home_path_resolve, relative: __home_path_win32_relative, basename: __home_path_win32_basename, extname: __home_path_win32_extname, parse: __home_path_win32_parse, format: __home_path_win32_format };
-    \\const __home_path_module = { join: __home_path_join, dirname: __home_path_posix_dirname, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_normalize, resolve: __home_path_resolve, relative: __home_path_relative, basename: __home_path_posix_basename, extname: __home_path_posix_extname, parse: __home_path_posix_parse, format: __home_path_posix_format, posix: __home_path_posix, win32: __home_path_win32 };
+    \\const __home_path_posix = { join: __home_path_posix_join, dirname: __home_path_posix_dirname, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_posix_normalize, resolve: __home_path_resolve, relative: __home_path_posix_relative, basename: __home_path_posix_basename, extname: __home_path_posix_extname, parse: __home_path_posix_parse, format: __home_path_posix_format, sep: "/", delimiter: ":" };
+    \\const __home_path_win32 = { join: __home_path_win32_join, dirname: __home_path_win32_dirname, isAbsolute: __home_path_win32_is_absolute, normalize: __home_path_win32_normalize, resolve: __home_path_resolve, relative: __home_path_win32_relative, basename: __home_path_win32_basename, extname: __home_path_win32_extname, parse: __home_path_win32_parse, format: __home_path_win32_format, sep: "\\", delimiter: ";" };
+    \\__home_path_posix.posix = __home_path_posix;
+    \\__home_path_posix.win32 = __home_path_win32;
+    \\__home_path_win32.posix = __home_path_posix;
+    \\__home_path_win32.win32 = __home_path_win32;
+    \\const __home_path_module = __home_path_posix;
     \\globalThis.__home_modules["assert"] = __home_assert_module;
     \\globalThis.__home_modules["node:assert"] = __home_assert_module;
     \\globalThis.__home_modules["path"] = __home_path_module;
@@ -3461,6 +3473,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/node/path/dirname.test.js",
         "js/node/path/parse-format.test.js",
         "js/node/path/relative.test.js",
+        "js/node/path/path.test.js",
     };
 
     for (expected) |path| {
