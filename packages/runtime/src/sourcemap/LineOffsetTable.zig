@@ -100,14 +100,12 @@ pub fn generate(allocator: std.mem.Allocator, contents: []const u8, approximate_
     // we want to avoid re-allocating this array _most_ of the time
     // when lines _do_ have unicode characters, they probably still won't be longer than 255 much
     //
-    // Zig 0.17 dropped `std.heap.stackFallback` in favor of
-    // `std.heap.BufferFirstAllocator`. The on-stack buffer is the same size
-    // and serves the same role; the field name `fixed_buffer_allocator` is
-    // also preserved so the `ownsSlice` + `end_index` + `reset()` accesses
-    // below still spell out 1:1 to the upstream Bun source.
-    var stack_buf: [@sizeOf(i32) * 256]u8 = undefined;
-    var stack_fallback = std.heap.BufferFirstAllocator.init(&stack_buf, allocator);
-    var columns_for_non_ascii = std.array_list.Managed(i32).initCapacity(stack_fallback.allocator(), 120) catch unreachable;
+    // `std.heap.stackFallback` owns a `[size]u8` buffer internally;
+    // `.get()` returns the `Allocator` interface and resets the
+    // backing `fixed_buffer_allocator`, whose `ownsSlice` / `end_index`
+    // / `reset()` accesses below mirror the upstream Bun source.
+    var stack_fallback = std.heap.stackFallback(@sizeOf(i32) * 256, allocator);
+    var columns_for_non_ascii = std.array_list.Managed(i32).initCapacity(stack_fallback.get(), 120) catch unreachable;
     const reset_end_index = stack_fallback.fixed_buffer_allocator.end_index;
     const initial_columns_for_non_ascii = columns_for_non_ascii;
 
