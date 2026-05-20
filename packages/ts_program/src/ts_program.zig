@@ -275,6 +275,7 @@ pub const Program = struct {
         var out: std.ArrayListUnmanaged([]const u8) = .empty;
         errdefer freeStringSlice(self.gpa, out.items);
         for (self.files.items) |f| {
+            try appendTopLevelNamespaceRootsFromSource(self.gpa, f.source, &out);
             try appendAmbientGlobalNamespaceRootsFromSource(self.gpa, f.source, &out);
         }
         return try out.toOwnedSlice(self.gpa);
@@ -283,16 +284,81 @@ pub const Program = struct {
     fn collectScriptObjectExpandos(self: *const Program) ProgramError![]const ts_driver.ScriptObjectExpando {
         var out: std.ArrayListUnmanaged(ts_driver.ScriptObjectExpando) = .empty;
         errdefer out.deinit(self.gpa);
+        var namespace_roots: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer namespace_roots.deinit(self.gpa);
+        for (self.files.items) |f| {
+            try collectTopLevelNamespaceRootSlices(self.gpa, f.source, &namespace_roots);
+        }
         for (self.files.items) |f| {
             if (!isJsLikePath(f.path)) continue;
             var roots: std.ArrayListUnmanaged([]const u8) = .empty;
             defer roots.deinit(self.gpa);
+            try roots.appendSlice(self.gpa, namespace_roots.items);
             try collectUntypedObjectLiteralRoots(self.gpa, f.source, &roots);
             for (roots.items) |root| {
                 try collectScriptObjectExpandosForRoot(self.gpa, f.source, root, &out);
             }
         }
         return try out.toOwnedSlice(self.gpa);
+    }
+
+    fn appendTopLevelNamespaceRootsFromSource(
+        gpa: std.mem.Allocator,
+        source: []const u8,
+        out: *std.ArrayListUnmanaged([]const u8),
+    ) ProgramError!void {
+        var roots: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer roots.deinit(gpa);
+        try collectTopLevelNamespaceRootSlices(gpa, source, &roots);
+        for (roots.items) |name| {
+            for (out.items) |existing| {
+                if (std.mem.eql(u8, existing, name)) break;
+            } else {
+                const owned = try gpa.dupe(u8, name);
+                errdefer gpa.free(owned);
+                try out.append(gpa, owned);
+            }
+        }
+    }
+
+    fn collectTopLevelNamespaceRootSlices(
+        gpa: std.mem.Allocator,
+        source: []const u8,
+        out: *std.ArrayListUnmanaged([]const u8),
+    ) ProgramError!void {
+        var i: usize = 0;
+        while (i < source.len) : (i += 1) {
+            var after_keyword: usize = 0;
+            if (identifierKeywordAt(source, i, "declare")) {
+                var p = i + "declare".len;
+                while (p < source.len and std.ascii.isWhitespace(source[p])) p += 1;
+                if (identifierKeywordAt(source, p, "namespace")) {
+                    after_keyword = p + "namespace".len;
+                } else if (identifierKeywordAt(source, p, "module")) {
+                    after_keyword = p + "module".len;
+                } else {
+                    continue;
+                }
+            } else if (identifierKeywordAt(source, i, "namespace")) {
+                after_keyword = i + "namespace".len;
+            } else if (identifierKeywordAt(source, i, "module")) {
+                after_keyword = i + "module".len;
+            } else {
+                continue;
+            }
+            var p = after_keyword;
+            while (p < source.len and std.ascii.isWhitespace(source[p])) p += 1;
+            if (p >= source.len or !asciiIdentifierStart(source[p])) continue;
+            const start = p;
+            p += 1;
+            while (p < source.len and asciiIdentifierContinue(source[p])) p += 1;
+            const name = source[start..p];
+            for (out.items) |existing| {
+                if (std.mem.eql(u8, existing, name)) break;
+            } else {
+                try out.append(gpa, name);
+            }
+        }
     }
 
     fn collectUntypedObjectLiteralRoots(

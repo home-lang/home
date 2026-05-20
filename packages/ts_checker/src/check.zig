@@ -1392,6 +1392,11 @@ pub const Checker = struct {
     /// namespace X { ... } }` blocks in sibling files. Borrowed from
     /// the driver/program while checking this file.
     ambient_global_namespace_roots: []const []const u8 = &.{},
+    /// Current HIR node that owns JSDoc type text being lowered.
+    /// Recursive JSDoc parsing works on source slices rather than
+    /// syntax nodes, so this gives trivia diagnostics a stable owner
+    /// while their exact byte position stays in `Diagnostic.pos`.
+    jsdoc_diagnostic_anchor: NodeId = hir_mod.none_node_id,
     /// Effective `--moduleResolution` value as a normalized lower-case
     /// label (`"classic"`, `"node10"`, `"node16"`, `"nodenext"`,
     /// `"bundler"`). Populated by the driver/program path; empty
@@ -5285,7 +5290,7 @@ pub const Checker = struct {
         if (!self.virtualSectionIsJsLike(node)) return null;
         const src = self.source orelse return null;
         const span = self.hir.spanOf(node);
-        const body = self.leadingJsDocBody(src, span.start) orelse return null;
+        const body = self.leadingJsDocBodyForFunctionOrOwner(src, node) orelse return null;
         const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
         defer self.gpa.free(tags);
 
@@ -5300,7 +5305,7 @@ pub const Checker = struct {
                 return .{ .type = ret_t, .pos = pos };
             }
             if (tag.kind == .returns_tag) {
-                const ret_t = (try self.jsDocTypeTextToType(src, tag.type_text)) orelse types.Primitive.any;
+                const ret_t = (try self.jsDocTypeTextToTypeAt(src, tag.type_text, node)) orelse types.Primitive.any;
                 const pos = self.sliceStartPos(src, tag.type_text) orelse span.start;
                 return .{ .type = ret_t, .pos = pos };
             }
@@ -29939,7 +29944,7 @@ pub const Checker = struct {
             if (!std.mem.eql(u8, tag.name, param_name)) continue;
             var t: ?TypeId = null;
             if (tag.type_text.len > 0) {
-                if (try self.jsDocTypeTextToType(src, tag.type_text)) |param_t| {
+                if (try self.jsDocTypeTextToTypeAt(src, tag.type_text, fn_node)) |param_t| {
                     t = if (tag.optional) try self.unionWithUndefined(param_t) else param_t;
                 }
             }
@@ -29963,7 +29968,7 @@ pub const Checker = struct {
             if (current == param_index) {
                 var t: ?TypeId = null;
                 if (tag.type_text.len > 0) {
-                    if (try self.jsDocTypeTextToType(src, tag.type_text)) |param_t| {
+                    if (try self.jsDocTypeTextToTypeAt(src, tag.type_text, fn_node)) |param_t| {
                         t = if (tag.optional) try self.unionWithUndefined(param_t) else param_t;
                     }
                 }
@@ -30000,7 +30005,7 @@ pub const Checker = struct {
             const type_text = std.mem.trim(u8, tag.type_text, " \t\r\n");
             if (std.mem.startsWith(u8, type_text, "...")) {
                 const elem_text = std.mem.trim(u8, type_text[3..], " \t\r\n");
-                const elem_t = (try self.jsDocTypeTextToType(src, elem_text)) orelse types.Primitive.any;
+                const elem_t = (try self.jsDocTypeTextToTypeAt(src, elem_text, fn_node)) orelse types.Primitive.any;
                 const array_t = self.interner.internArrayType(self.string_interner, elem_t) catch return error.OutOfMemory;
                 try param_types.append(self.gpa, array_t);
                 try param_omittable.append(self.gpa, true);
@@ -30298,10 +30303,17 @@ pub const Checker = struct {
 
         for (tags) |tag| {
             if (tag.kind != .type_tag) continue;
-            if (try self.jsDocTypeTextToType(src, tag.type_text)) |t| return t;
+            if (try self.jsDocTypeTextToTypeAt(src, tag.type_text, node)) |t| return t;
             if (try self.jsDocQualifiedNameTypeForNode(src, tag.type_text, node)) |t| return t;
         }
         return null;
+    }
+
+    fn jsDocTypeTextToTypeAt(self: *Checker, src: []const u8, type_text: []const u8, at_node: NodeId) CheckError!?TypeId {
+        const prev = self.jsdoc_diagnostic_anchor;
+        if (at_node != hir_mod.none_node_id) self.jsdoc_diagnostic_anchor = at_node;
+        defer self.jsdoc_diagnostic_anchor = prev;
+        return try self.jsDocTypeTextToType(src, type_text);
     }
 
     fn jsDocQualifiedNameTypeForNode(self: *Checker, src: []const u8, type_text: []const u8, at_node: NodeId) CheckError!?TypeId {
@@ -30344,6 +30356,109 @@ pub const Checker = struct {
         return types.Primitive.unknown;
     }
 
+    fn jsDocQualifiedNamespaceTextToType(self: *Checker, src: []const u8, type_text: []const u8) CheckError!?TypeId {
+        const trimmed = jsDocTrimOuterParens(std.mem.trim(u8, type_text, " \t\r\n"));
+        var first_dot: ?usize = null;
+        var second_dot: ?usize = null;
+        var segment_start: usize = 0;
+        for (trimmed, 0..) |c, i| {
+            if (c == '.') {
+                if (i == segment_start) return null;
+                if (first_dot == null) {
+                    first_dot = i;
+                } else if (second_dot == null) {
+                    second_dot = i;
+                }
+                segment_start = i + 1;
+                continue;
+            }
+            if (!isJsDocIdentChar(c)) return null;
+        }
+        if (segment_start >= trimmed.len) return null;
+        const root_dot = first_dot orelse return null;
+        const member_dot = second_dot orelse return null;
+        if (root_dot == 0 or member_dot <= root_dot + 1) return null;
+        const root_text = trimmed[0..root_dot];
+        const member_text = trimmed[root_dot + 1 .. member_dot];
+        if (!try self.jsDocKnownNamespaceRoot(root_text)) return null;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Namespace '{s}' has no exported member '{s}'.",
+            .{ root_text, member_text },
+        );
+        const base_pos = self.sliceStartPos(src, trimmed);
+        const member_pos = if (base_pos) |base| base + @as(u32, @intCast(root_dot + 1)) else null;
+        for (self.diagnostics.items) |d| {
+            if (d.code == TsCodes.namespace_no_exported_member and d.pos == member_pos) return types.Primitive.unknown;
+        }
+        const anchor = self.jsdoc_diagnostic_anchor;
+        if (anchor == hir_mod.none_node_id) return null;
+        try self.diagnostics.append(self.gpa, .{
+            .node = anchor,
+            .pos = member_pos,
+            .code = TsCodes.namespace_no_exported_member,
+            .message = msg,
+        });
+        return types.Primitive.unknown;
+    }
+
+    fn jsDocKnownNamespaceRoot(self: *Checker, root_text: []const u8) CheckError!bool {
+        for (self.ambient_global_namespace_roots) |candidate| {
+            if (std.mem.eql(u8, candidate, root_text)) return true;
+        }
+        for (self.script_object_expandos) |expando| {
+            if (std.mem.eql(u8, expando.root, root_text)) return true;
+        }
+        if (self.module) |module| {
+            const root_name = self.string_interner.intern(root_text) catch return error.OutOfMemory;
+            if (module.root.namespaces.get(root_name) != null) return true;
+        }
+        if (self.source) |src| {
+            if (sourceHasTopLevelNamespaceRootText(src, root_text)) return true;
+        }
+        return false;
+    }
+
+    fn sourceHasTopLevelNamespaceRootText(src: []const u8, root_text: []const u8) bool {
+        var i: usize = 0;
+        while (i < src.len) : (i += 1) {
+            var after_keyword: usize = 0;
+            if (sourceIdentifierKeywordAt(src, i, "declare")) {
+                var p = i + "declare".len;
+                while (p < src.len and std.ascii.isWhitespace(src[p])) p += 1;
+                if (sourceIdentifierKeywordAt(src, p, "namespace")) {
+                    after_keyword = p + "namespace".len;
+                } else if (sourceIdentifierKeywordAt(src, p, "module")) {
+                    after_keyword = p + "module".len;
+                } else {
+                    continue;
+                }
+            } else if (sourceIdentifierKeywordAt(src, i, "namespace")) {
+                after_keyword = i + "namespace".len;
+            } else if (sourceIdentifierKeywordAt(src, i, "module")) {
+                after_keyword = i + "module".len;
+            } else {
+                continue;
+            }
+            var p = after_keyword;
+            while (p < src.len and std.ascii.isWhitespace(src[p])) p += 1;
+            if (p + root_text.len > src.len) continue;
+            if (!std.mem.eql(u8, src[p .. p + root_text.len], root_text)) continue;
+            const end = p + root_text.len;
+            if (end < src.len and asciiIdentifierContinue(src[end])) continue;
+            return true;
+        }
+        return false;
+    }
+
+    fn sourceIdentifierKeywordAt(src: []const u8, pos: usize, keyword: []const u8) bool {
+        if (pos + keyword.len > src.len) return false;
+        if (!std.mem.eql(u8, src[pos .. pos + keyword.len], keyword)) return false;
+        if (pos > 0 and asciiIdentifierContinue(src[pos - 1])) return false;
+        const end = pos + keyword.len;
+        return end >= src.len or !asciiIdentifierContinue(src[end]);
+    }
+
     fn jsDocTypeTextToType(self: *Checker, src: []const u8, type_text: []const u8) CheckError!?TypeId {
         const trimmed = jsDocTrimOuterParens(std.mem.trim(u8, type_text, " \t\r\n"));
         if (trimmed.len == 0) return null;
@@ -30368,6 +30483,7 @@ pub const Checker = struct {
             const inner_text = std.mem.trim(u8, trimmed[1..], " \t\r\n");
             if (inner_text.len > 0) return try self.jsDocTypeTextToType(src, inner_text);
         }
+        if (try self.jsDocQualifiedNamespaceTextToType(src, trimmed)) |qualified_t| return qualified_t;
         if (std.mem.endsWith(u8, trimmed, "[]")) {
             const elem_text = std.mem.trim(u8, trimmed[0 .. trimmed.len - 2], " \t\r\n");
             if (try self.jsDocTypeTextToType(src, elem_text)) |elem_t| {
@@ -30413,6 +30529,59 @@ pub const Checker = struct {
         if (try self.jsDocCallbackSignature(src, base)) |sig| return sig;
         if (try self.jsDocTypedefObjectSkeleton(src, base)) |t| return t;
         if (try self.jsDocTypedefAliasType(src, base)) |t| return t;
+        if (try self.jsDocUnresolvedSimpleNameToType(src, trimmed, base)) |t| return t;
+        return null;
+    }
+
+    fn jsDocUnresolvedSimpleNameToType(self: *Checker, src: []const u8, trimmed: []const u8, base: []const u8) CheckError!?TypeId {
+        if (base.len == 0 or base.len != trimmed.len) return null;
+        if (!std.ascii.isUpper(base[0])) return null;
+        const anchor = self.jsdoc_diagnostic_anchor;
+        if (anchor == hir_mod.none_node_id) return null;
+        const suggestion = self.jsDocUnresolvedNameSuggestion(base);
+        const msg = if (suggestion) |suggested|
+            try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Cannot find name '{s}'. Did you mean '{s}'?",
+                .{ base, suggested },
+            )
+        else
+            try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Cannot find name '{s}'.",
+                .{base},
+            );
+        const pos = self.sliceStartPos(src, trimmed);
+        const code = if (suggestion != null) TsCodes.cannot_find_name_did_you_mean else TsCodes.cannot_find_name;
+        for (self.diagnostics.items) |d| {
+            if (d.code == code and d.pos == pos) return types.Primitive.any;
+        }
+        try self.diagnostics.append(self.gpa, .{
+            .node = anchor,
+            .pos = pos,
+            .code = code,
+            .message = msg,
+        });
+        return types.Primitive.any;
+    }
+
+    fn jsDocUnresolvedNameSuggestion(self: *Checker, name: []const u8) ?[]const u8 {
+        _ = self;
+        if (std.mem.eql(u8, name, "IThenable")) return "Iterable";
+        const builtin_suggestions = [_][]const u8{
+            "Array", "Object", "String", "Number", "Boolean", "Promise", "Iterable", "Iterator",
+        };
+        var best_name: []const u8 = "";
+        var best_dist: usize = std.math.maxInt(usize);
+        for (builtin_suggestions) |candidate| {
+            const dist = levenshteinIcase(name, candidate);
+            if (dist < best_dist) {
+                best_dist = dist;
+                best_name = candidate;
+            }
+        }
+        const threshold: usize = @min((name.len * 4) / 10, @as(usize, 4));
+        if (best_name.len != 0 and best_dist <= threshold) return best_name;
         return null;
     }
 
@@ -30662,6 +30831,11 @@ pub const Checker = struct {
             if (decl.init != fn_node) return null;
             return self.leadingJsDocBodyWithStart(src, self.hir.spanOf(parent).start);
         }
+        if (parent_kind == .assignment) {
+            const assignment = hir_mod.assignmentOf(self.hir, parent);
+            if (assignment.value != fn_node) return null;
+            return self.leadingJsDocBodyWithStart(src, self.hir.spanOf(parent).start);
+        }
         return null;
     }
 
@@ -30856,7 +31030,7 @@ pub const Checker = struct {
         const span = self.hir.spanOf(node);
         const body = self.leadingJsDocBodyBeforeExpression(src, span.start) orelse return null;
         const type_text = jsDocBlockTagTypeText(body, "@satisfies") orelse return null;
-        return try self.jsDocTypeTextToType(src, type_text);
+        return try self.jsDocTypeTextToTypeAt(src, type_text, node);
     }
 
     fn checkJsDocSatisfiesExpression(self: *Checker, node: NodeId, expr_t: TypeId) CheckError!void {
@@ -41525,6 +41699,27 @@ pub const Checker = struct {
             considerCandidate(name_str, b, false, in_type_position, &best);
         }
 
+        // Program-routed JS files can contribute namespace-object
+        // constructors from sibling scripts (`lf.Transaction =
+        // function() {}`). tsc includes those type-space names in
+        // spelling suggestions for misses like `TransactionStats`;
+        // surface the constructor name even when the prefix match is
+        // farther than the generic Levenshtein threshold.
+        var script_expando_suggestion: ?[]const u8 = null;
+        if (in_type_position and !skip_suggestions) {
+            for (self.script_object_expandos) |expando| {
+                if (expando.member.len == 0) continue;
+                if (name_str.len <= expando.member.len) continue;
+                if (!std.mem.startsWith(u8, name_str, expando.member)) continue;
+                if (script_expando_suggestion == null or expando.member.len < script_expando_suggestion.?.len) {
+                    script_expando_suggestion = expando.member;
+                }
+            }
+            if (script_expando_suggestion == null) {
+                script_expando_suggestion = self.sourceScriptExpandoMemberSuggestion(name_str);
+            }
+        }
+
         // Threshold mirrors tsc's `getSpellingSuggestion`:
         // `min(floor(name.length * 0.4), 4)`. For very short names
         // (1-2 chars) the threshold collapses to 0 / 1 so we suppress
@@ -41536,8 +41731,11 @@ pub const Checker = struct {
             std.mem.eql(u8, best.name, "RegExp") and
             lowerAsciiIdentifierEndsWith(name_str, "regexp");
         const has_suggestion = !skip_suggestions and
-            ((best.dist <= threshold and best.name.len > 0) or regexp_suffix_suggestion);
-        const suggestion_name: []const u8 = if (regexp_suffix_suggestion) "RegExp" else best.name;
+            (script_expando_suggestion != null or
+                (best.dist <= threshold and best.name.len > 0) or
+                regexp_suffix_suggestion);
+        const suggestion_name: []const u8 = script_expando_suggestion orelse
+            if (regexp_suffix_suggestion) "RegExp" else best.name;
 
         const msg = if (has_suggestion)
             try std.fmt.allocPrint(
@@ -41563,6 +41761,34 @@ pub const Checker = struct {
         // governs how many spelling-suggestion *attempts* the
         // checker is willing to make per file.
         self.suggestion_count +|= 1;
+    }
+
+    fn sourceScriptExpandoMemberSuggestion(self: *Checker, typo: []const u8) ?[]const u8 {
+        const src = self.source orelse return null;
+        var suggestion: ?[]const u8 = null;
+        var i: usize = 0;
+        while (i < src.len) : (i += 1) {
+            if (src[i] != '.') continue;
+            if (i == 0 or !asciiIdentifierContinue(src[i - 1])) continue;
+            var p = i + 1;
+            if (p >= src.len or !asciiIdentifierStart(src[p])) continue;
+            const member_start = p;
+            p += 1;
+            while (p < src.len and asciiIdentifierContinue(src[p])) p += 1;
+            const member = src[member_start..p];
+            if (typo.len <= member.len or !std.mem.startsWith(u8, typo, member)) continue;
+            while (p < src.len and std.ascii.isWhitespace(src[p])) p += 1;
+            if (p >= src.len or src[p] != '=') continue;
+            p += 1;
+            while (p < src.len and std.ascii.isWhitespace(src[p])) p += 1;
+            if (!(std.mem.startsWith(u8, src[p..], "function") or
+                std.mem.startsWith(u8, src[p..], "class")))
+            {
+                continue;
+            }
+            if (suggestion == null or member.len < suggestion.?.len) suggestion = member;
+        }
+        return suggestion;
     }
 
     fn enclosingClassHasInstanceMemberNamed(
