@@ -182,6 +182,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/test-fixture-preload-global-lifecycle-hook-test.js",
     "js/bun/test/skip-test-fixture.js",
     "js/bun/test/expect-type-doctest.test.ts",
+    "js/bun/test/todo-test-fixture.js",
 };
 
 const harness_prelude =
@@ -234,6 +235,9 @@ const harness_prelude =
     \\  version: "0.0.0-home",
     \\  revision: "home",
     \\  gc(force) {},
+    \\  spawnSync(options) {
+    \\    __home_unsupported("Bun.spawnSync object-form subprocess support is not implemented by the Home Bun corpus bootstrap runner yet");
+    \\  },
     \\  stripANSI(value) {
     \\    return String(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
     \\  },
@@ -558,6 +562,7 @@ const harness_prelude =
     \\}
     \\if (!process.versions) process.versions = {};
     \\if (!process.env) process.env = {};
+    \\if (!process.execPath) process.execPath = "home";
     \\process.versions.bun = Bun.version;
     \\process.revision = Bun.revision;
     \\process.__home_events = process.__home_events || Object.create(null);
@@ -1274,7 +1279,7 @@ const harness_prelude =
     \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, escapeHTML: Bun.escapeHTML, indexOfLine: Bun.indexOfLine };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["node:test"] = { test };
-    \\globalThis.__home_modules["harness"] = { isWindows: false };
+    \\globalThis.__home_modules["harness"] = { isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; } };
     \\function SourceMap(payload) {
     \\  if (!(this instanceof SourceMap)) return new SourceMap(payload);
     \\  this.payload = payload;
@@ -3076,6 +3081,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { isWindows } = globalThis.__home_import(\"harness\");",
         },
         .{
+            .needle = "import { bunEnv, bunExe } from \"harness\";",
+            .replacement = "const { bunEnv, bunExe } = globalThis.__home_import(\"harness\");",
+        },
+        .{
             .needle = "import { URL } from \"node:url\";",
             .replacement = "const { URL } = globalThis.__home_import(\"node:url\");",
         },
@@ -3488,8 +3497,10 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Set(\" + entry.size + \")") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "version: \"0.0.0-home\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "gc(force)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "spawnSync(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.versions.bun = Bun.version") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (!process.env) process.env = {}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.execPath = \"home\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.on = function(name, listener)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.emit = function(name)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.cwd = function()") != null);
@@ -3607,6 +3618,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var AbortController = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "AbortSignal.abort = function(reason)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var URLSearchParams = function(init)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bunExe() { return process.execPath; }") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.todo = function(name, fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.skip = it.todo") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.if = function(condition)") != null);
@@ -3703,6 +3715,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/test/test-fixture-preload-global-lifecycle-hook-test.js",
         "js/bun/test/skip-test-fixture.js",
         "js/bun/test/expect-type-doctest.test.ts",
+        "js/bun/test/todo-test-fixture.js",
     };
 
     for (expected) |path| {
@@ -3817,6 +3830,24 @@ test "Bun harness import rewrite lowers isWindows import" {
     defer std.testing.allocator.free(rewritten);
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { isWindows } = globalThis.__home_import(\"harness\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"harness\"") == null);
+}
+
+test "Bun harness import rewrite lowers bunEnv and bunExe import" {
+    const source =
+        \\import { bunEnv, bunExe } from "harness";
+        \\import path from "node:path";
+        \\test("subprocess", () => {
+        \\  const cmd = [bunExe(), "test", path.join(import.meta.dir, "fixtures/test.ts")];
+        \\  expect(bunEnv).toBeDefined();
+        \\  expect(cmd[0]).toBeDefined();
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "bake/deinitialization.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { bunEnv, bunExe } = globalThis.__home_import(\"harness\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const path = globalThis.__home_import(\"node:path\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"harness\"") == null);
 }
 

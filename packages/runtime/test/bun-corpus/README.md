@@ -17,7 +17,8 @@ macOS, Linux, and the WASM target.
   bootstrap path exists for the current allowlist:
   `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
-  That subset currently executes the todo-registration smoke, three Node
+  Latest measured subset run: `124` files, `437` passed, `0` failed,
+  `32` todo. That subset currently executes the todo-registration smoke, three Node
   `assert` CommonJS smokes, three Node `path` smokes, two Node `url` smokes, the Web
   `atob`/`btoa` smoke, twenty-three regression smokes, one bundler
   constant-fold smoke, one bun-types `test.each` type-shape smoke, six test-runner expectation smokes, one nested-describe
@@ -34,7 +35,7 @@ macOS, Linux, and the WASM target.
   cache/mode/clone, JSC `ShadowRealm`, native constructor identity, mutable
   `globalThis` prototype behavior, a comment-only module-load smoke, Bun file metadata, Node `Buffer`
   binary/UTF-16LE/compare/inspect-limit/isEncoding behavior, `Map`/`Set` deep-equality,
-  lifecycle hooks, conditional skip helpers, type-only `expectTypeOf`
+  lifecycle hooks, conditional skip helpers, broader todo registration, type-only `expectTypeOf`
   doctests, and additional sync fixture lifecycle smokes,
   `Bun.inspect` Set formatting, `MessageEvent` constructor
   behavior, Bun version aliases, own-key matchers, a `prepareStackTrace`
@@ -48,7 +49,11 @@ macOS, Linux, and the WASM target.
   virtual `globalThis.__home_import("bun:test")` module shim, and fails closed
   as unsupported for unsupported import shapes, unsupported module syntax,
   async tests or hooks, explicit unsupported shim paths, and files that
-  register zero tests.
+  register zero tests. The full gate currently reaches the real first Bake
+  blocker, `Bun.spawnSync` object-form subprocess support, after lowering the
+  upstream `harness` `bunEnv` / `bunExe` import. Latest measured full gate:
+  `4,013` files executed, `386` passed, `3,904` failed, `1,500`
+  unsupported, `33` todo.
 - No source renames. `Bun.serve`, `Bun.write`, `Bun.spawn`, etc. appear
   verbatim. The `Bun.* -> Home.*` rename happens at **test-runtime** (via the
   host runtime's surface aliasing), not at copy time, so the corpus stays a

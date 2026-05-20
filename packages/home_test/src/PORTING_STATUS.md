@@ -95,7 +95,8 @@ build-checks the copied primitive matcher leaves `toBeTrue.zig`,
 `toBeNil.zig`, `toBeNumber.zig`, `toBeInteger.zig`, `toBeNaN.zig`,
 `toBeFinite.zig`, `toBePositive.zig`, `toBeNegative.zig`,
 `toBeString.zig`, `toBeFunction.zig`, `toBeSymbol.zig`,
-`toBeObject.zig`, and `toBeDate.zig` through a small Home scaffold for the upstream
+`toBeObject.zig`, `toBeDate.zig`, `toBeValidDate.zig`,
+`toBeArray.zig`, `toBeEven.zig`, and `toBeOdd.zig` through a small Home scaffold for the upstream
 Expect/JSC/formatter surface. The copied matcher files stay unchanged
 apart from the Home license header; the target proves positive matches,
 `.not` failure signatures, post-match cleanup, and expect-call counting.
@@ -138,7 +139,7 @@ deferred `test.only` filtering for synchronous fixtures,
 `describe.only` selection with `test.only` precedence,
 concurrent / failure-skip / preload lifecycle fixture smokes,
 conditional skip / `test.if` fixture behavior,
-todo-only fixture registration,
+todo-only fixture registration, broader todo fixture registration,
 type-only `expectTypeOf` doctest module loading,
 `node:path` / `path` join and posix/win32 identity smokes,
 isAbsolute / normalize / resolve / relative empty-string smokes,
@@ -175,7 +176,10 @@ loader errors, and a narrow `ShadowRealm.evaluate` shim. Four sync runner
 fixtures
 (`only-fixture-4`, `21177`, `5738`, and printing dots) are also
 allowlisted, with `console.warn` falling back to `console.log` for the
-printing fixture. One snapshot `test.todo` fixture is allowlisted without
+printing fixture. The full-gate rewriter also lowers the Bake harness
+`bunEnv` / `bunExe` import and now reaches the real missing
+`Bun.spawnSync` subprocess surface instead of stopping at generic module
+syntax. One snapshot `test.todo` fixture is allowlisted without
 executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
@@ -222,7 +226,7 @@ shape (each ~30-100 LOC, 7-10 `bun.X` references — almost all
 | Collection.zig | 171 | 8 | 0 | 0 | tier2-collection | `bun.JSError`, `bun.assert`, `bun.md` |
 | Order.zig | 187 | 16 | 0 | 0 | tier2-order | `bun.JSError`, `bun.assert`, `bun.Environment` |
 | timers/FakeTimers.zig | 376 | 32 | 0 | 0 | blocked | `bun.JSError`, `bun.timespec`, `bun.assert` |
-| expect/toBeTrue.zig + 19 primitive/truthiness/number/tag matchers | ~750 | 7-10 each | 0 | 0 | tier2-expect-matchers | `bun.jsc`, `bun.JSError`, `Expect` |
+| expect/toBeTrue.zig + 23 primitive/truthiness/number/tag/array matchers | ~900 | 7-10 each | 0 | 0 | tier2-expect-matchers | `bun.jsc`, `bun.JSError`, `Expect` |
 | ScopeFunctions.zig | 498 | 64 | 0 | 0 | blocked | `bun.String`, `bun.JSError`, `bun.handleOom` |
 | jest.zig | 520 | 44 | 3 | 1 | blocked | `bun.handleOom`, `bun.default_allocator`, `bun.JSError` |
 | harness/fixtures.zig | 575 | 1 | 0 | 0 | tier0 | `bun.md` |
@@ -368,8 +372,9 @@ These need only `compat` for `OOM`/`handleOom`/`assert`/`md`:
     compile-checked in the focused `home_test_bun_tier2_execution`
     target with a local scaffold for BunTest/JSC/reporter/timespec
     surfaces
-13. `expect/toBeTrue.zig` + nineteen primitive matcher leaves — primitive,
-    truthiness, number, and tag expect matchers; compile-checked in the focused
+13. `expect/toBeTrue.zig` + twenty-three matcher leaves — primitive,
+    truthiness, number, tag, array, even/odd, and valid-date expect
+    matchers; compile-checked in the focused
     `home_test_bun_tier2_expect_matchers` target with a local
     Expect/JSC/formatter scaffold
 14. `timers/FakeTimers.zig` (376 LOC) — Jest-style fake timers

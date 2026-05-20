@@ -172,7 +172,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes one hundred twenty-three allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes one hundred twenty-four allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-three
@@ -184,12 +184,12 @@ JSC `ShadowRealm`, native constructor identity, mutable `globalThis` prototype b
 binary/UTF-16LE/compare/inspect-limit/isEncoding behavior, `Map`/`Set`
 deep-equality, `Bun.inspect` Set formatting, `MessageEvent` constructor
 behavior, Bun version aliases, lifecycle hooks, own-key matchers, and a
-`prepareStackTrace` crash smoke, fifteen sync runner fixture smokes
+`prepareStackTrace` crash smoke, sixteen sync runner fixture smokes
 (`only-fixture-4`, `21177`, `5738`, printing dots, two multi-file
 scheduling fixtures, six `test.only` / `describe.only` / `--only` flag
 fixtures, concurrent alias, failure-skip lifecycle hooks, preload global
-lifecycle hooks, conditional skip / `test.if` helpers, and one todo-only
-test fixture, plus one type-only `expectTypeOf` doctest), Web
+lifecycle hooks, conditional skip / `test.if` helpers, and two todo-only
+test fixtures, plus one type-only `expectTypeOf` doctest), Web
 `TextDecoder` CJK and single-byte
 encoding smokes, a `prepareStackTrace` non-empty filename regression,
 Node `module.SourceMap`, and a JSC string atomization smoke through the
@@ -228,13 +228,20 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
+Latest measured subset run: `124` files, `437` passed, `0` failed,
+`32` todo.
+
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
 uses the same Home-native JSC bootstrap instead of the retired
 `native-js-test-runner-missing` placeholder. It currently executes all
 4,013 discovered Bun test files and fails on the first real unsupported
-surface (`bake/deinitialization.test.ts`, unsupported module syntax), so
+surface (`bake/deinitialization.test.ts`, `Bun.spawnSync` object-form
+subprocess support), so
 the gate is measurable but still red until those unsupported surfaces
 are ported.
+
+Latest measured full gate: `4,013` files executed, `386` passed,
+`3,904` failed, `1,500` unsupported, `33` todo.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
