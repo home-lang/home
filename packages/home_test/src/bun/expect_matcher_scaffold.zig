@@ -114,7 +114,7 @@ pub const jsc = struct {
         }
 
         pub fn isObject(this: JSValue) bool {
-            return this.tag == .object or this.tag == .non_empty_object;
+            return this.tag == .object or this.tag == .non_empty_object or this.tag == .array;
         }
 
         pub fn isDate(this: JSValue) bool {
@@ -244,6 +244,15 @@ pub const jsc = struct {
                 .object => true,
                 .non_empty_object => false,
                 else => false,
+            };
+        }
+
+        pub fn getLengthIfPropertyExistsInternal(this: JSValue, _: *JSGlobalObject) JSError!f64 {
+            return switch (this.tag) {
+                .string => @floatFromInt(this.stringSlice().len),
+                .array => @floatFromInt(this.arraySlice().len),
+                .object, .non_empty_object => std.math.inf(f64),
+                else => std.math.inf(f64),
             };
         }
 

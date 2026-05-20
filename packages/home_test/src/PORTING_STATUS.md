@@ -102,12 +102,14 @@ build-checks the copied primitive matcher leaves `toBeTrue.zig`,
 `toBeString.zig`, `toBeFunction.zig`, `toBeSymbol.zig`,
 `toBeObject.zig`, `toBeDate.zig`, `toBeValidDate.zig`,
 `toBeArray.zig`, `toBeEven.zig`, `toBeOdd.zig`,
-`toBeEmptyObject.zig`, `toContain.zig`, `toInclude.zig`,
+`toBeEmptyObject.zig`, `toHaveLength.zig`, `toContain.zig`,
+`toInclude.zig`,
 `toEqualIgnoringWhitespace.zig`, and `toEndWith.zig` through a small Home
 scaffold for the upstream
 Expect/JSC/formatter surface. The copied matcher files stay unchanged
 apart from the Home license header; the target proves positive matches,
-`.not` failure signatures, post-match cleanup, and expect-call counting.
+`.not` failure signatures, post-match cleanup, expect-call counting, and
+the copied length-property path used by Bun's matcher implementation.
 
 The facade also includes a compile-only native ESM smoke for the exact
 static source `import { test, expect } from "bun:test";`. It verifies that
@@ -786,7 +788,7 @@ shape (each ~30-100 LOC, 7-10 `bun.X` references — almost all
 | Collection.zig | 171 | 8 | 0 | 0 | tier2-collection | `bun.JSError`, `bun.assert`, `bun.md` |
 | Order.zig | 187 | 16 | 0 | 0 | tier2-order | `bun.JSError`, `bun.assert`, `bun.Environment` |
 | timers/FakeTimers.zig | 376 | 32 | 0 | 0 | blocked | `bun.JSError`, `bun.timespec`, `bun.assert` |
-| expect/toBeTrue.zig + 29 primitive/truthiness/number/comparison/tag/array/object matchers | ~1 200 | 7-10 each | 0 | 0 | tier2-expect-matchers | `bun.jsc`, `bun.JSError`, `Expect` |
+| expect/toBeTrue.zig + 30 primitive/truthiness/number/comparison/tag/array/object/length matchers | ~1 280 | 7-10 each | 0 | 0 | tier2-expect-matchers | `bun.jsc`, `bun.JSError`, `Expect` |
 | ScopeFunctions.zig | 498 | 64 | 0 | 0 | blocked | `bun.String`, `bun.JSError`, `bun.handleOom` |
 | jest.zig | 520 | 44 | 3 | 1 | blocked | `bun.handleOom`, `bun.default_allocator`, `bun.JSError` |
 | harness/fixtures.zig | 575 | 1 | 0 | 0 | tier0 | `bun.md` |
@@ -932,8 +934,8 @@ These need only `compat` for `OOM`/`handleOom`/`assert`/`md`:
     compile-checked in the focused `home_test_bun_tier2_execution`
     target with a local scaffold for BunTest/JSC/reporter/timespec
     surfaces
-13. `expect/toBeTrue.zig` + twenty-nine matcher leaves — primitive,
-    truthiness, number, comparison, tag, array, object-empty, even/odd, and valid-date expect
+13. `expect/toBeTrue.zig` + thirty matcher leaves — primitive,
+    truthiness, number, comparison, tag, array, object-empty, length, even/odd, and valid-date expect
     matchers; compile-checked in the focused
     `home_test_bun_tier2_expect_matchers` target with a local
     Expect/JSC/formatter scaffold

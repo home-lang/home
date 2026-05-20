@@ -31,6 +31,7 @@ const to_be_even = @import("bun/expect/toBeEven.zig");
 const to_be_odd = @import("bun/expect/toBeOdd.zig");
 const to_be_valid_date = @import("bun/expect/toBeValidDate.zig");
 const to_be_empty_object = @import("bun/expect/toBeEmptyObject.zig");
+const to_have_length = @import("bun/expect/toHaveLength.zig");
 const to_contain = @import("bun/expect/toContain.zig");
 const to_end_with = @import("bun/expect/toEndWith.zig");
 const to_equal_ignoring_whitespace = @import("bun/expect/toEqualIgnoringWhitespace.zig");
@@ -302,6 +303,37 @@ test "copied Bun toContain matcher passes for arrays and strings" {
     var expect_empty_string = Expect{ .value = JSValue.string(" ") };
     var empty_string_frame = frameWithArgs(JSValue.string(" "), &expected_empty);
     try std.testing.expectEqual(JSValue.js_undefined, try to_contain.toContain(&expect_empty_string, globalObject(), &empty_string_frame));
+}
+
+test "copied Bun toHaveLength matcher passes positive cases" {
+    const array_items = [_]JSValue{ .js_false, .js_number, JSValue.string("needle") };
+    const array_value = JSValue.array(&array_items);
+    const expected_array_length = [_]JSValue{.{ .tag = .number, .number_value = 3 }};
+
+    var expect_array = Expect{ .value = array_value };
+    var array_frame = frameWithArgs(array_value, &expected_array_length);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_have_length.toHaveLength(&expect_array, globalObject(), &array_frame));
+    try std.testing.expectEqual(@as(usize, 1), expect_array.call_count);
+    try std.testing.expectEqual(@as(usize, 1), expect_array.post_count);
+
+    const expected_string_length = [_]JSValue{.{ .tag = .number, .number_value = 5 }};
+    var expect_string = Expect{ .value = JSValue.string("hello") };
+    var string_frame = frameWithArgs(JSValue.string("hello"), &expected_string_length);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_have_length.toHaveLength(&expect_string, globalObject(), &string_frame));
+}
+
+test "copied Bun toHaveLength matcher honors failure signatures" {
+    const expected_wrong_length = [_]JSValue{.{ .tag = .number, .number_value = 4 }};
+    var expect_wrong = Expect{ .value = JSValue.string("hello") };
+    var wrong_frame = frameWithArgs(JSValue.string("hello"), &expected_wrong_length);
+    try std.testing.expectError(error.JSException, to_have_length.toHaveLength(&expect_wrong, globalObject(), &wrong_frame));
+    try std.testing.expectEqualStrings("toHaveLength", expect_wrong.last_signature.?);
+
+    const expected_same_length = [_]JSValue{.{ .tag = .number, .number_value = 5 }};
+    var expect_not = Expect{ .value = JSValue.string("hello"), .flags = .{ .not = true } };
+    var not_frame = frameWithArgs(JSValue.string("hello"), &expected_same_length);
+    try std.testing.expectError(error.JSException, to_have_length.toHaveLength(&expect_not, globalObject(), &not_frame));
+    try std.testing.expectEqualStrings("not.toHaveLength", expect_not.last_signature.?);
 }
 
 test "copied Bun toContain matcher honors not flag and failure signatures" {
