@@ -151,6 +151,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/util/index-of-line.test.ts",
     "js/node/url/url-format-whatwg.test.js",
     "regression/issue/19412.test.ts",
+    "js/node/path/normalize.test.js",
 };
 
 const harness_prelude =
@@ -1233,9 +1234,69 @@ const harness_prelude =
     \\  const text = String(value);
     \\  return text.startsWith("/") || text.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(text);
     \\}
-    \\function __home_path_normalize(value) {
+    \\function __home_path_normalize_parts(parts, allowAboveRoot) {
+    \\  const out = [];
+    \\  for (const part of parts) {
+    \\    if (part === "" || part === ".") continue;
+    \\    if (part === "..") {
+    \\      if (out.length > 0 && out[out.length - 1] !== "..") out.pop();
+    \\      else if (allowAboveRoot) out.push("..");
+    \\    } else {
+    \\      out.push(part);
+    \\    }
+    \\  }
+    \\  return out;
+    \\}
+    \\function __home_path_posix_normalize(value) {
     \\  const text = String(value);
-    \\  return text.length === 0 ? "." : text;
+    \\  if (text.length === 0) return ".";
+    \\  const absolute = text.charCodeAt(0) === 47;
+    \\  const trailing = text.endsWith("/");
+    \\  const parts = __home_path_normalize_parts(text.split("/"), !absolute);
+    \\  let result = parts.join("/");
+    \\  if (result.length === 0 && !absolute) result = ".";
+    \\  if (result.length > 0 && trailing && result !== "/") result += "/";
+    \\  return absolute ? "/" + result : result;
+    \\}
+    \\function __home_path_win32_normalize(value) {
+    \\  let text = String(value);
+    \\  if (text.length === 0) return ".";
+    \\  const trailing = /[\\/]$/.test(text);
+    \\  let root = "";
+    \\  let absolute = false;
+    \\  let rest = text;
+    \\  const drive = text.match(/^([A-Za-z]:)(.*)$/);
+    \\  if (drive) {
+    \\    root = drive[1];
+    \\    rest = drive[2];
+    \\    if (/^[\\/]/.test(rest)) {
+    \\      absolute = true;
+    \\      root += "\\";
+    \\      rest = rest.replace(/^[\\/]+/, "");
+    \\    }
+    \\  } else if (/^[\\/]{2}[^\\/]+[\\/]+[^\\/]+/.test(text)) {
+    \\    const match = text.match(/^[\\/]{2}([^\\/]+)[\\/]+([^\\/]+)(.*)$/);
+    \\    root = "\\\\" + match[1] + "\\" + match[2] + "\\";
+    \\    rest = match[3].replace(/^[\\/]+/, "");
+    \\    absolute = true;
+    \\  } else if (/^[\\/]/.test(text)) {
+    \\    root = "\\";
+    \\    rest = text.replace(/^[\\/]+/, "");
+    \\    absolute = true;
+    \\  }
+    \\  const parts = __home_path_normalize_parts(rest.split(/[\\/]+/), !absolute);
+    \\  let result = parts.join("\\");
+    \\  if (result.length === 0) {
+    \\    if (root.length === 0) result = ".";
+    \\    else result = root.endsWith("\\") ? root : root + ".";
+    \\  } else {
+    \\    result = root + result;
+    \\  }
+    \\  if (trailing && !result.endsWith("\\")) result += "\\";
+    \\  return result;
+    \\}
+    \\function __home_path_normalize(value) {
+    \\  return __home_path_posix_normalize(value);
     \\}
     \\function __home_path_resolve() {
     \\  const parts = Array.prototype.slice.call(arguments).filter(part => String(part).length > 0);
@@ -1289,8 +1350,8 @@ const harness_prelude =
     \\function __home_path_win32_extname(value) {
     \\  return __home_path_extname_impl(value, true);
     \\}
-    \\const __home_path_posix = { join: __home_path_join, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_normalize, basename: __home_path_posix_basename, extname: __home_path_posix_extname };
-    \\const __home_path_win32 = { join: __home_path_join, isAbsolute: __home_path_win32_is_absolute, normalize: __home_path_normalize, basename: __home_path_win32_basename, extname: __home_path_win32_extname };
+    \\const __home_path_posix = { join: __home_path_join, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_posix_normalize, basename: __home_path_posix_basename, extname: __home_path_posix_extname };
+    \\const __home_path_win32 = { join: __home_path_join, isAbsolute: __home_path_win32_is_absolute, normalize: __home_path_win32_normalize, basename: __home_path_win32_basename, extname: __home_path_win32_extname };
     \\const __home_path_module = { join: __home_path_join, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_normalize, resolve: __home_path_resolve, relative: __home_path_relative, basename: __home_path_posix_basename, extname: __home_path_posix_extname, posix: __home_path_posix, win32: __home_path_win32 };
     \\globalThis.__home_modules["assert"] = __home_assert_module;
     \\globalThis.__home_modules["node:assert"] = __home_assert_module;
@@ -3135,6 +3196,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/util/index-of-line.test.ts",
         "js/node/url/url-format-whatwg.test.js",
         "regression/issue/19412.test.ts",
+        "js/node/path/normalize.test.js",
     };
 
     for (expected) |path| {
