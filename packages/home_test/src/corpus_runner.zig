@@ -97,6 +97,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/09778.test.ts",
     "regression/issue/18820.test.ts",
     "regression/issue/23382.test.js",
+    "js/bun/util/escapeRegExp.test.ts",
 };
 
 const harness_prelude =
@@ -363,6 +364,18 @@ const harness_prelude =
     \\    return lines.join("\n");
     \\  }
     \\  return __home_format(value);
+    \\}
+    \\function __home_escape_regexp(value, packageNameMode) {
+    \\  let output = "";
+    \\  const text = String(value);
+    \\  for (let i = 0; i < text.length; i++) {
+    \\    const ch = text[i];
+    \\    if (ch === "-") output += "\\x2d";
+    \\    else if (ch === "*" && packageNameMode) output += ".*";
+    \\    else if ("|\\{}()[]^$+*?.".includes(ch)) output += "\\" + ch;
+    \\    else output += ch;
+    \\  }
+    \\  return output;
     \\}
     \\function __home_is_thenable(value) {
     \\  return value !== null && (typeof value === "object" || typeof value === "function") && typeof value.then === "function";
@@ -851,6 +864,14 @@ const harness_prelude =
     \\  runInNewContext(code, sandbox) {
     \\    const context = sandbox || {};
     \\    return Function("sandbox", "with (sandbox) {\n" + String(code) + "\n}")(context);
+    \\  },
+    \\};
+    \\globalThis.__home_modules["bun:internal-for-testing"] = {
+    \\  escapeRegExp(value) {
+    \\    return __home_escape_regexp(value, false);
+    \\  },
+    \\  escapeRegExpForPackageNameMatching(value) {
+    \\    return __home_escape_regexp(value, true);
     \\  },
     \\};
     \\globalThis.__home_modules["deno:harness"] = {
@@ -1728,6 +1749,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { runInNewContext } = globalThis.__home_import(\"node:vm\");",
         },
         .{
+            .needle = "import testHelpers from \"bun:internal-for-testing\";",
+            .replacement = "const testHelpers = globalThis.__home_import(\"bun:internal-for-testing\");",
+        },
+        .{
             .needle = "import buffer, { INSPECT_MAX_BYTES } from \"node:buffer\";",
             .replacement = "const __home_node_buffer = globalThis.__home_import(\"node:buffer\");\nconst buffer = __home_node_buffer.default;\nconst { INSPECT_MAX_BYTES } = __home_node_buffer;",
         },
@@ -2012,6 +2037,7 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("regression/issue/09778.test.ts", filesForSubset(.minimal_js)[43]);
     try std.testing.expectEqualStrings("regression/issue/18820.test.ts", filesForSubset(.minimal_js)[44]);
     try std.testing.expectEqualStrings("regression/issue/23382.test.js", filesForSubset(.minimal_js)[45]);
+    try std.testing.expectEqualStrings("js/bun/util/escapeRegExp.test.ts", filesForSubset(.minimal_js)[46]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -2064,6 +2090,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock, onTestFinished, test") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun\"] = { semver: Bun.semver }") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:vm\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun:internal-for-testing\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "escapeRegExpForPackageNameMatching(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "createDenoTest(path)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "denoTest.ignore") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_import") != null);
@@ -2133,6 +2161,20 @@ test "Node VM import rewrite lowers runInNewContext to the virtual module" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { runInNewContext } = globalThis.__home_import(\"node:vm\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"node:vm\"") == null);
+}
+
+test "Bun internal testing import rewrite lowers default import" {
+    const source =
+        \\import testHelpers from "bun:internal-for-testing";
+        \\import { expect, test } from "bun:test";
+        \\const { escapeRegExp } = testHelpers;
+        \\test("escape", () => expect(escapeRegExp("foo - bar")).toBe("foo \\x2d bar"));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/bun/util/escapeRegExp.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const testHelpers = globalThis.__home_import(\"bun:internal-for-testing\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:internal-for-testing\"") == null);
 }
 
 test "Bun test import rewrite lowers mock imports" {
@@ -2615,6 +2657,39 @@ test "bootstrap runner covers inline snapshot unicode object formatting" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers Bun internal regexp escaping helpers" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import testHelpers from "bun:internal-for-testing";
+        \\import { expect, test } from "bun:test";
+        \\const { escapeRegExp, escapeRegExpForPackageNameMatching } = testHelpers;
+        \\
+        \\test("escapeRegExp", () => {
+        \\  expect(escapeRegExp("\\ ^ $ * + ? . ( ) | { } [ ]")).toBe("\\\\ \\^ \\$ \\* \\+ \\? \\. \\( \\) \\| \\{ \\} \\[ \\]");
+        \\  expect(escapeRegExp("foo - bar")).toBe("foo \\x2d bar");
+        \\});
+        \\
+        \\test("escapeRegExpForPackageName", () => {
+        \\  expect(escapeRegExpForPackageNameMatching("foo - bar*")).toBe("foo \\x2d bar.*");
+        \\  expect(escapeRegExpForPackageNameMatching("\\ ^ $ * + ? . ( ) | { } [ ]")).toBe(
+        \\    "\\\\ \\^ \\$ .* \\+ \\? \\. \\( \\) \\| \\{ \\} \\[ \\]",
+        \\  );
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/util/escapeRegExp.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner reports unsupported thrown by harness as unsupported" {
