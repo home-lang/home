@@ -64,6 +64,8 @@ pub const Runtime = struct {
             .passed = try readCounter(allocator, &self.engine, "__home_bun_tests.passed"),
             .failed = try readCounter(allocator, &self.engine, "__home_bun_tests.failed"),
             .todo = try readCounter(allocator, &self.engine, "__home_bun_tests.todo"),
+            .pending = try readCounter(allocator, &self.engine, "__home_bun_tests.pending"),
+            .unsupported = try readCounter(allocator, &self.engine, "__home_bun_tests.unsupported"),
         };
     }
 
@@ -113,6 +115,23 @@ pub const Runtime = struct {
         const counters = self.readCounters(allocator) catch |err| {
             return runner.FileRun.failBorrowed(spec.path, @errorName(err));
         };
+        if (counters.pending != 0) {
+            return runner.FileRun.unsupportedBorrowed(spec.path, "pending async test promise requires event-loop support");
+        }
+        if (counters.unsupported != 0) {
+            const message = readString(self, allocator, "__home_bun_tests.firstFailure || 'unsupported async test path'") catch |err| {
+                return runner.FileRun.failBorrowed(spec.path, @errorName(err));
+            };
+            defer allocator.free(message);
+            return runner.FileRun.unsupportedOwned(allocator, spec.path, message);
+        }
+        if (counters.failed != 0) {
+            const message = readString(self, allocator, "__home_bun_tests.firstFailure || 'test failed'") catch |err| {
+                return runner.FileRun.failBorrowed(spec.path, @errorName(err));
+            };
+            defer allocator.free(message);
+            return runner.FileRun.failOwned(allocator, spec.path, message);
+        }
         if (counters.passed + counters.failed + counters.todo == 0) {
             if (spec.allow_no_tests) {
                 return .{
@@ -480,6 +499,8 @@ const Counters = struct {
     passed: usize,
     failed: usize,
     todo: usize,
+    pending: usize,
+    unsupported: usize,
 };
 
 fn readCounter(allocator: std.mem.Allocator, engine: *home_rt.jsc.engine.Engine, expr: []const u8) !usize {
@@ -497,6 +518,31 @@ fn readCounter(allocator: std.mem.Allocator, engine: *home_rt.jsc.engine.Engine,
         return error.InvalidCorpusCounter;
     }
     return @intFromFloat(number);
+}
+
+fn readString(self: *Runtime, allocator: std.mem.Allocator, expr: []const u8) ![]u8 {
+    const value = (try home_rt.jsc.evaluate.evaluateUtf8(
+        allocator,
+        self.engine.currentContext(),
+        expr,
+        "home:corpus-string",
+        1,
+        null,
+    )) orelse return error.StringEvaluateFailed;
+
+    const string = home_rt.jsc.extern_fns.JSValueToStringCopy(self.engine.currentContext(), value, null) orelse
+        return error.StringConversionFailed;
+    defer home_rt.jsc.extern_fns.JSStringRelease(string);
+
+    const capacity = home_rt.jsc.extern_fns.JSStringGetLength(string) * 4 + 1;
+    if (capacity == 1) return allocator.dupe(u8, "");
+
+    const buf = try allocator.alloc(u8, capacity);
+    defer allocator.free(buf);
+
+    const written = home_rt.jsc.extern_fns.JSStringGetUTF8CString(string, buf.ptr, buf.len);
+    const end = if (written > 0) written - 1 else 0;
+    return allocator.dupe(u8, buf[0..end]);
 }
 
 const unsupported_error_name = "HomeUnsupportedError";

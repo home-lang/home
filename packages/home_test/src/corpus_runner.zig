@@ -187,9 +187,9 @@ pub const minimal_js_files = [_][]const u8{
 };
 
 const harness_prelude =
-    \\var __home_bun_tests = globalThis.__home_bun_tests || { passed: 0, failed: 0, todo: 0 };
+    \\var __home_bun_tests = globalThis.__home_bun_tests || { passed: 0, failed: 0, todo: 0, pending: 0, unsupported: 0, firstFailure: null };
     \\globalThis.__home_reset_tests = function() {
-    \\  __home_bun_tests = globalThis.__home_bun_tests = { passed: 0, failed: 0, todo: 0 };
+    \\  __home_bun_tests = globalThis.__home_bun_tests = { passed: 0, failed: 0, todo: 0, pending: 0, unsupported: 0, firstFailure: null };
     \\  globalThis.__home_root_scope = {
     \\    parent: null,
     \\    beforeAll: [],
@@ -806,6 +806,33 @@ const harness_prelude =
     \\function __home_done_callback(error) {
     \\  if (error) throw error;
     \\}
+    \\function __home_error_message(error) {
+    \\  if (error && typeof error.message === "string") return error.name ? error.name + ": " + error.message : error.message;
+    \\  return String(error);
+    \\}
+    \\function __home_record_async_failure(error) {
+    \\  __home_bun_tests.failed++;
+    \\  if (__home_bun_tests.firstFailure === null) __home_bun_tests.firstFailure = __home_error_message(error);
+    \\}
+    \\function __home_track_test_thenable(result) {
+    \\  __home_bun_tests.pending++;
+    \\  Promise.resolve(result).then(
+    \\    function() {
+    \\      __home_bun_tests.passed++;
+    \\    },
+    \\    function(error) {
+    \\      __home_record_async_failure(error);
+    \\    },
+    \\  ).then(
+    \\    function() {
+    \\      __home_bun_tests.pending--;
+    \\    },
+    \\    function(error) {
+    \\      __home_bun_tests.pending--;
+    \\      __home_record_async_failure(error);
+    \\    },
+    \\  );
+    \\}
     \\function __home_run_test_attempt(scope, fn) {
     \\  const chain = __home_scope_chain(scope);
     \\  const afterAllLengths = chain.map(item => item.afterAll.length);
@@ -815,7 +842,12 @@ const harness_prelude =
     \\    __home_run_before_all_hooks(scope);
     \\    for (const item of chain) for (const hook of item.beforeEach) __home_run_hook(hook);
     \\    const result = fn.length > 0 ? fn(__home_done_callback) : fn();
-    \\    if (__home_is_thenable(result)) __home_unsupported("Async tests are not supported by the Home Bun corpus bootstrap runner yet");
+    \\    if (__home_is_thenable(result)) {
+    \\      const hasLifecycleHooks = chain.some(item => item.beforeEach.length > 0 || item.afterEach.length > 0);
+    \\      if (hasLifecycleHooks || globalThis.__home_current_finished_callbacks.length > 0) __home_unsupported("Async tests with lifecycle hooks are not supported by the Home Bun corpus bootstrap runner yet");
+    \\      __home_track_test_thenable(result);
+    \\      return false;
+    \\    }
     \\  } finally {
     \\    const callbacks = globalThis.__home_current_finished_callbacks;
     \\    globalThis.__home_current_finished_callbacks = previousCallbacks;
@@ -853,14 +885,22 @@ const harness_prelude =
     \\    __home_bun_tests.todo++;
     \\    return;
     \\  }
+    \\  let completedSync = true;
     \\  try {
     \\    if (repeats > 0) {
-    \\      for (let i = 0; i <= repeats; i++) __home_run_test_attempt(scope, fn);
+    \\      for (let i = 0; i <= repeats; i++) {
+    \\        const attemptResult = __home_run_test_attempt(scope, fn);
+    \\        if (attemptResult === false) __home_unsupported("Async tests with repeats are not supported by the Home Bun corpus bootstrap runner yet");
+    \\      }
     \\    } else {
     \\      let lastError = null;
     \\      for (let i = 0; i <= retry; i++) {
     \\        try {
-    \\          __home_run_test_attempt(scope, fn);
+    \\          const attemptResult = __home_run_test_attempt(scope, fn);
+    \\          if (attemptResult === false) {
+    \\            if (retry > 0) __home_unsupported("Async tests with retry are not supported by the Home Bun corpus bootstrap runner yet");
+    \\            completedSync = false;
+    \\          }
     \\          lastError = null;
     \\          break;
     \\        } catch (error) {
@@ -870,7 +910,7 @@ const harness_prelude =
     \\      }
     \\      if (lastError) throw lastError;
     \\    }
-    \\    __home_bun_tests.passed++;
+    \\    if (completedSync) __home_bun_tests.passed++;
     \\  } catch (error) {
     \\    __home_bun_tests.failed++;
     \\    throw error;
@@ -1027,6 +1067,7 @@ const harness_prelude =
     \\};
     \\globalThis.__home_finish_tests = function() {
     \\  __home_run_registered_tests();
+    \\  if (__home_bun_tests.pending > 0 && globalThis.__home_scopes.some(scope => scope.afterAll.length > 0)) __home_unsupported("Async tests with afterAll hooks are not supported by the Home Bun corpus bootstrap runner yet");
     \\  for (let i = globalThis.__home_scopes.length - 1; i >= 0; --i) __home_run_scoped_after_all(globalThis.__home_scopes[i]);
     \\};
     \\const __home_expect_matchers = Object.create(null);
@@ -5181,13 +5222,34 @@ test "bootstrap runner reports unsupported thrown by harness as unsupported" {
     try std.testing.expect(std.mem.indexOf(u8, file_run.result.first_failure_message, "Only Buffer.from") != null);
 }
 
-test "bootstrap runner reports returned promises as unsupported" {
+test "bootstrap runner accepts microtask-settled returned promises" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const source =
-        \\test("async path", () => Promise.resolve());
+        \\test("async path", () => Promise.resolve().then(() => {
+        \\  expect(1).toBe(1);
+        \\}));
     ;
-    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/async-unsupported.test.ts");
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/async-resolved.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner reports pending returned promises as unsupported" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\test("pending async path", () => new Promise(() => {}));
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/async-pending.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
@@ -5197,7 +5259,26 @@ test "bootstrap runner reports returned promises as unsupported" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.unsupported, file_run.result.status());
-    try std.testing.expect(std.mem.indexOf(u8, file_run.result.first_failure_message, "Async tests are not supported") != null);
+    try std.testing.expect(std.mem.indexOf(u8, file_run.result.first_failure_message, "pending async test promise") != null);
+}
+
+test "bootstrap runner reports rejected returned promises as failed" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\test("rejected async path", () => Promise.reject(new Error("async boom")));
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/async-rejected.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.failed, file_run.result.status());
+    try std.testing.expect(std.mem.indexOf(u8, file_run.result.first_failure_message, "async boom") != null);
 }
 
 test "bootstrap runner keeps real assertion failures as failed" {

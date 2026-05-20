@@ -120,7 +120,10 @@ JSC engine, resets counters before each allowlisted file, reports a file
 as unsupported if it registers zero `bun:test` tests, and preserves
 explicit harness unsupported errors across the
 `adapters/jsc_bootstrap.zig` boundary instead of counting them as
-assertion failures. It covers the first real smoke slice: basic
+assertion failures. It also accepts microtask-settled returned Promises
+for simple tests, while still reporting pending async work and async
+lifecycle-hook paths as unsupported until the real event-loop runner
+lands. It covers the first real smoke slice: basic
 `describe` / `test` / `it`, `it.todo`, `it.failing`, lifecycle hooks,
 retry/repeats runner options, `onTestFinished`, returned-thenable
 rejection, `test.concurrent`, `test.each`, `.not`, `toBe`, `toBeDefined`,

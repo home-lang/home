@@ -152,6 +152,34 @@ test "evaluate helper captures thrown exception text when JSC is enabled" {
     try std.testing.expect(std.mem.indexOf(u8, evaluation.exception_message.?, "boom") != null);
 }
 
+test "evaluate helper exposes whether JSC drains promise microtasks after script evaluation" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    _ = try evaluateUtf8(
+        std.testing.allocator,
+        engine.currentContext(),
+        "globalThis.__home_microtask_smoke = 0; Promise.resolve().then(() => { globalThis.__home_microtask_smoke = 1; });",
+        "home:jsc-microtask-smoke-setup",
+        1,
+        null,
+    );
+
+    const value = (try evaluateUtf8(
+        std.testing.allocator,
+        engine.currentContext(),
+        "globalThis.__home_microtask_smoke",
+        "home:jsc-microtask-smoke-read",
+        1,
+        null,
+    )) orelse return error.JSEvaluateReturnedNull;
+
+    const number = extern_fns.JSValueToNumber(engine.currentContext(), value, null);
+    try std.testing.expectEqual(@as(f64, 1), number);
+}
+
 comptime {
     _ = JSObject;
 }
