@@ -168,6 +168,7 @@ selector / handler validation,
 `process.versions.bun`, `process.revision`, `process.on` / `process.emit`,
 `node:vm.runInNewContext`, DOMException, native constructor identity,
 mutable `globalThis` prototype behavior, comment-only module-load smoke,
+`Bun.file(...).type` explicit and `.css` MIME behavior,
 Request/Response/Headers/URL, `node-fetch`, `node:buffer`, `deno:harness`
 including Bun-copied Deno `test(options, fn)` / permission skip /
 `test.ignore` / `test.todo` call shapes, Deno `Event` / `CustomEvent` /
@@ -720,6 +721,9 @@ function form of `expect(...).toThrow(SyntaxError)`.
 The copied `cli/run/commonjs-invalid.test.ts` fixture now passes as `1`
 test through the real subprocess path, including piped stderr and the
 malformed CommonJS wrapper diagnostic.
+The copied `js/bun/util/file-type.test.ts` fixture now passes as `2`
+tests through the `Bun.file` bootstrap model. It covers explicit
+`{ type }` MIME overrides and Bun's `.css` default MIME type.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

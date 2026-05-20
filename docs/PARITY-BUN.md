@@ -191,7 +191,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes one hundred thirty-six allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes one hundred thirty-seven allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-four
@@ -205,7 +205,8 @@ narrow Deno URL authority/hash/origin parsing, a Deno `performance`
 bootstrap nucleus (`now`, `timeOrigin`, `toJSON`, marks, measures, and
 entry lookup), WebSocket failed-connect `ErrorEvent` snapshots, JSC
 `ShadowRealm`, native constructor identity, mutable
-`globalThis` prototype behavior, a comment-only module-load smoke, Bun file metadata, Node `Buffer`
+`globalThis` prototype behavior, a comment-only module-load smoke, Bun file metadata and
+`Bun.file(...).type` MIME behavior, Node `Buffer`
 binary/UTF-16LE/compare/inspect-limit/isEncoding behavior, `Map`/`Set`
 deep-equality, `Bun.inspect` Set formatting, `MessageEvent` constructor
 behavior, Bun version aliases, lifecycle hooks, own-key matchers, and a
@@ -254,7 +255,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `136` files, `609` passed, `0` failed,
+Latest measured subset run: `137` files, `611` passed, `0` failed,
 `38` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
@@ -1104,6 +1105,12 @@ The copied `cli/run/commonjs-invalid.test.ts` fixture now passes in Home
 as `1` passed, `0` failed, `0` unsupported, `0` todo. It exercises the
 real subprocess path through `Bun.spawn`, piped stderr, and malformed CJS
 wrapper diagnostics instead of a bootstrap-only shortcut.
+
+The copied `js/bun/util/file-type.test.ts` fixture now passes in Home as
+`2` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap models
+explicit `Bun.file(path, { type })` MIME overrides and Bun's `.css`
+default of `text/css;charset=utf-8`; native parity still belongs in the
+real file/blob implementation.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

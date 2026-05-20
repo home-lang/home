@@ -136,6 +136,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/expect-type-global.test.ts",
     "js/bun/test/expect-type.test.ts",
     "regression/issue/02367.test.ts",
+    "js/bun/util/file-type.test.ts",
     "js/web/encoding/text-decoder-cjk.test.ts",
     "js/web/encoding/text-decoder-single-byte.test.ts",
     "regression/issue/fix-bindings-stack-trace.test.ts",
@@ -309,6 +310,12 @@ const harness_prelude =
     \\}
     \\function __home_build_file_exists(path) {
     \\  return __home_build_read_text(path) !== null;
+    \\}
+    \\function __home_bun_file_type(path, options) {
+    \\  if (options && typeof options === "object" && Object.prototype.hasOwnProperty.call(options, "type")) return String(options.type);
+    \\  const text = String(path || "").toLowerCase();
+    \\  if (text.endsWith(".css")) return "text/css;charset=utf-8";
+    \\  return "";
     \\}
     \\function __home_build_write_text(path, text) {
     \\  if (typeof globalThis.__home_writeFileSyncNative !== "function") return;
@@ -625,8 +632,9 @@ const harness_prelude =
     \\    globalThis.__home_writeFileSyncNative(String(path), payload);
     \\    return Promise.resolve();
     \\  },
-    \\  file(path) {
+    \\  file(path, options) {
     \\    return {
+    \\      type: __home_bun_file_type(path, options),
     \\      exists() {
     \\        return Promise.resolve(__home_build_file_exists(String(path)));
     \\      },
@@ -9048,6 +9056,28 @@ test "bootstrap matcher toThrow accepts async rejection functions" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/02367.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap Bun.file exposes explicit and inferred file types" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\test("file type", () => {
+        \\  expect(Bun.file("test", { type: "text/markdown" }).type).toBe("text/markdown");
+        \\  expect(Bun.file("test.css").type).toBe("text/css;charset=utf-8");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/util/file-type.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
