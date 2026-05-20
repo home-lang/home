@@ -105,6 +105,18 @@ pub const Runtime = struct {
             "__home_realpathSyncNative",
             realpathSyncNative,
         );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_renameSyncNative",
+            renameSyncNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_unlinkSyncNative",
+            unlinkSyncNative,
+        );
     }
 
     fn resetFileState(self: *Runtime, allocator: std.mem.Allocator) !void {
@@ -647,6 +659,83 @@ fn realpathSyncNative(
         setExceptionFmt(actual_ctx, exception, "node:fs.realpathSync() result failed: {s}", .{@errorName(err)});
         return null;
     };
+}
+
+fn renameSyncNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+
+    if (argument_count < 2 or arguments[0] == null or arguments[1] == null) {
+        setException(actual_ctx, exception, "node:fs.renameSync() requires old and new paths");
+        return null;
+    }
+
+    const old_path = valueToOwnedString(allocator, actual_ctx, arguments[0].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.renameSync() old path failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(old_path);
+
+    const new_path = valueToOwnedString(allocator, actual_ctx, arguments[1].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.renameSync() new path failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(new_path);
+
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const cwd = Io.Dir.cwd();
+    cwd.rename(old_path, cwd, new_path, io) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.renameSync() failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    return extern_fns.JSValueMakeUndefined(actual_ctx);
+}
+
+fn unlinkSyncNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+
+    if (argument_count < 1 or arguments[0] == null) {
+        setException(actual_ctx, exception, "node:fs.unlinkSync() requires a path");
+        return null;
+    }
+
+    const path = valueToOwnedString(allocator, actual_ctx, arguments[0].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.unlinkSync() path failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(path);
+
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    Io.Dir.cwd().deleteFile(io, path) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.unlinkSync() failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    return extern_fns.JSValueMakeUndefined(actual_ctx);
 }
 
 fn spawnSyncNative(

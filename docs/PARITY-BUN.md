@@ -62,8 +62,9 @@ narrow hosted fetch path for the Bake deinitialization fixture's
 
 🔴 Not implemented as general runtime APIs. The Bun corpus bootstrap now has
 a narrow native bridge for `writeFileSync`, `readFileSync(..., "utf8")`,
-and `realpathSync`, which are needed by the Bake harness and
-`bake/dev-and-prod.test.ts` import surface.
+`realpathSync`, `renameSync`, and `unlinkSync`, which are needed by the
+Bake harness, `bake/dev-and-prod.test.ts`, and `bake/dev/hot.test.ts`
+import surfaces.
 
 ### `Bun.spawn` / `Bun.spawnSync`
 
@@ -277,8 +278,8 @@ Bake HTML-route shape; it allocates a real DevServer/Server carrier and
 routes `server.stop()`, hosted `fetch`, and HMR WebSocket open/close
 through the native lifecycle path. The bootstrap also lowers the
 `node:fs` sync imports used by Bake tests and forwards utf8
-`writeFileSync` / `readFileSync` / `realpathSync` calls to native Home
-host callbacks. The delegated
+`writeFileSync` / `readFileSync` / `realpathSync` plus `renameSync` /
+`unlinkSync` calls to native Home host callbacks. The delegated
 `bake/fixtures/deinitialization/test.ts` child now passes all nine cases.
 Exact Bake harness imports for `./bake-harness` and `../bake-harness`
 now lower to a virtual registrar copied from Bun's no-color test-name
@@ -289,7 +290,7 @@ registration while still failing honestly at the unported DevServer /
 bundler runtime boundary.
 
 Latest measured full gate after the Bake harness registrar:
-`4,013` files executed, `388` passed, `3,979` failed, `1,529`
+`4,013` files executed, `388` passed, `3,987` failed, `1,537`
 unsupported, `33` todo. First failure: `bake/dev-and-prod.test.ts`
 with the named unsupported Bake registration for
 ` DEV:dev-and-prod-1: define config via bunfig.toml`.

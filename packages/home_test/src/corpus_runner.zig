@@ -2003,6 +2003,14 @@ const harness_prelude =
     \\    if (typeof globalThis.__home_realpathSyncNative !== "function") __home_unsupported("node:fs.realpathSync native bridge is not installed");
     \\    return globalThis.__home_realpathSyncNative(String(path));
     \\  },
+    \\  renameSync(oldPath, newPath) {
+    \\    if (typeof globalThis.__home_renameSyncNative !== "function") __home_unsupported("node:fs.renameSync native bridge is not installed");
+    \\    return globalThis.__home_renameSyncNative(String(oldPath), String(newPath));
+    \\  },
+    \\  unlinkSync(path) {
+    \\    if (typeof globalThis.__home_unlinkSyncNative !== "function") __home_unsupported("node:fs.unlinkSync native bridge is not installed");
+    \\    return globalThis.__home_unlinkSyncNative(String(path));
+    \\  },
     \\};
     \\__home_node_fs.default = __home_node_fs;
     \\globalThis.__home_modules["fs"] = __home_node_fs;
@@ -3374,6 +3382,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { readFileSync, realpathSync, writeFileSync } from \"node:fs\";",
             .replacement = "const { readFileSync, realpathSync, writeFileSync } = globalThis.__home_import(\"node:fs\");",
+        },
+        .{
+            .needle = "import { renameSync, unlinkSync, writeFileSync } from \"node:fs\";",
+            .replacement = "const { renameSync, unlinkSync, writeFileSync } = globalThis.__home_import(\"node:fs\");",
+        },
+        .{
+            .needle = "import { readFileSync, renameSync, unlinkSync, writeFileSync } from \"node:fs\";",
+            .replacement = "const { readFileSync, renameSync, unlinkSync, writeFileSync } = globalThis.__home_import(\"node:fs\");",
         },
         .{
             .needle = "import fs, { readFileSync, realpathSync } from \"node:fs\";",
@@ -5773,6 +5789,21 @@ test "Bun corpus rewrite lowers node fs sync imports before Bake harness boundar
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { devAndProductionTest, devTest, emptyHtmlFile, WAIT_MULTIPLIER } = globalThis.__home_import(\"bake-harness\");") != null);
 }
 
+test "Bun corpus rewrite lowers node fs atomic save imports" {
+    const source =
+        \\import { expect } from "bun:test";
+        \\import { renameSync, unlinkSync, writeFileSync } from "node:fs";
+        \\import { devTest, emptyHtmlFile } from "../bake-harness";
+        \\devTest("smoke", { files: {}, async test(dev) {} });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/hot.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"node:fs\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { renameSync, unlinkSync, writeFileSync } = globalThis.__home_import(\"node:fs\");") != null);
+}
+
 test "Bun corpus rewrite lowers parent Bake harness after expect-only bun test import" {
     const source =
         \\import { expect } from "bun:test";
@@ -5874,6 +5905,42 @@ test "bootstrap runner supports node fs sync utf8 file methods" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/fs/fs-sync-bootstrap-smoke.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner supports node fs rename and unlink sync methods" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source_path = ".zig-cache/home-test-node-fs-rename-source.txt";
+    const target_path = ".zig-cache/home-test-node-fs-rename-target.txt";
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    defer Io.Dir.cwd().deleteFile(io, source_path) catch {};
+    defer Io.Dir.cwd().deleteFile(io, target_path) catch {};
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+        \\test("node fs rename unlink", () => {
+        \\  const source = ".zig-cache/home-test-node-fs-rename-source.txt";
+        \\  const target = ".zig-cache/home-test-node-fs-rename-target.txt";
+        \\  writeFileSync(source, "move me");
+        \\  renameSync(source, target);
+        \\  expect(readFileSync(target, "utf8")).toBe("move me");
+        \\  unlinkSync(target);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/fs/fs-rename-unlink-bootstrap-smoke.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
