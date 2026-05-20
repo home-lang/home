@@ -496,6 +496,16 @@ Latest measured full gate after the Bake remove/re-add CSS import slice:
 unsupported, `35` todo. First failure: `bake/dev/css.test.ts` with
 ` DEV:css-11: changing html file with link tag works`.
 
+The HTML link-tag CSS smoke now re-reads the current HTML root for every
+style assertion, collects multiple stylesheet links, exposes
+`fontSize`, validates unresolved linked stylesheets, and preserves styles
+across write-no-change and hard-reload paths in the harness model.
+
+Latest measured full gate after the Bake HTML link-tag CSS slice:
+`4,013` files executed, `440` passed, `3,941` failed, `1,494`
+unsupported, `35` todo. First failure: `bake/dev/css.test.ts` with
+` DEV:css-12: css import before create`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

@@ -334,6 +334,11 @@ the dependent `.colored` rule. It also models `background` as a
 import is restored. WebSocket silence is still a callback-level harness
 model rather than real dependency-edge notification tracking. The next
 Bake boundary is `DEV:css-11: changing html file with link tag works`.
+The HTML link-tag CSS smoke now re-reads the current HTML root for every
+style assertion, collects multiple stylesheet links, exposes
+`fontSize`, validates unresolved linked stylesheets, and preserves styles
+across write-no-change and hard-reload paths in the harness model. The
+next Bake boundary is `DEV:css-12: css import before create`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
