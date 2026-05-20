@@ -3444,6 +3444,42 @@ test "conformance: sub-strict directive without @strict keeps inferred strict-on
     try T.expect(merged_with_strict_on.use_unknown_in_catch_variables);
 }
 
+test "conformance: nonPrimitiveAndEmptyObject passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nonPrimitiveAndEmptyObject",
+        .path = "nonPrimitiveAndEmptyObject.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\// @declaration: true
+        \\
+        \\// Repro from #49480
+        \\
+        \\export interface BarProps {
+        \\    barProp?: string;
+        \\}
+        \\
+        \\export interface FooProps {
+        \\    fooProps?: BarProps & object;
+        \\}
+        \\
+        \\declare const foo: FooProps;
+        \\const { fooProps = {} } = foo;
+        \\
+        \\fooProps.barProp;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: nonPrimitiveAssignError matches TS2322/TS2741 baseline" {
     const result = try runOneEntry(T.allocator, .{
         .name = "nonPrimitiveAssignError",
