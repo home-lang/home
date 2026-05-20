@@ -21,6 +21,10 @@ const to_be_function = @import("bun/expect/toBeFunction.zig");
 const to_be_symbol = @import("bun/expect/toBeSymbol.zig");
 const to_be_object = @import("bun/expect/toBeObject.zig");
 const to_be_date = @import("bun/expect/toBeDate.zig");
+const to_be_array = @import("bun/expect/toBeArray.zig");
+const to_be_even = @import("bun/expect/toBeEven.zig");
+const to_be_odd = @import("bun/expect/toBeOdd.zig");
+const to_be_valid_date = @import("bun/expect/toBeValidDate.zig");
 
 const Expect = bun.jsc.Expect.Expect;
 const JSValue = bun.jsc.JSValue;
@@ -138,6 +142,22 @@ test "copied Bun tagged primitive matchers pass positive cases" {
     var expect_date = Expect{ .value = .js_date };
     var date_frame = frame(.js_date);
     try std.testing.expectEqual(JSValue.js_undefined, try to_be_date.toBeDate(&expect_date, globalObject(), &date_frame));
+
+    var expect_valid_date = Expect{ .value = .js_date };
+    var valid_date_frame = frame(.js_date);
+    try std.testing.expectEqual(JSValue.js_date, try to_be_valid_date.toBeValidDate(&expect_valid_date, globalObject(), &valid_date_frame));
+
+    var expect_array = Expect{ .value = .js_array };
+    var array_frame = frame(.js_array);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_be_array.toBeArray(&expect_array, globalObject(), &array_frame));
+
+    var expect_even = Expect{ .value = .js_even };
+    var even_frame = frame(.js_even);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_be_even.toBeEven(&expect_even, globalObject(), &even_frame));
+
+    var expect_odd = Expect{ .value = .js_odd };
+    var odd_frame = frame(.js_odd);
+    try std.testing.expectEqual(JSValue.js_undefined, try to_be_odd.toBeOdd(&expect_odd, globalObject(), &odd_frame));
 }
 
 test "copied Bun numeric matchers honor failure signatures" {
@@ -219,4 +239,29 @@ test "copied Bun tagged primitive matchers honor not flag and failure signatures
     var date_frame = frame(.js_date);
     try std.testing.expectError(error.JSException, to_be_date.toBeDate(&expect_date, globalObject(), &date_frame));
     try std.testing.expectEqualStrings("not.toBeDate", expect_date.last_signature.?);
+
+    var expect_valid_date = Expect{ .value = .js_date, .flags = .{ .not = true } };
+    var valid_date_frame = frame(.js_date);
+    try std.testing.expectError(error.JSException, to_be_valid_date.toBeValidDate(&expect_valid_date, globalObject(), &valid_date_frame));
+    try std.testing.expectEqualStrings("not.toBeValidDate", expect_valid_date.last_signature.?);
+
+    var expect_invalid_date = Expect{ .value = .js_invalid_date };
+    var invalid_date_frame = frame(.js_invalid_date);
+    try std.testing.expectError(error.JSException, to_be_valid_date.toBeValidDate(&expect_invalid_date, globalObject(), &invalid_date_frame));
+    try std.testing.expectEqualStrings("toBeValidDate", expect_invalid_date.last_signature.?);
+
+    var expect_array = Expect{ .value = .js_array, .flags = .{ .not = true } };
+    var array_frame = frame(.js_array);
+    try std.testing.expectError(error.JSException, to_be_array.toBeArray(&expect_array, globalObject(), &array_frame));
+    try std.testing.expectEqualStrings("not.toBeArray", expect_array.last_signature.?);
+
+    var expect_even = Expect{ .value = .js_odd };
+    var odd_frame = frame(.js_odd);
+    try std.testing.expectError(error.JSException, to_be_even.toBeEven(&expect_even, globalObject(), &odd_frame));
+    try std.testing.expectEqualStrings("toBeEven", expect_even.last_signature.?);
+
+    var expect_odd = Expect{ .value = .js_even };
+    var even_frame = frame(.js_even);
+    try std.testing.expectError(error.JSException, to_be_odd.toBeOdd(&expect_odd, globalObject(), &even_frame));
+    try std.testing.expectEqualStrings("toBeOdd", expect_odd.last_signature.?);
 }

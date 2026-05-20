@@ -17,6 +17,7 @@ pub const jsc = struct {
             function,
             symbol,
             object,
+            array,
             date,
             null,
             undefined,
@@ -37,6 +38,10 @@ pub const jsc = struct {
         pub const js_symbol = JSValue{ .tag = .symbol };
         pub const js_object = JSValue{ .tag = .object };
         pub const js_date = JSValue{ .tag = .date };
+        pub const js_invalid_date = JSValue{ .tag = .date, .number_value = std.math.nan(f64) };
+        pub const js_array = JSValue{ .tag = .array };
+        pub const js_even = JSValue{ .tag = .number, .number_value = 42 };
+        pub const js_odd = JSValue{ .tag = .number, .number_value = 41 };
         pub const js_other = JSValue{ .tag = .other };
 
         pub fn isBoolean(this: JSValue) bool {
@@ -67,8 +72,37 @@ pub const jsc = struct {
             return this.tag == .date;
         }
 
+        pub fn isBigInt(_: JSValue) bool {
+            return false;
+        }
+
+        pub fn isBigInt32(_: JSValue) bool {
+            return false;
+        }
+
+        pub fn isInt32(this: JSValue) bool {
+            if (!this.isAnyInt()) return false;
+            return this.number_value >= std.math.minInt(i32) and this.number_value <= std.math.maxInt(i32);
+        }
+
         pub fn asNumber(this: JSValue) f64 {
             return this.number_value;
+        }
+
+        pub fn toInt32(this: JSValue) i32 {
+            return @intFromFloat(this.number_value);
+        }
+
+        pub fn toInt64(this: JSValue) i64 {
+            return @intFromFloat(this.number_value);
+        }
+
+        pub fn getUnixTimestamp(this: JSValue) f64 {
+            return this.number_value;
+        }
+
+        pub fn jsType(this: JSValue) JSType {
+            return .{ .tag = this.tag };
         }
 
         pub fn isAnyInt(this: JSValue) bool {
@@ -107,11 +141,20 @@ pub const jsc = struct {
                 .function => "[Function]",
                 .symbol => "Symbol()",
                 .object => "{}",
+                .array => "[]",
                 .date => "Date",
                 .null => "null",
                 .undefined => "undefined",
                 .other => "value",
             });
+        }
+    };
+
+    pub const JSType = struct {
+        tag: JSValue.Tag,
+
+        pub fn isArray(this: JSType) bool {
+            return this.tag == .array;
         }
     };
 
