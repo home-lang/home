@@ -103,7 +103,8 @@ loader errors, and a narrow `ShadowRealm.evaluate` shim. Four sync runner
 fixtures
 (`only-fixture-4`, `21177`, `5738`, and printing dots) are also
 allowlisted, with `console.warn` falling back to `console.log` for the
-printing fixture. The source
+printing fixture. One snapshot `test.todo` fixture is allowlisted without
+executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
 `import.meta.dir/path` to the same per-file metadata used for the

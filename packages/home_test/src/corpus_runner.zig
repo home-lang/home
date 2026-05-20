@@ -133,6 +133,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/transpiler/transpiler-utf16-loader.test.ts",
     "js/web/html/html-rewriter-doctype.test.ts",
     "js/bun/jsonc/jsonc.test.ts",
+    "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts",
 };
 
 const harness_prelude =
@@ -2774,6 +2775,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/transpiler/transpiler-utf16-loader.test.ts",
         "js/web/html/html-rewriter-doctype.test.ts",
         "js/bun/jsonc/jsonc.test.ts",
+        "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts",
     };
 
     for (expected) |path| {
