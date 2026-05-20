@@ -159,6 +159,10 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/path/path.test.js",
     "js/node/path/posix-relative-on-windows.test.js",
     "js/node/path/resolve.test.js",
+    "js/bun/test/scheduling/multi-file/test1.fixture.ts",
+    "js/bun/test/scheduling/multi-file/test2.fixture.ts",
+    "js/bun/test/only-flag-fixtures/file0.fixture.ts",
+    "js/bun/test/only-flag-fixtures/file2.fixture.ts",
 };
 
 const harness_prelude =
@@ -3153,6 +3157,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         .{ .line = "import { expect, jest, test } from \"bun:test\";", .binding = "const { expect, jest, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, mock, test } from \"bun:test\";", .binding = "const { expect, mock, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, test } from \"bun:test\";", .binding = "const { expect, test } = globalThis.__home_import(\"bun:test\");\n" },
+        .{ .line = "import { test } from \"bun:test\";", .binding = "const { test } = globalThis.__home_import(\"bun:test\");\n" },
     };
 
     for (imports) |import_shape| {
@@ -3514,6 +3519,19 @@ test "Bun test import rewrite lowers to the virtual test module" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "\n//# sourceURL=js/node/example.test.js\n") != null);
 }
 
+test "Bun test import rewrite lowers single test binding" {
+    const source =
+        \\import { test } from "bun:test";
+        \\test("fixture", () => {});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/bun/test/scheduling/multi-file/test1.fixture.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { test } = globalThis.__home_import(\"bun:test\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "test(\"fixture\"") != null);
+}
+
 test "minimal JS subset includes low-risk Bun corpus expansion files" {
     const expected = [_][]const u8{
         "js/web/encoding/text-decoder-cjk.test.ts",
@@ -3557,6 +3575,10 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/node/path/path.test.js",
         "js/node/path/posix-relative-on-windows.test.js",
         "js/node/path/resolve.test.js",
+        "js/bun/test/scheduling/multi-file/test1.fixture.ts",
+        "js/bun/test/scheduling/multi-file/test2.fixture.ts",
+        "js/bun/test/only-flag-fixtures/file0.fixture.ts",
+        "js/bun/test/only-flag-fixtures/file2.fixture.ts",
     };
 
     for (expected) |path| {

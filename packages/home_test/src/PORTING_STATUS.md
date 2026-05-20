@@ -126,6 +126,7 @@ narrow `toMatchInlineSnapshot` object formatting,
 `assert` CJS require, `assert.match` / `assert.doesNotMatch`,
 `assert/strict.deepStrictEqual` boxed primitive handling,
 relative CJS fixture require for `regression/issue/013880-fixture.cjs`,
+single-binding `bun:test` scheduling / `--only` flag fixtures,
 `node:path` / `path` join and posix/win32 identity smokes,
 isAbsolute / normalize / resolve / relative empty-string smokes,
 basename / extname / normalize / join / dirname / parse / format / resolve path
