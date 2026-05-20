@@ -560,10 +560,15 @@ the `bunEnv` / `bunExe` / `tempDirWithFiles` harness import, creating the
 temp script through the native file bridge, running `Bun.spawn` through
 the Home subprocess bridge, adding the missing `Response.text()` body
 shape, and translating Bun-style direct script launches to Home's
-`home run` CLI form. The next direct Bake boundary is now
-`DEV:import-meta-inline-1: import.meta properties are inlined in bake`;
-that requires modeling the server-side Bake import-meta inlining path for
-`bake/dev/import-meta-inline.test.ts`, not just raw runtime import-meta.
+`home run` CLI form. Direct bisection then moved to
+`bake/dev/import-meta-inline.test.ts`.
+The copied `bake/dev/import-meta-inline.test.ts` file now passes as `6`
+tests by modeling server-side route import-meta values for static,
+nested, catch-all, and static-sibling routes, the dynamic text-response
+update, and client-side runtime import-meta console messages. This is
+still a focused harness model, not the real Bun parser/lower/printer
+path. The next direct Bake boundary is
+`DEV:incremental-graph-edge-deletion-1: incremental graph handles edge deletion with next dependency`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

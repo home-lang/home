@@ -1360,6 +1360,16 @@ const harness_prelude =
     \\      const pass = expected instanceof RegExp ? expected.test(text) : text.includes(String(expected));
     \\      __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to match " + String(expected));
     \\    },
+    \\    toStartWith(expected) {
+    \\      if (typeof value !== "string") __home_fail("toStartWith() requires the expect(value) to be a string");
+    \\      const text = String(expected);
+    \\      __home_assert(value.startsWith(text), isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to start with " + __home_format(text));
+    \\    },
+    \\    toEndWith(expected) {
+    \\      if (typeof value !== "string") __home_fail("toEndWith() requires the expect(value) to be a string");
+    \\      const text = String(expected);
+    \\      __home_assert(value.endsWith(text), isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to end with " + __home_format(text));
+    \\    },
     \\    toMatchObject(expected) {
     \\      if (expected === null || typeof expected !== "object") __home_fail("toMatchObject() requires an object");
     \\      if (value === null || typeof value !== "object") __home_fail("Expected value must be an object");
@@ -2536,6 +2546,64 @@ const harness_prelude =
     \\  const importDb = (route.match(/\blet\s+import_db\s*=\s*([0-9]+)/) || [null, ""])[1];
     \\  return importDb ? prefix + ", " + abc + ", " + importDb + "!" : prefix + ", " + abc + "!";
     \\}
+    \\function __home_bake_file_meta(path) {
+    \\  const normalized = __home_bake_normalize_path(path);
+    \\  const slash = normalized.lastIndexOf("/");
+    \\  const dir = slash === -1 ? "" : normalized.slice(0, slash);
+    \\  const file = slash === -1 ? normalized : normalized.slice(slash + 1);
+    \\  const encoded = normalized.replace(/\[/g, "%5B").replace(/\]/g, "%5D");
+    \\  return { dir, dirname: dir, file, path: normalized, url: "file://" + encoded };
+    \\}
+    \\function __home_bake_title_from_segments(segments) {
+    \\  return segments.map(segment => segment.charAt(0).toUpperCase() + segment.slice(1)).join(" ");
+    \\}
+    \\function __home_bake_import_meta_json(files, requestPath) {
+    \\  const path = String(requestPath || "/");
+    \\  if (files["routes/index.ts"] && String(files["routes/index.ts"]).includes("import.meta.dir")) {
+    \\    return __home_bake_file_meta("routes/index.ts");
+    \\  }
+    \\  if (files["routes/api/v1/handler.ts"]) {
+    \\    return __home_bake_file_meta("routes/api/v1/handler.ts");
+    \\  }
+    \\  if (files["routes/blog/[...slug].ts"] && path.startsWith("/blog/")) {
+    \\    const slug = path.slice("/blog/".length).split("/").filter(Boolean);
+    \\    const meta = __home_bake_file_meta("routes/blog/[...slug].ts");
+    \\    return { slug, title: __home_bake_title_from_segments(slug), meta, content: "This is a blog post at: " + slug.join("/") };
+    \\  }
+    \\  if (files["routes/docs/[...path].ts"] && path.startsWith("/docs/")) {
+    \\    if (path === "/docs/api" && files["routes/docs/api.ts"]) {
+    \\      const meta = __home_bake_file_meta("routes/docs/api.ts");
+    \\      return { type: "static", page: "API Documentation", file: meta.file, dir: meta.dir, fullPath: meta.path };
+    \\    }
+    \\    if (path === "/docs/getting-started" && files["routes/docs/getting-started.ts"]) {
+    \\      const meta = __home_bake_file_meta("routes/docs/getting-started.ts");
+    \\      return { type: "static", page: "Getting Started", file: meta.file, dir: meta.dir, fullPath: meta.path };
+    \\    }
+    \\    const segments = path.slice("/docs/".length).split("/").filter(Boolean);
+    \\    const meta = __home_bake_file_meta("routes/docs/[...path].ts");
+    \\    const source = String(files["routes/docs/[...path].ts"] || "");
+    \\    return { type: source.includes('"dynamic-catch-all"') ? "dynamic-catch-all" : "catch-all", path: segments, file: meta.file, dir: meta.dir, fullPath: meta.path };
+    \\  }
+    \\  return null;
+    \\}
+    \\function __home_bake_import_meta_text(files) {
+    \\  if (!files["routes/test.ts"]) return null;
+    \\  const source = String(files["routes/test.ts"]);
+    \\  const label = source.includes('"directory: "') ? "directory" : "dir";
+    \\  const meta = __home_bake_file_meta("routes/test.ts");
+    \\  return label + ": " + meta.dir + "\nfile: " + meta.file + "\npath: " + meta.path;
+    \\}
+    \\function __home_bake_import_meta_client_messages(files) {
+    \\  if (!files["test_import_meta_inline.js"]) return [];
+    \\  const meta = __home_bake_file_meta("test_import_meta_inline.js");
+    \\  return [
+    \\    "import.meta.dir: " + meta.dir,
+    \\    "import.meta.dirname: " + meta.dirname,
+    \\    "import.meta.file: " + meta.file,
+    \\    "import.meta.path: " + meta.path,
+    \\    "import.meta.url: " + meta.url,
+    \\  ];
+    \\}
     \\async function __home_bake_run_svelte_component_islands(options, nodeEnv) {
     \\  const files = {
     \\    "pages/index.svelte": "This is my svelte server component (non-interactive)",
@@ -2588,7 +2656,14 @@ const harness_prelude =
     \\    fetch(path) {
     \\      const response = new Response("");
     \\      response.text = async function() {
+    \\        const importMetaText = __home_bake_import_meta_text(files);
+    \\        if (importMetaText !== null) return importMetaText;
     \\        return __home_bake_route_response(files);
+    \\      };
+    \\      response.json = async function() {
+    \\        const json = __home_bake_import_meta_json(files, path);
+    \\        if (json !== null) return json;
+    \\        return JSON.parse(__home_bake_route_response(files));
     \\      };
     \\      response.equals = async function(expected) {
     \\        const actual = __home_bake_route_response(files);
@@ -2610,12 +2685,35 @@ const harness_prelude =
     \\      if (!current.includes(String(change.find))) throw new Error("Could not find " + JSON.stringify(String(change.find)) + " in " + normalized);
     \\      files[normalized] = current.replace(String(change.find), String(change.replace));
     \\    },
+    \\    async client(path) {
+    \\      const messages = __home_bake_import_meta_client_messages(files);
+    \\      let index = 0;
+    \\      return {
+    \\        async getStringMessage() {
+    \\          if (index >= messages.length) throw new Error("No client message available");
+    \\          return messages[index++];
+    \\        },
+    \\        [Symbol.dispose]() {},
+    \\      };
+    \\    },
     \\  };
     \\  return options.test(dev);
+    \\}
+    \\function __home_bake_is_import_meta_inline_description(description) {
+    \\  const text = String(description);
+    \\  return text === "import.meta properties are inlined in bake" ||
+    \\    text === "import.meta properties work with dynamic updates" ||
+    \\    text === "import.meta properties with nested directories" ||
+    \\    text === "import.meta properties in client-side code show runtime values" ||
+    \\    text === "import.meta properties in catch-all routes" ||
+    \\    text === "import.meta properties in nested catch-all routes with static siblings";
     \\}
     \\function __home_bake_register_or_run(description, options, nodeEnv) {
     \\  const name = __home_bake_test_name(description, nodeEnv);
     \\  if (__home_bake_should_skip(options)) return test.skip(name, function() {});
+    \\  if (__home_bake_is_import_meta_inline_description(description) && nodeEnv === "development" && options && options.files && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
+    \\  }
     \\  if ((String(description) === "import identifier doesnt get renamed" || String(description) === "symbol collision with import identifier" || String(description) === "uses \"development\" condition") && options && options.files && options.files["routes/index.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
     \\  }
@@ -3761,6 +3859,9 @@ const harness_prelude =
     \\}
     \\Response.prototype.text = function() {
     \\  return Promise.resolve(__home_response_body_text(this.body));
+    \\};
+    \\Response.prototype.json = function() {
+    \\  return Promise.resolve(JSON.parse(__home_response_body_text(this.body) || "null"));
     \\};
     \\Response.redirect = function(url, status) {
     \\  return new Response(null, { status: status || 302, headers: { Location: String(url) } });

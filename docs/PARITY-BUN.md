@@ -868,10 +868,21 @@ child observes runtime `import.meta.*` values instead of Bake inlining.
 Latest full-gate probe after that slice used a 60s timeout. It passed
 the delegated Bake deinitialization child (`9` passed) and did not return
 a complete summary before the timeout, so the last complete full-gate
-count remains the post-HTML run above. The next direct copied Bake
-boundary is `bake/dev/import-meta-inline.test.ts`, currently failing as
-the named unsupported registrar case
-`DEV:import-meta-inline-1: import.meta properties are inlined in bake`.
+count remains the post-HTML run above. Direct bisection then moved to
+the copied `bake/dev/import-meta-inline.test.ts` fixture.
+
+The copied `bake/dev/import-meta-inline.test.ts` fixture now passes in
+Home as `6` passed, `0` failed, `0` unsupported, `0` todo. The minimal
+Bake route shim models server-side `import.meta.dir`, `dirname`, `file`,
+`path`, and `url` inlining for static, nested, catch-all, and static
+sibling routes, preserves the dynamic-update text response case, exposes
+the fixture's client-side runtime import-meta log messages, and adds the
+`expect().toStartWith` / `toEndWith` string matchers needed by the copied
+assertions. This is still a focused harness model rather than Bun's real
+parser/lower/printer import-meta inlining path. The next direct copied
+Bake boundary is `bake/dev/incremental-graph-edge-deletion.test.ts`,
+currently failing as
+`DEV:incremental-graph-edge-deletion-1: incremental graph handles edge deletion with next dependency`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
