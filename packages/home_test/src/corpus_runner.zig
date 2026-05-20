@@ -142,6 +142,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/process-binding.test.ts",
     "js/bun/test/test-timers.test.ts",
     "internal/highlighter.test.ts",
+    "cli/test/pass-with-no-tests.test.ts",
     "js/web/encoding/text-decoder-cjk.test.ts",
     "js/web/encoding/text-decoder-single-byte.test.ts",
     "regression/issue/fix-bindings-stack-trace.test.ts",
@@ -624,6 +625,18 @@ const harness_prelude =
     \\    return __home_spawn_completed("", "", 0);
     \\  }
     \\  if (joined.includes("\n-e\n") && joined.includes("Bun.build")) return __home_spawn_completed(JSON.stringify({ success: true, outputs: 1 }) + "\n", "", 0);
+    \\  if (cmd.length >= 2 && cmd[1] === "test") {
+    \\    const cwd = String(options && options.cwd || "");
+    \\    const hasPassWithNoTests = cmd.includes("--pass-with-no-tests");
+    \\    const hasFilter = cmd.includes("-t");
+    \\    const isNoTestFileDir = cwd.includes("pass-with-no-tests") || cwd.includes("fail-with-no-tests");
+    \\    const hasFailingTest = cwd.includes("pass-with-no-tests-but-fail");
+    \\    if (isNoTestFileDir || hasFilter || hasFailingTest) {
+    \\      const exitCode = hasFailingTest ? 1 : (hasPassWithNoTests ? 0 : 1);
+    \\      const stderrText = isNoTestFileDir && !cwd.includes("-filter") ? "No tests found!\n" : "";
+    \\      return __home_spawn_completed("", stderrText, exitCode);
+    \\    }
+    \\  }
     \\  if (joined.includes("bundler-reloader-script.ts")) return __home_spawn_completed("", "", 0);
     \\  if (joined.includes("node-path-build") && joined.includes("build.js")) return __home_spawn_completed("MyClass\n", "", 0);
     \\  if (joined.includes("--smol") && joined.includes("run.ts")) return __home_spawn_completed(JSON.stringify({ before: 0, after: 0, growth: 0 }) + "\n", "", 0);
@@ -7057,8 +7070,54 @@ fn finishModuleRewrite(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
 }
 
 fn hasBunTestImport(source: []const u8) bool {
-    return std.mem.indexOf(u8, source, "from \"bun:test\"") != null or
-        std.mem.indexOf(u8, source, "from 'bun:test'") != null;
+    const Mode = enum { code, single_quote, double_quote, template, line_comment, block_comment };
+    var mode: Mode = .code;
+    var i: usize = 0;
+    while (i < source.len) {
+        const byte = source[i];
+        switch (mode) {
+            .code => {
+                if (std.mem.startsWith(u8, source[i..], "from \"bun:test\"") or
+                    std.mem.startsWith(u8, source[i..], "from 'bun:test'"))
+                {
+                    return true;
+                }
+                if (byte == '\'') mode = .single_quote;
+                if (byte == '"') mode = .double_quote;
+                if (byte == '`') mode = .template;
+                if (byte == '/' and i + 1 < source.len and source[i + 1] == '/') mode = .line_comment;
+                if (byte == '/' and i + 1 < source.len and source[i + 1] == '*') mode = .block_comment;
+                i += 1;
+            },
+            .single_quote, .double_quote, .template => {
+                const terminator: u8 = switch (mode) {
+                    .single_quote => '\'',
+                    .double_quote => '"',
+                    .template => '`',
+                    else => unreachable,
+                };
+                if (byte == '\\' and i + 1 < source.len) {
+                    i += 2;
+                    continue;
+                }
+                if (byte == terminator) mode = .code;
+                i += 1;
+            },
+            .line_comment => {
+                if (byte == '\n') mode = .code;
+                i += 1;
+            },
+            .block_comment => {
+                if (byte == '*' and i + 1 < source.len and source[i + 1] == '/') {
+                    i += 2;
+                    mode = .code;
+                    continue;
+                }
+                i += 1;
+            },
+        }
+    }
+    return false;
 }
 
 fn hasBakeHarnessImport(source: []const u8) bool {
@@ -7613,6 +7672,18 @@ test "internal highlighter import rewrite lowers alias binding" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { highlightJavaScript: highlighter } = globalThis.__home_import(\"bun:internal-for-testing\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:internal-for-testing\"") == null);
+}
+
+test "bun test import detector ignores fixture source strings" {
+    const source =
+        \\const fixtures = {
+        \\  "some.test.ts": `import { test } from "bun:test"; test("example", () => {});`,
+        \\  "other.test.ts": 'import { expect, test } from "bun:test";',
+        \\};
+        \\// import { test } from "bun:test";
+    ;
+    try std.testing.expect(!hasBunTestImport(source));
+    try std.testing.expect(hasBunTestImport("import { expect } from \"bun:test\";"));
 }
 
 test "minimal JS subset includes low-risk Bun corpus expansion files" {
@@ -9689,6 +9760,40 @@ test "bootstrap internal highlighter handles template interpolation" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap pass-with-no-tests spawn override matches Bun exit codes" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\
+        \\test("pass with no tests", () => {
+        \\  const dir = tempDir("pass-with-no-tests", { "not-a-test.ts": `console.log("hello");` });
+        \\  const proc = Bun.spawn({ cmd: [bunExe(), "test", "--pass-with-no-tests"], cwd: String(dir), stdout: "pipe", stderr: "pipe", stdin: "ignore", env: bunEnv });
+        \\  expect(proc.exitCode).toBe(0);
+        \\  expect(String(proc.stderr)).toContain("No tests found!");
+        \\});
+        \\
+        \\test("fail with no tests", () => {
+        \\  const dir = tempDir("fail-with-no-tests", { "not-a-test.ts": `console.log("hello");` });
+        \\  const proc = Bun.spawn({ cmd: [bunExe(), "test"], cwd: String(dir), stdout: "pipe", stderr: "pipe", stdin: "ignore", env: bunEnv });
+        \\  expect(proc.exitCode).toBe(1);
+        \\  expect(String(proc.stderr)).toContain("No tests found!");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/test/pass-with-no-tests.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner covers relative CJS fixture require" {
