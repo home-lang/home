@@ -143,6 +143,13 @@ pub const Program = struct {
             (std.mem.endsWith(u8, path, ".ts") and std.mem.indexOf(u8, path, ".d.") != null);
     }
 
+    fn isJsLikePath(path: []const u8) bool {
+        return std.mem.endsWith(u8, path, ".js") or
+            std.mem.endsWith(u8, path, ".jsx") or
+            std.mem.endsWith(u8, path, ".mjs") or
+            std.mem.endsWith(u8, path, ".cjs");
+    }
+
     /// Replace the source bytes for an existing file (matched by
     /// path). Returns the file's id, or null if `path` isn't
     /// tracked. Drops the file's cached compilation if any.
@@ -179,11 +186,14 @@ pub const Program = struct {
     pub fn compileAll(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
         const ambient_global_namespace_roots = try self.collectAmbientGlobalNamespaceRoots();
         defer freeStringSlice(self.gpa, ambient_global_namespace_roots);
+        const script_object_expandos = try self.collectScriptObjectExpandos();
+        defer self.gpa.free(script_object_expandos);
         for (self.files.items) |f| {
             if (f.compilation != null) continue;
             var per_file = options;
             per_file.is_tsx = options.is_tsx or f.is_tsx;
             per_file.ambient_global_namespace_roots = ambient_global_namespace_roots;
+            per_file.script_object_expandos = script_object_expandos;
             // Per-file declaration-file flag. Multi-file fixtures
             // (e.g. `react.d.ts` + `app.tsx` in one conformance case)
             // share a global `options.is_declaration_file` that the
@@ -231,6 +241,8 @@ pub const Program = struct {
     ) ProgramError!void {
         const ambient_global_namespace_roots = try self.collectAmbientGlobalNamespaceRoots();
         defer freeStringSlice(self.gpa, ambient_global_namespace_roots);
+        const script_object_expandos = try self.collectScriptObjectExpandos();
+        defer self.gpa.free(script_object_expandos);
         for (self.files.items) |f| {
             if (f.compilation != null) {
                 // Already compiled — replay its diagnostics anyway so
@@ -243,6 +255,7 @@ pub const Program = struct {
             per_file.is_tsx = options.is_tsx or f.is_tsx;
             per_file.is_declaration_file = f.is_declaration;
             per_file.ambient_global_namespace_roots = ambient_global_namespace_roots;
+            per_file.script_object_expandos = script_object_expandos;
             if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
             const c = ts_driver.compileSource(self.gpa, f.source, per_file) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
@@ -265,6 +278,97 @@ pub const Program = struct {
             try appendAmbientGlobalNamespaceRootsFromSource(self.gpa, f.source, &out);
         }
         return try out.toOwnedSlice(self.gpa);
+    }
+
+    fn collectScriptObjectExpandos(self: *const Program) ProgramError![]const ts_driver.ScriptObjectExpando {
+        var out: std.ArrayListUnmanaged(ts_driver.ScriptObjectExpando) = .empty;
+        errdefer out.deinit(self.gpa);
+        for (self.files.items) |f| {
+            if (!isJsLikePath(f.path)) continue;
+            var roots: std.ArrayListUnmanaged([]const u8) = .empty;
+            defer roots.deinit(self.gpa);
+            try collectUntypedObjectLiteralRoots(self.gpa, f.source, &roots);
+            for (roots.items) |root| {
+                try collectScriptObjectExpandosForRoot(self.gpa, f.source, root, &out);
+            }
+        }
+        return try out.toOwnedSlice(self.gpa);
+    }
+
+    fn collectUntypedObjectLiteralRoots(
+        gpa: std.mem.Allocator,
+        source: []const u8,
+        out: *std.ArrayListUnmanaged([]const u8),
+    ) ProgramError!void {
+        var i: usize = 0;
+        while (i < source.len) : (i += 1) {
+            const kw_len: usize = if (identifierKeywordAt(source, i, "var"))
+                3
+            else if (identifierKeywordAt(source, i, "let"))
+                3
+            else if (identifierKeywordAt(source, i, "const"))
+                5
+            else
+                continue;
+            var p = i + kw_len;
+            while (p < source.len and std.ascii.isWhitespace(source[p])) p += 1;
+            if (p >= source.len or !asciiIdentifierStart(source[p])) continue;
+            const name_start = p;
+            p += 1;
+            while (p < source.len and asciiIdentifierContinue(source[p])) p += 1;
+            const name = source[name_start..p];
+            while (p < source.len and std.ascii.isWhitespace(source[p])) p += 1;
+            if (p >= source.len or source[p] != '=') continue;
+            p += 1;
+            while (p < source.len and std.ascii.isWhitespace(source[p])) p += 1;
+            if (p >= source.len or source[p] != '{') continue;
+            p += 1;
+            while (p < source.len and std.ascii.isWhitespace(source[p])) p += 1;
+            if (p >= source.len or source[p] != '}') continue;
+            var exists = false;
+            for (out.items) |existing| {
+                if (std.mem.eql(u8, existing, name)) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists) try out.append(gpa, name);
+        }
+    }
+
+    fn collectScriptObjectExpandosForRoot(
+        gpa: std.mem.Allocator,
+        source: []const u8,
+        root: []const u8,
+        out: *std.ArrayListUnmanaged(ts_driver.ScriptObjectExpando),
+    ) ProgramError!void {
+        var i: usize = 0;
+        while (i + root.len + 1 < source.len) : (i += 1) {
+            if (!std.mem.startsWith(u8, source[i..], root)) continue;
+            if (i > 0 and asciiIdentifierContinue(source[i - 1])) continue;
+            var p = i + root.len;
+            if (p >= source.len or source[p] != '.') continue;
+            p += 1;
+            if (p >= source.len or !asciiIdentifierStart(source[p])) continue;
+            const member_start = p;
+            p += 1;
+            while (p < source.len and asciiIdentifierContinue(source[p])) p += 1;
+            const member = source[member_start..p];
+            while (p < source.len and std.ascii.isWhitespace(source[p])) p += 1;
+            if (p >= source.len or source[p] != '=') continue;
+            p += 1;
+            while (p < source.len and std.ascii.isWhitespace(source[p])) p += 1;
+            if (!(std.mem.startsWith(u8, source[p..], "function") or
+                std.mem.startsWith(u8, source[p..], "class")))
+            {
+                continue;
+            }
+            for (out.items) |existing| {
+                if (std.mem.eql(u8, existing.root, root) and std.mem.eql(u8, existing.member, member)) break;
+            } else {
+                try out.append(gpa, .{ .root = root, .member = member });
+            }
+        }
     }
 
     fn appendAmbientGlobalNamespaceRootsFromSource(

@@ -106,6 +106,11 @@ pub const ExternalResolver = struct {
     }
 };
 
+pub const ScriptObjectExpando = struct {
+    root: []const u8,
+    member: []const u8,
+};
+
 /// TypeScript-compatible diagnostic codes used by the checker.
 /// Matches `ts_diagnostics.TsCodes` numerically. We keep a local
 /// copy to avoid a cross-package dependency from the checker.
@@ -1379,6 +1384,10 @@ pub const Checker = struct {
     /// the virtual filesystem. Empty means "fall back to the
     /// `@filename:` virtual-section scan".
     importer_path: []const u8 = "",
+    /// Program-level JS namespace-object expandos such as
+    /// `var Ns = {}; Ns.C = function() {}` discovered in sibling
+    /// script files. Borrowed from the driver/program while checking.
+    script_object_expandos: []const ScriptObjectExpando = &.{},
     /// Program-level namespace roots contributed by `declare global {
     /// namespace X { ... } }` blocks in sibling files. Borrowed from
     /// the driver/program while checking this file.
@@ -1535,6 +1544,10 @@ pub const Checker = struct {
     /// 'any' type.` shape.
     pub fn setExternalResolver(self: *Checker, resolver: ?ExternalResolver) void {
         self.external_resolver = resolver;
+    }
+
+    pub fn setScriptObjectExpandos(self: *Checker, expandos: []const ScriptObjectExpando) void {
+        self.script_object_expandos = expandos;
     }
 
     pub fn setAmbientGlobalNamespaceRoots(self: *Checker, roots: []const []const u8) void {
@@ -24681,6 +24694,7 @@ pub const Checker = struct {
                 if (try self.reportMissingImportTypeModule(type_node)) return types.Primitive.any;
                 if (r.qualifier_len > 0) {
                     if (try self.qualifiedEnumMemberTypeRef(type_node)) |t| return t;
+                    if (try self.checkJsObjectExpandoTypeRef(type_node)) |t| return t;
                     if (try self.resolveQualifiedTypeRef(type_node)) |t| return t;
                     if (try self.reactComponentClassType(type_node)) |t| return t;
                     try self.reportCannotFindNamespaceForQualifiedTypeRef(type_node);
@@ -30308,6 +30322,7 @@ pub const Checker = struct {
         const leaf_text = trimmed[dot_pos + 1 ..];
         const root_name = self.string_interner.intern(root_text) catch return error.OutOfMemory;
         const leaf_name = self.string_interner.intern(leaf_text) catch return error.OutOfMemory;
+        if (try self.checkJsObjectExpandoQualifiedType(root_name, leaf_name, at_node)) |t| return t;
         const root_t = (try self.typeOfVisibleNameNoDiag(at_node, root_name)) orelse return null;
         if (try self.lookupObjectMember(root_t, leaf_name)) |member_t| return member_t;
         const msg = try std.fmt.allocPrint(
@@ -36766,6 +36781,125 @@ pub const Checker = struct {
         if (self.localNameIsImportBinding(obj_id.name, m.object)) return null;
         if (!self.identifierNamesUntypedObjectLiteralBindingInScope(obj_id.name, node)) return null;
         return .{ .obj_name = obj_id.name, .prop_name = m.name };
+    }
+
+    fn checkJsObjectExpandoTypeRef(self: *Checker, type_node: NodeId) CheckError!?TypeId {
+        if (!self.sourceHasCheckJsDirective()) return null;
+        if (self.hir.kindOf(type_node) != .type_ref) return null;
+        const r = hir_mod.typeRefOf(self.hir, type_node);
+        if (r.qualifier_len != 1) return null;
+        const qualifiers = hir_mod.typeRefQualifier(self.hir, type_node);
+        if (qualifiers.len != 1 or self.hir.kindOf(qualifiers[0]) != .identifier) return null;
+        const root_id = hir_mod.identifierOf(self.hir, qualifiers[0]);
+        return try self.checkJsObjectExpandoQualifiedType(root_id.name, r.name, type_node);
+    }
+
+    fn checkJsObjectExpandoQualifiedType(
+        self: *Checker,
+        root_name: hir_mod.StringId,
+        member_name: hir_mod.StringId,
+        anchor: NodeId,
+    ) CheckError!?TypeId {
+        const key: MemberKey = .{ .obj_name = root_name, .prop_name = member_name };
+        const value_t = self.checkjs_object_expando_narrows.get(key) orelse
+            (try self.checkJsObjectExpandoAssignmentValueType(root_name, member_name, anchor)) orelse blk: {
+            if (try self.programScriptObjectExpandoInstanceType(root_name, member_name)) |instance_t| {
+                try self.recordObjectExpandoInstanceDisplay(instance_t, member_name);
+                return instance_t;
+            }
+            break :blk null;
+        } orelse
+            return null;
+        const instance_t = if (try self.constructReturnType(value_t)) |constructed|
+            constructed
+        else
+            try self.checkJsObjectExpandoPrototypeInstanceType(root_name, member_name, anchor);
+        try self.recordObjectExpandoInstanceDisplay(instance_t, member_name);
+        return instance_t;
+    }
+
+    fn programScriptObjectExpandoInstanceType(
+        self: *Checker,
+        root_name: hir_mod.StringId,
+        member_name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        const root_text = self.string_interner.get(root_name);
+        const member_text = self.string_interner.get(member_name);
+        for (self.script_object_expandos) |expando| {
+            if (!std.mem.eql(u8, expando.root, root_text)) continue;
+            if (!std.mem.eql(u8, expando.member, member_text)) continue;
+            return self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+        }
+        return null;
+    }
+
+    fn checkJsObjectExpandoAssignmentValueType(
+        self: *Checker,
+        root_name: hir_mod.StringId,
+        member_name: hir_mod.StringId,
+        anchor: NodeId,
+    ) CheckError!?TypeId {
+        if (!self.identifierNamesUntypedObjectLiteralBindingInScope(root_name, anchor)) return null;
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const use_start = self.hir.spanOf(anchor).start;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.spanOf(stmt).start > use_start) break;
+            const node = self.unwrapExportDecl(stmt);
+            if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .assignment) continue;
+            const a = hir_mod.assignmentOf(self.hir, node);
+            if (a.op != null or a.target == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(a.target) != .member_access) continue;
+            const target = hir_mod.memberOf(self.hir, a.target);
+            if (target.name != member_name) continue;
+            if (target.object == hir_mod.none_node_id or self.hir.kindOf(target.object) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, target.object).name != root_name) continue;
+            if (a.value == hir_mod.none_node_id) return types.Primitive.any;
+            const value_t = self.hir.typeOf(a.value);
+            if (value_t != types.Primitive.none and value_t != types.Primitive.unknown) return value_t;
+            return try self.checkExpression(a.value);
+        }
+        return null;
+    }
+
+    fn checkJsObjectExpandoPrototypeInstanceType(
+        self: *Checker,
+        root_name: hir_mod.StringId,
+        member_name: hir_mod.StringId,
+        anchor: NodeId,
+    ) CheckError!TypeId {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) {
+            return self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+        }
+        const use_start = self.hir.spanOf(anchor).start;
+        const prototype_name = self.string_interner.intern("prototype") catch return error.OutOfMemory;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.spanOf(stmt).start > use_start) break;
+            const node = self.unwrapExportDecl(stmt);
+            if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .assignment) continue;
+            const a = hir_mod.assignmentOf(self.hir, node);
+            if (a.op != null or a.target == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(a.target) != .member_access) continue;
+            const proto_access = hir_mod.memberOf(self.hir, a.target);
+            if (proto_access.name != prototype_name) continue;
+            if (proto_access.object == hir_mod.none_node_id or self.hir.kindOf(proto_access.object) != .member_access) continue;
+            const ctor_access = hir_mod.memberOf(self.hir, proto_access.object);
+            if (ctor_access.name != member_name) continue;
+            if (ctor_access.object == hir_mod.none_node_id or self.hir.kindOf(ctor_access.object) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, ctor_access.object).name != root_name) continue;
+            if (a.value == hir_mod.none_node_id or self.hir.kindOf(a.value) != .object_literal) break;
+            const proto_t = self.hir.typeOf(a.value);
+            if (proto_t != types.Primitive.none and proto_t != types.Primitive.unknown) return proto_t;
+            return try self.checkExpression(a.value);
+        }
+        return self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+    }
+
+    fn recordObjectExpandoInstanceDisplay(self: *Checker, instance_t: TypeId, name: hir_mod.StringId) !void {
+        if (instance_t < types.Primitive.first_dynamic or instance_t >= self.interner.pool.typeCount()) return;
+        if (self.alias_display_names.contains(instance_t)) return;
+        try self.alias_display_names.put(self.gpa, instance_t, self.string_interner.get(name));
     }
 
     fn identifierNamesUntypedObjectLiteralBindingInScope(self: *Checker, name: hir_mod.StringId, from_node: NodeId) bool {
@@ -56161,6 +56295,9 @@ test "checker: for-await allowed in async function and async generator" {
         \\async function* g() { for await (const x of y) {} }
     );
     defer destroySetup(s);
+    const expandos = [_]ScriptObjectExpando{.{ .root = "Ns", .member = "One" }};
+    s.checker.setScriptObjectExpandos(&expandos);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.for_await_only_in_async);
@@ -73639,6 +73776,35 @@ test "checker: checkjs object namespace class expando is visible to new and exte
         }
     }
     try T.expectEqual(@as(usize, 1), number_member_count);
+}
+
+test "checker: checkjs JSDoc qualified object expando constructor names instance type" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: ns.js
+        \\var Ns = {};
+        \\Ns.One = function() {};
+        \\Ns.One.prototype = { ok() {} };
+        \\
+        \\// @Filename: other.js
+        \\/** @type {Ns.One} */
+        \\var one = undefined;
+        \\one.wat;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var missing_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.namespace_no_exported_member);
+        if (d.code == TsCodes.property_does_not_exist and
+            std.mem.indexOf(u8, d.message, "wat") != null and
+            std.mem.indexOf(u8, d.message, "One") != null)
+        {
+            missing_count += 1;
+        }
+    }
+    try T.expectEqual(@as(usize, 1), missing_count);
 }
 
 test "checker: checkjs CommonJS export property assignment flow reports possibly undefined call once" {

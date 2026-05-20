@@ -24,6 +24,7 @@ pub const Hir = hir_mod.Hir;
 pub const Token = ts_lexer.Token;
 pub const StrictFlags = ts_checker.StrictFlags;
 pub const ExternalResolver = ts_checker.ExternalResolver;
+pub const ScriptObjectExpando = ts_checker.ScriptObjectExpando;
 
 /// One unified diagnostic across all phases.
 pub const Diagnostic = struct {
@@ -162,6 +163,9 @@ pub const CompileOptions = struct {
     /// this to make qualified type refs like `X.Y` see global
     /// namespace augmentations declared elsewhere.
     ambient_global_namespace_roots: []const []const u8 = &.{},
+    /// Program-level JS namespace-object expandos discovered in
+    /// sibling script files.
+    script_object_expandos: []const ScriptObjectExpando = &.{},
     /// Effective `--moduleResolution` value as a normalized
     /// lower-case label (`"classic"`, `"node10"`, `"node16"`,
     /// `"nodenext"`, `"bundler"`). The conformance harness derives
@@ -809,6 +813,9 @@ pub fn compileSource(
         (virtualFilenameIsJs(source) or pathIsJsLike(options.importer_path)));
     checker.setTargetEs5Baseline(options.report_deprecated_target_es5);
     if (options.external_resolver) |er| checker.setExternalResolver(er);
+    if (options.script_object_expandos.len > 0) {
+        checker.setScriptObjectExpandos(options.script_object_expandos);
+    }
     if (options.ambient_global_namespace_roots.len > 0) {
         checker.setAmbientGlobalNamespaceRoots(options.ambient_global_namespace_roots);
     }
