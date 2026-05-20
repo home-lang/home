@@ -748,6 +748,12 @@ const CommonJsExportEntry = struct {
     }
 };
 
+const CommonJsImportMemberSpace = enum {
+    type,
+    value,
+    jsdoc_type,
+};
+
 /// Predicate metadata attached to a specific object member. Unlike
 /// `signature_predicates`, this key distinguishes same-shaped methods
 /// such as `isLeader(): this is LeadGuard` and
@@ -12614,6 +12620,7 @@ pub const Checker = struct {
                 for (hir_mod.typeRefArgs(self.hir, type_node)) |arg| {
                     try self.reportUnresolvedBodylessSignatureTypeRefs(arg, type_params);
                 }
+                if (self.importTypeModuleSpecifier(type_node) != null) return;
                 if (r.qualifier_len != 0 or r.args_len != 0) return;
                 if (self.typeParamNameMatches(r.name, type_params)) return;
                 if (try self.importedTypeRefForLocal(r.name, type_node)) |_| return;
@@ -20652,6 +20659,7 @@ pub const Checker = struct {
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const stmts = hir_mod.blockStmts(self.hir, root);
         var export_alias: ?hir_mod.StringId = null;
+        var direct_export_t: TypeId = types.Primitive.none;
         var found_section = false;
         for (stmts) |raw| {
             if (!self.virtualSectionMatchesSpecifier(src, raw, spec)) continue;
@@ -20660,8 +20668,12 @@ pub const Checker = struct {
             const a = hir_mod.assignmentOf(self.hir, raw);
             if (a.op != null or a.target == hir_mod.none_node_id or a.value == hir_mod.none_node_id) continue;
             if (!self.memberAccessIsModuleExports(a.target)) continue;
-            if (self.hir.kindOf(a.value) != .identifier) continue;
-            export_alias = hir_mod.identifierOf(self.hir, a.value).name;
+            if (self.hir.kindOf(a.value) == .identifier) {
+                export_alias = hir_mod.identifierOf(self.hir, a.value).name;
+                direct_export_t = try self.commonJsExportAssignmentValueType(a.value);
+                continue;
+            }
+            direct_export_t = try self.commonJsExportAssignmentValueType(a.value);
         }
         if (!found_section) return null;
 
@@ -20689,17 +20701,29 @@ pub const Checker = struct {
             }
         }
 
-        if (entries.items.len == 0) return null;
+        if (entries.items.len == 0 and direct_export_t == types.Primitive.none) return null;
         for (entries.items) |entry| {
             if (entry.module_nodes.items.len == 0 or entry.alias_nodes.items.len == 0) continue;
             for (entry.module_nodes.items) |node| try self.reportCommonJsExportRedeclaredOnce(node, entry.name);
             for (entry.alias_nodes.items) |node| try self.reportCommonJsExportRedeclaredOnce(node, entry.name);
         }
 
+        if (direct_export_t != types.Primitive.none and direct_export_t < self.interner.pool.typeCount()) {
+            const flags = self.interner.pool.flagsOf(direct_export_t);
+            if (!flags.is_object_type and !flags.is_intersection) return direct_export_t;
+        } else if (direct_export_t != types.Primitive.none) {
+            return direct_export_t;
+        }
+
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
+        if (direct_export_t != types.Primitive.none and direct_export_t < self.interner.pool.typeCount()) {
+            for (self.interner.objectMembers(direct_export_t)) |member| {
+                try members.append(self.gpa, member);
+            }
+        }
         for (entries.items) |entry| {
-            try members.append(self.gpa, .{
+            try self.upsertObjectMember(&members, .{
                 .name = entry.name,
                 .type = entry.typ,
                 .is_optional = false,
@@ -20708,6 +20732,132 @@ pub const Checker = struct {
             });
         }
         return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+    }
+
+    fn upsertObjectMember(
+        self: *Checker,
+        members: *std.ArrayListUnmanaged(types.ObjectMember),
+        member: types.ObjectMember,
+    ) CheckError!void {
+        for (members.items) |*existing| {
+            if (existing.name != member.name) continue;
+            existing.* = member;
+            return;
+        }
+        try members.append(self.gpa, member);
+    }
+
+    fn virtualCommonJsImportTypeMember(
+        self: *Checker,
+        type_node: NodeId,
+        space: CommonJsImportMemberSpace,
+    ) CheckError!?TypeId {
+        if (self.hir.kindOf(type_node) != .type_ref) return null;
+        const spec = self.importTypeModuleSpecifier(type_node) orelse return null;
+        if (!std.mem.startsWith(u8, spec, ".")) return null;
+        if (!self.sourceHasVirtualFilenameSections()) return null;
+        const r = hir_mod.typeRefOf(self.hir, type_node);
+        if (r.qualifier_len != 0) return null;
+        return try self.virtualCommonJsImportMemberByName(
+            type_node,
+            spec,
+            r.name,
+            space,
+            self.qualifiedTypeRefLeafNamePos(type_node),
+        );
+    }
+
+    fn virtualCommonJsImportMemberByName(
+        self: *Checker,
+        anchor: NodeId,
+        spec: []const u8,
+        leaf: hir_mod.StringId,
+        space: CommonJsImportMemberSpace,
+        missing_pos: ?u32,
+    ) CheckError!?TypeId {
+        if (!std.mem.startsWith(u8, spec, ".")) return null;
+        if (!self.sourceHasVirtualFilenameSections()) return null;
+        if (try self.virtualCommonJsTypedefAliasType(anchor, spec, leaf)) |type_export| {
+            if (space == .value) {
+                try self.reportCommonJsImportTypeMissingExport(anchor, spec, leaf, missing_pos);
+                return types.Primitive.any;
+            }
+            return type_export;
+        }
+
+        const module_t = (try self.virtualCommonJsModuleExportObjectType(anchor, spec)) orelse return null;
+        const value_t = (try self.lookupObjectMember(module_t, leaf)) orelse return null;
+        if (space == .value) return value_t;
+        if (space == .jsdoc_type) return try self.commonJsValueExportAsJsDocType(value_t);
+        try self.reportCommonJsImportTypeMissingExport(anchor, spec, leaf, missing_pos);
+        return types.Primitive.any;
+    }
+
+    fn commonJsValueExportAsJsDocType(self: *Checker, value_t: TypeId) CheckError!TypeId {
+        if (self.class_name_by_static.get(value_t)) |class_name| {
+            if (self.class_instance_types.get(class_name)) |instance_t| return instance_t;
+        }
+        return value_t;
+    }
+
+    fn virtualCommonJsTypedefAliasType(
+        self: *Checker,
+        anchor: NodeId,
+        spec: []const u8,
+        name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        const src = self.source orelse return null;
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const wanted = self.string_interner.get(name);
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            if (!self.virtualSectionMatchesSpecifier(src, raw, spec)) continue;
+            const start = self.virtualSectionStartForNode(raw);
+            const end = self.virtualSectionEndForNode(raw);
+            if (start >= end or end > src.len) return null;
+            return try self.jsDocTypedefAliasType(src[start..end], wanted);
+        }
+        return null;
+    }
+
+    fn reportCommonJsImportTypeMissingExport(
+        self: *Checker,
+        anchor: NodeId,
+        spec: []const u8,
+        leaf: hir_mod.StringId,
+        missing_pos: ?u32,
+    ) CheckError!void {
+        const leaf_pos = missing_pos;
+        for (self.diagnostics.items) |d| {
+            if (d.code == TsCodes.namespace_no_exported_member and d.pos == leaf_pos) return;
+        }
+        const leaf_text = self.string_interner.get(leaf);
+        const module_label = try self.commonJsExportEqualsNamespaceLabel(spec);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Namespace '{s}' has no exported member '{s}'.",
+            .{ module_label, leaf_text },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = anchor,
+            .pos = leaf_pos,
+            .code = TsCodes.namespace_no_exported_member,
+            .message = msg,
+        });
+    }
+
+    fn commonJsExportEqualsNamespaceLabel(self: *Checker, spec: []const u8) CheckError![]const u8 {
+        var trimmed = spec;
+        while (std.mem.startsWith(u8, trimmed, "./")) trimmed = trimmed[2..];
+        while (std.mem.startsWith(u8, trimmed, "../")) trimmed = trimmed[3..];
+        const exts = [_][]const u8{ ".d.ts", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs" };
+        for (exts) |ext| {
+            if (std.mem.endsWith(u8, trimmed, ext)) {
+                trimmed = trimmed[0 .. trimmed.len - ext.len];
+                break;
+            }
+        }
+        return try std.fmt.allocPrint(self.diag_arena.allocator(), "\"{s}\".export=", .{trimmed});
     }
 
     fn commonJsModuleExportsPropertyName(self: *Checker, target: NodeId) ?hir_mod.StringId {
@@ -24860,9 +25010,13 @@ pub const Checker = struct {
             .type_ref => {
                 const r = hir_mod.typeRefOf(self.hir, type_node);
                 if (try self.reportMissingImportTypeModule(type_node)) return types.Primitive.any;
+                if (self.importTypeModuleSpecifier(type_node) != null) {
+                    if (try self.virtualCommonJsImportTypeMember(type_node, .type)) |t| return t;
+                }
                 if (r.qualifier_len > 0) {
                     if (try self.qualifiedEnumMemberTypeRef(type_node)) |t| return t;
                     if (try self.checkJsObjectExpandoTypeRef(type_node)) |t| return t;
+                    if (try self.virtualCommonJsImportTypeMember(type_node, .type)) |t| return t;
                     if (try self.resolveQualifiedTypeRef(type_node)) |t| return t;
                     if (try self.reactComponentClassType(type_node)) |t| return t;
                     try self.reportCannotFindNamespaceForQualifiedTypeRef(type_node);
@@ -25280,6 +25434,9 @@ pub const Checker = struct {
                 // path identifier expressions go through, so the
                 // result honors module-level scoping + nested scopes.
                 const tt = hir_mod.typeofTypeOf(self.hir, type_node);
+                if (self.hir.kindOf(tt.operand) == .type_ref) {
+                    if (try self.virtualCommonJsImportTypeMember(tt.operand, .value)) |import_value_t| return import_value_t;
+                }
                 if (self.hir.kindOf(tt.operand) == .identifier) {
                     const name = hir_mod.identifierOf(self.hir, tt.operand).name;
                     const raw = self.string_interner.get(name);
@@ -30685,6 +30842,7 @@ pub const Checker = struct {
         }
         if (try self.jsDocGenericTypeTextToType(src, trimmed)) |generic_t| return generic_t;
         if (try self.jsDocFunctionType(trimmed)) |sig| return sig;
+        if (try self.jsDocImportTypeTextToType(src, trimmed)) |import_t| return import_t;
         if (try self.jsDocPrimitiveType(trimmed)) |prim| return prim;
         if (try self.jsDocObjectSkeletonFromTypeText(trimmed)) |obj| return obj;
         const base = jsDocTypeBaseName(trimmed);
@@ -30887,6 +31045,26 @@ pub const Checker = struct {
     }
 
     fn jsDocFunctionType(self: *Checker, type_text: []const u8) CheckError!?TypeId {
+        if (std.mem.indexOf(u8, type_text, "=>")) |arrow| {
+            const params_part = std.mem.trim(u8, type_text[0..arrow], " \t\r\n");
+            if (params_part.len < 2 or params_part[0] != '(' or params_part[params_part.len - 1] != ')') return null;
+            var params: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer params.deinit(self.gpa);
+            var splitter = JsDocTopLevelSplitter.init(params_part[1 .. params_part.len - 1], ',');
+            while (splitter.next()) |raw_param| {
+                const param = std.mem.trim(u8, raw_param, " \t\r\n");
+                if (param.len == 0) continue;
+                const param_t = (try self.jsDocFunctionType(param)) orelse
+                    (try self.jsDocPrimitiveType(param)) orelse
+                    types.Primitive.any;
+                try params.append(self.gpa, param_t);
+            }
+            const ret_text = std.mem.trim(u8, type_text[arrow + "=>".len ..], " \t\r\n");
+            const ret_t = (try self.jsDocFunctionType(ret_text)) orelse
+                (try self.jsDocPrimitiveType(ret_text)) orelse
+                types.Primitive.any;
+            return self.interner.internSignature(params.items, ret_t, false) catch return error.OutOfMemory;
+        }
         const prefix = "function(";
         if (!std.mem.startsWith(u8, type_text, prefix)) return null;
         const close = jsDocMatchingParen(type_text, "function".len) orelse return null;
@@ -30920,6 +31098,36 @@ pub const Checker = struct {
                 types.Primitive.any;
         }
         return self.interner.internSignature(params.items, ret_t, false) catch return error.OutOfMemory;
+    }
+
+    fn jsDocImportTypeTextToType(self: *Checker, src: []const u8, type_text: []const u8) CheckError!?TypeId {
+        var space: CommonJsImportMemberSpace = .jsdoc_type;
+        var text = type_text;
+        if (std.mem.startsWith(u8, text, "typeof")) {
+            const after_typeof = std.mem.trimStart(u8, text["typeof".len..], " \t\r\n");
+            if (after_typeof.len == text.len - "typeof".len) return null;
+            text = after_typeof;
+            space = .value;
+        }
+        const prefix = "import(";
+        if (!std.mem.startsWith(u8, text, prefix)) return null;
+        const close = jsDocMatchingParen(text, "import".len) orelse return null;
+        if (close + 2 > text.len or text[close + 1] != '.') return null;
+        var spec_text = std.mem.trim(u8, text[prefix.len..close], " \t\r\n");
+        if (spec_text.len < 2) return null;
+        const quote = spec_text[0];
+        if ((quote != '"' and quote != '\'') or spec_text[spec_text.len - 1] != quote) return null;
+        spec_text = spec_text[1 .. spec_text.len - 1];
+        const member_text = std.mem.trim(u8, text[close + 2 ..], " \t\r\n");
+        if (member_text.len == 0) return null;
+        for (member_text) |c| {
+            if (!isJsDocIdentChar(c)) return null;
+        }
+        const member_id = self.string_interner.intern(member_text) catch return error.OutOfMemory;
+        const anchor = self.jsdoc_diagnostic_anchor;
+        if (anchor == hir_mod.none_node_id) return null;
+        const member_pos = self.sliceStartPos(src, member_text);
+        return try self.virtualCommonJsImportMemberByName(anchor, spec_text, member_id, space, member_pos);
     }
 
     fn jsDocMatchingParen(text: []const u8, open_idx: usize) ?usize {
@@ -32850,6 +33058,15 @@ pub const Checker = struct {
                     if (try self.jsDocTypeForPrototypeAssignmentTarget(node, a.target)) |overridden_t| {
                         target_t = overridden_t;
                     }
+                    if (self.commonJsModuleExportsPropertyName(a.target)) |prop_name| {
+                        if (self.lookupCommonJsExportNarrow(try self.commonJsModuleExportsDirectKey())) |exports_t| {
+                            if (!self.typeCanReceiveCommonJsExportProperty(exports_t) and
+                                (try self.lookupObjectMember(exports_t, prop_name)) == null)
+                            {
+                                try self.reportPropertyDoesNotExistOnType(a.target, prop_name, exports_t);
+                            }
+                        }
+                    }
                 }
                 // Reassignment clears any prior conditional alias for
                 // the variable: `let cond = isString(x); cond = false;
@@ -32979,6 +33196,12 @@ pub const Checker = struct {
                     {
                         if (commonjs_export_key) |key| {
                             try self.recordCommonJsExportNarrow(key, assignment_result_t);
+                        }
+                        if (target_kind == .member_access and self.memberAccessIsModuleExports(a.target)) {
+                            try self.recordCommonJsExportNarrow(
+                                try self.commonJsModuleExportsDirectKey(),
+                                try self.commonJsExportAssignmentValueType(a.value),
+                            );
                         }
                         if (checkjs_object_expando_key) |key| {
                             try self.recordCheckJsObjectExpandoNarrow(key, assignment_result_t);
@@ -37082,6 +37305,19 @@ pub const Checker = struct {
             try self.recordMemberNarrow(key, t);
         }
         try self.commonjs_export_narrows.put(self.gpa, key, t);
+    }
+
+    fn commonJsModuleExportsDirectKey(self: *Checker) CheckError!MemberKey {
+        const module_name = self.string_interner.intern("module") catch return error.OutOfMemory;
+        const exports_name = self.string_interner.intern("exports") catch return error.OutOfMemory;
+        return .{ .obj_name = module_name, .prop_name = exports_name };
+    }
+
+    fn typeCanReceiveCommonJsExportProperty(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.any or t == types.Primitive.unknown or t == types.Primitive.object_t) return true;
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        return flags.is_object_type or flags.is_intersection or flags.is_type_parameter;
     }
 
     fn recordCheckJsObjectExpandoNarrow(self: *Checker, key: MemberKey, t: TypeId) !void {
