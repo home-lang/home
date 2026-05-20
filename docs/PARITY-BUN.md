@@ -331,17 +331,19 @@ This completes the current `bake/dev-and-prod.test.ts` file. The first
 narrow `minimalFramework` route model for import binding updates,
 symbol-collision preservation, development export conditions, and a
 missing-import reload after `dev.write("second.ts", ...)`. These are
-bootstrap route smokes, not full internal-Bake-dev parser/printer parity
-yet; the real Bun path still needs the vendored parser/lower/printer
-pipeline wired into Home. Later Bake files are still recorded as
-unsupported until the broader DevServer / bundler / browser-client
-runtime path lands.
+bootstrap route smokes, not full internal-Bake-dev parser/printer parity.
+The default-export same-scope client graph smoke also runs through a
+narrow fixture graph model for dynamic imports, default export chunk
+formatting, and HMR chunk inspection. The real Bun path still needs the
+vendored parser/lower/printer pipeline wired into Home. Later Bake files
+are still recorded as unsupported until the broader DevServer / bundler /
+browser-client runtime path lands.
 
-Latest measured full gate after the Bake bundle-route slice:
-`4,013` files executed, `420` passed, `3,968` failed, `1,521`
+Latest measured full gate after the Bake default-export graph slice:
+`4,013` files executed, `420` passed, `3,967` failed, `1,520`
 unsupported, `35` todo. First failure: `bake/dev/bundle.test.ts`
 with the named unsupported Bake registration for
-` DEV:bundle-5: default export same-scope handling`.
+` DEV:bundle-6: directory cache bust case #17576`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

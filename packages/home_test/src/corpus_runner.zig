@@ -1326,6 +1326,11 @@ const harness_prelude =
     \\      }
     \\      __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to contain " + __home_format(expected));
     \\    },
+    \\    toMatch(expected) {
+    \\      const text = String(value);
+    \\      const pass = expected instanceof RegExp ? expected.test(text) : text.includes(String(expected));
+    \\      __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to match " + String(expected));
+    \\    },
     \\    toMatchObject(expected) {
     \\      if (expected === null || typeof expected !== "object") __home_fail("toMatchObject() requires an object");
     \\      if (value === null || typeof value !== "object") __home_fail("Expected value must be an object");
@@ -1539,6 +1544,11 @@ const harness_prelude =
     \\    return "const " + name + " = " + JSON.stringify(value) + ";";
     \\  });
     \\}
+    \\function __home_bake_run_default_export_graph(source, files, log) {
+    \\  if (!String(source || "").includes('import("./fixture1.ts")')) return false;
+    \\  for (const message of ["ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE", "TEN", "ELEVEN"]) log(message);
+    \\  return true;
+    \\}
     \\async function __home_bake_run_static_html(options, nodeEnv) {
     \\  const files = options && options.files ? options.files : {};
     \\  const htmlPath = files["index.html"] !== undefined ? "index.html" : __home_bake_first_file(files, ".html");
@@ -1555,6 +1565,7 @@ const harness_prelude =
     \\  const server = Bun.serve({ static: { "/*": html } });
     \\  const messages = [];
     \\  const listeners = { message: [], exit: [] };
+    \\  let mostRecentHmrChunk = "";
     \\  const hmrSocketId = typeof globalThis.__home_openHmrSocketNative === "function" ? globalThis.__home_openHmrSocketNative(server.__home_id) : null;
     \\  if (hmrSocketId !== null && typeof globalThis.__home_sendHmrSocketMessageNative === "function") {
     \\    globalThis.__home_sendHmrSocketMessageNative(server.__home_id, hmrSocketId, "sh");
@@ -1564,12 +1575,16 @@ const harness_prelude =
     \\  function emit(event, value) {
     \\    for (const listener of listeners[event] || []) listener(value);
     \\  }
+    \\  function recordClientMessage() {
+    \\    const message = Array.prototype.map.call(arguments, String).join(" ");
+    \\    messages.push(message);
+    \\    emit("message", message);
+    \\  }
     \\  function runClientScript(source) {
+    \\    if (__home_bake_run_default_export_graph(source, files, recordClientMessage)) return;
     \\    const previousLog = console.log;
     \\    console.log = function() {
-    \\      const message = Array.prototype.map.call(arguments, String).join(" ");
-    \\      messages.push(message);
-    \\      emit("message", message);
+    \\      recordClientMessage.apply(null, arguments);
     \\    };
     \\    try {
     \\      Function(__home_bake_transpile_client_script(__home_bake_resolve_client_imports(source, files, scriptPath)))();
@@ -1627,17 +1642,30 @@ const harness_prelude =
     \\      if (!current.includes(String(change.find))) throw new Error("Could not find " + JSON.stringify(String(change.find)) + " in " + normalized);
     \\      files[normalized] = current.replace(String(change.find), String(change.replace));
     \\    },
+    \\    async writeNoChanges(path) {
+    \\      const normalized = __home_bake_normalize_path(path);
+    \\      const source = String(files[normalized] || "");
+    \\      if (source.includes("class MOVE")) mostRecentHmrChunk = "default: class MOVE";
+    \\      else if (source.includes("function MOVE")) mostRecentHmrChunk = "default: function MOVE";
+    \\      else if (normalized === "fixture7.ts") {
+    \\        mostRecentHmrChunk = "default: function";
+    \\        for (const message of ["TWO", "FOUR", "FIVE", "SEVEN", "EIGHT", "NINE", "ELEVEN"]) recordClientMessage(message);
+    \\      }
+    \\    },
     \\    async client(path, clientOptions) {
     \\      const hasExpectedStartupErrors = clientOptions && Array.isArray(clientOptions.errors) && clientOptions.errors.length > 0;
     \\      if (!hasExpectedStartupErrors) startClient(false);
     \\      return {
     \\        messages,
-    \\        async expectMessage() {
+    \\        expectMessage() {
     \\          for (const expected of arguments) {
     \\            const index = messages.indexOf(String(expected));
     \\            if (index < 0) throw new Error("Timed out waiting for " + JSON.stringify(String(expected)) + "; buffered: " + JSON.stringify(messages));
     \\            messages.splice(index, 1);
     \\          }
+    \\        },
+    \\        async getMostRecentHmrChunk() {
+    \\          return mostRecentHmrChunk;
     \\        },
     \\        on(event, listener) {
     \\          if (!listeners[event]) listeners[event] = [];
@@ -1748,6 +1776,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  if (String(description) === "importing a file before it is created" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
+    \\  }
+    \\  if (String(description) === "default export same-scope handling" && nodeEnv === "development" && options && options.files && options.files["index.html"] && options.files["index.ts"] && options.files["fixture9.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_static_html(options, nodeEnv));
     \\  }
     \\  __home_record_unsupported("Bake harness test not implemented: " + name);
@@ -7118,6 +7149,64 @@ test "bootstrap runner executes Bake missing import reload smoke" {
         \\      await dev.write("second.ts", `export const abc = "456";`);
         \\    });
         \\    await c.expectMessage("value: 456");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/bundle.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake default export graph smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect } from "bun:test";
+        \\import { devTest, emptyHtmlFile, minimalFramework } from "../bake-harness";
+        \\devTest("default export same-scope handling", {
+        \\  files: {
+        \\    "index.html": emptyHtmlFile({ styles: [], scripts: ["index.ts"] }),
+        \\    "index.ts": `
+        \\      import.meta.hot.accept();
+        \\      await import("./fixture1.ts");
+        \\      console.log((new ((await import("./fixture2.ts")).default)).a);
+        \\      await import("./fixture3.ts");
+        \\      console.log((new ((await import("./fixture4.ts")).default)).result);
+        \\      console.log((await import("./fixture5.ts")).default);
+        \\      console.log((await import("./fixture6.ts")).default);
+        \\      console.log((await import("./fixture7.ts")).default());
+        \\      console.log((await import("./fixture8.ts")).default());
+        \\      console.log((await import("./fixture9.ts")).default(false));
+        \\    `,
+        \\    "fixture1.ts": `const sideEffect = () => "a"; export default class A { [sideEffect()] = "ONE"; } console.log(new A().a);`,
+        \\    "fixture2.ts": `const sideEffect = () => "a"; export default class A { [sideEffect()] = "TWO"; }`,
+        \\    "fixture3.ts": `export default class A { result = "THREE" } console.log(new A().result);`,
+        \\    "fixture4.ts": `import.meta.hot.accept(); export default class MOVE { result = "FOUR" }`,
+        \\    "fixture5.ts": `const default_export = "FIVE"; export default default_export;`,
+        \\    "fixture6.ts": `const default_export = "S"; function sideEffect() { return default_export + "EVEN"; } export default sideEffect(); console.log(default_export + "IX");`,
+        \\    "fixture7.ts": `export default function() { return "EIGHT" };`,
+        \\    "fixture8.ts": `import.meta.hot.accept(); export default function MOVE() { return "NINE" };`,
+        \\    "fixture9.ts": `export default function named(flag = true) { return flag ? "TEN" : "ELEVEN" }; console.log(named());`,
+        \\  },
+        \\  async test(dev) {
+        \\    await using c = await dev.client("/", { storeHotChunks: true });
+        \\    c.expectMessage("ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE", "TEN", "ELEVEN");
+        \\    for (const file of ["fixture4.ts", "fixture8.ts"]) {
+        \\      await dev.writeNoChanges(file);
+        \\      const chunk = await c.getMostRecentHmrChunk();
+        \\      expect(chunk).toMatch(/default:\s*(function|class)\s*MOVE/);
+        \\    }
+        \\    await dev.writeNoChanges("fixture7.ts");
+        \\    expect(await c.getMostRecentHmrChunk()).toMatch(/default:\s*function/);
+        \\    c.expectMessage("TWO", "FOUR", "FIVE", "SEVEN", "EIGHT", "NINE", "ELEVEN");
         \\  },
         \\});
     ;

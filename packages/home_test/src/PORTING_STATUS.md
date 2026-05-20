@@ -239,9 +239,11 @@ smokes now cover import binding updates, symbol collisions with an
 `import_db` local, package `development` export conditions, and
 missing-import reload after `dev.write("second.ts", ...)`. These remain
 bootstrap route-model smokes rather than true internal-Bake-dev
-parser/lower/printer parity. The next Bake boundary is
-`DEV:bundle-5: default export same-scope handling`, which reaches deeper
-dynamic import and default-export client graph behavior. One snapshot `test.todo` fixture is
+parser/lower/printer parity. The default-export same-scope smoke now
+models the fixture dynamic import graph, default export HMR chunk shapes,
+and `getMostRecentHmrChunk()` assertions. The next Bake boundary is
+`DEV:bundle-6: directory cache bust case #17576`, which reaches directory
+cache invalidation and no-activity WebSocket assertions. One snapshot `test.todo` fixture is
 allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
