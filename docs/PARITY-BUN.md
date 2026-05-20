@@ -567,6 +567,17 @@ slice: `4,013` files executed, `454` passed, `3,935` failed, `1,488`
 unsupported, `35` todo. First failure: `bake/dev/esm.test.ts` with
 `DEV:esm-4: export { x as y }`.
 
+The ESM alias/default export cluster now covers `export { x as y }`,
+`import { x as y }`, `import { default as y }`, and
+`export { default as y }`, including hot patches to the source module.
+This is still modeled in the minimal Bake harness; the real parity target
+is Bun's ESM lowering and HMR reload semantics.
+
+Latest measured full gate after the Bake ESM alias/default export slice:
+`4,013` files executed, `454` passed, `3,931` failed, `1,484`
+unsupported, `35` todo. First failure: `bake/dev/esm.test.ts` with
+`DEV:esm-8: export * as namespace`.
+
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
 smoke verifies the source is not lowered through the bootstrap

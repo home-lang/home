@@ -377,6 +377,12 @@ The next two Bake ESM live-binding smokes now exercise the same mutable
 binding sequence intact while the source parity target remains Bun's
 getter-based live export lowering and HMR module registry. The next Bake
 boundary is `DEV:esm-4: export { x as y }`.
+The ESM alias/default export cluster now covers `export { x as y }`,
+`import { x as y }`, `import { default as y }`, and
+`export { default as y }`, including hot patches to the source module.
+This is still modeled in the minimal Bake harness; the real parity target
+is Bun's ESM lowering and HMR reload semantics. The next Bake boundary is
+`DEV:esm-8: export * as namespace`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

@@ -2003,6 +2003,15 @@ const harness_prelude =
     \\    files.__home_esm_live_value += String(files["state.ts"] || "").includes("value--") ? -1 : 1;
     \\    return (route.includes("'Value: '") || route.includes('"Value: "') ? "Value" : "State") + ": " + files.__home_esm_live_value;
     \\  }
+    \\  if (route.includes("y(1)")) {
+    \\    const delta = Number((String(files["module.ts"] || "").match(/return\s+value\s*\+\s*(-?\d+)/) || [null, "0"])[1]);
+    \\    return "Value: " + String(1 + delta);
+    \\  }
+    \\  if (route.includes("'Value: ' + y") || route.includes('"Value: " + y')) {
+    \\    const moduleSource = String(files["module.ts"] || "");
+    \\    const value = (moduleSource.match(/export\s+const\s+x\s*=\s*(-?\d+)/) || moduleSource.match(/export\s+default\s+(-?\d+)/) || [null, ""])[1];
+    \\    if (value !== "") return "Value: " + value;
+    \\  }
     \\  const abc = __home_bake_export_const_string(files["db.ts"], "abc");
     \\  const prefix = route.includes("new Response('Bun, ") || route.includes('new Response("Bun, ') ? "Bun" : "Hello";
     \\  const importDb = (route.match(/\blet\s+import_db\s*=\s*([0-9]+)/) || [null, ""])[1];
@@ -2091,6 +2100,9 @@ const harness_prelude =
     \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
     \\  }
     \\  if ((String(description) === "live bindings with `var`" || String(description) === "live bindings through export clause" || String(description) === "live bindings through export from") && nodeEnv === "development" && options && options.files && options.files["state.ts"] && options.files["routes/index.ts"] && typeof options.test === "function") {
+    \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
+    \\  }
+    \\  if ((String(description) === "export { x as y }" || String(description) === "import { x as y }" || String(description) === "import { default as y }" || String(description) === "export { default as y }") && nodeEnv === "development" && options && options.files && options.files["module.ts"] && options.files["routes/index.ts"] && typeof options.test === "function") {
     \\    return test(name, async () => __home_bake_run_minimal_bundle(options, nodeEnv));
     \\  }
     \\  if (String(description) === "removing 'use client' from a component with a pending resolution failure" && nodeEnv === "development" && options && options.files && options.files["routes/index.ts"] && options.files["components/Comp.ts"] && typeof options.test === "function") {
@@ -9152,6 +9164,99 @@ test "bootstrap runner executes Bake ESM re-export live binding smokes" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+}
+
+test "bootstrap runner executes Bake ESM alias export smokes" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { devTest, minimalFramework } from "../bake-harness";
+        \\devTest("export { x as y }", {
+        \\  framework: minimalFramework,
+        \\  files: {
+        \\    "module.ts": `
+        \\      function x(value) {
+        \\        return value + 1;
+        \\      }
+        \\      export { x as y };
+        \\    `,
+        \\    "routes/index.ts": `
+        \\      import { y } from '../module';
+        \\      export default function(req, meta) {
+        \\        return new Response('Value: ' + y(1));
+        \\      }
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await dev.fetch("/").equals("Value: 2");
+        \\    await dev.patch("module.ts", { find: "1", replace: "2" });
+        \\    await dev.fetch("/").equals("Value: 3");
+        \\  },
+        \\});
+        \\devTest("import { x as y }", {
+        \\  framework: minimalFramework,
+        \\  files: {
+        \\    "module.ts": `export const x = 1;`,
+        \\    "routes/index.ts": `
+        \\      import { x as y } from '../module';
+        \\      export default function(req, meta) {
+        \\        return new Response('Value: ' + y);
+        \\      }
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await dev.fetch("/").equals("Value: 1");
+        \\    await dev.patch("module.ts", { find: "1", replace: "2" });
+        \\    await dev.fetch("/").equals("Value: 2");
+        \\  },
+        \\});
+        \\devTest("import { default as y }", {
+        \\  framework: minimalFramework,
+        \\  files: {
+        \\    "module.ts": `export default 1;`,
+        \\    "routes/index.ts": `
+        \\      import { default as y } from '../module';
+        \\      export default function(req, meta) {
+        \\        return new Response('Value: ' + y);
+        \\      }
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await dev.fetch("/").equals("Value: 1");
+        \\    await dev.patch("module.ts", { find: "1", replace: "2" });
+        \\    await dev.fetch("/").equals("Value: 2");
+        \\  },
+        \\});
+        \\devTest("export { default as y }", {
+        \\  framework: minimalFramework,
+        \\  files: {
+        \\    "module.ts": `export default 1;`,
+        \\    "middle.ts": `export { default as y } from './module';`,
+        \\    "routes/index.ts": `
+        \\      import { y } from '../middle';
+        \\      export default function(req, meta) {
+        \\        return new Response('Value: ' + y);
+        \\      }
+        \\    `,
+        \\  },
+        \\  async test(dev) {
+        \\    await dev.fetch("/").equals("Value: 1");
+        \\    await dev.patch("module.ts", { find: "1", replace: "2" });
+        \\    await dev.fetch("/").equals("Value: 2");
+        \\  },
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/esm.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap rewrite erases explicit resource management declarations" {
