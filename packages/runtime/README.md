@@ -1,6 +1,6 @@
 # Home Runtime (`packages/runtime/`)
 
-> **Status (2026-05-20):** **485 / 1,193 Bun source files ported (~40.7%).**
+> **Status (2026-05-20):** **491 / 1,193 Bun source files ported (~41.2%).**
 > Phase 12.2 (JSC bring-up) has reached the M6 milestone — JSON + Promise
 > + Iterator + Global helpers across 97 files. Phase 12.7 round-15
 > has top-level `node:*` substrate modules for `buffer`, `stream`,
@@ -68,6 +68,11 @@ packages while the execution engine is still blocked.
   a live `1 + 2` evaluation through JavaScriptCore.
 - `src/node/` — 28 files; Phase 12.7 round-15 (top-level `assert.zig`, `buffer.zig`, `crypto.zig`, `events.zig`, `fs.zig`, `os.zig`, `path.zig`, `process.zig`, `querystring.zig`, `stream.zig`, `string_decoder.zig`, `tty.zig`, `url.zig`, `util.zig`, plus binding/helper files: `Stat`, `StatFS`, `dir_iterator`, `fs_events`, `os_constants`, `nodejs_error_code`, `node_fs_constant`, `node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`, `types`, `time_like`, `util/parse_args_utils`, `assert/myers_diff`).
 - `src/cli/` — destination for Bun's `src/cli/` command dispatch (Phase 12.10 scaffold landed).
+- `src/runtime/bake/` — Bake DevServer/HmrSocket lifetime carrier copied
+  from Bun and made Zig 0.17-clean. This covers the deinit counter,
+  active route viewer release, source-map ref release, and active
+  websocket snapshot-before-close invariants; the JS-visible
+  `Bun.serve`/Bake API is still pending.
 - `src/install/` — `home <-> pantry` shim. Pantry replaces `bun install` entirely.
 - `src/event_loop/`, `src/io/`, `src/async/`, `src/web/`, `src/http/`, `src/runtime/`, `src/string/`, `src/threading/`, `src/css/`, `src/sql/`, `src/uws_sys/`, … — 60 subsystem directories under `src/`, most populated by wave-19+ grinder rounds (Tier-0 / Tier-1 leaves, no JSC dependency yet).
 

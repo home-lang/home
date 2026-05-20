@@ -6,8 +6,8 @@ row is in the
 [README parity status](../README.md#bun-runtime-port-packagesruntime)
 section.
 
-> **Status:** Substrate + JSC M6 landed. 486 / 1,193 Bun source
-> files ported (~40.7%); the runtime is not yet JavaScript-callable
+> **Status:** Substrate + JSC M6 landed. 491 / 1,193 Bun source
+> files ported (~41.2%); the runtime is not yet JavaScript-callable
 > end-to-end, but Phase 12.2 (JSC bring-up) has reached the M6
 > milestone — JSON + Promise + Iterator + Global helpers — across
 > 97 files in `packages/runtime/src/jsc/`, including a live
@@ -248,12 +248,15 @@ first blocker is that the child fixture still exits `1` while Bun expects
 `0`, because the Bake fixture now reaches the bootstrap runner's async
 test boundary and reports `Async tests are not supported by the Home Bun
 corpus bootstrap runner yet`. The exact `bun:internal-for-testing`,
-`bun:jsc`, and fixture HTML imports are lowered, but real async
-`bun:test`, `Bun.serve`, fetch, and HMR WebSocket surfaces are still
-unported.
+`bun:jsc`, and fixture HTML imports are lowered. The Zig-side Bake
+DevServer/HmrSocket lifetime carrier is now present under
+`packages/runtime/src/runtime/bake/` with deinit counter, route-viewer,
+source-map ref, and active-websocket teardown tests, but it is not yet
+connected to the JS-visible `Bun.serve`/Bake API. Real async `bun:test`,
+`Bun.serve`, fetch, and HMR WebSocket surfaces are still unported.
 
 Latest measured full gate: `4,013` files executed, `387` passed,
-`3,903` failed, `1,495` unsupported, `33` todo. First failure:
+`3,903` failed, `1,453` unsupported, `33` todo. First failure:
 `bake/deinitialization.test.ts` with `Error: Expected 1 to be 0`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
@@ -269,10 +272,11 @@ Substrate file-count progress (the only objective number today):
 | Metric | Count | Notes |
 |---|---|---|
 | Bun upstream files (excluding test/codegen/jsc/macros) | 1,193 | pinned at `fd0b6f1a` |
-| Files ported to `packages/runtime/src/` | 486 | ~40.7% |
-| Files remaining to port | 707 | ~59.3% |
+| Files ported to `packages/runtime/src/` | 491 | ~41.2% |
+| Files remaining to port | 702 | ~58.8% |
 | JSC bring-up (`packages/runtime/src/jsc/`) | 97 files | Phase 12.2 M6 milestone + native eval smoke |
 | Node namespace (`packages/runtime/src/node/`) | 28 files | Phase 12.7 round-15 |
+| Bake lifetime carrier (`packages/runtime/src/runtime/bake/`) | 5 files | DevServer/HmrSocket deinit substrate, JS surface pending |
 | Tier-0 leaves (≤100 LOC, zero subsystem coupling) | 30 catalogued | next-to-port pool |
 | Tier-1 leaves (≤300 LOC, light coupling) | 30 catalogued | follow-on pool |
 

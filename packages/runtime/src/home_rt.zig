@@ -434,6 +434,7 @@ pub const unicode = struct {
 // Bun's `src/runtime/` subtree. Directory shape mirrors upstream;
 // individual files are flat copies as their bun.X deps allow.
 pub const runtime = struct {
+    pub const bake = @import("runtime/bake/bake.zig");
     pub const image = struct {
         pub const exif = @import("runtime/image/exif.zig");
         // Sixth-wave port batch (2026-05-18):
@@ -1292,6 +1293,11 @@ test {
     _ = event_loop;
     _ = unicode;
     _ = runtime;
+    _ = @import("runtime/bake/bake.zig");
+    _ = @import("runtime/bake/DevServer.zig");
+    _ = @import("runtime/bake/DevServer/HmrSocket.zig");
+    _ = @import("runtime/bake/DevServer/RouteBundle.zig");
+    _ = @import("runtime/bake/DevServer/SourceMapStore.zig");
     _ = node;
     _ = meta;
     _ = crash_handler;

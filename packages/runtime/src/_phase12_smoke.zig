@@ -32,6 +32,14 @@ test {
     _ = @import("runtime/api/bun/Terminal.zig");
     _ = @import("runtime/api/bun/spawn.zig");
     _ = @import("runtime/api/glob.zig");
+    // Phase 12 Bake lifetime carrier: DevServer/HmrSocket teardown
+    // substrate copied from Bun and made Zig 0.17-clean before the
+    // JS-visible Bun.serve/Bake API is wired in.
+    _ = @import("runtime/bake/bake.zig");
+    _ = @import("runtime/bake/DevServer.zig");
+    _ = @import("runtime/bake/DevServer/HmrSocket.zig");
+    _ = @import("runtime/bake/DevServer/RouteBundle.zig");
+    _ = @import("runtime/bake/DevServer/SourceMapStore.zig");
     _ = @import("runtime/webcore/Body.zig");
     _ = @import("runtime/webcore/FormData.zig");
     _ = @import("runtime/webcore/ObjectURLRegistry.zig");
