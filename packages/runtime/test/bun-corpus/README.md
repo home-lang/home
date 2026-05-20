@@ -34,7 +34,8 @@ macOS, Linux, and the WASM target.
   cache/mode/clone, JSC `ShadowRealm`, native constructor identity, mutable
   `globalThis` prototype behavior, a comment-only module-load smoke, Bun file metadata, Node `Buffer`
   binary/UTF-16LE/compare/inspect-limit/isEncoding behavior, `Map`/`Set` deep-equality,
-  lifecycle hooks, `Bun.inspect` Set formatting, `MessageEvent` constructor
+  lifecycle hooks and additional sync fixture lifecycle smokes,
+  `Bun.inspect` Set formatting, `MessageEvent` constructor
   behavior, Bun version aliases, own-key matchers, a `prepareStackTrace`
   crash smoke plus a non-empty filename regression, four sync runner
   fixture smokes (`only-fixture-4`, `21177`, `5738`, and printing dots),

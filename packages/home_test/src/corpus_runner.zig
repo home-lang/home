@@ -177,6 +177,9 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/only-fixture-3.ts",
     "js/bun/test/only-flag-fixtures/file1.fixture.ts",
     "js/bun/test/only-inside-only.fixture.ts",
+    "js/bun/test/concurrent_immediate.fixture.ts",
+    "js/bun/test/failure-skip.fixture.ts",
+    "js/bun/test/test-fixture-preload-global-lifecycle-hook-test.js",
 };
 
 const harness_prelude =
@@ -552,6 +555,7 @@ const harness_prelude =
     \\  var process = {};
     \\}
     \\if (!process.versions) process.versions = {};
+    \\if (!process.env) process.env = {};
     \\process.versions.bun = Bun.version;
     \\process.revision = Bun.revision;
     \\process.__home_events = process.__home_events || Object.create(null);
@@ -2907,6 +2911,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": any =", .replacement = " =" },
         .{ .needle = ": number =", .replacement = " =" },
         .{ .needle = ": number)", .replacement = ")" },
+        .{ .needle = ": string)", .replacement = ")" },
         .{ .needle = ": string)=>", .replacement = ")=>" },
         .{ .needle = ": string, value: string)", .replacement = ", value)" },
         .{ .needle = "readonly foo: FooParent", .replacement = "foo" },
@@ -3194,6 +3199,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         .{ .line = "import { describe, expect, test } from \"bun:test\";", .binding = "const { describe, expect, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeAll, beforeEach, expect, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } = globalThis.__home_import(\"bun:test\");\n" },
+        .{ .line = "import { afterAll, afterEach, beforeAll, beforeEach, describe, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeAll, beforeEach, describe, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, it } from \"bun:test\";", .binding = "const { expect, it } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expectTypeOf, test } from \"bun:test\";", .binding = "const { expectTypeOf, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { describe, expect, jest, test } from \"bun:test\";", .binding = "const { describe, expect, jest, test } = globalThis.__home_import(\"bun:test\");\n" },
@@ -3459,6 +3465,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "version: \"0.0.0-home\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "gc(force)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.versions.bun = Bun.version") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (!process.env) process.env = {}") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.on = function(name, listener)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.emit = function(name)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process.cwd = function()") != null);
@@ -3665,6 +3672,9 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/test/only-fixture-3.ts",
         "js/bun/test/only-flag-fixtures/file1.fixture.ts",
         "js/bun/test/only-inside-only.fixture.ts",
+        "js/bun/test/concurrent_immediate.fixture.ts",
+        "js/bun/test/failure-skip.fixture.ts",
+        "js/bun/test/test-fixture-preload-global-lifecycle-hook-test.js",
     };
 
     for (expected) |path| {
