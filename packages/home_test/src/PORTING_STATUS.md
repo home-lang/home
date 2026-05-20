@@ -218,9 +218,11 @@ as real Home bootstrap tests by resolving the self-closing script and
 stylesheet refs relative to `public/index.html`, evaluating
 `src/app/index.tsx`, and deriving the `background-color: red` style
 assertion from `src/app/styles.css`. The next Bake boundary is now the
-named unsupported ` DEV:dev-and-prod-5: missing head end tag works fine`,
-which needs the same asset path to tolerate a missing `</head>` rewrite
-case before it can execute faithfully. One snapshot `test.todo` fixture is
+named unsupported ` DEV:dev-and-prod-7: missing all meta tags works fine`.
+The missing-head case now uses the same static asset path and tolerates a
+missing `</head>` before executing the script and stylesheet assertions.
+The next case adds the first `dev.fetch("/").expect.toInclude("root")`
+shape to this Bake slice. One snapshot `test.todo` fixture is
 allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
