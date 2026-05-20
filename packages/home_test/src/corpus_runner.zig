@@ -148,6 +148,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/url/url-is-url.test.js",
     "js/node/path/basename.test.js",
     "js/node/path/extname.test.js",
+    "js/bun/util/index-of-line.test.ts",
 };
 
 const harness_prelude =
@@ -208,6 +209,26 @@ const harness_prelude =
     \\      if (ch === "\"") return "&quot;";
     \\      return "&#x27;";
     \\    });
+    \\  },
+    \\  indexOfLine(input, offset) {
+    \\    const view = __home_array_buffer_view(input);
+    \\    if (!view) return -1;
+    \\    let current = Number(offset);
+    \\    if (!Number.isFinite(current) || current < 0) current = 0;
+    \\    current = Math.trunc(current);
+    \\    while (current < view.byteLength) {
+    \\      const byte = view[current];
+    \\      if (byte === 10) return current;
+    \\      if (byte > 0x7f) {
+    \\        if (byte >= 0xf0) current += 4;
+    \\        else if (byte >= 0xe0) current += 3;
+    \\        else if (byte >= 0xc0) current += 2;
+    \\        else current += 1;
+    \\        continue;
+    \\      }
+    \\      current++;
+    \\    }
+    \\    return -1;
     \\  },
     \\  wrapAnsi(value, columns, options) {
     \\    const input = String(value);
@@ -1153,7 +1174,7 @@ const harness_prelude =
     \\  return globalThis.__home_bun_test;
     \\};
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
-    \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, escapeHTML: Bun.escapeHTML };
+    \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, escapeHTML: Bun.escapeHTML, indexOfLine: Bun.indexOfLine };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\function SourceMap(payload) {
     \\  if (!(this instanceof SourceMap)) return new SourceMap(payload);
@@ -1670,6 +1691,28 @@ const harness_prelude =
     \\  };
     \\}
     \\if (typeof Buffer !== "function") {
+    \\  function __home_utf8_bytes(value) {
+    \\    const text = String(value);
+    \\    const bytes = [];
+    \\    for (const ch of text) {
+    \\      const code = ch.codePointAt(0);
+    \\      if (code <= 0x7f) bytes.push(code);
+    \\      else if (code <= 0x7ff) {
+    \\        bytes.push(0xc0 | (code >> 6));
+    \\        bytes.push(0x80 | (code & 0x3f));
+    \\      } else if (code <= 0xffff) {
+    \\        bytes.push(0xe0 | (code >> 12));
+    \\        bytes.push(0x80 | ((code >> 6) & 0x3f));
+    \\        bytes.push(0x80 | (code & 0x3f));
+    \\      } else {
+    \\        bytes.push(0xf0 | (code >> 18));
+    \\        bytes.push(0x80 | ((code >> 12) & 0x3f));
+    \\        bytes.push(0x80 | ((code >> 6) & 0x3f));
+    \\        bytes.push(0x80 | (code & 0x3f));
+    \\      }
+    \\    }
+    \\    return bytes;
+    \\  }
     \\  var Buffer = function(size) {
     \\    const bytes = new Uint8Array(size);
     \\    Object.setPrototypeOf(bytes, Buffer.prototype);
@@ -1703,6 +1746,12 @@ const harness_prelude =
     \\      return buffer;
     \\    }
     \\    const normalized = encoding === undefined ? "utf8" : String(encoding).toLowerCase();
+    \\    if (typeof value === "string" && (normalized === "utf8" || normalized === "utf-8")) {
+    \\      const bytes = __home_utf8_bytes(value);
+    \\      const buffer = new Buffer(bytes.length);
+    \\      for (let i = 0; i < bytes.length; i++) buffer[i] = bytes[i];
+    \\      return buffer;
+    \\    }
     \\    if (typeof value === "string" && (normalized === "utf-16le" || normalized === "utf16le" || normalized === "ucs2" || normalized === "ucs-2")) {
     \\      const buffer = new Buffer(value.length * 2);
     \\      for (let i = 0; i < value.length; i++) {
@@ -1713,6 +1762,12 @@ const harness_prelude =
     \\      return buffer;
     \\    }
     \\    __home_unsupported("Only Buffer.from(string, 'utf-16le') is supported by the Home Bun corpus bootstrap runner");
+    \\  };
+    \\  Buffer.byteLength = function(value, encoding) {
+    \\    const normalized = encoding === undefined ? "utf8" : String(encoding).toLowerCase();
+    \\    if (normalized === "utf8" || normalized === "utf-8") return __home_utf8_bytes(value).length;
+    \\    if (normalized === "utf16le" || normalized === "utf-16le" || normalized === "ucs2" || normalized === "ucs-2") return String(value).length * 2;
+    \\    return String(value).length;
     \\  };
     \\  Buffer.prototype.compare = function(target, targetStart, targetEnd, sourceStart, sourceEnd) {
     \\    if (!target || typeof target.length !== "number") throw new TypeError("The target argument must be an instance of Buffer or Uint8Array");
@@ -2524,6 +2579,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { escapeHTML } = globalThis.__home_import(\"bun\");",
         },
         .{
+            .needle = "import { indexOfLine } from \"bun\";",
+            .replacement = "const { indexOfLine } = globalThis.__home_import(\"bun\");",
+        },
+        .{
             .needle = "import { Buffer } from \"node:buffer\";",
             .replacement = "const { Buffer } = globalThis.__home_import(\"node:buffer\");",
         },
@@ -2956,6 +3015,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:buffer\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_path_posix_basename") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_path_win32_extname") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "indexOfLine(input, offset)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.byteLength = function(value, encoding)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toString(16).padStart") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Bun.jest = function(path)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "escapeHTML(value)") != null);
@@ -3025,6 +3086,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/node/url/url-is-url.test.js",
         "js/node/path/basename.test.js",
         "js/node/path/extname.test.js",
+        "js/bun/util/index-of-line.test.ts",
     };
 
     for (expected) |path| {
@@ -4268,7 +4330,7 @@ test "bootstrap runner reports unsupported thrown by harness as unsupported" {
 
     const source =
         \\test("unsupported Buffer path", () => {
-        \\  Buffer.from("x");
+        \\  Buffer.from(new ArrayBuffer(1));
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/buffer-unsupported.test.ts");
