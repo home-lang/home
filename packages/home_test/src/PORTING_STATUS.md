@@ -73,7 +73,7 @@ constructor-modifier rewrites, bun-types `test.each` type-shape smoke, narrow `t
 relative CJS fixture require for `regression/issue/013880-fixture.cjs`,
 `node:path` / `path` join and posix/win32 identity smokes,
 `node:url` URL.canParse and url.format empty-input smokes,
-`jest.fn`, narrow `HTMLRewriter` element callbacks,
+`jest.fn`, narrow `HTMLRewriter` element and doctype callbacks,
 `process.versions.bun`, `process.revision`, `process.on` / `process.emit`,
 `node:vm.runInNewContext`, DOMException, native constructor identity,
 mutable `globalThis` prototype behavior, comment-only module-load smoke,
@@ -89,8 +89,9 @@ smoke, `Bun.inspect({ key: Set<string> })`, `Bun.jest(import.meta.path)`
 as an alias to the existing bootstrap `bun:test` facade, `jest.mock`
 argument validation, `expect.extend` matcher validation plus installed
 expectation-object matchers, validation-only `Bun.S3Client.write`
-numeric path errors, and a narrow `ShadowRealm.evaluate` shim. Four sync
-runner fixtures
+numeric path errors, validation-only `Bun.Transpiler` invalid UTF-16
+loader errors, and a narrow `ShadowRealm.evaluate` shim. Four sync runner
+fixtures
 (`only-fixture-4`, `21177`, `5738`, and printing dots) are also
 allowlisted, with `console.warn` falling back to `console.log` for the
 printing fixture. The source

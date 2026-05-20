@@ -130,6 +130,8 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/s3/s3-fd-validation.test.ts",
     "regression/issue/ENG-24434.test.ts",
     "regression/issue/fuzzer-ENG-22942.test.ts",
+    "js/bun/transpiler/transpiler-utf16-loader.test.ts",
+    "js/web/html/html-rewriter-doctype.test.ts",
 };
 
 const harness_prelude =
@@ -295,6 +297,31 @@ const harness_prelude =
     \\      if (typeof path !== "string") throw new TypeError("S3Client.write path must be a string or file descriptor");
     \\      __home_unsupported("Only Bun.S3Client.write invalid path validation is supported by this bootstrap path");
     \\    },
+    \\  },
+    \\  Transpiler: function(options) {
+    \\    function validateLoader(loader) {
+    \\      if (loader === undefined || loader === null) return;
+    \\      const text = String(loader);
+    \\      if (!/^(js|jsx|ts|tsx|json|toml|file|napi|wasm|text|css|html|sqlite|sqlite3)$/i.test(text)) throw new TypeError("Invalid loader: " + text);
+    \\    }
+    \\    if (!(this instanceof Bun.Transpiler)) return new Bun.Transpiler(options);
+    \\    if (options && Object.prototype.hasOwnProperty.call(options, "loader")) validateLoader(options.loader);
+    \\    this.scan = function(source, loader) {
+    \\      validateLoader(loader);
+    \\      __home_unsupported("Only Bun.Transpiler invalid loader validation is supported by this bootstrap path");
+    \\    };
+    \\    this.scanImports = function(source, loader) {
+    \\      validateLoader(loader);
+    \\      __home_unsupported("Only Bun.Transpiler invalid loader validation is supported by this bootstrap path");
+    \\    };
+    \\    this.transformSync = function(source, loader) {
+    \\      validateLoader(loader);
+    \\      __home_unsupported("Only Bun.Transpiler invalid loader validation is supported by this bootstrap path");
+    \\    };
+    \\    this.transform = function(source, loader) {
+    \\      validateLoader(loader);
+    \\      __home_unsupported("Only Bun.Transpiler invalid loader validation is supported by this bootstrap path");
+    \\    };
     \\  },
     \\  TOML: {
     \\    parse(value) {
@@ -1214,6 +1241,7 @@ const harness_prelude =
     \\if (typeof HTMLRewriter !== "function") {
     \\  var HTMLRewriter = function() {
     \\    this.__home_html_handlers = [];
+    \\    this.__home_html_doctype_handlers = [];
     \\  };
     \\  HTMLRewriter.prototype.on = function(selector, handlers) {
     \\    if (String(selector) !== "p") __home_unsupported("Only HTMLRewriter.on('p', { element }) is supported by this bootstrap path");
@@ -1221,14 +1249,33 @@ const harness_prelude =
     \\    this.__home_html_handlers.push(handlers.element);
     \\    return this;
     \\  };
+    \\  HTMLRewriter.prototype.onDocument = function(handlers) {
+    \\    if (!handlers || typeof handlers.doctype !== "function") __home_unsupported("Only HTMLRewriter.onDocument({ doctype }) is supported by this bootstrap path");
+    \\    this.__home_html_doctype_handlers.push(handlers.doctype);
+    \\    return this;
+    \\  };
     \\  HTMLRewriter.prototype.transform = function(input) {
     \\    const body = input instanceof Response ? input.body : input;
     \\    const text = String(body);
+    \\    let output = text;
+    \\    const doctypeMatch = output.match(/^<!DOCTYPE[^>]*>/i);
+    \\    if (doctypeMatch) {
+    \\      for (const handler of this.__home_html_doctype_handlers) {
+    \\        const doctype = {
+    \\          removed: false,
+    \\          remove() {
+    \\            this.removed = true;
+    \\          },
+    \\        };
+    \\        handler(doctype);
+    \\        if (doctype.removed) output = output.slice(doctypeMatch[0].length);
+    \\      }
+    \\    }
     \\    const matches = text.match(/<p(?:\s|>|\/)/gi) || [];
     \\    for (let i = 0; i < matches.length; i++) {
     \\      for (const element of this.__home_html_handlers) element({ tagName: "p" });
     \\    }
-    \\    return input;
+    \\    return input instanceof Response ? input : output;
     \\  };
     \\}
     \\if (typeof Request !== "function") {
@@ -2506,6 +2553,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Bun.TOML.parse expects a string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "S3Client: {") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "S3Client.write path must be a valid file descriptor or path string") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Transpiler: function(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Invalid loader:") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "satisfies(version, range)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "inspect(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Set(\" + entry.size + \")") != null);
@@ -2579,6 +2628,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.redirect") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.json") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var HTMLRewriter = function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "HTMLRewriter.prototype.onDocument") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "doctype.remove") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "HTMLRewriter.prototype.transform") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var Request = function(input, init)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "typeof input.href === \"string\"") != null);
@@ -2638,6 +2689,8 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/s3/s3-fd-validation.test.ts",
         "regression/issue/ENG-24434.test.ts",
         "regression/issue/fuzzer-ENG-22942.test.ts",
+        "js/bun/transpiler/transpiler-utf16-loader.test.ts",
+        "js/web/html/html-rewriter-doctype.test.ts",
     };
 
     for (expected) |path| {
@@ -3588,6 +3641,93 @@ test "bootstrap runner covers HTMLRewriter element callback smoke" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers HTMLRewriter doctype removal smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("remove and removed property work on DOCTYPE", () => {
+        \\  const html = "<!DOCTYPE html><html><head></head><body>Hello</body></html>";
+        \\  let sawDoctype = false;
+        \\  let wasRemoved = false;
+        \\
+        \\  const rewriter = new HTMLRewriter().onDocument({
+        \\    doctype(doctype) {
+        \\      sawDoctype = true;
+        \\      doctype.remove();
+        \\      wasRemoved = doctype.removed;
+        \\    },
+        \\  });
+        \\
+        \\  const result = rewriter.transform(html);
+        \\
+        \\  expect(sawDoctype).toBe(true);
+        \\  expect(wasRemoved).toBe(true);
+        \\  expect(result).not.toContain("<!DOCTYPE");
+        \\  expect(result).toContain("<html>");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/html/html-rewriter-doctype.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers Bun.Transpiler invalid UTF-16 loader smoke" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, test } from "bun:test";
+        \\
+        \\describe("Bun.Transpiler with a UTF-16 loader string", () => {
+        \\  const utf16 = "тsx";
+        \\
+        \\  test("scan", () => {
+        \\    const t = new Bun.Transpiler();
+        \\    expect(() => t.scan("", utf16)).toThrow(TypeError);
+        \\  });
+        \\
+        \\  test("scanImports", () => {
+        \\    const t = new Bun.Transpiler();
+        \\    expect(() => t.scanImports("", utf16)).toThrow(TypeError);
+        \\  });
+        \\
+        \\  test("transformSync", () => {
+        \\    const t = new Bun.Transpiler();
+        \\    expect(() => t.transformSync("", utf16)).toThrow(TypeError);
+        \\  });
+        \\
+        \\  test("transform", () => {
+        \\    const t = new Bun.Transpiler();
+        \\    expect(() => t.transform("", utf16)).toThrow(TypeError);
+        \\  });
+        \\
+        \\  test("constructor", () => {
+        \\    expect(() => new Bun.Transpiler({ loader: utf16 as any })).toThrow(TypeError);
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/transpiler/transpiler-utf16-loader.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
 }
 
 test "bootstrap runner covers PowerShell escaping helper" {
