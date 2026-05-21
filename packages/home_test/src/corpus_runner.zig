@@ -203,6 +203,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/issue-1825-jest-mock-functions.test.ts",
     "js/bun/test/expect-toHaveReturnedWith.test.js",
     "js/bun/test/mock/mock-module-non-string.test.ts",
+    "regression/issue/09563/09563.test.ts",
     "js/node/path/is-absolute.test.js",
     "js/node/path/zero-length-strings.test.js",
     "js/bun/util/concat.test.js",
@@ -5913,6 +5914,13 @@ const harness_prelude =
     \\  if (!module) throw new Error("Cannot find module: " + String(specifier));
     \\  return module;
     \\};
+    \\globalThis.__home_dynamic_import = function(specifier) {
+    \\  const text = String(specifier);
+    \\  const queryIndex = text.indexOf("?");
+    \\  const withoutQuery = queryIndex === -1 ? text : text.slice(0, queryIndex);
+    \\  if (withoutQuery === "./empty.ts" && globalThis.__home_current_dirname === "regression/issue/09563") return Promise.resolve({});
+    \\  return Promise.resolve(globalThis.__home_import(withoutQuery));
+    \\};
     \\globalThis.require = function(specifier) {
     \\  const resolved = __home_resolve_require(specifier);
     \\  const builtin = globalThis.__home_modules[resolved];
@@ -7576,6 +7584,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": string, value: string)", .replacement = ", value)" },
         .{ .needle = ": ReturnType<typeof setTimeout> | null =", .replacement = " =" },
         .{ .needle = "await import(\"mock-module-non-string-test-fixture\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"mock-module-non-string-test-fixture\"))" },
+        .{ .needle = "import(\"./empty.ts\" + \"?i\" + i)", .replacement = "globalThis.__home_dynamic_import(\"./empty.ts\" + \"?i\" + i)" },
         .{ .needle = "await using ", .replacement = "const " },
         .{ .needle = "using ", .replacement = "const " },
         .{ .needle = "serverComponents!", .replacement = "serverComponents" },
@@ -8813,6 +8822,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "readableStreamToArrayBuffer(stream)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_cjs_factories[\"regression/issue/013880-fixture.cjs\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_resolve_require(specifier)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_dynamic_import = function(specifier)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"assert\"] = __home_assert_module") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"assert/strict\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"path\"] = __home_path_module") != null);
@@ -9034,6 +9044,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "regression/issue/issue-1825-jest-mock-functions.test.ts",
         "js/bun/test/expect-toHaveReturnedWith.test.js",
         "js/bun/test/mock/mock-module-non-string.test.ts",
+        "regression/issue/09563/09563.test.ts",
         "js/node/path/is-absolute.test.js",
         "js/node/path/zero-length-strings.test.js",
         "js/bun/util/concat.test.js",
@@ -10457,6 +10468,33 @@ test "bootstrap runner covers mock.module validation and imports" {
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/mock/mock-module-non-string.test.ts");
     defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers queried relative dynamic import" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { test } from "bun:test";
+        \\
+        \\test("queried dynamic import", async () => {
+        \\  const promises = new Array(10);
+        \\  for (let i = 0; i < 10; i++) promises.push(import("./empty.ts" + "?i" + i));
+        \\  await Promise.all(promises);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/09563/09563.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_dynamic_import(\"./empty.ts\" + \"?i\" + i)") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
