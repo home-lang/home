@@ -4120,6 +4120,178 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: awaitClassExpression_es2017 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "awaitClassExpression_es2017",
+        .path = "awaitClassExpression_es2017.ts",
+        .source =
+        \\// @target: es2017
+        \\// @noEmitHelpers: true
+        \\declare class C { }
+        \\declare var p: Promise<typeof C>;
+        \\
+        \\async function func(): Promise<void> {
+        \\    class D extends (await p) {
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectLiteralShorthandPropertiesWithModule passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectLiteralShorthandPropertiesWithModule",
+        .path = "objectLiteralShorthandPropertiesWithModule.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// module export
+        \\
+        \\namespace m {
+        \\    export var x;
+        \\}
+        \\
+        \\namespace m {
+        \\    var z = x;
+        \\    var y = {
+        \\        a: x,
+        \\        x
+        \\    };
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectLiteralShorthandPropertiesWithModuleES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectLiteralShorthandPropertiesWithModuleES6",
+        .path = "objectLiteralShorthandPropertiesWithModuleES6.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es6
+        \\
+        \\namespace m {
+        \\    export var x;
+        \\}
+        \\
+        \\namespace m {
+        \\    var z = x;
+        \\    var y = {
+        \\        a: x,
+        \\        x
+        \\    };
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: decoratorOnClass5_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "decoratorOnClass5.es6",
+        .path = "decoratorOnClass5.es6.ts",
+        .source =
+        \\// @target:es6
+        \\// @experimentaldecorators: true
+        \\declare function dec<T>(target: T): T;
+        \\
+        \\@dec
+        \\class C {
+        \\    static x() { return C.y; }
+        \\    static y = 1;
+        \\}
+        \\
+        \\let c = new C();
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringWithEmbeddedYieldKeywordES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringWithEmbeddedYieldKeywordES6",
+        .path = "templateStringWithEmbeddedYieldKeywordES6.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: ES6
+        \\function* gen() {
+        \\    // Once this is supported, yield *must* be parenthesized.
+        \\    var x = `abc${ yield 10 }def`;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringWithCommentsInArrowFunction passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringWithCommentsInArrowFunction",
+        .path = "templateStringWithCommentsInArrowFunction.ts",
+        .source =
+        \\// @target: es2015
+        \\// @removeComments: false
+        \\
+        \\const a = 1;
+        \\const f1 = () =>
+        \\    `${
+        \\      // a
+        \\      a
+        \\    }a`;
+        \\
+        \\const f2 = () =>
+        \\    `${
+        \\      // a
+        \\      a
+        \\    }`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: contextualThisType passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "contextualThisType",
