@@ -873,6 +873,12 @@ zero-terminated command tags, preserves INSERT OIDs, classifies common
 command kinds, and feeds query / execute affected-row counts through the
 shared parser without requiring a live PostgreSQL server in tests.
 
+The runtime package now includes the copied PostgreSQL
+`NegotiateProtocolVersion` protocol leaf. It preserves Bun's version plus
+unrecognized-options shape, substitutes the current heap-owned UTF-8
+string stand-in for upstream `bun.String`, and is exported through
+`home_rt.sql.postgres.protocol` plus the phase smoke imports.
+
 > **Why a verbatim copy?** Per direction 2026-05-14: Bun is shifting
 > its core to Rust; we want to continue maintaining the Zig portion
 > ourselves. Vendoring lets us adapt the test runner to Home's HIR /

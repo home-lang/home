@@ -1323,6 +1323,14 @@ behavior. It decodes zero-terminated PostgreSQL command tags, preserves
 INSERT OIDs, classifies common command kinds, and routes query/execute
 affected-row counts through the shared parser.
 
+The copied `bun/src/sql/postgres/protocol/NegotiateProtocolVersion.zig`
+leaf now lives in
+`packages/runtime/src/sql/postgres/protocol/NegotiateProtocolVersion.zig`,
+exported through `home_rt.sql.postgres.protocol` and the phase smoke
+imports. The Home copy preserves the version / unrecognized-option list
+shape while substituting the existing heap-owned UTF-8 string stand-in
+for upstream `bun.String`.
+
 ## Summary
 
 Substrate file-count progress (the only objective number today):
@@ -1330,8 +1338,8 @@ Substrate file-count progress (the only objective number today):
 | Metric | Count | Notes |
 |---|---|---|
 | Bun upstream files (excluding test/codegen/jsc/macros) | 1,193 | pinned at `fd0b6f1a` |
-| Files ported to `packages/runtime/src/` | 493 | ~41.3% |
-| Files remaining to port | 700 | ~58.7% |
+| Files ported to `packages/runtime/src/` | 494 | ~41.4% |
+| Files remaining to port | 699 | ~58.6% |
 | JSC bring-up (`packages/runtime/src/jsc/`) | 97 files | Phase 12.2 M6 milestone + native eval smoke |
 | Node namespace (`packages/runtime/src/node/`) | 28 files | Phase 12.7 round-15 |
 | Bake lifetime carrier (`packages/runtime/src/runtime/bake/`) | 5 files | DevServer/HmrSocket deinit substrate, JS surface pending |

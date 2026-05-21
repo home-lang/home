@@ -163,4 +163,5 @@ test {
     _ = @import("sql/postgres/protocol/FieldMessage.zig");
     _ = @import("sql/postgres/protocol/ErrorResponse.zig");
     _ = @import("sql/postgres/protocol/NoticeResponse.zig");
+    _ = @import("sql/postgres/protocol/NegotiateProtocolVersion.zig");
 }

@@ -1236,6 +1236,7 @@ pub const sql = struct {
             pub const FieldMessage = @import("sql/postgres/protocol/FieldMessage.zig").FieldMessage;
             pub const ErrorResponse = @import("sql/postgres/protocol/ErrorResponse.zig");
             pub const NoticeResponse = @import("sql/postgres/protocol/NoticeResponse.zig");
+            pub const NegotiateProtocolVersion = @import("sql/postgres/protocol/NegotiateProtocolVersion.zig");
         };
     };
 };
@@ -1698,6 +1699,7 @@ test {
     _ = @import("sql/postgres/protocol/CommandComplete.zig");
     _ = @import("sql/postgres/protocol/CopyData.zig");
     _ = @import("sql/postgres/protocol/CopyFail.zig");
+    _ = @import("sql/postgres/protocol/NegotiateProtocolVersion.zig");
     _ = @import("css/properties/text.zig");
     // Wave-19 unmined-corner port (2026-05-19). Adds bun/src/perf/hw_timer.zig
     // (TSC reader) — the perf/ directory is otherwise lightly mined here.
