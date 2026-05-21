@@ -10465,6 +10465,227 @@ test "conformance: comparisonOperatorWithNoRelationshipObjectsOnOptionalProperty
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: parentheses passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parentheses",
+        .path = "parentheses.ts",
+        .source =
+        \\// @target: es2015
+        \\// @noTypesAndSymbols: true
+        \\
+        \\declare const o1: ((...args: any[]) => number);
+        \\declare const o2: { b: (...args: any[]) => number };
+        \\declare const o3: { b: ((...args: any[]) => (...args: any[]) => number) };
+        \\declare const o4: { b: ((...args: any[]) => { c: (...args: any[]) => number } ) };
+        \\
+        \\(o1)(o1 ?? 1);
+        \\(o2?.b)(o1 ?? 1);
+        \\(o3?.b())(o1 ?? 1);
+        \\(o4?.b().c)(o1 ?? 1);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: callChain passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "callChain",
+        .path = "callChain.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\
+        \\declare const o1: undefined | ((...args: any[]) => number);
+        \\o1?.();
+        \\o1?.(1);
+        \\o1?.(...[1, 2]);
+        \\o1?.(1, ...[2, 3], 4);
+        \\
+        \\declare const o2: undefined | { b: (...args: any[]) => number };
+        \\o2?.b();
+        \\o2?.b(1);
+        \\o2?.b(...[1, 2]);
+        \\o2?.b(1, ...[2, 3], 4);
+        \\o2?.["b"]();
+        \\o2?.["b"](1);
+        \\o2?.["b"](...[1, 2]);
+        \\o2?.["b"](1, ...[2, 3], 4);
+        \\
+        \\declare const o3: { b: ((...args: any[]) => { c: string }) | undefined };
+        \\o3.b?.().c;
+        \\o3.b?.(1).c;
+        \\o3.b?.(...[1, 2]).c;
+        \\o3.b?.(1, ...[2, 3], 4).c;
+        \\o3.b?.()["c"];
+        \\o3.b?.(1)["c"];
+        \\o3.b?.(...[1, 2])["c"];
+        \\o3.b?.(1, ...[2, 3], 4)["c"];
+        \\o3["b"]?.().c;
+        \\o3["b"]?.(1).c;
+        \\o3["b"]?.(...[1, 2]).c;
+        \\o3["b"]?.(1, ...[2, 3], 4).c;
+        \\
+        \\declare const o4: undefined | (<T>(f: (a: T) => T) => T);
+        \\declare function incr(x: number): number;
+        \\const v: number | undefined = o4?.(incr);
+        \\
+        \\declare const o5: <T>() => undefined | (() => void);
+        \\o5<number>()?.();
+        \\
+        \\o2?.b()!.toString;
+        \\o2?.b()!.toString!;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: propertyAccessChain passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "propertyAccessChain",
+        .path = "propertyAccessChain.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\
+        \\declare const o1: undefined | { b: string };
+        \\o1?.b;
+        \\
+        \\declare const o2: undefined | { b: { c: string } };
+        \\o2?.b.c;
+        \\
+        \\declare const o3: { b: undefined | { c: string } };
+        \\o3.b?.c;
+        \\
+        \\declare const o4: { b?: { c: { d?: { e: string } } } };
+        \\o4.b?.c.d?.e;
+        \\
+        \\declare const o5: { b?(): { c: { d?: { e: string } } } };
+        \\o5.b?.().c.d?.e;
+        \\
+        \\declare const o6: <T>() => undefined | ({ x: number });
+        \\o6<number>()?.x;
+        \\
+        \\o1?.b ? 1 : 0;
+        \\
+        \\o2?.b!.c;
+        \\o2?.b!.c!;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: typeGuardFunction passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeGuardFunction",
+        .path = "typeGuardFunction.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\class A {
+        \\    propA: number;
+        \\}
+        \\
+        \\class B {
+        \\    propB: number;
+        \\}
+        \\
+        \\class C extends A {
+        \\    propC: number;
+        \\}
+        \\
+        \\declare function isA(p1: any): p1 is A;
+        \\declare function isB(p1: any): p1 is B;
+        \\declare function isC(p1: any): p1 is C;
+        \\
+        \\declare function retC(): C;
+        \\
+        \\var a: A;
+        \\var b: B;
+        \\
+        \\if (isC(a)) {
+        \\    a.propC;
+        \\}
+        \\
+        \\var subType: C;
+        \\if(isA(subType)) {
+        \\    subType.propC;
+        \\}
+        \\
+        \\var union: A | B;
+        \\if(isA(union)) {
+        \\    union.propA;
+        \\}
+        \\
+        \\interface I1 {
+        \\    (p1: A): p1 is C;
+        \\}
+        \\
+        \\declare function isC_multipleParams(p1, p2): p1 is C;
+        \\if (isC_multipleParams(a, 0)) {
+        \\    a.propC;
+        \\}
+        \\
+        \\var obj: {
+        \\    func1(p1: A): p1 is C;
+        \\}
+        \\class D {
+        \\    method1(p1: A): p1 is C {
+        \\        return true;
+        \\    }
+        \\}
+        \\
+        \\let f1 = (p1: A): p1 is C => false;
+        \\
+        \\declare function f2(p1: (p1: A) => p1 is C);
+        \\
+        \\f2(function(p1: A): p1 is C {
+        \\    return true;
+        \\});
+        \\
+        \\declare function acceptingBoolean(a: boolean);
+        \\acceptingBoolean(isA(a));
+        \\
+        \\declare function acceptingTypeGuardFunction(p1: (item) => item is A);
+        \\acceptingTypeGuardFunction(isA);
+        \\
+        \\let union2: C | B;
+        \\let union3: boolean | B = isA(union2) || union2;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
