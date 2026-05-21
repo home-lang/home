@@ -4120,6 +4120,729 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: stringEnumInElementAccess01 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringEnumInElementAccess01",
+        .path = "stringEnumInElementAccess01.ts",
+        .source =
+        \\// @target: es2015
+        \\// @noImplicitAny: true
+        \\enum E {
+        \\    A = "a",
+        \\    B = "b",
+        \\    C = "c",
+        \\}
+        \\
+        \\interface Item {
+        \\    a: string;
+        \\    b: number;
+        \\    c: boolean;
+        \\}
+        \\
+        \\declare const item: Item;
+        \\declare const e: E;
+        \\const snb: string | number | boolean = item[e];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: augmentedTypeBracketAccessIndexSignature passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "augmentedTypeBracketAccessIndexSignature",
+        .path = "augmentedTypeBracketAccessIndexSignature.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\interface Foo { a }
+        \\interface Bar { b }
+        \\
+        \\interface Object {
+        \\    [n: number]: Foo;
+        \\}
+        \\
+        \\interface Function {
+        \\    [n: number]: Bar;
+        \\}
+        \\
+        \\var a = {}[0]; // Should be Foo
+        \\var b = (() => { })[0]; // Should be Bar
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: extendStringInterface passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "extendStringInterface",
+        .path = "extendStringInterface.ts",
+        .source =
+        \\// @target: es2015
+        \\interface String {
+        \\    doStuff(): string;
+        \\    doOtherStuff<T>(x:T): T;
+        \\}
+        \\
+        \\var x = '';
+        \\var a: string = x.doStuff();
+        \\var b: string = x.doOtherStuff('hm');
+        \\var c: string = x['doStuff']();
+        \\var d: string = x['doOtherStuff']('hm');
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: stringLiteralCheckedInIf02 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringLiteralCheckedInIf02",
+        .path = "stringLiteralCheckedInIf02.ts",
+        .source =
+        \\// @target: es2015
+        \\
+        \\type S = "a" | "b";
+        \\type T = S[] | S;
+        \\
+        \\function isS(t: T): t is S {
+        \\    return t === "a" || t === "b";
+        \\}
+        \\
+        \\function f(foo: T) {
+        \\    if (isS(foo)) {
+        \\        return foo;
+        \\    }
+        \\    else {
+        \\        return foo[0];
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: stringLiteralTypesOverloadAssignability03 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringLiteralTypesOverloadAssignability03",
+        .path = "stringLiteralTypesOverloadAssignability03.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\
+        \\function f(x: "foo"): number;
+        \\function f(x: string): number {
+        \\    return 0;
+        \\}
+        \\
+        \\function g(x: "foo"): number;
+        \\function g(x: string): number {
+        \\    return 0;
+        \\}
+        \\
+        \\let a = f;
+        \\let b = g;
+        \\
+        \\a = b;
+        \\b = a;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: stringLiteralTypesOverloadAssignability04 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringLiteralTypesOverloadAssignability04",
+        .path = "stringLiteralTypesOverloadAssignability04.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\
+        \\function f(x: "foo"): number;
+        \\function f(x: "foo"): number {
+        \\    return 0;
+        \\}
+        \\
+        \\function g(x: "foo"): number;
+        \\function g(x: "foo"): number {
+        \\    return 0;
+        \\}
+        \\
+        \\let a = f;
+        \\let b = g;
+        \\
+        \\a = b;
+        \\b = a;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: awaitBinaryExpression1_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "awaitBinaryExpression1_es6",
+        .path = "awaitBinaryExpression1_es6.ts",
+        .source =
+        \\// @target: ES6
+        \\// @noEmitHelpers: true
+        \\declare var a: boolean;
+        \\declare var p: Promise<boolean>;
+        \\declare function before(): void;
+        \\declare function after(): void;
+        \\async function func(): Promise<void> {
+        \\    before();
+        \\    var b = await p || a;
+        \\    after();
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: awaitBinaryExpression2_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "awaitBinaryExpression2_es6",
+        .path = "awaitBinaryExpression2_es6.ts",
+        .source =
+        \\// @target: ES6
+        \\// @noEmitHelpers: true
+        \\declare var a: boolean;
+        \\declare var p: Promise<boolean>;
+        \\declare function before(): void;
+        \\declare function after(): void;
+        \\async function func(): Promise<void> {
+        \\    before();
+        \\    var b = await p && a;
+        \\    after();
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: awaitBinaryExpression4_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "awaitBinaryExpression4_es6",
+        .path = "awaitBinaryExpression4_es6.ts",
+        .source =
+        \\// @target: ES6
+        \\// @noEmitHelpers: true
+        \\declare var a: boolean;
+        \\declare var p: Promise<boolean>;
+        \\declare function before(): void;
+        \\declare function after(): void;
+        \\async function func(): Promise<void> {
+        \\    before();
+        \\    var b = (await p, a);
+        \\    after();
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: awaitBinaryExpression1_es2017 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "awaitBinaryExpression1_es2017",
+        .path = "awaitBinaryExpression1_es2017.ts",
+        .source =
+        \\// @target: es2017
+        \\// @noEmitHelpers: true
+        \\declare var a: boolean;
+        \\declare var p: Promise<boolean>;
+        \\declare function before(): void;
+        \\declare function after(): void;
+        \\async function func(): Promise<void> {
+        \\    before();
+        \\    var b = await p || a;
+        \\    after();
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: awaitBinaryExpression2_es2017 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "awaitBinaryExpression2_es2017",
+        .path = "awaitBinaryExpression2_es2017.ts",
+        .source =
+        \\// @target: es2017
+        \\// @noEmitHelpers: true
+        \\declare var a: boolean;
+        \\declare var p: Promise<boolean>;
+        \\declare function before(): void;
+        \\declare function after(): void;
+        \\async function func(): Promise<void> {
+        \\    before();
+        \\    var b = await p && a;
+        \\    after();
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: awaitBinaryExpression3_es2017 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "awaitBinaryExpression3_es2017",
+        .path = "awaitBinaryExpression3_es2017.ts",
+        .source =
+        \\// @target: es2017
+        \\// @noEmitHelpers: true
+        \\declare var a: number;
+        \\declare var p: Promise<number>;
+        \\declare function before(): void;
+        \\declare function after(): void;
+        \\async function func(): Promise<void> {
+        \\    before();
+        \\    var b = await p + a;
+        \\    after();
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: awaitBinaryExpression4_es2017 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "awaitBinaryExpression4_es2017",
+        .path = "awaitBinaryExpression4_es2017.ts",
+        .source =
+        \\// @target: es2017
+        \\// @noEmitHelpers: true
+        \\declare var a: boolean;
+        \\declare var p: Promise<boolean>;
+        \\declare function before(): void;
+        \\declare function after(): void;
+        \\async function func(): Promise<void> {
+        \\    before();
+        \\    var b = (await p, a);
+        \\    after();
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: infiniteExpansionThroughTypeInference passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "infiniteExpansionThroughTypeInference",
+        .path = "infiniteExpansionThroughTypeInference.ts",
+        .source =
+        \\// @target: es2015
+        \\interface G<T> {
+        \\    x: G<G<T>> // infinitely expanding type reference
+        \\    y: T
+        \\}
+        \\
+        \\function ff<T>(g: G<T>): void {
+        \\    ff(g) // when infering T here we need to make sure to not descend into the structure of G<T> infinitely
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: iteratorSpreadInArray3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "iteratorSpreadInArray3",
+        .path = "iteratorSpreadInArray3.ts",
+        .source =
+        \\//@target: ES6
+        \\class SymbolIterator {
+        \\    next() {
+        \\        return {
+        \\            value: Symbol(),
+        \\            done: false
+        \\        };
+        \\    }
+        \\
+        \\    [Symbol.iterator]() {
+        \\        return this;
+        \\    }
+        \\}
+        \\
+        \\var array = [...[0, 1], ...new SymbolIterator];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+
+test "conformance: strictBindCallApply2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "strictBindCallApply2",
+        .path = "strictBindCallApply2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strictFunctionTypes: false
+        \\// @strictBindCallApply: true
+        \\
+        \\// Repro from #32964
+        \\
+        \\interface Foo { blub: string };
+        \\function fn(this: Foo) {}
+        \\
+        \\type Test = ThisParameterType<typeof fn>;
+        \\
+        \\const fb = fn.bind({ blub: "blub" });
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserOverloadOnConstants1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserOverloadOnConstants1",
+        .path = "parserOverloadOnConstants1.ts",
+        .source =
+        \\// @target: es2015
+        \\interface Document {
+        \\    createElement(tagName: string): HTMLElement;
+        \\    createElement(tagName: 'canvas'): HTMLCanvasElement;
+        \\    createElement(tagName: 'div'): HTMLDivElement;
+        \\    createElement(tagName: 'span'): HTMLSpanElement;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: ambientEnumDeclaration1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "ambientEnumDeclaration1",
+        .path = "ambientEnumDeclaration1.ts",
+        .source =
+        \\// @target: es2015
+        \\// In ambient enum declarations, all values specified in enum member declarations must be classified as constant enum expressions.
+        \\
+        \\declare enum E {
+        \\    a = 10,
+        \\    b = 10 + 1,
+        \\    c = b,
+        \\    d = (c) + 1,
+        \\    e = 10 << 2 * 8,
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: superCallBeforeThisAccessing8 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "superCallBeforeThisAccessing8",
+        .path = "superCallBeforeThisAccessing8.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es2015
+        \\class Base {
+        \\    constructor(c) { }
+        \\}
+        \\class D extends Base {
+        \\    private _t;
+        \\    constructor() {
+        \\        let x = {
+        \\            k: super(undefined),
+        \\            j: this._t,  // no error
+        \\        }
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: computedPropertyNames31_ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "computedPropertyNames31_ES6",
+        .path = "computedPropertyNames31_ES6.ts",
+        .source =
+        \\// @target: es6
+        \\class Base {
+        \\    bar() {
+        \\        return 0;
+        \\    }
+        \\}
+        \\class C extends Base {
+        \\    foo() {
+        \\        () => {
+        \\            var obj = {
+        \\                [super.bar()]() { } // needs capture
+        \\            };
+        \\        }
+        \\        return 0;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: extendBooleanInterface passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "extendBooleanInterface",
+        .path = "extendBooleanInterface.ts",
+        .source =
+        \\// @target: es2015
+        \\interface Boolean {
+        \\    doStuff(): string;
+        \\    doOtherStuff<T>(x: T): T;
+        \\}
+        \\
+        \\var x = true;
+        \\var a: string = x.doStuff();
+        \\var b: string = x.doOtherStuff('hm');
+        \\var c: string = x['doStuff']();
+        \\var d: string = x['doOtherStuff']('hm');
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: elementAccessChain_2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "elementAccessChain.2",
+        .path = "elementAccessChain.2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\declare const o1: undefined | { b: string };
+        \\o1?.["b"];
+        \\
+        \\declare const o2: undefined | { b: { c: string } };
+        \\o2?.["b"].c;
+        \\o2?.b["c"];
+        \\
+        \\declare const o3: { b: undefined | { c: string } };
+        \\o3["b"]?.c;
+        \\o3.b?.["c"];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: for-of19 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "for-of19",
+        .path = "for-of19.ts",
+        .source =
+        \\//@target: ES6
+        \\class Foo { }
+        \\class FooIterator {
+        \\    next() {
+        \\        return {
+        \\            value: new Foo,
+        \\            done: false
+        \\        };
+        \\    }
+        \\    [Symbol.iterator]() {
+        \\        return this;
+        \\    }
+        \\}
+        \\
+        \\for (var v of new FooIterator) {
+        \\    v;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: for-of20 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "for-of20",
+        .path = "for-of20.ts",
+        .source =
+        \\//@target: ES6
+        \\class Foo { }
+        \\class FooIterator {
+        \\    next() {
+        \\        return {
+        \\            value: new Foo,
+        \\            done: false
+        \\        };
+        \\    }
+        \\    [Symbol.iterator]() {
+        \\        return this;
+        \\    }
+        \\}
+        \\
+        \\for (let v of new FooIterator) {
+        \\    v;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: privateNameInLhsReceiverExpression passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "privateNameInLhsReceiverExpression",
