@@ -924,6 +924,14 @@ The copied `js/third_party/jsonwebtoken/decoding.test.js` fixture now
 passes as `1` test through the CommonJS bootstrap model. It covers
 default-import lowering for `jsonwebtoken` and `jwt.decode("null")`
 returning `null` without throwing.
+The copied `js/third_party/jsonwebtoken/buffer.test.js`,
+`js/third_party/jsonwebtoken/expires_format.test.js`,
+`js/third_party/jsonwebtoken/noTimestamp.test.js`, and
+`js/third_party/jsonwebtoken/invalid_exp.test.js` fixtures now pass as
+`8` tests through the CommonJS bootstrap model. They cover base64
+`Buffer` payload signing/decoding, deprecated `expiresInSeconds` option
+validation, `expiresIn: "5m"` claim insertion, and invalid `exp`
+callback error names.
 The copied `js/node/path/to-namespaced-path.test.js` fixture now passes
 as `4` tests through the path bootstrap model. It covers
 `path.toNamespacedPath`, `path._makeLong`, posix/win32 namespace variants,

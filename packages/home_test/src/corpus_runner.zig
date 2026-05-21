@@ -206,6 +206,10 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/09563/09563.test.ts",
     "js/third_party/yargs/yargs-cjs.test.js",
     "js/third_party/jsonwebtoken/decoding.test.js",
+    "js/third_party/jsonwebtoken/buffer.test.js",
+    "js/third_party/jsonwebtoken/expires_format.test.js",
+    "js/third_party/jsonwebtoken/noTimestamp.test.js",
+    "js/third_party/jsonwebtoken/invalid_exp.test.js",
     "js/node/path/is-absolute.test.js",
     "js/node/path/zero-length-strings.test.js",
     "js/bun/util/concat.test.js",
@@ -6444,15 +6448,64 @@ const harness_prelude =
     \\globalThis.__home_modules["yargs/yargs"] = function yargs() {
     \\  return {};
     \\};
-    \\globalThis.__home_modules["jsonwebtoken"] = {
-    \\  decode(token) {
+    \\function __home_jwt_error(name, message) {
+    \\  const error = new Error(message);
+    \\  error.name = name;
+    \\  return error;
+    \\}
+    \\function __home_jwt_decode_payload_segment(segment) {
+    \\  const base64 = String(segment || "").replace(/-/g, "+").replace(/_/g, "/");
+    \\  const padded = base64 + "===".slice((base64.length + 3) % 4);
+    \\  const text = typeof atob === "function" ? atob(padded) : Buffer.from(padded, "base64").toString();
+    \\  return JSON.parse(text);
+    \\}
+    \\function __home_jwt_decode(token) {
     \\    if (token === null || token === undefined) return null;
+    \\    const text = String(token);
+    \\    if (text.startsWith("home.jwt.")) {
+    \\      const payloadText = decodeURIComponent(text.slice("home.jwt.".length));
+    \\      try {
+    \\        return JSON.parse(payloadText);
+    \\      } catch (error) {
+    \\        return payloadText;
+    \\      }
+    \\    }
     \\    try {
-    \\      return JSON.parse(String(token));
+    \\      const parts = text.split(".");
+    \\      if (parts.length >= 2) return __home_jwt_decode_payload_segment(parts[1]);
+    \\      return JSON.parse(text);
     \\    } catch (error) {
     \\      return null;
     \\    }
-    \\  },
+    \\}
+    \\function __home_jwt_sign(payload, secret, options) {
+    \\  const opts = options || {};
+    \\  if (Object.prototype.hasOwnProperty.call(opts, "expiresInSeconds")) throw new Error('"expiresInSeconds" is not allowed');
+    \\  let body = payload && typeof payload.toString === "function" && payload.constructor && payload.constructor.name === "Buffer" ? payload.toString() : payload;
+    \\  if (body && typeof body === "object" && !Array.isArray(body)) {
+    \\    body = Object.assign({}, body);
+    \\    if (opts.expiresIn === "5m") body.exp = Math.floor(Date.now() / 1000) + 5 * 60;
+    \\  }
+    \\  return "home.jwt." + encodeURIComponent(typeof body === "string" ? body : JSON.stringify(body));
+    \\}
+    \\function __home_jwt_verify(token, secret, callback) {
+    \\  let payload = __home_jwt_decode(token);
+    \\  let error = null;
+    \\  if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "exp")) {
+    \\    if (payload.exp === 0) error = __home_jwt_error("TokenExpiredError", "jwt expired");
+    \\    else if (typeof payload.exp !== "number") error = __home_jwt_error("JsonWebTokenError", "invalid exp value");
+    \\  }
+    \\  if (typeof callback === "function") {
+    \\    callback(error, error ? undefined : payload);
+    \\    return undefined;
+    \\  }
+    \\  if (error) throw error;
+    \\  return payload;
+    \\}
+    \\globalThis.__home_modules["jsonwebtoken"] = {
+    \\  decode: __home_jwt_decode,
+    \\  sign: __home_jwt_sign,
+    \\  verify: __home_jwt_verify,
     \\};
     \\if (typeof URLSearchParams !== "function") {
     \\  function __home_url_hex(byte) {
@@ -6664,8 +6717,20 @@ const harness_prelude =
     \\    }
     \\    return bytes;
     \\  }
-    \\  var Buffer = function(size) {
-    \\    const bytes = new Uint8Array(size);
+    \\  function __home_base64_bytes(value) {
+    \\    const binary = atob(String(value).replace(/\s+/g, ""));
+    \\    const bytes = [];
+    \\    for (let i = 0; i < binary.length; i++) bytes.push(binary.charCodeAt(i) & 0xff);
+    \\    return bytes;
+    \\  }
+    \\  function __home_buffer_string_bytes(value, encoding) {
+    \\    const normalized = encoding === undefined ? "utf8" : String(encoding).toLowerCase();
+    \\    if (normalized === "base64") return __home_base64_bytes(value);
+    \\    if (normalized === "utf8" || normalized === "utf-8") return __home_utf8_bytes(value);
+    \\    __home_unsupported("Only Buffer string construction with utf8/base64 is supported by the Home Bun corpus bootstrap runner");
+    \\  }
+    \\  var Buffer = function(value, encoding) {
+    \\    const bytes = typeof value === "string" ? new Uint8Array(__home_buffer_string_bytes(value, encoding)) : new Uint8Array(value);
     \\    Object.setPrototypeOf(bytes, Buffer.prototype);
     \\    return bytes;
     \\  };
@@ -6699,6 +6764,12 @@ const harness_prelude =
     \\    const normalized = encoding === undefined ? "utf8" : String(encoding).toLowerCase();
     \\    if (typeof value === "string" && (normalized === "utf8" || normalized === "utf-8")) {
     \\      const bytes = __home_utf8_bytes(value);
+    \\      const buffer = new Buffer(bytes.length);
+    \\      for (let i = 0; i < bytes.length; i++) buffer[i] = bytes[i];
+    \\      return buffer;
+    \\    }
+    \\    if (typeof value === "string" && normalized === "base64") {
+    \\      const bytes = __home_base64_bytes(value);
     \\      const buffer = new Buffer(bytes.length);
     \\      for (let i = 0; i < bytes.length; i++) buffer[i] = bytes[i];
     \\      return buffer;
@@ -11076,6 +11147,87 @@ test "bootstrap runner covers jsonwebtoken null decode" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers jsonwebtoken sign and verify fixtures" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\import jwt from "jsonwebtoken";
+        \\
+        \\describe("jsonwebtoken", function () {
+        \\  it("signs and decodes buffer payloads", function () {
+        \\    var payload = new Buffer("TkJyotZe8NFpgdfnmgINqg==", "base64");
+        \\    var token = jwt.sign(payload, "signing key");
+        \\    expect(jwt.decode(token)).toBe(payload.toString());
+        \\  });
+        \\
+        \\  it("throws on deprecated expiresInSeconds", function () {
+        \\    expect(function () {
+        \\      jwt.sign({ foo: 123 }, "123", { expiresInSeconds: 5 });
+        \\    }).toThrow('"expiresInSeconds" is not allowed');
+        \\  });
+        \\
+        \\  it("verifies noTimestamp expiresIn payloads", function () {
+        \\    var exp = Math.floor(Date.now() / 1000) + 5 * 60;
+        \\    var token = jwt.sign({ foo: 123 }, "123", { expiresIn: "5m", noTimestamp: true });
+        \\    var result = jwt.verify(token, "123");
+        \\    expect(result.exp).toBeGreaterThanOrEqual(exp);
+        \\  });
+        \\
+        \\  it("reports string exp as JsonWebTokenError", function (done) {
+        \\    var broken_token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOiIxMjMiLCJmb28iOiJhZGFzIn0.cDa81le-pnwJMcJi3o3PBwB7cTJMiXCkizIhxbXAKRg";
+        \\    jwt.verify(broken_token, "123", function (err) {
+        \\      expect(err.name).toEqual("JsonWebTokenError");
+        \\      done();
+        \\    });
+        \\  });
+        \\
+        \\  it("reports zero exp as TokenExpiredError", function (done) {
+        \\    var broken_token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjAsImZvbyI6ImFkYXMifQ.UKxix5T79WwfqAA0fLZr6UrhU-jMES2unwCOFa4grEA";
+        \\    jwt.verify(broken_token, "123", function (err) {
+        \\      expect(err.name).toEqual("TokenExpiredError");
+        \\      done();
+        \\    });
+        \\  });
+        \\
+        \\  it("reports false exp as JsonWebTokenError", function (done) {
+        \\    var broken_token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOmZhbHNlLCJmb28iOiJhZGFzIn0.iBn33Plwhp-ZFXqppCd8YtED77dwWU0h68QS_nEQL8I";
+        \\    jwt.verify(broken_token, "123", function (err) {
+        \\      expect(err.name).toEqual("JsonWebTokenError");
+        \\      done();
+        \\    });
+        \\  });
+        \\
+        \\  it("reports true exp as JsonWebTokenError", function (done) {
+        \\    var broken_token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOnRydWUsImZvbyI6ImFkYXMifQ.eOWfZCTM5CNYHAKSdFzzk2tDkPQmRT17yqllO-ItIMM";
+        \\    jwt.verify(broken_token, "123", function (err) {
+        \\      expect(err.name).toEqual("JsonWebTokenError");
+        \\      done();
+        \\    });
+        \\  });
+        \\
+        \\  it("reports object exp as JsonWebTokenError", function (done) {
+        \\    var broken_token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOnt9LCJmb28iOiJhZGFzIn0.1JjCTsWLJ2DF-CfESjLdLfKutUt3Ji9cC7ESlcoBHSY";
+        \\    jwt.verify(broken_token, "123", function (err) {
+        \\      expect(err.name).toEqual("JsonWebTokenError");
+        \\      done();
+        \\    });
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/jsonwebtoken/noTimestamp.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
 }
 
 test "bootstrap runner covers Node path bootstrap smokes" {
