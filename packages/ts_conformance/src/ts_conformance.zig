@@ -15059,6 +15059,234 @@ test "conformance: parserMethodSignature12 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: parserGreaterThanTokenAmbiguity1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserGreaterThanTokenAmbiguity1",
+        .path = "parserGreaterThanTokenAmbiguity1.ts",
+        .source =
+        \\// @target: es2015
+        \\1 >> 2;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserGreaterThanTokenAmbiguity5 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserGreaterThanTokenAmbiguity5",
+        .path = "parserGreaterThanTokenAmbiguity5.ts",
+        .source =
+        \\// @target: es2015
+        \\1
+        \\// before
+        \\>> // after
+        \\2;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserGreaterThanTokenAmbiguity6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserGreaterThanTokenAmbiguity6",
+        .path = "parserGreaterThanTokenAmbiguity6.ts",
+        .source =
+        \\// @target: es2015
+        \\1 >>> 2;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserGreaterThanTokenAmbiguity10 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserGreaterThanTokenAmbiguity10",
+        .path = "parserGreaterThanTokenAmbiguity10.ts",
+        .source =
+        \\// @target: es2015
+        \\1
+        \\// before
+        \\>>> // after
+        \\2;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserGenericConstraint1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserGenericConstraint1",
+        .path = "parserGenericConstraint1.ts",
+        .source =
+        \\// @target: es2015
+        \\class C<T extends number> {
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserSymbolProperty3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserSymbolProperty3",
+        .path = "parserSymbolProperty3.ts",
+        .source =
+        \\//@target: ES6
+        \\declare class C {
+        \\    [Symbol.unscopables](): string;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserSymbolProperty6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserSymbolProperty6",
+        .path = "parserSymbolProperty6.ts",
+        .source =
+        \\//@target: ES6
+        \\class C {
+        \\    [Symbol.toStringTag]: string = "";
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserSymbolProperty7 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserSymbolProperty7",
+        .path = "parserSymbolProperty7.ts",
+        .source =
+        \\//@target: ES6
+        \\class C {
+        \\    [Symbol.toStringTag](): void { }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserForOfStatement17 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserForOfStatement17",
+        .path = "parserForOfStatement17.ts",
+        .source =
+        \\//@target: ES6
+        \\for (var of; ;) { }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parser_numericSeparators_hex passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parser.numericSeparators.hex",
+        .path = "parser.numericSeparators.hex.ts",
+        .source =
+        \\// @target: es2015
+        \\0x00_11;
+        \\0X0_1;
+        \\0x1100_0011;
+        \\0X0_11_0101;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parser_numericSeparators_octal passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parser.numericSeparators.octal",
+        .path = "parser.numericSeparators.octal.ts",
+        .source =
+        \\// @target: es2015
+        \\0o00_11;
+        \\0O0_1;
+        \\0o1100_0011;
+        \\0O0_11_0101;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
