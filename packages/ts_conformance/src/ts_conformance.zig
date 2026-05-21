@@ -4120,6 +4120,335 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: derivedInterfaceDoesNotHideBaseSignatures passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "derivedInterfaceDoesNotHideBaseSignatures",
+        .path = "derivedInterfaceDoesNotHideBaseSignatures.ts",
+        .source =
+        \\// @target: es2015
+        \\interface Base {
+        \\    (): string;
+        \\    new (x: string): number;
+        \\}
+        \\
+        \\interface Derived extends Base {
+        \\    (): number;
+        \\    new (x: string): string;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emitClassDeclarationWithThisKeywordInES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emitClassDeclarationWithThisKeywordInES6",
+        .path = "emitClassDeclarationWithThisKeywordInES6.ts",
+        .source =
+        \\// @target: es6
+        \\class B {
+        \\    x = 10;
+        \\    constructor() {
+        \\        this.x = 10;
+        \\    }
+        \\    static log(a: number) { }
+        \\    foo() {
+        \\        B.log(this.x);
+        \\    }
+        \\
+        \\    get X() {
+        \\        return this.x;
+        \\    }
+        \\
+        \\    set bX(y: number) {
+        \\        this.x = y;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: nominalSubtypeCheckOfTypeParameter2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nominalSubtypeCheckOfTypeParameter2",
+        .path = "nominalSubtypeCheckOfTypeParameter2.ts",
+        .source =
+        \\// @target: es2015
+        \\interface B<T> {
+        \\    bar: T;
+        \\}
+        \\
+        \\// ok
+        \\interface A<T> extends B<T> {
+        \\    foo: T;
+        \\}
+        \\
+        \\// ok
+        \\interface A2<T> extends B<B<string>> {
+        \\    baz: T;
+        \\}
+        \\
+        \\interface C<T> {
+        \\    bam: T;
+        \\}
+        \\
+        \\// ok
+        \\interface A3<T> extends B<C<T>> {
+        \\    bing: T;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: spreadContextualTypedBindingPattern_18308 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "spreadContextualTypedBindingPattern_18308",
+        .path = "spreadContextualTypedBindingPattern.ts",
+        .source =
+        \\// @target: es2015
+        \\// #18308
+        \\interface Person {
+        \\  naam: string,
+        \\  age: number
+        \\}
+        \\
+        \\declare const bob: Person
+        \\declare const alice: Person
+        \\
+        \\const { naam, age } = {...bob, ...alice}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: wrappedAndRecursiveConstraints passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "wrappedAndRecursiveConstraints",
+        .path = "wrappedAndRecursiveConstraints.ts",
+        .source =
+        \\// @target: es2015
+        \\// no errors expected
+        \\
+        \\class C<T extends Date> {
+        \\    constructor(public data: T) { }
+        \\    foo<U extends T>(x: U) {
+        \\        return x;
+        \\    }
+        \\}
+        \\
+        \\interface Foo extends Date {
+        \\    foo: string;
+        \\}
+        \\
+        \\var y: Foo = {} as Foo;
+        \\var c = new C(y);
+        \\var r = c.foo(y);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emitRestParametersMethodES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emitRestParametersMethodES6",
+        .path = "emitRestParametersMethodES6.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es6
+        \\class C {
+        \\    constructor(name: string, ...rest) { }
+        \\
+        \\    public bar(...rest) { }
+        \\    public foo(x: number, ...rest) { }
+        \\}
+        \\
+        \\class D {
+        \\    constructor(...rest) { }
+        \\
+        \\    public bar(...rest) { }
+        \\    public foo(x: number, ...rest) { }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: strictNullChecksNoWidening passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "strictNullChecksNoWidening",
+        .path = "strictNullChecksNoWidening.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strictNullChecks: true
+        \\
+        \\var a1 = null;
+        \\var a2 = undefined;
+        \\var a3 = void 0;
+        \\
+        \\var b1 = [];
+        \\var b2 = [,];
+        \\var b3 = [undefined];
+        \\var b4 = [[], []];
+        \\var b5 = [[], [,]];
+        \\
+        \\declare function f<T>(x: T): T;
+        \\
+        \\var c1 = f(null);
+        \\var c2 = f(undefined);
+        \\var c3 = f([]);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: EnumAndModuleWithSameNameAndCommonRoot passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "EnumAndModuleWithSameNameAndCommonRoot",
+        .path = "EnumAndModuleWithSameNameAndCommonRoot.ts",
+        .source =
+        \\// @target: es2015
+        \\enum enumdule {
+        \\    Red, Blue
+        \\}
+        \\
+        \\namespace enumdule {
+        \\
+        \\    export class Point {
+        \\        constructor(public x: number, public y: number) { }
+        \\    }
+        \\}
+        \\
+        \\var x: enumdule;
+        \\var x = enumdule.Red;
+        \\
+        \\var y: { x: number; y: number };
+        \\var y = new enumdule.Point(0, 0);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: ModuleAndEnumWithSameNameAndCommonRoot passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "ModuleAndEnumWithSameNameAndCommonRoot",
+        .path = "ModuleAndEnumWithSameNameAndCommonRoot.ts",
+        .source =
+        \\// @target: es2015
+        \\namespace enumdule {
+        \\
+        \\    export class Point {
+        \\        constructor(public x: number, public y: number) { }
+        \\    }
+        \\}
+        \\
+        \\enum enumdule {
+        \\    Red, Blue
+        \\}
+        \\
+        \\var x: enumdule;
+        \\var x = enumdule.Red;
+        \\
+        \\var y: { x: number; y: number };
+        \\var y = new enumdule.Point(0, 0);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+
+test "conformance: thisTypeOptionalCall passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "thisTypeOptionalCall",
+        .path = "thisTypeOptionalCall.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strictNullChecks: true
+        \\// @noImplicitAny: true
+        \\// @noImplicitThis: true
+        \\// @strictBindCallApply: false
+        \\
+        \\function maybeBind<T, A extends any[], R>(obj: T, fn: ((this: T, ...args: A) => R) | undefined): ((...args: A) => R) | undefined {
+        \\    return fn?.bind(obj);
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: scannerEnum1 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "scannerEnum1",
