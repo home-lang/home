@@ -169,6 +169,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/web/timers/performance.test.js",
     "js/web/timers/performance-entries.test.ts",
     "js/web/fetch/blob-cow.test.ts",
+    "js/web/fetch/blob-array-fast-path.test.ts",
     "js/web/fetch/body-async-iterator.test.ts",
     "js/web/fetch/fetch-abort-queued.test.ts",
     "js/web/fetch/fetch-abort-stream-body.test.ts",
@@ -2725,6 +2726,18 @@ const harness_prelude =
     \\        __home_fail("Expected value must be a string or array");
     \\      }
     \\      __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to contain " + __home_format(expected));
+    \\    },
+    \\    toContainEqual(expected) {
+    \\      if (!Array.isArray(value)) __home_fail("Expected value must be an array");
+    \\      let pass = false;
+    \\      for (let i = 0; i < value.length; i++) {
+    \\        if (!(i in value)) continue;
+    \\        if (__home_deep_equal(value[i], expected, false, new Map())) {
+    \\          pass = true;
+    \\          break;
+    \\        }
+    \\      }
+    \\      __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to contain equal " + __home_format(expected));
     \\    },
     \\    toInclude(expected) {
     \\      return this.toContain(expected);
@@ -6492,13 +6505,17 @@ const harness_prelude =
     \\  if (ArrayBuffer.isView(part)) return Array.from(new Uint8Array(part.buffer, part.byteOffset, part.byteLength));
     \\  return __home_text_to_utf8_bytes(String(part));
     \\}
+    \\function __home_array_append(array, value) {
+    \\  Object.defineProperty(array, array.length, { value, writable: true, enumerable: true, configurable: true });
+    \\  return array.length;
+    \\}
     \\function __home_blob_parts(parts) {
     \\  if (parts === undefined || parts === null) return [];
     \\  if (typeof parts === "string") throw new TypeError("Blob constructor argument must be an array");
     \\  if (parts instanceof ArrayBuffer || ArrayBuffer.isView(parts)) return [parts];
     \\  if (Array.isArray(parts)) {
     \\    const out = [];
-    \\    for (let i = 0; i < parts.length; i++) if (i in parts) out.push(parts[i]);
+    \\    for (let i = 0; i < parts.length; i++) if (i in parts) __home_array_append(out, parts[i]);
     \\    return out;
     \\  }
     \\  return Array.from(parts);
@@ -6508,7 +6525,7 @@ const harness_prelude =
     \\  const bytes = [];
     \\  for (const part of source) {
     \\    const partBytes = __home_blob_part_to_bytes(part);
-    \\    for (let i = 0; i < partBytes.length; i++) bytes.push(partBytes[i]);
+    \\    for (let i = 0; i < partBytes.length; i++) __home_array_append(bytes, partBytes[i]);
     \\  }
     \\  this.parts = source.slice();
     \\  this.__home_blob_bytes = bytes;
@@ -7301,10 +7318,25 @@ const harness_prelude =
     \\if (typeof TextEncoder !== "function") {
     \\  var TextEncoder = function() {};
     \\  TextEncoder.prototype.encode = function(input) {
-    \\    const text = String(input === undefined ? "" : input);
-    \\    const bytes = new Uint8Array(text.length);
-    \\    for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i) & 0xff;
-    \\    return bytes;
+    \\    const out = [];
+    \\    for (const ch of String(input === undefined ? "" : input)) {
+    \\      const code = ch.codePointAt(0);
+    \\      if (code <= 0x7f) __home_array_append(out, code);
+    \\      else if (code <= 0x7ff) {
+    \\        __home_array_append(out, 0xc0 | (code >> 6));
+    \\        __home_array_append(out, 0x80 | (code & 0x3f));
+    \\      } else if (code <= 0xffff) {
+    \\        __home_array_append(out, 0xe0 | (code >> 12));
+    \\        __home_array_append(out, 0x80 | ((code >> 6) & 0x3f));
+    \\        __home_array_append(out, 0x80 | (code & 0x3f));
+    \\      } else {
+    \\        __home_array_append(out, 0xf0 | (code >> 18));
+    \\        __home_array_append(out, 0x80 | ((code >> 12) & 0x3f));
+    \\        __home_array_append(out, 0x80 | ((code >> 6) & 0x3f));
+    \\        __home_array_append(out, 0x80 | (code & 0x3f));
+    \\      }
+    \\    }
+    \\    return new Uint8Array(out);
     \\  };
     \\}
     \\if (typeof ReadableStream !== "function") {
@@ -9271,6 +9303,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.each = function(rows)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_finish_tests") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContain(expected)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toContainEqual(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toMatchObject(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toHaveProperty(expected, expectedValue)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toIncludeRepeated() requires the expect(value) to be a string") != null);
@@ -9290,6 +9323,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "UnreachableError") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Blob.prototype.arrayBuffer") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_blob_part_to_bytes(part)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_array_append(out, parts[i])") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest, mock, onTestFinished, spyOn, test") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "concatArrayBuffers: __home_concat_array_buffers") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var TextEncoder = function()") != null);
@@ -10113,6 +10147,43 @@ test "bootstrap runner covers Blob byte storage and copy-on-read" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/fetch/blob-cow.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers Blob array prototype indexed getter" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("Blob consults indexed prototype getters without mutating through them", async () => {
+        \\  let calls = 0;
+        \\  Object.defineProperty(Array.prototype, 1, {
+        \\    get() {
+        \\      calls++;
+        \\      return "intercepted";
+        \\    },
+        \\    configurable: true,
+        \\  });
+        \\  try {
+        \\    const blob = new Blob(["x", , "z"]);
+        \\    expect(await blob.text()).toBe("xinterceptedz");
+        \\    expect(calls).toBe(1);
+        \\  } finally {
+        \\    delete Array.prototype[1];
+        \\  }
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/fetch/blob-array-fast-path.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);

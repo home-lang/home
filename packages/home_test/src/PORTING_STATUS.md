@@ -801,6 +801,12 @@ The copied `js/web/fetch/blob-cow.test.ts` fixture now passes as `1`
 test through the Web Blob bootstrap model. It covers byte-backed
 construction from typed arrays, copy-on-write `arrayBuffer()` reads,
 `size`, and sliced `arrayBuffer()` reads without sharing mutable buffers.
+The copied `js/web/fetch/blob-array-fast-path.test.ts` fixture now
+passes as `11` tests through the same Web Blob bootstrap model. It
+covers string arrays, large arrays, typed-array and nested-Blob parts,
+empty and derived arrays, frozen arrays, sparse arrays, Array prototype
+indexed getters, numeric coercion, non-ASCII text encoding, and
+`expect().toContainEqual()` side-effect matching.
 The copied `cli/run/commonjs-invalid.test.ts` fixture now passes as `1`
 test through the real subprocess path, including piped stderr and the
 malformed CommonJS wrapper diagnostic.
