@@ -7319,7 +7319,7 @@ pub const Parser = struct {
                 }
                 const ref_start = switch (self.peek().kind) {
                     .identifier, .kw_default, .kw_undefined, .kw_super, .kw_this => self.advance(),
-                    else => {
+                    else => if (self.peek().kind.isPrimitiveTypeKeyword()) self.advance() else {
                         try self.report("expected ", "identifier after typeof");
                         return error.UnexpectedToken;
                     },
@@ -9264,7 +9264,10 @@ pub const Parser = struct {
         optional_chain_message: []const u8,
     ) ParseError!NodeId {
         const start = self.peek();
-        const name_tok = try self.expect(.identifier, "type name");
+        const name_tok = if (self.peek().kind == .identifier or self.peek().kind.isPrimitiveTypeKeyword())
+            self.advance()
+        else
+            try self.expect(.identifier, "type name");
         const final_name = try self.internToken(name_tok);
 
         var qualifier: std.ArrayListUnmanaged(NodeId) = .empty;

@@ -255,6 +255,10 @@ pub const TsCodes = struct {
     /// tsc emits a dedicated diagnostic for the case rather than
     /// the generic TS2304 / TS2507 path.
     pub const class_extends_primitive: u32 = 2863;
+    /// TS2840 — `interface I extends number {}` and friends. Interfaces
+    /// can only extend named object types, not lowercase primitive
+    /// type names.
+    pub const interface_extends_primitive: u32 = 2840;
     pub const arithmetic_operand_type: u32 = 2356;
     pub const update_operand_not_variable: u32 = 2357;
     pub const arithmetic_left_operand_type: u32 = 2362;
@@ -23855,6 +23859,7 @@ pub const Checker = struct {
         var own_index_signatures: IndexSignatureDuplicateState = .{};
         const extends = hir_mod.interfaceExtends(self.hir, node);
         for (extends) |extends_node| {
+            try self.reportInterfaceExtendsPrimitive(extends_node);
             try self.reportUnresolvedTypeRefHeritage(extends_node, type_params);
         }
         for (members) |m| {
@@ -23941,6 +23946,7 @@ pub const Checker = struct {
         // members into the child. Child decls win on name conflict.
         if (extends.len > 0) {
             for (extends) |extends_node| {
+                if (self.interfaceExtendsPrimitiveName(extends_node) != null) continue;
                 if (self.bareTypeNodeIsTypeParam(extends_node, type_params)) {
                     try self.report(extends_node, TsCodes.interface_incorrectly_extends, "An interface can only extend an object type or intersection of object types with statically known members.");
                 }
@@ -24972,6 +24978,7 @@ pub const Checker = struct {
         if (string_idx != types.Primitive.none) {
             try self.checkObjectInterfaceStringIndexerCompatibility(node, members);
             for (members) |m| {
+                if (self.syntheticSignatureMemberName(m.name)) continue;
                 if (self.isSymbolNamedMember(m.name)) continue;
                 if (m.type == types.Primitive.any or string_idx == types.Primitive.any) continue;
                 if (try self.heritageAssignableDeep(m.type, string_idx)) continue;
@@ -25000,6 +25007,7 @@ pub const Checker = struct {
         }
         if (number_idx != types.Primitive.none) {
             for (members) |m| {
+                if (self.syntheticSignatureMemberName(m.name)) continue;
                 if (!self.memberNameIsNumeric(m.name)) continue;
                 if (m.type == types.Primitive.any or number_idx == types.Primitive.any) continue;
                 if (try self.heritageAssignableDeep(m.type, number_idx)) continue;
@@ -25027,6 +25035,7 @@ pub const Checker = struct {
         }
         if (symbol_idx != types.Primitive.none) {
             for (members) |m| {
+                if (self.syntheticSignatureMemberName(m.name)) continue;
                 if (m.type == types.Primitive.any or symbol_idx == types.Primitive.any) continue;
                 if (!self.isSymbolNamedMember(m.name)) continue;
                 if (try self.heritageAssignableDeep(m.type, symbol_idx)) continue;
@@ -27001,6 +27010,33 @@ pub const Checker = struct {
         try self.reportCannotFindNamePlainOnce(type_ref_node, r.name);
     }
 
+    fn interfaceExtendsPrimitiveName(self: *Checker, extends_node: NodeId) ?hir_mod.StringId {
+        if (extends_node == hir_mod.none_node_id or self.hir.kindOf(extends_node) != .type_ref) return null;
+        const r = hir_mod.typeRefOf(self.hir, extends_node);
+        if (r.qualifier_len != 0) return null;
+        const raw = self.string_interner.get(r.name);
+        if (std.mem.eql(u8, raw, "number") or
+            std.mem.eql(u8, raw, "string") or
+            std.mem.eql(u8, raw, "boolean") or
+            std.mem.eql(u8, raw, "bigint") or
+            std.mem.eql(u8, raw, "symbol"))
+        {
+            return r.name;
+        }
+        return null;
+    }
+
+    fn reportInterfaceExtendsPrimitive(self: *Checker, extends_node: NodeId) CheckError!void {
+        const name = self.interfaceExtendsPrimitiveName(extends_node) orelse return;
+        const raw = self.string_interner.get(name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "An interface cannot extend a primitive type like '{s}'. It can only extend other named object types.",
+            .{raw},
+        );
+        try self.report(extends_node, TsCodes.interface_extends_primitive, msg);
+    }
+
     fn classExtendsHeritageNameResolves(
         self: *Checker,
         anchor: NodeId,
@@ -27937,6 +27973,20 @@ pub const Checker = struct {
                     if (std.mem.startsWith(u8, raw, "Symbol.")) {
                         return types.Primitive.symbol_t;
                     }
+                    if (std.mem.eql(u8, raw, "string") or
+                        std.mem.eql(u8, raw, "number") or
+                        std.mem.eql(u8, raw, "boolean") or
+                        std.mem.eql(u8, raw, "bigint") or
+                        std.mem.eql(u8, raw, "symbol") or
+                        std.mem.eql(u8, raw, "object") or
+                        std.mem.eql(u8, raw, "any") or
+                        std.mem.eql(u8, raw, "unknown") or
+                        std.mem.eql(u8, raw, "never") or
+                        std.mem.eql(u8, raw, "void"))
+                    {
+                        try self.reportTypeOnlyUsedAsValueOnce(tt.operand, name);
+                        return types.Primitive.any;
+                    }
                     if (self.lookupNarrow(name)) |narrow_t| {
                         if (narrow_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(narrow_t).is_type_parameter) {
                             const msg = try std.fmt.allocPrint(
@@ -28185,7 +28235,7 @@ pub const Checker = struct {
                 const ret_t = if (ft.return_type != hir_mod.none_node_id)
                     (if (is_predicate) types.Primitive.boolean_t else try self.lowererLowerWithTypeParams(ft.return_type))
                 else
-                    types.Primitive.void_t;
+                    types.Primitive.any;
                 const is_construct = self.hir.kindOf(type_node) == .constructor_type;
                 const ft_payload = hir_mod.fnTypeOf(self.hir, type_node);
                 const sig = self.interner.internSignatureWithAbstract(
