@@ -15882,6 +15882,229 @@ test "conformance: parserArrowFunctionExpression6 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: parserIndexMemberDeclaration1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserIndexMemberDeclaration1",
+        .path = "parserIndexMemberDeclaration1.ts",
+        .source =
+        \\// @target: es2015
+        \\class C {
+        \\   [a: string]: number
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserEnumDeclaration1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserEnumDeclaration1",
+        .path = "parserEnumDeclaration1.ts",
+        .source =
+        \\// @target: es2015
+        \\enum E {
+        \\  Foo = 1,
+        \\  Bar
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserEnumDeclaration3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserEnumDeclaration3",
+        .path = "parserEnumDeclaration3.ts",
+        .source =
+        \\// @target: es2015
+        \\declare enum E {
+        \\  A = 1
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserEnumDeclaration5 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserEnumDeclaration5",
+        .path = "parserEnumDeclaration5.ts",
+        .source =
+        \\// @target: es2015
+        \\enum E {
+        \\    A = 1,
+        \\    B,
+        \\    C = 2,
+        \\    D
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserEnumDeclaration6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserEnumDeclaration6",
+        .path = "parserEnumDeclaration6.ts",
+        .source =
+        \\// @target: es2015
+        \\enum E {
+        \\    A = 1,
+        \\    B,
+        \\    C = 1 << 1,
+        \\    D,
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserEnum1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserEnum1",
+        .path = "parserEnum1.ts",
+        .source =
+        \\// @module: commonjs
+        \\// @target: es2015
+        \\
+        \\
+        \\    export enum SignatureFlags {
+        \\        None = 0,
+        \\        IsIndexer = 1,
+        \\        IsStringIndexer = 1 << 1,
+        \\        IsNumberIndexer = 1 << 2,
+        \\    }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserEnum6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserEnum6",
+        .path = "parserEnum6.ts",
+        .source =
+        \\// @target: es2015
+        \\enum E {
+        \\  "A", "B", "C"
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserInterfaceKeywordInEnum passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserInterfaceKeywordInEnum",
+        .path = "parserInterfaceKeywordInEnum.ts",
+        .source =
+        \\// @target: es2015
+        \\enum Bar {
+        \\    interface,
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserInterfaceKeywordInEnum1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserInterfaceKeywordInEnum1",
+        .path = "parserInterfaceKeywordInEnum1.ts",
+        .source =
+        \\// @target: es2015
+        \\"use strict";
+        \\
+        \\enum Bar {
+        \\    interface,
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parser645086_3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parser645086_3",
+        .path = "parser645086_3.ts",
+        .source =
+        \\// @target: es2015
+        \\var v = /[\]/]/
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
