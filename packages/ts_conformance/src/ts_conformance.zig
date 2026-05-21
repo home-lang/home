@@ -4120,6 +4120,243 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: typeParameterUsedAsTypeParameterConstraint3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeParameterUsedAsTypeParameterConstraint3",
+        .path = "typeParameterUsedAsTypeParameterConstraint3.ts",
+        .source =
+        \\// @target: es2015
+        \\// Type parameters are in scope in their own and other type parameter lists
+        \\// Object types
+        \\
+        \\interface I<T, U, V> {
+        \\    x: T;
+        \\    y: U;
+        \\    z: V;
+        \\    foo<W extends V>(x: W): T;
+        \\}
+        \\
+        \\interface I2<V, T, U> {
+        \\    x: T;
+        \\    y: U;
+        \\    z: V;
+        \\    foo<W extends V>(x: W): T;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: callSignaturesWithOptionalParameters passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "callSignaturesWithOptionalParameters",
+        .path = "callSignaturesWithOptionalParameters.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// Optional parameters should be valid in all the below casts
+        \\
+        \\function foo(x?: number) { }
+        \\var f = function foo(x?: number) { }
+        \\var f2 = (x: number, y?: number) => { }
+        \\
+        \\foo(1);
+        \\foo();
+        \\f(1);
+        \\f();
+        \\f2(1);
+        \\f2(1, 2);
+        \\
+        \\class C {
+        \\    foo(x?: number) { }
+        \\}
+        \\
+        \\var c: C;
+        \\c.foo();
+        \\c.foo(1);
+        \\
+        \\interface I {
+        \\    (x?: number);
+        \\    foo(x: number, y?: number);
+        \\}
+        \\
+        \\var i: I;
+        \\i();
+        \\i(1);
+        \\i.foo(1);
+        \\i.foo(1, 2);
+        \\
+        \\var a: {
+        \\    (x?: number);
+        \\    foo(x?: number);
+        \\}
+        \\
+        \\a();
+        \\a(1);
+        \\a.foo();
+        \\a.foo(1);
+        \\
+        \\var b = {
+        \\    foo(x?: number) { },
+        \\    a: function foo(x: number, y?: number) { },
+        \\    b: (x?: number) => { }
+        \\}
+        \\
+        \\b.foo();
+        \\b.foo(1);
+        \\b.a(1);
+        \\b.a(1, 2);
+        \\b.b();
+        \\b.b(1);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: callSignaturesThatDifferOnlyByReturnType3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "callSignaturesThatDifferOnlyByReturnType3",
+        .path = "callSignaturesThatDifferOnlyByReturnType3.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// Normally it is an error to have multiple overloads with identical signatures in a single type declaration.
+        \\// Here the multiple overloads come from multiple merged declarations.
+        \\
+        \\interface I {
+        \\    (x: string): string;
+        \\}
+        \\
+        \\interface I {
+        \\    (x: string): number;
+        \\}
+        \\
+        \\interface I2<T> {
+        \\    (x: string): string;
+        \\}
+        \\
+        \\interface I2<T> {
+        \\    (x: string): number;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: stringLiteralTypesInImplementationSignatures passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringLiteralTypesInImplementationSignatures",
+        .path = "stringLiteralTypesInImplementationSignatures.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// String literal types are only valid in overload signatures
+        \\
+        \\function foo(x: 'hi') { }
+        \\var f = function foo(x: 'hi') { }
+        \\var f2 = (x: 'hi', y: 'hi') => { }
+        \\
+        \\class C {
+        \\    foo(x: 'hi') { }
+        \\}
+        \\
+        \\interface I {
+        \\    (x: 'hi');
+        \\    foo(x: 'hi', y: 'hi');
+        \\}
+        \\
+        \\var a: {
+        \\    (x: 'hi');
+        \\    foo(x: 'hi');
+        \\}
+        \\
+        \\var b = {
+        \\    foo(x: 'hi') { },
+        \\    a: function foo(x: 'hi', y: 'hi') { },
+        \\    b: (x: 'hi') => { }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: typeParameterUsedAsTypeParameterConstraint passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeParameterUsedAsTypeParameterConstraint",
+        .path = "typeParameterUsedAsTypeParameterConstraint.ts",
+        .source =
+        \\// @target: es2015
+        \\// Type parameters are in scope in their own and other type parameter lists
+        \\
+        \\function foo<T, U extends T>(x: T, y: U): T {
+        \\    x = y;
+        \\    return y;
+        \\}
+        \\
+        \\function foo2<U extends T, T>(x: T, y: U): T {
+        \\    x = y;
+        \\    return y;
+        \\}
+        \\
+        \\var f = function <T, U extends T>(x: T, y: U): T {
+        \\    x = y;
+        \\    return y;
+        \\}
+        \\
+        \\var f2 = function <U extends T, T>(x: T, y: U): T {
+        \\    x = y;
+        \\    return y;
+        \\}
+        \\
+        \\var f3 = <T, U extends T>(x: T, y: U): T => {
+        \\    x = y;
+        \\    return y;
+        \\}
+        \\
+        \\var f4 = <U extends T, T>(x: T, y: U): T => {
+        \\    x = y;
+        \\    return y;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: identicalCallSignatures passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "identicalCallSignatures",
