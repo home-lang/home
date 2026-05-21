@@ -7,9 +7,7 @@
 // `database`, `client_encoding`, optional additional `options`). No
 // `@import("bun")` references upstream. Imports rewritten:
 // `../PostgresTypes.zig` (re-exports int_types) is replaced with a
-// direct import of `../types/int_types.zig`. The writer body reaches
-// into the wave-16 NewWriter stub method surface (writer.write/.int4/
-// .string) and trips a natural compile error if exercised today.
+// direct import of `../types/int_types.zig`.
 
 const StartupMessage = @This();
 
@@ -63,7 +61,37 @@ test "StartupMessage holds user + database + options" {
     try std.testing.expectEqualStrings("", s.options.slice());
 }
 
+test "StartupMessage writes startup packet bytes" {
+    var list = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer list.deinit();
+
+    const ctx = ArrayList{ .array = &list };
+    const writer = NewWriter(ArrayList){ .wrapped = ctx };
+    const message: StartupMessage = .{
+        .user = .{ .temporary = "u" },
+        .database = .{ .empty = {} },
+    };
+
+    try message.writeInternal(ArrayList, writer);
+
+    try std.testing.expectEqualSlices(u8, &.{
+        0,   0,   0,   46,
+        0,   3,   0,   0,
+        'u', 's', 'e', 'r',
+        0,   'u', 0,   'd',
+        'a', 't', 'a', 'b',
+        'a', 's', 'e', 0,
+        'u', 0,   'c', 'l',
+        'i', 'e', 'n', 't',
+        '_', 'e', 'n', 'c',
+        'o', 'd', 'i', 'n',
+        'g', 0,   'U', 'T',
+        'F', '8', 0,   0,
+    }, list.items);
+}
+
 const std = @import("std");
+const ArrayList = @import("./ArrayList.zig");
 const Data = @import("../../shared/Data.zig").Data;
 const NewWriter = @import("./NewWriter.zig").NewWriter;
 const WriteWrap = @import("./WriteWrap.zig").WriteWrap;

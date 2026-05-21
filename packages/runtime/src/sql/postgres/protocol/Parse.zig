@@ -2,11 +2,9 @@
 // upstream SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see
 // ../../../cli/LICENSE.bun.md. No `@import("bun")` references.
 //
-// Postgres Parse ('P') extended-protocol packet writer. Wire body
-// reaches into the wave-16 NewWriter stub method surface — those
-// calls trip a natural compile error if exercised today, so the leaf
-// compiles as declaration-only. The upstream `@import("../PostgresTypes.zig")`
-// import is rewritten to the in-tree split-out `types/int_types.zig`.
+// Postgres Parse ('P') extended-protocol packet writer. The upstream
+// `@import("../PostgresTypes.zig")` import is rewritten to the in-tree
+// split-out `types/int_types.zig`.
 
 const Parse = @This();
 
@@ -50,7 +48,47 @@ test "Parse holds name + query + params" {
     try std_local.testing.expectEqual(@as(usize, 0), p.params.len);
 }
 
+test "Parse writes extended query packet bytes" {
+    var list = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer list.deinit();
+
+    const ctx = ArrayList{ .array = &list };
+    const writer = NewWriter(ArrayList){ .wrapped = ctx };
+    const message: Parse = .{
+        .name = "",
+        .query = "select 1",
+        .params = &.{23},
+    };
+
+    try message.writeInternal(ArrayList, writer);
+
+    try std.testing.expectEqualSlices(u8, &.{
+        'P',
+        0,
+        0,
+        0,
+        20,
+        0,
+        's',
+        'e',
+        'l',
+        'e',
+        'c',
+        't',
+        ' ',
+        '1',
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        23,
+    }, list.items);
+}
+
 const std = @import("std");
+const ArrayList = @import("./ArrayList.zig");
 const NewWriter = @import("./NewWriter.zig").NewWriter;
 const WriteWrap = @import("./WriteWrap.zig").WriteWrap;
 const toBytes = std.mem.toBytes;
