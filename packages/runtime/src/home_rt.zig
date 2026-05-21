@@ -1113,6 +1113,10 @@ pub const sql = struct {
             // from Bun: offset/message-start tracking, bounded reads,
             // backwards skip, and NUL-terminated field reads.
             pub const StackReader = @import("sql/mysql/protocol/StackReader.zig");
+            // Wave-27 grinder (2026-05-20). COM_QUERY writer leaf copied
+            // from Bun; it compiles over the current NewWriter shape and
+            // becomes executable once the full writer body lands.
+            pub const Query = @import("sql/mysql/protocol/Query.zig");
             // Wave-22 grinder (2026-05-19). Three additional MySQL
             // wire-protocol leaves from less-mined corners:
             //   - ResultSetHeader (`field_count`): leading row-set
@@ -1687,6 +1691,7 @@ test {
     _ = @import("sql/mysql/protocol/LocalInfileRequest.zig");
     _ = @import("sql/mysql/protocol/OKPacket.zig");
     _ = @import("sql/mysql/protocol/StackReader.zig");
+    _ = @import("sql/mysql/protocol/Query.zig");
     _ = @import("sql/postgres/protocol/PasswordMessage.zig");
     _ = @import("sql/postgres/protocol/SASLResponse.zig");
     _ = @import("sql/postgres/protocol/SASLInitialResponse.zig");

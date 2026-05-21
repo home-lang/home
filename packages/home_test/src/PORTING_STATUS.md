@@ -901,6 +901,11 @@ leaf. It preserves Bun's in-memory reader cursor behavior, bounded reads,
 backwards skip clamping, and NUL-terminated field reads while routing
 the only Bun helper dependency through `home_rt.strings.indexOfChar`.
 
+The runtime package now includes the copied MySQL `Query` COM_QUERY
+writer leaf. The port keeps Bun's packet-framing logic and debug scope,
+with execution still gated by the current `NewWriter` method stub until
+the full writer surface is ported.
+
 > **Why a verbatim copy?** Per direction 2026-05-14: Bun is shifting
 > its core to Rust; we want to continue maintaining the Zig portion
 > ourselves. Vendoring lets us adapt the test runner to Home's HIR /

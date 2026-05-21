@@ -6,8 +6,8 @@ row is in the
 [README parity status](../README.md#bun-runtime-port-packagesruntime)
 section.
 
-> **Status:** Substrate + JSC M6 landed. 495 / 1,193 Bun source
-> files ported (~41.5%); the runtime is not yet JavaScript-callable
+> **Status:** Substrate + JSC M6 landed. 496 / 1,193 Bun source
+> files ported (~41.6%); the runtime is not yet JavaScript-callable
 > end-to-end, but Phase 12.2 (JSC bring-up) has reached the M6
 > milestone — JSON + Promise + Iterator + Global helpers — across
 > 97 files in `packages/runtime/src/jsc/`, including a live
@@ -1362,6 +1362,13 @@ Home copy preserves Bun's in-memory MySQL reader cursor model:
 offset/message-start tracking, bounded reads, backwards skip clamping,
 and NUL-terminated field reads over the shared `Data` substrate.
 
+The copied `bun/src/sql/mysql/protocol/Query.zig` COM_QUERY writer leaf
+now lives in `packages/runtime/src/sql/mysql/protocol/Query.zig`,
+exported through `home_rt.sql.mysql.protocol` and the phase smoke
+imports. Its writer bodies stay aligned with Bun's packet framing while
+remaining naturally gated by Home's current `NewWriter` stub until the
+full writer implementation lands.
+
 ## Summary
 
 Substrate file-count progress (the only objective number today):
@@ -1369,8 +1376,8 @@ Substrate file-count progress (the only objective number today):
 | Metric | Count | Notes |
 |---|---|---|
 | Bun upstream files (excluding test/codegen/jsc/macros) | 1,193 | pinned at `fd0b6f1a` |
-| Files ported to `packages/runtime/src/` | 495 | ~41.5% |
-| Files remaining to port | 698 | ~58.5% |
+| Files ported to `packages/runtime/src/` | 496 | ~41.6% |
+| Files remaining to port | 697 | ~58.4% |
 | JSC bring-up (`packages/runtime/src/jsc/`) | 97 files | Phase 12.2 M6 milestone + native eval smoke |
 | Node namespace (`packages/runtime/src/node/`) | 28 files | Phase 12.7 round-15 |
 | Bake lifetime carrier (`packages/runtime/src/runtime/bake/`) | 5 files | DevServer/HmrSocket deinit substrate, JS surface pending |

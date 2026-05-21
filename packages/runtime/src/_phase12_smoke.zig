@@ -87,6 +87,7 @@ test {
     _ = @import("sql/mysql/protocol/LocalInfileRequest.zig");
     _ = @import("sql/mysql/protocol/OKPacket.zig");
     _ = @import("sql/mysql/protocol/StackReader.zig");
+    _ = @import("sql/mysql/protocol/Query.zig");
     _ = @import("sql/postgres/protocol/PasswordMessage.zig");
     _ = @import("sql/postgres/protocol/SASLResponse.zig");
     _ = @import("sql/postgres/protocol/SASLInitialResponse.zig");
