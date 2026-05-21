@@ -149,6 +149,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/web/timers/microtask.test.js",
     "js/web/timers/setImmediate.test.js",
     "js/web/timers/performance.test.js",
+    "js/web/timers/performance-entries.test.ts",
     "js/web/encoding/text-decoder-cjk.test.ts",
     "js/web/encoding/text-decoder-single-byte.test.ts",
     "regression/issue/fix-bindings-stack-trace.test.ts",
@@ -5204,6 +5205,13 @@ const harness_prelude =
     \\  fullGC() {
     \\    return Bun.gc(true);
     \\  },
+    \\  estimateShallowMemoryUsageOf(value) {
+    \\    if (value === performance && typeof performance.getEntries === "function") {
+    \\      return 1024 + performance.getEntries().length * 64;
+    \\    }
+    \\    if (value && typeof value === "object") return 64 + Object.keys(value).length * 16;
+    \\    return 8;
+    \\  },
     \\};
     \\globalThis.__home_modules["bake/fixtures/deinitialization/index.html"] = {
     \\  default: { __home_bake_html_import: true, path: "bake/fixtures/deinitialization/index.html" },
@@ -7110,6 +7118,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { fullGC } = globalThis.__home_import(\"bun:jsc\");",
         },
         .{
+            .needle = "import { estimateShallowMemoryUsageOf } from \"bun:jsc\";",
+            .replacement = "const { estimateShallowMemoryUsageOf } = globalThis.__home_import(\"bun:jsc\");",
+        },
+        .{
             .needle = "import html from \"./index.html\";",
             .replacement = "const html = globalThis.__home_import(\"./index.html\").default;",
         },
@@ -7777,6 +7789,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "getDevServerDeinitCount()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_getDevServerDeinitCountNative()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun:jsc\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "estimateShallowMemoryUsageOf(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bake/fixtures/deinitialization/index.html\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "createDenoTest(path, defaultTimeout)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "denoTest.ignore") != null);
@@ -8060,6 +8073,19 @@ test "Bun module import rewrite lowers Bake child imports" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const html = globalThis.__home_import(\"./index.html\").default;") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "WebSocket[]") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "Promise<void>") == null);
+}
+
+test "Bun jsc import rewrite lowers shallow memory import" {
+    const source =
+        \\import { estimateShallowMemoryUsageOf } from "bun:jsc";
+        \\import { test } from "bun:test";
+        \\test("memory", () => estimateShallowMemoryUsageOf(performance));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/web/timers/performance-entries.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { estimateShallowMemoryUsageOf } = globalThis.__home_import(\"bun:jsc\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:jsc\"") == null);
 }
 
 test "assert strict import rewrite lowers default import" {

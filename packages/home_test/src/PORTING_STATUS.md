@@ -178,6 +178,7 @@ interactive third-party prompts stdin/stdout behavior,
 `queueMicrotask` ordering and argument validation,
 `setImmediate` / `clearImmediate` scheduling and cancellation,
 Performance resource-timing no-ops and `Bun.nanoseconds`,
+`bun:jsc.estimateShallowMemoryUsageOf(performance)` entry-growth coverage,
 `node:vm.runInNewContext`, DOMException, native constructor identity,
 mutable `globalThis` prototype behavior, comment-only module-load smoke,
 `Bun.file(...).type` explicit and `.css` MIME behavior,
@@ -795,6 +796,10 @@ The copied `js/web/timers/performance.test.js` fixture now passes as
 resource-timing no-op methods, writable
 `onresourcetimingbufferfull`, monotonic `performance.now()`, wall-clock
 origin behavior, and positive numeric `Bun.nanoseconds()` output.
+The copied `js/web/timers/performance-entries.test.ts` fixture now
+passes as `1` test through the performance/JSC bootstrap model. It
+covers named `bun:jsc` import lowering plus shallow performance memory
+growth as marks and measures are registered.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
