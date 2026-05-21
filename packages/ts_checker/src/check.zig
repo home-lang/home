@@ -20293,7 +20293,9 @@ pub const Checker = struct {
             },
             .call_expr => blk: {
                 const static_t = try self.checkExpression(extends_expr);
-                if (try self.constructReturnType(static_t)) |instance_t| break :blk instance_t;
+                if (try self.constructReturnType(static_t)) |instance_t| {
+                    break :blk try self.refineHeritageFactoryInstanceTypeFromArgs(extends_expr, instance_t);
+                }
                 break :blk null;
             },
             else => null,
@@ -20332,10 +20334,81 @@ pub const Checker = struct {
         }
         var returns: std.ArrayListUnmanaged(TypeId) = .empty;
         defer returns.deinit(self.gpa);
+        var non_unknown_count: usize = 0;
         for (construct_sigs.items) |sig| {
-            try returns.append(self.gpa, self.interner.signatureReturn(sig) orelse types.Primitive.any);
+            const ret = self.interner.signatureReturn(sig) orelse types.Primitive.any;
+            if (ret != types.Primitive.unknown) non_unknown_count += 1;
+            try returns.append(self.gpa, ret);
+        }
+        if (non_unknown_count > 0 and non_unknown_count < returns.items.len) {
+            var filtered: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer filtered.deinit(self.gpa);
+            for (returns.items) |ret| {
+                if (ret == types.Primitive.unknown) continue;
+                try filtered.append(self.gpa, ret);
+            }
+            return self.interner.internIntersection(filtered.items) catch return types.Primitive.any;
         }
         return self.interner.internIntersection(returns.items) catch return types.Primitive.any;
+    }
+
+    fn refineHeritageFactoryInstanceTypeFromArgs(
+        self: *Checker,
+        call_node: NodeId,
+        instance_t: TypeId,
+    ) CheckError!TypeId {
+        if (self.hir.kindOf(call_node) != .call_expr) return instance_t;
+        const args = hir_mod.callArgs(self.hir, call_node);
+        if (args.len == 0) return instance_t;
+        const context_ctor_t = try self.checkExpression(args[0]);
+        const context_instance_t = (try self.constructReturnType(context_ctor_t)) orelse return instance_t;
+        const context_name = self.string_interner.intern("context") catch return error.OutOfMemory;
+        return try self.replaceObjectMemberTypeInType(instance_t, context_name, context_instance_t);
+    }
+
+    fn replaceObjectMemberTypeInType(
+        self: *Checker,
+        t: TypeId,
+        member_name: hir_mod.StringId,
+        replacement_t: TypeId,
+    ) CheckError!TypeId {
+        if (t >= self.interner.pool.typeCount()) return t;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_intersection) {
+            var members: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer members.deinit(self.gpa);
+            var changed = false;
+            for (self.interner.intersectionMembers(t)) |part| {
+                const next = try self.replaceObjectMemberTypeInType(part, member_name, replacement_t);
+                if (next != part) changed = true;
+                try members.append(self.gpa, next);
+            }
+            if (!changed) return t;
+            return self.interner.internIntersection(members.items) catch return t;
+        }
+        if (!flags.is_object_type) return t;
+        const old_members = self.interner.objectMembers(t);
+        var new_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer new_members.deinit(self.gpa);
+        var changed = false;
+        for (old_members) |member| {
+            if (member.name == member_name and (member.type == types.Primitive.any or member.type == types.Primitive.unknown)) {
+                var next = member;
+                next.type = replacement_t;
+                try new_members.append(self.gpa, next);
+                changed = true;
+            } else {
+                try new_members.append(self.gpa, member);
+            }
+        }
+        if (!changed) return t;
+        const str_idx = self.interner.objectStringIndex(t);
+        const num_idx = self.interner.objectNumberIndex(t);
+        const sym_idx = self.interner.objectSymbolIndex(t);
+        return if (str_idx == types.Primitive.none and num_idx == types.Primitive.none and sym_idx == types.Primitive.none)
+            self.interner.internObjectType(new_members.items) catch return t
+        else
+            self.interner.internObjectTypeWithIndexAndSymbol(new_members.items, str_idx, num_idx, sym_idx) catch return t;
     }
 
     fn applyClassJsDocExtendsSubstitution(
