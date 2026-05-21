@@ -4120,6 +4120,93 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: constructorFunctionTypeIsAssignableToBaseType passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "constructorFunctionTypeIsAssignableToBaseType",
+        .path = "constructorFunctionTypeIsAssignableToBaseType.ts",
+        .source =
+        \\// @target: es2015
+        \\class Base {
+        \\    static foo: {
+        \\        bar: Object;
+        \\    }
+        \\}
+        \\
+        \\class Derived extends Base {
+        \\    // ok
+        \\    static foo: {
+        \\        bar: number;
+        \\    }
+        \\}
+        \\
+        \\class Derived2 extends Base {
+        \\    // ok, use assignability here
+        \\    static foo: {
+        \\        bar: any;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: constructorFunctionTypeIsAssignableToBaseType2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "constructorFunctionTypeIsAssignableToBaseType2",
+        .path = "constructorFunctionTypeIsAssignableToBaseType2.ts",
+        .source =
+        \\// @target: es2015
+        \\// the constructor function itself does not need to be a subtype of the base type constructor function
+        \\
+        \\class Base {
+        \\    static foo: {
+        \\        bar: Object;
+        \\    }
+        \\    constructor(x: Object) {
+        \\    }
+        \\}
+        \\
+        \\class Derived extends Base {
+        \\    // ok
+        \\    static foo: {
+        \\        bar: number;
+        \\    }
+        \\
+        \\    constructor(x: number) {
+        \\        super(x);
+        \\    }
+        \\}
+        \\
+        \\class Derived2 extends Base {
+        \\    static foo: {
+        \\        bar: number;
+        \\    }
+        \\
+        \\    // ok, not enforcing assignability relation on this
+        \\    constructor(x: any) {
+        \\        super(x);
+        \\        return 1;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: classExtendingNull passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "classExtendingNull",
