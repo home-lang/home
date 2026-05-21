@@ -127,6 +127,18 @@ pub const Runtime = struct {
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
             self.engine.currentGlobalObject(),
+            "__home_existsPathNative",
+            existsPathNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_statPathNative",
+            statPathNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
             "__home_realpathSyncNative",
             realpathSyncNative,
         );
@@ -915,6 +927,77 @@ fn readFileSyncNative(
     };
 }
 
+fn existsPathNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+
+    if (argument_count < 1 or arguments[0] == null) {
+        setException(actual_ctx, exception, "node:fs.existsSync() requires a path");
+        return null;
+    }
+
+    const path = valueToOwnedString(allocator, actual_ctx, arguments[0].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.existsSync() path failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(path);
+
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    Io.Dir.cwd().access(io, path, .{}) catch return extern_fns.JSValueMakeBoolean(actual_ctx, false);
+    return extern_fns.JSValueMakeBoolean(actual_ctx, true);
+}
+
+fn statPathNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+
+    if (argument_count < 1 or arguments[0] == null) {
+        setException(actual_ctx, exception, "node:fs.statSync() requires a path");
+        return null;
+    }
+
+    const path = valueToOwnedString(allocator, actual_ctx, arguments[0].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.statSync() path failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(path);
+
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const stat = Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = true }) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.statSync() failed: {s}", .{@errorName(err)});
+        return null;
+    };
+
+    return makeStatResult(actual_ctx, stat) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.statSync() result failed: {s}", .{@errorName(err)});
+        return null;
+    };
+}
+
 fn realpathSyncNative(
     ctx: ?*JSContextRef,
     function: ?*JSObject,
@@ -1423,6 +1506,15 @@ fn makeSpawnResult(ctx: *JSContextRef, term: std.process.Child.Term, stdout_text
     return @ptrCast(object);
 }
 
+fn makeStatResult(ctx: *JSContextRef, stat: Io.File.Stat) !*JSValue {
+    const object = extern_fns.JSObjectMake(ctx, null, null) orelse return error.MakeObjectFailed;
+    setNumberProperty(ctx, object, "size", stat.size);
+    setBoolProperty(ctx, object, "isFile", stat.kind == .file);
+    setBoolProperty(ctx, object, "isDirectory", stat.kind == .directory);
+    setBoolProperty(ctx, object, "isSymbolicLink", stat.kind == .sym_link);
+    return @ptrCast(object);
+}
+
 fn getProperty(ctx: *JSContextRef, object: *JSObject, name: []const u8, exception: extern_fns.ExceptionRef) ?*JSValue {
     const name_string = makeJSString(name) catch return null;
     defer extern_fns.JSStringRelease(name_string);
@@ -1436,6 +1528,11 @@ fn setNumberProperty(ctx: *JSContextRef, object: *JSObject, name: []const u8, va
 
 fn setNullProperty(ctx: *JSContextRef, object: *JSObject, name: []const u8) void {
     const js_value = extern_fns.JSValueMakeNull(ctx) orelse return;
+    setProperty(ctx, object, name, js_value);
+}
+
+fn setBoolProperty(ctx: *JSContextRef, object: *JSObject, name: []const u8, value: bool) void {
+    const js_value = extern_fns.JSValueMakeBoolean(ctx, value) orelse return;
     setProperty(ctx, object, name, js_value);
 }
 

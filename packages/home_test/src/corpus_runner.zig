@@ -136,6 +136,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/empty-file.test.ts",
     "js/bun/test/expect-type-global.test.ts",
     "js/bun/test/expect-type.test.ts",
+    "regression/issue/26631.test.ts",
     "regression/issue/02367.test.ts",
     "js/bun/util/fileUrl.test.js",
     "js/bun/util/file-type.test.ts",
@@ -5537,6 +5538,14 @@ const harness_prelude =
     \\  },
     \\};
     \\const __home_node_fs = {
+    \\  __home_make_stats(nativeStats) {
+    \\    return {
+    \\      size: Number(nativeStats && nativeStats.size) || 0,
+    \\      isFile() { return !!(nativeStats && nativeStats.isFile); },
+    \\      isDirectory() { return !!(nativeStats && nativeStats.isDirectory); },
+    \\      isSymbolicLink() { return !!(nativeStats && nativeStats.isSymbolicLink); },
+    \\    };
+    \\  },
     \\  writeFileSync(path, data) {
     \\    if (typeof globalThis.__home_bake_on_write_file === "function" && globalThis.__home_bake_on_write_file(String(path), data)) return;
     \\    if (typeof globalThis.__home_writeFileSyncNative !== "function") __home_unsupported("node:fs.writeFileSync native bridge is not installed");
@@ -5569,19 +5578,32 @@ const harness_prelude =
     \\  chmodSync(path, mode) {
     \\    return undefined;
     \\  },
+    \\  statSync(path) {
+    \\    if (typeof globalThis.__home_statPathNative !== "function") __home_unsupported("node:fs.statSync native bridge is not installed");
+    \\    return __home_node_fs.__home_make_stats(globalThis.__home_statPathNative(String(path)));
+    \\  },
     \\  promises: {
+    \\    exists(path) {
+    \\      return Promise.resolve(__home_node_fs.existsSync(path));
+    \\    },
+    \\    stat(path) {
+    \\      return Promise.resolve(__home_node_fs.statSync(path));
+    \\    },
     \\    rm(path, options) {
     \\      return Promise.resolve();
     \\    },
     \\  },
     \\  existsSync(path) {
     \\    if (__home_bake_virtual_exists(String(path))) return true;
+    \\    if (typeof globalThis.__home_existsPathNative === "function") return !!globalThis.__home_existsPathNative(String(path));
     \\    return false;
     \\  },
     \\};
     \\__home_node_fs.default = __home_node_fs;
     \\globalThis.__home_modules["fs"] = __home_node_fs;
     \\globalThis.__home_modules["node:fs"] = __home_node_fs;
+    \\globalThis.__home_modules["fs/promises"] = __home_node_fs.promises;
+    \\globalThis.__home_modules["node:fs/promises"] = __home_node_fs.promises;
     \\const __home_node_os = {
     \\  tmpdir() {
     \\    return process.env.TMPDIR || "/tmp";
@@ -8030,6 +8052,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { writeFileSync } from \"node:fs\";",
             .replacement = "const { writeFileSync } = globalThis.__home_import(\"node:fs\");",
+        },
+        .{
+            .needle = "import { existsSync, statSync } from \"node:fs\";",
+            .replacement = "const { existsSync, statSync } = globalThis.__home_import(\"node:fs\");",
+        },
+        .{
+            .needle = "import { exists, stat } from \"node:fs/promises\";",
+            .replacement = "const { exists, stat } = globalThis.__home_import(\"node:fs/promises\");",
         },
         .{
             .needle = "import { write } from \"bun\";",
@@ -12228,6 +12258,27 @@ test "Bun corpus rewrite lowers node fs sync imports before Bake harness boundar
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"./bake-harness\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { writeFileSync } = globalThis.__home_import(\"node:fs\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { devAndProductionTest, devTest, emptyHtmlFile, WAIT_MULTIPLIER } = globalThis.__home_import(\"bake-harness\");") != null);
+}
+
+test "Bun corpus rewrite lowers node fs stat imports" {
+    const source =
+        \\import { existsSync, statSync } from "node:fs";
+        \\import { exists, stat } from "node:fs/promises";
+        \\test("stat", async () => {
+        \\  expect(existsSync(".")).toBe(true);
+        \\  expect(await exists(".")).toBe(true);
+        \\  expect(statSync(".").isDirectory()).toBe(true);
+        \\  expect((await stat(".")).isDirectory()).toBe(true);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26631.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"node:fs\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"node:fs/promises\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { existsSync, statSync } = globalThis.__home_import(\"node:fs\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { exists, stat } = globalThis.__home_import(\"node:fs/promises\");") != null);
 }
 
 test "Bun corpus rewrite lowers node fs atomic save imports" {

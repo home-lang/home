@@ -961,6 +961,11 @@ tests through the Web Streams bootstrap model. It covers
 `close()`, after `error()`, and after failed `pipeTo()` cleanup, plus the
 `expect().toBeOneOf()` matcher and the TypeScript generic/union
 annotation erasure needed for the upstream fixture.
+The copied `regression/issue/26631.test.ts` fixture now passes as `8`
+tests through the Node filesystem bootstrap model. It covers
+`node:fs.existsSync`, `node:fs.statSync`, `node:fs/promises.exists`, and
+`node:fs/promises.stat` against `.` and `..`, backed by native access/stat
+bridges and a JS `Stats` wrapper with `isDirectory()`.
 The copied `js/node/path/to-namespaced-path.test.js` fixture now passes
 as `4` tests through the path bootstrap model. It covers
 `path.toNamespacedPath`, `path._makeLong`, posix/win32 namespace variants,
