@@ -182,6 +182,7 @@ inline `clearImmediate(setImmediate(...))` subprocess GC coverage,
 Performance resource-timing no-ops and `Bun.nanoseconds`,
 `bun:jsc.estimateShallowMemoryUsageOf(performance)` entry-growth coverage,
 Web `URLSearchParams` Bun-extension coverage,
+FormData missing-file serialization leak subprocess coverage,
 `node:vm.runInNewContext`, DOMException, native constructor identity,
 mutable `globalThis` prototype behavior, comment-only module-load smoke,
 `Bun.file(...).type` explicit and `.css` MIME behavior,
@@ -818,6 +819,10 @@ TypeScript cast rewrite, Bun's `toJSON` / `.length` extensions,
 configurable/enumerable `size`, value-aware `.has()` / `.delete()`, and
 `Bun.inspect(URLSearchParams)` formatting without regressing the Deno
 URLSearchParams smoke.
+The copied `js/web/html/FormData-file-error-leak.test.ts` fixture now
+passes as `1` test through the subprocess fixture model. It covers named
+`node:path` import lowering plus bounded RSS-growth JSON returned for the
+upstream `--smol` FormData missing-file serialization leak child process.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

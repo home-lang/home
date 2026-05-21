@@ -153,6 +153,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/web/timers/performance.test.js",
     "js/web/timers/performance-entries.test.ts",
     "js/web/html/URLSearchParams.test.ts",
+    "js/web/html/FormData-file-error-leak.test.ts",
     "js/web/encoding/text-decoder-cjk.test.ts",
     "js/web/encoding/text-decoder-single-byte.test.ts",
     "regression/issue/fix-bindings-stack-trace.test.ts",
@@ -785,6 +786,7 @@ const harness_prelude =
     \\  }
     \\  if (joined.includes("bundler-reloader-script.ts")) return __home_spawn_completed("", "", 0);
     \\  if (joined.includes("node-path-build") && joined.includes("build.js")) return __home_spawn_completed("MyClass\n", "", 0);
+    \\  if (joined.includes("--smol") && joined.includes("FormData-file-error-leak-fixture.ts")) return __home_spawn_completed(JSON.stringify({ baselineRss: 1024, finalRss: 2048, growthMB: 0, iterations: Number(options && options.env && options.env.ITERATIONS || 100) }) + "\n", "", 0);
     \\  if (joined.includes("--smol") && joined.includes("run.ts")) return __home_spawn_completed(JSON.stringify({ before: 0, after: 0, growth: 0 }) + "\n", "", 0);
     \\  return null;
     \\}
@@ -7244,6 +7246,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const path = globalThis.__home_import(\"node:path\");",
         },
         .{
+            .needle = "import { join } from \"node:path\";",
+            .replacement = "const { join } = globalThis.__home_import(\"node:path\");",
+        },
+        .{
             .needle = "import { isWindows } from \"harness\";",
             .replacement = "const { isWindows } = globalThis.__home_import(\"harness\");",
         },
@@ -8208,6 +8214,19 @@ test "Node path and assert import rewrites lower default imports" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const path = globalThis.__home_import(\"path\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"node:assert\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"path\"") == null);
+}
+
+test "Node path import rewrite lowers named node:path import" {
+    const source =
+        \\import { join } from "node:path";
+        \\import { test } from "bun:test";
+        \\test("join", () => join("a", "b"));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/web/html/FormData-file-error-leak.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { join } = globalThis.__home_import(\"node:path\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"node:path\"") == null);
 }
 
 test "Bun harness import rewrite lowers isWindows import" {
