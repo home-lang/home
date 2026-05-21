@@ -457,6 +457,8 @@ pub const TsCodes = struct {
     /// from a function/class also named `M`. Both partial namespace
     /// blocks fire individually if multiple sibling blocks exist.
     pub const namespace_in_different_file: u32 = 2433;
+    pub const import_alias_hidden_by_local: u32 = 2437;
+    pub const import_name_cannot_be_any: u32 = 2438;
     pub const import_conflicts_with_local: u32 = 2440;
     pub const generic_type_requires_args: u32 = 2314;
     /// TS2689 — `class D extends I` where I resolves to an interface
@@ -2780,6 +2782,7 @@ pub const Checker = struct {
         } else {
             try self.checkDeclarationSpaceDiagnostics(hir_mod.namespaceBody(self.hir, node));
         }
+        try self.checkImportLocalConflicts(hir_mod.namespaceBody(self.hir, node));
         try self.checkTopLevelDecoratorDiagnostics(hir_mod.namespaceBody(self.hir, node));
         for (hir_mod.namespaceBody(self.hir, node)) |s| {
             switch (self.hir.kindOf(s)) {
@@ -2815,6 +2818,7 @@ pub const Checker = struct {
                 .let_decl,
                 .const_decl,
                 => try self.checkNamespaceValueDecl(s),
+                .import_decl => try self.checkImportDecl(s),
                 .export_decl => {
                     const ex = hir_mod.exportOf(self.hir, s);
                     if (ex.decl == hir_mod.none_node_id) continue;
@@ -2860,6 +2864,7 @@ pub const Checker = struct {
                         .let_decl,
                         .const_decl,
                         => try self.checkNamespaceValueDecl(ex.decl),
+                        .import_decl => try self.checkImportDecl(ex.decl),
                         else => {},
                     }
                 },
@@ -4198,6 +4203,7 @@ pub const Checker = struct {
         node: NodeId,
         module: hir_mod.StringId,
         section_start: usize,
+        value_space_only: bool = false,
     };
 
     fn checkImportLocalConflicts(self: *Checker, stmts: []const NodeId) CheckError!void {
@@ -4208,6 +4214,14 @@ pub const Checker = struct {
             if (self.hir.kindOf(stmt) != .import_decl) continue;
             const imp = hir_mod.importOf(self.hir, stmt);
             const import_section = self.virtualSectionStartForNode(stmt);
+            if (imp.import_equals != hir_mod.none_node_id) {
+                if (self.importEqualsAliasName(stmt)) |alias_name| {
+                    if (self.importEqualsTargetHasRuntimeValue(stmt, 0)) {
+                        try imports_by_name.put(self.gpa, alias_name, .{ .node = stmt, .module = imp.module, .section_start = import_section, .value_space_only = true });
+                    }
+                }
+                continue;
+            }
             if (!imp.is_type_only and imp.default_binding != hir_mod.none_node_id and self.hir.kindOf(imp.default_binding) == .identifier) {
                 const id = hir_mod.identifierOf(self.hir, imp.default_binding);
                 try imports_by_name.put(self.gpa, id.name, .{ .node = imp.default_binding, .module = imp.module, .section_start = import_section });
@@ -4225,11 +4239,12 @@ pub const Checker = struct {
 
         for (stmts) |stmt| {
             const local = self.unwrapExportDecl(stmt);
-            if (local == hir_mod.none_node_id or self.hir.kindOf(local) != .namespace_decl) continue;
+            if (local == hir_mod.none_node_id or self.hir.kindOf(local) == .import_decl) continue;
             const name = self.declarationName(local) orelse continue;
             const import_info = imports_by_name.get(name) orelse continue;
             if (self.sourceHasVirtualFilenameSections() and self.virtualSectionStartForNode(local) != import_info.section_start) continue;
             if (try self.ambientModuleExportsName(stmts, import_info.module, name)) continue;
+            if (import_info.value_space_only and !self.declCreatesRuntimeValue(local, 0)) continue;
             const name_str = self.string_interner.get(name);
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -8061,14 +8076,7 @@ pub const Checker = struct {
         var class_names: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
         defer class_names.deinit(self.gpa);
         for (stmts) |raw| {
-            const s = self.unwrapExportDecl(raw);
-            if (s == hir_mod.none_node_id) continue;
-            const k = self.hir.kindOf(s);
-            if (k != .class_decl and k != .class_expr) continue;
-            const c = hir_mod.classOf(self.hir, s);
-            if (c.name == hir_mod.none_node_id or self.hir.kindOf(c.name) != .identifier) continue;
-            const id = hir_mod.identifierOf(self.hir, c.name);
-            try class_names.put(self.gpa, id.name, s);
+            try self.collectClassNamesForUseBefore(raw, &class_names);
         }
         if (class_names.count() == 0) return;
 
@@ -8088,6 +8096,7 @@ pub const Checker = struct {
             var ref_nodes: std.ArrayListUnmanaged(NameRef) = .empty;
             defer ref_nodes.deinit(self.gpa);
             try self.collectIdentifierRefsWithNodes(s, &ref_nodes);
+            try self.collectImportAliasClassMemberRefs(s, &class_names, &ref_nodes);
             const own_name_opt = self.classDeclarationName(s);
             for (ref_nodes.items) |ref| {
                 const name = ref.name;
@@ -8104,6 +8113,7 @@ pub const Checker = struct {
                 );
                 try self.diagnostics.append(self.gpa, .{
                     .node = ref.node,
+                    .pos = ref.pos,
                     .code = TsCodes.class_used_before_declaration,
                     .message = msg,
                 });
@@ -8127,7 +8137,51 @@ pub const Checker = struct {
                     const id = hir_mod.identifierOf(self.hir, c.name);
                     try declared.put(self.gpa, id.name, {});
                 }
+            } else if (k == .namespace_decl or k == .module_decl) {
+                try self.markClassNamesDeclaredInNode(s, &declared);
             }
+        }
+    }
+
+    fn collectClassNamesForUseBefore(
+        self: *Checker,
+        node: NodeId,
+        out: *std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+    ) CheckError!void {
+        const s = self.unwrapExportDecl(node);
+        if (s == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(s)) {
+            .class_decl, .class_expr => {
+                const c = hir_mod.classOf(self.hir, s);
+                if (c.name == hir_mod.none_node_id or self.hir.kindOf(c.name) != .identifier) return;
+                const id = hir_mod.identifierOf(self.hir, c.name);
+                try out.put(self.gpa, id.name, s);
+            },
+            .namespace_decl, .module_decl => for (hir_mod.namespaceBody(self.hir, s)) |inner| {
+                try self.collectClassNamesForUseBefore(inner, out);
+            },
+            else => {},
+        }
+    }
+
+    fn markClassNamesDeclaredInNode(
+        self: *Checker,
+        node: NodeId,
+        out: *std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) CheckError!void {
+        const s = self.unwrapExportDecl(node);
+        if (s == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(s)) {
+            .class_decl, .class_expr => {
+                const c = hir_mod.classOf(self.hir, s);
+                if (c.name == hir_mod.none_node_id or self.hir.kindOf(c.name) != .identifier) return;
+                const id = hir_mod.identifierOf(self.hir, c.name);
+                try out.put(self.gpa, id.name, {});
+            },
+            .namespace_decl, .module_decl => for (hir_mod.namespaceBody(self.hir, s)) |inner| {
+                try self.markClassNamesDeclaredInNode(inner, out);
+            },
+            else => {},
         }
     }
 
@@ -8289,6 +8343,7 @@ pub const Checker = struct {
     const NameRef = struct {
         name: hir_mod.StringId,
         node: NodeId,
+        pos: ?u32 = null,
     };
 
     fn checkFnParameterDuplicateNames(self: *Checker, fn_node: NodeId) CheckError!void {
@@ -8682,6 +8737,109 @@ pub const Checker = struct {
             },
             else => {},
         }
+    }
+
+    fn collectImportAliasClassMemberRefs(
+        self: *Checker,
+        node: NodeId,
+        class_names: *const std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+        out: *std.ArrayListUnmanaged(NameRef),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .member_access => {
+                const m = hir_mod.memberOf(self.hir, node);
+                if (class_names.contains(m.name) and self.memberAccessResolvesImportAliasClass(m.object, m.name)) {
+                    try out.append(self.gpa, .{ .name = m.name, .node = node, .pos = self.memberAccessNamePos(node) });
+                }
+                try self.collectImportAliasClassMemberRefs(m.object, class_names, out);
+            },
+            .fn_decl, .fn_expr, .arrow_fn => return,
+            .block_stmt => for (hir_mod.blockStmts(self.hir, node)) |s| try self.collectImportAliasClassMemberRefs(s, class_names, out),
+            .return_stmt => try self.collectImportAliasClassMemberRefs(hir_mod.returnOf(self.hir, node).value, class_names, out),
+            .throw_stmt => try self.collectImportAliasClassMemberRefs(hir_mod.throwOf(self.hir, node).value, class_names, out),
+            .var_decl, .let_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, node);
+                try self.collectImportAliasClassMemberRefs(v.init, class_names, out);
+            },
+            .binary_op => {
+                const b = hir_mod.binopOf(self.hir, node);
+                try self.collectImportAliasClassMemberRefs(b.lhs, class_names, out);
+                try self.collectImportAliasClassMemberRefs(b.rhs, class_names, out);
+            },
+            .unary_op => try self.collectImportAliasClassMemberRefs(hir_mod.unaryOf(self.hir, node).operand, class_names, out),
+            .logical_op => {
+                const l = hir_mod.logicalOf(self.hir, node);
+                try self.collectImportAliasClassMemberRefs(l.lhs, class_names, out);
+                try self.collectImportAliasClassMemberRefs(l.rhs, class_names, out);
+            },
+            .conditional => {
+                const c = hir_mod.conditionalOf(self.hir, node);
+                try self.collectImportAliasClassMemberRefs(c.cond, class_names, out);
+                try self.collectImportAliasClassMemberRefs(c.then_branch, class_names, out);
+                try self.collectImportAliasClassMemberRefs(c.else_branch, class_names, out);
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                try self.collectImportAliasClassMemberRefs(a.target, class_names, out);
+                try self.collectImportAliasClassMemberRefs(a.value, class_names, out);
+            },
+            .call_expr, .new_expr => {
+                const c = hir_mod.callOf(self.hir, node);
+                try self.collectImportAliasClassMemberRefs(c.callee, class_names, out);
+                for (hir_mod.callArgs(self.hir, node)) |arg| try self.collectImportAliasClassMemberRefs(arg, class_names, out);
+            },
+            .element_access => {
+                const e = hir_mod.elementOf(self.hir, node);
+                try self.collectImportAliasClassMemberRefs(e.object, class_names, out);
+                try self.collectImportAliasClassMemberRefs(e.index, class_names, out);
+            },
+            .as_expr, .satisfies_expr, .type_assertion, .non_null_expr => {
+                const a = hir_mod.asExpressionOf(self.hir, node);
+                try self.collectImportAliasClassMemberRefs(a.expr, class_names, out);
+            },
+            .array_literal => for (hir_mod.arrayLiteralElements(self.hir, node)) |el| try self.collectImportAliasClassMemberRefs(el, class_names, out),
+            .spread => try self.collectImportAliasClassMemberRefs(hir_mod.spreadOf(self.hir, node).expression, class_names, out),
+            .object_literal => for (hir_mod.objectLiteralProps(self.hir, node)) |p| try self.collectImportAliasClassMemberRefs(p, class_names, out),
+            .object_property => {
+                const op = hir_mod.objectPropertyOf(self.hir, node);
+                try self.collectImportAliasClassMemberRefs(op.value, class_names, out);
+                if (op.is_computed) try self.collectImportAliasClassMemberRefs(op.key, class_names, out);
+            },
+            .class_decl, .class_expr => {
+                const c = hir_mod.classOf(self.hir, node);
+                try self.collectImportAliasClassMemberRefs(c.extends, class_names, out);
+                for (hir_mod.classMembers(self.hir, node)) |m| try self.collectImportAliasClassMemberRefs(m, class_names, out);
+            },
+            .namespace_decl, .module_decl => for (hir_mod.namespaceBody(self.hir, node)) |s| try self.collectImportAliasClassMemberRefs(s, class_names, out),
+            .export_decl => {
+                const ex = hir_mod.exportOf(self.hir, node);
+                try self.collectImportAliasClassMemberRefs(ex.decl, class_names, out);
+            },
+            else => {},
+        }
+    }
+
+    fn memberAccessResolvesImportAliasClass(self: *Checker, object: NodeId, member_name: hir_mod.StringId) bool {
+        if (object == hir_mod.none_node_id or self.hir.kindOf(object) != .identifier) return false;
+        const alias_name = hir_mod.identifierOf(self.hir, object).name;
+        var i: NodeId = 1;
+        while (i < self.hir.nodeCount()) : (i += 1) {
+            if (self.hir.kindOf(i) != .import_decl) continue;
+            if (self.importEqualsAliasName(i) != alias_name) continue;
+            const imp = hir_mod.importOf(self.hir, i);
+            if (imp.import_equals == hir_mod.none_node_id or self.hir.kindOf(imp.import_equals) != .type_ref) continue;
+            const r = hir_mod.typeRefOf(self.hir, imp.import_equals);
+            const qualifiers = hir_mod.typeRefQualifier(self.hir, imp.import_equals);
+            if (qualifiers.len != 0) continue;
+            const root = self.rootBlockFor(i);
+            if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) continue;
+            const path = [_]hir_mod.StringId{r.name};
+            const ns_node = self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), &path) orelse continue;
+            const target = self.findNamedTypeDeclInNamespace(ns_node, member_name) orelse continue;
+            if (self.hir.kindOf(target) == .class_decl or self.hir.kindOf(target) == .class_expr) return true;
+        }
+        return false;
     }
 
     fn reportBindingDefaultReference(
@@ -15024,6 +15182,7 @@ pub const Checker = struct {
                     if (self.strict_flags.no_implicit_any and
                         op.type_annotation == hir_mod.none_node_id and
                         op.value == hir_mod.none_node_id and
+                        !(self.virtualSectionIsJsLike(m) and self.classMemberNameIsPrivateName(member_name)) and
                         !(op.is_static and static_block_this_assigned_names.contains(member_name)) and
                         !redeclares_inherited_instance_field and
                         !is_declared_property and
@@ -16422,6 +16581,7 @@ pub const Checker = struct {
             .enum_decl,
             => true,
             .namespace_decl => self.namespaceHasRuntimeValue(node),
+            .import_decl => self.importEqualsTargetHasRuntimeValue(node, 0),
             .interface_decl, .type_alias_decl => false,
             else => false,
         };
@@ -16442,9 +16602,15 @@ pub const Checker = struct {
             if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) continue;
             if (hir_mod.identifierOf(self.hir, ns.name).name != namespace_name) continue;
             for (hir_mod.namespaceBody(self.hir, ns_node)) |member_raw| {
-                if (self.hir.kindOf(member_raw) != .export_decl) continue;
-                const member_node = self.unwrapExportDecl(member_raw);
-                const decl_name = self.declarationName(member_node) orelse continue;
+                const member_node = switch (self.hir.kindOf(member_raw)) {
+                    .export_decl => self.unwrapExportDecl(member_raw),
+                    .import_decl => if (self.importDeclHasExportKeyword(member_raw)) member_raw else continue,
+                    else => continue,
+                };
+                const decl_name = if (self.hir.kindOf(member_node) == .import_decl)
+                    (self.importEqualsAliasName(member_node) orelse continue)
+                else
+                    (self.declarationName(member_node) orelse continue);
                 if (decl_name != member_name) continue;
                 if (self.nodeHasAncestor(anchor, member_node)) {
                     const existing_t = self.hir.typeOf(member_node);
@@ -16468,6 +16634,7 @@ pub const Checker = struct {
                         try self.checkEnumDecl(member_node);
                         return try self.enumNamespaceValueType(member_node, member_name);
                     },
+                    .import_decl => return types.Primitive.any,
                     .namespace_decl => return types.Primitive.any,
                     else => return null,
                 }
@@ -22117,12 +22284,36 @@ pub const Checker = struct {
     fn checkImportEqualsEntity(self: *Checker, node: NodeId, imp: hir_mod.ImportPayload) CheckError!void {
         if (imp.import_equals == hir_mod.none_node_id) return;
         if (self.hir.kindOf(imp.import_equals) != .type_ref) return;
+        if (imp.default_binding != hir_mod.none_node_id and self.hir.kindOf(imp.default_binding) == .identifier) {
+            const alias = hir_mod.identifierOf(self.hir, imp.default_binding);
+            if (std.mem.eql(u8, self.string_interner.get(alias.name), "any")) {
+                try self.diagnostics.append(self.gpa, .{
+                    .node = imp.default_binding,
+                    .code = TsCodes.import_name_cannot_be_any,
+                    .message = "Import name cannot be 'any'.",
+                });
+            }
+        }
         const r = hir_mod.typeRefOf(self.hir, imp.import_equals);
         const qualifiers = hir_mod.typeRefQualifier(self.hir, imp.import_equals);
         const root_name = if (qualifiers.len > 0) blk: {
             if (self.hir.kindOf(qualifiers[0]) != .identifier) return;
             break :blk hir_mod.identifierOf(self.hir, qualifiers[0]).name;
         } else r.name;
+        if (self.importEqualsRootHiddenByLocal(node, root_name)) {
+            const root_text = self.string_interner.get(root_name);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Module '{s}' is hidden by a local declaration with the same name.",
+                .{root_text},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = imp.import_equals,
+                .code = TsCodes.import_alias_hidden_by_local,
+                .message = msg,
+            });
+            return;
+        }
         if (self.rootHasNonImportDeclarationNamed(root_name)) {
             try self.recordImportEqualsAbstractAlias(imp);
             // Upstream tsc differentiates the diagnostic by root-decl
@@ -22182,6 +22373,25 @@ pub const Checker = struct {
         if (std.mem.eql(u8, root_text, "module")) {
             try self.reportCannotFindNodeName(imp.import_equals, root_name);
         }
+    }
+
+    fn importEqualsRootHiddenByLocal(self: *Checker, import_node: NodeId, root_name: hir_mod.StringId) bool {
+        const one = [_]hir_mod.StringId{root_name};
+        const root = self.rootBlockFor(import_node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        if (self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), &one) == null) return false;
+        const container = self.declarationContainer(import_node);
+        if (container == root) return false;
+        const stmts = self.containerStatements(container) orelse return false;
+        for (stmts) |raw| {
+            const stmt = self.unwrapExportDecl(raw);
+            if (stmt == import_node or raw == import_node) return false;
+            if (stmt == hir_mod.none_node_id or self.hir.kindOf(stmt) == .import_decl) continue;
+            const name = self.declarationName(stmt) orelse continue;
+            if (name != root_name) continue;
+            if (self.declCreatesRuntimeValue(stmt, 0)) return true;
+        }
+        return false;
     }
 
     /// Walk the HIR root once and return a representative NodeKind
@@ -23743,6 +23953,11 @@ pub const Checker = struct {
             };
         }
         return false;
+    }
+
+    fn classMemberNameIsPrivateName(self: *Checker, name: hir_mod.StringId) bool {
+        const text = self.string_interner.get(name);
+        return text.len > 0 and text[0] == '#';
     }
 
     fn reportMemberImplicitAny(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!void {
@@ -28844,9 +29059,13 @@ pub const Checker = struct {
                 .class_expr,
                 .enum_decl,
                 .namespace_decl,
+                .import_decl,
                 => {
-                    const decl_name = self.declarationName(node) orelse continue;
-                    if (self.hir.kindOf(node) == .namespace_decl and !self.namespaceHasRuntimeValue(node)) continue;
+                    const decl_name = if (self.hir.kindOf(node) == .import_decl)
+                        (self.importEqualsAliasName(node) orelse continue)
+                    else
+                        (self.declarationName(node) orelse continue);
+                    if (!self.declCreatesRuntimeValue(node, 0)) continue;
                     if (decl_name == name) return node;
                 },
                 else => {},
@@ -28868,8 +29087,11 @@ pub const Checker = struct {
         name: hir_mod.StringId,
     ) ?NodeId {
         for (hir_mod.namespaceBody(self.hir, ns_node)) |raw| {
-            if (self.hir.kindOf(raw) != .export_decl) continue;
-            const node = self.unwrapExportDecl(raw);
+            const node = switch (self.hir.kindOf(raw)) {
+                .export_decl => self.unwrapExportDecl(raw),
+                .import_decl => if (self.importDeclHasExportKeyword(raw)) raw else continue,
+                else => continue,
+            };
             switch (self.hir.kindOf(node)) {
                 .var_decl,
                 .let_decl,
@@ -28879,8 +29101,13 @@ pub const Checker = struct {
                 .class_decl,
                 .class_expr,
                 .enum_decl,
+                .import_decl,
                 => {
-                    const decl_name = self.declarationName(node) orelse continue;
+                    const decl_name = if (self.hir.kindOf(node) == .import_decl)
+                        (self.importEqualsAliasName(node) orelse continue)
+                    else
+                        (self.declarationName(node) orelse continue);
+                    if (!self.declCreatesRuntimeValue(node, 0)) continue;
                     if (decl_name == name) return node;
                 },
                 else => {},
@@ -43127,6 +43354,11 @@ pub const Checker = struct {
     }
 
     fn namespaceHasRuntimeValue(self: *Checker, node: NodeId) bool {
+        return self.namespaceHasRuntimeValueDepth(node, 0);
+    }
+
+    fn namespaceHasRuntimeValueDepth(self: *Checker, node: NodeId, depth: u8) bool {
+        if (depth > 32) return false;
         if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .namespace_decl) return false;
         if (self.declarationSourceHasLeadingDeclare(node) or self.virtualSectionIsDeclarationFile(node)) return true;
         for (hir_mod.namespaceBody(self.hir, node)) |raw| {
@@ -43142,11 +43374,82 @@ pub const Checker = struct {
                 .enum_decl,
                 => return true,
                 .block_stmt => return true,
-                .namespace_decl => if (self.namespaceHasRuntimeValue(s)) return true,
+                .namespace_decl => if (self.namespaceHasRuntimeValueDepth(s, depth + 1)) return true,
+                .import_decl => if (self.importEqualsTargetHasRuntimeValue(s, depth + 1)) return true,
                 else => {},
             }
         }
         return false;
+    }
+
+    fn importEqualsAliasName(self: *Checker, import_node: NodeId) ?hir_mod.StringId {
+        if (import_node == hir_mod.none_node_id or self.hir.kindOf(import_node) != .import_decl) return null;
+        const imp = hir_mod.importOf(self.hir, import_node);
+        if (imp.import_equals == hir_mod.none_node_id) return null;
+        if (imp.default_binding == hir_mod.none_node_id or self.hir.kindOf(imp.default_binding) != .identifier) return null;
+        return hir_mod.identifierOf(self.hir, imp.default_binding).name;
+    }
+
+    fn importDeclHasExportKeyword(self: *Checker, import_node: NodeId) bool {
+        if (import_node == hir_mod.none_node_id or self.hir.kindOf(import_node) != .import_decl) return false;
+        const src = self.source orelse return false;
+        const sp = self.hir.spanOf(import_node);
+        if (sp.start >= sp.end or sp.end > src.len) return false;
+        const text = std.mem.trim(u8, src[sp.start..sp.end], " \t\r\n");
+        if (std.mem.startsWith(u8, text, "export") and
+            (text.len == "export".len or !isAsciiWordChar(text["export".len]))) return true;
+        var line_start: usize = sp.start;
+        while (line_start > 0 and src[line_start - 1] != '\n' and src[line_start - 1] != '\r') : (line_start -= 1) {}
+        const prefix = std.mem.trim(u8, src[line_start..sp.start], " \t\r\n");
+        return std.mem.eql(u8, prefix, "export");
+    }
+
+    fn importEqualsTargetHasRuntimeValue(self: *Checker, import_node: NodeId, depth: u8) bool {
+        if (depth > 32) return false;
+        if (import_node == hir_mod.none_node_id or self.hir.kindOf(import_node) != .import_decl) return false;
+        const imp = hir_mod.importOf(self.hir, import_node);
+        if (imp.import_equals == hir_mod.none_node_id or self.hir.kindOf(imp.import_equals) != .type_ref) return false;
+        const r = hir_mod.typeRefOf(self.hir, imp.import_equals);
+        const qualifiers = hir_mod.typeRefQualifier(self.hir, imp.import_equals);
+        if (qualifiers.len == 0) {
+            return self.unqualifiedImportEqualsTargetHasRuntimeValue(r.name, depth + 1);
+        }
+        const target = self.importEqualsTargetDecl(imp.import_equals) orelse return false;
+        return self.declCreatesRuntimeValue(target, depth + 1);
+    }
+
+    fn unqualifiedImportEqualsTargetHasRuntimeValue(self: *Checker, name: hir_mod.StringId, depth: u8) bool {
+        if (depth > 32) return false;
+        const root = if (self.hir.nodeCount() > 1) self.rootBlockFor(1) else hir_mod.none_node_id;
+        const stmts = if (root != hir_mod.none_node_id and self.hir.kindOf(root) == .block_stmt)
+            hir_mod.blockStmts(self.hir, root)
+        else
+            &[_]NodeId{};
+        for (stmts) |raw| {
+            const decl = self.unwrapExportDecl(raw);
+            const decl_name = self.declarationName(decl) orelse continue;
+            if (decl_name != name) continue;
+            if (self.declCreatesRuntimeValue(decl, depth + 1)) return true;
+        }
+        return false;
+    }
+
+    fn declCreatesRuntimeValue(self: *Checker, decl: NodeId, depth: u8) bool {
+        if (depth > 32) return false;
+        return switch (self.hir.kindOf(decl)) {
+            .var_decl,
+            .let_decl,
+            .const_decl,
+            .fn_decl,
+            .fn_expr,
+            .class_decl,
+            .class_expr,
+            .enum_decl,
+            => true,
+            .namespace_decl => self.namespaceHasRuntimeValueDepth(decl, depth + 1),
+            .import_decl => self.importEqualsTargetHasRuntimeValue(decl, depth + 1),
+            else => false,
+        };
     }
 
     fn reportNamespaceAsValue(
@@ -61151,6 +61454,70 @@ test "checker: namespace declaration conflicts with imported local" {
     try T.expect(found);
 }
 
+test "checker: import-equals reports shadowed module and local value conflicts" {
+    const b = try newBoundSetup(
+        \\namespace A {
+        \\  export var Point = { x: 0, y: 0 };
+        \\}
+        \\namespace B {
+        \\  var A = { x: 0, y: 0 };
+        \\  import Point = A;
+        \\}
+        \\namespace X {
+        \\  export class Y {}
+        \\}
+        \\namespace Z {
+        \\  import Y = X.Y;
+        \\  var Y = 12;
+        \\}
+        \\namespace q {
+        \\  export const Q = {};
+        \\}
+        \\namespace r {
+        \\  export import Q = q.Q;
+        \\  export type Q = number;
+        \\}
+        \\namespace s {
+        \\  import Q = r.Q;
+        \\  const Q = 0;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    var saw_hidden = false;
+    var conflicts: usize = 0;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.import_alias_hidden_by_local) saw_hidden = true;
+        if (d.code == TsCodes.import_conflicts_with_local) conflicts += 1;
+    }
+    try T.expect(saw_hidden);
+    try T.expect(conflicts >= 2);
+}
+
+test "checker: import-equals alias name cannot be any" {
+    const b = try newBoundSetup(
+        \\namespace a {
+        \\  export type A = number;
+        \\}
+        \\namespace b {
+        \\  export import A = a.A;
+        \\  export namespace A {}
+        \\}
+        \\namespace c {
+        \\  import any = b.A;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.import_name_cannot_be_any) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: ambient module export target does not conflict with import equals" {
     const s = try newSetup(
         \\declare namespace ReactRouter {
@@ -78074,6 +78441,42 @@ test "checker: `export = N` of a namespace-only binding does not raise TS2708" {
     try b.base.checker.checkSourceFile(b.base.root);
     for (b.base.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.namespace_as_value);
+    }
+}
+
+test "checker: exported import-equals aliases make namespaces usable as values" {
+    const b = try newBoundSetup(
+        \\namespace A {
+        \\  export var x = "hello";
+        \\  export class Point {
+        \\    constructor(public x: number, public y: number) {}
+        \\  }
+        \\}
+        \\namespace C {
+        \\  export import a = A;
+        \\}
+        \\var s: string = C.a.x;
+        \\var p = new C.a.Point(0, 0);
+        \\
+        \\namespace X {
+        \\  export function Y() { return 42; }
+        \\  export namespace Y {
+        \\    export class Point {
+        \\      constructor(public x: number, public y: number) {}
+        \\    }
+        \\  }
+        \\}
+        \\namespace Z {
+        \\  export import y = X.Y;
+        \\}
+        \\var n: number = Z.y();
+        \\var q = new Z.y.Point(0, 0);
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.namespace_as_value);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
     }
 }
 
