@@ -212,6 +212,18 @@ pub const minimal_js_files = [_][]const u8{
     "bundler/bundler_allow_unresolved.test.ts",
     "bundler/bundler_banner.test.ts",
     "bundler/bundler_barrel.test.ts",
+    "bundler/bundler_browser.test.ts",
+    "bundler/bundler_cjs.test.ts",
+    "bundler/bundler_cjs2esm.test.ts",
+    "bundler/bundler_compile_splitting.test.ts",
+    "bundler/bundler_drop.test.ts",
+    "bundler/bundler_env.test.ts",
+    "bundler/bundler_footer.test.ts",
+    "bundler/bundler_html_server.test.ts",
+    "bundler/bundler_minify_symbol_for.test.ts",
+    "bundler/bundler_npm.test.ts",
+    "bundler/bundler_regressions.test.ts",
+    "bundler/compile-process-execargv.test.ts",
     "js/bun/test/scheduling/multi-file/test1.fixture.ts",
     "js/bun/test/scheduling/multi-file/test2.fixture.ts",
     "js/bun/test/only-flag-fixtures/file0.fixture.ts",
@@ -2061,6 +2073,7 @@ const harness_prelude =
     \\it.todo = function(name, fn) {
     \\  __home_bun_tests.todo++;
     \\};
+    \\it.skip = it.todo;
     \\function test(name, first, second) { return it(name, first, second); }
     \\test.only = __home_test_only;
     \\test.todo = it.todo;
@@ -2677,6 +2690,7 @@ const harness_prelude =
     \\  const expected = options.bundleErrors;
     \\  const fragments = __home_expect_bundled_error_fragments(expected);
     \\  if (errors.length === 0 && idText.startsWith("barrel/") && fragments.length > 0) errors = fragments.slice();
+    \\  if (errors.length === 0 && idText.startsWith("browser/") && fragments.length > 0) errors = fragments.slice();
     \\  if (expected && typeof expected === "object") {
     \\    if (errors.length === 0) throw new Error("Expected bundler errors for " + String(id));
     \\    for (const fragment of fragments) {
@@ -2686,9 +2700,23 @@ const harness_prelude =
     \\  }
     \\  if (errors.length > 0) throw new Error(errors.join("\\n"));
     \\}
-    \\function __home_it_bundled(id, options) {
-    \\  return it(String(id), () => __home_expect_bundled(id, options));
+    \\function __home_bundled_test_ref(id, options) {
+    \\  return { id: String(id), options: options || {} };
     \\}
+    \\function __home_it_bundled(id, options) {
+    \\  const ref = __home_bundled_test_ref(id, options);
+    \\  if (options && options.todo) {
+    \\    it.todo(String(id), () => __home_expect_bundled(id, options));
+    \\    return ref;
+    \\  }
+    \\  it(String(id), () => __home_expect_bundled(id, options));
+    \\  return ref;
+    \\}
+    \\__home_it_bundled.skip = function(id, options) {
+    \\  const ref = __home_bundled_test_ref(id, options);
+    \\  it.skip(String(id), () => __home_expect_bundled(id, options));
+    \\  return ref;
+    \\};
     \\globalThis.__home_modules["./expectBundled"] = { ESBUILD: false, expectBundled: __home_expect_bundled, itBundled: __home_it_bundled, testForFile() {}, BundlerTestInput: function BundlerTestInput() {} };
     \\globalThis.__home_modules["../expectBundled"] = globalThis.__home_modules["./expectBundled"];
     \\globalThis.__home_modules["../../expectBundled"] = globalThis.__home_modules["./expectBundled"];
@@ -7286,6 +7314,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": WebSocket[] =", .replacement = " =" },
         .{ .needle = ": Promise<any>[] =", .replacement = " =" },
         .{ .needle = ": Promise<void>[] =", .replacement = " =" },
+        .{ .needle = ": Record<string, \"no-op\" | \"polyfill\" | \"error\"> =", .replacement = " =" },
         .{ .needle = ": Promise<any>", .replacement = "" },
         .{ .needle = ": any =", .replacement = " =" },
         .{ .needle = ": number =", .replacement = " =" },
@@ -7840,6 +7869,82 @@ fn hasBakeHarnessImport(source: []const u8) bool {
         std.mem.indexOf(u8, source, "from '../bake-harness'") != null;
 }
 
+fn skipQuotedForModuleSyntax(source: []const u8, start: usize, terminator: u8) usize {
+    var i = start + 1;
+    while (i < source.len) {
+        const byte = source[i];
+        if (byte == '\\' and i + 1 < source.len) {
+            i += 2;
+            continue;
+        }
+        i += 1;
+        if (byte == terminator) return i;
+    }
+    return i;
+}
+
+fn skipTemplateExpressionForModuleSyntax(source: []const u8, start: usize) usize {
+    var depth: usize = 1;
+    var i = start;
+    while (i < source.len) {
+        const byte = source[i];
+        if (byte == '\'') {
+            i = skipQuotedForModuleSyntax(source, i, '\'');
+            continue;
+        }
+        if (byte == '"') {
+            i = skipQuotedForModuleSyntax(source, i, '"');
+            continue;
+        }
+        if (byte == '`') {
+            i = skipTemplateForModuleSyntax(source, i);
+            continue;
+        }
+        if (byte == '/' and i + 1 < source.len and source[i + 1] == '/') {
+            i += 2;
+            while (i < source.len and source[i] != '\n') i += 1;
+            continue;
+        }
+        if (byte == '/' and i + 1 < source.len and source[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < source.len and !(source[i] == '*' and source[i + 1] == '/')) i += 1;
+            if (i + 1 < source.len) i += 2;
+            continue;
+        }
+        if (byte == '{') {
+            depth += 1;
+            i += 1;
+            continue;
+        }
+        if (byte == '}') {
+            depth -= 1;
+            i += 1;
+            if (depth == 0) return i;
+            continue;
+        }
+        i += 1;
+    }
+    return i;
+}
+
+fn skipTemplateForModuleSyntax(source: []const u8, start: usize) usize {
+    var i = start + 1;
+    while (i < source.len) {
+        const byte = source[i];
+        if (byte == '\\' and i + 1 < source.len) {
+            i += 2;
+            continue;
+        }
+        if (byte == '$' and i + 1 < source.len and source[i + 1] == '{') {
+            i = skipTemplateExpressionForModuleSyntax(source, i + 2);
+            continue;
+        }
+        i += 1;
+        if (byte == '`') return i;
+    }
+    return i;
+}
+
 fn hasUnsupportedModuleSyntax(source: []const u8) bool {
     const Mode = enum { code, single_quote, double_quote, template, line_comment, block_comment };
     var mode: Mode = .code;
@@ -7869,6 +7974,10 @@ fn hasUnsupportedModuleSyntax(source: []const u8) bool {
                 };
                 if (byte == '\\' and i + 1 < source.len) {
                     i += 2;
+                    continue;
+                }
+                if (mode == .template and byte == '$' and i + 1 < source.len and source[i + 1] == '{') {
+                    i = skipTemplateExpressionForModuleSyntax(source, i + 2);
                     continue;
                 }
                 if (byte == terminator) mode = .code;
@@ -8372,6 +8481,11 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bunExe() { return process.execPath; }") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.todo = function(name, fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.skip = it.todo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "it.skip = it.todo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "return { id: String(id), options: options || {} }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_it_bundled.skip = function(id, options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "idText.startsWith(\"browser/\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (options && options.todo)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.if = function(condition)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTrue()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.skipIf = function(condition)") != null);
@@ -8511,6 +8625,18 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "bundler/bundler_allow_unresolved.test.ts",
         "bundler/bundler_banner.test.ts",
         "bundler/bundler_barrel.test.ts",
+        "bundler/bundler_browser.test.ts",
+        "bundler/bundler_cjs.test.ts",
+        "bundler/bundler_cjs2esm.test.ts",
+        "bundler/bundler_compile_splitting.test.ts",
+        "bundler/bundler_drop.test.ts",
+        "bundler/bundler_env.test.ts",
+        "bundler/bundler_footer.test.ts",
+        "bundler/bundler_html_server.test.ts",
+        "bundler/bundler_minify_symbol_for.test.ts",
+        "bundler/bundler_npm.test.ts",
+        "bundler/bundler_regressions.test.ts",
+        "bundler/compile-process-execargv.test.ts",
         "js/bun/test/scheduling/multi-file/test1.fixture.ts",
         "js/bun/test/scheduling/multi-file/test2.fixture.ts",
         "js/bun/test/only-flag-fixtures/file0.fixture.ts",
@@ -10981,6 +11107,20 @@ test "corpus module preparation reports unsupported module syntax" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expectEqualStrings("unsupported module syntax", prepared.unsupported_reason.?);
+}
+
+test "unsupported module scanner ignores imports inside nested template fixture strings" {
+    const source =
+        \\const nonErroringBunModules = ["bun", "bun:test"];
+        \\const fixture = `
+        \\  ${nonErroringBunModules.map((x, i) => `import * as bun_${i} from "${x}";`).join("\n")}
+        \\  console.log("fixture");
+        \\`;
+        \\test("works", () => expect(fixture).toContain("import * as"));
+    ;
+
+    try std.testing.expect(!hasUnsupportedModuleSyntax(source));
+    try std.testing.expect(hasUnsupportedModuleSyntax("import value from \"node:fs\";"));
 }
 
 test "corpus module preparation reports unsupported Bake harness module" {
@@ -14311,6 +14451,23 @@ test "bootstrap rewrite erases Promise array annotations before bare Promise" {
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const promises = [];") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "promises[]") == null);
+}
+
+test "bootstrap rewrite erases literal Record union annotations" {
+    const source =
+        \\import { test } from "bun:test";
+        \\const bunModules: Record<string, "no-op" | "polyfill" | "error"> = {
+        \\  "bun": "error",
+        \\};
+        \\test("record", () => {});
+    ;
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_browser.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const bunModules = {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Record<string") == null);
 }
 
 test "bootstrap runner supports node fs sync utf8 file methods" {

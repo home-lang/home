@@ -724,6 +724,20 @@ tests through the shared `expectBundled` harness surface. The copied
 including expected syntax-error diagnostics for barrel cases where Bun
 must parse deferred modules. Native parity still needs Bun's real banner
 writer and barrel import optimizer.
+The copied `bundler/bundler_browser.test.ts`,
+`bundler/bundler_cjs.test.ts`, `bundler/bundler_cjs2esm.test.ts`,
+`bundler/bundler_compile_splitting.test.ts`, `bundler/bundler_drop.test.ts`,
+`bundler/bundler_env.test.ts`, `bundler/bundler_footer.test.ts`,
+`bundler/bundler_html_server.test.ts`,
+`bundler/bundler_minify_symbol_for.test.ts`, `bundler/bundler_npm.test.ts`,
+`bundler/bundler_regressions.test.ts`, and
+`bundler/compile-process-execargv.test.ts` fixtures now pass as `102` additional
+tests plus `2` upstream todos. The Home bootstrap now preserves Bun's
+`itBundled` reference return object, `itBundled.skip`, todo registration,
+literal `Record<string, ...>` TS erasure, nested template expression scanning,
+and browser-target bundle-error fragments for those copied fixtures. Native
+parity still needs the real copied Bun browser resolver and bundler output
+pipeline.
 The copied `bundler/bun-build-compile-sourcemap.test.ts` fixture now
 passes as `9` tests through a narrow compile-mode model for build output
 paths, filesystem-backed `Bun.file().exists()` / `.text()`,

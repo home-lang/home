@@ -17,11 +17,15 @@ macOS, Linux, and the WASM target.
   bootstrap path exists for the current allowlist:
   `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
-  Latest measured subset run: `172` files, `815` passed, `0` failed,
-  `42` todo. That subset currently executes the todo-registration smoke, three Node
+  Latest measured subset run: `184` files, `917` passed, `0` failed,
+  `44` todo. That subset currently executes the todo-registration smoke, three Node
   `assert` CommonJS smokes, Node `path` smokes, two Node `url` smokes, the Web
   `atob`/`btoa` smoke, twenty-four regression smokes, one bundler
-  constant-fold smoke, bundler `allowUnresolved`, banner, and barrel optimization smokes, one bun-types `test.each` type-shape smoke, six test-runner expectation smokes, one nested-describe
+  constant-fold smoke, bundler `allowUnresolved`, banner, barrel,
+  browser-target builtin diagnostics, CJS, CJS-to-ESM, compile-splitting,
+  drop/env/footer, HTML server, minify-symbol, npm, regression, and process
+  `execArgv` smokes, one bun-types
+  `test.each` type-shape smoke, six test-runner expectation smokes, one nested-describe
   smoke, two `expectTypeOf` type-only smokes, a narrow `Bun.TOML.parse` throw smoke, `Bun.stripANSI`, `Bun.wrapAnsi`, `Bun.semver.satisfies`, and
   `bun:internal-for-testing` regexp / PowerShell escaping smokes, retry/repeats runner
   behavior, `test.concurrent.each`, `expect().pass`, `expect().toBeEmpty`, a narrow `mock.clearAllMocks` /
