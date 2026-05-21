@@ -740,6 +740,7 @@ pub fn compileSource(
             .pos = d.pos,
             .line = d.line,
             .code = d.code,
+            .span_len = d.span_len,
             .message = try gpa.dupe(u8, d.message),
         });
         c.has_errors = true;
@@ -1969,6 +1970,31 @@ test "driver: arrow assigned to function-type annotation type-checks" {
     for (c.diagnostics.items) |d| {
         try T.expect(std.mem.indexOf(u8, d.message, "not assignable") == null);
     }
+}
+
+test "driver: parser diagnostics preserve span length for exact ordering" {
+    var c = try compileSource(T.allocator,
+        \\enum E {
+        \\    [e] = id++
+        \\    [e2] = 1
+        \\}
+    , .{ .syntax_target_es2015 = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var saw_span_1357 = false;
+    var saw_span_1164 = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 1357) {
+            saw_span_1357 = d.span_len == 1;
+        } else if (d.code == 1164 and d.line == 3) {
+            saw_span_1164 = d.span_len == 4;
+        }
+    }
+    try T.expect(saw_span_1357);
+    try T.expect(saw_span_1164);
 }
 
 test "driver: importHelpers reports missing Stage 3 decorator helpers from virtual tslib" {
