@@ -20295,6 +20295,167 @@ test "conformance: iteratorSpreadInCall12 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: symbolProperty4 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "symbolProperty4",
+        .path = "symbolProperty4.ts",
+        .source =
+        \\var x = {
+        \\    [Symbol()]: 0,
+        \\    [Symbol()]() { },
+        \\    get [Symbol()]() {
+        \\        return 0;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: symbolProperty5 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "symbolProperty5",
+        .path = "symbolProperty5.ts",
+        .source =
+        \\var x = {
+        \\    [Symbol.iterator]: 0,
+        \\    [Symbol.toPrimitive]() { },
+        \\    get [Symbol.toStringTag]() {
+        \\        return 0;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: symbolDeclarationEmit8 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "symbolDeclarationEmit8",
+        .path = "symbolDeclarationEmit8.ts",
+        .source =
+        \\var obj = {
+        \\    [Symbol.isConcatSpreadable]: 0
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: symbolDeclarationEmit9 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "symbolDeclarationEmit9",
+        .path = "symbolDeclarationEmit9.ts",
+        .source =
+        \\var obj = {
+        \\    [Symbol.isConcatSpreadable]() { }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: symbolDeclarationEmit14 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "symbolDeclarationEmit14",
+        .path = "symbolDeclarationEmit14.ts",
+        .source =
+        \\class C {
+        \\    get [Symbol.toPrimitive]() { return ""; }
+        \\    get [Symbol.toStringTag]() { return ""; }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: symbolProperty40 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "symbolProperty40",
+        .path = "symbolProperty40.ts",
+        .source =
+        \\class C {
+        \\    [Symbol.iterator](x: string): string;
+        \\    [Symbol.iterator](x: number): number;
+        \\    [Symbol.iterator](x: any) {
+        \\        return undefined;
+        \\    }
+        \\}
+        \\
+        \\var c = new C;
+        \\c[Symbol.iterator]("");
+        \\c[Symbol.iterator](0);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: symbolProperty48 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "symbolProperty48",
+        .path = "symbolProperty48.ts",
+        .source =
+        \\namespace M {
+        \\    var Symbol;
+        \\
+        \\    class C {
+        \\        [Symbol.iterator]() { }
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
