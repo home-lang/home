@@ -2106,6 +2106,7 @@ pub const Checker = struct {
                         }
                     }
                     try self.checkStatement(ex.decl);
+                    try self.checkExportDefaultExpressionJsDocType(node, ex);
                 }
             },
             .return_stmt => {
@@ -21244,6 +21245,7 @@ pub const Checker = struct {
                 return true;
             },
             .implementation => {
+                if (self.virtualRelativeImportIsProjectJsSource(node, spec)) return true;
                 if (self.strict_flags.no_implicit_any) {
                     const msg = try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
@@ -21259,6 +21261,31 @@ pub const Checker = struct {
                 return true;
             },
         }
+    }
+
+    fn virtualRelativeImportIsProjectJsSource(self: *Checker, node: NodeId, spec: []const u8) bool {
+        if (!self.sourceHasAllowJsDirective() or !self.sourceHasVirtualFilenameSections()) return false;
+        const resolved = self.resolveVirtualRelativePath(self.virtualSectionFilenameForNode(node) orelse return false, spec) catch return false;
+        defer self.gpa.free(resolved);
+        const exts = [_][]const u8{ ".js", ".jsx", ".mjs", ".cjs" };
+        for (exts) |ext| {
+            const direct = std.fmt.allocPrint(self.gpa, "{s}{s}", .{ resolved, ext }) catch return false;
+            defer self.gpa.free(direct);
+            if (self.virtualSourceHasFilename(direct) and !self.virtualPathIsNodeModules(direct)) return true;
+            const index = std.fmt.allocPrint(self.gpa, "{s}/index{s}", .{ resolved, ext }) catch return false;
+            defer self.gpa.free(index);
+            if (self.virtualSourceHasFilename(index) and !self.virtualPathIsNodeModules(index)) return true;
+        }
+        if (self.virtualSourceHasFilename(resolved) and self.pathIsJsLike(resolved) and !self.virtualPathIsNodeModules(resolved)) return true;
+        return false;
+    }
+
+    fn virtualPathIsNodeModules(self: *Checker, path: []const u8) bool {
+        _ = self;
+        var p = path;
+        while (std.mem.startsWith(u8, p, "/")) p = p[1..];
+        return std.mem.startsWith(u8, p, "node_modules/") or
+            std.mem.indexOf(u8, p, "/node_modules/") != null;
     }
 
     fn checkNodeEsmRelativeImportExtensionDiagnostic(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
@@ -21453,6 +21480,36 @@ pub const Checker = struct {
             .code = TsCodes.cannot_find_module,
             .message = msg,
         });
+    }
+
+    fn checkExportDefaultExpressionJsDocType(self: *Checker, node: NodeId, ex: hir_mod.ExportPayload) CheckError!void {
+        if (!ex.is_default or ex.decl == hir_mod.none_node_id) return;
+        if (!self.sourceHasCheckJsDirective() or !self.virtualSectionIsJsLike(node)) return;
+        switch (self.hir.kindOf(ex.decl)) {
+            .class_decl, .class_expr, .fn_decl, .fn_expr, .arrow_fn, .interface_decl, .type_alias_decl, .enum_decl, .namespace_decl => return,
+            else => {},
+        }
+        const target_t = (try self.jsDocTypeForLeadingNode(node)) orelse return;
+        const value_t = if (self.hir.typeOf(ex.decl) != types.Primitive.none)
+            self.hir.typeOf(ex.decl)
+        else
+            try self.checkExpression(ex.decl);
+        const assignable =
+            (try self.expressionNodeAssignableToTarget(ex.decl, value_t, target_t)) or
+            (self.engine.isAssignableTo(value_t, target_t) catch false);
+        const diag_start = self.diagnostics.items.len;
+        try self.checkExcessProperties(ex.decl, target_t);
+        if (!assignable) {
+            if (self.diagnostics.items.len != diag_start) {
+                // Fresh object-literal excess properties use TS2353
+                // instead of an additional generic TS2322.
+            } else if (self.hir.kindOf(ex.decl) == .object_literal and try self.tryReportSinglePropertyMissing(ex.decl, ex.decl, value_t, target_t)) {
+                // Reported the precise missing-property diagnostic.
+            } else if (!try self.tryReportObjectLiteralPropertyMismatch(ex.decl, target_t)) {
+                try self.reportTypeNotAssignable(ex.decl, value_t, target_t, "Type is not assignable to declared type.");
+            }
+        }
+        try self.checkExactOptionalProperties(ex.decl, target_t);
     }
 
     fn virtualArbitraryExtensionDeclarationPath(self: *Checker, node: NodeId, spec: []const u8) CheckError!?[]u8 {
@@ -23123,6 +23180,10 @@ pub const Checker = struct {
                 return types.Primitive.any;
             }
             return type_export;
+        }
+        if (space != .value) {
+            const spec_id = self.string_interner.intern(spec) catch return error.OutOfMemory;
+            if (try self.virtualRelativeModuleExportType(anchor, spec_id, &.{}, leaf)) |type_export| return type_export;
         }
 
         const module_t = (try self.virtualCommonJsModuleExportObjectType(anchor, spec)) orelse return null;
@@ -77906,6 +77967,41 @@ test "checker: checkjs virtual JSDoc typedef is visible to TS type refs" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
     }
+}
+
+test "checker: checkjs export default expression consumes leading JSDoc type" {
+    const s = try newSetup(
+        \\// @module: commonjs
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: a.ts
+        \\export interface Foo {
+        \\    a: number;
+        \\    b: number;
+        \\}
+        \\
+        \\// @Filename: b.js
+        \\/** @type {import("./a").Foo} */
+        \\export default { c: false };
+        \\
+        \\// @Filename: c.js
+        \\import b from "./b";
+        \\b;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var saw_excess = false;
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.untyped_module);
+        if (d.code == TsCodes.object_literal_excess_property and
+            std.mem.indexOf(u8, d.message, "'c'") != null and
+            std.mem.indexOf(u8, d.message, "Foo") != null)
+        {
+            saw_excess = true;
+        }
+    }
+    try T.expect(saw_excess);
 }
 
 test "checker: checkjs Closure-style JSDoc namepaths do not resolve as truncated aliases" {
