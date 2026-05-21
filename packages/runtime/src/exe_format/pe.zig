@@ -771,3 +771,57 @@ test "PEFile error set contains the documented PE-specific codes" {
     try std.testing.expectEqualStrings("BunSectionNotFound", @errorName(e2));
     try std.testing.expectEqualStrings("InvalidDOSSignature", @errorName(e3));
 }
+
+fn writeAt(comptime T: type, bytes: []u8, offset: usize, value: T) void {
+    std.mem.copyForwards(u8, bytes[offset..][0..@sizeOf(T)], std.mem.asBytes(&value));
+}
+
+fn makeMinimalPE64() [0x80 + @sizeOf(PEFile.PEHeader) + @sizeOf(PEFile.OptionalHeader64)]u8 {
+    var bytes = std.mem.zeroes([0x80 + @sizeOf(PEFile.PEHeader) + @sizeOf(PEFile.OptionalHeader64)]u8);
+
+    var dos = std.mem.zeroes(PEFile.DOSHeader);
+    dos.e_magic = PEFile.DOS_SIGNATURE;
+    dos.e_lfanew = 0x80;
+    writeAt(PEFile.DOSHeader, &bytes, 0, dos);
+
+    var pe = std.mem.zeroes(PEFile.PEHeader);
+    pe.signature = PEFile.PE_SIGNATURE;
+    pe.machine = 0x8664;
+    pe.number_of_sections = 0;
+    pe.size_of_optional_header = @sizeOf(PEFile.OptionalHeader64);
+    writeAt(PEFile.PEHeader, &bytes, dos.e_lfanew, pe);
+
+    var opt = std.mem.zeroes(PEFile.OptionalHeader64);
+    opt.magic = PEFile.OPTIONAL_HEADER_MAGIC_64;
+    opt.section_alignment = 0x1000;
+    opt.file_alignment = 0x200;
+    opt.size_of_headers = 0x200;
+    writeAt(PEFile.OptionalHeader64, &bytes, dos.e_lfanew + @sizeOf(PEFile.PEHeader), opt);
+
+    return bytes;
+}
+
+test "PE utils recognize DOS and PE signatures" {
+    var bytes = makeMinimalPE64();
+    try std.testing.expect(utils.isPE(&bytes));
+
+    bytes[0] = 0;
+    try std.testing.expect(!utils.isPE(&bytes));
+}
+
+test "PEFile.init parses a minimal PE32+ header" {
+    var bytes = makeMinimalPE64();
+    const file = try PEFile.init(std.testing.allocator, &bytes);
+    defer file.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), file.dos_header_offset);
+    try std.testing.expectEqual(@as(usize, 0x80), file.pe_header_offset);
+    try std.testing.expectEqual(@as(u16, 0), file.num_sections);
+
+    var unsupported = bytes;
+    unsupported[0x80 + @sizeOf(PEFile.PEHeader)] = 0;
+    unsupported[0x80 + @sizeOf(PEFile.PEHeader) + 1] = 0;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectError(error.UnsupportedPEFormat, PEFile.init(arena.allocator(), &unsupported));
+}

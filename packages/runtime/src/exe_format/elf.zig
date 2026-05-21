@@ -15,7 +15,7 @@ pub const ElfFile = struct {
         const ehdr = readEhdr(elf_data);
 
         // Validate ELF magic
-        if (!bun.strings.eqlComptime(ehdr.e_ident[0..4], "\x7fELF")) return error.InvalidElfFile;
+        if (!std.mem.eql(u8, ehdr.e_ident[0..4], "\x7fELF")) return error.InvalidElfFile;
 
         // Must be 64-bit
         if (ehdr.e_ident[elf.EI_CLASS] != elf.ELFCLASS64) return error.Not64Bit;
@@ -80,8 +80,8 @@ pub const ElfFile = struct {
             const interp_region = self.data.items[interp_offset..][0..interp_filesz];
             const current = std.mem.sliceTo(interp_region, 0);
 
-            if (!bun.strings.hasPrefixComptime(current, "/nix/store/") and
-                !bun.strings.hasPrefixComptime(current, "/gnu/store/"))
+            if (!std.mem.startsWith(u8, current, "/nix/store/") and
+                !std.mem.startsWith(u8, current, "/gnu/store/"))
             {
                 return;
             }
@@ -90,14 +90,14 @@ pub const ElfFile = struct {
             const basename = current[last_slash + 1 ..];
 
             const replacement: []const u8 = inline for (interp_map) |entry| {
-                if (bun.strings.eqlComptime(basename, entry[0])) break entry[1];
+                if (std.mem.eql(u8, basename, entry[0])) break entry[1];
             } else return;
 
             // FHS path + NUL must fit in the existing segment (always true for
             // store paths: 32-char hash + pname + "/lib/" alone exceeds any FHS path).
             if (replacement.len + 1 > interp_filesz) return;
 
-            log("rewriting PT_INTERP {s} -> {s}", .{ current, replacement });
+            log.debug("rewriting PT_INTERP {s} -> {s}", .{ current, replacement });
 
             @memcpy(interp_region[0..replacement.len], replacement);
             @memset(interp_region[replacement.len..], 0);
@@ -132,7 +132,7 @@ pub const ElfFile = struct {
             const shdr = self.readShdr(ehdr.e_shoff, @intCast(i));
             if (shdr.sh_name >= strtab.len) continue;
             const name = std.mem.sliceTo(strtab[shdr.sh_name..], 0);
-            if (!bun.strings.eqlComptime(name, ".interp")) continue;
+            if (!std.mem.eql(u8, name, ".interp")) continue;
 
             // sh_size @ +32 in Elf64_Shdr
             const shdr_offset = @as(usize, @intCast(ehdr.e_shoff)) + i * shdr_size;
@@ -264,7 +264,7 @@ pub const ElfFile = struct {
         // MB of debug info past the RW segment), the destination overlaps
         // the source, so memmove is required.
         if (moved_tail_size != 0) {
-            bun.memmove(
+            std.mem.copyBackwards(
                 self.data.items[move_dst_start..move_dst_end],
                 self.data.items[move_src_start..move_src_end],
             );
@@ -388,7 +388,7 @@ pub const ElfFile = struct {
 
             if (name_offset < strtab.len) {
                 const name = std.mem.sliceTo(strtab[name_offset..], 0);
-                if (bun.strings.eqlComptime(name, ".bun")) {
+                if (std.mem.eql(u8, name, ".bun")) {
                     return .{
                         .file_offset = shdr.sh_offset,
                         .section_index = @intCast(i),
@@ -428,6 +428,19 @@ fn alignUp(value: u64, alignment: u64) u64 {
     return (value + mask) & ~mask;
 }
 
+pub const utils = struct {
+    pub fn isElf(data: []const u8) bool {
+        return data.len >= 4 and std.mem.eql(u8, data[0..4], "\x7fELF");
+    }
+
+    pub fn isElf64LittleEndian(data: []const u8) bool {
+        return data.len >= @sizeOf(Elf64_Ehdr) and
+            isElf(data) and
+            data[elf.EI_CLASS] == elf.ELFCLASS64 and
+            data[elf.EI_DATA] == elf.ELFDATA2LSB;
+    }
+};
+
 /// True iff the host bun is running on is managed by Nix or Guix — in which
 /// case the "generic" FHS linker path `/lib64/ld-linux-x86-64.so.2` is a stub
 /// that rejects generic binaries, and rewriting PT_INTERP to it would break
@@ -450,7 +463,7 @@ fn alignUp(value: u64, alignment: u64) u64 {
 /// can run on macOS/Windows, in which case the host's linker layout is
 /// irrelevant and we want to normalize for portability (#24742).
 fn hostUsesNixStoreInterpreter() bool {
-    if (comptime !bun.Environment.isLinux) return false;
+    if (comptime builtin.os.tag != .linux) return false;
 
     const cache = struct {
         var computed: std.atomic.Value(u8) = .init(0); // 0 unknown, 1 no, 2 yes
@@ -458,13 +471,16 @@ fn hostUsesNixStoreInterpreter() bool {
             // Test-only override: lets #29290's regression test force the
             // Nix-host branch without mutating `/etc/NIXOS` on the shared
             // rootfs (which would poison concurrent test workers).
-            if (bun.env_var.BUN_DEBUG_FORCE_NIX_HOST.get()) return true;
+            if (std.c.getenv("BUN_DEBUG_FORCE_NIX_HOST") != null) return true;
             if (selfInterpIsNixStore()) return true;
             // Canonical NixOS marker — present even when bun itself was not
             // installed via Nix (statically-linked bun, downloaded tarball).
-            if (bun.sys.exists("/etc/NIXOS")) return true;
+            if (std.fs.accessAbsolute("/etc/NIXOS", .{}) == .{}) return true;
             // Guix equivalent.
-            if (bun.sys.directoryExistsAt(bun.FD.cwd(), "/gnu/store").unwrapOr(false)) return true;
+            if (std.fs.openDirAbsolute("/gnu/store", .{})) |dir| {
+                dir.close();
+                return true;
+            } else |_| {}
             return false;
         }
 
@@ -473,19 +489,13 @@ fn hostUsesNixStoreInterpreter() bool {
             // the first page. Read just the leading bytes to avoid slurping
             // the whole bun binary.
             var buf: [4096]u8 = undefined;
-            const fd = switch (bun.sys.open("/proc/self/exe", bun.O.RDONLY, 0)) {
-                .result => |fd| fd,
-                .err => return false,
-            };
-            defer fd.close();
-            const n = switch (bun.sys.read(fd, &buf)) {
-                .result => |n| n,
-                .err => return false,
-            };
+            const file = std.fs.openFileAbsolute("/proc/self/exe", .{}) catch return false;
+            defer file.close();
+            const n = file.read(&buf) catch return false;
             if (n < @sizeOf(Elf64_Ehdr)) return false;
             const data = buf[0..n];
 
-            if (!bun.strings.eqlComptime(data[0..4], "\x7fELF")) return false;
+            if (!std.mem.eql(u8, data[0..4], "\x7fELF")) return false;
             if (data[elf.EI_CLASS] != elf.ELFCLASS64) return false;
             if (data[elf.EI_DATA] != elf.ELFDATA2LSB) return false;
 
@@ -504,8 +514,8 @@ fn hostUsesNixStoreInterpreter() bool {
                 if (interp_off + interp_sz > data.len) return false;
 
                 const interp = std.mem.sliceTo(data[interp_off..][0..interp_sz], 0);
-                return bun.strings.hasPrefixComptime(interp, "/nix/store/") or
-                    bun.strings.hasPrefixComptime(interp, "/gnu/store/");
+                return std.mem.startsWith(u8, interp, "/nix/store/") or
+                    std.mem.startsWith(u8, interp, "/gnu/store/");
             }
             return false;
         }
@@ -521,14 +531,55 @@ fn hostUsesNixStoreInterpreter() bool {
     return result;
 }
 
-const log = bun.Output.scoped(.elf, .visible);
-
-const bun = @import("bun");
-
+const builtin = @import("builtin");
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const log = std.log.scoped(.elf);
 
 const elf = std.elf;
 const Elf64_Ehdr = elf.Elf64_Ehdr;
 const Elf64_Phdr = elf.Elf64_Phdr;
 const Elf64_Shdr = elf.Elf64_Shdr;
+
+fn makeElfHeader(class: u8, data_encoding: u8) [@sizeOf(Elf64_Ehdr)]u8 {
+    var bytes = std.mem.zeroes([@sizeOf(Elf64_Ehdr)]u8);
+    @memcpy(bytes[0..4], "\x7fELF");
+    bytes[elf.EI_CLASS] = class;
+    bytes[elf.EI_DATA] = data_encoding;
+    return bytes;
+}
+
+test "ELF utils recognize magic and 64-bit little-endian headers" {
+    var bytes = makeElfHeader(elf.ELFCLASS64, elf.ELFDATA2LSB);
+    try std.testing.expect(utils.isElf(&bytes));
+    try std.testing.expect(utils.isElf64LittleEndian(&bytes));
+
+    bytes[elf.EI_DATA] = elf.ELFDATA2MSB;
+    try std.testing.expect(utils.isElf(&bytes));
+    try std.testing.expect(!utils.isElf64LittleEndian(&bytes));
+
+    bytes[0] = 0;
+    try std.testing.expect(!utils.isElf(&bytes));
+}
+
+test "ElfFile.init validates ELF identification fields" {
+    const allocator = std.testing.allocator;
+
+    var valid = makeElfHeader(elf.ELFCLASS64, elf.ELFDATA2LSB);
+    const file = try ElfFile.init(allocator, &valid);
+    file.deinit();
+
+    try std.testing.expectError(error.InvalidElfFile, ElfFile.init(allocator, valid[0..3]));
+
+    var bad_magic = valid;
+    bad_magic[1] = 'X';
+    try std.testing.expectError(error.InvalidElfFile, ElfFile.init(allocator, &bad_magic));
+
+    var not_64 = valid;
+    not_64[elf.EI_CLASS] = elf.ELFCLASS32;
+    try std.testing.expectError(error.Not64Bit, ElfFile.init(allocator, &not_64));
+
+    var big_endian = valid;
+    big_endian[elf.EI_DATA] = elf.ELFDATA2MSB;
+    try std.testing.expectError(error.NotLittleEndian, ElfFile.init(allocator, &big_endian));
+}

@@ -61,19 +61,19 @@ pub const MachoFile = struct {
 
         var found_bun = false;
 
-        var iter = self.iterator();
+        var iter = try self.iterator();
 
-        while (iter.next()) |entry| {
+        while (try iter.next()) |entry| {
             const cmd = entry.hdr;
             switch (cmd.cmd) {
                 .SEGMENT_64 => {
                     const command = entry.cast(macho.segment_command_64).?;
-                    if (strings.eqlComptime(command.segName(), "__BUN")) {
+                    if (mem.eql(u8, command.segName(), "__BUN")) {
                         if (command.nsects > 0) {
                             const section_offset = @intFromPtr(entry.data.ptr) - @intFromPtr(self.data.items.ptr);
                             const sections = @as([*]macho.section_64, @ptrCast(@alignCast(&self.data.items[section_offset + @sizeOf(macho.segment_command_64)])))[0..command.nsects];
                             for (sections) |*sect| {
-                                if (strings.eqlComptime(sect.sectName(), "__bun")) {
+                                if (mem.eql(u8, sect.sectName(), "__bun")) {
                                     found_bun = true;
                                     original_fileoff = sect.offset;
                                     original_vmaddr = sect.addr;
@@ -109,7 +109,7 @@ pub const MachoFile = struct {
                                 }
                             }
                         }
-                    } else if (strings.eqlComptime(command.segName(), SEG_LINKEDIT)) {
+                    } else if (mem.eql(u8, command.segName(), SEG_LINKEDIT)) {
                         linkedit_seg_idx = @intFromPtr(entry.data.ptr) - @intFromPtr(self.data.items.ptr);
                     }
                 },
@@ -157,7 +157,7 @@ pub const MachoFile = struct {
         // We need to shift [...data after __BUN] forward by size_diff bytes.
         const after_bun_slice = self.data.items[original_data_end + @as(usize, @intCast(size_diff)) ..];
         const prev_after_bun_slice = prev_data_slice[original_segsize..];
-        bun.memmove(after_bun_slice, prev_after_bun_slice);
+        memmove(u8, after_bun_slice, prev_after_bun_slice);
 
         // Now we copy the u64 size header (8 bytes for alignment)
         std.mem.writeInt(u64, self.data.items[original_fileoff..][0..8], @intCast(data.len), .little);
@@ -180,7 +180,7 @@ pub const MachoFile = struct {
         }
 
         if (code_sign_cmd) |cs| {
-            if (self.header.cputype == macho.CPU_TYPE_ARM64 and !bun.feature_flag.BUN_NO_CODESIGN_MACHO_BINARY.get()) {
+            if (self.header.cputype == macho.CPU_TYPE_ARM64 and code_sign_macho_binary) {
                 // `buildAndSign` replaces the template's signature with one built by
                 // `MachoSigner`, whose size depends only on the (possibly-shifted)
                 // `cs.dataoff` — not on the template signature's shape. Resize
@@ -255,7 +255,7 @@ pub const MachoFile = struct {
         const aligned_previous = alignSize(previous_fileoff, PAGE_SIZE);
         const aligned_linkedit = alignSize(new_linkedit_fileoff, PAGE_SIZE);
 
-        var iter = self.iterator();
+        var iter = try self.iterator();
 
         // Create shifter with validated parameters
         const shifter = Shifter{
@@ -265,7 +265,7 @@ pub const MachoFile = struct {
             .linkedit_filesize = new_linkedit_filesize,
         };
 
-        while (iter.next()) |entry| {
+        while (try iter.next()) |entry| {
             const cmd = entry.hdr;
             const cmd_ptr: [*]u8 = @constCast(entry.data.ptr);
 
@@ -324,11 +324,11 @@ pub const MachoFile = struct {
         }
     }
 
-    pub fn iterator(self: *const MachoFile) macho.LoadCommandIterator {
-        return .{
-            .buffer = self.data.items[@sizeOf(macho.mach_header_64)..][0..self.header.sizeofcmds],
-            .ncmds = self.header.ncmds,
-        };
+    pub fn iterator(self: *const MachoFile) !macho.LoadCommandIterator {
+        return macho.LoadCommandIterator.init(
+            &self.header,
+            self.data.items[@sizeOf(macho.mach_header_64)..],
+        );
     }
 
     pub fn build(self: *MachoFile, writer: anytype) !void {
@@ -336,10 +336,10 @@ pub const MachoFile = struct {
     }
 
     fn validateSegments(self: *MachoFile) !void {
-        var iter = self.iterator();
+        var iter = try self.iterator();
         var prev_end: u64 = 0;
 
-        while (iter.next()) |entry| {
+        while (try iter.next()) |entry| {
             const cmd = entry.hdr;
             if (cmd.cmd == .SEGMENT_64) {
                 const seg = entry.cast(macho.segment_command_64).?;
@@ -352,7 +352,7 @@ pub const MachoFile = struct {
     }
 
     pub fn buildAndSign(self: *MachoFile, writer: *std.Io.Writer) !void {
-        if (self.header.cputype == macho.CPU_TYPE_ARM64 and !bun.feature_flag.BUN_NO_CODESIGN_MACHO_BINARY.get()) {
+        if (self.header.cputype == macho.CPU_TYPE_ARM64 and code_sign_macho_binary) {
             var data = std.array_list.Managed(u8).init(self.allocator);
             defer data.deinit();
             try self.build(data.writer());
@@ -389,18 +389,15 @@ pub const MachoFile = struct {
             var text_seg = std.mem.zeroes(macho.segment_command_64);
             var linkedit_seg = std.mem.zeroes(macho.segment_command_64);
 
-            var it = macho.LoadCommandIterator{
-                .ncmds = header.ncmds,
-                .buffer = obj[header_size..][0..header.sizeofcmds],
-            };
+            var it = try macho.LoadCommandIterator.init(&header, obj[header_size..]);
 
             // First pass: find segments to establish bounds
-            while (it.next()) |cmd| {
-                if (cmd.cmd() == .SEGMENT_64) {
+            while (try it.next()) |cmd| {
+                if (cmd.hdr.cmd == .SEGMENT_64) {
                     const seg = cmd.cast(macho.segment_command_64).?;
 
                     // Store segment info
-                    if (strings.eqlComptime(seg.segName(), SEG_LINKEDIT)) {
+                    if (mem.eql(u8, seg.segName(), SEG_LINKEDIT)) {
                         linkedit_seg = seg;
                         linkedit_off = @intFromPtr(cmd.data.ptr) - @intFromPtr(obj.ptr);
 
@@ -408,21 +405,18 @@ pub const MachoFile = struct {
                         if (linkedit_seg.fileoff < text_seg.fileoff + text_seg.filesize) {
                             return error.InvalidLinkeditOffset;
                         }
-                    } else if (strings.eqlComptime(seg.segName(), "__TEXT")) {
+                    } else if (mem.eql(u8, seg.segName(), "__TEXT")) {
                         text_seg = seg;
                     }
                 }
             }
 
             // Reset iterator
-            it = macho.LoadCommandIterator{
-                .ncmds = header.ncmds,
-                .buffer = obj[header_size..][0..header.sizeofcmds],
-            };
+            it = try macho.LoadCommandIterator.init(&header, obj[header_size..]);
 
             // Second pass: find code signature
-            while (it.next()) |cmd| {
-                switch (cmd.cmd()) {
+            while (try it.next()) |cmd| {
+                switch (cmd.hdr.cmd) {
                     .CODE_SIGNATURE => {
                         const cs = cmd.cast(macho.linkedit_data_command).?;
                         sig_off = cs.dataoff;
@@ -499,7 +493,7 @@ pub const MachoFile = struct {
 
             // Calculate total signature size
             const sig_structure_size = super_blob_header_size + blob_index_size + code_dir_length;
-            bun.debugAssert(sig_structure_size == computeSignatureSize(self.sig_off));
+            std.debug.assert(sig_structure_size == computeSignatureSize(self.sig_off));
             const total_sig_size = alignSize(sig_structure_size, PAGE_SIZE);
 
             // Setup SuperBlob
@@ -555,17 +549,17 @@ pub const MachoFile = struct {
             var remaining = self.data.items[0..self.sig_off];
             while (remaining.len >= PAGE_SIZE) {
                 const page = remaining[0..PAGE_SIZE];
-                var digest: bun.sha.SHA256.Digest = undefined;
-                bun.sha.SHA256.hash(page, &digest, null);
+                var digest: [Sha256.digest_length]u8 = undefined;
+                Sha256.hash(page, &digest, .{});
                 try sig_writer.writeAll(&digest);
                 remaining = remaining[PAGE_SIZE..];
             }
 
             if (remaining.len > 0) {
-                var last_page = [_]u8{0} ** PAGE_SIZE;
+                var last_page = [_]u8{0}**PAGE_SIZE;
                 @memcpy(last_page[0..remaining.len], remaining);
-                var digest: bun.sha.SHA256.Digest = undefined;
-                bun.sha.SHA256.hash(&last_page, &digest, null);
+                var digest: [Sha256.digest_length]u8 = undefined;
+                Sha256.hash(&last_page, &digest, .{});
                 try sig_writer.writeAll(&digest);
             }
 
@@ -588,6 +582,17 @@ fn alignVmsize(size: u64, page_size: u64) u64 {
 }
 
 const SEG_LINKEDIT = "__LINKEDIT";
+const code_sign_macho_binary = true;
+
+fn memmove(comptime T: type, dest: []T, source: []const T) void {
+    const dest_start = @intFromPtr(dest.ptr);
+    const source_start = @intFromPtr(source.ptr);
+    if (dest_start <= source_start) {
+        mem.copyForwards(T, dest, source);
+    } else {
+        mem.copyBackwards(T, dest, source);
+    }
+}
 
 pub const utils = struct {
     pub fn isElf(data: []const u8) bool {
@@ -599,6 +604,12 @@ pub const utils = struct {
         if (data.len < 4) return false;
         return mem.readInt(u32, data[0..4], .little) == macho.MH_MAGIC_64;
     }
+
+    pub fn readMachHeader64(data: []const u8) ?macho.mach_header_64 {
+        if (data.len < @sizeOf(macho.mach_header_64) or !isMacho(data)) return null;
+        const header: *align(1) const macho.mach_header_64 = @ptrCast(data.ptr);
+        return header.*;
+    }
 };
 
 const CSMAGIC_CODEDIRECTORY: u32 = 0xfade0c02;
@@ -609,13 +620,60 @@ const CS_EXECSEG_MAIN_BINARY: u64 = 0x1;
 
 const std = @import("std");
 
-const bun = @import("bun");
-const strings = bun.strings;
-
 const macho = std.macho;
 const BlobIndex = std.macho.BlobIndex;
 const CodeDirectory = std.macho.CodeDirectory;
 const SuperBlob = std.macho.SuperBlob;
+const Sha256 = std.crypto.hash.sha2.Sha256;
 
 const mem = std.mem;
 const Allocator = mem.Allocator;
+
+fn writeMachHeader(bytes: []u8, header: macho.mach_header_64) void {
+    mem.copyForwards(u8, bytes[0..@sizeOf(macho.mach_header_64)], mem.asBytes(&header));
+}
+
+test "Mach-O utils recognize magic and read mach_header_64" {
+    var bytes = std.mem.zeroes([@sizeOf(macho.mach_header_64)]u8);
+    const header = macho.mach_header_64{
+        .magic = macho.MH_MAGIC_64,
+        .cputype = macho.CPU_TYPE_X86_64,
+        .cpusubtype = 3,
+        .filetype = macho.MH_EXECUTE,
+        .ncmds = 0,
+        .sizeofcmds = 0,
+        .flags = 0,
+        .reserved = 0,
+    };
+    writeMachHeader(&bytes, header);
+
+    try std.testing.expect(utils.isMacho(&bytes));
+    const parsed = utils.readMachHeader64(&bytes).?;
+    try std.testing.expectEqual(header.magic, parsed.magic);
+    try std.testing.expectEqual(header.cputype, parsed.cputype);
+    try std.testing.expectEqual(header.filetype, parsed.filetype);
+
+    bytes[0] = 0;
+    try std.testing.expect(!utils.isMacho(&bytes));
+    try std.testing.expectEqual(@as(?macho.mach_header_64, null), utils.readMachHeader64(&bytes));
+}
+
+test "MachoFile.init exposes an empty load-command iterator" {
+    var bytes = std.mem.zeroes([@sizeOf(macho.mach_header_64)]u8);
+    writeMachHeader(&bytes, .{
+        .magic = macho.MH_MAGIC_64,
+        .cputype = macho.CPU_TYPE_X86_64,
+        .cpusubtype = 3,
+        .filetype = macho.MH_EXECUTE,
+        .ncmds = 0,
+        .sizeofcmds = 0,
+        .flags = 0,
+        .reserved = 0,
+    });
+
+    const file = try MachoFile.init(std.testing.allocator, &bytes, 0);
+    defer file.deinit();
+
+    var iter = try file.iterator();
+    try std.testing.expectEqual(@as(?macho.LoadCommandIterator.LoadCommand, null), try iter.next());
+}
