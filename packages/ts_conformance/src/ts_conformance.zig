@@ -4120,6 +4120,140 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: iterableArrayPattern3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "iterableArrayPattern3",
+        .path = "iterableArrayPattern3.ts",
+        .source =
+        \\// @strict: false
+        \\//@target: ES6
+        \\class Bar { x }
+        \\class Foo extends Bar { y }
+        \\class FooIterator {
+        \\    next() {
+        \\        return {
+        \\            value: new Foo,
+        \\            done: false
+        \\        };
+        \\    }
+        \\
+        \\    [Symbol.iterator]() {
+        \\        return this;
+        \\    }
+        \\}
+        \\
+        \\var a: Bar, b: Bar;
+        \\[a, b] = new FooIterator;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: iterableArrayPattern4 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "iterableArrayPattern4",
+        .path = "iterableArrayPattern4.ts",
+        .source =
+        \\// @strict: false
+        \\//@target: ES6
+        \\class Bar { x }
+        \\class Foo extends Bar { y }
+        \\class FooIterator {
+        \\    next() {
+        \\        return {
+        \\            value: new Foo,
+        \\            done: false
+        \\        };
+        \\    }
+        \\
+        \\    [Symbol.iterator]() {
+        \\        return this;
+        \\    }
+        \\}
+        \\
+        \\var a: Bar, b: Bar[];
+        \\[a, ...b] = new FooIterator
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+
+test "conformance: typeParametersAvailableInNestedScope3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeParametersAvailableInNestedScope3",
+        .path = "typeParametersAvailableInNestedScope3.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\
+        \\function foo<T>(v: T) {
+        \\    function a<T>(a: T) { return a; }
+        \\    function b(): T { return v; }
+        \\
+        \\    function c<T>(v: T) {
+        \\        function a<T>(a: T) { return a; }
+        \\        function b(): T { return v; }
+        \\        return { a, b };
+        \\    }
+        \\
+        \\    return { a, b, c };
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: keyofInferenceIntersectsResults passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "keyofInferenceIntersectsResults",
+        .path = "keyofInferenceIntersectsResults.ts",
+        .source =
+        \\// @target: es2015
+        \\interface X {
+        \\    a: string;
+        \\    b: string;
+        \\}
+        \\
+        \\declare function foo<T = X>(x: keyof T, y: keyof T): T;
+        \\declare function bar<T>(x: keyof T, y: keyof T): T;
+        \\
+        \\const a = foo<X>('a', 'b'); // compiles cleanly
+        \\const b = foo('a', 'b');    // also clean
+        \\const c = bar('a', 'b');    // still clean
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: assignmentGenericLookupTypeNarrowing passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "assignmentGenericLookupTypeNarrowing",
