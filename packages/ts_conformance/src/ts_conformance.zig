@@ -16387,6 +16387,158 @@ test "conformance: parserAccessibilityAfterStatic5 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: parserAccessibilityAfterStatic2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserAccessibilityAfterStatic2",
+        .path = "parserAccessibilityAfterStatic2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\class Outer
+        \\{
+        \\static public;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parser_breakInIterationOrSwitchStatement1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parser_breakInIterationOrSwitchStatement1",
+        .path = "parser_breakInIterationOrSwitchStatement1.ts",
+        .source =
+        \\// @target: es2015
+        \\while (true) {
+        \\  break;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parser_breakInIterationOrSwitchStatement2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parser_breakInIterationOrSwitchStatement2",
+        .path = "parser_breakInIterationOrSwitchStatement2.ts",
+        .source =
+        \\// @target: es2015
+        \\do {
+        \\  break;
+        \\}
+        \\while (true);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserReturnStatement3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserReturnStatement3",
+        .path = "parserReturnStatement3.ts",
+        .source =
+        \\// @target: es2015
+        \\function f() {
+        \\   return;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserReturnStatement4 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserReturnStatement4",
+        .path = "parserReturnStatement4.ts",
+        .source =
+        \\// @target: es2015
+        \\var v = { get foo() { return } };
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parser_continueInIterationStatement3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parser_continueInIterationStatement3",
+        .path = "parser_continueInIterationStatement3.ts",
+        .source =
+        \\// @target: es2015
+        \\for (;;) {
+        \\  continue;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parser_continueTarget3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parser_continueTarget3",
+        .path = "parser_continueTarget3.ts",
+        .source =
+        \\// @target: es2015
+        \\// @allowUnusedLabels: true
+        \\
+        \\target1:
+        \\target2:
+        \\while (true) {
+        \\  continue target1;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
