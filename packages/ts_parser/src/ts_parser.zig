@@ -7318,7 +7318,7 @@ pub const Parser = struct {
                     return try self.parseArrayTypePostfix(typeof_t);
                 }
                 const ref_start = switch (self.peek().kind) {
-                    .identifier, .kw_undefined, .kw_super, .kw_this => self.advance(),
+                    .identifier, .kw_default, .kw_undefined, .kw_super, .kw_this => self.advance(),
                     else => {
                         try self.report("expected ", "identifier after typeof");
                         return error.UnexpectedToken;
@@ -12521,6 +12521,11 @@ pub const Parser = struct {
         var props: std.ArrayListUnmanaged(NodeId) = .empty;
         defer props.deinit(self.gpa);
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
+            if (self.peek().kind == .comma) {
+                const comma = self.advance();
+                try self.reportCodeAt(comma.span.start, comma.line, 1136, "Property assignment expected.");
+                continue;
+            }
             if (self.peek().kind == .colon) {
                 const colon = self.advance();
                 try self.reportCodeAt(colon.span.start, colon.line, 1136, "Property assignment expected.");
@@ -15906,6 +15911,17 @@ test "parser: type annotation — typeof undefined accepts keyword operand" {
     try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(tt.operand));
 }
 
+test "parser: type annotation — typeof default parses for checker resolution" {
+    var s = try newTestSetup("export type X = typeof default;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const ex = hir_mod.exportOf(&s.hir, top);
+    const alias = hir_mod.typeAliasOf(&s.hir, ex.decl);
+    try T.expectEqual(hir_mod.NodeKind.typeof_type, s.hir.kindOf(alias.aliased));
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
 test "parser: type annotation — typeof qualified reserved property" {
     var s = try newTestSetup(
         \\class Controller {
@@ -18400,6 +18416,20 @@ test "parser: object literal missing value recovers keyword property" {
     try T.expectEqualStrings("Expression expected.", s.parser.diagnostics.items[0].message);
     try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
     try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[2].code);
+}
+
+test "parser: object literal double comma reports property assignment expected" {
+    var s = try newTestSetup(
+        \\Boolean({
+        \\  x: 0,,
+        \\});
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1136), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Property assignment expected.", s.parser.diagnostics.items[0].message);
 }
 
 test "parser: object literal malformed computed indexer recovers like upstream" {
