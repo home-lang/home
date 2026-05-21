@@ -17120,6 +17120,121 @@ test "conformance: decrementOperatorWithAnyOtherType passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: weakTypesAndLiterals01 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "weakTypesAndLiterals01",
+        .path = "weakTypesAndLiterals01.ts",
+        .source =
+        \\type WeakTypes =
+        \\    | { optional?: true; }
+        \\    | { toLowerCase?(): string }
+        \\    | { toUpperCase?(): string, otherOptionalProp?: number };
+        \\
+        \\type LiteralsOrWeakTypes =
+        \\    | "A"
+        \\    | "B"
+        \\    | WeakTypes;
+        \\
+        \\declare let aOrB: "A" | "B";
+        \\
+        \\const f = (arg: LiteralsOrWeakTypes) => {
+        \\    if (arg === "A") {
+        \\        return arg;
+        \\    }
+        \\    else {
+        \\        return arg;
+        \\    }
+        \\}
+        \\
+        \\const g = (arg: WeakTypes) => {
+        \\    if (arg === "A") {
+        \\        return arg;
+        \\    }
+        \\    else {
+        \\        return arg;
+        \\    }
+        \\}
+        \\
+        \\const h = (arg: LiteralsOrWeakTypes) => {
+        \\    if (arg === aOrB) {
+        \\        return arg;
+        \\    }
+        \\    else {
+        \\        return arg;
+        \\    }
+        \\}
+        \\
+        \\const i = (arg: WeakTypes) => {
+        \\    if (arg === aOrB) {
+        \\        return arg;
+        \\    }
+        \\    else {
+        \\        return arg;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: genericFunctionParameters passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "genericFunctionParameters",
+        .path = "genericFunctionParameters.ts",
+        .source =
+        \\declare function f1<T>(cb: <S>(x: S) => T): T;
+        \\declare function f2<T>(cb: <S extends number>(x: S) => T): T;
+        \\declare function f3<T>(cb: <S extends Array<S>>(x: S) => T): T;
+        \\
+        \\let x1 = f1(x => x);
+        \\let x2 = f2(x => x);
+        \\let x3 = f3(x => x);
+        \\
+        \\declare const s: <R>(go: <S>(ops: { init(): S; }) => R) => R;
+        \\const x = s(a => a.init());
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: generatorTypeCheck30 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "generatorTypeCheck30",
+        .path = "generatorTypeCheck30.ts",
+        .source =
+        \\function* g2(): Iterator<Iterable<(x: string) => number>> {
+        \\    yield function* () {
+        \\        yield x => x.length;
+        \\    } ()
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
