@@ -37,8 +37,34 @@ pub fn LinearFifo(
         count: usize,
 
         const Self = @This();
-        pub const Reader = std.Io.GenericReader(*Self, error{}, readFn);
-        pub const Writer = std.Io.GenericWriter(*Self, error{OutOfMemory}, appendWrite);
+        pub const Reader = struct {
+            fifo: *Self,
+
+            pub fn readUntilDelimiterOrEof(self: Reader, buf: []u8, delimiter: u8) !?[]u8 {
+                var i: usize = 0;
+                while (i < buf.len) {
+                    const byte = self.fifo.readItem() orelse break;
+                    if (byte == delimiter) return buf[0..i];
+                    buf[i] = byte;
+                    i += 1;
+                }
+                return if (i == 0) null else buf[0..i];
+            }
+        };
+
+        pub const Writer = struct {
+            fifo: *Self,
+
+            pub fn writeAll(self: Writer, bytes: []const u8) error{OutOfMemory}!void {
+                try self.fifo.write(bytes);
+            }
+
+            pub fn print(self: Writer, comptime fmt: []const u8, args: anytype) error{OutOfMemory}!void {
+                var buf: [4096]u8 = undefined;
+                const bytes = std.fmt.bufPrint(&buf, fmt, args) catch return error.OutOfMemory;
+                try self.writeAll(bytes);
+            }
+        };
 
         // Type of Self argument for slice operations.
         // If buffer is inline (Static) then we need to ensure we haven't
@@ -85,7 +111,7 @@ pub fn LinearFifo(
         pub fn realign(self: *Self) void {
             if (self.buf.len - self.head >= self.count) {
                 // this copy overlaps
-                bun.copy(T, self.buf[0..self.count], self.buf[self.head..][0..self.count]);
+                copy(T, self.buf[0..self.count], self.buf[self.head..][0..self.count]);
                 self.head = 0;
             } else {
                 var tmp: [std.heap.page_size_min / 2 / @sizeOf(T)]T = undefined;
@@ -93,10 +119,10 @@ pub fn LinearFifo(
                 while (self.head != 0) {
                     const n = @min(self.head, tmp.len);
                     const m = self.buf.len - n;
-                    bun.copy(T, tmp[0..n], self.buf[0..n]);
+                    copy(T, tmp[0..n], self.buf[0..n]);
                     // this middle copy overlaps; the others here don't
-                    bun.copy(T, self.buf[0..m], self.buf[n..][0..m]);
-                    bun.copy(T, self.buf[m..], tmp[0..n]);
+                    copy(T, self.buf[0..m], self.buf[n..][0..m]);
+                    copy(T, self.buf[m..], tmp[0..n]);
                     self.head -= n;
                 }
             }
@@ -174,7 +200,7 @@ pub fn LinearFifo(
         pub fn discard(self: *Self, count: usize) void {
             assert(count <= self.count);
 
-            if (comptime bun.Environment.allow_assert) {
+            if (comptime Environment.allow_assert) {
                 // set old range to undefined. Note: may be wrapped around
                 const slice = self.readableSliceMut(0);
                 if (slice.len >= count) {
@@ -217,7 +243,7 @@ pub fn LinearFifo(
                 const slice = self.readableSlice(0);
                 if (slice.len == 0) break;
                 const n = @min(slice.len, dst_left.len);
-                bun.copy(T, dst_left, slice[0..n]);
+                copy(T, dst_left, slice[0..n]);
                 self.discard(n);
                 dst_left = dst_left[n..];
             }
@@ -225,14 +251,8 @@ pub fn LinearFifo(
             return dst.len - dst_left.len;
         }
 
-        /// Same as `read` except it returns an error union
-        /// The purpose of this function existing is to match `std.io.Reader` API.
-        fn readFn(self: *Self, dest: []u8) error{}!usize {
-            return self.read(dest);
-        }
-
         pub fn reader(self: *Self) Reader {
-            return .{ .context = self };
+            return .{ .fifo = self };
         }
 
         /// Returns number of items available in fifo
@@ -266,7 +286,7 @@ pub fn LinearFifo(
                 slice = self.writableSlice(0);
             }
 
-            bun.assert(slice.len >= size);
+            assert(slice.len >= size);
             return slice[0..size];
         }
 
@@ -286,7 +306,7 @@ pub fn LinearFifo(
                 const writable_slice = self.writableSlice(0);
                 assert(writable_slice.len != 0);
                 const n = @min(writable_slice.len, src_left.len);
-                bun.copy(T, writable_slice, src_left[0..n]);
+                copy(T, writable_slice, src_left[0..n]);
                 self.update(n);
                 src_left = src_left[n..];
             }
@@ -317,15 +337,8 @@ pub fn LinearFifo(
             return self.writeAssumeCapacity(src);
         }
 
-        /// Same as `write` except it returns the number of bytes written, which is always the same
-        /// as `bytes.len`. The purpose of this function existing is to match `std.io.Writer` API.
-        fn appendWrite(self: *Self, bytes: []const u8) error{OutOfMemory}!usize {
-            try self.write(bytes);
-            return bytes.len;
-        }
-
         pub fn writer(self: *Self) Writer {
-            return .{ .context = self };
+            return .{ .fifo = self };
         }
 
         /// Make `count` items available before the current read location
@@ -350,11 +363,11 @@ pub fn LinearFifo(
 
             const slice = self.readableSliceMut(0);
             if (src.len < slice.len) {
-                bun.copy(T, slice, src);
+                copy(T, slice, src);
             } else {
-                bun.copy(T, slice, src[0..slice.len]);
+                copy(T, slice, src[0..slice.len]);
                 const slice2 = self.readableSliceMut(slice.len);
-                bun.copy(T, slice2, src[slice.len..]);
+                copy(T, slice2, src[slice.len..]);
             }
         }
 
@@ -395,7 +408,7 @@ pub fn LinearFifo(
             if (self.buf.len - self.head >= self.count) {
                 // If it doesnt overflow past the end, there is one copy to be done
                 const rest = self.buf[self.head + offset ..];
-                bun.copy(T, rest[0 .. rest.len - 1], rest[1..]);
+                copy(T, rest[0 .. rest.len - 1], rest[1..]);
             } else {
                 var index = self.head + offset;
                 if (powers_of_two) {
@@ -406,15 +419,15 @@ pub fn LinearFifo(
                 if (index < self.head) {
                     // If the item to remove is before the head, one slice is moved.
                     const rest = self.buf[index .. self.count - self.head];
-                    bun.copy(T, rest[0 .. rest.len - 1], rest[1..]);
+                    copy(T, rest[0 .. rest.len - 1], rest[1..]);
                 } else {
                     // The items before and after the head have to be shifted
                     const wrap = self.buf[0];
                     const right = self.buf[index..];
-                    bun.copy(T, right[0 .. right.len - 1], right[1..]);
+                    copy(T, right[0 .. right.len - 1], right[1..]);
                     self.buf[self.buf.len - 1] = wrap;
                     const left = self.buf[0 .. self.head - self.count];
-                    bun.copy(T, left[0 .. left.len - 1], left[1..]);
+                    copy(T, left[0 .. left.len - 1], left[1..]);
                 }
             }
             self.count -= 1;
@@ -427,7 +440,7 @@ pub fn LinearFifo(
             assert(self.buf.len > 0);
             while (true) {
                 if (self.writableLength() > 0) {
-                    const n = try src_reader.read(self.writableSlice(0));
+                    const n = try src_reader.readSliceShort(self.writableSlice(0));
                     if (n == 0) break; // EOF
                     self.update(n);
                 }
@@ -492,7 +505,7 @@ test "LinearFifo(u8, .Dynamic)" {
         const buf = try fifo.writableWithSize(12);
         try testing.expectEqual(@as(usize, 12), buf.len);
         for (0..10) |i| {
-            buf[i] = i + 'a';
+            buf[i] = @as(u8, @intCast(i)) + 'a';
         }
         fifo.update(10);
         try testing.expectEqualSlices(u8, "abcdefghij", fifo.readableSlice(0));
@@ -527,11 +540,11 @@ test "LinearFifo(u8, .Dynamic)" {
 
     {
         try fifo.ensureTotalCapacity(1);
-        var in_fbs = std.io.fixedBufferStream("pump test");
+        var in_reader: std.Io.Reader = .fixed("pump test");
         var out_buf: [50]u8 = undefined;
-        var out_fbs = std.io.fixedBufferStream(&out_buf);
-        try fifo.pump(in_fbs.reader(), out_fbs.writer());
-        try testing.expectEqualSlices(u8, in_fbs.buffer, out_fbs.getWritten());
+        var out_writer: std.Io.Writer = .fixed(&out_buf);
+        try fifo.pump(&in_reader, &out_writer);
+        try testing.expectEqualSlices(u8, "pump test", out_writer.buffered());
     }
 }
 
@@ -575,8 +588,6 @@ test "LinearFifo" {
     }
 }
 
-const bun = @import("bun");
-
 const std = @import("std");
 const math = std.math;
 const testing = std.testing;
@@ -586,3 +597,12 @@ const assert = debug.assert;
 
 const mem = std.mem;
 const Allocator = mem.Allocator;
+
+const Environment = struct {
+    const allow_assert = std.debug.runtime_safety;
+};
+
+inline fn copy(comptime T: type, dest: []T, src: []const T) void {
+    assert(dest.len >= src.len);
+    @memmove(dest[0..src.len], src);
+}
