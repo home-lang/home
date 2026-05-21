@@ -17893,6 +17893,151 @@ test "conformance: booleanLiteralTypes1 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: objectRestParameter passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectRestParameter",
+        .path = "objectRestParameter.ts",
+        .source =
+        \\function cloneAgain({ a, ...clone }: { a: number, b: string }): void {
+        \\}
+        \\
+        \\declare function suddenly(f: (a: { x: { z, ka }, y: string }) => void);
+        \\suddenly(({ x: a, ...rest }) => rest.y);
+        \\suddenly(({ x: { z = 12, ...nested }, ...rest } = { x: { z: 1, ka: 1 }, y: 'noo' }) => rest.y + nested.ka);
+        \\
+        \\class C {
+        \\    m({ a, ...clone }: { a: number, b: string}): void {
+        \\    }
+        \\    set p({ a, ...clone }: { a: number, b: string}) {
+        \\    }
+        \\}
+        \\function foobar({ bar={}, ...opts }: any = {}) {
+        \\}
+        \\foobar();
+        \\foobar({ baz: 'hello' });
+        \\foobar({ bar: { greeting: 'hello' } });
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: genericObjectRest passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "genericObjectRest",
+        .path = "genericObjectRest.ts",
+        .source =
+        \\const a = 'a';
+        \\
+        \\function f1<T extends { a: string, b: number }>(obj: T) {
+        \\    let { ...r0 } = obj;
+        \\    let { a: a1, ...r1 } = obj;
+        \\    let { a: a2, b: b2, ...r2 } = obj;
+        \\    let { 'a': a3, ...r3 } = obj;
+        \\    let { ['a']: a4, ...r4 } = obj;
+        \\    let { [a]: a5, ...r5 } = obj;
+        \\}
+        \\
+        \\const sa = Symbol();
+        \\const sb = Symbol();
+        \\
+        \\function f2<T extends { [sa]: string, [sb]: number }>(obj: T) {
+        \\    let { [sa]: a1, [sb]: b1, ...r1 } = obj;
+        \\}
+        \\
+        \\function f3<T, K1 extends keyof T, K2 extends keyof T>(obj: T, k1: K1, k2: K2) {
+        \\    let { [k1]: a1, [k2]: a2, ...r1 } = obj;
+        \\}
+        \\
+        \\type Item = { a: string, b: number, c: boolean };
+        \\
+        \\function f4<K1 extends keyof Item, K2 extends keyof Item>(obj: Item, k1: K1, k2: K2) {
+        \\    let { [k1]: a1, [k2]: a2, ...r1 } = obj;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: contextuallyTypedBindingInitializer passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "contextuallyTypedBindingInitializer",
+        .path = "contextuallyTypedBindingInitializer.ts",
+        .source =
+        \\interface Show {
+        \\    show: (x: number) => string;
+        \\}
+        \\function f({ show = v => v.toString() }: Show) {}
+        \\function f2({ "show": showRename = v => v.toString() }: Show) {}
+        \\function f3({ ["show"]: showRename = v => v.toString() }: Show) {}
+        \\
+        \\interface Nested {
+        \\    nested: Show
+        \\}
+        \\function ff({ nested = { show: v => v.toString() } }: Nested) {}
+        \\
+        \\interface Tuples {
+        \\    prop: [string, number];
+        \\}
+        \\function g({ prop = ["hello", 1234] }: Tuples) {}
+        \\
+        \\interface StringUnion {
+        \\    prop: "foo" | "bar";
+        \\}
+        \\function h({ prop = "foo" }: StringUnion) {}
+        \\
+        \\interface StringIdentity {
+        \\    stringIdentity(s: string): string;
+        \\}
+        \\let { stringIdentity: id = arg => arg }: StringIdentity = { stringIdentity: x => x};
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: constraintSatisfactionWithAny2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "constraintSatisfactionWithAny2",
+        .path = "constraintSatisfactionWithAny2.ts",
+        .source =
+        \\declare function foo<Z, T extends <U>(x: U) => Z>(y: T): Z;
+        \\var a: any;
+        \\
+        \\foo(a);
+        \\foo<any, any>(a);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
