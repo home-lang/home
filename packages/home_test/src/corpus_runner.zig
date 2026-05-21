@@ -140,6 +140,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/util/file-type.test.ts",
     "js/node/url/url-pathtofileurl.test.js",
     "js/bun/util/randomUUIDv7.test.ts",
+    "js/bun/util/sleepSync.test.ts",
     "js/node/process-binding.test.ts",
     "js/bun/test/test-timers.test.ts",
     "internal/highlighter.test.ts",
@@ -859,9 +860,13 @@ const harness_prelude =
     \\  version: "0.0.0-home",
     \\  revision: "home",
     \\  gc(force) {},
-    \\  sleepSync(seconds) {
-    \\    const deadline = Date.now() + Math.max(0, Number(seconds) || 0) * 1000;
-    \\    while (Date.now() < deadline) {}
+    \\  sleepSync(milliseconds) {
+    \\    if (arguments.length === 0 || typeof milliseconds !== "number" || !Number.isFinite(milliseconds) || milliseconds < 0) throw new TypeError("Bun.sleepSync expects a non-negative number of milliseconds");
+    \\    const deadline = performance.now() + milliseconds;
+    \\    while (performance.now() < deadline) {}
+    \\  },
+    \\  sleep(ms) {
+    \\    return Promise.resolve();
     \\  },
     \\  nanoseconds() {
     \\    if (typeof performance === "object" && performance && typeof performance.now === "function") {
@@ -948,9 +953,6 @@ const harness_prelude =
     \\      exitCode: result.exitCode == null ? 1 : result.exitCode,
     \\      signalCode: result.signalCode,
     \\    };
-    \\  },
-    \\  sleep(ms) {
-    \\    return Promise.resolve();
     \\  },
     \\  build(options) {
     \\    return __home_bun_build(options);
@@ -2495,7 +2497,7 @@ const harness_prelude =
     \\  return globalThis.__home_bun_test;
     \\};
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
-    \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, spawn: Bun.spawn, spawnSync: Bun.spawnSync };
+    \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["bun:build"] = { BuildArtifact, BuildMessage };
     \\globalThis.__home_modules["node:test"] = { test };
@@ -6991,6 +6993,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "<[string]>", .replacement = "" },
         .{ .needle = "<number>", .replacement = "" },
         .{ .needle = "<string>", .replacement = "" },
+        .{ .needle = " as any[]", .replacement = "" },
         .{ .needle = " as unknown", .replacement = "" },
         .{ .needle = " as (err?: unknown) => void", .replacement = "" },
         .{ .needle = " as Error", .replacement = "" },
@@ -7363,6 +7366,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { indexOfLine } from \"bun\";",
             .replacement = "const { indexOfLine } = globalThis.__home_import(\"bun\");",
+        },
+        .{
+            .needle = "import { sleepSync } from \"bun\";",
+            .replacement = "const { sleepSync } = globalThis.__home_import(\"bun\");",
         },
         .{
             .needle = "import { fileURLToPath, pathToFileURL } from \"bun\";",
@@ -7837,7 +7844,9 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Set(\" + entry.size + \")") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "version: \"0.0.0-home\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "gc(force)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "sleepSync(seconds)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "sleepSync(milliseconds)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Bun.sleepSync expects a non-negative number of milliseconds") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "sleepSync: Bun.sleepSync") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "nanoseconds()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "serve(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "hostname: \"localhost\"") != null);
@@ -8304,6 +8313,19 @@ test "Bun URL import rewrite lowers file URL helpers" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun\"") == null);
 }
 
+test "Bun sleepSync import rewrite lowers named bun import" {
+    const source =
+        \\import { sleepSync } from "bun";
+        \\import { test } from "bun:test";
+        \\test("sleep", () => sleepSync(1));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/bun/util/sleepSync.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { sleepSync } = globalThis.__home_import(\"bun\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun\"") == null);
+}
+
 test "Bun harness import rewrite lowers isWindows import" {
     const source =
         \\import { describe, test } from "bun:test";
@@ -8752,6 +8774,8 @@ test "bootstrap rewrite erases as any assertions" {
         \\import { expect, test } from "bun:test";
         \\test("works", () => {
         \\  expect(() => new (BigInt as any)(1)).toThrow(TypeError);
+        \\  const invalidValues = [true, false, "hi", {}, [], undefined, null] as any[];
+        \\  expect(invalidValues.length).toBe(7);
         \\});
     ;
     const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/bun/jsc/native-constructor-identity.test.ts");
@@ -8759,6 +8783,7 @@ test "bootstrap rewrite erases as any assertions" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, " as any") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "new (BigInt)(1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const invalidValues = [true, false, \"hi\", {}, [], undefined, null];") != null);
 }
 
 test "bootstrap rewrite erases admitted type-only syntax" {

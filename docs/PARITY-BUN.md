@@ -149,7 +149,9 @@ is not a JS-callable runtime API.
 
 ### `Bun.sleep` / `Bun.sleepSync`
 
-🔴 Not implemented.
+🟡 Bootstrap-only `Bun.sleepSync` support for copied corpus smokes:
+millisecond timing plus missing, non-number, and negative argument
+validation. Native runtime parity and `Bun.sleep` remain open.
 
 ### `Bun.stdin` / `Bun.stdout` / `Bun.stderr`
 
@@ -200,7 +202,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes one hundred fifty-eight allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes one hundred fifty-nine allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-four
@@ -215,7 +217,8 @@ bootstrap nucleus (`now`, `timeOrigin`, `toJSON`, marks, measures, and
 entry lookup), WebSocket failed-connect `ErrorEvent` snapshots, JSC
 `ShadowRealm`, native constructor identity, mutable
 `globalThis` prototype behavior, a comment-only module-load smoke, Bun file metadata and
-`Bun.file(...).type` MIME behavior, `Bun.randomUUIDv7` and
+`Bun.file(...).type` MIME behavior, `Bun.randomUUIDv7`, `Bun.sleepSync`
+millisecond timing / argument validation, and
 `Bun.deepEquals`, Node `Buffer`
 binary/UTF-16LE/compare/inspect-limit/isEncoding behavior, `Map`/`Set`
 deep-equality, `Bun.inspect` Set formatting, `MessageEvent` constructor
@@ -285,7 +288,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `158` files, `682` passed, `0` failed,
+Latest measured subset run: `159` files, `687` passed, `0` failed,
 `41` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
@@ -1162,6 +1165,12 @@ models UUIDv7 timestamp-prefix encoding, version and variant bits,
 `hex` / `base64` / `buffer` output forms, per-timestamp monotonic
 ordering, `Bun.deepEquals`, and `expect().toBeLessThanOrEqual`. Native
 parity still needs Bun's real crypto-backed UUID implementation.
+
+The copied `js/bun/util/sleepSync.test.ts` fixture now passes in Home as
+`5` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap exports
+named `sleepSync` from `bun`, uses millisecond timing, throws for
+missing, non-number, and negative arguments, and keeps the fixture
+byte-identical to upstream Bun.
 
 The copied `js/node/process-binding.test.ts` fixture now passes in Home
 as `2` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap

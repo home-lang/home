@@ -189,7 +189,8 @@ FormData missing-file serialization leak subprocess coverage,
 `node:vm.runInNewContext`, DOMException, native constructor identity,
 mutable `globalThis` prototype behavior, comment-only module-load smoke,
 `Bun.file(...).type` explicit and `.css` MIME behavior,
-`Bun.randomUUIDv7` timestamped / monotonic UUID output plus
+`Bun.randomUUIDv7` timestamped / monotonic UUID output,
+`Bun.sleepSync` millisecond timing / argument validation, plus
 `Bun.deepEquals`,
 Request/Response/Headers/URL, `node-fetch`, `node:buffer`, `deno:harness`
 including Bun-copied Deno `test(options, fn)` / permission skip /
@@ -760,6 +761,11 @@ tests through the `Bun.randomUUIDv7` bootstrap model. It covers
 timestamp-prefix encoding, version/variant bits, `hex` / `base64` /
 `buffer` output forms, per-timestamp monotonic ordering, `Bun.deepEquals`,
 and `expect().toBeLessThanOrEqual`.
+The copied `js/bun/util/sleepSync.test.ts` fixture now passes as `5`
+tests through the `Bun.sleepSync` bootstrap model. It covers
+millisecond timing, missing / non-number / negative argument validation,
+and named `import { sleepSync } from "bun"` lowering while keeping the
+fixture byte-identical to upstream Bun.
 The copied `js/node/process-binding.test.ts` fixture now passes as `2`
 tests through the `process.binding` bootstrap model. It covers the
 `constants` binding buckets Bun asserts plus the `uv` error-name and
