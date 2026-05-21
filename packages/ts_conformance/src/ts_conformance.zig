@@ -20456,6 +20456,56 @@ test "conformance: symbolProperty48 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: symbolProperty29 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "symbolProperty29",
+        .path = "symbolProperty29.ts",
+        .source =
+        \\class C1 {
+        \\    [Symbol.toStringTag]() {
+        \\        return { x: "" };
+        \\    }
+        \\    [s: symbol]: () => { x: string };
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: computedPropertyNames28_ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "computedPropertyNames28_ES6",
+        .path = "computedPropertyNames28_ES6.ts",
+        .source =
+        \\class Base {
+        \\}
+        \\class C extends Base {
+        \\    constructor() {
+        \\        super();
+        \\        var obj = {
+        \\            [(super(), "prop")]() { }
+        \\        };
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
