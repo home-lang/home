@@ -13557,6 +13557,213 @@ test "conformance: objectRest2 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: circularTypeAliasForUnionWithInterface passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "circularTypeAliasForUnionWithInterface",
+        .path = "circularTypeAliasForUnionWithInterface.ts",
+        .source =
+        \\// @target: es2015
+        \\var v0: T0;
+        \\type T0 = string | I0;
+        \\interface I0 {
+        \\    x: T0;
+        \\}
+        \\
+        \\var v1: T1;
+        \\type T1 = string | I1;
+        \\interface I1 {
+        \\    (): T1;
+        \\}
+        \\
+        \\var v2: T2;
+        \\type T2 = string | I2;
+        \\interface I2 {
+        \\    new (): T2;
+        \\}
+        \\
+        \\var v3: T3;
+        \\type T3 = string | I3;
+        \\interface I3 {
+        \\    [x: number]: T3;
+        \\}
+        \\
+        \\var v4: T4;
+        \\type T4 = string | I4;
+        \\interface I4 {
+        \\    [x: string]: T4;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: thisTypeInObjectLiterals passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "thisTypeInObjectLiterals",
+        .path = "thisTypeInObjectLiterals.ts",
+        .source =
+        \\// @target: es2015
+        \\// @noImplicitAny: true
+        \\// @noImplicitThis: true
+        \\
+        \\let o = {
+        \\    d: "bar",
+        \\    m() {
+        \\        return this.d.length;
+        \\    },
+        \\    f: function() {
+        \\        return this.d.length;
+        \\    }
+        \\}
+        \\
+        \\let mutuallyRecursive = {
+        \\    a: 100,
+        \\    start() {
+        \\        return this.passthrough(this.a);
+        \\    },
+        \\    passthrough(n: number) {
+        \\        return this.sub1(n);
+        \\    },
+        \\    sub1(n: number): number {
+        \\        if (n > 0) {
+        \\            return this.passthrough(n - 1);
+        \\        }
+        \\        return n;
+        \\    }
+        \\}
+        \\var i: number = mutuallyRecursive.start();
+        \\interface I {
+        \\    a: number;
+        \\    start(): number;
+        \\    passthrough(n: number): number;
+        \\    sub1(n: number): number;
+        \\}
+        \\var impl: I = mutuallyRecursive;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: thisTypeAndConstraints passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "thisTypeAndConstraints",
+        .path = "thisTypeAndConstraints.ts",
+        .source =
+        \\// @target: es2015
+        \\class A {
+        \\    self() {
+        \\        return this;
+        \\    }
+        \\}
+        \\
+        \\function f<T extends A>(x: T) {
+        \\    function g<U extends T>(x: U) {
+        \\        x = x.self();
+        \\    }
+        \\    x = x.self();
+        \\}
+        \\
+        \\class B<T extends A> {
+        \\    foo(x: T) {
+        \\        x = x.self();
+        \\    }
+        \\    bar<U extends T>(x: U) {
+        \\        x = x.self();
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectTypeWithStringNamedPropertyOfIllegalCharacters passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectTypeWithStringNamedPropertyOfIllegalCharacters",
+        .path = "objectTypeWithStringNamedPropertyOfIllegalCharacters.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\class C {
+        \\    "   ": number;
+        \\    "a   b": string;
+        \\    "~!@#$%^&*()_+{}|:'<>?\/.,`": number;
+        \\    "a\a": number;
+        \\    static "a ": number
+        \\}
+        \\
+        \\var c: C;
+        \\var r = c["   "];
+        \\var r2 = c["    "];
+        \\var r3 = c["a   b"];
+        \\var r4 = c["~!@#$%^&*()_+{}|:'<>?\/.,`"];
+        \\
+        \\interface I {
+        \\    "   ": number;
+        \\    "a   b": string;
+        \\    "~!@#$%^&*()_+{}|:'<>?\/.,`": number;
+        \\}
+        \\
+        \\var i: I;
+        \\var r = i["   "];
+        \\var r2 = i["    "];
+        \\var r3 = i["a   b"];
+        \\var r4 = i["~!@#$%^&*()_+{}|:'<>?\/.,`"];
+        \\
+        \\
+        \\var a: {
+        \\    "   ": number;
+        \\    "a   b": string;
+        \\    "~!@#$%^&*()_+{}|:'<>?\/.,`": number;
+        \\}
+        \\
+        \\var r = a["   "];
+        \\var r2 = a["    "];
+        \\var r3 = a["a   b"];
+        \\var r4 = a["~!@#$%^&*()_+{}|:'<>?\/.,`"];
+        \\
+        \\var b = {
+        \\    "   ": 1,
+        \\    "a   b": "",
+        \\    "~!@#$%^&*()_+{}|:'<>?\/.,`": 1,
+        \\}
+        \\
+        \\var r = b["   "];
+        \\var r2 = b["    "];
+        \\var r3 = b["a   b"];
+        \\var r4 = b["~!@#$%^&*()_+{}|:'<>?\/.,`"];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
