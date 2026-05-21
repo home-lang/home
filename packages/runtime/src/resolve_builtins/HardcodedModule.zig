@@ -1,3 +1,10 @@
+// Copied from bun/src/resolve_builtins/HardcodedModule.zig at upstream SHA
+// fd0b6f1a271fca0b8124b69f230b100f4d636af6.
+//
+// Home subset: keep Bun's hardcoded module and alias tables, but replace
+// bundler/import-record back edges with local pure-data shims so the table can
+// be tested while the full resolver/bundler graph remains dormant.
+
 const string = []const u8;
 
 pub const HardcodedModule = enum {
@@ -400,11 +407,11 @@ pub const HardcodedModule = enum {
         const bun_test_aliases = bun.ComptimeStringMap(Alias, common_alias_kvs ++ bun_extra_alias_kvs ++ bun_test_extra_alias_kvs);
 
         const Cfg = struct { rewrite_jest_for_tests: bool = false };
-        pub fn has(name: []const u8, target: options.Target, cfg: Cfg) bool {
+        pub fn has(name: []const u8, target: Target, cfg: Cfg) bool {
             return get(name, target, cfg) != null;
         }
 
-        pub fn get(name: []const u8, target: options.Target, cfg: Cfg) ?Alias {
+        pub fn get(name: []const u8, target: Target, cfg: Cfg) ?Alias {
             if (target.isBun()) {
                 if (cfg.rewrite_jest_for_tests) {
                     return bun_test_aliases.get(name);
@@ -419,9 +426,65 @@ pub const HardcodedModule = enum {
     };
 };
 
-const bun = @import("bun");
-const options = @import("../bundler/options.zig");
+const bun = struct {
+    pub fn ComptimeStringMap(comptime V: type, comptime kvs_list: anytype) type {
+        return struct {
+            pub fn get(input: []const u8) ?V {
+                @setEvalBranchQuota(20_000);
+                inline for (kvs_list) |kv| {
+                    if (std.mem.eql(u8, kv.@"0", input)) return kv.@"1";
+                }
+                return null;
+            }
+        };
+    }
+};
+
 const std = @import("std");
 
-const ast = @import("../options_types/import_record.zig");
-const ImportRecord = ast.ImportRecord;
+const Target = enum {
+    bun,
+    node,
+    browser,
+
+    pub fn isBun(this: Target) bool {
+        return this == .bun;
+    }
+
+    pub fn isNode(this: Target) bool {
+        return this == .node;
+    }
+};
+
+const ImportRecord = struct {
+    const Tag = enum {
+        builtin,
+        bun,
+    };
+};
+
+test "HardcodedModule.map resolves Bun and Node builtins" {
+    try std.testing.expectEqual(HardcodedModule.bun, HardcodedModule.map.get("bun").?);
+    try std.testing.expectEqual(HardcodedModule.@"node:fs", HardcodedModule.map.get("node:fs").?);
+    try std.testing.expectEqual(HardcodedModule.ws, HardcodedModule.map.get("ws").?);
+    try std.testing.expect(HardcodedModule.map.get("not-a-builtin") == null);
+}
+
+test "HardcodedModule.Alias rewrites common Node aliases" {
+    const alias = HardcodedModule.Alias.get("fs", .node, .{}).?;
+    try std.testing.expectEqualStrings("node:fs", alias.path);
+    try std.testing.expect(alias.node_builtin);
+
+    const prefixed = HardcodedModule.Alias.get("node:test", .node, .{}).?;
+    try std.testing.expect(prefixed.node_only_prefix);
+}
+
+test "HardcodedModule.Alias maps Bun extras and test rewrites" {
+    const bun_alias = HardcodedModule.Alias.get("ffi", .bun, .{}).?;
+    try std.testing.expectEqualStrings("bun:ffi", bun_alias.path);
+
+    const vitest = HardcodedModule.Alias.get("vitest", .bun, .{ .rewrite_jest_for_tests = true }).?;
+    try std.testing.expectEqualStrings("bun:test", vitest.path);
+
+    try std.testing.expect(HardcodedModule.Alias.get("bun", .browser, .{}) == null);
+}
