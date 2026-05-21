@@ -204,6 +204,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/expect-toHaveReturnedWith.test.js",
     "js/bun/test/mock/mock-module-non-string.test.ts",
     "regression/issue/09563/09563.test.ts",
+    "js/third_party/yargs/yargs-cjs.test.js",
     "js/node/path/is-absolute.test.js",
     "js/node/path/zero-length-strings.test.js",
     "js/bun/util/concat.test.js",
@@ -2480,6 +2481,9 @@ const harness_prelude =
     \\    },
     \\    toBeString() {
     \\      __home_assert(typeof value === "string", isNot, "Expected value" + (isNot ? " not" : "") + " to be a string");
+    \\    },
+    \\    toBeFunction() {
+    \\      __home_assert(typeof value === "function", isNot, "Expected value" + (isNot ? " not" : "") + " to be a function");
     \\    },
     \\    toBeArray() {
     \\      __home_assert(Array.isArray(value), isNot, "Expected value" + (isNot ? " not" : "") + " to be an array");
@@ -6436,6 +6440,9 @@ const harness_prelude =
     \\  return Promise.resolve(this.text()).then(text => __home_parse_json_body_text(text));
     \\};
     \\globalThis.__home_modules["node-fetch"] = { Request };
+    \\globalThis.__home_modules["yargs/yargs"] = function yargs() {
+    \\  return {};
+    \\};
     \\if (typeof URLSearchParams !== "function") {
     \\  function __home_url_hex(byte) {
     \\    const text = byte.toString(16).toUpperCase();
@@ -8810,6 +8817,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "expect.extend") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_expect_matchers") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "asymmetricMatch(received)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeFunction()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Expected value must be string or Error") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Deep equality for this value type is not supported") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var FormData = function()") != null);
@@ -8872,6 +8880,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Request.prototype.text") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Request.prototype.clone") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node-fetch\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"yargs/yargs\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.alloc = function(size, fill)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "String.fromCharCode(this[i])") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.from") != null);
@@ -9045,6 +9054,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/test/expect-toHaveReturnedWith.test.js",
         "js/bun/test/mock/mock-module-non-string.test.ts",
         "regression/issue/09563/09563.test.ts",
+        "js/third_party/yargs/yargs-cjs.test.js",
         "js/node/path/is-absolute.test.js",
         "js/node/path/zero-length-strings.test.js",
         "js/bun/util/concat.test.js",
@@ -10998,6 +11008,28 @@ test "bootstrap runner covers CommonJS assert require helpers" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
+}
+
+test "bootstrap runner covers yargs CommonJS function require" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\test("yargs/yargs works", () => {
+        \\  const yargs = require("yargs/yargs");
+        \\  expect(yargs).toBeFunction();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/yargs/yargs-cjs.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner covers Node path bootstrap smokes" {
