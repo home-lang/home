@@ -12531,6 +12531,221 @@ test "conformance: classExpression3 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: readonlyArraysAndTuples2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "readonlyArraysAndTuples2",
+        .path = "readonlyArraysAndTuples2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\// @declaration: true
+        \\// @emitDecoratorMetadata: true
+        \\// @experimentalDecorators: true
+        \\
+        \\type T10 = string[];
+        \\type T11 = Array<string>;
+        \\type T12 = readonly string[];
+        \\type T13 = ReadonlyArray<string>;
+        \\
+        \\type T20 = [number, number];
+        \\type T21 = readonly [number, number];
+        \\
+        \\declare function f1(ma: string[], ra: readonly string[], mt: [string, string], rt: readonly [string, string]): readonly [string, string];
+        \\
+        \\declare const someDec: any;
+        \\
+        \\class A {
+        \\  @someDec
+        \\  j: readonly string[] = [];
+        \\  @someDec
+        \\  k: readonly [string, number] = ['foo', 42];
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: namedTupleMembers passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "namedTupleMembers",
+        .path = "namedTupleMembers.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// @declaration: true
+        \\
+        \\export type Segment = [length: number, count: number];
+        \\
+        \\export type SegmentAnnotated = [
+        \\    /**
+        \\     * Size of message buffer segment handles
+        \\     */
+        \\    length: number,
+        \\    /**
+        \\     * Number of segments handled at once
+        \\     */
+        \\    count: number
+        \\];
+        \\
+        \\declare var a: Segment;
+        \\declare var b: SegmentAnnotated;
+        \\declare var c: [number, number];
+        \\declare var d: [a: number, b: number];
+        \\
+        \\a = b;
+        \\a = c;
+        \\a = d;
+        \\
+        \\b = a;
+        \\b = c;
+        \\b = d;
+        \\
+        \\c = a;
+        \\c = b;
+        \\c = d;
+        \\
+        \\d = a;
+        \\d = b;
+        \\d = c;
+        \\
+        \\export type WithOptAndRest = [first: number, second?: number, ...rest: string[]];
+        \\
+        \\export type Func<T extends any[]> = (...x: T) => void;
+        \\
+        \\export const func = null as any as Func<SegmentAnnotated>;
+        \\
+        \\export function useState<T>(initial: T): [value: T, setter: (T) => void] {
+        \\    return null as any;
+        \\}
+        \\
+        \\
+        \\export type Iter = Func<[step: number, iterations: number]>;
+        \\
+        \\export function readSegment([length, count]: [number, number]) {}
+        \\
+        \\export const val = null as any as Parameters<typeof readSegment>[0];
+        \\
+        \\export type RecursiveTupleA = [initial: string, next: RecursiveTupleA];
+        \\
+        \\export type RecursiveTupleB = [first: string, ptr: RecursiveTupleB];
+        \\
+        \\declare var q: RecursiveTupleA;
+        \\declare var r: RecursiveTupleB;
+        \\
+        \\q = r;
+        \\r = q;
+        \\
+        \\export type RecusiveRest = [first: string, ...rest: RecusiveRest[]];
+        \\export type RecusiveRest2 = [string, ...RecusiveRest2[]];
+        \\
+        \\declare var x: RecusiveRest;
+        \\declare var y: RecusiveRest2;
+        \\
+        \\x = y;
+        \\y = x;
+        \\
+        \\declare function f<T extends any[]>(...x: T): T;
+        \\declare function g(elem: object, index: number): object;
+        \\declare function getArgsForInjection<T extends (...args: any[]) => any>(x: T): Parameters<T>;
+        \\
+        \\export const argumentsOfGAsFirstArgument = f(getArgsForInjection(g));
+        \\export const argumentsOfG = f(...getArgsForInjection(g));
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: partiallyNamedTuples passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "partiallyNamedTuples",
+        .path = "partiallyNamedTuples.ts",
+        .source =
+        \\// @target: es2015
+        \\type NamedAndAnonymous = [a: string, number];
+        \\
+        \\function fa1(...args: NamedAndAnonymous) {}
+        \\function fa2(a: NamedAndAnonymous, ...args: NamedAndAnonymous) {}
+        \\
+        \\type NamedAnonymousMixed = [a: string, number, c: number, NamedAndAnonymous];
+        \\
+        \\function fb1(...args: NamedAnonymousMixed) {}
+        \\function fb2(a: NamedAnonymousMixed, ...args: NamedAnonymousMixed) {}
+        \\function fb3(a: NamedAnonymousMixed, ...args: NamedAnonymousMixed[3]) {}
+        \\
+        \\type ToAnonymousTuple<T extends unknown[]> = {
+        \\  [K in keyof T]: [K, T[K], keyof T, T];
+        \\};
+        \\
+        \\type AnonymousToAnonymous = ToAnonymousTuple<[boolean, number]>;
+        \\type MixedToAnonymous = ToAnonymousTuple<[boolean, second: number]>;
+        \\type NamedToAnonymous = ToAnonymousTuple<[first: boolean, second: number]>;
+        \\
+        \\type ToMixedTuple<T extends unknown[]> = {
+        \\  [K in keyof T]: [K, second: T[K], keyof T, fourth: T];
+        \\};
+        \\
+        \\type AnonymousToMixed = ToMixedTuple<[boolean, number]>;
+        \\type MixedToMixed = ToMixedTuple<[boolean, second: number]>;
+        \\type NamedToMixed = ToMixedTuple<[first: boolean, second: number]>;
+        \\
+        \\type MixedSpread = [first: boolean, ...[second: string]];
+        \\
+        \\type ConditionalTuple = [
+        \\  first: boolean,
+        \\  ...(0 extends 0 ? [second: string] : [])
+        \\];
+        \\
+        \\type AddMixedConditional<T> = [
+        \\  first: boolean,
+        \\  null,
+        \\  third: T extends number ? "a" : "b",
+        \\  ...(T extends 0 ? [fourth: "c"] : [])
+        \\];
+        \\
+        \\type AddMixedConditionalBoolean = AddMixedConditional<boolean>;
+        \\type AddMixedConditionalLiteral = AddMixedConditional<0>;
+        \\type AddMixedConditionalNumberPrimitive = AddMixedConditional<number>;
+        \\
+        \\declare function test<T extends readonly unknown[]>(
+        \\  arg: [
+        \\    ...{
+        \\      [K in keyof T]: {
+        \\        type: T[K];
+        \\      };
+        \\    }
+        \\  ]
+        \\): T;
+        \\
+        \\declare const input: [first: { type: number }, { type: string }];
+        \\
+        \\const output = test(input);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
