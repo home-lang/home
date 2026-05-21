@@ -224,6 +224,8 @@ millisecond timing / argument validation,
 `bun:internal-for-testing.stringsInternals.toUTF16AllocSentinel`
 UTF-8 replacement behavior, and
 `Bun.isMainThread` / worker child-output smoke coverage, and
+Bun `pathToFileURL` invalid-host subprocess crash-regression coverage,
+and
 `Bun.deepEquals`, Node `Buffer`
 binary/UTF-16LE/compare/inspect-limit/isEncoding behavior, `Map`/`Set`
 deep-equality, `Bun.inspect` Set formatting, `MessageEvent` constructor
@@ -293,8 +295,8 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `163` files, `699` passed, `0` failed,
-`41` todo.
+Latest measured subset run: `164` files, `700` passed, `0` failed,
+`42` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
 uses the same Home-native JSC bootstrap instead of the retired
@@ -1201,6 +1203,13 @@ Home as `1` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap
 exports `Bun.isMainThread`, adds `expect().toBeTrue()`, resolves the
 relative worker fixture path, and models the expected worker child
 stdout through the subprocess fixture path.
+
+The copied `js/bun/util/pathToFileURL-invalid.test.ts` fixture now passes
+in Home as `1` passed, `0` failed, `0` unsupported, `1` todo. The
+bootstrap lowers the narrow Bun/harness import shapes, supports
+`expect.stringMatching()` in deep equality, and models the POSIX
+subprocess crash-regression output while keeping the Windows throw block
+registered as skipped on this host.
 
 The copied `js/node/process-binding.test.ts` fixture now passes in Home
 as `2` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap

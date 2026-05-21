@@ -195,7 +195,8 @@ mutable `globalThis` prototype behavior, comment-only module-load smoke,
 `Bun.unsafe.arrayBufferToString` / `Bun.allocUnsafe` smoke coverage,
 `bun:internal-for-testing.stringsInternals.toUTF16AllocSentinel`
 UTF-8 replacement behavior, `Bun.isMainThread` / worker child-output
-smoke coverage, plus
+smoke coverage, Bun `pathToFileURL` invalid-host subprocess
+crash-regression coverage, plus
 `Bun.deepEquals`,
 Request/Response/Headers/URL, `node-fetch`, `node:buffer`, `deno:harness`
 including Bun-copied Deno `test(options, fn)` / permission skip /
@@ -789,6 +790,11 @@ The copied `js/bun/util/bun-isMainThread.test.js` fixture now passes as
 `1` test through the worker/subprocess bootstrap model. It covers
 `Bun.isMainThread`, `expect().toBeTrue()`, relative
 `import.meta.resolveSync`, and the expected worker child stdout.
+The copied `js/bun/util/pathToFileURL-invalid.test.ts` fixture now
+passes as `1` executable test plus `1` host-skipped Windows block. It
+covers narrow Bun/harness import lowering, `expect.stringMatching()`
+inside deep equality, and POSIX subprocess output for invalid UNC-style
+inputs without exercising a real crash path.
 The copied `js/node/process-binding.test.ts` fixture now passes as `2`
 tests through the `process.binding` bootstrap model. It covers the
 `constants` binding buckets Bun asserts plus the `uv` error-name and

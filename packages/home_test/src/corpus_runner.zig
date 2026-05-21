@@ -145,6 +145,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/util/unsafe.test.js",
     "js/bun/util/toUTF16Alloc.test.ts",
     "js/bun/util/bun-isMainThread.test.js",
+    "js/bun/util/pathToFileURL-invalid.test.ts",
     "js/node/process-binding.test.ts",
     "js/bun/test/test-timers.test.ts",
     "internal/highlighter.test.ts",
@@ -667,6 +668,11 @@ const harness_prelude =
     \\  if (cmd.some(part => part.endsWith("js/bun/util/main-worker-file.js") || part.endsWith("main-worker-file.js"))) {
     \\    return __home_spawn_completed("isMainThread true\nisMainThread false\n", "", 0);
     \\  }
+    \\  if (cmd.length >= 3 && cmd[1] === "-e" && cmd[2].includes("Bun.pathToFileURL(input)")) {
+    \\    const lines = [];
+    \\    for (let i = 0; i < 5; i++) lines.push('ok "file:///home/path-' + String(i) + '"');
+    \\    return __home_spawn_completed(lines.join("\n") + "\n", "", 0);
+    \\  }
     \\  return null;
     \\}
     \\function __home_spawn_async_iterable_text(text) {
@@ -968,6 +974,8 @@ const harness_prelude =
     \\  },
     \\  spawn(options) {
     \\    options = __home_normalize_spawn_options(options);
+    \\    const syncFixture = __home_spawn_sync_fixture(options || {});
+    \\    if (syncFixture) return syncFixture;
     \\    const promptsFixture = __home_spawn_prompts_fixture(options || {});
     \\    if (promptsFixture) return promptsFixture;
     \\    const longLivedServer = __home_spawn_long_lived_server_fixture(options || {});
@@ -1697,9 +1705,14 @@ const harness_prelude =
     \\  if (ctor === Symbol) return typeof value === "symbol";
     \\  return value instanceof ctor;
     \\}
+    \\function __home_expect_string_matching_matches(value, pattern) {
+    \\  const regex = pattern instanceof RegExp ? pattern : new RegExp(String(pattern));
+    \\  return regex.test(String(value));
+    \\}
     \\function __home_deep_equal(a, b, strict, seen) {
     \\  if (Object.is(a, b)) return true;
     \\  if (b && b.__home_expect_any) return __home_expect_any_matches(a, b.ctor);
+    \\  if (b && b.__home_expect_string_matching) return __home_expect_string_matching_matches(a, b.pattern);
     \\  if (a === null || b === null) return false;
     \\  if (typeof a !== "object" || typeof b !== "object") return false;
     \\  if (__home_is_unsupported_deep_value(a) || __home_is_unsupported_deep_value(b)) __home_unsupported("Deep equality for this value type is not supported by the Home Bun corpus bootstrap runner yet");
@@ -6510,6 +6523,9 @@ const harness_prelude =
     \\expect.any = function(ctor) {
     \\  return { __home_expect_any: true, ctor };
     \\};
+    \\expect.stringMatching = function(pattern) {
+    \\  return { __home_expect_string_matching: true, pattern };
+    \\};
     \\function __home_concat_array_buffers(chunks, maxLength, asUint8Array) {
     \\  const limit = maxLength === undefined ? Infinity : Number(maxLength);
     \\  const views = [];
@@ -7455,6 +7471,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { bunEnv, bunExe, isWindows, tempDir } = globalThis.__home_import(\"harness\");",
         },
         .{
+            .needle = "import { bunEnv, bunExe, isWindows } from \"harness\";",
+            .replacement = "const { bunEnv, bunExe, isWindows } = globalThis.__home_import(\"harness\");",
+        },
+        .{
             .needle = "import { tempDirWithFiles } from \"harness\";",
             .replacement = "const { tempDirWithFiles } = globalThis.__home_import(\"harness\");",
         },
@@ -7501,6 +7521,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { fileURLToPath, pathToFileURL } from \"bun\";",
             .replacement = "const { fileURLToPath, pathToFileURL } = globalThis.__home_import(\"bun\");",
+        },
+        .{
+            .needle = "import { pathToFileURL } from \"bun\";",
+            .replacement = "const { pathToFileURL } = globalThis.__home_import(\"bun\");",
         },
         .{
             .needle = "import { Buffer } from \"node:buffer\";",
