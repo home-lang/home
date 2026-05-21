@@ -4120,6 +4120,47 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: classPropertyIsPublicByDefault passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "classPropertyIsPublicByDefault",
+        .path = "classPropertyIsPublicByDefault.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\class C {
+        \\    x: string;
+        \\    get y() { return null; }
+        \\    set y(x) { }
+        \\    foo() { }
+        \\
+        \\    static a: string;
+        \\    static get b() { return null; }
+        \\    static set b(x) { }
+        \\    static foo() { }
+        \\}
+        \\
+        \\var c: C;
+        \\c.x;
+        \\c.y;
+        \\c.y = 1;
+        \\c.foo();
+        \\
+        \\C.a;
+        \\C.b();
+        \\C.b = 1;
+        \\C.foo();
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: stringNamedPropertyAccess TS2454 baseline" {
     const result = try runOneEntry(T.allocator, .{
         .name = "stringNamedPropertyAccess",
