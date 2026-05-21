@@ -8919,6 +8919,288 @@ test "conformance: functionWithUseStrictAndSimpleParameterList passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: controlFlowBindingElement passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "controlFlowBindingElement",
+        .path = "controlFlowBindingElement.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strictNullChecks: true
+        \\// @allowUnreachableCode: false
+        \\{
+        \\    const data =  { param: 'value' };
+        \\
+        \\    const {
+        \\        param = (() => { throw new Error('param is not defined') })(),
+        \\    } = data;
+        \\
+        \\    console.log(param); // should not trigger 'Unreachable code detected.'
+        \\}
+        \\
+        \\
+        \\{
+        \\    const data =  { param: 'value' };
+        \\
+        \\    let foo: string | undefined = "";
+        \\    const {
+        \\        param = (() => { throw new Error('param is not defined') })(),
+        \\    } = data;
+        \\
+        \\    foo;  // should be string
+        \\}
+        \\
+        \\{
+        \\    const data =  { param: 'value' };
+        \\
+        \\    let foo: string | undefined = "";
+        \\    const {
+        \\        param = (() => { foo = undefined })(),
+        \\    } = data;
+        \\
+        \\    foo;  // should be string | undefined
+        \\}
+        \\
+        \\{
+        \\    const data =  { param: 'value' };
+        \\
+        \\    let foo: string | undefined = "";
+        \\    const {
+        \\        param = (() => { return "" + 1 })(),
+        \\    } = data;
+        \\
+        \\    foo;  // should be string
+        \\}
+        \\
+        \\{
+        \\    interface Window {
+        \\        window: Window;
+        \\    }
+        \\
+        \\    let foo: string | undefined;
+        \\    let window = {} as Window;
+        \\    window.window = window;
+        \\
+        \\    const { [(() => { foo = ""; return 'window' as const })()]:
+        \\        { [(() => { return 'window' as const })()]: bar } } = window;
+        \\
+        \\    foo;  // should be string
+        \\}
+        \\
+        \\{
+        \\    interface Window {
+        \\        window: Window;
+        \\    }
+        \\
+        \\    let foo: string | undefined;
+        \\    let window = {} as Window;
+        \\    window.window = window;
+        \\
+        \\    const { [(() => {  return 'window' as const })()]:
+        \\        { [(() => { foo = ""; return 'window' as const })()]: bar } } = window;
+        \\
+        \\    foo;  // should be string
+        \\}
+        \\
+        \\{
+        \\    interface Window {
+        \\        window: Window;
+        \\    }
+        \\
+        \\    let foo: string | undefined;
+        \\    let window = {} as Window;
+        \\    window.window = window;
+        \\
+        \\    const { [(() => { return 'window' as const })()]:
+        \\        { [(() => { return 'window' as const })()]: bar = (() => { foo = ""; return window; })() } } = window;
+        \\
+        \\    foo;  // should be string | undefined
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = false },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: controlFlowAssignmentPatternOrder passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "controlFlowAssignmentPatternOrder",
+        .path = "controlFlowAssignmentPatternOrder.ts",
+        .source =
+        \\// @target: esnext
+        \\// @noEmit: true
+        \\
+        \\// https://github.com/microsoft/TypeScript/pull/41094#issuecomment-716044363
+        \\declare function f(): void;
+        \\{
+        \\    let a: 0 | 1 = 0;
+        \\    let b: 0 | 1 | 9;
+        \\    [{ [(a = 1)]: b } = [9, a] as const] = [];
+        \\    const bb: 0 = b;
+        \\}
+        \\{
+        \\    let a: 0 | 1 = 1;
+        \\    let b: 0 | 1 | 9;
+        \\    [{ [a]: b } = [9, a = 0] as const] = [];
+        \\    const bb: 9 = b;
+        \\}
+        \\{
+        \\    let a: 0 | 1 = 0;
+        \\    let b: 0 | 1 | 8 | 9;
+        \\    [{ [(a = 1)]: b } = [9, a] as const] = [[9, 8] as const];
+        \\    const bb: 0 | 8 = b;
+        \\}
+        \\{
+        \\    let a: 0 | 1 = 1;
+        \\    let b: 0 | 1 | 8 | 9;
+        \\    [{ [a]: b } = [a = 0, 9] as const] = [[8, 9] as const];
+        \\    const bb: 0 | 8 = b;
+        \\}
+        \\// same as above but on left of a binary expression
+        \\{
+        \\    let a: 0 | 1 = 0;
+        \\    let b: 0 | 1 | 9;
+        \\    [{ [(a = 1)]: b } = [9, a] as const] = [], f();
+        \\    const bb: 0 = b;
+        \\}
+        \\{
+        \\    let a: 0 | 1 = 1;
+        \\    let b: 0 | 1 | 9;
+        \\    [{ [a]: b } = [9, a = 0] as const] = [], f();
+        \\    const bb: 9 = b;
+        \\}
+        \\{
+        \\    let a: 0 | 1 = 0;
+        \\    let b: 0 | 1 | 8 | 9;
+        \\    [{ [(a = 1)]: b } = [9, a] as const] = [[9, 8] as const], f();
+        \\    const bb: 0 | 8 = b;
+        \\}
+        \\{
+        \\    let a: 0 | 1 = 1;
+        \\    let b: 0 | 1 | 8 | 9;
+        \\    [{ [a]: b } = [a = 0, 9] as const] = [[8, 9] as const], f();
+        \\    const bb: 0 | 8 = b;
+        \\}
+        \\// same as above but on right of a binary expression
+        \\{
+        \\    let a: 0 | 1 = 0;
+        \\    let b: 0 | 1 | 9;
+        \\    f(), [{ [(a = 1)]: b } = [9, a] as const] = [];
+        \\    const bb: 0 = b;
+        \\}
+        \\{
+        \\    let a: 0 | 1 = 1;
+        \\    let b: 0 | 1 | 9;
+        \\    f(), [{ [a]: b } = [9, a = 0] as const] = [];
+        \\    const bb: 9 = b;
+        \\}
+        \\{
+        \\    let a: 0 | 1 = 0;
+        \\    let b: 0 | 1 | 8 | 9;
+        \\    f(), [{ [(a = 1)]: b } = [9, a] as const] = [[9, 8] as const];
+        \\    const bb: 0 | 8 = b;
+        \\}
+        \\{
+        \\    let a: 0 | 1 = 1;
+        \\    let b: 0 | 1 | 8 | 9;
+        \\    f(), [{ [a]: b } = [a = 0, 9] as const] = [[8, 9] as const];
+        \\    const bb: 0 | 8 = b;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: controlFlowParameter passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "controlFlowParameter",
+        .path = "controlFlowParameter.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strictNullChecks: true
+        \\// @allowUnreachableCode: false
+        \\function f1(
+        \\  required: unknown = (() => {
+        \\    throw new Error("bad");
+        \\  })()
+        \\) {
+        \\  console.log("ok"); // should not trigger 'Unreachable code detected.'
+        \\}
+        \\
+        \\function f2(
+        \\  a: number | string | undefined,
+        \\  required: unknown = (() => {
+        \\    a = 1;
+        \\  })()
+        \\) {
+        \\  a; // should be number | string | undefined
+        \\}
+        \\
+        \\function f3(
+        \\  a: number | string | undefined = 1,
+        \\  required: unknown = (() => {
+        \\    a = "";
+        \\  })()
+        \\) {
+        \\  a; // should be number | string
+        \\}
+        \\
+        \\function f4(
+        \\  a: number | string | undefined = 1,
+        \\  { [(a = "")]: b } = {} as any
+        \\) {
+        \\  a; // should be string
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = false },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: verbatimModuleSyntaxConstEnum passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "verbatimModuleSyntaxConstEnum",
+        .path = "verbatimModuleSyntaxConstEnum.ts",
+        .source =
+        \\// @target: es2015
+        \\// @verbatimModuleSyntax: true
+        \\// @module: esnext
+        \\
+        \\export const enum E {
+        \\    A = 1,
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
