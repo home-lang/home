@@ -13947,6 +13947,124 @@ test "conformance: optionalMethod passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: awaitCallExpression1_es2017 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "awaitCallExpression1_es2017",
+        .path = "awaitCallExpression1_es2017.ts",
+        .source =
+        \\// @target: es2017
+        \\// @noEmitHelpers: true
+        \\declare var a: boolean;
+        \\declare var p: Promise<boolean>;
+        \\declare function fn(arg0: boolean, arg1: boolean, arg2: boolean): void;
+        \\declare var o: { fn(arg0: boolean, arg1: boolean, arg2: boolean): void; };
+        \\declare var pfn: Promise<{ (arg0: boolean, arg1: boolean, arg2: boolean): void; }>;
+        \\declare var po: Promise<{ fn(arg0: boolean, arg1: boolean, arg2: boolean): void; }>;
+        \\declare function before(): void;
+        \\declare function after(): void;
+        \\async function func(): Promise<void> {
+        \\    before();
+        \\    var b = fn(a, a, a);
+        \\    after();
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: awaitCallExpression6_es2017 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "awaitCallExpression6_es2017",
+        .path = "awaitCallExpression6_es2017.ts",
+        .source =
+        \\// @target: es2017
+        \\// @noEmitHelpers: true
+        \\declare var a: boolean;
+        \\declare var p: Promise<boolean>;
+        \\declare function fn(arg0: boolean, arg1: boolean, arg2: boolean): void;
+        \\declare var o: { fn(arg0: boolean, arg1: boolean, arg2: boolean): void; };
+        \\declare var pfn: Promise<{ (arg0: boolean, arg1: boolean, arg2: boolean): void; }>;
+        \\declare var po: Promise<{ fn(arg0: boolean, arg1: boolean, arg2: boolean): void; }>;
+        \\declare function before(): void;
+        \\declare function after(): void;
+        \\async function func(): Promise<void> {
+        \\    before();
+        \\    var b = o.fn(await p, a, a);
+        \\    after();
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: awaitCallExpression7_es2017 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "awaitCallExpression7_es2017",
+        .path = "awaitCallExpression7_es2017.ts",
+        .source =
+        \\// @target: es2017
+        \\// @noEmitHelpers: true
+        \\declare var a: boolean;
+        \\declare var p: Promise<boolean>;
+        \\declare function fn(arg0: boolean, arg1: boolean, arg2: boolean): void;
+        \\declare var o: { fn(arg0: boolean, arg1: boolean, arg2: boolean): void; };
+        \\declare var pfn: Promise<{ (arg0: boolean, arg1: boolean, arg2: boolean): void; }>;
+        \\declare var po: Promise<{ fn(arg0: boolean, arg1: boolean, arg2: boolean): void; }>;
+        \\declare function before(): void;
+        \\declare function after(): void;
+        \\async function func(): Promise<void> {
+        \\    before();
+        \\    var b = o.fn(a, await p, a);
+        \\    after();
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: asyncFunctionDeclaration14_es2017 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "asyncFunctionDeclaration14_es2017",
+        .path = "asyncFunctionDeclaration14_es2017.ts",
+        .source =
+        \\// @target: es2017
+        \\// @noEmitHelpers: true
+        \\async function foo(): Promise<void> {
+        \\  return;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
