@@ -4479,28 +4479,7 @@ pub const Parser = struct {
                 if (is_generator and self.peek().kind != .open_paren and self.peek().kind != .less_than) {
                     const missing_paren = self.peek();
                     try self.reportCodeAt(missing_paren.span.start, missing_paren.line, 1005, "'(' expected.");
-                    const name_id = try self.internPropertyName(name_tok, name_span);
-                    const name_node = try self.builder.addIdentifier(name_span, name_id);
-                    const fn_node = try self.builder.addFnDeclGeneric(
-                        .{ .start = name_span.start, .end = name_span.end },
-                        name_node,
-                        &.{},
-                        &.{},
-                        hir_mod.none_node_id,
-                        hir_mod.none_node_id,
-                        .{
-                            .is_method = true,
-                            .is_generator = true,
-                            .is_private = mods.visibility == .private,
-                            .is_protected = mods.visibility == .protected,
-                            .is_static = mods.is_static,
-                            .is_async = mods.is_async,
-                            .is_override = mods.is_override,
-                            .is_abstract = mods.is_abstract,
-                            .is_optional = is_optional_member,
-                        },
-                    );
-                    try members.append(self.gpa, fn_node);
+                    self.skipMalformedGeneratorClassMemberTail();
                     continue;
                 }
                 if (is_generator or self.peek().kind == .open_paren or self.peek().kind == .less_than) {
@@ -5335,6 +5314,34 @@ pub const Parser = struct {
             if (self.match(.semicolon)) return;
             if (self.peek().flags.preceded_by_newline) return;
             _ = self.advance();
+        }
+    }
+
+    fn skipMalformedGeneratorClassMemberTail(self: *Parser) void {
+        var depth: u32 = 0;
+        while (self.peek().kind != .eof) {
+            const t = self.peek();
+            if (depth == 0) {
+                if (t.kind == .semicolon) {
+                    _ = self.advance();
+                    return;
+                }
+                if (t.kind == .close_brace) return;
+                if (t.flags.preceded_by_newline and canStartClassMemberAfterModifier(t.kind)) return;
+            }
+            switch (t.kind) {
+                .open_paren, .open_bracket, .open_brace => {
+                    depth += 1;
+                    _ = self.advance();
+                },
+                .close_paren, .close_bracket, .close_brace => {
+                    _ = self.advance();
+                    if (depth == 0) return;
+                    depth -= 1;
+                    if (depth == 0 and t.kind == .close_brace) return;
+                },
+                else => _ = self.advance(),
+            }
         }
     }
 
@@ -19267,6 +19274,27 @@ test "parser: 'declare' on a class method still reports TS1031" {
     try T.expect(saw_ts1031);
 }
 
+test "parser: malformed async generator class members recover without overload noise" {
+    var s = try newTestSetup(
+        \\class C {
+        \\    async * get x() { return 1; }
+        \\    async * set y(value: number) { }
+        \\    async * z = 1;
+        \\    ok() { return 2; }
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+
+    var ts1005_count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1005 and std.mem.eql(u8, d.message, "'(' expected.")) ts1005_count += 1;
+        try T.expect(d.code != 2389);
+        try T.expect(d.code != 2391);
+    }
+    try T.expectEqual(@as(usize, 3), ts1005_count);
+}
+
 test "parser: same-line decorator after class property reports TS1436" {
     var s = try newTestSetup(
         \\class Foo {
@@ -19514,7 +19542,7 @@ test "parser: class generator method missing name reports TS1003 without escapin
     try T.expect(saw_ts1003);
 }
 
-test "parser: class generator method missing parens preserves bodyless method name" {
+test "parser: class generator method missing parens reports TS1005 without synthetic overload" {
     const src = "class C {\n   *foo\n}";
     var s = try newTestSetup(src);
     defer destroyTestSetup(s);
@@ -19528,10 +19556,7 @@ test "parser: class generator method missing parens preserves bodyless method na
     const stmts = hir_mod.blockStmts(&s.hir, root);
     const cls = hir_mod.classOf(&s.hir, stmts[0]);
     const members = s.hir.childSlice(cls.members_start, cls.members_len);
-    try T.expectEqual(@as(usize, 1), members.len);
-    const f = hir_mod.fnDeclOf(&s.hir, members[0]);
-    const name_span = s.hir.spanOf(f.name);
-    try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, src, "foo").?)), name_span.start);
+    try T.expectEqual(@as(usize, 0), members.len);
 }
 
 test "parser: 'LBL: continue LBL;' where LBL wraps a non-iteration reports TS1115" {
