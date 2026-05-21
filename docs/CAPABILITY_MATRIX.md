@@ -65,7 +65,7 @@ Drop-in Bun replacement. Detailed per-area status:
 
 | Capability | Status |
 |---|---|
-| Bun source files ported | 🚧 547 / 1,193 (~45.9%) |
+| Bun source files ported | 🚧 549 / 1,193 (~46.0%) |
 | JSC bring-up (Phase 12.2) | 🚧 M1-M6 landed (128 files); JS-callable bridge pending |
 | `node:*` namespace substrate | 🚧 28 files (`assert`, `buffer`, `events`, `fs`, `path`, `stream`, `util`, `crypto`, `process`, `string_decoder`, `tty` + bindings) |
 | `bun` compat shim (`packages/compat/`) | 🚧 16 / ~103 Tier-0/Tier-1 symbols |

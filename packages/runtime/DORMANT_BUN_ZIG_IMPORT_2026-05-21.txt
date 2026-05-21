@@ -114,7 +114,6 @@ Copied files: 786
 - packages/runtime/src/clap/comptime.zig
 - packages/runtime/src/clap/streaming.zig
 - packages/runtime/src/collections/array_list.zig
-- packages/runtime/src/collections/baby_list.zig
 - packages/runtime/src/collections/collections.zig
 - packages/runtime/src/collections/linear_fifo.zig
 - packages/runtime/src/collections/StaticHashMap.zig
@@ -724,7 +723,6 @@ Copied files: 786
 - packages/runtime/src/runtime/webview/ChromeProcess.zig
 - packages/runtime/src/runtime/webview/HostProcess.zig
 - packages/runtime/src/s3_signing/credentials.zig
-- packages/runtime/src/semver/semver.zig
 - packages/runtime/src/semver/SemverQuery.zig
 - packages/runtime/src/semver/SemverRange.zig
 - packages/runtime/src/semver/Version.zig

@@ -8,7 +8,7 @@ section.
 
 > **Status:** Substrate + JSC M6 landed. `packages/runtime/src/`
 > currently contains 1,289 Zig source files. Of the audited 1,193-file
-> Bun baseline, 547 files are integrated into Home (~45.9%): rewritten
+> Bun baseline, 549 files are integrated into Home (~46.0%): rewritten
 > for Home imports, Zig 0.17-clean, build-wired, and tested. The remaining
 > staged Bun files are an integration backlog, not parity credit; the
 > runtime is not yet JavaScript-callable end-to-end, but Phase 12.2
@@ -1398,9 +1398,9 @@ until they are exported or compiled through Home.
 | Bun upstream files (excluding test/codegen/jsc/macros) | 1,193 | pinned at `fd0b6f1a` |
 | Runtime Zig files present in `packages/runtime/src/` | 1,289 | live `find packages/runtime/src -type f -name '*.zig'` count |
 | Audited Bun baseline files present in `packages/runtime/src/` | 1,193 / 1,193 | existing Home ports plus staged integration backlog |
-| Files integrated into Home | 547 | ~45.9% |
+| Files integrated into Home | 549 | ~46.0% |
 | Staged Bun Zig files awaiting integration | 768 | copied in `ba157c27`, see `packages/runtime/DORMANT_BUN_ZIG_IMPORT_2026-05-21.txt`; not counted as ported |
-| Files remaining to integrate | 646 | ~54.1%; excludes raw copy-only files that duplicate already-integrated Home paths |
+| Files remaining to integrate | 644 | ~54.0%; excludes raw copy-only files that duplicate already-integrated Home paths |
 | JSC bring-up (`packages/runtime/src/jsc/`) | 128 files | Phase 12.2 M6 milestone + native eval smoke |
 | Node namespace (`packages/runtime/src/node/`) | 28 files | Phase 12.7 round-15 |
 | Bake lifetime carrier (`packages/runtime/src/runtime/bake/`) | 5 files | DevServer/HmrSocket deinit substrate, JS surface pending |
