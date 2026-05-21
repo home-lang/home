@@ -3953,6 +3953,79 @@ test "conformance: instanceMemberInitialization passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: literalTypesAndTypeAssertions passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "literalTypesAndTypeAssertions",
+        .path = "literalTypesAndTypeAssertions.ts",
+        .source =
+        \\// @target: es2015
+        \\const obj = {
+        \\    a: "foo" as "foo",
+        \\    b: <"foo">"foo",
+        \\    c: "foo"
+        \\};
+        \\
+        \\let x1 = 1 as (0 | 1);
+        \\let x2 = 1;
+        \\
+        \\let { a = "foo" } = { a: "foo" };
+        \\let { b = "foo" as "foo" } = { b: "bar" };
+        \\let { c = "foo" } = { c: "bar" as "bar" };
+        \\let { d = "foo" as "foo" } = { d: "bar" as "bar" };
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: literalTypesAndDestructuring passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "literalTypesAndDestructuring",
+        .path = "literalTypesAndDestructuring.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\
+        \\declare let x: { a: 0 | 1 | undefined };
+        \\
+        \\let { a: a1 } = x;
+        \\let { a: a2 = 0 } = x;
+        \\let { a: a3 = 2 } = x;
+        \\let { a: a4 = 2 as const } = x;
+        \\
+        \\let b1 = x.a;
+        \\let b2 = x.a ?? 0;
+        \\let b3 = x.a ?? 2;
+        \\let b4 = x.a ?? 2 as const;
+        \\
+        \\// Repro from #35693
+        \\
+        \\interface Foo {
+        \\  bar: 'yo' | 'ha' | undefined;
+        \\}
+        \\
+        \\let { bar = 'yo' } = {} as Foo;
+        \\
+        \\bar;  // "yo" | "ha"
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: doWhileBreakStatements passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "doWhileBreakStatements",
