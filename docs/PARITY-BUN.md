@@ -77,6 +77,9 @@ Bun's POSIX `WaitPidResult`, `posix_spawnattr_t`, and
 `posix_spawn_file_actions_t` wrapper substrate in
 `packages/runtime/src/runtime/api/bun/spawn.zig`, rewritten for Home fd
 aliases and Pantry Zig 0.17's Darwin `std.c.POSIX_SPAWN` flag type; the
+ported `BunSpawn.Attr.set()` now re-derives `detached` from the packed
+`SETSID` flag when the platform exposes it while preserving Bun's
+no-flag fallback for FreeBSD-style targets. The
 actual `spawnZ` / `waitpid` execution glue remains parked until the
 `posix_spawn_bun` shim and `home_rt.sys.Error` surface land.
 

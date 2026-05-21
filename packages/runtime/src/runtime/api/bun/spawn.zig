@@ -48,6 +48,18 @@ fn spawnFlagsToBits(flags: SpawnFlags) u16 {
     return @bitCast(flags);
 }
 
+fn spawnFlagFieldBits(comptime field_name: []const u8) ?u16 {
+    return switch (@typeInfo(SpawnFlags)) {
+        .@"struct" => {
+            if (!@hasField(SpawnFlags, field_name)) return null;
+            var flags = std.mem.zeroes(SpawnFlags);
+            @field(flags, field_name) = true;
+            return spawnFlagsToBits(flags);
+        },
+        else => null,
+    };
+}
+
 pub const BunSpawn = struct {
     pub const Action = extern struct {
         pub const FileActionType = enum(u8) {
@@ -162,11 +174,13 @@ pub const BunSpawn = struct {
 
         pub fn set(self: *Attr, flags: u16) !void {
             self.flags = flags;
-            // Upstream additionally re-derives `detached` from the
-            // `POSIX_SPAWN_SETSID` flag bit on platforms where that bit
-            // is defined (Linux/macOS). Home's `home_rt.c` doesn't yet
-            // expose the POSIX_SPAWN_* constants, so this skeleton
-            // preserves the explicit-`detached` value set by the caller.
+            // FreeBSD's <spawn.h> has no POSIX_SPAWN_SETSID; bun-spawn.cpp
+            // calls setsid() in the child for `detached`, which process.zig
+            // sets directly on this struct BEFORE calling set(). Preserve
+            // that value when the flag bit isn't available.
+            if (comptime spawnFlagFieldBits("SETSID")) |setsid| {
+                self.detached = (flags & setsid) != 0;
+            }
         }
 
         pub fn resetSignals(self: *Attr) !void {
@@ -391,6 +405,25 @@ test "spawn: BunSpawn.Attr round-trips flags through set/get" {
 
     try attr.resetSignals();
     try std.testing.expect(attr.reset_signals);
+}
+
+test "spawn: BunSpawn.Attr.set derives detached from SETSID when available" {
+    var attr = try BunSpawn.Attr.init();
+    defer attr.deinit();
+
+    if (comptime spawnFlagFieldBits("SETSID")) |setsid| {
+        attr.detached = true;
+        try attr.set(0);
+        try std.testing.expect(!attr.detached);
+
+        try attr.set(setsid);
+        try std.testing.expect(attr.detached);
+        try std.testing.expectEqual(setsid, try attr.get());
+    } else {
+        attr.detached = true;
+        try attr.set(0);
+        try std.testing.expect(attr.detached);
+    }
 }
 
 test "spawn: PosixSpawn.WaitPidResult pins pid/status fields" {
