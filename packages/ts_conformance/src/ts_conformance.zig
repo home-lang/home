@@ -3953,6 +3953,218 @@ test "conformance: instanceMemberInitialization passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: functionLiteralForOverloads2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "functionLiteralForOverloads2",
+        .path = "functionLiteralForOverloads2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// basic uses of function literals with constructor overloads
+        \\
+        \\class C {
+        \\    constructor(x: string);
+        \\    constructor(x: number);
+        \\    constructor(x) { }
+        \\}
+        \\
+        \\class D<T> {
+        \\    constructor(x: string);
+        \\    constructor(x: number);
+        \\    constructor(x) { }
+        \\}
+        \\
+        \\var f: {
+        \\    new(x: string): C;
+        \\    new(x: number): C;
+        \\} = C;
+        \\
+        \\var f2: {
+        \\    new<T>(x: string): C;
+        \\    new<T>(x: number): C;
+        \\} = C;
+        \\
+        \\var f3: {
+        \\    new<T>(x: string): D<T>;
+        \\    new<T>(x: number): D<T>;
+        \\} = D;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectTypesWithPredefinedTypesAsName matches TS2414 baseline" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectTypesWithPredefinedTypesAsName",
+        .path = "objectTypesWithPredefinedTypesAsName.ts",
+        .source =
+        \\// @target: es2015
+        \\// it is an error to use a predefined type as a type name
+        \\
+        \\class any { }
+        \\
+        \\class number { }
+        \\
+        \\class boolean { }
+        \\class bool { } // not a predefined type anymore
+        \\
+        \\class string { }
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\objectTypesWithPredefinedTypesAsName.ts(3,7): error TS2414: Class name cannot be 'any'.
+        \\objectTypesWithPredefinedTypesAsName.ts(5,7): error TS2414: Class name cannot be 'number'.
+        \\objectTypesWithPredefinedTypesAsName.ts(7,7): error TS2414: Class name cannot be 'boolean'.
+        \\objectTypesWithPredefinedTypesAsName.ts(10,7): error TS2414: Class name cannot be 'string'.
+        ,
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    if (result.outcome != .passed) {
+        std.debug.print("objectTypesWithPredefinedTypesAsName detail:\n{s}\n", .{result.detail});
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: functionLiteral passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "functionLiteral",
+        .path = "functionLiteral.ts",
+        .source =
+        \\// @target: es2015
+        \\// basic valid forms of function literals
+        \\
+        \\var x = () => 1;
+        \\var x: {
+        \\    (): number;
+        \\}
+        \\
+        \\var y: { (x: string): string; };
+        \\var y: (x: string) => string;
+        \\var y2: { <T>(x: T): T; } = <T>(x: T) => x
+        \\
+        \\var z: { new (x: number): number; };
+        \\var z: new (x: number) => number;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nonGenericTypeReferenceWithTypeArguments",
+        .path = "nonGenericTypeReferenceWithTypeArguments.ts",
+        .source =
+        \\// @target: es2015
+        \\// Check that errors are reported for non-generic types with type arguments
+        \\
+        \\class C { }
+        \\interface I { }
+        \\enum E { }
+        \\type T = { };
+        \\var v1: C<string>;
+        \\var v2: I<string>;
+        \\var v3: E<string>;
+        \\var v4: T<string>;
+        \\
+        \\function f<U>() {
+        \\    class C { }
+        \\    interface I { }
+        \\    enum E { }
+        \\    type T = {};
+        \\    var v1: C<string>;
+        \\    var v2: I<string>;
+        \\    var v3: E<string>;
+        \\    var v4: T<string>;
+        \\    var v5: U<string>;
+        \\}
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\nonGenericTypeReferenceWithTypeArguments.ts(7,9): error TS2315: Type 'C' is not generic.
+        \\nonGenericTypeReferenceWithTypeArguments.ts(8,9): error TS2315: Type 'I' is not generic.
+        \\nonGenericTypeReferenceWithTypeArguments.ts(9,9): error TS2315: Type 'E' is not generic.
+        \\nonGenericTypeReferenceWithTypeArguments.ts(10,9): error TS2315: Type 'T' is not generic.
+        \\nonGenericTypeReferenceWithTypeArguments.ts(17,13): error TS2315: Type 'C' is not generic.
+        \\nonGenericTypeReferenceWithTypeArguments.ts(18,13): error TS2315: Type 'I' is not generic.
+        \\nonGenericTypeReferenceWithTypeArguments.ts(19,13): error TS2315: Type 'E' is not generic.
+        \\nonGenericTypeReferenceWithTypeArguments.ts(20,13): error TS2315: Type 'T' is not generic.
+        \\nonGenericTypeReferenceWithTypeArguments.ts(21,13): error TS2315: Type 'U' is not generic.
+        ,
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    if (result.outcome != .passed) {
+        std.debug.print("nonGenericTypeReferenceWithTypeArguments detail:\n{s}\n", .{result.detail});
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: variance passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "variance",
+        .path = "variance.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\
+        \\// Test cases for parameter variances affected by conditional types.
+        \\
+        \\// Repro from #30047
+        \\
+        \\interface Foo<T> {
+        \\  prop: T extends unknown ? true : false;
+        \\}
+        \\
+        \\const foo = { prop: true } as const;
+        \\const x: Foo<1> = foo;
+        \\const y: Foo<number> = foo;
+        \\const z: Foo<number> = x;
+        \\
+        \\
+        \\// Repro from #30118
+        \\
+        \\class Bar<T extends string> {
+        \\  private static instance: Bar<string>[] = [];
+        \\
+        \\  cast(_name: ([T] extends [string] ? string : string)) { }
+        \\
+        \\  pushThis() {
+        \\    Bar.instance.push(this);
+        \\  }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: literalTypesAndTypeAssertions passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "literalTypesAndTypeAssertions",
