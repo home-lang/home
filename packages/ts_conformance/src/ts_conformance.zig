@@ -9696,6 +9696,277 @@ test "conformance: commaOperatorWithSecondOperandAnyType passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: typeGuardOfFormTypeOfFunction passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeGuardOfFormTypeOfFunction",
+        .path = "typeGuardOfFormTypeOfFunction.ts",
+        .source =
+        \\// @target: es2015
+        \\
+        \\function f1(x: any) {
+        \\    if (typeof x === "function") {
+        \\        x;
+        \\    }
+        \\}
+        \\
+        \\function f2(x: unknown) {
+        \\    if (typeof x === "function") {
+        \\        x;
+        \\    }
+        \\}
+        \\
+        \\function f3(x: {}) {
+        \\    if (typeof x === "function") {
+        \\        x;
+        \\    }
+        \\}
+        \\
+        \\function f4<T>(x: T) {
+        \\    if (typeof x === "function") {
+        \\        x;
+        \\    }
+        \\}
+        \\
+        \\function f5(x: { s: string }) {
+        \\    if (typeof x === "function") {
+        \\        x;
+        \\    }
+        \\}
+        \\
+        \\function f6(x: () => string) {
+        \\    if (typeof x === "function") {
+        \\        x;
+        \\    }
+        \\}
+        \\
+        \\function f10(x: string | (() => string)) {
+        \\    if (typeof x === "function") {
+        \\        x;
+        \\    }
+        \\    else {
+        \\        x;
+        \\    }
+        \\}
+        \\
+        \\function f11(x: { s: string } | (() => string)) {
+        \\    if (typeof x === "function") {
+        \\        x;
+        \\    }
+        \\    else {
+        \\        x;
+        \\    }
+        \\}
+        \\
+        \\function f12(x: { s: string } | { n: number }) {
+        \\    if (typeof x === "function") {
+        \\        x;
+        \\    }
+        \\    else {
+        \\        x;
+        \\    }
+        \\}
+        \\
+        \\function f100<T, K extends keyof T>(obj: T, keys: K[]) : void {
+        \\    for (const k of keys) {
+        \\        const item = obj[k];
+        \\        if (typeof item == 'function')
+        \\            item.call(obj);
+        \\    }
+        \\}
+        \\
+        \\function configureStore<S extends object>(reducer: (() => void) | Record<keyof S, () => void>) {
+        \\    let rootReducer: () => void;
+        \\    if (typeof reducer === 'function') {
+        \\        rootReducer = reducer;
+        \\    }
+        \\}
+        \\
+        \\function f101(x: string | Record<string, any>) {
+        \\    return typeof x === "object" && x.anything;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: typeGuardsInRightOperandOfAndAndOperator passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeGuardsInRightOperandOfAndAndOperator",
+        .path = "typeGuardsInRightOperandOfAndAndOperator.ts",
+        .source =
+        \\// @target: es2015
+        \\function foo(x: number | string) {
+        \\    return typeof x === "string" && x.length === 10;
+        \\}
+        \\function foo2(x: number | string) {
+        \\    return typeof x === "string" && ((x = 10) && x);
+        \\}
+        \\function foo3(x: number | string) {
+        \\    return typeof x === "string" && ((x = "hello") && x);
+        \\}
+        \\function foo4(x: number | string | boolean) {
+        \\    return typeof x !== "string"
+        \\        && typeof x !== "number"
+        \\        && x;
+        \\}
+        \\function foo5(x: number | string | boolean) {
+        \\    var b: number | boolean;
+        \\    return typeof x !== "string"
+        \\        && ((b = x) && (typeof x !== "number"
+        \\        && x));
+        \\}
+        \\function foo6(x: number | string | boolean) {
+        \\    return typeof x !== "string"
+        \\        && (typeof x !== "number"
+        \\        ? x
+        \\        : x === 10)
+        \\}
+        \\function foo7(x: number | string | boolean) {
+        \\    var y: number| boolean | string;
+        \\    var z: number| boolean | string;
+        \\    return typeof x !== "string"
+        \\        && ((z = x)
+        \\        && (typeof x === "number"
+        \\        ? ((x = 10) && x.toString())
+        \\        : ((y = x) && x.toString())));
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: typeGuardIntersectionTypes passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeGuardIntersectionTypes",
+        .path = "typeGuardIntersectionTypes.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strictNullChecks: true
+        \\
+        \\interface X {
+        \\    x: string;
+        \\}
+        \\
+        \\interface Y {
+        \\    y: string;
+        \\}
+        \\
+        \\interface Z {
+        \\    z: string;
+        \\}
+        \\
+        \\declare function isX(obj: any): obj is X;
+        \\declare function isY(obj: any): obj is Y;
+        \\declare function isZ(obj: any): obj is Z;
+        \\
+        \\function f1(obj: Object) {
+        \\    if (isX(obj) || isY(obj) || isZ(obj)) {
+        \\        obj;
+        \\    }
+        \\    if (isX(obj) && isY(obj) && isZ(obj)) {
+        \\        obj;
+        \\    }
+        \\}
+        \\
+        \\interface A {
+        \\  a: string;
+        \\}
+        \\
+        \\interface B {
+        \\  b: string;
+        \\}
+        \\
+        \\function isB(toTest: any): toTest is B {
+        \\  return toTest && toTest.b;
+        \\}
+        \\
+        \\function union(a: A): A & B | null {
+        \\  if (isB(a)) {
+        \\    return a;
+        \\  } else {
+        \\    return null;
+        \\  }
+        \\}
+        \\
+        \\declare function log(s: string): void;
+        \\
+        \\interface Beast     { wings?: boolean; legs?: number }
+        \\interface Legged    { legs: number; }
+        \\interface Winged    { wings: boolean; }
+        \\
+        \\function hasLegs(x: Beast): x is Legged { return x && typeof x.legs === 'number'; }
+        \\function hasWings(x: Beast): x is Winged { return x && !!x.wings; }
+        \\
+        \\function identifyBeast(beast: Beast) {
+        \\
+        \\    if (hasLegs(beast)) {
+        \\
+        \\        if (hasWings(beast)) {
+        \\            if (beast.legs === 4) {
+        \\                log(`pegasus - 4 legs, wings`);
+        \\            }
+        \\            else if (beast.legs === 2) {
+        \\                log(`bird - 2 legs, wings`);
+        \\            }
+        \\            else {
+        \\                log(`unknown - ${beast.legs} legs, wings`);
+        \\            }
+        \\        }
+        \\
+        \\        else {
+        \\            log(`manbearpig - ${beast.legs} legs, no wings`);
+        \\        }
+        \\    }
+        \\
+        \\    else {
+        \\        if (hasWings(beast)) {
+        \\            log(`quetzalcoatl - no legs, wings`)
+        \\        }
+        \\        else {
+        \\            log(`snake - no legs, no wings`)
+        \\        }
+        \\    }
+        \\}
+        \\
+        \\function beastFoo(beast: Object) {
+        \\    if (hasWings(beast) && hasLegs(beast)) {
+        \\        beast;
+        \\    }
+        \\    else {
+        \\        beast;
+        \\    }
+        \\
+        \\    if (hasLegs(beast) && hasWings(beast)) {
+        \\        beast;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = false },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
