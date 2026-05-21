@@ -12167,6 +12167,126 @@ test "conformance: nullIsSubtypeOfEverythingButUndefined passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: genericContextualTypes2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "genericContextualTypes2",
+        .path = "genericContextualTypes2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\// @noEmit: true
+        \\
+        \\type LowInfer<T> = T & {};
+        \\
+        \\type PartialAssigner<TContext, TKey extends keyof TContext> = (
+        \\  context: TContext
+        \\) => TContext[TKey];
+        \\
+        \\type PropertyAssigner<TContext> = {
+        \\  [K in keyof TContext]?: PartialAssigner<TContext, K> | TContext[K];
+        \\};
+        \\
+        \\type Meta<TContext> = {
+        \\  action: (ctx: TContext) => void
+        \\}
+        \\
+        \\interface AssignAction<TContext> {
+        \\  type: "xstate.assign";
+        \\  exec: (arg: TContext, meta: Meta<TContext>) => void;
+        \\}
+        \\
+        \\declare function assign<TContext>(
+        \\  assignment: PropertyAssigner<LowInfer<TContext>>
+        \\): AssignAction<TContext>;
+        \\
+        \\type Config<TContext> = {
+        \\  context: TContext;
+        \\  entry?: AssignAction<TContext>;
+        \\};
+        \\
+        \\declare function createMachine<TContext>(config: Config<TContext>): void;
+        \\
+        \\createMachine<{ count: number }>({
+        \\  context: {
+        \\    count: 0,
+        \\  },
+        \\  entry: assign({
+        \\    count: (ctx: { count: number }) => ++ctx.count,
+        \\  }),
+        \\});
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: genericContextualTypes3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "genericContextualTypes3",
+        .path = "genericContextualTypes3.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\// @noEmit: true
+        \\
+        \\type LowInfer<T> = T & {};
+        \\
+        \\type PartialAssigner<TContext, TKey extends keyof TContext> = (
+        \\  context: TContext
+        \\) => TContext[TKey];
+        \\
+        \\type PropertyAssigner<TContext> = {
+        \\  [K in keyof TContext]?: PartialAssigner<TContext, K> | TContext[K];
+        \\};
+        \\
+        \\type Meta<TContext> = {
+        \\  action: (ctx: TContext) => void
+        \\}
+        \\
+        \\interface AssignAction<TContext> {
+        \\  type: "xstate.assign";
+        \\  (arg: TContext, meta: Meta<TContext>): void;
+        \\}
+        \\
+        \\declare function assign<TContext>(
+        \\  assignment: PropertyAssigner<LowInfer<TContext>>
+        \\): AssignAction<TContext>;
+        \\
+        \\type Config<TContext> = {
+        \\  context: TContext;
+        \\  entry?: AssignAction<TContext>;
+        \\};
+        \\
+        \\declare function createMachine<TContext>(config: Config<TContext>): void;
+        \\
+        \\createMachine<{ count: number }>({
+        \\  context: {
+        \\    count: 0,
+        \\  },
+        \\  entry: assign({
+        \\    count: (ctx: { count: number }) => ++ctx.count,
+        \\  }),
+        \\});
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
