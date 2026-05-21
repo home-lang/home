@@ -1,4 +1,27 @@
-pub const css = @import("./css_parser.zig");
+const css_stub = @import("./css_parser_stub.zig");
+
+pub const css = struct {
+    pub const Error = css_stub.Error;
+    pub const Location = css_stub.Location;
+
+    pub const SourceLocation = struct {
+        line: u32,
+        column: u32,
+    };
+
+    pub const Token = union(enum) {
+        ident: []const u8,
+        delim: u8,
+
+        pub fn format(this: @This(), writer: *std.Io.Writer) !void {
+            switch (this) {
+                .ident => |ident| try writer.print("{s}", .{ident}),
+                .delim => |delim| try writer.print("{c}", .{delim}),
+            }
+        }
+    };
+};
+
 pub const css_values = @import("./values/values.zig");
 pub const Error = css.Error;
 const Location = css.Location;
@@ -31,7 +54,9 @@ pub fn Err(comptime T: type) type {
             @compileError("format not implemented for " ++ @typeName(T));
         }
 
-        pub const toErrorInstance = @import("../css_jsc/error_jsc.zig").toErrorInstance;
+        pub fn toErrorInstance(_: @This(), _: anytype, _: anytype) void {
+            @compileError("css_jsc error bridge is not ported in Home runtime yet");
+        }
 
         pub fn fromParseError(err: ParseError(ParserError), filename: []const u8) Err(ParserError) {
             if (T != ParserError) {
@@ -409,9 +434,71 @@ pub const MinifyErrorKind = union(enum) {
     }
 };
 
-const bun = @import("bun");
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const logger = bun.logger;
-const Log = logger.Log;
+const logger = struct {
+    const Namespace = enum { file };
+
+    pub const Location = struct {
+        file: []const u8,
+        namespace: Namespace = .file,
+        line: i32,
+        column: i32,
+        line_text: ?[]const u8 = null,
+    };
+
+    pub const Source = struct {
+        path: struct {
+            text: []const u8,
+            namespace: Namespace = .file,
+        },
+        contents: []const u8 = "",
+    };
+
+    pub const Log = struct {
+        errors: usize = 0,
+
+        pub fn addMsg(_: *@This(), _: anytype) !void {}
+    };
+};
+
+const bun = struct {
+    pub const strings = struct {
+        pub const Lines = struct {
+            buffer: []const []const u8,
+        };
+
+        pub fn getLinesInText(_: []const u8, _: u32, _: u32) ?Lines {
+            return null;
+        }
+    };
+};
+
+test "fmtPrinterError returns formatting error without a location" {
+    const err = fmtPrinterError();
+    try std.testing.expect(err.kind == .fmt_error);
+    try std.testing.expect(err.loc == null);
+}
+
+test "ErrorLocation.withFilename preserves line and column" {
+    const loc = ErrorLocation{ .filename = "old.css", .line = 3, .column = 9 };
+    const renamed = loc.withFilename("new.css");
+
+    try std.testing.expectEqualStrings("new.css", renamed.filename);
+    try std.testing.expectEqual(@as(u32, 3), renamed.line);
+    try std.testing.expectEqual(@as(u32, 9), renamed.column);
+}
+
+test "BasicParseError.intoDefaultParseError wraps the basic kind" {
+    const basic = BasicParseError{
+        .kind = .end_of_input,
+        .location = .{ .line = 4, .column = 2 },
+    };
+    const parsed = basic.intoDefaultParseError();
+
+    try std.testing.expect(parsed.kind == .basic);
+    try std.testing.expect(parsed.kind.basic == .end_of_input);
+    try std.testing.expectEqual(@as(u32, 4), parsed.location.line);
+    try std.testing.expectEqual(@as(u32, 2), parsed.location.column);
+}

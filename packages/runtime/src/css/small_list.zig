@@ -37,7 +37,7 @@ pub fn SmallList(comptime T: type, comptime N: comptime_int) type {
         pub fn initInlined(values: []const T) This {
             bun.assert(values.len <= N);
             var this = This{
-                .capacity = values.len,
+                .capacity = @intCast(values.len),
                 .data = .{ .inlined = undefined },
             };
 
@@ -82,12 +82,12 @@ pub fn SmallList(comptime T: type, comptime N: comptime_int) type {
             if (list.cap > N) {
                 return .{
                     .capacity = list.cap,
-                    .data = .{ .heap = .{ .len = list.len, .ptr = list.ptr } },
+                    .data = .{ .heap = .{ .len = @intCast(list.len), .ptr = list.ptr } },
                 };
             }
             defer list.deinit(allocator);
             var this: @This() = .{
-                .capacity = list.len,
+                .capacity = @intCast(list.len),
                 .data = .{ .inlined = undefined },
             };
             @memcpy(this.data.inlined[0..list.len], list.items[0..list.len]);
@@ -98,11 +98,11 @@ pub fn SmallList(comptime T: type, comptime N: comptime_int) type {
             if (list.cap > N) {
                 return .{
                     .capacity = list.cap,
-                    .data = .{ .heap = .{ .len = list.len, .ptr = list.ptr } },
+                    .data = .{ .heap = .{ .len = @intCast(list.len), .ptr = list.ptr } },
                 };
             }
             var this: @This() = .{
-                .capacity = list.len,
+                .capacity = @intCast(list.len),
                 .data = .{ .inlined = undefined },
             };
             @memcpy(this.data.inlined[0..list.len], list.items[0..list.len]);
@@ -657,16 +657,133 @@ pub fn SmallList(comptime T: type, comptime N: comptime_int) type {
     };
 }
 
-const bun = @import("bun");
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const css = @import("./css_parser.zig");
-const Delimiters = css.Delimiters;
+const css = @import("./css_parser_stub.zig");
+const Delimiters = struct {
+    comma: bool = false,
+};
 const Parser = css.Parser;
 const PrintErr = css.PrintErr;
 const Printer = css.Printer;
 const Result = css.Result;
-const generic = css.generic;
-const voidWrap = css.voidWrap;
-const TextShadow = css.css_properties.text.TextShadow;
+
+const generic = struct {
+    pub fn parseFor(comptime T: type) fn (*Parser) Result(T) {
+        return T.parse;
+    }
+
+    pub fn deepClone(comptime T: type, value: *const T, allocator: Allocator) T {
+        if (comptime @hasDecl(T, "deepClone")) return value.deepClone(allocator);
+        return value.*;
+    }
+
+    pub fn eql(comptime T: type, lhs: *const T, rhs: *const T) bool {
+        if (comptime @hasDecl(T, "eql")) return lhs.eql(rhs);
+        return std.meta.eql(lhs.*, rhs.*);
+    }
+
+    pub fn hash(comptime T: type, value: *const T, hasher: anytype) void {
+        if (comptime @hasDecl(T, "hash")) return value.hash(hasher);
+        std.hash.autoHash(hasher, value.*);
+    }
+};
+
+fn voidWrap(comptime T: type, comptime func: anytype) @TypeOf(func) {
+    _ = T;
+    return func;
+}
+
+const TextShadow = struct {};
+
+const bun = struct {
+    pub const assert = std.debug.assert;
+    pub const debugAssert = std.debug.assert;
+
+    pub fn handleOom(result: anytype) @typeInfo(@TypeOf(result)).error_union.payload {
+        return result catch unreachable;
+    }
+
+    pub const bits = struct {
+        pub fn insert(comptime T: type, dest: *T, value: T) void {
+            const Int = @typeInfo(T).@"struct".backing_integer.?;
+            dest.* = @bitCast(@as(Int, @bitCast(dest.*)) | @as(Int, @bitCast(value)));
+        }
+
+        pub fn contains(comptime T: type, haystack: T, needle: T) bool {
+            const Int = @typeInfo(T).@"struct".backing_integer.?;
+            const haystack_bits: Int = @bitCast(haystack);
+            const needle_bits: Int = @bitCast(needle);
+            return (haystack_bits & needle_bits) == needle_bits;
+        }
+    };
+
+    pub fn BabyList(comptime T: type) type {
+        return struct {
+            ptr: [*]T = undefined,
+            len: u32 = 0,
+            cap: u32 = 0,
+
+            pub fn append(this: *@This(), allocator: Allocator, value: T) !void {
+                if (this.len == this.cap) {
+                    const new_cap: u32 = if (this.cap == 0) 8 else this.cap +| this.cap / 2 + 8;
+                    const new_items = try allocator.alloc(T, new_cap);
+                    if (this.cap > 0) {
+                        @memcpy(new_items[0..this.len], this.ptr[0..this.len]);
+                        allocator.free(this.ptr[0..this.cap]);
+                    }
+                    this.ptr = new_items.ptr;
+                    this.cap = new_cap;
+                }
+                this.ptr[this.len] = value;
+                this.len += 1;
+            }
+
+            pub fn pop(this: *@This()) ?T {
+                if (this.len == 0) return null;
+                this.len -= 1;
+                return this.ptr[this.len];
+            }
+
+            pub fn deinit(this: *@This(), allocator: Allocator) void {
+                if (this.cap > 0) allocator.free(this.ptr[0..this.cap]);
+                this.* = .{};
+            }
+        };
+    }
+};
+
+test "SmallList keeps values inline up to inline capacity" {
+    var list = SmallList(u32, 2){};
+    list.append(std.testing.allocator, 10);
+    list.append(std.testing.allocator, 20);
+    defer list.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(u32, 2), list.len());
+    try std.testing.expectEqualSlices(u32, &.{ 10, 20 }, list.slice());
+    try std.testing.expectEqual(@as(u32, 2), list.capacity);
+}
+
+test "SmallList spills to heap after inline capacity" {
+    var list = SmallList(u32, 2){};
+    defer list.deinit(std.testing.allocator);
+
+    list.append(std.testing.allocator, 1);
+    list.append(std.testing.allocator, 2);
+    list.append(std.testing.allocator, 3);
+
+    try std.testing.expectEqual(@as(u32, 3), list.len());
+    try std.testing.expect(list.capacity > 2);
+    try std.testing.expectEqualSlices(u32, &.{ 1, 2, 3 }, list.slice());
+}
+
+test "SmallList orderedRemove and swapRemove update length" {
+    var list = SmallList(u32, 3).initInlined(&.{ 1, 2, 3 });
+
+    try std.testing.expectEqual(@as(u32, 2), list.orderedRemove(1));
+    try std.testing.expectEqualSlices(u32, &.{ 1, 3 }, list.slice());
+
+    try std.testing.expectEqual(@as(u32, 1), list.swapRemove(0));
+    try std.testing.expectEqualSlices(u32, &.{3}, list.slice());
+}

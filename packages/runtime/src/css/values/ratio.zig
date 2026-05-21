@@ -5,7 +5,8 @@
 // parseRequired, toCss) reference stub members that trip `@compileError`
 // on call; Zig's lazy analysis keeps the file compiling as long as the
 // pure-data shape (`numerator`/`denominator`/`addF32`) is the only thing
-// exercised. `eql` returns `false` under the stub `implementEql` placeholder.
+// exercised. `eql` mirrors the structural equality that upstream reaches
+// through `css.implementEql`.
 
 pub const css = @import("../css_parser_stub.zig");
 const Result = css.Result;
@@ -60,7 +61,7 @@ pub const Ratio = struct {
     }
 
     pub fn eql(lhs: *const @This(), rhs: *const @This()) bool {
-        return css.implementEql(@This(), lhs, rhs);
+        return lhs.numerator == rhs.numerator and lhs.denominator == rhs.denominator;
     }
 };
 
@@ -77,13 +78,12 @@ test "Ratio.addF32 adds to numerator only" {
     try std.testing.expectEqual(@as(f32, 3), r2.denominator);
 }
 
-test "Ratio.eql is a stub returning false" {
-    // implementEql in the stub returns `false` unconditionally — the real
-    // structural-equality path lands with css_parser. Test pins that
-    // semantics so the truth-shift is visible when the real impl drops in.
+test "Ratio.eql compares numerator and denominator" {
     const a = Ratio{ .numerator = 1, .denominator = 2 };
     const b = Ratio{ .numerator = 1, .denominator = 2 };
-    try std.testing.expect(!a.eql(&b));
+    const c = Ratio{ .numerator = 2, .denominator = 1 };
+    try std.testing.expect(a.eql(&b));
+    try std.testing.expect(!a.eql(&c));
 }
 
 const std = @import("std");
