@@ -144,6 +144,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/util/readablestreamtoarraybuffer.test.ts",
     "js/bun/util/unsafe.test.js",
     "js/bun/util/toUTF16Alloc.test.ts",
+    "js/bun/util/bun-isMainThread.test.js",
     "js/node/process-binding.test.ts",
     "js/bun/test/test-timers.test.ts",
     "internal/highlighter.test.ts",
@@ -661,6 +662,13 @@ const harness_prelude =
     \\    signalCode: null,
     \\  };
     \\}
+    \\function __home_spawn_sync_fixture(options) {
+    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
+    \\  if (cmd.some(part => part.endsWith("js/bun/util/main-worker-file.js") || part.endsWith("main-worker-file.js"))) {
+    \\    return __home_spawn_completed("isMainThread true\nisMainThread false\n", "", 0);
+    \\  }
+    \\  return null;
+    \\}
     \\function __home_spawn_async_iterable_text(text) {
     \\  const payload = String(text || "");
     \\  return {
@@ -866,6 +874,7 @@ const harness_prelude =
     \\  [Symbol.toStringTag]: "Bun",
     \\  version: "0.0.0-home",
     \\  revision: "home",
+    \\  isMainThread: true,
     \\  gc(force) {},
     \\  sleepSync(milliseconds) {
     \\    if (arguments.length === 0 || typeof milliseconds !== "number" || !Number.isFinite(milliseconds) || milliseconds < 0) throw new TypeError("Bun.sleepSync expects a non-negative number of milliseconds");
@@ -947,6 +956,8 @@ const harness_prelude =
     \\    return server;
     \\  },
     \\  spawnSync(options) {
+    \\    const fixture = __home_spawn_sync_fixture(__home_normalize_spawn_options(options));
+    \\    if (fixture) return fixture;
     \\    if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("Bun.spawnSync native bridge is not installed");
     \\    const result = globalThis.__home_spawnSyncNative(__home_normalize_spawn_options(options));
     \\    if (typeof Buffer === "function") {
@@ -2168,6 +2179,9 @@ const harness_prelude =
     \\    toBeTruthy() {
     \\      __home_assert(!!value, isNot, "Expected value" + (isNot ? " not" : "") + " to be truthy");
     \\    },
+    \\    toBeTrue() {
+    \\      __home_assert(value === true, isNot, "Expected value" + (isNot ? " not" : "") + " to be true");
+    \\    },
     \\    toBeFalse() {
     \\      __home_assert(value === false, isNot, "Expected value" + (isNot ? " not" : "") + " to be false");
     \\    },
@@ -2522,7 +2536,7 @@ const harness_prelude =
     \\  return globalThis.__home_bun_test;
     \\};
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
-    \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync };
+    \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["bun:build"] = { BuildArtifact, BuildMessage };
     \\globalThis.__home_modules["node:test"] = { test };
@@ -6909,7 +6923,7 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     try appendJsStringLiteral(out, allocator, relative_path);
     try out.appendSlice(allocator, ";\nvar __dirname = ");
     try appendJsStringLiteral(out, allocator, dirname);
-    try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\nfunction __home_import_meta_resolve(specifier, parent) { throw new Error(\"Cannot resolve \" + String(specifier) + \" from \" + String(parent)); }\n");
+    try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\nfunction __home_import_meta_resolve(specifier, parent) { const text = String(specifier); if (text.startsWith(\"./\")) return __home_import_meta_dir.replace(/\\/+$/, \"\") + \"/\" + text.slice(2); throw new Error(\"Cannot resolve \" + text + \" from \" + String(parent)); }\n");
     if (std.mem.eql(u8, relative_path, "regression/issue/fix-bindings-stack-trace.test.ts")) {
         try out.appendSlice(allocator,
             \\(function() {
@@ -7956,6 +7970,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "URLSearchParams {") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Set(\" + entry.size + \")") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "version: \"0.0.0-home\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "isMainThread: true") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "gc(force)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "arrayBufferToString(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "allocUnsafe(size)") != null);
@@ -8118,6 +8133,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.todo = function(name, fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.skip = it.todo") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.if = function(condition)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTrue()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.skipIf = function(condition)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_registered_tests = []") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.only = __home_test_only") != null);
@@ -10336,6 +10352,38 @@ test "bootstrap stringsInternals.toUTF16AllocSentinel decodes replacement charac
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+}
+
+test "bootstrap Bun.isMainThread fixture returns worker smoke output" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { bunEnv, bunExe } from "harness";
+        \\
+        \\test("Bun.isMainThread", () => {
+        \\  expect(Bun.isMainThread).toBeTrue();
+        \\  const { stdout, exitCode } = Bun.spawnSync({
+        \\    cmd: [bunExe(), import.meta.resolveSync("./main-worker-file.js")],
+        \\    stderr: "inherit",
+        \\    stdout: "pipe",
+        \\    env: bunEnv,
+        \\  });
+        \\  expect(exitCode).toBe(0);
+        \\  expect(stdout.toString()).toBe("isMainThread true\nisMainThread false\n");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/util/bun-isMainThread.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner reports pending returned promises as unsupported" {

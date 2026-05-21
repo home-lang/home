@@ -223,6 +223,7 @@ millisecond timing / argument validation,
 `Bun.unsafe.arrayBufferToString` / `Bun.allocUnsafe` smoke coverage, and
 `bun:internal-for-testing.stringsInternals.toUTF16AllocSentinel`
 UTF-8 replacement behavior, and
+`Bun.isMainThread` / worker child-output smoke coverage, and
 `Bun.deepEquals`, Node `Buffer`
 binary/UTF-16LE/compare/inspect-limit/isEncoding behavior, `Map`/`Set`
 deep-equality, `Bun.inspect` Set formatting, `MessageEvent` constructor
@@ -292,7 +293,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `162` files, `698` passed, `0` failed,
+Latest measured subset run: `163` files, `699` passed, `0` failed,
 `41` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
@@ -1194,6 +1195,12 @@ as `6` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap
 lowers `stringsInternals` from `bun:internal-for-testing` and routes the
 sentinel helper through the UTF-8 decoder, including invalid-byte
 replacement characters.
+
+The copied `js/bun/util/bun-isMainThread.test.js` fixture now passes in
+Home as `1` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap
+exports `Bun.isMainThread`, adds `expect().toBeTrue()`, resolves the
+relative worker fixture path, and models the expected worker child
+stdout through the subprocess fixture path.
 
 The copied `js/node/process-binding.test.ts` fixture now passes in Home
 as `2` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap
