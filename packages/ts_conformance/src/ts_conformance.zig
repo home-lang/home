@@ -19133,6 +19133,87 @@ test "conformance: decoratorOnClassConstructorParameter5 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: stringLiteralTypeIsSubtypeOfString passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringLiteralTypeIsSubtypeOfString",
+        .path = "stringLiteralTypeIsSubtypeOfString.ts",
+        .source =
+        \\function f1(x: 'a');
+        \\function f1(x: string);
+        \\function f1(x: string) { }
+        \\
+        \\function f2(x: 'a');
+        \\function f2(x: any);
+        \\function f2(x: any) { }
+        \\
+        \\function f3(x: 'a');
+        \\function f3(x: Object);
+        \\function f3(x: any) { }
+        \\
+        \\function f4(x: 'a');
+        \\function f4(x: {});
+        \\function f4(x: any) { }
+        \\
+        \\function f5(x: 'a');
+        \\function f5(x: number);
+        \\function f5(x: any) { }
+        \\
+        \\function f6(x: 'a');
+        \\function f6(x: boolean);
+        \\function f6(x: any) { }
+        \\
+        \\function f7(x: 'a');
+        \\function f7(x: Date);
+        \\function f7(x: any) { }
+        \\
+        \\function f8(x: 'a');
+        \\function f8(x: RegExp);
+        \\function f8(x: any) { }
+        \\
+        \\function f9(x: 'a');
+        \\function f9(x: () => {});
+        \\function f9(x: any) { }
+        \\
+        \\interface I extends String {
+        \\    foo: string;
+        \\}
+        \\
+        \\function f11(x: 'a');
+        \\function f11(x: I);
+        \\function f11(x: any) { }
+        \\
+        \\function f12<T>(x: 'a');
+        \\function f12<T>(x: T);
+        \\function f12<T>(x: any) { }
+        \\
+        \\function f13<T extends String>(x: 'a');
+        \\function f13<T extends String>(x: T);
+        \\function f13<T extends String>(x: any) { }
+        \\
+        \\enum E { A }
+        \\function f14(x: 'a');
+        \\function f14(x: E);
+        \\function f14(x: any) { }
+        \\
+        \\function f15<T, U extends T>(x: 'a');
+        \\function f15<T, U extends T>(x: U);
+        \\function f15<T, U extends T>(x: any) { }
+        \\
+        \\function f16<T extends String, U extends T>(x: 'a');
+        \\function f16<T extends String, U extends T>(x: U);
+        \\function f16<T extends String, U extends T>(x: any) { }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
