@@ -142,6 +142,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/util/randomUUIDv7.test.ts",
     "js/bun/util/sleepSync.test.ts",
     "js/bun/util/readablestreamtoarraybuffer.test.ts",
+    "js/bun/util/unsafe.test.js",
     "js/node/process-binding.test.ts",
     "js/bun/test/test-timers.test.ts",
     "internal/highlighter.test.ts",
@@ -881,6 +882,21 @@ const harness_prelude =
     \\    return Date.now() * 1000000;
     \\  },
     \\  randomUUIDv7: __home_random_uuidv7,
+    \\  unsafe: {
+    \\    arrayBufferToString(value) {
+    \\      if (value instanceof Uint16Array) {
+    \\        let output = "";
+    \\        for (const code of value) output += String.fromCharCode(code);
+    \\        return output;
+    \\      }
+    \\      const view = __home_array_buffer_view(value);
+    \\      if (!view) throw new TypeError("arrayBufferToString expects an ArrayBuffer or typed array");
+    \\      return new TextDecoder().decode(view);
+    \\    },
+    \\  },
+    \\  allocUnsafe(size) {
+    \\    return new Uint8Array(Math.max(0, Number(size) || 0));
+    \\  },
     \\  deepEquals(left, right) {
     \\    return __home_deep_equal(left, right, false, new Map());
     \\  },
@@ -2532,7 +2548,7 @@ const harness_prelude =
     \\  __home_write_temp_files(root, files || {});
     \\  return root;
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); } };
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, gc(force) { return Bun.gc(force); }, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); } };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -7342,6 +7358,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { isWindows } = globalThis.__home_import(\"harness\");",
         },
         .{
+            .needle = "import { gc } from \"harness\";",
+            .replacement = "const { gc } = globalThis.__home_import(\"harness\");",
+        },
+        .{
             .needle = "import { bunEnv, bunExe } from \"harness\";",
             .replacement = "const { bunEnv, bunExe } = globalThis.__home_import(\"harness\");",
         },
@@ -7886,6 +7906,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Set(\" + entry.size + \")") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "version: \"0.0.0-home\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "gc(force)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "arrayBufferToString(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "allocUnsafe(size)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "sleepSync(milliseconds)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Bun.sleepSync expects a non-negative number of milliseconds") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "sleepSync: Bun.sleepSync") != null);
@@ -8382,6 +8404,22 @@ test "Bun harness import rewrite lowers isWindows import" {
     defer std.testing.allocator.free(rewritten);
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { isWindows } = globalThis.__home_import(\"harness\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"harness\"") == null);
+}
+
+test "Bun harness import rewrite lowers gc import" {
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { gc } from "harness";
+        \\test("gc", () => {
+        \\  gc(true);
+        \\  expect(true).toBe(true);
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/bun/util/unsafe.test.js");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { gc } = globalThis.__home_import(\"harness\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"harness\"") == null);
 }
 
@@ -10150,6 +10188,51 @@ test "bootstrap Bun.readableStreamToArrayBuffer drains queued chunks" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap Bun unsafe array buffer helpers cover copied fixture shape" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, it } from "bun:test";
+        \\import { gc } from "harness";
+        \\
+        \\it("arrayBufferToString u8", async () => {
+        \\  const bytes = new TextEncoder().encode("hello world");
+        \\  gc(true);
+        \\  expect(Bun.unsafe.arrayBufferToString(bytes)).toBe("hello world");
+        \\});
+        \\
+        \\it("arrayBufferToString ArrayBuffer", async () => {
+        \\  const bytes = new TextEncoder().encode("hello world");
+        \\  const out = Bun.unsafe.arrayBufferToString(bytes.buffer);
+        \\  expect(out).toBe("hello world");
+        \\});
+        \\
+        \\it("arrayBufferToString u16", () => {
+        \\  const bytes = new TextEncoder().encode("hello world");
+        \\  const uint16 = new Uint16Array(bytes.byteLength);
+        \\  uint16.set(bytes);
+        \\  expect(Bun.unsafe.arrayBufferToString(uint16)).toBe("hello world");
+        \\});
+        \\
+        \\it("Bun.allocUnsafe", () => {
+        \\  const buffer = Bun.allocUnsafe(1024);
+        \\  expect(buffer instanceof Uint8Array).toBe(true);
+        \\  expect(buffer.length).toBe(1024);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/util/unsafe.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap runner reports pending returned promises as unsupported" {

@@ -220,6 +220,7 @@ entry lookup), WebSocket failed-connect `ErrorEvent` snapshots, JSC
 `Bun.file(...).type` MIME behavior, `Bun.randomUUIDv7`, `Bun.sleepSync`
 millisecond timing / argument validation,
 `Bun.readableStreamToArrayBuffer` queued chunk draining, and
+`Bun.unsafe.arrayBufferToString` / `Bun.allocUnsafe` smoke coverage, and
 `Bun.deepEquals`, Node `Buffer`
 binary/UTF-16LE/compare/inspect-limit/isEncoding behavior, `Map`/`Set`
 deep-equality, `Bun.inspect` Set formatting, `MessageEvent` constructor
@@ -289,7 +290,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `160` files, `688` passed, `0` failed,
+Latest measured subset run: `161` files, `692` passed, `0` failed,
 `41` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
@@ -1179,6 +1180,12 @@ bootstrap adds narrow `ReadableStream` / `TextEncoder` support,
 `ArrayBuffer` decoding in `TextDecoder`, and an internal-promise-style
 `Bun.readableStreamToArrayBuffer` path that does not observe user
 overrides of `Promise.prototype.then`.
+
+The copied `js/bun/util/unsafe.test.js` fixture now passes in Home as
+`4` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap lowers
+the `harness.gc` import and models `Bun.unsafe.arrayBufferToString` for
+`Uint8Array`, `ArrayBuffer`, and `Uint16Array`, plus `Bun.allocUnsafe`
+returning writable `Uint8Array` storage.
 
 The copied `js/node/process-binding.test.ts` fixture now passes in Home
 as `2` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap

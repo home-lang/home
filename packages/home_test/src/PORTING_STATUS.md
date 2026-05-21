@@ -191,7 +191,8 @@ mutable `globalThis` prototype behavior, comment-only module-load smoke,
 `Bun.file(...).type` explicit and `.css` MIME behavior,
 `Bun.randomUUIDv7` timestamped / monotonic UUID output,
 `Bun.sleepSync` millisecond timing / argument validation,
-`Bun.readableStreamToArrayBuffer` queued chunk draining, plus
+`Bun.readableStreamToArrayBuffer` queued chunk draining,
+`Bun.unsafe.arrayBufferToString` / `Bun.allocUnsafe` smoke coverage, plus
 `Bun.deepEquals`,
 Request/Response/Headers/URL, `node-fetch`, `node:buffer`, `deno:harness`
 including Bun-copied Deno `test(options, fn)` / permission skip /
@@ -772,6 +773,11 @@ passes as `1` test through the stream bootstrap model. It covers queued
 `ReadableStream` chunks, `TextEncoder` / `TextDecoder` ArrayBuffer
 roundtrips, and an internal-promise-style implementation that ignores
 user overrides of `Promise.prototype.then`.
+The copied `js/bun/util/unsafe.test.js` fixture now passes as `4` tests
+through the unsafe utility bootstrap model. It covers `harness.gc`
+lowering, `Bun.unsafe.arrayBufferToString` for byte arrays,
+`ArrayBuffer`, and `Uint16Array`, plus writable `Bun.allocUnsafe`
+`Uint8Array` storage.
 The copied `js/node/process-binding.test.ts` fixture now passes as `2`
 tests through the `process.binding` bootstrap model. It covers the
 `constants` binding buckets Bun asserts plus the `uv` error-name and
