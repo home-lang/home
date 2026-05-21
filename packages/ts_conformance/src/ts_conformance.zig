@@ -4120,19 +4120,301 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
-test "conformance: iterableArrayPattern14 passes clean" {
+test "conformance: additionOperatorWithConstrainedTypeParameter passes clean" {
     const result = try runOneEntry(T.allocator, .{
-        .name = "iterableArrayPattern14",
-        .path = "iterableArrayPattern14.ts",
+        .name = "additionOperatorWithConstrainedTypeParameter",
+        .path = "additionOperatorWithConstrainedTypeParameter.ts",
+        .source =
+        \\// @target: es2015
+        \\// test for #17069
+        \\function sum<T extends Record<K, number>, K extends string>(n: number, v: T, k: K) {
+        \\    n = n + v[k];
+        \\    n += v[k]; // += should work the same way
+        \\}
+        \\function realSum<T extends Record<K, number>, K extends string>(n: number, vs: T[], k: K) {
+        \\    for (const v of vs) {
+        \\        n = n + v[k];
+        \\        n += v[k];
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+
+test "conformance: subtypesOfTypeParameterWithConstraints3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "subtypesOfTypeParameterWithConstraints3",
+        .path = "subtypesOfTypeParameterWithConstraints3.ts",
+        .source =
+        \\// @target: es2015
+        \\// checking whether other types are subtypes of type parameters with constraints
+        \\
+        \\function f<T extends U, U, V>(t: T, u: U, v: V) {
+        \\    // ok
+        \\    var r = true ? t : u;
+        \\    var r = true ? u : t;
+        \\
+        \\    // ok
+        \\    var r2 = true ? t : v;
+        \\    var r2 = true ? v : t;
+        \\
+        \\    // ok
+        \\    var r3 = true ? v : u;
+        \\    var r3 = true ? u : v;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: stringLiteralTypesAsTypeParameterConstraint01 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringLiteralTypesAsTypeParameterConstraint01",
+        .path = "stringLiteralTypesAsTypeParameterConstraint01.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\
+        \\function foo<T extends "foo">(f: (x: T) => T) {
+        \\    return f;
+        \\}
+        \\
+        \\function bar<T extends "foo" | "bar">(f: (x: T) => T) {
+        \\    return f;
+        \\}
+        \\
+        \\let f = foo(x => x);
+        \\let fResult = f("foo");
+        \\
+        \\let g = foo((x => x));
+        \\let gResult = g("foo");
+        \\
+        \\let h = bar(x => x);
+        \\let hResult = h("foo");
+        \\hResult = h("bar");
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: stringLiteralTypesInUnionTypes01 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringLiteralTypesInUnionTypes01",
+        .path = "stringLiteralTypesInUnionTypes01.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// @declaration: true
+        \\
+        \\type T = "foo" | "bar" | "baz";
+        \\
+        \\var x: "foo" | "bar" | "baz" = undefined;
+        \\var y: T = undefined;
+        \\
+        \\if (x === "foo") {
+        \\    let a = x;
+        \\}
+        \\else if (x !== "bar") {
+        \\    let b = x || y;
+        \\}
+        \\else {
+        \\    let c = x;
+        \\    let d = y;
+        \\    let e: (typeof x) | (typeof y) = c || d;
+        \\}
+        \\
+        \\x = y;
+        \\y = x;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: ambientInsideNonAmbient passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "ambientInsideNonAmbient",
+        .path = "ambientInsideNonAmbient.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\namespace M {
+        \\    export declare var x;
+        \\    export declare function f();
+        \\    export declare class C { }
+        \\    export declare enum E { }
+        \\    export declare namespace M { }
+        \\}
+        \\
+        \\namespace M2 {
+        \\    declare var x;
+        \\    declare function f();
+        \\    declare class C { }
+        \\    declare enum E { }
+        \\    declare namespace M { }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emitClassDeclarationWithPropertyAssignmentInES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emitClassDeclarationWithPropertyAssignmentInES6",
+        .path = "emitClassDeclarationWithPropertyAssignmentInES6.ts",
+        .source =
+        \\// @target:es6
+        \\class C {
+        \\    x: string = "Hello world";
+        \\}
+        \\
+        \\class D {
+        \\    x: string = "Hello world";
+        \\    y: number;
+        \\    constructor() {
+        \\        this.y = 10;
+        \\    }
+        \\}
+        \\
+        \\class E extends D{
+        \\    z: boolean = true;
+        \\}
+        \\
+        \\class F extends D{
+        \\    z: boolean = true;
+        \\    j: string;
+        \\    constructor() {
+        \\        super();
+        \\        this.j = "HI";
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: typeGuardOfFormFunctionEquality passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeGuardOfFormFunctionEquality",
+        .path = "typeGuardOfFormFunctionEquality.ts",
+        .source =
+        \\// @target: es2015
+        \\declare function isString1(a: number, b: Object): b is string;
+        \\
+        \\declare function isString2(a: Object): a is string;
+        \\
+        \\switch (isString1(0, "")) {
+        \\    case isString2(""):
+        \\    default:
+        \\}
+        \\
+        \\var x = isString1(0, "") === isString2("");
+        \\
+        \\function isString3(a: number, b: number, c: Object): c is string {
+        \\    return isString1(0, c);
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+
+test "conformance: parserSbp_7_9_A9_T3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserSbp_7.9_A9_T3",
+        .path = "parserSbp_7.9_A9_T3.ts",
+        .source =
+        \\// @target: es2015
+        \\// Copyright 2009 the Sputnik authors.  All rights reserved.
+        \\// This code is governed by the BSD license found in the LICENSE file.
+        \\
+        \\/**
+        \\ * Check Do-While Statement for automatic semicolon insertion
+        \\ *
+        \\ * @path bestPractice/Sbp_7.9_A9_T3.js
+        \\ * @description Execute do { \n ; \n }while(false) true
+        \\ */
+        \\
+        \\//CHECK#1
+        \\do {
+        \\  ;
+        \\} while (false) true
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+
+test "conformance: iterableArrayPattern20 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "iterableArrayPattern20",
+        .path = "iterableArrayPattern20.ts",
         .source =
         \\// @strict: false
         \\//@target: ES6
         \\class Bar { x }
         \\class Foo extends Bar { y }
-        \\class FooIterator {
+        \\class FooArrayIterator {
         \\    next() {
         \\        return {
-        \\            value: new Foo,
+        \\            value: [new Foo],
         \\            done: false
         \\        };
         \\    }
@@ -4142,8 +4424,74 @@ test "conformance: iterableArrayPattern14 passes clean" {
         \\    }
         \\}
         \\
-        \\function fun(...[a, ...b]) { }
-        \\fun(new FooIterator);
+        \\function fun(...[[a = new Foo], b = [new Foo]]: Bar[][]) { }
+        \\fun(...new FooArrayIterator);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: controlFlowAssignmentExpression passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "controlFlowAssignmentExpression",
+        .path = "controlFlowAssignmentExpression.ts",
+        .source =
+        \\// @target: es2015
+        \\let x: string | boolean | number;
+        \\let obj: any;
+        \\
+        \\x = "";
+        \\x = x.length;
+        \\x; // number
+        \\
+        \\x = true;
+        \\(x = "", obj).foo = (x = x.length);
+        \\x; // number
+        \\
+        \\// https://github.com/microsoft/TypeScript/issues/35484
+        \\type D = { done: true, value: 1 } | { done: false, value: 2 };
+        \\declare function fn(): D;
+        \\let o: D;
+        \\if ((o = fn()).done) {
+        \\    const y: 1 = o.value;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: genericCallWithArrayLiteralArgs passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "genericCallWithArrayLiteralArgs",
+        .path = "genericCallWithArrayLiteralArgs.ts",
+        .source =
+        \\// @target: es2015
+        \\function foo<T>(t: T) {
+        \\    return t;
+        \\}
+        \\
+        \\var r = foo([1, 2]); // number[]
+        \\var r = foo<number[]>([1, 2]); // number[]
+        \\var ra = foo<any[]>([1, 2]); // any[]
+        \\var r2 = foo([]); // any[]
+        \\var r3 = foo<number[]>([]); // number[]
+        \\var r4 = foo([1, '']); // {}[]
+        \\var r5 = foo<any[]>([1, '']); // any[]
+        \\var r6 = foo<Object[]>([1, '']); // Object[]
         ,
         .expects_error = false,
         .expected_errors = "",
