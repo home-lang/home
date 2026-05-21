@@ -4121,6 +4121,418 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
 }
 
 
+test "conformance: inferThisType passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "inferThisType",
+        .path = "inferThisType.ts",
+        .source =
+        \\// @target: es2015
+        \\declare function f<T>(g: (this: T) => void): T
+        \\declare function h(this: number): void;
+        \\f(h)
+        \\
+        \\// works with infer types as well
+        \\type Check<T> = T extends (this: infer U, ...args: any[]) => any ? string : unknown;
+        \\type r1 = Check<(this: number) => void>; // should be string
+        \\
+        \\type This<T>  = T extends (this: infer U, ...args: any[]) => any ? U : unknown;
+        \\type r2 = This<(this: number) => void>; // should be number
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: typeParameterConstModifiersWithIntersection passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeParameterConstModifiersWithIntersection",
+        .path = "typeParameterConstModifiersWithIntersection.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\// @noEmit: true
+        \\
+        \\// https://github.com/microsoft/TypeScript/issues/55778
+        \\
+        \\interface Config<T1 extends { type: string }> {
+        \\  useIt: T1;
+        \\}
+        \\
+        \\declare function test<
+        \\  T1 extends { type: string },
+        \\  const TConfig extends Config<T1>,
+        \\>(config: { produceThing: T1 } & TConfig): TConfig;
+        \\
+        \\const result = test({
+        \\  produceThing: {} as {
+        \\    type: "foo";
+        \\  },
+        \\  useIt: {
+        \\    type: "foo",
+        \\  },
+        \\  extra: 10,
+        \\});
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+
+test "conformance: stringLiteralTypesTypePredicates01 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringLiteralTypesTypePredicates01",
+        .path = "stringLiteralTypesTypePredicates01.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// @declaration: true
+        \\
+        \\type Kind = "A" | "B"
+        \\
+        \\function kindIs(kind: Kind, is: "A"): kind is "A";
+        \\function kindIs(kind: Kind, is: "B"): kind is "B";
+        \\function kindIs(kind: Kind, is: Kind): boolean {
+        \\    return kind === is;
+        \\}
+        \\
+        \\var x: Kind = undefined;
+        \\
+        \\if (kindIs(x, "A")) {
+        \\    let a = x;
+        \\}
+        \\else {
+        \\    let b = x;
+        \\}
+        \\
+        \\if (!kindIs(x, "B")) {
+        \\    let c = x;
+        \\}
+        \\else {
+        \\    let d = x;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectLiteralWidened passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectLiteralWidened",
+        .path = "objectLiteralWidened.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// object literal properties are widened to any
+        \\
+        \\var x1 = {
+        \\    foo: null,
+        \\    bar: undefined
+        \\}
+        \\
+        \\var y1 = {
+        \\    foo: null,
+        \\    bar: {
+        \\        baz: null,
+        \\        boo: undefined
+        \\    }
+        \\}
+        \\
+        \\// these are not widened
+        \\
+        \\var u: undefined = undefined;
+        \\var n: null = null;
+        \\
+        \\var x2 = {
+        \\    foo: n,
+        \\    bar: u
+        \\}
+        \\
+        \\var y2 = {
+        \\    foo: n,
+        \\    bar: {
+        \\        baz: n,
+        \\        boo: u
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: overrideInterfaceProperty passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "overrideInterfaceProperty",
+        .path = "overrideInterfaceProperty.ts",
+        .source =
+        \\// @target: esnext
+        \\// @useDefineForClassFields: false
+        \\interface Mup<K, V> {
+        \\    readonly size: number;
+        \\}
+        \\interface MupConstructor {
+        \\    new(): Mup<any, any>;
+        \\    new<K, V>(entries?: readonly (readonly [K, V])[] | null): Mup<K, V>;
+        \\    readonly prototype: Mup<any, any>;
+        \\}
+        \\declare var Mup: MupConstructor;
+        \\
+        \\class Sizz extends Mup {
+        \\    // ok, because Mup is an interface
+        \\    get size() { return 0 }
+        \\}
+        \\class Kasizz extends Mup {
+        \\    size = -1
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: autoAccessor10 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "autoAccessor10",
+        .path = "autoAccessor10.ts",
+        .source =
+        \\// @target: es2022
+        \\
+        \\class C1 {
+        \\    accessor a0 = 1;
+        \\}
+        \\
+        \\class C2 {
+        \\    #a1_accessor_storage = 1;
+        \\    accessor a1 = 2;
+        \\}
+        \\
+        \\class C3 {
+        \\    static #a2_accessor_storage = 1;
+        \\    static {
+        \\        class C3_Inner {
+        \\            accessor a2 = 2;
+        \\            static {
+        \\                #a2_accessor_storage in C3;
+        \\            }
+        \\        }
+        \\    }
+        \\}
+        \\
+        \\class C4_1 {
+        \\    static accessor a3 = 1;
+        \\}
+        \\
+        \\class C4_2 {
+        \\    static accessor a3 = 1;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: thisTypeInFunctions4 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "thisTypeInFunctions4",
+        .path = "thisTypeInFunctions4.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\type WrongObject = {value: number};
+        \\type CorrectObject = {name: string};
+        \\
+        \\declare function isCorrect(obj: any): obj is CorrectObject
+        \\
+        \\declare function callsCallback(cb: (name: string)=>void)
+        \\
+        \\function problemFunction(this: CorrectObject | WrongObject): void {
+        \\    //check type
+        \\    if (!isCorrect(this)) return;
+        \\
+        \\    callsCallback((name)=>{
+        \\        this.name = name; //should not error
+        \\        type T = typeof this;
+        \\    });
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: es2018IntlAPIs passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "es2018IntlAPIs",
+        .path = "es2018IntlAPIs.ts",
+        .source =
+        \\// @target: es2018
+        \\
+        \\// Sample from
+        \\// https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/PluralRules/supportedLocalesOf
+        \\const locales = ['ban', 'id-u-co-pinyin', 'de-ID'];
+        \\const options = { localeMatcher: 'lookup' } as const;
+        \\console.log(Intl.PluralRules.supportedLocalesOf(locales, options).join(', '));
+        \\
+        \\const [ part ] = new Intl.NumberFormat().formatToParts();
+        \\console.log(part.type, part.value);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: forContinueStatements passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "forContinueStatements",
+        .path = "forContinueStatements.ts",
+        .source =
+        \\// @target: es2015
+        \\// @allowUnreachableCode: true
+        \\
+        \\for (; ;) {
+        \\    continue;
+        \\}
+        \\
+        \\ONE:
+        \\for (; ;) {
+        \\    continue ONE;
+        \\}
+        \\
+        \\TWO:
+        \\THREE:
+        \\for (; ;) {
+        \\    continue THREE;
+        \\}
+        \\
+        \\FOUR:
+        \\for (; ;) {
+        \\    FIVE:
+        \\    for (; ;) {
+        \\        continue FOUR;
+        \\    }
+        \\}
+        \\
+        \\for (; ;) {
+        \\    SIX:
+        \\    for (; ;) continue SIX;
+        \\}
+        \\
+        \\SEVEN:
+        \\for (; ;) for (; ;) for (; ;) continue SEVEN;
+        \\
+        \\EIGHT:
+        \\for (; ;) {
+        \\    var fn = function () { }
+        \\    continue EIGHT;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: iteratorSpreadInArray2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "iteratorSpreadInArray2",
+        .path = "iteratorSpreadInArray2.ts",
+        .source =
+        \\//@target: ES6
+        \\class SymbolIterator {
+        \\    next() {
+        \\        return {
+        \\            value: Symbol(),
+        \\            done: false
+        \\        };
+        \\    }
+        \\
+        \\    [Symbol.iterator]() {
+        \\        return this;
+        \\    }
+        \\}
+        \\
+        \\class NumberIterator {
+        \\    next() {
+        \\        return {
+        \\            value: 0,
+        \\            done: false
+        \\        };
+        \\    }
+        \\
+        \\    [Symbol.iterator]() {
+        \\        return this;
+        \\    }
+        \\}
+        \\
+        \\var array = [...new NumberIterator, ...new SymbolIterator];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
