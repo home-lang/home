@@ -4120,6 +4120,208 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: stringLiteralType passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringLiteralType",
+        .path = "stringLiteralType.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\var x: 'hi';
+        \\
+        \\function f(x: 'hi');
+        \\function f(x: string);
+        \\function f(x: any) {
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: stringLiteralsAssertionsInEqualityComparisons01 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringLiteralsAssertionsInEqualityComparisons01",
+        .path = "stringLiteralsAssertionsInEqualityComparisons01.ts",
+        .source =
+        \\// @target: es2015
+        \\var a = "foo" === "bar" as string;
+        \\var b = "foo" !== ("bar" as string);
+        \\var c = "foo" == (<any>"bar");
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: contextuallyTypeCommaOperator01 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "contextuallyTypeCommaOperator01",
+        .path = "contextuallyTypeCommaOperator01.ts",
+        .source =
+        \\// @target: es2015
+        \\// @allowUnreachableCode: true
+        \\// @noImplicitAny: true
+        \\
+        \\let x: (a: string) => string;
+        \\
+        \\x = (100, a => a);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: asiPreventsParsingAsTypeAlias02 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "asiPreventsParsingAsTypeAlias02",
+        .path = "asiPreventsParsingAsTypeAlias02.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\var type;
+        \\var string;
+        \\var Foo;
+        \\
+        \\namespace container {
+        \\    type
+        \\    Foo = string;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: contextualIntersectionType passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "contextualIntersectionType",
+        .path = "contextualIntersectionType.ts",
+        .source =
+        \\// @target: es2015
+        \\var x: { a: (s: string) => string } & { b: (n: number) => number };
+        \\x = {
+        \\    a: s => s,
+        \\    b: n => n
+        \\};
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: nonPrimitiveRhsSideOfInExpression passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nonPrimitiveRhsSideOfInExpression",
+        .path = "nonPrimitiveRhsSideOfInExpression.ts",
+        .source =
+        \\// @target: es2015
+        \\let o: object = {};
+        \\
+        \\function f(): object {
+        \\    return {};
+        \\}
+        \\
+        \\const b1 = "foo" in o;
+        \\const b2 = "bar" in f();
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: validNumberAssignments passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "validNumberAssignments",
+        .path = "validNumberAssignments.ts",
+        .source =
+        \\// @target: es2015
+        \\var x = 1;
+        \\
+        \\var a: any = x;
+        \\var b: Object = x;
+        \\var c: number = x;
+        \\enum E { A };
+        \\var d: E = x;
+        \\var e = E.A;
+        \\e = x;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: optionalProperties02 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "optionalProperties02",
+        .path = "optionalProperties02.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strictNullChecks: true
+        \\// @declaration: true
+        \\
+        \\interface Foo {
+        \\    a?: string;
+        \\    b: string;
+        \\}
+        \\
+        \\<Foo>{ a: undefined };
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: validUndefinedValues passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "validUndefinedValues",
