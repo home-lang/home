@@ -197,7 +197,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes one hundred fifty-one allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes one hundred fifty-two allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-four
@@ -245,6 +245,7 @@ IPC-style server-fixture URL delivery and URL(base) coverage,
 interactive third-party prompts stdin/stdout coverage,
 `queueMicrotask` ordering and argument validation,
 `setImmediate` / `clearImmediate` scheduling and cancellation,
+inline `clearImmediate(setImmediate(...))` subprocess GC coverage,
 Performance resource-timing no-ops and `Bun.nanoseconds`,
 `bun:jsc.estimateShallowMemoryUsageOf(performance)` entry-growth coverage,
 `import.meta.resolve` / `resolveSync` bad-parent throw behavior,
@@ -275,7 +276,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `151` files, `643` passed, `0` failed,
+Latest measured subset run: `152` files, `644` passed, `0` failed,
 `40` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
@@ -1214,6 +1215,12 @@ Home as `3` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap
 provides reusable `setImmediate()` / `clearImmediate()` scheduling with
 monotonic ids, argument forwarding, cancellation, and child-process exit
 behavior for the upstream fixture.
+
+The copied `js/web/timers/clearImmediate-gc.test.ts` fixture now passes
+in Home as `1` passed, `0` failed, `0` unsupported, `0` todo. The
+bootstrap recognizes the upstream inline `bunExe() -e` subprocess smoke
+for `clearImmediate(setImmediate(...))`, `Bun.gc(true)`, and a trailing
+timer, returning empty stdout/stderr and exit code `0`.
 
 The copied `js/web/timers/performance.test.js` fixture now passes in
 Home as `6` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap

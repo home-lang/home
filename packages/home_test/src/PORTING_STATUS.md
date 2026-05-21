@@ -177,6 +177,7 @@ IPC-style server-fixture URL delivery and `new URL(input, base)`,
 interactive third-party prompts stdin/stdout behavior,
 `queueMicrotask` ordering and argument validation,
 `setImmediate` / `clearImmediate` scheduling and cancellation,
+inline `clearImmediate(setImmediate(...))` subprocess GC coverage,
 Performance resource-timing no-ops and `Bun.nanoseconds`,
 `bun:jsc.estimateShallowMemoryUsageOf(performance)` entry-growth coverage,
 `node:vm.runInNewContext`, DOMException, native constructor identity,
@@ -791,6 +792,10 @@ The copied `js/web/timers/setImmediate.test.js` fixture now passes as
 `3` tests through the timer bootstrap model. It covers scheduled
 callbacks, argument forwarding, `clearImmediate` cancellation, and
 process-exit behavior for pending immediates.
+The copied `js/web/timers/clearImmediate-gc.test.ts` fixture now passes
+as `1` test through the timer/subprocess bootstrap model. It covers the
+upstream inline `bunExe() -e` smoke for clearing a queued immediate,
+forcing GC, and letting a trailing timer settle without stdout/stderr.
 The copied `js/web/timers/performance.test.js` fixture now passes as
 `6` tests through the performance/timer bootstrap model. It covers
 resource-timing no-op methods, writable

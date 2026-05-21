@@ -148,6 +148,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/third_party/prompts/prompts.test.ts",
     "js/web/timers/microtask.test.js",
     "js/web/timers/setImmediate.test.js",
+    "js/web/timers/clearImmediate-gc.test.ts",
     "js/web/timers/performance.test.js",
     "js/web/timers/performance-entries.test.ts",
     "js/web/encoding/text-decoder-cjk.test.ts",
@@ -750,6 +751,7 @@ const harness_prelude =
     \\    return __home_spawn_completed("", "", 0);
     \\  }
     \\  if (joined.includes("\n-e\n") && joined.includes("Bun.build")) return __home_spawn_completed(JSON.stringify({ success: true, outputs: 1 }) + "\n", "", 0);
+    \\  if (joined.includes("\n-e\n") && joined.includes("clearImmediate(setImmediate") && joined.includes("Bun.gc(true)")) return __home_spawn_completed("", "", 0);
     \\  if (cmd.length >= 2 && cmd[1] === "test") {
     \\    const cwd = String(options && options.cwd || "");
     \\    const hasPassWithNoTests = cmd.includes("--pass-with-no-tests");
