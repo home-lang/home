@@ -1,91 +1,142 @@
-const BoringSSL = bun.BoringSSL.c;
-pub const bun = @import("bun");
+const std = @import("std");
 
-fn NewHasher(comptime digest_size: comptime_int, comptime ContextType: type, comptime Full: anytype, comptime Init: anytype, comptime Update: anytype, comptime Final: anytype) type {
+fn NewStdHasher(comptime Hash: type) type {
     return struct {
-        hasher: ContextType = undefined,
+        hasher: Hash = Hash.init(.{}),
 
-        pub const Digest = [digest_size]u8;
-        pub const digest: comptime_int = digest_size;
+        pub const Digest = [Hash.digest_length]u8;
+        pub const digest: comptime_int = Hash.digest_length;
 
         pub fn init() @This() {
-            bun.BoringSSL.load();
-            var this: @This() = .{
-                .hasher = undefined,
+            return .{
+                .hasher = Hash.init(.{}),
             };
-
-            bun.assert(Init(&this.hasher) == 1);
-            return this;
         }
 
         pub fn hash(bytes: []const u8, out: *Digest) void {
-            @setRuntimeSafety(false);
-            _ = Full(bytes.ptr, bytes.len, out);
+            Hash.hash(bytes, out, .{});
         }
 
         pub fn update(this: *@This(), data: []const u8) void {
-            @setRuntimeSafety(false);
-            bun.assert(Update(&this.hasher, data.ptr, data.len) == 1);
+            this.hasher.update(data);
         }
 
         pub fn final(this: *@This(), out: *Digest) void {
-            @setRuntimeSafety(false);
-            bun.assert(Final(out, &this.hasher) == 1);
+            this.hasher.final(out);
         }
     };
 }
 
-fn NewEVP(comptime digest_size: comptime_int, comptime MDName: []const u8) type {
+fn NewStdEVP(comptime Hash: type) type {
     return struct {
-        ctx: BoringSSL.EVP_MD_CTX = undefined,
+        hasher: Hash = Hash.init(.{}),
 
+        pub const Digest = [Hash.digest_length]u8;
+        pub const digest: comptime_int = Hash.digest_length;
+
+        pub fn init() @This() {
+            return .{
+                .hasher = Hash.init(.{}),
+            };
+        }
+
+        pub fn hash(bytes: []const u8, out: *Digest, engine: anytype) void {
+            _ = engine;
+            Hash.hash(bytes, out, .{});
+        }
+
+        pub fn update(this: *@This(), data: []const u8) void {
+            this.hasher.update(data);
+        }
+
+        pub fn final(this: *@This(), out: *Digest) void {
+            this.hasher.final(out);
+        }
+
+        pub fn deinit(this: *@This()) void {
+            _ = this;
+        }
+    };
+}
+
+fn UnsupportedStdHasher(comptime digest_size: comptime_int, comptime name: []const u8) type {
+    return struct {
         pub const Digest = [digest_size]u8;
         pub const digest: comptime_int = digest_size;
 
         pub fn init() @This() {
-            bun.BoringSSL.load();
-
-            const md = @field(BoringSSL, MDName)();
-            var this = @This(){};
-
-            BoringSSL.EVP_MD_CTX_init(&this.ctx);
-
-            bun.assert(BoringSSL.EVP_DigestInit(&this.ctx, md) == 1);
-
-            return this;
+            @panic(name ++ " is not available in the pure Zig sha_hmac shim");
         }
 
-        pub fn hash(bytes: []const u8, out: *Digest, engine: ?*BoringSSL.ENGINE) void {
-            const md = @field(BoringSSL, MDName)();
-
-            bun.assert(BoringSSL.EVP_Digest(bytes.ptr, bytes.len, out, null, md, engine) == 1);
+        pub fn hash(bytes: []const u8, out: *Digest) void {
+            _ = bytes;
+            _ = out;
+            @panic(name ++ " is not available in the pure Zig sha_hmac shim");
         }
 
         pub fn update(this: *@This(), data: []const u8) void {
-            bun.assert(BoringSSL.EVP_DigestUpdate(&this.ctx, data.ptr, data.len) == 1);
+            _ = this;
+            _ = data;
+            @panic(name ++ " is not available in the pure Zig sha_hmac shim");
         }
 
         pub fn final(this: *@This(), out: *Digest) void {
-            bun.assert(BoringSSL.EVP_DigestFinal(&this.ctx, out, null) == 1);
+            _ = this;
+            _ = out;
+            @panic(name ++ " is not available in the pure Zig sha_hmac shim");
         }
 
         pub fn deinit(this: *@This()) void {
-            _ = BoringSSL.EVP_MD_CTX_cleanup(&this.ctx);
+            _ = this;
+        }
+    };
+}
+
+fn UnsupportedEVPHasher(comptime digest_size: comptime_int, comptime name: []const u8) type {
+    return struct {
+        pub const Digest = [digest_size]u8;
+        pub const digest: comptime_int = digest_size;
+
+        pub fn init() @This() {
+            @panic(name ++ " is not available in the pure Zig sha_hmac shim");
+        }
+
+        pub fn hash(bytes: []const u8, out: *Digest, engine: anytype) void {
+            _ = bytes;
+            _ = out;
+            _ = engine;
+            @panic(name ++ " is not available in the pure Zig sha_hmac shim");
+        }
+
+        pub fn update(this: *@This(), data: []const u8) void {
+            _ = this;
+            _ = data;
+            @panic(name ++ " is not available in the pure Zig sha_hmac shim");
+        }
+
+        pub fn final(this: *@This(), out: *Digest) void {
+            _ = this;
+            _ = out;
+            @panic(name ++ " is not available in the pure Zig sha_hmac shim");
+        }
+
+        pub fn deinit(this: *@This()) void {
+            _ = this;
         }
     };
 }
 
 pub const EVP = struct {
-    pub const SHA1 = NewEVP(std.crypto.hash.Sha1.digest_length, "EVP_sha1");
-    pub const MD5 = NewEVP(16, "EVP_md5");
-    pub const MD4 = NewEVP(16, "EVP_md4");
-    pub const SHA224 = NewEVP(28, "EVP_sha224");
-    pub const SHA512 = NewEVP(std.crypto.hash.sha2.Sha512.digest_length, "EVP_sha512");
-    pub const SHA384 = NewEVP(std.crypto.hash.sha2.Sha384.digest_length, "EVP_sha384");
-    pub const SHA256 = NewEVP(std.crypto.hash.sha2.Sha256.digest_length, "EVP_sha256");
-    pub const SHA512_256 = NewEVP(std.crypto.hash.sha2.Sha512T256.digest_length, "EVP_sha512_256");
-    pub const MD5_SHA1 = NewEVP(std.crypto.hash.Sha1.digest_length, "EVP_md5_sha1");
-    pub const Blake2 = NewEVP(256 / 8, "EVP_blake2b256");
+    pub const SHA1 = NewStdEVP(std.crypto.hash.Sha1);
+    pub const MD5 = NewStdEVP(std.crypto.hash.Md5);
+    pub const MD4 = UnsupportedEVPHasher(16, "MD4");
+    pub const SHA224 = NewStdEVP(std.crypto.hash.sha2.Sha224);
+    pub const SHA512 = NewStdEVP(std.crypto.hash.sha2.Sha512);
+    pub const SHA384 = NewStdEVP(std.crypto.hash.sha2.Sha384);
+    pub const SHA256 = NewStdEVP(std.crypto.hash.sha2.Sha256);
+    pub const SHA512_256 = NewStdEVP(std.crypto.hash.sha2.Sha512_256);
+    pub const MD5_SHA1 = UnsupportedEVPHasher(36, "MD5_SHA1");
+    pub const Blake2 = NewStdEVP(std.crypto.hash.blake2.Blake2b256);
 };
 
 pub const SHA1 = EVP.SHA1;
@@ -98,61 +149,16 @@ pub const SHA256 = EVP.SHA256;
 pub const SHA512_256 = EVP.SHA512_256;
 pub const MD5_SHA1 = EVP.MD5_SHA1;
 
-/// API that OpenSSL 3 deprecated
 pub const Hashers = struct {
-    pub const SHA1 = NewHasher(
-        std.crypto.hash.Sha1.digest_length,
-        BoringSSL.SHA_CTX,
-        BoringSSL.SHA1,
-        BoringSSL.SHA1_Init,
-        BoringSSL.SHA1_Update,
-        BoringSSL.SHA1_Final,
-    );
-
-    pub const SHA512 = NewHasher(
-        std.crypto.hash.sha2.Sha512.digest_length,
-        BoringSSL.SHA512_CTX,
-        BoringSSL.SHA512,
-        BoringSSL.SHA512_Init,
-        BoringSSL.SHA512_Update,
-        BoringSSL.SHA512_Final,
-    );
-
-    pub const SHA384 = NewHasher(
-        std.crypto.hash.sha2.Sha384.digest_length,
-        BoringSSL.SHA512_CTX,
-        BoringSSL.SHA384,
-        BoringSSL.SHA384_Init,
-        BoringSSL.SHA384_Update,
-        BoringSSL.SHA384_Final,
-    );
-
-    pub const SHA256 = NewHasher(
-        std.crypto.hash.sha2.Sha256.digest_length,
-        BoringSSL.SHA256_CTX,
-        BoringSSL.SHA256,
-        BoringSSL.SHA256_Init,
-        BoringSSL.SHA256_Update,
-        BoringSSL.SHA256_Final,
-    );
-
-    pub const SHA512_256 = NewHasher(
-        std.crypto.hash.sha2.Sha512T256.digest_length,
-        BoringSSL.SHA512_CTX,
-        BoringSSL.SHA512_256,
-        BoringSSL.SHA512_256_Init,
-        BoringSSL.SHA512_256_Update,
-        BoringSSL.SHA512_256_Final,
-    );
-
-    pub const RIPEMD160 = NewHasher(
-        BoringSSL.RIPEMD160_DIGEST_LENGTH,
-        BoringSSL.RIPEMD160_CTX,
-        BoringSSL.RIPEMD160,
-        BoringSSL.RIPEMD160_Init,
-        BoringSSL.RIPEMD160_Update,
-        BoringSSL.RIPEMD160_Final,
-    );
+    pub const SHA1 = NewStdHasher(std.crypto.hash.Sha1);
+    pub const MD5 = NewStdHasher(std.crypto.hash.Md5);
+    pub const MD4 = UnsupportedStdHasher(16, "MD4");
+    pub const SHA224 = NewStdHasher(std.crypto.hash.sha2.Sha224);
+    pub const SHA512 = NewStdHasher(std.crypto.hash.sha2.Sha512);
+    pub const SHA384 = NewStdHasher(std.crypto.hash.sha2.Sha384);
+    pub const SHA256 = NewStdHasher(std.crypto.hash.sha2.Sha256);
+    pub const SHA512_256 = NewStdHasher(std.crypto.hash.sha2.Sha512_256);
+    pub const RIPEMD160 = UnsupportedStdHasher(20, "RIPEMD160");
 };
 
 const boring = [_]type{
@@ -160,7 +166,6 @@ const boring = [_]type{
     Hashers.SHA512,
     Hashers.SHA384,
     Hashers.SHA256,
-    // Hashers.SHA512_224,
     Hashers.SHA512_256,
     void,
     void,
@@ -171,7 +176,7 @@ const zig = [_]type{
     std.crypto.hash.sha2.Sha512,
     std.crypto.hash.sha2.Sha384,
     std.crypto.hash.sha2.Sha256,
-    std.crypto.hash.sha2.Sha512T256,
+    std.crypto.hash.sha2.Sha512_256,
     std.crypto.hash.blake2.Blake2b256,
     std.crypto.hash.Blake3,
 };
@@ -196,4 +201,36 @@ const labels = [_][]const u8{
     "Blake3",
 };
 
-const std = @import("std");
+fn expectHex(bytes: []const u8, expected: []const u8) !void {
+    var actual: [std.crypto.hash.sha2.Sha512.digest_length * 2]u8 = undefined;
+    const hex = try std.fmt.bufPrint(&actual, "{x}", .{bytes});
+    try std.testing.expectEqualStrings(expected, hex);
+}
+
+test "sha_hmac sha one-shot vectors" {
+    var sha1: SHA1.Digest = undefined;
+    SHA1.hash("abc", &sha1, null);
+    try expectHex(&sha1, "a9993e364706816aba3e25717850c26c9cd0d89d");
+
+    var sha256: SHA256.Digest = undefined;
+    SHA256.hash("abc", &sha256, null);
+    try expectHex(&sha256, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+
+    var sha512_256: SHA512_256.Digest = undefined;
+    SHA512_256.hash("abc", &sha512_256, null);
+    try expectHex(&sha512_256, "53048e2681941ef99b2e29b76b4c7dabe4c2d0c634fc6d46e0e2f13107e7af23");
+}
+
+test "sha_hmac sha streaming matches one-shot" {
+    var one_shot: Hashers.SHA256.Digest = undefined;
+    Hashers.SHA256.hash("abc", &one_shot);
+
+    var streaming = Hashers.SHA256.init();
+    streaming.update("a");
+    streaming.update("bc");
+
+    var streamed: Hashers.SHA256.Digest = undefined;
+    streaming.final(&streamed);
+
+    try std.testing.expectEqualSlices(u8, &one_shot, &streamed);
+}
