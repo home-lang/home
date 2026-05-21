@@ -210,6 +210,10 @@ pub const minimal_js_files = [_][]const u8{
     "js/third_party/jsonwebtoken/expires_format.test.js",
     "js/third_party/jsonwebtoken/noTimestamp.test.js",
     "js/third_party/jsonwebtoken/invalid_exp.test.js",
+    "js/third_party/jsonwebtoken/non_object_values.test.js",
+    "js/third_party/jsonwebtoken/issue_147.test.js",
+    "js/third_party/jsonwebtoken/encoding.test.js",
+    "js/third_party/jsonwebtoken/set_headers.test.js",
     "js/node/path/is-absolute.test.js",
     "js/node/path/zero-length-strings.test.js",
     "js/bun/util/concat.test.js",
@@ -2412,6 +2416,10 @@ const harness_prelude =
     \\    toBeLessThanOrEqual(expected) {
     \\      if (arguments.length < 1) __home_fail("toBeLessThanOrEqual() requires 1 argument");
     \\      __home_assert(value <= expected, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be less than or equal to " + __home_format(expected));
+    \\    },
+    \\    toBeWithin(start, end) {
+    \\      if (arguments.length < 2) __home_fail("toBeWithin() requires 2 arguments");
+    \\      __home_assert(value >= start && value <= end, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be within " + __home_format(start) + " and " + __home_format(end));
     \\    },
     \\    toHaveLength(expected) {
     \\      if (!Number.isInteger(expected) || expected < 0) __home_fail("toHaveLength() requires a non-negative integer");
@@ -6453,13 +6461,42 @@ const harness_prelude =
     \\  error.name = name;
     \\  return error;
     \\}
-    \\function __home_jwt_decode_payload_segment(segment) {
-    \\  const base64 = String(segment || "").replace(/-/g, "+").replace(/_/g, "/");
+    \\function __home_jwt_base64url_to_binary(value) {
+    \\  const base64 = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
     \\  const padded = base64 + "===".slice((base64.length + 3) % 4);
-    \\  const text = typeof atob === "function" ? atob(padded) : Buffer.from(padded, "base64").toString();
-    \\  return JSON.parse(text);
+    \\  return atob(padded);
     \\}
-    \\function __home_jwt_decode(token) {
+    \\function __home_jwt_binary_to_base64url(value) {
+    \\  return btoa(value).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+    \\}
+    \\function __home_jwt_utf8_binary(value) {
+    \\  return unescape(encodeURIComponent(String(value)));
+    \\}
+    \\function __home_jwt_utf8_text(binary) {
+    \\  try {
+    \\    return decodeURIComponent(escape(binary));
+    \\  } catch (error) {
+    \\    return binary;
+    \\  }
+    \\}
+    \\function __home_jwt_encode_segment(value, encoding) {
+    \\  const text = String(value);
+    \\  const binary = encoding === "binary" ? text : __home_jwt_utf8_binary(text);
+    \\  return __home_jwt_binary_to_base64url(binary);
+    \\}
+    \\function __home_jwt_parse_payload_text(text) {
+    \\  const trimmed = String(text).trim();
+    \\  if (trimmed === "null" || trimmed === "true" || trimmed === "false" || trimmed.startsWith("{") || trimmed.startsWith("[") || trimmed.startsWith('"')) return JSON.parse(trimmed);
+    \\  return text;
+    \\}
+    \\function __home_jwt_decode_payload_segment(segment) {
+    \\  const binary = __home_jwt_base64url_to_binary(segment);
+    \\  return __home_jwt_parse_payload_text(__home_jwt_utf8_text(binary));
+    \\}
+    \\function __home_jwt_decode_header_segment(segment) {
+    \\  return JSON.parse(__home_jwt_utf8_text(__home_jwt_base64url_to_binary(segment)));
+    \\}
+    \\function __home_jwt_decode(token, options) {
     \\    if (token === null || token === undefined) return null;
     \\    const text = String(token);
     \\    if (text.startsWith("home.jwt.")) {
@@ -6472,7 +6509,12 @@ const harness_prelude =
     \\    }
     \\    try {
     \\      const parts = text.split(".");
-    \\      if (parts.length >= 2) return __home_jwt_decode_payload_segment(parts[1]);
+    \\      if (parts.length >= 2) {
+    \\        const header = __home_jwt_decode_header_segment(parts[0]);
+    \\        const payload = __home_jwt_decode_payload_segment(parts[1]);
+    \\        if (options && options.complete) return { header, payload, signature: parts.slice(2).join(".") };
+    \\        return payload;
+    \\      }
     \\      return JSON.parse(text);
     \\    } catch (error) {
     \\      return null;
@@ -6485,8 +6527,11 @@ const harness_prelude =
     \\  if (body && typeof body === "object" && !Array.isArray(body)) {
     \\    body = Object.assign({}, body);
     \\    if (opts.expiresIn === "5m") body.exp = Math.floor(Date.now() / 1000) + 5 * 60;
+    \\    else if (typeof opts.expiresIn === "number") body.exp = Math.floor(Date.now() / 1000) + opts.expiresIn;
     \\  }
-    \\  return "home.jwt." + encodeURIComponent(typeof body === "string" ? body : JSON.stringify(body));
+    \\  const header = Object.assign({ alg: "HS256", typ: "JWT" }, opts.header || {});
+    \\  const payloadText = body && typeof body === "object" ? JSON.stringify(body) : String(body);
+    \\  return __home_jwt_encode_segment(JSON.stringify(header), undefined) + "." + __home_jwt_encode_segment(payloadText, opts.encoding) + ".home";
     \\}
     \\function __home_jwt_verify(token, secret, callback) {
     \\  let payload = __home_jwt_decode(token);
@@ -11215,6 +11260,58 @@ test "bootstrap runner covers jsonwebtoken sign and verify fixtures" {
         \\      done();
         \\    });
         \\  });
+        \\
+        \\  it("verifies string payloads", function () {
+        \\    var token = jwt.sign("hello", "123");
+        \\    var result = jwt.verify(token, "123");
+        \\    expect(result).toEqual("hello");
+        \\  });
+        \\
+        \\  it("verifies number payloads as strings", function () {
+        \\    var token = jwt.sign(123, "123");
+        \\    var result = jwt.verify(token, "123");
+        \\    expect(result).toEqual("123");
+        \\  });
+        \\
+        \\  it("adds expiration to sealed object payloads", function () {
+        \\    var token = jwt.sign(Object.seal({ foo: 123 }), "123", { expiresIn: 1000 });
+        \\    var result = jwt.verify(token, "123");
+        \\    const expected = Math.floor(Date.now() / 1000) + 1000;
+        \\    expect(result.exp).toBeWithin(expected - 1, expected + 2);
+        \\  });
+        \\
+        \\  it("encodes utf8 payloads", function () {
+        \\    var expected = "José";
+        \\    var token = jwt.sign({ name: expected }, "shhhhh");
+        \\    var decoded_name = JSON.parse(decodeURIComponent(escape(atob(token.split(".")[1])))).name;
+        \\    expect(decoded_name).toEqual(expected);
+        \\  });
+        \\
+        \\  it("encodes binary payloads", function () {
+        \\    var expected = "José";
+        \\    var token = jwt.sign({ name: expected }, "shhhhh", { encoding: "binary" });
+        \\    var decoded_name = JSON.parse(atob(token.split(".")[1])).name;
+        \\    expect(decoded_name).toEqual(expected);
+        \\  });
+        \\
+        \\  it("roundtrips unicode payload verification", function () {
+        \\    var username = "測試";
+        \\    var token = jwt.sign({ username: username }, "test");
+        \\    var payload = jwt.verify(token, "test");
+        \\    expect(payload.username).toEqual(username);
+        \\  });
+        \\
+        \\  it("adds custom headers to complete decode", function () {
+        \\    var token = jwt.sign({ foo: 123 }, "123", { header: { foo: "bar" } });
+        \\    var decoded = jwt.decode(token, { complete: true });
+        \\    expect(decoded.header.foo).toEqual("bar");
+        \\  });
+        \\
+        \\  it("allows overriding alg headers", function () {
+        \\    var token = jwt.sign({ foo: 123 }, "123", { header: { alg: "HS512" } });
+        \\    var decoded = jwt.decode(token, { complete: true });
+        \\    expect(decoded.header.alg).toEqual("HS512");
+        \\  });
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/jsonwebtoken/noTimestamp.test.js");
@@ -11227,7 +11324,7 @@ test "bootstrap runner covers jsonwebtoken sign and verify fixtures" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 16), file_run.result.passed);
 }
 
 test "bootstrap runner covers Node path bootstrap smokes" {

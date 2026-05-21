@@ -932,6 +932,14 @@ The copied `js/third_party/jsonwebtoken/buffer.test.js`,
 `Buffer` payload signing/decoding, deprecated `expiresInSeconds` option
 validation, `expiresIn: "5m"` claim insertion, and invalid `exp`
 callback error names.
+The copied `js/third_party/jsonwebtoken/non_object_values.test.js`,
+`js/third_party/jsonwebtoken/issue_147.test.js`,
+`js/third_party/jsonwebtoken/encoding.test.js`, and
+`js/third_party/jsonwebtoken/set_headers.test.js` fixtures now pass as
+`8` tests through the CommonJS bootstrap model. They cover compact JWT
+header and payload segment decoding, custom header merges, UTF-8 and
+binary payload encoding, non-object payload verification, and numeric
+`expiresIn` handling on sealed object payloads.
 The copied `js/node/path/to-namespaced-path.test.js` fixture now passes
 as `4` tests through the path bootstrap model. It covers
 `path.toNamespacedPath`, `path._makeLong`, posix/win32 namespace variants,
