@@ -12937,6 +12937,296 @@ test "conformance: typeParameterUsedAsConstraint passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: parenthesizedTypes passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parenthesizedTypes",
+        .path = "parenthesizedTypes.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\var a: string;
+        \\var a: (string);
+        \\var a: ((string) | string | (((string))));
+        \\var a: ((((((((((((((((((((((((((((((((((((((((string))))))))))))))))))))))))))))))))))))))));
+        \\
+        \\var b: (x: string) => string;
+        \\var b: ((x: (string)) => (string));
+        \\
+        \\var c: string[] | number[];
+        \\var c: (string)[] | (number)[];
+        \\var c: ((string)[]) | ((number)[]);
+        \\
+        \\var d: (((x: string) => string) | ((x: number) => number))[];
+        \\var d: ({ (x: string): string } | { (x: number): number })[];
+        \\var d: Array<((x: string) => string) | ((x: number) => number)>;
+        \\var d: Array<{ (x: string): string } | { (x: number): number }>;
+        \\var d: (Array<{ (x: string): string } | { (x: number): number }>);
+        \\
+        \\var e: typeof a[];
+        \\var e: (typeof a)[];
+        \\
+        \\var f: (string) => string;
+        \\var f: (string: any) => string;
+        \\
+        \\var g: [string, string];
+        \\var g: [(string), string];
+        \\var g: [(string), (((typeof a)))];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: typeQueryOnClass passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeQueryOnClass",
+        .path = "typeQueryOnClass.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\class C<T> {
+        \\    constructor(x: number);
+        \\    constructor(x: string);
+        \\    constructor(public x) { }
+        \\
+        \\    static foo(x: number);
+        \\    static foo(x: {});
+        \\    static foo(x) { }
+        \\
+        \\    static bar(x) { }
+        \\
+        \\    static sa = 1;
+        \\    static sb = () => 1;
+        \\
+        \\    static get sc() {
+        \\        return 1;
+        \\    }
+        \\    static set sc(x) {
+        \\    }
+        \\
+        \\    static get sd() {
+        \\        return 1;
+        \\    }
+        \\
+        \\    baz(x): string { return ''; }
+        \\
+        \\    ia = 1;
+        \\    ib = () => this.ia;
+        \\
+        \\    get ic() {
+        \\        return 1;
+        \\    }
+        \\    set ic(x) {
+        \\    }
+        \\
+        \\    get id() {
+        \\        return 1;
+        \\    }
+        \\
+        \\}
+        \\
+        \\var c: C<string>;
+        \\
+        \\var r1: typeof C;
+        \\var r2: typeof c;
+        \\
+        \\class D<T> {
+        \\    constructor(public y?) { }
+        \\    x: T;
+        \\    foo() { }
+        \\}
+        \\
+        \\var d: D<string>;
+        \\var r3: typeof D;
+        \\var r4: typeof d;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: contextuallyTypedObjectLiteralMethodDeclaration01 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "contextuallyTypedObjectLiteralMethodDeclaration01",
+        .path = "contextuallyTypedObjectLiteralMethodDeclaration01.ts",
+        .source =
+        \\// @target: es2015
+        \\// @noImplicitAny: true
+        \\
+        \\interface A {
+        \\    numProp: number;
+        \\}
+        \\
+        \\interface B  {
+        \\    strProp: string;
+        \\}
+        \\
+        \\interface Foo {
+        \\    method1(arg: A): void;
+        \\    method2(arg: B): void;
+        \\}
+        \\
+        \\function getFoo1(): Foo {
+        \\    return {
+        \\        method1(arg) {
+        \\            arg.numProp = 10;
+        \\        },
+        \\        method2(arg) {
+        \\            arg.strProp = "hello";
+        \\        }
+        \\    }
+        \\}
+        \\
+        \\function getFoo2(): Foo {
+        \\    return {
+        \\        method1: (arg) => {
+        \\            arg.numProp = 10;
+        \\        },
+        \\        method2: (arg) => {
+        \\            arg.strProp = "hello";
+        \\        }
+        \\    }
+        \\}
+        \\
+        \\function getFoo3(): Foo {
+        \\    return {
+        \\        method1: function (arg) {
+        \\            arg.numProp = 10;
+        \\        },
+        \\        method2: function (arg) {
+        \\            arg.strProp = "hello";
+        \\        }
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: contextuallyTypeAsyncFunctionReturnType passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "contextuallyTypeAsyncFunctionReturnType",
+        .path = "contextuallyTypeAsyncFunctionReturnType.ts",
+        .source =
+        \\// @target: esnext
+        \\// @noImplicitAny: true
+        \\// @noEmit: true
+        \\
+        \\interface Obj { key: "value"; }
+        \\
+        \\async function fn1(): Promise<Obj> {
+        \\    return { key: "value" };
+        \\}
+        \\
+        \\async function fn2(): Promise<Obj> {
+        \\    return new Promise(resolve => {
+        \\        resolve({ key: "value" });
+        \\    });
+        \\}
+        \\
+        \\async function fn3(): Promise<Obj> {
+        \\    return await { key: "value" };
+        \\}
+        \\
+        \\async function fn4(): Promise<Obj> {
+        \\    return await new Promise(resolve => {
+        \\        resolve({ key: "value" });
+        \\    });
+        \\}
+        \\
+        \\declare class Context {
+        \\  private _runnable;
+        \\}
+        \\type Done = (err?: any) => void;
+        \\type Func = (this: Context, done: Done) => void;
+        \\type AsyncFunc = (this: Context) => PromiseLike<any>;
+        \\
+        \\interface TestFunction {
+        \\  (fn: Func): void;
+        \\  (fn: AsyncFunc): void;
+        \\  (title: string, fn?: Func): void;
+        \\  (title: string, fn?: AsyncFunc): void;
+        \\}
+        \\
+        \\declare const test: TestFunction;
+        \\
+        \\interface ProcessTreeNode {
+        \\  pid: number;
+        \\  name: string;
+        \\  memory?: number;
+        \\  commandLine?: string;
+        \\  children: ProcessTreeNode[];
+        \\}
+        \\
+        \\export declare function getProcessTree(
+        \\  rootPid: number,
+        \\  callback: (tree: ProcessTreeNode) => void
+        \\): void;
+        \\
+        \\test("windows-process-tree", async () => {
+        \\  return new Promise((resolve, reject) => {
+        \\    getProcessTree(123, (tree) => {
+        \\      if (tree) {
+        \\        resolve();
+        \\      } else {
+        \\        reject(new Error("windows-process-tree"));
+        \\      }
+        \\    });
+        \\  });
+        \\});
+        \\
+        \\interface ILocalExtension {
+        \\  isApplicationScoped: boolean;
+        \\  publisherId: string | null;
+        \\}
+        \\type Metadata = {
+        \\  updated: boolean;
+        \\};
+        \\declare function scanMetadata(
+        \\  local: ILocalExtension
+        \\): Promise<Metadata | undefined>;
+        \\
+        \\async function copyExtensions(
+        \\  fromExtensions: ILocalExtension[]
+        \\): Promise<void> {
+        \\  const extensions: [ILocalExtension, Metadata | undefined][] =
+        \\    await Promise.all(
+        \\      fromExtensions
+        \\        .filter((e) => !e.isApplicationScoped)
+        \\        .map(async (e) => [e, await scanMetadata(e)])
+        \\    );
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
