@@ -896,6 +896,11 @@ unrecognized-options shape, substitutes the current heap-owned UTF-8
 string stand-in for upstream `bun.String`, and is exported through
 `home_rt.sql.postgres.protocol` plus the phase smoke imports.
 
+The runtime package now includes the copied MySQL `StackReader` protocol
+leaf. It preserves Bun's in-memory reader cursor behavior, bounded reads,
+backwards skip clamping, and NUL-terminated field reads while routing
+the only Bun helper dependency through `home_rt.strings.indexOfChar`.
+
 > **Why a verbatim copy?** Per direction 2026-05-14: Bun is shifting
 > its core to Rust; we want to continue maintaining the Zig portion
 > ourselves. Vendoring lets us adapt the test runner to Home's HIR /
