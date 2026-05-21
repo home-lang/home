@@ -147,6 +147,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/util/toUTF16Alloc.test.ts",
     "js/bun/util/bun-isMainThread.test.js",
     "js/bun/util/pathToFileURL-invalid.test.ts",
+    "js/node/url/pathToFileURL.test.ts",
     "regression/issue/015201.test.ts",
     "js/node/process-binding.test.ts",
     "js/bun/test/test-timers.test.ts",
@@ -1041,6 +1042,9 @@ const harness_prelude =
     \\    } catch (error) {
     \\      return path;
     \\    }
+    \\  },
+    \\  pathToFileURL(path) {
+    \\    return __home_url_path_to_file_url(path);
     \\  },
     \\  serve(options) {
     \\    options = options || {};
@@ -6051,6 +6055,7 @@ const harness_prelude =
     \\}
     \\function __home_url_path_encode_segment(segment) {
     \\  return Array.from(String(segment)).map(ch => {
+    \\    if (ch === "~") return "%7E";
     \\    if (/^[A-Za-z0-9._~!$&'()*+,;=:@-]$/.test(ch)) return ch;
     \\    const encoded = encodeURIComponent(ch);
     \\    return encoded.replace(/%[0-9a-f]{2}/g, text => text.toUpperCase());
@@ -8649,6 +8654,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Bun.sleepSync expects a non-negative number of milliseconds") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "sleepSync: Bun.sleepSync") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "nanoseconds()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "pathToFileURL(path)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "serve(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "hostname: \"localhost\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_serveNative(options)") != null);
@@ -10999,6 +11005,7 @@ test "bootstrap node url pathToFileURL handles POSIX path encoding" {
         \\  expect(url.pathToFileURL("/foo bar").href).toBe("file:///foo%20bar");
         \\  expect(url.pathToFileURL("/foo?bar").href).toBe("file:///foo%3Fbar");
         \\  expect(url.pathToFileURL("/foo#bar").href).toBe("file:///foo%23bar");
+        \\  expect(url.pathToFileURL("/foo~bar").href).toBe("file:///foo%7Ebar");
         \\  expect(url.pathToFileURL("/fóóbàr").href).toBe("file:///f%C3%B3%C3%B3b%C3%A0r");
         \\});
     ;

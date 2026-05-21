@@ -910,6 +910,10 @@ The copied `js/bun/util/fileUrl.test.js` fixture now passes as `20`
 tests through the URL bootstrap model. It covers Bun file URL helper
 imports, `Bun.pathToFileURL`, stricter `Bun.fileURLToPath` throws, long
 relative path normalization, and corpus-relative `import.meta` roundtrips.
+The copied `js/node/url/pathToFileURL.test.ts` fixture now passes as `2`
+tests through the URL bootstrap model. It covers global
+`Bun.pathToFileURL` exposure and special-character path escaping,
+including Bun's `%7E` encoding for `~`.
 The copied `js/node/url/url-fileurltopath.test.js` fixture now passes as
 `1` executable test plus `1` upstream todo through the URL bootstrap
 model. It covers POSIX `url.fileURLToPath` string and `URL` roundtrips.
