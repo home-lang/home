@@ -1,6 +1,6 @@
 // Copied from bun/src/http_types/Method.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt"). The JSC-bridge
+// Imports rewritten: @import("bun") → local pure Zig string map. The JSC-bridge
 // references (`Map.fromJS`, `@import("../http_jsc/method_jsc.zig").toJS`,
 // `Bun__HTTPMethod__from` export) are intentionally omitted — they re-land
 // under `src/http_jsc/` in Phase 12.2 once JSC bindings exist.
@@ -93,7 +93,7 @@ pub const Method = enum(u8) {
         return Map.get(str);
     }
 
-    const Map = home_rt.ComptimeStringMap(Method, .{
+    const Map = ComptimeStringMap(Method, .{
         .{ "ACL", Method.ACL },
         .{ "BIND", Method.BIND },
         .{ "CHECKOUT", Method.CHECKOUT },
@@ -224,5 +224,15 @@ test "Method.isIdempotent matches RFC 7231" {
     try std.testing.expect(!Method.PATCH.isIdempotent());
 }
 
-const home_rt = @import("home_rt");
 const std = @import("std");
+
+fn ComptimeStringMap(comptime V: type, comptime kvs_list: anytype) type {
+    return struct {
+        pub fn get(input: []const u8) ?V {
+            inline for (kvs_list) |kv| {
+                if (std.mem.eql(u8, kv.@"0", input)) return kv.@"1";
+            }
+            return null;
+        }
+    };
+}

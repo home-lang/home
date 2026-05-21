@@ -1,6 +1,6 @@
 // Copied from bun/src/http_types/ETag.zig at upstream
 // SHA e643d7b085dfd29f675ade275197daedc2cdfc9c. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt"). The
+// Imports rewritten: @import("bun") → local std helpers. The
 // `appendToHeaders` helper takes an opaque `*Headers` because the full
 // HTTP header container lands in Phase 12.5 — callers supply any type
 // that exposes `append(name, value) !void`. Marker: HOME_RT_STUB_HEADERS.
@@ -14,7 +14,7 @@ fn parse(tag_str: []const u8) struct { tag: []const u8, is_weak: bool } {
 
     // Check for weak indicator
     var is_weak = false;
-    if (home_rt.strings.hasPrefix(str, "W/")) {
+    if (std.mem.startsWith(u8, str, "W/")) {
         is_weak = true;
         str = str[2..];
         str = std.mem.trimStart(u8, str, " \t");
@@ -45,7 +45,7 @@ pub fn appendToHeaders(bytes: []const u8, headers: anytype) !void {
     const hash = std.hash.XxHash64.hash(0, bytes);
 
     var etag_buf: [40]u8 = undefined;
-    const etag_str = std.fmt.bufPrint(&etag_buf, "\"{f}\"", .{home_rt.fmt.hexIntLower(hash)}) catch unreachable;
+    const etag_str = std.fmt.bufPrint(&etag_buf, "\"{x:0>16}\"", .{hash}) catch unreachable;
     try headers.append("etag", etag_str);
 }
 
@@ -74,7 +74,6 @@ pub fn ifNoneMatch(
     return false; // Condition is true, continue with normal processing
 }
 
-const home_rt = @import("home_rt");
 const std = @import("std");
 
 // ---- Tests -------------------------------------------------------------

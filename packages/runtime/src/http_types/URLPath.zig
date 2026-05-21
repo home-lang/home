@@ -1,6 +1,6 @@
 // Copied from bun/src/http_types/URLPath.zig at upstream
 // SHA e643d7b085dfd29f675ade275197daedc2cdfc9c. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt").
+// Imports rewritten: @import("bun") → local pure Zig helpers.
 // HOME_RT_STUB_PERCENT_ENCODING: Bun pulls `PercentEncoding` from
 // `src/url/url.zig`, which is a large, JSC-aware module. To keep this
 // leaf self-contained we inline the minimum copy of
@@ -226,8 +226,23 @@ fn copy(comptime T: type, dest: []T, src: []const T) void {
 const string = []const u8;
 
 const std = @import("std");
-const home_rt = @import("home_rt");
-const strings = home_rt.strings;
+const strings = struct {
+    pub inline fn eqlComptime(a: []const u8, comptime b: []const u8) bool {
+        return std.mem.eql(u8, a, b);
+    }
+
+    pub inline fn eql(a: []const u8, b: []const u8) bool {
+        return std.mem.eql(u8, a, b);
+    }
+
+    pub inline fn endsWithComptime(a: []const u8, comptime b: []const u8) bool {
+        return std.mem.endsWith(u8, a, b);
+    }
+
+    pub inline fn containsChar(a: []const u8, c: u8) bool {
+        return std.mem.indexOfScalar(u8, a, c) != null;
+    }
+};
 
 // ---- Tests -------------------------------------------------------------
 
