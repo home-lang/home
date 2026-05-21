@@ -1023,6 +1023,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
             actual_count += 1;
         }
     }
+    actual_count += try appendTsconfigPathsValidationDiagnostics(gpa, virtual_files.items, &actual_lines);
     if (exact_mode) {
         std.mem.sort(ActualDiagnosticLine, actual_lines.items, {}, ActualDiagnosticLine.lessThan);
     }
@@ -1884,6 +1885,164 @@ fn isTsConfigVirtualPath(path: []const u8) bool {
     while (std.mem.startsWith(u8, p, "/")) p = p[1..];
     while (std.mem.startsWith(u8, p, "./")) p = p[2..];
     return std.ascii.eqlIgnoreCase(p, "tsconfig.json");
+}
+
+fn appendTsconfigPathsValidationDiagnostics(
+    gpa: std.mem.Allocator,
+    virtual_files: []const VirtualFile,
+    actual_lines: *std.ArrayListUnmanaged(ActualDiagnosticLine),
+) !u32 {
+    var count: u32 = 0;
+    for (virtual_files) |file| {
+        if (!isTsConfigVirtualPath(file.path)) continue;
+        count += try appendOneTsconfigPathsValidationDiagnostics(gpa, file, actual_lines);
+    }
+    return count;
+}
+
+fn appendOneTsconfigPathsValidationDiagnostics(
+    gpa: std.mem.Allocator,
+    file: VirtualFile,
+    actual_lines: *std.ArrayListUnmanaged(ActualDiagnosticLine),
+) !u32 {
+    const src = file.source;
+    const paths_key = std.mem.indexOf(u8, src, "\"paths\"") orelse return 0;
+    const colon = std.mem.indexOfScalarPos(u8, src, paths_key + "\"paths\"".len, ':') orelse return 0;
+    const object_start = std.mem.indexOfScalarPos(u8, src, colon + 1, '{') orelse return 0;
+    const object_end = matchingJsonObjectEnd(src, object_start) orelse return 0;
+
+    var i = object_start + 1;
+    var count: u32 = 0;
+    while (i < object_end) {
+        i = skipJsonTrivia(src, i);
+        if (i >= object_end or src[i] == '}') break;
+        if (src[i] == ',') {
+            i += 1;
+            continue;
+        }
+        if (src[i] != '"') {
+            i += 1;
+            continue;
+        }
+        const key_start = i;
+        const key_end = jsonStringEnd(src, key_start) orelse break;
+        i = skipJsonTrivia(src, key_end);
+        if (i >= object_end or src[i] != ':') continue;
+        i = skipJsonTrivia(src, i + 1);
+        if (i >= object_end) break;
+        if (src[i] != '[') {
+            const pattern = src[key_start + 1 .. key_end - 1];
+            const msg = try std.fmt.allocPrint(gpa, "Substitutions for pattern '{s}' should be an array.", .{pattern});
+            defer gpa.free(msg);
+            const pos = ts_diagnostics.positionToLineCol(src, @intCast(i));
+            var diag_path = file.path;
+            if (std.mem.startsWith(u8, diag_path, "./")) diag_path = diag_path[2..];
+            const fdiag: ts_diagnostics.Diagnostic = .{
+                .file = diag_path,
+                .line = pos.line,
+                .col = pos.col,
+                .code = 5063,
+                .code_prefix = .TS,
+                .severity = .err,
+                .message = msg,
+                .span_len = @intCast(@max(@as(usize, 1), jsonValueSpanLen(src, i))),
+            };
+            const formatted = try ts_diagnostics.formatDefault(gpa, fdiag);
+            try actual_lines.append(gpa, .{
+                .file = diag_path,
+                .line = pos.line,
+                .col = pos.col,
+                .order = actual_lines.items.len,
+                .text = formatted,
+            });
+            count += 1;
+        }
+        i = jsonValueEnd(src, i) orelse (i + 1);
+    }
+    return count;
+}
+
+fn skipJsonTrivia(src: []const u8, start: usize) usize {
+    var i = start;
+    while (i < src.len) {
+        switch (src[i]) {
+            ' ', '\t', '\r', '\n' => i += 1,
+            '/' => {
+                if (i + 1 < src.len and src[i + 1] == '/') {
+                    i += 2;
+                    while (i < src.len and src[i] != '\n') i += 1;
+                } else if (i + 1 < src.len and src[i + 1] == '*') {
+                    i += 2;
+                    while (i + 1 < src.len and !(src[i] == '*' and src[i + 1] == '/')) i += 1;
+                    if (i + 1 < src.len) i += 2;
+                } else {
+                    return i;
+                }
+            },
+            else => return i,
+        }
+    }
+    return i;
+}
+
+fn jsonStringEnd(src: []const u8, quote: usize) ?usize {
+    if (quote >= src.len or src[quote] != '"') return null;
+    var i = quote + 1;
+    while (i < src.len) : (i += 1) {
+        if (src[i] == '\\') {
+            i += 1;
+            continue;
+        }
+        if (src[i] == '"') return i + 1;
+    }
+    return null;
+}
+
+fn matchingJsonObjectEnd(src: []const u8, object_start: usize) ?usize {
+    if (object_start >= src.len or src[object_start] != '{') return null;
+    var depth: usize = 0;
+    var i = object_start;
+    while (i < src.len) : (i += 1) {
+        if (src[i] == '"') {
+            i = (jsonStringEnd(src, i) orelse return null) - 1;
+            continue;
+        }
+        if (src[i] == '{') depth += 1;
+        if (src[i] == '}') {
+            depth -= 1;
+            if (depth == 0) return i;
+        }
+    }
+    return null;
+}
+
+fn jsonValueEnd(src: []const u8, value_start: usize) ?usize {
+    var i = skipJsonTrivia(src, value_start);
+    if (i >= src.len) return null;
+    if (src[i] == '"') return jsonStringEnd(src, i);
+    if (src[i] == '{') return matchingJsonObjectEnd(src, i);
+    if (src[i] == '[') {
+        var depth: usize = 0;
+        while (i < src.len) : (i += 1) {
+            if (src[i] == '"') {
+                i = (jsonStringEnd(src, i) orelse return null) - 1;
+                continue;
+            }
+            if (src[i] == '[') depth += 1;
+            if (src[i] == ']') {
+                depth -= 1;
+                if (depth == 0) return i + 1;
+            }
+        }
+        return null;
+    }
+    while (i < src.len and src[i] != ',' and src[i] != '}' and src[i] != '\n' and src[i] != '\r') i += 1;
+    return i;
+}
+
+fn jsonValueSpanLen(src: []const u8, value_start: usize) usize {
+    const end = jsonValueEnd(src, value_start) orelse return 1;
+    return if (end > value_start) end - value_start else 1;
 }
 
 fn isDeclarationFilePath(path: []const u8) bool {
