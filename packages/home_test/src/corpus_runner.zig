@@ -146,6 +146,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/util/toUTF16Alloc.test.ts",
     "js/bun/util/bun-isMainThread.test.js",
     "js/bun/util/pathToFileURL-invalid.test.ts",
+    "regression/issue/015201.test.ts",
     "js/node/process-binding.test.ts",
     "js/bun/test/test-timers.test.ts",
     "internal/highlighter.test.ts",
@@ -342,6 +343,7 @@ const harness_prelude =
     \\  if (typeof callback !== "function") throw new TypeError("queueMicrotask callback must be a function");
     \\  Promise.resolve().then(callback);
     \\}
+    \\const __home_util_promisify_custom = Symbol.for("nodejs.util.promisify.custom");
     \\function setImmediate(callback) {
     \\  const id = __home_next_timer_id++;
     \\  const args = Array.prototype.slice.call(arguments, 1);
@@ -372,6 +374,11 @@ const harness_prelude =
     \\function clearTimeout(id) {
     \\  __home_cancelled_timers.add(__home_timer_id(id));
     \\}
+    \\setTimeout[__home_util_promisify_custom] = function(delay, value) {
+    \\  return new Promise(resolve => {
+    \\    setTimeout(resolve, delay, value);
+    \\  });
+    \\};
     \\const __home_object_set_prototype_of = Object.setPrototypeOf;
     \\const __home_global_original_prototype = Object.getPrototypeOf(globalThis);
     \\let __home_global_virtual_prototype_keys = [];
@@ -5075,6 +5082,30 @@ const harness_prelude =
     \\    return Function("sandbox", "with (sandbox) {\n" + String(code) + "\n}")(context);
     \\  },
     \\};
+    \\function __home_util_promisify(original) {
+    \\  if (typeof original !== "function") throw new TypeError("The original argument must be of type function");
+    \\  const custom = original[__home_util_promisify_custom];
+    \\  if (custom !== undefined) {
+    \\    if (typeof custom !== "function") throw new TypeError("The util.promisify.custom property must be a function");
+    \\    return custom;
+    \\  }
+    \\  return function() {
+    \\    const args = Array.prototype.slice.call(arguments);
+    \\    const receiver = this;
+    \\    return new Promise((resolve, reject) => {
+    \\      args.push(function(err, value) {
+    \\        if (err) reject(err);
+    \\        else resolve(value);
+    \\      });
+    \\      original.apply(receiver, args);
+    \\    });
+    \\  };
+    \\}
+    \\__home_util_promisify.custom = __home_util_promisify_custom;
+    \\const __home_util_module = { promisify: __home_util_promisify };
+    \\__home_util_module.default = __home_util_module;
+    \\globalThis.__home_modules["util"] = __home_util_module;
+    \\globalThis.__home_modules["node:util"] = __home_util_module;
     \\globalThis.__home_modules["peechy"] = {
     \\  ByteBuffer: function ByteBuffer(bytes) {
     \\    this.bytes = bytes;
@@ -6906,7 +6937,7 @@ const harness_prelude =
     \\  CustomEvent.prototype.toString = function() { return "[object CustomEvent]"; };
     \\}
     \\
-;
+    ;
 
 pub fn parseSubsetFlagValue(value: []const u8) ?Subset {
     if (std.mem.eql(u8, value, "minimal-js")) return .minimal_js;
@@ -7265,6 +7296,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { runInNewContext } from \"node:vm\";",
             .replacement = "const { runInNewContext } = globalThis.__home_import(\"node:vm\");",
+        },
+        .{
+            .needle = "import { promisify } from \"util\";",
+            .replacement = "const { promisify } = globalThis.__home_import(\"util\");",
+        },
+        .{
+            .needle = "import { promisify } from \"node:util\";",
+            .replacement = "const { promisify } = globalThis.__home_import(\"node:util\");",
         },
         .{
             .needle = "import { writeFileSync } from \"node:fs\";",
@@ -8333,6 +8372,21 @@ test "Node VM import rewrite lowers runInNewContext to the virtual module" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { runInNewContext } = globalThis.__home_import(\"node:vm\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"node:vm\"") == null);
+}
+
+test "Node util import rewrite lowers promisify imports" {
+    const source =
+        \\import { promisify } from "util";
+        \\test("abc", () => {
+        \\  const setTimeout = promisify(globalThis.setTimeout);
+        \\  setTimeout(1, "ok").then(console.log);
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/015201.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { promisify } = globalThis.__home_import(\"util\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"util\"") == null);
 }
 
 test "Bun internal testing import rewrite lowers default import" {

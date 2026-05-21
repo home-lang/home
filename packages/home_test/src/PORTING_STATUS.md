@@ -795,6 +795,12 @@ passes as `1` executable test plus `1` host-skipped Windows block. It
 covers narrow Bun/harness import lowering, `expect.stringMatching()`
 inside deep equality, and POSIX subprocess output for invalid UNC-style
 inputs without exercising a real crash path.
+The copied `regression/issue/015201.test.ts` fixture now passes as `1`
+test through the Node util bootstrap model. It covers named
+`import { promisify } from "util"` lowering, the virtual `util` /
+`node:util` module, and the `nodejs.util.promisify.custom` hook on the
+timer shim so `promisify(globalThis.setTimeout)(1, "ok")` resolves
+`"ok"`.
 The copied `js/node/process-binding.test.ts` fixture now passes as `2`
 tests through the `process.binding` bootstrap model. It covers the
 `constants` binding buckets Bun asserts plus the `uv` error-name and
