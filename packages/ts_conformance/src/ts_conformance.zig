@@ -4120,6 +4120,171 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: classWithSemicolonClassElement1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "classWithSemicolonClassElement1",
+        .path = "classWithSemicolonClassElement1.ts",
+        .source = "// @target: es2015\nclass C {\n    ;\n}",
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: classWithSemicolonClassElement2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "classWithSemicolonClassElement2",
+        .path = "classWithSemicolonClassElement2.ts",
+        .source = "// @target: es2015\nclass C {\n    ;\n    ;\n}",
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: classInsideBlock passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "classInsideBlock",
+        .path = "classInsideBlock.ts",
+        .source = "// @target: es2015\nfunction foo() {\n    class C { }\n}",
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: classDeclarationLoop passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "classDeclarationLoop",
+        .path = "classDeclarationLoop.ts",
+        .source =
+        \\// @target: es2015
+        \\const arr = [];
+        \\for (let i = 0; i < 10; ++i) {
+        \\    class C {
+        \\        prop = i;
+        \\    }
+        \\    arr.push(C);
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: derivedClassOverridesIndexersWithAssignmentCompatibility passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "derivedClassOverridesIndexersWithAssignmentCompatibility",
+        .path = "derivedClassOverridesIndexersWithAssignmentCompatibility.ts",
+        .source =
+        \\// @target: es2015
+        \\class Base {
+        \\    [x: string]: Object;
+        \\}
+        \\
+        \\// ok, use assignment compatibility
+        \\class Derived extends Base {
+        \\    [x: string]: any;
+        \\}
+        \\
+        \\class Base2 {
+        \\    [x: number]: Object;
+        \\}
+        \\
+        \\// ok, use assignment compatibility
+        \\class Derived2 extends Base2 {
+        \\    [x: number]: any;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: derivedClassIncludesInheritedMembers passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "derivedClassIncludesInheritedMembers",
+        .path = "derivedClassIncludesInheritedMembers.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\class Base {
+        \\    a: string;
+        \\    b() { }
+        \\    get c() { return ''; }
+        \\    set c(v) { }
+        \\
+        \\    static r: string;
+        \\    static s() { }
+        \\    static get t() { return ''; }
+        \\    static set t(v) { }
+        \\
+        \\    constructor(x) { }
+        \\}
+        \\
+        \\class Derived extends Base {
+        \\}
+        \\
+        \\var d: Derived = new Derived(1);
+        \\var r1 = d.a;
+        \\var r2 = d.b();
+        \\var r3 = d.c;
+        \\d.c = '';
+        \\var r4 = Derived.r;
+        \\var r5 = Derived.s();
+        \\var r6 = Derived.t;
+        \\Derived.t = '';
+        \\
+        \\class Base2 {
+        \\    [x: string]: Object;
+        \\    [x: number]: Date;
+        \\}
+        \\
+        \\class Derived2 extends Base2 {
+        \\}
+        \\
+        \\var d2: Derived2;
+        \\var r7 = d2[''];
+        \\var r8 = d2[1];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: protectedClassPropertyAccessibleWithinSubclass passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "protectedClassPropertyAccessibleWithinSubclass",
