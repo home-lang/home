@@ -87,7 +87,6 @@ test "MySQL Query.Execute deinit is safe for empty params" {
 
 test "MySQL Query exports write entrypoints without instantiating writer body" {
     const testing = std.testing;
-    const write_entry: *const @TypeOf(Execute.write) = &Execute.write;
-    try testing.expect(@intFromPtr(write_entry) != 0);
+    try testing.expect(@typeInfo(@TypeOf(Execute.write)) == .@"fn");
     try testing.expectEqual(@as(u8, 0x03), @intFromEnum(CommandType.COM_QUERY));
 }

@@ -126,8 +126,39 @@ test "HandshakeResponse41 defaults packet size, charset, and empty attrs" {
 
 test "HandshakeResponse41 write entrypoint is addressable" {
     const testing = std.testing;
-    const write_entry: *const @TypeOf(write) = &write;
-    try testing.expect(@intFromPtr(write_entry) != 0);
+    try testing.expect(@typeInfo(@TypeOf(write)) == .@"fn");
+}
+
+test "HandshakeResponse41 writes a secure connection packet" {
+    const testing = std.testing;
+    var response: HandshakeResponse41 = .{
+        .capability_flags = .{
+            .CLIENT_PROTOCOL_41 = true,
+            .CLIENT_SECURE_CONNECTION = true,
+            .CLIENT_PLUGIN_AUTH = true,
+        },
+        .username = .{ .temporary = "home" },
+        .auth_response = .{ .temporary = "token" },
+        .database = .{ .empty = {} },
+        .auth_plugin_name = .{ .temporary = "mysql_native_password" },
+        .sequence_id = 1,
+    };
+    defer response.deinit();
+
+    var buf: [128]u8 = undefined;
+    var len: usize = 0;
+    const ctx = TestWriter.init(&buf, &len);
+
+    try response.write(ctx);
+
+    const out = ctx.slice();
+    try testing.expectEqualSlices(u8, &.{ 65, 0, 0, 1 }, out[0..4]);
+    try testing.expectEqual(@as(u8, 'h'), out[36]);
+    try testing.expectEqual(@as(u8, 0), out[40]);
+    try testing.expectEqual(@as(u8, 5), out[41]);
+    try testing.expectEqualSlices(u8, "token", out[42..47]);
+    try testing.expectEqualSlices(u8, "mysql_native_password", out[47..68]);
+    try testing.expectEqual(@as(u8, 0), out[68]);
 }
 
 const debug = home_rt.Output.scoped(.MySQLConnection, .hidden);
@@ -141,3 +172,34 @@ const encodeLengthInt = @import("./EncodeInt.zig").encodeLengthInt;
 
 const NewWriter = @import("./NewWriter.zig").NewWriter;
 const writeWrap = @import("./NewWriter.zig").writeWrap;
+
+const TestWriter = struct {
+    bytes: []u8,
+    len: *usize,
+
+    fn init(bytes: []u8, len: *usize) TestWriter {
+        len.* = 0;
+        return .{ .bytes = bytes, .len = len };
+    }
+
+    fn slice(this: TestWriter) []const u8 {
+        return this.bytes[0..this.len.*];
+    }
+
+    pub fn offset(this: TestWriter) usize {
+        return this.len.*;
+    }
+
+    pub fn write(this: TestWriter, bytes: []const u8) AnyMySQLError.Error!void {
+        if (this.len.* + bytes.len > this.bytes.len) return error.ShortRead;
+        @memcpy(this.bytes[this.len.*..][0..bytes.len], bytes);
+        this.len.* += bytes.len;
+    }
+
+    pub fn pwrite(this: TestWriter, bytes: []const u8, offset_value: usize) AnyMySQLError.Error!void {
+        if (offset_value + bytes.len > this.len.*) return error.ShortRead;
+        @memcpy(this.bytes[offset_value..][0..bytes.len], bytes);
+    }
+};
+
+const AnyMySQLError = @import("./AnyMySQLError.zig");
