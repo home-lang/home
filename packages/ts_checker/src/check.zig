@@ -20581,17 +20581,6 @@ pub const Checker = struct {
     }
 
     fn heritageValueType(self: *Checker, at_node: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
-        if (self.findLocalValueDeclBefore(self.enclosingClassNode(at_node), name)) |decl| {
-            switch (self.hir.kindOf(decl)) {
-                .var_decl, .let_decl, .const_decl => {
-                    const v = hir_mod.varDeclOf(self.hir, decl);
-                    if (v.type_annotation != hir_mod.none_node_id) {
-                        return try self.lowerValueTypeAnnotation(name, v.type_annotation);
-                    }
-                },
-                else => {},
-            }
-        }
         if (self.lookupNarrow(name)) |t| return t;
         return try self.typeOfVisibleNameNoDiag(at_node, name);
     }
