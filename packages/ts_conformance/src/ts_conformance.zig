@@ -9967,6 +9967,302 @@ test "conformance: typeGuardIntersectionTypes passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: voidOperatorWithBooleanType passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "voidOperatorWithBooleanType",
+        .path = "voidOperatorWithBooleanType.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\var BOOLEAN: boolean;
+        \\
+        \\function foo(): boolean { return true; }
+        \\
+        \\class A {
+        \\    public a: boolean;
+        \\    static foo() { return false; }
+        \\}
+        \\namespace M {
+        \\    export var n: boolean;
+        \\}
+        \\
+        \\var objA = new A();
+        \\
+        \\var ResultIsAny1 = void BOOLEAN;
+        \\
+        \\var ResultIsAny2 = void true;
+        \\var ResultIsAny3 = void { x: true, y: false };
+        \\
+        \\var ResultIsAny4 = void objA.a;
+        \\var ResultIsAny5 = void M.n;
+        \\var ResultIsAny6 = void foo();
+        \\var ResultIsAny7 = void A.foo();
+        \\
+        \\var ResultIsAny8 = void void BOOLEAN;
+        \\
+        \\void true;
+        \\void BOOLEAN;
+        \\void foo();
+        \\void true, false;
+        \\void objA.a;
+        \\void M.n;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: voidOperatorWithNumberType passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "voidOperatorWithNumberType",
+        .path = "voidOperatorWithNumberType.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\var NUMBER: number;
+        \\var NUMBER1: number[] = [1, 2];
+        \\
+        \\function foo(): number { return 1; }
+        \\
+        \\class A {
+        \\    public a: number;
+        \\    static foo() { return 1; }
+        \\}
+        \\namespace M {
+        \\    export var n: number;
+        \\}
+        \\
+        \\var objA = new A();
+        \\
+        \\var ResultIsAny1 = void NUMBER;
+        \\var ResultIsAny2 = void NUMBER1;
+        \\
+        \\var ResultIsAny3 = void 1;
+        \\var ResultIsAny4 = void { x: 1, y: 2};
+        \\var ResultIsAny5 = void { x: 1, y: (n: number) => { return n; } };
+        \\
+        \\var ResultIsAny6 = void objA.a;
+        \\var ResultIsAny7 = void M.n;
+        \\var ResultIsAny8 = void NUMBER1[0];
+        \\var ResultIsAny9 = void foo();
+        \\var ResultIsAny10 = void A.foo();
+        \\var ResultIsAny11 = void (NUMBER + NUMBER);
+        \\
+        \\var ResultIsAny12 = void void NUMBER;
+        \\var ResultIsAny13 = void void void (NUMBER + NUMBER);
+        \\
+        \\void 1;
+        \\void NUMBER;
+        \\void NUMBER1;
+        \\void foo();
+        \\void objA.a;
+        \\void M.n;
+        \\void objA.a, M.n;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: voidOperatorWithStringType passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "voidOperatorWithStringType",
+        .path = "voidOperatorWithStringType.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\var STRING: string;
+        \\var STRING1: string[] = ["", "abc"];
+        \\
+        \\function foo(): string { return "abc"; }
+        \\
+        \\class A {
+        \\    public a: string;
+        \\    static foo() { return ""; }
+        \\}
+        \\namespace M {
+        \\    export var n: string;
+        \\}
+        \\
+        \\var objA = new A();
+        \\
+        \\var ResultIsAny1 = void STRING;
+        \\var ResultIsAny2 = void STRING1;
+        \\
+        \\var ResultIsAny3 = void "";
+        \\var ResultIsAny4 = void { x: "", y: "" };
+        \\var ResultIsAny5 = void { x: "", y: (s: string) => { return s; } };
+        \\
+        \\var ResultIsAny6 = void objA.a;
+        \\var ResultIsAny7 = void M.n;
+        \\var ResultIsAny8 = void STRING1[0];
+        \\var ResultIsAny9 = void foo();
+        \\var ResultIsAny10 = void A.foo();
+        \\var ResultIsAny11 = void (STRING + STRING);
+        \\var ResultIsAny12 = void STRING.charAt(0);
+        \\
+        \\var ResultIsAny13 = void void STRING;
+        \\var ResultIsAny14 = void void void (STRING + STRING);
+        \\
+        \\void "";
+        \\void STRING;
+        \\void STRING1;
+        \\void foo();
+        \\void objA.a,M.n;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: voidOperatorWithEnumType passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "voidOperatorWithEnumType",
+        .path = "voidOperatorWithEnumType.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\enum ENUM { };
+        \\enum ENUM1 { A, B, "" };
+        \\
+        \\var ResultIsAny1 = void ENUM;
+        \\var ResultIsAny2 = void ENUM1;
+        \\
+        \\var ResultIsAny3 = void ENUM1["A"];
+        \\var ResultIsAny4 = void (ENUM[0] + ENUM1["B"]);
+        \\
+        \\var ResultIsAny5 = void void ENUM;
+        \\var ResultIsAny6 = void void void (ENUM[0] + ENUM1.B);
+        \\
+        \\void ENUM;
+        \\void ENUM1;
+        \\void ENUM1["B"];
+        \\void ENUM, ENUM1;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: typeOfThisInConstructorParamList passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeOfThisInConstructorParamList",
+        .path = "typeOfThisInConstructorParamList.ts",
+        .source =
+        \\// @target: es2015
+        \\class ErrClass {
+        \\    constructor(f = this) { }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: newOperatorConformance passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "newOperatorConformance",
+        .path = "newOperatorConformance.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\class C0 {
+        \\
+        \\}
+        \\class C1 {
+        \\    constructor(n: number, s: string) { }
+        \\}
+        \\
+        \\class T<T> {
+        \\    constructor(n?: T) { }
+        \\}
+        \\
+        \\var anyCtor: {
+        \\    new (): any;
+        \\};
+        \\
+        \\var anyCtor1: {
+        \\    new (n): any;
+        \\};
+        \\
+        \\interface nestedCtor {
+        \\    new (): nestedCtor;
+        \\}
+        \\var nestedCtor: nestedCtor;
+        \\
+        \\var a = new C0;
+        \\var a: C0;
+        \\
+        \\
+        \\var c1 = new T;
+        \\var c1: T<{}>;
+        \\
+        \\var d = new anyCtor;
+        \\var d: any;
+        \\
+        \\var d = new anyCtor1(undefined);
+        \\
+        \\function newFn1<T extends { new (): number }>(s: T) {
+        \\    var p = new s;
+        \\    var p: number;
+        \\}
+        \\
+        \\function newFn2<T extends { new (s: number): string}>(s: T) {
+        \\    var p = new s(32);
+        \\    var p: string;
+        \\}
+        \\
+        \\function fnVoid(): void { }
+        \\var t = new fnVoid();
+        \\var t: any;
+        \\
+        \\var nested = new (new (new nestedCtor())())();
+        \\var n = new nested();
+        \\var n = new nested();
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
