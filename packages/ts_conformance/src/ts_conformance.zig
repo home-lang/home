@@ -4120,6 +4120,198 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: for-of18 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "for-of18",
+        .path = "for-of18.ts",
+        .source =
+        \\//@target: ES6
+        \\class MyStringIterator {
+        \\    next() {
+        \\        return {
+        \\            value: "",
+        \\            done: false
+        \\        };
+        \\    }
+        \\    [Symbol.iterator]() {
+        \\        return this;
+        \\    }
+        \\}
+        \\
+        \\var v: string;
+        \\for (v of new MyStringIterator) { } // Should succeed
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: for-of23 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "for-of23",
+        .path = "for-of23.ts",
+        .source =
+        \\//@target: ES6
+        \\class Foo { }
+        \\class FooIterator {
+        \\    next() {
+        \\        return {
+        \\            value: new Foo,
+        \\            done: false
+        \\        };
+        \\    }
+        \\    [Symbol.iterator]() {
+        \\        return this;
+        \\    }
+        \\}
+        \\
+        \\for (const v of new FooIterator) {
+        \\    const v = 0; // new scope
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: controlFlowStringIndex passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "controlFlowStringIndex",
+        .path = "controlFlowStringIndex.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\type A = {
+        \\    other: number | null;
+        \\    [index: string]: number | null
+        \\};
+        \\declare const value: A;
+        \\if (value.foo !== null) {
+        \\    value.foo.toExponential()
+        \\    value.other // should still be number | null
+        \\    value.bar // should still be number | null
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+
+test "conformance: seeTag1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "seeTag1",
+        .path = "seeTag1.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\
+        \\interface Foo {
+        \\    foo: string
+        \\}
+        \\
+        \\namespace NS {
+        \\    export interface Bar {
+        \\        baz: Foo
+        \\    }
+        \\}
+        \\
+        \\/** @see {Foo} foooo*/
+        \\const a = ""
+        \\
+        \\/** @see {NS.Bar} ns.bar*/
+        \\const b = ""
+        \\
+        \\/** @see {b} b */
+        \\const c = ""
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: optionalProperties01 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "optionalProperties01",
+        .path = "optionalProperties01.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strictNullChecks: true
+        \\// @declaration: true
+        \\
+        \\interface Foo {
+        \\  required1: string;
+        \\  required2: string;
+        \\  optional?: string;
+        \\}
+        \\
+        \\const foo1 = { required1: "hello" } as Foo;
+        \\const foo2 = { required1: "hello", optional: "bar" } as Foo;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: nullishCoalescingOperator8 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nullishCoalescingOperator8",
+        .path = "nullishCoalescingOperator8.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\
+        \\declare const a: { p: string | undefined, m(): string | undefined };
+        \\declare const b: { p: string | undefined, m(): string | undefined };
+        \\
+        \\const n1 = a.p ?? "default";
+        \\const n2 = a.m() ?? "default";
+        \\const n3 = a.m() ?? b.p ?? b.m() ?? "default";;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: derivedInterfaceDoesNotHideBaseSignatures passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "derivedInterfaceDoesNotHideBaseSignatures",
