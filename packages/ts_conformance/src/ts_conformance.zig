@@ -8006,6 +8006,196 @@ test "conformance: propertyAssignmentUseParentType3 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: declarationEmitThisPredicates02 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "declarationEmitThisPredicates02",
+        .path = "declarationEmitThisPredicates02.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\// @module: commonjs
+        \\
+        \\export interface Foo {
+        \\    a: string;
+        \\    b: number;
+        \\    c: boolean;
+        \\}
+        \\
+        \\export const obj = {
+        \\    m(): this is Foo {
+        \\        let dis = this as {} as Foo;
+        \\        return dis.a != null && dis.b != null && dis.c != null;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: declarationEmitIdentifierPredicatesWithPrivateName01 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "declarationEmitIdentifierPredicatesWithPrivateName01",
+        .path = "declarationEmitIdentifierPredicatesWithPrivateName01.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\// @module: commonjs
+        \\
+        \\interface I {
+        \\    a: number;
+        \\}
+        \\
+        \\export function f(x: any): x is I {
+        \\    return typeof x.a === "number";
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: declarationEmitThisPredicatesWithPrivateName01 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "declarationEmitThisPredicatesWithPrivateName01",
+        .path = "declarationEmitThisPredicatesWithPrivateName01.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\// @module: commonjs
+        \\
+        \\export class C {
+        \\    m(): this is D {
+        \\        return this instanceof D;
+        \\    }
+        \\}
+        \\
+        \\class D extends C {
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: declarationEmitThisPredicatesWithPrivateName02 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "declarationEmitThisPredicatesWithPrivateName02",
+        .path = "declarationEmitThisPredicatesWithPrivateName02.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\// @module: commonjs
+        \\
+        \\interface Foo {
+        \\    a: string;
+        \\    b: number;
+        \\    c: boolean;
+        \\}
+        \\
+        \\export const obj = {
+        \\    m(): this is Foo {
+        \\        let dis = this as {} as Foo;
+        \\        return dis.a != null && dis.b != null && dis.c != null;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: controlFlowIteration passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "controlFlowIteration",
+        .path = "controlFlowIteration.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strictNullChecks: true
+        \\
+        \\let cond: boolean;
+        \\
+        \\function ff() {
+        \\    let x: string | undefined;
+        \\    while (true) {
+        \\        if (cond) {
+        \\            x = "";
+        \\        }
+        \\        else {
+        \\            if (x) {
+        \\                x.length;
+        \\            }
+        \\            if (x) {
+        \\                x.length;
+        \\            }
+        \\        }
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = false },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: importCallExpressionShouldNotGetParen passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "importCallExpressionShouldNotGetParen",
+        .path = "importCallExpressionShouldNotGetParen.ts",
+        .source =
+        \\// @module: es2020
+        \\// @target: es6
+        \\// @noImplicitAny: true
+        \\const localeName = "zh-CN";
+        \\import(`./locales/${localeName}.js`).then(bar => {
+        \\    let x = bar;
+        \\});
+        \\
+        \\import("./locales/" + localeName + ".js").then(bar => {
+        \\    let x = bar;
+        \\});
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
