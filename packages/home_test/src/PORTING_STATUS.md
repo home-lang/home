@@ -626,8 +626,7 @@ strings in that fixture. The source rewrite also handles
 non-null index assertion. This keeps the copied production corpus moving;
 native parity still needs Bun's real Bake production build, React SSG,
 routing, and bundle output. The next direct Bake boundary is
-`bake/dev/react-response.test.ts`, which currently fails source
-preparation with `unsupported module syntax`.
+`bake/dev/react-response.test.ts`, now tracked below.
 The copied `bake/dev/react-response.test.ts` fixture now passes as `11`
 tests through a narrow React response model with `peechy` / schema import
 stubs, fallback-message decoding, `Response.render` rewrites/errors,

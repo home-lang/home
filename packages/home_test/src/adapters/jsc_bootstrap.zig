@@ -3,6 +3,7 @@ const home_rt = @import("home_rt");
 const runner = @import("../runner.zig");
 
 const Io = std.Io;
+var home_eval_counter: usize = 0;
 
 pub const Runtime = struct {
     engine: home_rt.jsc.engine.Engine,
@@ -1109,12 +1110,23 @@ fn runSpawnSyncNative(
     try readStringArray(allocator, ctx, cmd_value, exception, &argv_storage);
     if (argv_storage.items.len == 0) return error.EmptyCmd;
 
-    const is_home_invocation = std.mem.eql(u8, argv_storage.items[0], "home");
-    if (is_home_invocation) {
+    const is_home_invocation = isHomeExecutableArg(argv_storage.items[0]);
+    if (std.mem.eql(u8, argv_storage.items[0], "home")) {
         const self_path = try selfExePathAlloc(allocator);
         allocator.free(argv_storage.items[0]);
         argv_storage.items[0] = self_path;
     }
+
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const eval_script_path = if (is_home_invocation and isHomeEvalInvocation(argv_storage.items))
+        try rewriteHomeEvalInvocation(allocator, io, &argv_storage)
+    else
+        null;
+    defer if (eval_script_path) |path| Io.Dir.cwd().deleteFile(io, path) catch {};
+
     if (is_home_invocation and shouldInsertHomeRunForScript(argv_storage.items)) {
         try argv_storage.insert(allocator, 1, try allocator.dupe(u8, "run"));
     }
@@ -1126,10 +1138,6 @@ fn runSpawnSyncNative(
     defer if (cwd.owned) allocator.free(cwd.path.?);
 
     const stdio = try readStdio(ctx, options, exception);
-
-    var threaded = std.Io.Threaded.init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
 
     var stdout_text: []u8 = &.{};
     var stderr_text: []u8 = &.{};
@@ -1204,6 +1212,48 @@ fn resolveCorpusArguments(allocator: std.mem.Allocator, argv: *std.ArrayList([]c
             allocator.free(corpus_path);
         }
     }
+}
+
+fn isHomeExecutableArg(value: []const u8) bool {
+    return std.mem.eql(u8, value, "home") or std.mem.eql(u8, std.fs.path.basename(value), "home");
+}
+
+fn isHomeEvalInvocation(argv: []const []const u8) bool {
+    return argv.len >= 2 and std.mem.eql(u8, argv[1], "-e");
+}
+
+fn rewriteHomeEvalInvocation(
+    allocator: std.mem.Allocator,
+    io: Io,
+    argv: *std.ArrayList([]const u8),
+) ![]const u8 {
+    if (argv.items.len < 3) return error.MissingEvalSource;
+
+    const pid: i32 = @intCast(std.c.getpid());
+    home_eval_counter += 1;
+    const relative_script_path = try std.fmt.allocPrint(
+        allocator,
+        ".zig-cache/home-corpus-eval-{d}-{d}.js",
+        .{ pid, home_eval_counter },
+    );
+    defer allocator.free(relative_script_path);
+
+    const cwd = try currentWorkingDirectoryAlloc(allocator);
+    defer allocator.free(cwd);
+
+    const script_path = try std.fs.path.join(allocator, &.{ cwd, relative_script_path });
+    errdefer allocator.free(script_path);
+
+    try Io.Dir.cwd().writeFile(io, .{
+        .sub_path = script_path,
+        .data = argv.items[2],
+    });
+
+    allocator.free(argv.items[1]);
+    argv.items[1] = try allocator.dupe(u8, "run");
+    allocator.free(argv.items[2]);
+    argv.items[2] = script_path;
+    return script_path;
 }
 
 fn shouldInsertHomeRunForScript(argv: []const []const u8) bool {

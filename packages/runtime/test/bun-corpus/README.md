@@ -17,7 +17,7 @@ macOS, Linux, and the WASM target.
   bootstrap path exists for the current allowlist:
   `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
-  Latest measured subset run: `168` files, `737` passed, `0` failed,
+  Latest measured subset run: `169` files, `740` passed, `0` failed,
   `42` todo. That subset currently executes the todo-registration smoke, three Node
   `assert` CommonJS smokes, Node `path` smokes, two Node `url` smokes, the Web
   `atob`/`btoa` smoke, twenty-four regression smokes, one bundler
@@ -28,7 +28,7 @@ macOS, Linux, and the WASM target.
   `toHaveBeenCalledTimes` smoke, a narrow `jest.fn` / `HTMLRewriter`
   element-callback smoke, a narrow TypeScript constructor-modifier
   rewrite smoke, narrow `assert` / `assert/strict`, `node:path`, `node:url`
-  including POSIX `pathToFileURL`, Bun file URL helper conversion, Node `fileURLToPath` POSIX roundtrips, path `toNamespacedPath` / `_makeLong` / `matchesGlob`, and relative CJS fixture smokes, a narrow inline-snapshot Unicode object
+  including POSIX `pathToFileURL`, Bun file URL helper conversion, Node `fileURLToPath` POSIX roundtrips, path `toNamespacedPath` / `_makeLong` / `matchesGlob`, long-CWD POSIX resolution subprocess coverage, and relative CJS fixture smokes, a narrow inline-snapshot Unicode object
   formatting smoke, a `node:vm.runInNewContext` / `process.on` throw
   propagation smoke, `process.binding("constants")` /
   `process.binding("uv")` smoke coverage, Jest fake-timer Date /

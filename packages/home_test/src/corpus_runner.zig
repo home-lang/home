@@ -208,6 +208,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/path/resolve.test.js",
     "js/node/path/to-namespaced-path.test.js",
     "js/node/path/matches-glob.test.ts",
+    "js/node/path/resolve-long-cwd.test.ts",
     "js/bun/test/scheduling/multi-file/test1.fixture.ts",
     "js/bun/test/scheduling/multi-file/test2.fixture.ts",
     "js/bun/test/only-flag-fixtures/file0.fixture.ts",
@@ -5221,6 +5222,12 @@ const harness_prelude =
     \\    if (typeof data !== "string") __home_unsupported("Only string data is supported by node:fs.writeFileSync in the Home Bun corpus bootstrap runner");
     \\    return globalThis.__home_writeFileSyncNative(String(path), data);
     \\  },
+    \\  mkdirSync(path, options) {
+    \\    if (typeof globalThis.__home_createDirPathNative !== "function") __home_unsupported("node:fs.mkdirSync native bridge is not installed");
+    \\    const recursive = options === true || (options && typeof options === "object" && options.recursive === true);
+    \\    if (!recursive) __home_unsupported("Only recursive node:fs.mkdirSync is supported by the Home Bun corpus bootstrap runner");
+    \\    return globalThis.__home_createDirPathNative(String(path));
+    \\  },
     \\  readFileSync(path, encoding) {
     \\    if (typeof globalThis.__home_readFileSyncNative !== "function") __home_unsupported("node:fs.readFileSync native bridge is not installed");
     \\    if (encoding !== "utf8" && encoding !== "utf-8") __home_unsupported("Only utf8 node:fs.readFileSync is supported by the Home Bun corpus bootstrap runner");
@@ -7211,11 +7218,11 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "cleanup(outfile: string)", .replacement = "cleanup(outfile)" },
         .{ .needle = "(pattern: string, msg: string) =>", .replacement = "(pattern, msg) =>" },
         .{ .needle = "(pattern: string) =>", .replacement = "(pattern) =>" },
-        .{ .needle = ": Promise<any>", .replacement = "" },
         .{ .needle = ": any[] =", .replacement = " =" },
         .{ .needle = ": WebSocket[] =", .replacement = " =" },
         .{ .needle = ": Promise<any>[] =", .replacement = " =" },
         .{ .needle = ": Promise<void>[] =", .replacement = " =" },
+        .{ .needle = ": Promise<any>", .replacement = "" },
         .{ .needle = ": any =", .replacement = " =" },
         .{ .needle = ": number =", .replacement = " =" },
         .{ .needle = ": string =", .replacement = " =" },
@@ -8222,6 +8229,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_path_win32_to_namespaced_path") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "matchesGlob: __home_path_posix_matches_glob") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "matchesGlob: __home_path_win32_matches_glob") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mkdirSync(path, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "js/node/path/common/fixtures.js") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:url\"] = __home_url_module") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "URL.canParse = function(input, base)") != null);
@@ -8413,6 +8421,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/node/path/posix-relative-on-windows.test.js",
         "js/node/path/resolve.test.js",
         "js/node/path/matches-glob.test.ts",
+        "js/node/path/resolve-long-cwd.test.ts",
         "js/bun/test/scheduling/multi-file/test1.fixture.ts",
         "js/bun/test/scheduling/multi-file/test2.fixture.ts",
         "js/bun/test/only-flag-fixtures/file0.fixture.ts",
@@ -14200,6 +14209,19 @@ test "bootstrap rewrite erases Bake TypeScript-only syntax" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, ": unknown") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "ReturnType") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "serverComponents!") == null);
+}
+
+test "bootstrap rewrite erases Promise array annotations before bare Promise" {
+    const source =
+        \\const promises: Promise<any>[] = [];
+        \\promises.push(Promise.resolve(1));
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/react-response.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const promises = [];") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "promises[]") == null);
 }
 
 test "bootstrap runner supports node fs sync utf8 file methods" {
