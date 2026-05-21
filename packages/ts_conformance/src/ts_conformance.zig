@@ -19214,6 +19214,37 @@ test "conformance: stringLiteralTypeIsSubtypeOfString passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: importCallExpressionDeclarationEmit1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "importCallExpressionDeclarationEmit1",
+        .path = "importCallExpressionDeclarationEmit1.ts",
+        .source =
+        \\declare function getSpecifier(): string;
+        \\declare var whatToLoad: boolean;
+        \\declare const directory: string;
+        \\declare const moduleFile: number;
+        \\
+        \\import(getSpecifier());
+        \\
+        \\var p0 = import(`${directory}\\${moduleFile}`);
+        \\var p1 = import(getSpecifier());
+        \\const p2 = import(whatToLoad ? getSpecifier() : "defaulPath")
+        \\
+        \\function returnDynamicLoad(path: string) {
+        \\    return import(path);
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
