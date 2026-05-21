@@ -19324,6 +19324,121 @@ test "conformance: objectSpreadRepeatedNullCheckPerf passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: superCallBeforeThisAccessing1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "superCallBeforeThisAccessing1",
+        .path = "superCallBeforeThisAccessing1.ts",
+        .source =
+        \\declare var Factory: any
+        \\
+        \\class Base {
+        \\    constructor(c) { }
+        \\}
+        \\class D extends Base {
+        \\    private _t;
+        \\    constructor() {
+        \\        super(i);
+        \\        var s = {
+        \\            t: this._t
+        \\        }
+        \\        var i = Factory.create(s);
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: generatorTypeCheck46 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "generatorTypeCheck46",
+        .path = "generatorTypeCheck46.ts",
+        .source =
+        \\declare function foo<T, U>(x: T, fun: () => Iterable<(x: T) => U>, fun2: (y: U) => T): T;
+        \\
+        \\foo("", function* () {
+        \\    yield* {
+        \\        *[Symbol.iterator]() {
+        \\            yield x => x.length
+        \\        }
+        \\    }
+        \\}, p => undefined);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: classExpressionES63 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "classExpressionES63",
+        .path = "classExpressionES63.ts",
+        .source =
+        \\let C = class extends class extends class { a = 1 } { b = 2 } { c = 3 };
+        \\let c = new C();
+        \\c.a;
+        \\c.b;
+        \\c.c;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emitArrowFunctionES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emitArrowFunctionES6",
+        .path = "emitArrowFunctionES6.ts",
+        .source =
+        \\var f1 = () => { }
+        \\var f2 = (x: string, y: string) => { }
+        \\var f3 = (x: string, y: number, ...rest) => { }
+        \\var f4 = (x: string, y: number, z=10) => { }
+        \\function foo(func: () => boolean) { }
+        \\foo(() => true);
+        \\foo(() => { return false; });
+        \\
+        \\var p1 = ([a]) => { };
+        \\var p2 = ([...a]) => { };
+        \\var p3 = ([, a]) => { };
+        \\var p4 = ([, ...a]) => { };
+        \\var p5 = ([a = 1]) => { };
+        \\var p6 = ({ a }) => { };
+        \\var p7 = ({ a: { b } }) => { };
+        \\var p8 = ({ a = 1 }) => { };
+        \\var p9 = ({ a: { b = 1 } = { b: 1 } }) => { };
+        \\var p10 = ([{ value, done }]) => { };
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
