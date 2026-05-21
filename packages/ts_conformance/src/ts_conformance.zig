@@ -4120,6 +4120,314 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: controlFlowForInStatement2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "controlFlowForInStatement2",
+        .path = "controlFlowForInStatement2.ts",
+        .source =
+        \\// @target: es2015
+        \\const keywordA = 'a';
+        \\const keywordB = 'b';
+        \\
+        \\type A = { [keywordA]: number };
+        \\type B = { [keywordB]: string };
+        \\
+        \\declare const c: A | B;
+        \\
+        \\if ('a' in c) {
+        \\    c; // narrowed to `A`
+        \\}
+        \\
+        \\if (keywordA in c) {
+        \\    c; // also narrowed to `A`
+        \\}
+        \\
+        \\let stringB: string = 'b';
+        \\
+        \\if ((stringB as 'b') in c) {
+        \\    c; // narrowed to `B`
+        \\}
+        \\
+        \\if ((stringB as ('a' | 'b')) in c) {
+        \\    c; // not narrowed
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: intersectionTypeInference2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "intersectionTypeInference2",
+        .path = "intersectionTypeInference2.ts",
+        .source =
+        \\// @target: es2015
+        \\declare function f<T>(x: { prop: T }): T;
+        \\
+        \\declare const a: { prop: string } & { prop: number };
+        \\declare const b: { prop: string & number };
+        \\
+        \\f(a);  // never
+        \\f(b);  // never
+        \\
+        \\// Repro from #18354
+        \\
+        \\declare function f2<T, Key extends keyof T>(obj: {[K in keyof T]: T[K]}, key: Key): T[Key];
+        \\
+        \\declare const obj: { a: string } & { b: string };
+        \\f2(obj, 'a');
+        \\f2(obj, 'b');
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: neverUnionIntersection passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "neverUnionIntersection",
+        .path = "neverUnionIntersection.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\
+        \\type T01 = string | never;
+        \\type T02 = string & never;
+        \\type T03 = string | number | never;
+        \\type T04 = string & number & never;
+        \\type T05 = any | never;
+        \\type T06 = any & never;
+        \\type T07 = undefined | never;
+        \\type T08 = undefined & never;
+        \\type T09 = null | never;
+        \\type T10 = null & never;
+        \\type T11 = { a: string } | never;
+        \\type T12 = { a: string } & never;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: functionLiteralForOverloads passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "functionLiteralForOverloads",
+        .path = "functionLiteralForOverloads.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// basic uses of function literals with overloads
+        \\
+        \\var f: {
+        \\    (x: string): string;
+        \\    (x: number): number;
+        \\} = (x) => x;
+        \\
+        \\var f2: {
+        \\    <T>(x: string): string;
+        \\    <T>(x: number): number;
+        \\} = (x) => x;
+        \\
+        \\var f3: {
+        \\    <T>(x: T): string;
+        \\    <T>(x: T): number;
+        \\} = (x) => x;
+        \\
+        \\var f4: {
+        \\    <T>(x: string): T;
+        \\    <T>(x: number): T;
+        \\} = (x) => x;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emitClassDeclarationWithConstructorInES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emitClassDeclarationWithConstructorInES6",
+        .path = "emitClassDeclarationWithConstructorInES6.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es6
+        \\class A {
+        \\    y: number;
+        \\    constructor(x: number) {
+        \\    }
+        \\    foo(a: any);
+        \\    foo() { }
+        \\}
+        \\
+        \\class B {
+        \\    y: number;
+        \\    x: string = "hello";
+        \\    _bar: string;
+        \\
+        \\    constructor(x: number, z = "hello", ...args) {
+        \\        this.y = 10;
+        \\    }
+        \\    baz(...args): string;
+        \\    baz(z: string, v: number): string {
+        \\        return this._bar;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: contextuallyTypedFunctionExpressionsAndReturnAnnotations passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "contextuallyTypedFunctionExpressionsAndReturnAnnotations",
+        .path = "contextuallyTypedFunctionExpressionsAndReturnAnnotations.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\declare function foo(x: (y: string) => (y2: number) => void);
+        \\
+        \\// Contextually type the parameter even if there is a return annotation
+        \\foo((y): (y2: number) => void => {
+        \\    var z = y.charAt(0); // Should be string
+        \\    return null;
+        \\});
+        \\
+        \\foo((y: string) => {
+        \\    return y2 => {
+        \\        var z = y2.toFixed(); // Should be string
+        \\        return 0;
+        \\    };
+        \\});
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: bitwiseNotOperatorWithEnumType passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "bitwiseNotOperatorWithEnumType",
+        .path = "bitwiseNotOperatorWithEnumType.ts",
+        .source =
+        \\// @target: es2015
+        \\// @allowUnreachableCode: true
+        \\
+        \\// ~ operator on enum type
+        \\
+        \\enum ENUM1 { A, B, "" };
+        \\
+        \\// enum type var
+        \\var ResultIsNumber1 = ~ENUM1;
+        \\
+        \\// enum type expressions
+        \\var ResultIsNumber2 = ~ENUM1["A"];
+        \\var ResultIsNumber3 = ~(ENUM1.A + ENUM1["B"]);
+        \\
+        \\// multiple ~ operators
+        \\var ResultIsNumber4 = ~~~(ENUM1["A"] + ENUM1.B);
+        \\
+        \\// miss assignment operators
+        \\~ENUM1;
+        \\~ENUM1["A"];
+        \\~ENUM1.A, ~ENUM1["B"];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: typesWithOptionalProperty passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typesWithOptionalProperty",
+        .path = "typesWithOptionalProperty.ts",
+        .source =
+        \\// @target: es2015
+        \\// basic uses of optional properties without errors
+        \\
+        \\interface I {
+        \\    foo: string;
+        \\    bar?: number;
+        \\    baz? (): string;
+        \\}
+        \\
+        \\var a: {
+        \\    foo: string;
+        \\    bar?: number;
+        \\    baz? (): string;
+        \\};
+        \\
+        \\var b = { foo: '' };
+        \\var c = { foo: '', bar: 3 };
+        \\var d = { foo: '', bar: 3, baz: () => '' };
+        \\
+        \\var i: I;
+        \\
+        \\i = b;
+        \\i = c;
+        \\i = d;
+        \\
+        \\a = b;
+        \\a = c;
+        \\a = d;
+        \\
+        \\i = a;
+        \\a = i;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: additionOperatorWithConstrainedTypeParameter passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "additionOperatorWithConstrainedTypeParameter",
