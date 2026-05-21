@@ -7529,6 +7529,483 @@ test "conformance: arrayAssignmentPatternWithAny passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: ambientDeclarations passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "ambientDeclarations",
+        .path = "ambientDeclarations.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// Ambient variable without type annotation
+        \\declare var n;
+        \\
+        \\// Ambient variable with type annotation
+        \\declare var m: string;
+        \\
+        \\// Ambient function with no type annotations
+        \\declare function fn1();
+        \\
+        \\// Ambient function with type annotations
+        \\declare function fn2(n: string): number;
+        \\
+        \\// Ambient function with valid overloads
+        \\declare function fn3(n: string): number;
+        \\declare function fn4(n: number, y: number): string;
+        \\
+        \\// Ambient function with optional parameters
+        \\declare function fn5(x, y?);
+        \\declare function fn6(e?);
+        \\declare function fn7(x, y?, ...z);
+        \\declare function fn8(y?, ...z: number[]);
+        \\declare function fn9(...q: {}[]);
+        \\declare function fn10<T>(...q: T[]);
+        \\
+        \\// Ambient class
+        \\declare class cls {
+        \\    constructor();
+        \\    method(): cls;
+        \\    static static(p): number;
+        \\    static q;
+        \\    private fn();
+        \\    private static fns();
+        \\}
+        \\
+        \\// Ambient enum
+        \\declare enum E1 {
+        \\    x,
+        \\    y,
+        \\    z
+        \\}
+        \\
+        \\// Ambient enum with integer literal initializer
+        \\declare enum E2 {
+        \\    q,
+        \\    a = 1,
+        \\    b,
+        \\    c = 2,
+        \\    d
+        \\}
+        \\
+        \\// Ambient enum members are always exported with or without export keyword
+        \\declare enum E3 {
+        \\    A
+        \\}
+        \\declare namespace E3 {
+        \\    var B;
+        \\}
+        \\var x = E3.B;
+        \\
+        \\// Ambient module
+        \\declare namespace M1 {
+        \\    var x;
+        \\    function fn(): number;
+        \\}
+        \\
+        \\// Ambient module members are always exported with or without export keyword
+        \\var p = M1.x;
+        \\var q = M1.fn();
+        \\
+        \\// Ambient external module in the global module
+        \\// Ambient external module with a string literal name that is a top level external module name
+        \\declare module 'external1' {
+        \\    var q;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: enumClassification passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "enumClassification",
+        .path = "enumClassification.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\
+        \\// An enum type where each member has no initializer or an initializer that specififes
+        \\// a numeric literal, a string literal, or a single identifier naming another member in
+        \\// the enum type is classified as a literal enum type. An enum type that doesn't adhere
+        \\// to this pattern is classified as a numeric enum type.
+        \\
+        \\// Examples of literal enum types
+        \\
+        \\enum E01 {
+        \\    A
+        \\}
+        \\
+        \\enum E02 {
+        \\    A = 123
+        \\}
+        \\
+        \\enum E03 {
+        \\    A = "hello"
+        \\}
+        \\
+        \\enum E04 {
+        \\    A,
+        \\    B,
+        \\    C
+        \\}
+        \\
+        \\enum E05 {
+        \\    A,
+        \\    B = 10,
+        \\    C
+        \\}
+        \\
+        \\enum E06 {
+        \\    A = "one",
+        \\    B = "two",
+        \\    C = "three"
+        \\}
+        \\
+        \\enum E07 {
+        \\    A,
+        \\    B,
+        \\    C = "hi",
+        \\    D = 10,
+        \\    E,
+        \\    F = "bye"
+        \\}
+        \\
+        \\enum E08 {
+        \\    A = 10,
+        \\    B = "hello",
+        \\    C = A,
+        \\    D = B,
+        \\    E = C,
+        \\}
+        \\
+        \\// Examples of numeric enum types with only constant members
+        \\
+        \\enum E10 {}
+        \\
+        \\enum E11 {
+        \\    A = +0,
+        \\    B,
+        \\    C
+        \\}
+        \\
+        \\enum E12 {
+        \\    A = 1 << 0,
+        \\    B = 1 << 1,
+        \\    C = 1 << 2
+        \\}
+        \\
+        \\// Examples of numeric enum types with constant and computed members
+        \\
+        \\enum E20 {
+        \\    A = "foo".length,
+        \\    B = A + 1,
+        \\    C = +"123",
+        \\    D = Math.sin(1)
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: enumMerging passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "enumMerging",
+        .path = "enumMerging.ts",
+        .source =
+        \\// @target: es2015
+        \\// Enum with only constant members across 2 declarations with the same root module
+        \\// Enum with initializer in all declarations with constant members with the same root module
+        \\namespace M1 {
+        \\    enum EImpl1 {
+        \\        A, B, C
+        \\    }
+        \\
+        \\    enum EImpl1 {
+        \\        D = 1, E, F
+        \\    }
+        \\
+        \\    export enum EConst1 {
+        \\        A = 3, B = 2, C = 1
+        \\    }
+        \\
+        \\    export enum EConst1 {
+        \\        D = 7, E = 9, F = 8
+        \\    }
+        \\
+        \\    var x = [EConst1.A, EConst1.B, EConst1.C, EConst1.D, EConst1.E, EConst1.F];
+        \\}
+        \\
+        \\// Enum with only computed members across 2 declarations with the same root module
+        \\namespace M2 {
+        \\    export enum EComp2 {
+        \\        A = 'foo'.length, B = 'foo'.length, C = 'foo'.length
+        \\    }
+        \\
+        \\    export enum EComp2 {
+        \\        D = 'foo'.length, E = 'foo'.length, F = 'foo'.length
+        \\    }
+        \\
+        \\    var x = [EComp2.A, EComp2.B, EComp2.C, EComp2.D, EComp2.E, EComp2.F];
+        \\}
+        \\
+        \\// Enum with initializer in only one of two declarations with constant members with the same root module
+        \\namespace M3 {
+        \\    enum EInit {
+        \\        A,
+        \\        B
+        \\    }
+        \\
+        \\    enum EInit {
+        \\        C = 1, D, E
+        \\    }
+        \\}
+        \\
+        \\// Enums with same name but different root module
+        \\namespace M4 {
+        \\    export enum Color { Red, Green, Blue }
+        \\}
+        \\namespace M5 {
+        \\    export enum Color { Red, Green, Blue }
+        \\}
+        \\
+        \\namespace M6.A {
+        \\    export enum Color { Red, Green, Blue }
+        \\}
+        \\namespace M6 {
+        \\    export namespace A {
+        \\        export enum Color { Yellow = 1 }
+        \\    }
+        \\    var t = A.Color.Yellow;
+        \\    t = A.Color.Red;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: enumBasics passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "enumBasics",
+        .path = "enumBasics.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// Enum without initializers have first member = 0 and successive members = N + 1
+        \\enum E1 {
+        \\    A,
+        \\    B,
+        \\    C
+        \\}
+        \\
+        \\// Enum type is a subtype of Number
+        \\var x: number = E1.A;
+        \\
+        \\// Enum object type is anonymous with properties of the enum type and numeric indexer
+        \\var e = E1;
+        \\var e: {
+        \\    readonly A: E1.A;
+        \\    readonly B: E1.B;
+        \\    readonly C: E1.C;
+        \\    readonly [n: number]: string;
+        \\};
+        \\var e: typeof E1;
+        \\
+        \\// Reverse mapping of enum returns string name of property
+        \\var s = E1[e.A];
+        \\var s: string;
+        \\
+        \\
+        \\// Enum with only constant members
+        \\enum E2 {
+        \\    A = 1, B = 2, C = 3
+        \\}
+        \\
+        \\// Enum with only computed members
+        \\enum E3 {
+        \\    X = 'foo'.length, Y = 4 + 3, Z = +'foo'
+        \\}
+        \\
+        \\// Enum with constant members followed by computed members
+        \\enum E4 {
+        \\    X = 0, Y, Z = 'foo'.length
+        \\}
+        \\
+        \\// Enum with > 2 constant members with no initializer for first member, non zero initializer for second element
+        \\enum E5 {
+        \\    A,
+        \\    B = 3,
+        \\    C // 4
+        \\}
+        \\
+        \\enum E6 {
+        \\    A,
+        \\    B = 0,
+        \\    C // 1
+        \\}
+        \\
+        \\// Enum with computed member initializer of type 'any'
+        \\enum E7 {
+        \\    A = 'foo'['foo']
+        \\}
+        \\
+        \\// Enum with computed member initializer of type number
+        \\enum E8 {
+        \\    B = 'foo'['foo']
+        \\}
+        \\
+        \\//Enum with computed member intializer of same enum type
+        \\enum E9 {
+        \\    A,
+        \\    B = A
+        \\}
+        \\
+        \\// (refer to .js to validate)
+        \\// Enum constant members are propagated
+        \\var doNotPropagate = [
+        \\    E8.B, E7.A, E4.Z, E3.X, E3.Y, E3.Z
+        \\];
+        \\// Enum computed members are not propagated
+        \\var doPropagate = [
+        \\    E9.A, E9.B, E6.B, E6.C, E6.A, E5.A, E5.B, E5.C
+        \\];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: constEnum1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "constEnum1",
+        .path = "constEnum1.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\
+        \\// An enum declaration that specifies a const modifier is a constant enum declaration.
+        \\// In a constant enum declaration, all members must have constant values and
+        \\// it is an error for a member declaration to specify an expression that isn't classified as a constant enum expression.
+        \\
+        \\const enum E {
+        \\    a = 10,
+        \\    b = a,
+        \\    c = (a+1),
+        \\    e,
+        \\    d = ~e,
+        \\    f = a << 2 >> 1,
+        \\    g = a << 2 >>> 1,
+        \\    h = a | b
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: propertyAssignmentUseParentType1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "propertyAssignmentUseParentType1",
+        .path = "propertyAssignmentUseParentType1.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\interface N {
+        \\    (): boolean
+        \\    num: 123;
+        \\}
+        \\export const interfaced: N = () => true;
+        \\interfaced.num = 123;
+        \\
+        \\export const inlined: { (): boolean; nun: 456 } = () => true;
+        \\inlined.nun = 456;
+        \\
+        \\export const ignoreJsdoc = () => true;
+        \\/** @type {string} make sure to ignore jsdoc! */
+        \\ignoreJsdoc.extra = 111
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: propertyAssignmentUseParentType3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "propertyAssignmentUseParentType3",
+        .path = "propertyAssignmentUseParentType3.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// don't use the parent type if it's a function declaration (#33741)
+        \\
+        \\function foo1(): number {
+        \\    return 123;
+        \\}
+        \\foo1.toFixed = "";
+        \\
+        \\function foo2(): any[] {
+        \\    return [];
+        \\}
+        \\foo2.join = "";
+        \\
+        \\function foo3(): string {
+        \\    return "";
+        \\}
+        \\foo3.trim = "";
+        \\
+        \\function foo4(): ({x: number}) {
+        \\    return {x: 123};
+        \\}
+        \\foo4.x = "456";
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
