@@ -12386,6 +12386,151 @@ test "conformance: discriminatedUnionInference passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: classConstructorAccessibility4 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "classConstructorAccessibility4",
+        .path = "classConstructorAccessibility4.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\
+        \\class A {
+        \\    private constructor() { }
+        \\
+        \\    method() {
+        \\        class B {
+        \\            method() {
+        \\                new A();
+        \\            }
+        \\        }
+        \\
+        \\        class C extends A {
+        \\        }
+        \\    }
+        \\}
+        \\
+        \\class D {
+        \\    protected constructor() { }
+        \\
+        \\    method() {
+        \\        class E {
+        \\            method() {
+        \\                new D();
+        \\            }
+        \\        }
+        \\
+        \\        class F extends D {
+        \\        }
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: quotedConstructors passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "quotedConstructors",
+        .path = "quotedConstructors.ts",
+        .source =
+        \\// @target: es2015
+        \\class C {
+        \\    "constructor"() {
+        \\        console.log(this);
+        \\    }
+        \\}
+        \\
+        \\class D {
+        \\    'constructor'() {
+        \\        console.log(this);
+        \\    }
+        \\}
+        \\
+        \\class E {
+        \\    ['constructor']() {
+        \\        console.log(this);
+        \\    }
+        \\}
+        \\
+        \\new class {
+        \\    "constructor"() {
+        \\        console.log(this);
+        \\    }
+        \\};
+        \\
+        \\var o = { "constructor"() {} };
+        \\
+        \\class F {
+        \\    "\x63onstructor"() {
+        \\        console.log(this);
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: optionalProperty passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "optionalProperty",
+        .path = "optionalProperty.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: esnext
+        \\// @useDefineForClassFields: true
+        \\// @noTypesAndSymbols: true
+        \\class C {
+        \\    prop?;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: classExpression3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "classExpression3",
+        .path = "classExpression3.ts",
+        .source =
+        \\// @target: es2015
+        \\let C = class extends class extends class { a = 1 } { b = 2 } { c = 3 };
+        \\let c = new C();
+        \\c.a;
+        \\c.b;
+        \\c.c;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
