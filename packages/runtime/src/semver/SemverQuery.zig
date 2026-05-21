@@ -179,17 +179,14 @@ pub const Group = struct {
     }
 
     pub fn deinit(this: *const Group) void {
-        var list = this.head;
-        var allocator = this.allocator;
+        const allocator = this.allocator;
+        deinitQueryChain(allocator, &this.head.head);
 
-        while (list.next) |next| {
-            var query = list.head;
-            while (query.next) |next_query| {
-                query = next_query.*;
-                allocator.destroy(next_query);
-            }
-            list = next.*;
-            allocator.destroy(next);
+        var next_list = this.head.next;
+        while (next_list) |list| {
+            next_list = list.next;
+            deinitQueryChain(allocator, &list.head);
+            allocator.destroy(list);
         }
     }
 
@@ -226,7 +223,7 @@ pub const Group = struct {
         };
     }
 
-    pub const FlagsBitSet = bun.bit_set.IntegerBitSet(3);
+    pub const FlagsBitSet = std.StaticBitSet(3);
 
     pub fn isExact(this: *const Group) bool {
         return this.head.next == null and this.head.head.next == null and !this.head.head.range.hasRight() and this.head.head.range.left.op == .eql;
@@ -300,6 +297,14 @@ pub const Group = struct {
             group.head.satisfies(version, group_buf, version_buf);
     }
 };
+
+fn deinitQueryChain(allocator: Allocator, head: *const Query) void {
+    var next_query = head.next;
+    while (next_query) |query| {
+        next_query = query.next;
+        allocator.destroy(query);
+    }
+}
 
 pub fn eql(lhs: *const Query, rhs: *const Query) bool {
     if (!lhs.range.eql(rhs.range)) return false;
@@ -559,7 +564,7 @@ pub fn parse(
     allocator: Allocator,
     input: string,
     sliced: SlicedString,
-) bun.OOM!Group {
+) OOM!Group {
     var i: usize = 0;
     var list = Group{
         .allocator = allocator,
@@ -781,13 +786,61 @@ const string = []const u8;
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const bun = @import("bun");
+const bun = @import("./shim.zig");
 const Environment = bun.Environment;
 const OOM = bun.OOM;
 const assert = bun.assert;
 const default_allocator = bun.default_allocator;
 const strings = bun.strings;
 
-const Range = bun.Semver.Range;
-const SlicedString = bun.Semver.SlicedString;
-const Version = bun.Semver.Version;
+const Range = @import("./SemverRange.zig");
+const SlicedString = @import("./SlicedString.zig");
+const Version = @import("./Version.zig").Version;
+
+test "semver query parses caret range and checks satisfaction" {
+    const input = "^1.2.3";
+    const group = try parse(std.testing.allocator, input, SlicedString.init(input, input));
+    defer group.deinit();
+
+    const ok_input = "1.9.0";
+    const ok = Version.parseUTF8(ok_input).version.min();
+    const too_high_input = "2.0.0";
+    const too_high = Version.parseUTF8(too_high_input).version.min();
+    const too_low_input = "1.2.2";
+    const too_low = Version.parseUTF8(too_low_input).version.min();
+
+    try std.testing.expect(group.satisfies(ok, input, ok_input));
+    try std.testing.expect(!group.satisfies(too_high, input, too_high_input));
+    try std.testing.expect(!group.satisfies(too_low, input, too_low_input));
+}
+
+test "semver query parses wildcard and OR ranges" {
+    const input = "1.2.x || 2.0.0";
+    const group = try parse(std.testing.allocator, input, SlicedString.init(input, input));
+    defer group.deinit();
+
+    const one_input = "1.2.99";
+    const one = Version.parseUTF8(one_input).version.min();
+    const two_input = "2.0.0";
+    const two = Version.parseUTF8(two_input).version.min();
+    const miss_input = "1.3.0";
+    const miss = Version.parseUTF8(miss_input).version.min();
+
+    try std.testing.expect(group.satisfies(one, input, one_input));
+    try std.testing.expect(group.satisfies(two, input, two_input));
+    try std.testing.expect(!group.satisfies(miss, input, miss_input));
+}
+
+test "semver query keeps prerelease matching scoped to the same core version" {
+    const input = ">=1.0.0-alpha <1.0.0";
+    const group = try parse(std.testing.allocator, input, SlicedString.init(input, input));
+    defer group.deinit();
+
+    const matched_input = "1.0.0-beta";
+    const matched = Version.parseUTF8(matched_input).version.min();
+    const scoped_out_input = "1.0.1-alpha";
+    const scoped_out = Version.parseUTF8(scoped_out_input).version.min();
+
+    try std.testing.expect(group.satisfies(matched, input, matched_input));
+    try std.testing.expect(!group.satisfies(scoped_out, input, scoped_out_input));
+}

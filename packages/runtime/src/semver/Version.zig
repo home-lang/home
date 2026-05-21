@@ -6,7 +6,7 @@ pub fn VersionType(comptime IntType: type) type {
         major: IntType = 0,
         minor: IntType = 0,
         patch: IntType = 0,
-        _tag_padding: [if (IntType == u32) 4 else 0]u8 = .{0} ** if (IntType == u32) 4 else 0, // [see padding_checker.zig]
+        _tag_padding: [if (IntType == u32) 4 else 0]u8 = @splat(0), // [see padding_checker.zig]
         tag: Tag = .{},
 
         const This = @This();
@@ -983,13 +983,53 @@ const string = []const u8;
 
 const std = @import("std");
 
-const bun = @import("bun");
+const bun = @import("./shim.zig");
 const Environment = bun.Environment;
 const Output = bun.Output;
 const assert = bun.assert;
 const strings = bun.strings;
 
-const ExternalString = bun.Semver.ExternalString;
-const Query = bun.Semver.Query;
-const SlicedString = bun.Semver.SlicedString;
-const String = bun.Semver.String;
+const ExternalString = @import("./ExternalString.zig").ExternalString;
+const Query = @import("./SemverQuery.zig");
+const SlicedString = @import("./SlicedString.zig");
+const String = @import("./SemverString.zig").String;
+
+test "semver version parses core, prerelease, and build metadata" {
+    const input = "1.2.3-alpha.1+build.5";
+    const parsed = Version.parseUTF8(input);
+
+    try std.testing.expect(parsed.valid);
+    try std.testing.expectEqual(Query.Token.Wildcard.none, parsed.wildcard);
+    try std.testing.expectEqual(@as(u32, input.len), parsed.len);
+    try std.testing.expectEqual(@as(u64, 1), parsed.version.major.?);
+    try std.testing.expectEqual(@as(u64, 2), parsed.version.minor.?);
+    try std.testing.expectEqual(@as(u64, 3), parsed.version.patch.?);
+
+    const version = parsed.version.min();
+    try std.testing.expect(version.tag.hasPre());
+    try std.testing.expect(version.tag.hasBuild());
+    try std.testing.expectEqualStrings("alpha.1", version.tag.pre.slice(input));
+    try std.testing.expectEqualStrings("build.5", version.tag.build.slice(input));
+}
+
+test "semver version orders prereleases before releases and ignores build when requested" {
+    const alpha_input = "1.0.0-alpha.1";
+    const alpha = Version.parseUTF8(alpha_input).version.min();
+    const beta_input = "1.0.0-beta.1";
+    const beta = Version.parseUTF8(beta_input).version.min();
+    const release_input = "1.0.0";
+    const release = Version.parseUTF8(release_input).version.min();
+    const build_input = "1.0.0+build.1";
+    const build = Version.parseUTF8(build_input).version.min();
+
+    try std.testing.expectEqual(std.math.Order.lt, alpha.order(beta, alpha_input, beta_input));
+    try std.testing.expectEqual(std.math.Order.lt, alpha.order(release, alpha_input, release_input));
+    try std.testing.expectEqual(std.math.Order.eq, release.orderWithoutBuild(build, release_input, build_input));
+}
+
+test "semver pinned-version fast path classifies common package ranges" {
+    try std.testing.expectEqual(Version.PinnedVersion.patch, Version.whichVersionIsPinned("1.2.3"));
+    try std.testing.expectEqual(Version.PinnedVersion.minor, Version.whichVersionIsPinned("~1.2.3"));
+    try std.testing.expectEqual(Version.PinnedVersion.major, Version.whichVersionIsPinned("^1.2.3"));
+    try std.testing.expectEqual(Version.PinnedVersion.major, Version.whichVersionIsPinned(">=1.2.3"));
+}

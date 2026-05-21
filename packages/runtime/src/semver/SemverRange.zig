@@ -252,9 +252,37 @@ const string = []const u8;
 
 const std = @import("std");
 
-const bun = @import("bun");
+const bun = @import("./shim.zig");
 const Environment = bun.Environment;
 const assert = bun.assert;
 
-const Query = bun.Semver.Query;
-const Version = bun.Semver.Version;
+const Query = @import("./SemverQuery.zig");
+const Version = @import("./Version.zig").Version;
+
+test "semver range comparators satisfy closed-open interval" {
+    const range = Range{
+        .left = .{
+            .op = .gte,
+            .version = .{ .major = 1, .minor = 2, .patch = 0 },
+        },
+        .right = .{
+            .op = .lt,
+            .version = .{ .major = 2, .minor = 0, .patch = 0 },
+        },
+    };
+
+    try std.testing.expect(range.satisfies(.{ .major = 1, .minor = 2, .patch = 0 }, "", ""));
+    try std.testing.expect(range.satisfies(.{ .major = 1, .minor = 9, .patch = 9 }, "", ""));
+    try std.testing.expect(!range.satisfies(.{ .major = 2, .minor = 0, .patch = 0 }, "", ""));
+    try std.testing.expect(!range.satisfies(.{ .major = 1, .minor = 1, .patch = 9 }, "", ""));
+}
+
+test "semver wildcard range expands minor and patch wildcards" {
+    const minor = Range.initWildcard(.{ .major = 1 }, .minor);
+    try std.testing.expect(minor.satisfies(.{ .major = 1, .minor = 9, .patch = 9 }, "", ""));
+    try std.testing.expect(!minor.satisfies(.{ .major = 2, .minor = 0, .patch = 0 }, "", ""));
+
+    const patch = Range.initWildcard(.{ .major = 1, .minor = 2 }, .patch);
+    try std.testing.expect(patch.satisfies(.{ .major = 1, .minor = 2, .patch = 99 }, "", ""));
+    try std.testing.expect(!patch.satisfies(.{ .major = 1, .minor = 3, .patch = 0 }, "", ""));
+}
