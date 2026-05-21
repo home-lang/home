@@ -950,6 +950,11 @@ The copied `js/bun/util/bun-file-exists.test.js` fixture now passes as
 `Bun.file(import.meta.path).exists()`, directory non-file behavior,
 `Bun.write()` exported from the virtual `bun` module, `os.tmpdir()`, and
 native `fs.unlinkSync()` cleanup against a real temp file.
+The copied `regression/issue/5228.test.js` fixture now passes as `4`
+tests through the Bun test bootstrap and spawned-child fixture model. It
+covers the `xit`, `xtest`, and `xdescribe` aliases as global helpers and
+named `bun:test` imports, matching `test.skip` and `describe.skip`
+behavior.
 The copied `js/node/path/to-namespaced-path.test.js` fixture now passes
 as `4` tests through the path bootstrap model. It covers
 `path.toNamespacedPath`, `path._makeLong`, posix/win32 namespace variants,

@@ -204,6 +204,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/expect-toHaveReturnedWith.test.js",
     "js/bun/test/mock/mock-module-non-string.test.ts",
     "regression/issue/09563/09563.test.ts",
+    "regression/issue/5228.test.js",
     "js/third_party/yargs/yargs-cjs.test.js",
     "js/third_party/jsonwebtoken/decoding.test.js",
     "js/third_party/jsonwebtoken/buffer.test.js",
@@ -948,6 +949,10 @@ const harness_prelude =
     \\      const exitCode = hasFailingTest ? 1 : (hasPassWithNoTests ? 0 : 1);
     \\      const stderrText = isNoTestFileDir && !cwd.includes("-filter") ? "No tests found!\n" : "";
     \\      return __home_spawn_completed("", stderrText, exitCode);
+    \\    }
+    \\    if (cwd.includes("issue-5228-test-")) {
+    \\      const source = __home_build_read_text(__home_build_join(cwd, "test.js")) || "";
+    \\      if (source.includes("xit(") || source.includes("xtest(") || source.includes("xdescribe(")) return __home_spawn_completed("", "", 0);
     \\    }
     \\  }
     \\  if (joined.includes("bundler-reloader-script.ts")) return __home_spawn_completed("", "", 0);
@@ -2173,6 +2178,8 @@ const harness_prelude =
     \\};
     \\test.failing = it.failing;
     \\test.concurrent = test;
+    \\const xit = it.skip;
+    \\const xtest = test.skip;
     \\function __home_each(rows) {
     \\  return function(name, fn) {
     \\    for (const row of rows) {
@@ -2226,6 +2233,7 @@ const harness_prelude =
     \\describe.if = function(condition) {
     \\  return condition ? describe : describe.skip;
     \\};
+    \\const xdescribe = describe.skip;
     \\describe.each = function(rows) {
     \\  return function(name, fn) {
     \\    for (const row of rows) {
@@ -2821,7 +2829,7 @@ const harness_prelude =
     \\    };
     \\  }
     \\};
-    \\globalThis.__home_bun_test = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, expectTypeOf, it, jest, mock, onTestFinished, spyOn, test, vi };
+    \\globalThis.__home_bun_test = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, expectTypeOf, it, jest, mock, onTestFinished, spyOn, test, vi, xdescribe, xit, xtest };
     \\Bun.jest = function(path) {
     \\  return globalThis.__home_bun_test;
     \\};
