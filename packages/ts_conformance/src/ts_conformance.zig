@@ -5014,6 +5014,272 @@ test "conformance: exportDefaultExpressionComments passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: exportDefaultNamespace passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "exportDefaultNamespace",
+        .path = "exportDefaultNamespace.ts",
+        .source =
+        \\// @module: commonjs
+        \\// @target: es2015
+        \\// @declaration: true
+        \\
+        \\export default function someFunc() {
+        \\    return 'hello!';
+        \\}
+        \\
+        \\someFunc.someProp = 'yo';
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: declarationEmitWorkWithInlineComments passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "declarationEmitWorkWithInlineComments",
+        .path = "declarationEmitWorkWithInlineComments.ts",
+        .source =
+        \\// @module: commonjs
+        \\// @target: es2015
+        \\// @declaration: true
+        \\// @stripInternal:true
+        \\
+        \\export class Foo {
+        \\  constructor(
+        \\    /** @internal */
+        \\    public isInternal1: string,
+        \\    /** @internal */ public isInternal2: string, /** @internal */
+        \\    public isInternal3: string,
+        \\    // @internal
+        \\    public isInternal4: string,
+        \\    // nothing
+        \\    /** @internal */
+        \\    public isInternal5: string,
+        \\    /* @internal */ public isInternal6: string /* trailing */,
+        \\    /* @internal */ public isInternal7: string, /** @internal */
+        \\    // not work
+        \\    public notInternal1: string,
+        \\    // @internal
+        \\    /* not work */
+        \\    public notInternal2: string,
+        \\    /* not work */
+        \\    // @internal
+        \\    /* not work */
+        \\    public notInternal3: string,
+        \\  ) { }
+        \\}
+        \\
+        \\export class Bar {
+        \\  constructor(/* @internal */ public isInternal1: string) {}
+        \\}
+        \\
+        \\export class Baz {
+        \\  constructor(/* @internal */
+        \\    public isInternal: string
+        \\  ) {}
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: jsdocTwoLineTypedef passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "jsdocTwoLineTypedef",
+        .path = "jsdocTwoLineTypedef.ts",
+        .source =
+        \\// @target: es2015
+        \\// Regression from #18301
+        \\/**
+        \\ * @typedef LoadCallback
+        \\ * @type {function}
+        \\ */
+        \\type LoadCallback = void;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: seeTag2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "seeTag2",
+        .path = "seeTag2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\
+        \\/** @see {} empty*/
+        \\const a = ""
+        \\
+        \\/** @see {aaaaaa} unknown name*/
+        \\const b = ""
+        \\
+        \\/** @see {?????} invalid */
+        \\const c = ""
+        \\
+        \\/** @see c without brace */
+        \\const d = ""
+        \\
+        \\/** @see ?????? wowwwwww*/
+        \\const e = ""
+        \\
+        \\/** @see {}*/
+        \\const f = ""
+        \\
+        \\/** @see */
+        \\const g = ""
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: globalThisTypeIndexAccess passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "globalThisTypeIndexAccess",
+        .path = "globalThisTypeIndexAccess.ts",
+        .source =
+        \\// @target: es2015
+        \\
+        \\declare const w_e: (typeof globalThis)["globalThis"]
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: constLocalsInFunctionExpressions passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "constLocalsInFunctionExpressions",
+        .path = "constLocalsInFunctionExpressions.ts",
+        .source =
+        \\// @target: es2015
+        \\declare function getStringOrNumber(): string | number;
+        \\
+        \\function f1() {
+        \\    const x = getStringOrNumber();
+        \\    if (typeof x === "string") {
+        \\        const f = () => x.length;
+        \\    }
+        \\}
+        \\
+        \\function f2() {
+        \\    const x = getStringOrNumber();
+        \\    if (typeof x !== "string") {
+        \\        return;
+        \\    }
+        \\    const f = () => x.length;
+        \\}
+        \\
+        \\function f3() {
+        \\    const x = getStringOrNumber();
+        \\    if (typeof x === "string") {
+        \\        const f = function() { return x.length; };
+        \\    }
+        \\}
+        \\
+        \\function f4() {
+        \\    const x = getStringOrNumber();
+        \\    if (typeof x !== "string") {
+        \\        return;
+        \\    }
+        \\    const f = function() { return x.length; };
+        \\}
+        \\
+        \\function f5() {
+        \\    const x = getStringOrNumber();
+        \\    if (typeof x === "string") {
+        \\        const f = () => () => x.length;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: mixinAccessors5 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "mixinAccessors5",
+        .path = "mixinAccessors5.ts",
+        .source =
+        \\// @strict: true
+        \\// @target: esnext
+        \\// @declaration: true
+        \\
+        \\// https://github.com/microsoft/TypeScript/issues/61967
+        \\
+        \\declare function basicMixin<T extends object, U extends object>(
+        \\  t: T,
+        \\  u: U,
+        \\): T & U;
+        \\
+        \\declare class GetterA {
+        \\  constructor(...args: any[]);
+        \\
+        \\  get inCompendium(): boolean;
+        \\}
+        \\
+        \\declare class GetterB {
+        \\  constructor(...args: any[]);
+        \\
+        \\  get inCompendium(): boolean;
+        \\}
+        \\
+        \\declare class TestB extends basicMixin(GetterA, GetterB) {
+        \\  override get inCompendium(): boolean;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
