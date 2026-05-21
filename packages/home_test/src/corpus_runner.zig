@@ -215,6 +215,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/third_party/jsonwebtoken/encoding.test.js",
     "js/third_party/jsonwebtoken/set_headers.test.js",
     "js/third_party/jsonwebtoken/undefined_secretOrPublickey.test.js",
+    "js/bun/util/bun-file-exists.test.js",
     "js/node/path/is-absolute.test.js",
     "js/node/path/zero-length-strings.test.js",
     "js/bun/util/concat.test.js",
@@ -524,11 +525,17 @@ const harness_prelude =
     \\}
     \\function __home_build_read_text(path) {
     \\  if (typeof globalThis.__home_readFileSyncNative !== "function") return null;
+    \\  const text = String(path);
+    \\  const candidates = [text];
+    \\  if (!text.startsWith("/") && !text.startsWith("packages/runtime/test/bun-corpus/")) candidates.push("packages/runtime/test/bun-corpus/" + text);
+    \\  for (const candidate of candidates) {
     \\  try {
-    \\    return String(globalThis.__home_readFileSyncNative(String(path)));
+    \\      return String(globalThis.__home_readFileSyncNative(candidate));
     \\  } catch (error) {
-    \\    return null;
+    \\      continue;
+    \\    }
     \\  }
+    \\  return null;
     \\}
     \\function __home_build_file_exists(path) {
     \\  return __home_build_read_text(path) !== null;
@@ -2819,7 +2826,7 @@ const harness_prelude =
     \\  return globalThis.__home_bun_test;
     \\};
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
-    \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync };
+    \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, write: Bun.write };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["bun:build"] = { BuildArtifact, BuildMessage };
     \\globalThis.__home_modules["node:test"] = { test };
@@ -5561,6 +5568,14 @@ const harness_prelude =
     \\__home_node_fs.default = __home_node_fs;
     \\globalThis.__home_modules["fs"] = __home_node_fs;
     \\globalThis.__home_modules["node:fs"] = __home_node_fs;
+    \\const __home_node_os = {
+    \\  tmpdir() {
+    \\    return process.env.TMPDIR || "/tmp";
+    \\  },
+    \\};
+    \\__home_node_os.default = __home_node_os;
+    \\globalThis.__home_modules["os"] = __home_node_os;
+    \\globalThis.__home_modules["node:os"] = __home_node_os;
     \\globalThis.__home_modules["child_process"] = {
     \\  execSync(command, options) {
     \\    return "";
@@ -7896,6 +7911,18 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { writeFileSync } from \"node:fs\";",
             .replacement = "const { writeFileSync } = globalThis.__home_import(\"node:fs\");",
+        },
+        .{
+            .needle = "import { write } from \"bun\";",
+            .replacement = "const { write } = globalThis.__home_import(\"bun\");",
+        },
+        .{
+            .needle = "import { unlinkSync } from \"fs\";",
+            .replacement = "const { unlinkSync } = globalThis.__home_import(\"fs\");",
+        },
+        .{
+            .needle = "import { tmpdir } from \"os\";",
+            .replacement = "const { tmpdir } = globalThis.__home_import(\"os\");",
         },
         .{
             .needle = "import { chmodSync } from \"node:fs\";",

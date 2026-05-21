@@ -945,6 +945,11 @@ The copied
 fixture now passes as `2` tests through the CommonJS bootstrap model. It
 covers `jwt.verify()` validation for null and missing secret/public key
 arguments with the upstream error message matcher.
+The copied `js/bun/util/bun-file-exists.test.js` fixture now passes as
+`1` test through the Bun/file-system bootstrap model. It covers
+`Bun.file(import.meta.path).exists()`, directory non-file behavior,
+`Bun.write()` exported from the virtual `bun` module, `os.tmpdir()`, and
+native `fs.unlinkSync()` cleanup against a real temp file.
 The copied `js/node/path/to-namespaced-path.test.js` fixture now passes
 as `4` tests through the path bootstrap model. It covers
 `path.toNamespacedPath`, `path._makeLong`, posix/win32 namespace variants,
