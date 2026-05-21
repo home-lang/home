@@ -16807,6 +16807,319 @@ test "conformance: everyTypeWithInitializer passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: stringLiteralTypesWithVariousOperators01 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringLiteralTypesWithVariousOperators01",
+        .path = "stringLiteralTypesWithVariousOperators01.ts",
+        .source =
+        \\declare let abc: "ABC";
+        \\declare let xyz: "XYZ";
+        \\declare let abcOrXyz: "ABC" | "XYZ";
+        \\declare let abcOrXyzOrNumber: "ABC" | "XYZ" | number;
+        \\
+        \\let a = "" + abc;
+        \\let b = abc + "";
+        \\let c = 10 + abc;
+        \\let d = abc + 10;
+        \\let e = xyz + abc;
+        \\let f = abc + xyz;
+        \\let g = true + abc;
+        \\let h = abc + true;
+        \\let i = abc + abcOrXyz + xyz;
+        \\let j = abcOrXyz + abcOrXyz;
+        \\let k = +abcOrXyz;
+        \\let l = -abcOrXyz;
+        \\let m = abcOrXyzOrNumber + "";
+        \\let n = "" + abcOrXyzOrNumber;
+        \\let o = abcOrXyzOrNumber + abcOrXyz;
+        \\let p = abcOrXyz + abcOrXyzOrNumber;
+        \\let q = !abcOrXyzOrNumber;
+        \\let r = ~abcOrXyzOrNumber;
+        \\let s = abcOrXyzOrNumber < abcOrXyzOrNumber;
+        \\let t = abcOrXyzOrNumber >= abcOrXyz;
+        \\let u = abc === abcOrXyz;
+        \\let v = abcOrXyz === abcOrXyzOrNumber;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: stringLiteralTypesAsTags01 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringLiteralTypesAsTags01",
+        .path = "stringLiteralTypesAsTags01.ts",
+        .source =
+        \\type Kind = "A" | "B"
+        \\
+        \\interface Entity {
+        \\    kind: Kind;
+        \\}
+        \\
+        \\interface A extends Entity {
+        \\    kind: "A";
+        \\    a: number;
+        \\}
+        \\
+        \\interface B extends Entity {
+        \\    kind: "B";
+        \\    b: string;
+        \\}
+        \\
+        \\function hasKind(entity: Entity, kind: "A"): entity is A;
+        \\function hasKind(entity: Entity, kind: "B"): entity is B;
+        \\function hasKind(entity: Entity, kind: Kind): entity is Entity;
+        \\function hasKind(entity: Entity, kind: Kind): boolean {
+        \\    return entity.kind === kind;
+        \\}
+        \\
+        \\let x: A = {
+        \\    kind: "A",
+        \\    a: 100,
+        \\}
+        \\
+        \\if (hasKind(x, "A")) {
+        \\    let a = x;
+        \\}
+        \\else {
+        \\    let b = x;
+        \\}
+        \\
+        \\if (!hasKind(x, "B")) {
+        \\    let c = x;
+        \\}
+        \\else {
+        \\    let d = x;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: stringLiteralTypesAsTags02 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringLiteralTypesAsTags02",
+        .path = "stringLiteralTypesAsTags02.ts",
+        .source =
+        \\type Kind = "A" | "B"
+        \\
+        \\interface Entity {
+        \\    kind: Kind;
+        \\}
+        \\
+        \\interface A extends Entity {
+        \\    kind: "A";
+        \\    a: number;
+        \\}
+        \\
+        \\interface B extends Entity {
+        \\    kind: "B";
+        \\    b: string;
+        \\}
+        \\
+        \\function hasKind(entity: Entity, kind: "A"): entity is A;
+        \\function hasKind(entity: Entity, kind: "B"): entity is B;
+        \\function hasKind(entity: Entity, kind: Kind): entity is (A | B) {
+        \\    return entity.kind === kind;
+        \\}
+        \\
+        \\let x: A = {
+        \\    kind: "A",
+        \\    a: 100,
+        \\}
+        \\
+        \\if (hasKind(x, "A")) {
+        \\    let a = x;
+        \\}
+        \\else {
+        \\    let b = x;
+        \\}
+        \\
+        \\if (!hasKind(x, "B")) {
+        \\    let c = x;
+        \\}
+        \\else {
+        \\    let d = x;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: stringLiteralTypesAndTuples01 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringLiteralTypesAndTuples01",
+        .path = "stringLiteralTypesAndTuples01.ts",
+        .source =
+        \\let [hello, brave, newish, world] = ["Hello", "Brave", "New", "World"];
+        \\
+        \\type RexOrRaptor = "t-rex" | "raptor"
+        \\let [im, a, dinosaur]: ["I'm", "a", RexOrRaptor] = ['I\'m', 'a', 't-rex'];
+        \\
+        \\rawr(dinosaur);
+        \\
+        \\function rawr(dino: RexOrRaptor) {
+        \\    if (dino === "t-rex") {
+        \\        return "ROAAAAR!";
+        \\    }
+        \\    if (dino === "raptor") {
+        \\        return "yip yip!";
+        \\    }
+        \\
+        \\    throw "Unexpected " + dino;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: incrementOperatorWithAnyOtherType passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "incrementOperatorWithAnyOtherType",
+        .path = "incrementOperatorWithAnyOtherType.ts",
+        .source =
+        \\var ANY: any;
+        \\var ANY1: any;
+        \\var ANY2: any[] = ["", ""];
+        \\var obj = {x:1,y:null};
+        \\class A {
+        \\    public a: any;
+        \\}
+        \\namespace M {
+        \\    export var n: any;
+        \\}
+        \\var objA = new A();
+        \\
+        \\var ResultIsNumber1 = ++ANY;
+        \\var ResultIsNumber2 = ++ANY1;
+        \\
+        \\var ResultIsNumber3 = ANY1++;
+        \\var ResultIsNumber4 = ANY1++;
+        \\
+        \\var ResultIsNumber5 = ++ANY2[0];
+        \\var ResultIsNumber6 = ++obj.x;
+        \\var ResultIsNumber7 = ++obj.y;
+        \\var ResultIsNumber8 = ++objA.a;
+        \\var ResultIsNumber = ++M.n;
+        \\
+        \\var ResultIsNumber9 = ANY2[0]++;
+        \\var ResultIsNumber10 = obj.x++;
+        \\var ResultIsNumber11 = obj.y++;
+        \\var ResultIsNumber12 = objA.a++;
+        \\var ResultIsNumber13 = M.n++;
+        \\
+        \\++ANY;
+        \\++ANY1;
+        \\++ANY2[0];
+        \\++ANY, ++ANY1;
+        \\++objA.a;
+        \\++M.n;
+        \\
+        \\ANY++;
+        \\ANY1++;
+        \\ANY2[0]++;
+        \\ANY++, ANY1++;
+        \\objA.a++;
+        \\M.n++;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: decrementOperatorWithAnyOtherType passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "decrementOperatorWithAnyOtherType",
+        .path = "decrementOperatorWithAnyOtherType.ts",
+        .source =
+        \\var ANY: any;
+        \\var ANY1: any;
+        \\var ANY2: any[] = ["", ""];
+        \\var obj = {x:1,y:null};
+        \\class A {
+        \\    public a: any;
+        \\}
+        \\namespace M {
+        \\    export var n: any;
+        \\}
+        \\var objA = new A();
+        \\
+        \\var ResultIsNumber1 = --ANY;
+        \\var ResultIsNumber2 = --ANY1;
+        \\
+        \\var ResultIsNumber3 = ANY1--;
+        \\var ResultIsNumber4 = ANY1--;
+        \\
+        \\var ResultIsNumber5 = --ANY2[0];
+        \\var ResultIsNumber6 = --obj.x;
+        \\var ResultIsNumber7 = --obj.y;
+        \\var ResultIsNumber8 = --objA.a;
+        \\var ResultIsNumber = --M.n;
+        \\
+        \\var ResultIsNumber9 = ANY2[0]--;
+        \\var ResultIsNumber10 = obj.x--;
+        \\var ResultIsNumber11 = obj.y--;
+        \\var ResultIsNumber12 = objA.a--;
+        \\var ResultIsNumber13 = M.n--;
+        \\
+        \\--ANY;
+        \\--ANY1;
+        \\--ANY2[0];
+        \\--ANY, --ANY1;
+        \\--objA.a;
+        \\--M.n;
+        \\
+        \\ANY--;
+        \\ANY1--;
+        \\ANY2[0]--;
+        \\ANY--, ANY1--;
+        \\objA.a--;
+        \\M.n--;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
