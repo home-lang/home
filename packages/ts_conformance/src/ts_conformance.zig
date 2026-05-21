@@ -8196,6 +8196,312 @@ test "conformance: importCallExpressionShouldNotGetParen passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: throwStatements passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "throwStatements",
+        .path = "throwStatements.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// @allowUnreachableCode: true
+        \\
+        \\// all legal
+        \\
+        \\interface I {
+        \\    id: number;
+        \\}
+        \\
+        \\class C implements I {
+        \\    id: number;
+        \\}
+        \\
+        \\class D<T>{
+        \\    source: T;
+        \\    recurse: D<T>;
+        \\    wrapped: D<D<T>>
+        \\}
+        \\
+        \\function F(x: string): number { return 42; }
+        \\
+        \\namespace M {
+        \\    export class A {
+        \\        name: string;
+        \\    }
+        \\
+        \\    export function F2(x: number): string { return x.toString(); }
+        \\}
+        \\
+        \\var aNumber = 9.9;
+        \\throw aNumber;
+        \\var aString = 'this is a string';
+        \\throw aString;
+        \\var aDate = new Date(12);
+        \\throw aDate;
+        \\var anObject = new Object();
+        \\throw anObject;
+        \\
+        \\var anAny = null;
+        \\throw anAny;
+        \\var anOtherAny = <any> new C();
+        \\throw anOtherAny;
+        \\var anUndefined = undefined;
+        \\throw anUndefined;
+        \\
+        \\var aClass = new C();
+        \\throw aClass;
+        \\var aGenericClass = new D<string>();
+        \\throw aGenericClass;
+        \\var anObjectLiteral = { id: 12 };
+        \\throw anObjectLiteral;
+        \\
+        \\var aFunction = F;
+        \\throw aFunction;
+        \\throw aFunction('');
+        \\var aLambda = (x) => 2;
+        \\throw aLambda;
+        \\throw aLambda(1);
+        \\
+        \\var aModule = M;
+        \\throw aModule;
+        \\throw typeof M;
+        \\var aClassInModule = new M.A();
+        \\throw aClassInModule;
+        \\var aFunctionInModule = M.F2;
+        \\throw aFunctionInModule;
+        \\
+        \\// no initializer or annotation, so this is an 'any'
+        \\var x;
+        \\throw x;
+        \\
+        \\// literals
+        \\throw 0.0;
+        \\throw false;
+        \\throw null;
+        \\throw undefined;
+        \\throw 'a string';
+        \\throw function () { return 'a string' };
+        \\throw <T>(x:T) => 42;
+        \\throw { x: 12, y: 13 };
+        \\throw [];
+        \\throw ['a', ['b']];
+        \\throw /[a-z]/;
+        \\throw new Date();
+        \\throw new C();
+        \\throw new Object();
+        \\throw new D<number>();
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emitDefaultParametersMethodES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emitDefaultParametersMethodES6",
+        .path = "emitDefaultParametersMethodES6.ts",
+        .source =
+        \\// @strict: false
+        \\// @target:es6
+        \\class C {
+        \\    constructor(t: boolean, z: string, x: number, y = "hello") { }
+        \\
+        \\    public foo(x: string, t = false) { }
+        \\    public foo1(x: string, t = false, ...rest) { }
+        \\    public bar(t = false) { }
+        \\    public boo(t = false, ...rest) { }
+        \\}
+        \\
+        \\class D {
+        \\    constructor(y = "hello") { }
+        \\}
+        \\
+        \\class E {
+        \\    constructor(y = "hello", ...rest) { }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emitDefaultParametersFunctionExpressionES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emitDefaultParametersFunctionExpressionES6",
+        .path = "emitDefaultParametersFunctionExpressionES6.ts",
+        .source =
+        \\// @strict: false
+        \\// @target:es6
+        \\var lambda1 = (y = "hello") => { }
+        \\var lambda2 = (x: number, y = "hello") => { }
+        \\var lambda3 = (x: number, y = "hello", ...rest) => { }
+        \\var lambda4 = (y = "hello", ...rest) => { }
+        \\
+        \\var x = function (str = "hello", ...rest) { }
+        \\var y = (function (num = 10, boo = false, ...rest) { })()
+        \\var z = (function (num: number, boo = false, ...rest) { })(10)
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: for_of24 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "for-of24",
+        .path = "for-of24.ts",
+        .source =
+        \\//@target: ES6
+        \\var x: any;
+        \\for (var v of x) { }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: for_of4 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "for-of4",
+        .path = "for-of4.ts",
+        .source =
+        \\//@target: ES6
+        \\for (var v of [0]) {
+        \\    v;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: for_of5 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "for-of5",
+        .path = "for-of5.ts",
+        .source =
+        \\//@target: ES6
+        \\for (let v of [0]) {
+        \\    v;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: for_of49 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "for-of49",
+        .path = "for-of49.ts",
+        .source =
+        \\//@target: ES6
+        \\var k: string, v: boolean;
+        \\var map = new Map([["", true]]);
+        \\for ([k, ...[v]] of map) {
+        \\    k;
+        \\    v;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: for_of58 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "for-of58",
+        .path = "for-of58.ts",
+        .source =
+        \\// @target: es6
+        \\type X = { x: 'x' };
+        \\type Y = { y: 'y' };
+        \\
+        \\declare const arr: X[] & Y[];
+        \\
+        \\for (const item of arr) {
+        \\    item.x;
+        \\    item.y;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emitRestParametersFunctionPropertyES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emitRestParametersFunctionPropertyES6",
+        .path = "emitRestParametersFunctionPropertyES6.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es6
+        \\var obj: {
+        \\    func1: (...rest) => void
+        \\}
+        \\
+        \\var obj2 = {
+        \\    func(...rest) { }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
