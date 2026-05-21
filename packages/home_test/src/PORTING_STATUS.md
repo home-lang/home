@@ -726,12 +726,19 @@ must parse deferred modules. Native parity still needs Bun's real banner
 writer and barrel import optimizer.
 The copied `bundler/bundler_browser.test.ts`,
 `bundler/bundler_cjs.test.ts`, `bundler/bundler_cjs2esm.test.ts`,
-`bundler/bundler_compile_splitting.test.ts`, `bundler/bundler_drop.test.ts`,
+`bundler/bundler_compile_autoload.test.ts`,
+`bundler/bundler_compile_splitting.test.ts`,
+`bundler/bundler_decorator_metadata.test.ts`, `bundler/bundler_drop.test.ts`,
 `bundler/bundler_env.test.ts`, `bundler/bundler_footer.test.ts`,
 `bundler/bundler_html_server.test.ts`,
 `bundler/bundler_minify_symbol_for.test.ts`, `bundler/bundler_npm.test.ts`,
-`bundler/bundler_regressions.test.ts`, and
-`bundler/compile-process-execargv.test.ts` fixtures now pass as `102` additional
+`bundler/bundler_promiseall_deadcode.test.ts`,
+`bundler/bundler_regressions.test.ts`, `bundler/compile-argv.test.ts`,
+`bundler/compile-process-execargv.test.ts`,
+`bundler/plugin-sync-exception-fallback.test.ts`,
+`bundler/transpiler/es-decorators.test.ts`,
+`bundler/transpiler/preserve-use-strict-cjs.test.ts`, and
+`bundler/transpiler/template-literal.test.ts` fixtures now pass as `172` additional
 tests plus `2` upstream todos. The Home bootstrap now preserves Bun's
 `itBundled` reference return object, `itBundled.skip`, todo registration,
 literal `Record<string, ...>` TS erasure, nested template expression scanning,

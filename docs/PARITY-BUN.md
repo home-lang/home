@@ -207,20 +207,23 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes one hundred eighty-four allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes two hundred allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator. On macOS this
 JSC path is now part of the default `./pantry/.bin/zig build test` graph
 (`-Denable_jsc=false` remains available for constrained hosts): the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-four
 regression smokes, one bundler constant-fold smoke, bundler
 `allowUnresolved`, banner, barrel, browser-target builtin diagnostics, CJS,
-CJS-to-ESM, compile-splitting, drop/env/footer, HTML server, minify-symbol,
-npm, regression, and process `execArgv`
+CJS-to-ESM, compile-autoload, compile-splitting, decorator metadata,
+drop/env/footer, HTML server, minify-symbol, npm, Promise.all dead-code,
+regression, process `execArgv`, plugin exception, and transpiler
+decorator / use-strict / template-literal
 smokes, two `Bun.build` API
 smokes, one bun-types `test.each` type-shape smoke, six test-runner
 expectation smokes plus `expect().toBeEmpty`, one nested-describe smoke, two `expectTypeOf` type-only smokes, a narrow `Bun.TOML.parse` throw smoke, a TOML build invalid-source diagnostic `lineText` crash-regression smoke, CSS `intFromFloat` serialization snapshots, `Bun.stripANSI` and
-`Bun.wrapAnsi`, `Bun.semver.satisfies`, and `bun:internal-for-testing` regexp / PowerShell escaping smokes, retry/repeats runner behavior, `test.concurrent.each`, `expect().pass`, a narrow `mock.clearAllMocks` / `toHaveBeenCalledTimes` smoke, a narrow `jest.fn` / `HTMLRewriter` element-callback smoke, a narrow TypeScript constructor-modifier rewrite smoke, narrow `assert` / `assert/strict`, `node:path` including `matchesGlob` and long-CWD POSIX subprocess coverage, `node:url`, and relative CJS fixture smokes, a narrow inline-snapshot Unicode object formatting smoke, a `node:vm.runInNewContext` / `process.on` throw propagation smoke, Deno harness `test(options, fn)` / permission skip / `test.ignore` / `test.todo` call-shape parity, Deno `Event` / `CustomEvent` / `AbortController`, and a Deno `URLSearchParams` bootstrap smoke, plus narrow bootstrap coverage for Node `DOMException`, Web
-`Response.json` / `Response.redirect`, Web `Request` cache/mode/clone
+`Bun.wrapAnsi`, `Bun.semver.satisfies`, and `bun:internal-for-testing` regexp / PowerShell escaping smokes, retry/repeats runner behavior, `test.concurrent.each`, `expect().pass`, a narrow `mock.clearAllMocks` / `toHaveBeenCalledTimes` smoke, a narrow `jest.fn` / `HTMLRewriter` element-callback smoke, a narrow TypeScript constructor-modifier rewrite smoke, narrow `assert` / `assert/strict`, `node:path` including `matchesGlob` and long-CWD POSIX subprocess coverage, `node:url`, relative CJS fixture smokes, Node worker/fs/dns/readline one-shot smokes, and a WebSocket close-reentrancy smoke, a narrow inline-snapshot Unicode object formatting smoke, a `node:vm.runInNewContext` / `process.on` throw propagation smoke, Deno harness `test(options, fn)` / permission skip / `test.ignore` / `test.todo` call-shape parity, Deno `Event` / `CustomEvent` / `AbortController`, and a Deno `URLSearchParams` bootstrap smoke, plus narrow bootstrap coverage for Node `DOMException`, Web
+`Response.json` / `Response.redirect`, Web `Request` cache/mode/clone,
+fetch body async-iterator and abort-stream smokes,
 and Deno Request string-body `text()` / clone call shapes,
 narrow Deno URL authority/hash/origin parsing, a Deno `performance`
 bootstrap nucleus (`now`, `timeOrigin`, `toJSON`, marks, measures, and
@@ -307,7 +310,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `184` files, `917` passed, `0` failed,
+Latest measured subset run: `200` files, `996` passed, `0` failed,
 `44` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
@@ -1118,12 +1121,19 @@ as `11` passed, `0` failed, `0` unsupported, `0` todo through the shared
 diagnostics for barrel cases where Bun must parse deferred modules.
 The copied `bundler/bundler_browser.test.ts`,
 `bundler/bundler_cjs.test.ts`, `bundler/bundler_cjs2esm.test.ts`,
-`bundler/bundler_compile_splitting.test.ts`, `bundler/bundler_drop.test.ts`,
+`bundler/bundler_compile_autoload.test.ts`,
+`bundler/bundler_compile_splitting.test.ts`,
+`bundler/bundler_decorator_metadata.test.ts`, `bundler/bundler_drop.test.ts`,
 `bundler/bundler_env.test.ts`, `bundler/bundler_footer.test.ts`,
 `bundler/bundler_html_server.test.ts`,
 `bundler/bundler_minify_symbol_for.test.ts`, `bundler/bundler_npm.test.ts`,
-`bundler/bundler_regressions.test.ts`, and
-`bundler/compile-process-execargv.test.ts` fixtures now pass as `102` additional
+`bundler/bundler_promiseall_deadcode.test.ts`,
+`bundler/bundler_regressions.test.ts`, `bundler/compile-argv.test.ts`,
+`bundler/compile-process-execargv.test.ts`,
+`bundler/plugin-sync-exception-fallback.test.ts`,
+`bundler/transpiler/es-decorators.test.ts`,
+`bundler/transpiler/preserve-use-strict-cjs.test.ts`, and
+`bundler/transpiler/template-literal.test.ts` fixtures now pass as `172` additional
 passed tests plus `2` upstream todos. The bootstrap models Bun's `itBundled`
 reference return shape, `itBundled.skip`, todo registration, literal
 `Record<string, ...>` TypeScript erasure, nested template expression scanning,
