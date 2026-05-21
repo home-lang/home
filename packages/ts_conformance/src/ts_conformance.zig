@@ -4120,6 +4120,132 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: iterableContextualTyping1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "iterableContextualTyping1",
+        .path = "iterableContextualTyping1.ts",
+        .source =
+        \\//@target: ES6
+        \\var iter: Iterable<(x: string) => number> = [s => s.length];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: functionExpressionContextualTyping3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "functionExpressionContextualTyping3",
+        .path = "functionExpressionContextualTyping3.ts",
+        .source =
+        \\// @target: es2015
+        \\// @noImplicitAny: true
+        \\
+        \\// #31114
+        \\declare function f<T>(value: T | number): void;
+        \\f((a: any) => "")
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: superCallParameterContextualTyping1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "superCallParameterContextualTyping1",
+        .path = "superCallParameterContextualTyping1.ts",
+        .source =
+        \\// @target: es2015
+        \\
+        \\class A<T1, T2> {
+        \\    constructor(private map: (value: T1) => T2) {
+        \\
+        \\    }
+        \\}
+        \\
+        \\class B extends A<number, string> {
+        \\    // Ensure 'value' is of type 'number (and not '{}') by using its 'toExponential()' method.
+        \\    constructor() { super(value => String(value.toExponential())); }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: scopeResolutionIdentifiers passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "scopeResolutionIdentifiers",
+        .path = "scopeResolutionIdentifiers.ts",
+        .source =
+        \\// @target: es2015
+        \\// EveryType used in a nested scope of a different EveryType with the same name, type of the identifier is the one defined in the inner scope
+        \\
+        \\var s: string;
+        \\namespace M1 {
+        \\    export var s: number = 0;
+        \\    var n = s;
+        \\    var n: number;
+        \\}
+        \\
+        \\namespace M2 {
+        \\    var s: number = 0;
+        \\    var n = s;
+        \\    var n: number;
+        \\}
+        \\
+        \\function fn() {
+        \\    var s: boolean = false;
+        \\    var n = s;
+        \\    var n: boolean;
+        \\}
+        \\
+        \\class C {
+        \\    s!: Date;
+        \\    n = this.s;
+        \\    x() {
+        \\        var p = this.n;
+        \\        var p: Date;
+        \\    }
+        \\}
+        \\
+        \\namespace M3 {
+        \\    var s: any;
+        \\    namespace M4 {
+        \\        var n = s;
+        \\        var n: any;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: constructorFunctionTypeIsAssignableToBaseType passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "constructorFunctionTypeIsAssignableToBaseType",
