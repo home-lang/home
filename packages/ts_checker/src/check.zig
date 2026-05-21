@@ -21428,7 +21428,7 @@ pub const Checker = struct {
     }
 
     fn reportVirtualCannotFindRelativeModule(self: *Checker, node: NodeId, spec: []const u8) CheckError!void {
-        if (self.moduleResolutionIsClassic()) {
+        if (self.classicBareSiblingResolutionEnabled()) {
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "Cannot find module '{s}'. Did you mean to set the 'moduleResolution' option to 'nodenext', or to add aliases to the 'paths' option?",
