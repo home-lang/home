@@ -200,7 +200,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes one hundred fifty-seven allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes one hundred fifty-eight allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-four
@@ -240,6 +240,7 @@ selector / handler validation plus element callback methods,
 `node:url.domainToASCII` / `domainToUnicode` invalid-punycode handling,
 POSIX `node:url.pathToFileURL` path encoding,
 `Bun.fileURLToPath` / `pathToFileURL` conversion and throw behavior,
+Node `url.fileURLToPath` POSIX roundtrip coverage,
 `process.binding("constants")` / `process.binding("uv")` smoke coverage,
 Jest fake-timer Date / `Intl.DateTimeFormat` smoke coverage,
 `bun:internal-for-testing.highlightJavaScript` template-literal coverage,
@@ -284,8 +285,8 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `157` files, `681` passed, `0` failed,
-`40` todo.
+Latest measured subset run: `158` files, `682` passed, `0` failed,
+`41` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
 uses the same Home-native JSC bootstrap instead of the retired
@@ -1274,6 +1275,11 @@ The copied `js/bun/util/fileUrl.test.js` fixture now passes in Home as
 the Bun file URL helper import, exports `Bun.pathToFileURL`, tightens
 `Bun.fileURLToPath` throw behavior, normalizes long relative `..` paths,
 and maps corpus-relative `import.meta.path` / `import.meta.url` roundtrips.
+
+The copied `js/node/url/url-fileurltopath.test.js` fixture now passes in
+Home as `1` passed, `0` failed, `0` unsupported, `1` todo. The executable
+coverage validates POSIX `url.fileURLToPath` string and `URL` roundtrips;
+the upstream invalid-input block remains registered as `test.todo`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

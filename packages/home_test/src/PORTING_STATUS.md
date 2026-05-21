@@ -162,6 +162,7 @@ table smokes, posix/win32 relative path table smokes,
 / invalid-argument coverage,
 `node:url` URL.canParse, url.format empty-input, POSIX pathToFileURL,
 `Bun.fileURLToPath` / `pathToFileURL` conversion and throw behavior,
+Node `url.fileURLToPath` POSIX roundtrip coverage,
 and WHATWG URL auth stripping plus domainToASCII/domainToUnicode smokes,
 skipped Node URL null-character / internal URL smokes,
 `test.skipIf` registration for the Windows-only POSIX relative path smoke,
@@ -833,6 +834,9 @@ The copied `js/bun/util/fileUrl.test.js` fixture now passes as `20`
 tests through the URL bootstrap model. It covers Bun file URL helper
 imports, `Bun.pathToFileURL`, stricter `Bun.fileURLToPath` throws, long
 relative path normalization, and corpus-relative `import.meta` roundtrips.
+The copied `js/node/url/url-fileurltopath.test.js` fixture now passes as
+`1` executable test plus `1` upstream todo through the URL bootstrap
+model. It covers POSIX `url.fileURLToPath` string and `URL` roundtrips.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

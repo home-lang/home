@@ -187,6 +187,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/path/extname.test.js",
     "js/bun/util/index-of-line.test.ts",
     "js/node/url/url-format-whatwg.test.js",
+    "js/node/url/url-fileurltopath.test.js",
     "regression/issue/19412.test.ts",
     "js/node/path/normalize.test.js",
     "js/node/path/join.test.js",
