@@ -148,6 +148,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/third_party/prompts/prompts.test.ts",
     "js/web/timers/microtask.test.js",
     "js/web/timers/setImmediate.test.js",
+    "js/web/timers/setImmediate2.test.ts",
     "js/web/timers/clearImmediate-gc.test.ts",
     "js/web/timers/performance.test.js",
     "js/web/timers/performance-entries.test.ts",
@@ -306,6 +307,22 @@ const harness_prelude =
     \\if (typeof console.warn !== "function") console.warn = console.log;
     \\let __home_next_timer_id = 1;
     \\const __home_cancelled_timers = new Set();
+    \\function __home_timer_handle(id) {
+    \\  return {
+    \\    __home_timer_id: id,
+    \\    ref() { return this; },
+    \\    unref() { return this; },
+    \\    hasRef() { return true; },
+    \\    refresh() { return this; },
+    \\    valueOf() { return id; },
+    \\    toString() { return String(id); },
+    \\    [Symbol.toPrimitive]() { return id; },
+    \\  };
+    \\}
+    \\function __home_timer_id(value) {
+    \\  if (value && typeof value === "object" && "__home_timer_id" in value) return value.__home_timer_id;
+    \\  return Number(value);
+    \\}
     \\function queueMicrotask(callback) {
     \\  if (typeof callback !== "function") throw new TypeError("queueMicrotask callback must be a function");
     \\  Promise.resolve().then(callback);
@@ -317,13 +334,14 @@ const harness_prelude =
     \\    if (__home_cancelled_timers.has(id)) return;
     \\    if (typeof callback === "function") callback.apply(undefined, args);
     \\  });
-    \\  return id;
+    \\  return __home_timer_handle(id);
     \\}
     \\function clearImmediate(id) {
-    \\  __home_cancelled_timers.add(id);
+    \\  __home_cancelled_timers.add(__home_timer_id(id));
     \\}
     \\function setTimeout(callback, delay) {
     \\  const id = __home_next_timer_id++;
+    \\  const args = Array.prototype.slice.call(arguments, 2);
     \\  Promise.resolve().then(() => {
     \\    if (__home_cancelled_timers.has(id)) return;
     \\    const delayMs = Math.max(0, Number(delay) || 0);
@@ -332,12 +350,12 @@ const harness_prelude =
     \\      while (Date.now() - started < delayMs) {}
     \\    }
     \\    globalThis.__home_performance_clock = (globalThis.__home_performance_clock || 0) + delayMs;
-    \\    if (typeof callback === "function") callback();
+    \\    if (typeof callback === "function") callback.apply(undefined, args);
     \\  });
-    \\  return id;
+    \\  return __home_timer_handle(id);
     \\}
     \\function clearTimeout(id) {
-    \\  __home_cancelled_timers.add(id);
+    \\  __home_cancelled_timers.add(__home_timer_id(id));
     \\}
     \\const __home_object_set_prototype_of = Object.setPrototypeOf;
     \\const __home_global_original_prototype = Object.getPrototypeOf(globalThis);
@@ -866,7 +884,7 @@ const harness_prelude =
     \\    if (typeof options.fetch === "function" && !options.routes && !options.static) {
     \\      const id = "js-" + (Bun.__home_next_js_serve_id++);
     \\      const port = 43000 + Bun.__home_next_js_serve_id;
-    \\      handle = { id, port, origin: "http://localhost:" + String(port), native: false };
+    \\      handle = { id, port, hostname: "localhost", origin: "http://localhost:" + String(port), native: false };
     \\    } else {
     \\      if (typeof globalThis.__home_serveNative !== "function" || typeof globalThis.__home_stopServeNative !== "function") __home_unsupported("Bun.serve native bridge is not installed");
     \\      handle = globalThis.__home_serveNative(options);
@@ -880,6 +898,7 @@ const harness_prelude =
     \\    const server = {
     \\      __home_id: handle.id,
     \\      port: handle.port,
+    \\      hostname: handle.hostname || "localhost",
     \\      url,
     \\      stop(closeActiveConnections) {
     \\        if (handle.stopped) return;
@@ -7678,6 +7697,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "console.warn = console.log") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function queueMicrotask(callback)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function setImmediate(callback)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "unref() { return this; }") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_reset_performance_clock") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_is_thenable(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_done_callback(error)") != null);
@@ -7701,6 +7721,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "sleepSync(seconds)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "nanoseconds()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "serve(options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "hostname: \"localhost\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_serveNative(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "typeof options.fetch === \"function\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_stopServeNative(handle.id") != null);

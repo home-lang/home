@@ -177,6 +177,7 @@ IPC-style server-fixture URL delivery and `new URL(input, base)`,
 interactive third-party prompts stdin/stdout behavior,
 `queueMicrotask` ordering and argument validation,
 `setImmediate` / `clearImmediate` scheduling and cancellation,
+`setImmediate` interaction with JS-only `Bun.serve` / fetch,
 inline `clearImmediate(setImmediate(...))` subprocess GC coverage,
 Performance resource-timing no-ops and `Bun.nanoseconds`,
 `bun:jsc.estimateShallowMemoryUsageOf(performance)` entry-growth coverage,
@@ -792,6 +793,11 @@ The copied `js/web/timers/setImmediate.test.js` fixture now passes as
 `3` tests through the timer bootstrap model. It covers scheduled
 callbacks, argument forwarding, `clearImmediate` cancellation, and
 process-exit behavior for pending immediates.
+The copied `js/web/timers/setImmediate2.test.ts` fixture now passes as
+`1` test through the timer/server bootstrap model. It covers Bun-like
+timer handles with no-op `ref()` / `unref()` / `refresh()` methods,
+numeric handle coercion, and JS-only `Bun.serve({ fetch })` hostname
+resolution through the in-harness `fetch` model.
 The copied `js/web/timers/clearImmediate-gc.test.ts` fixture now passes
 as `1` test through the timer/subprocess bootstrap model. It covers the
 upstream inline `bunExe() -e` smoke for clearing a queued immediate,
