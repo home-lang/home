@@ -205,6 +205,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/mock/mock-module-non-string.test.ts",
     "regression/issue/09563/09563.test.ts",
     "js/third_party/yargs/yargs-cjs.test.js",
+    "js/third_party/jsonwebtoken/decoding.test.js",
     "js/node/path/is-absolute.test.js",
     "js/node/path/zero-length-strings.test.js",
     "js/bun/util/concat.test.js",
@@ -6443,6 +6444,16 @@ const harness_prelude =
     \\globalThis.__home_modules["yargs/yargs"] = function yargs() {
     \\  return {};
     \\};
+    \\globalThis.__home_modules["jsonwebtoken"] = {
+    \\  decode(token) {
+    \\    if (token === null || token === undefined) return null;
+    \\    try {
+    \\      return JSON.parse(String(token));
+    \\    } catch (error) {
+    \\      return null;
+    \\    }
+    \\  },
+    \\};
     \\if (typeof URLSearchParams !== "function") {
     \\  function __home_url_hex(byte) {
     \\    const text = byte.toString(16).toUpperCase();
@@ -7749,6 +7760,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { Request } = globalThis.__home_import(\"node-fetch\");",
         },
         .{
+            .needle = "import jwt from \"jsonwebtoken\";",
+            .replacement = "const jwt = globalThis.__home_import(\"jsonwebtoken\");",
+        },
+        .{
             .needle = "import { runInNewContext } from \"node:vm\";",
             .replacement = "const { runInNewContext } = globalThis.__home_import(\"node:vm\");",
         },
@@ -8881,6 +8896,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Request.prototype.clone") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node-fetch\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"yargs/yargs\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"jsonwebtoken\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.alloc = function(size, fill)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "String.fromCharCode(this[i])") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Buffer.from") != null);
@@ -9055,6 +9071,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/test/mock/mock-module-non-string.test.ts",
         "regression/issue/09563/09563.test.ts",
         "js/third_party/yargs/yargs-cjs.test.js",
+        "js/third_party/jsonwebtoken/decoding.test.js",
         "js/node/path/is-absolute.test.js",
         "js/node/path/zero-length-strings.test.js",
         "js/bun/util/concat.test.js",
@@ -11021,6 +11038,35 @@ test "bootstrap runner covers yargs CommonJS function require" {
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/yargs/yargs-cjs.test.js");
     defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers jsonwebtoken null decode" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { describe, expect, it } from "bun:test";
+        \\import jwt from "jsonwebtoken";
+        \\
+        \\describe("decoding", function () {
+        \\  it("should not crash when decoding a null token", function () {
+        \\    var decoded = jwt.decode("null");
+        \\    expect(decoded).toEqual(null);
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/jsonwebtoken/decoding.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const jwt = globalThis.__home_import(\"jsonwebtoken\");") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();

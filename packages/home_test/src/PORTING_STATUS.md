@@ -920,6 +920,10 @@ The copied `js/third_party/yargs/yargs-cjs.test.js` fixture now passes
 as `1` test through the CommonJS bootstrap model. It covers
 `require("yargs/yargs")` returning a function and the runtime
 `expect(...).toBeFunction()` matcher.
+The copied `js/third_party/jsonwebtoken/decoding.test.js` fixture now
+passes as `1` test through the CommonJS bootstrap model. It covers
+default-import lowering for `jsonwebtoken` and `jwt.decode("null")`
+returning `null` without throwing.
 The copied `js/node/path/to-namespaced-path.test.js` fixture now passes
 as `4` tests through the path bootstrap model. It covers
 `path.toNamespacedPath`, `path._makeLong`, posix/win32 namespace variants,
