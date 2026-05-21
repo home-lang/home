@@ -20131,6 +20131,170 @@ test "conformance: templateStringWithOpenCommentInStringPortionES6 passes clean"
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: arrayLiteralSpread passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "arrayLiteralSpread",
+        .path = "arrayLiteralSpread.ts",
+        .source =
+        \\function f0() {
+        \\    var a = [1, 2, 3];
+        \\    var a1 = [...a];
+        \\    var a2 = [1, ...a];
+        \\    var a3 = [1, 2, ...a];
+        \\    var a4 = [...a, 1];
+        \\    var a5 = [...a, 1, 2];
+        \\    var a6 = [1, 2, ...a, 1, 2];
+        \\    var a7 = [1, ...a, 2, ...a];
+        \\    var a8 = [...a, ...a, ...a];
+        \\}
+        \\
+        \\function f1() {
+        \\    var a = [1, 2, 3];
+        \\    var b = ["hello", ...a, true];
+        \\    var b: (string | number | boolean)[];
+        \\}
+        \\
+        \\function f2() {
+        \\    var a = [...[...[...[...[...[]]]]]];
+        \\    var b = [...[...[...[...[...[5]]]]]];
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: iteratorSpreadInCall3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "iteratorSpreadInCall3",
+        .path = "iteratorSpreadInCall3.ts",
+        .source =
+        \\function foo(...s: symbol[]) { }
+        \\class SymbolIterator {
+        \\    next() {
+        \\        return {
+        \\            value: Symbol(),
+        \\            done: false
+        \\        };
+        \\    }
+        \\
+        \\    [Symbol.iterator]() {
+        \\        return this;
+        \\    }
+        \\}
+        \\
+        \\foo(...new SymbolIterator);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: iteratorSpreadInCall5 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "iteratorSpreadInCall5",
+        .path = "iteratorSpreadInCall5.ts",
+        .source =
+        \\function foo(...s: (symbol | string)[]) { }
+        \\class SymbolIterator {
+        \\    next() {
+        \\        return {
+        \\            value: Symbol(),
+        \\            done: false
+        \\        };
+        \\    }
+        \\
+        \\    [Symbol.iterator]() {
+        \\        return this;
+        \\    }
+        \\}
+        \\
+        \\class _StringIterator {
+        \\    next() {
+        \\        return {
+        \\            value: "",
+        \\            done: false
+        \\        };
+        \\    }
+        \\
+        \\    [Symbol.iterator]() {
+        \\        return this;
+        \\    }
+        \\}
+        \\
+        \\foo(...new SymbolIterator, ...new _StringIterator);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: iteratorSpreadInCall12 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "iteratorSpreadInCall12",
+        .path = "iteratorSpreadInCall12.ts",
+        .source =
+        \\class Foo<T> {
+        \\    constructor(...s: T[]) { }
+        \\}
+        \\
+        \\class SymbolIterator {
+        \\    next() {
+        \\        return {
+        \\            value: Symbol(),
+        \\            done: false
+        \\        };
+        \\    }
+        \\
+        \\    [Symbol.iterator]() {
+        \\        return this;
+        \\    }
+        \\}
+        \\
+        \\class _StringIterator {
+        \\    next() {
+        \\        return {
+        \\            value: "",
+        \\            done: false
+        \\        };
+        \\    }
+        \\
+        \\    [Symbol.iterator]() {
+        \\        return this;
+        \\    }
+        \\}
+        \\
+        \\new Foo(...[...new SymbolIterator, ...[...new _StringIterator]]);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
