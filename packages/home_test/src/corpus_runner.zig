@@ -220,6 +220,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/12034/12034.fixture.ts",
     "regression/issue/12548.test.ts",
     "regression/issue/12910/12910.test.ts",
+    "regression/issue/13316.test.ts",
     "regression/issue/15276.test.ts",
     "regression/issue/20092.fixture.ts",
     "regression/issue/21680.test.ts",
@@ -2185,6 +2186,9 @@ const harness_prelude =
     \\describe.skip.concurrent = describe.skip;
     \\describe.skipIf = function(condition) {
     \\  return condition ? describe.skip : describe;
+    \\};
+    \\describe.if = function(condition) {
+    \\  return condition ? describe : describe.skip;
     \\};
     \\describe.each = function(rows) {
     \\  return function(name, fn) {
@@ -8539,6 +8543,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.if = function(condition)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTrue()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.skipIf = function(condition)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.if = function(condition)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_registered_tests = []") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.only = __home_test_only") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.only = function(name, fn)") != null);
@@ -8684,6 +8689,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "regression/issue/12034/12034.fixture.ts",
         "regression/issue/12548.test.ts",
         "regression/issue/12910/12910.test.ts",
+        "regression/issue/13316.test.ts",
         "regression/issue/15276.test.ts",
         "regression/issue/20092.fixture.ts",
         "regression/issue/21680.test.ts",
@@ -9632,6 +9638,10 @@ test "bootstrap runner covers conditional skip helpers" {
         \\describe.skipIf(1)("describe #3", () => test("test #8", () => expect.unreachable()));
         \\describe.skipIf(false)("describe #4", () => test("test #9", () => expect().pass()));
         \\describe.skipIf(null)("describe #5", () => test("test #10", () => expect().pass()));
+        \\describe.if(false)("describe #6", () => test("test #15", () => expect.unreachable()));
+        \\describe.if(null)("describe #7", () => test("test #16", () => expect.unreachable()));
+        \\describe.if(true)("describe #8", () => test("test #17", () => expect().pass()));
+        \\describe.if(1)("describe #9", () => test("test #18", () => expect().pass()));
         \\test.if(false)("test #11", () => expect.unreachable());
         \\test.if(null)("test #12", () => expect.unreachable());
         \\test.if(true)("test #13", () => expect().pass());
@@ -9647,8 +9657,8 @@ test "bootstrap runner covers conditional skip helpers" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 8), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 10), file_run.result.todo);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
 }
 
