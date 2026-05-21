@@ -17235,6 +17235,105 @@ test "conformance: generatorTypeCheck30 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: parserS7_6_1_1_A1_10 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserS7.6.1.1_A1.10",
+        .path = "parserS7.6.1.1_A1.10.ts",
+        .source =
+        \\//for = 1;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserAmbiguityWithBinaryOperator1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserAmbiguityWithBinaryOperator1",
+        .path = "parserAmbiguityWithBinaryOperator1.ts",
+        .source =
+        \\function f1() {
+        \\    var a, b, c;
+        \\    if (a < b || b > (c + 1)) { }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserAmbiguityWithBinaryOperator2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserAmbiguityWithBinaryOperator2",
+        .path = "parserAmbiguityWithBinaryOperator2.ts",
+        .source =
+        \\function f() {
+        \\    var a, b, c;
+        \\    if (a < b && b > (c + 1)) { }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserAmbiguityWithBinaryOperator3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserAmbiguityWithBinaryOperator3",
+        .path = "parserAmbiguityWithBinaryOperator3.ts",
+        .source =
+        \\function f() {
+        \\    var a, b, c;
+        \\    if (a < b && b < (c + 1)) { }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserUnaryExpression6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserUnaryExpression6",
+        .path = "parserUnaryExpression6.ts",
+        .source =
+        \\
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
