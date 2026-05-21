@@ -4120,7 +4120,6 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
-
 test "conformance: inferThisType passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "inferThisType",
@@ -4190,7 +4189,6 @@ test "conformance: typeParameterConstModifiersWithIntersection passes clean" {
     }
     try T.expectEqual(Outcome.passed, result.outcome);
 }
-
 
 test "conformance: stringLiteralTypesTypePredicates01 passes clean" {
     const result = try runOneEntry(T.allocator, .{
@@ -4532,7 +4530,6 @@ test "conformance: iteratorSpreadInArray2 passes clean" {
     }
     try T.expectEqual(Outcome.passed, result.outcome);
 }
-
 
 test "conformance: forBreakStatements passes clean" {
     const result = try runOneEntry(T.allocator, .{
@@ -16042,6 +16039,164 @@ test "conformance: parserEnum6 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: enumConstantMemberWithString keeps string constants and arithmetic errors" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "enumConstantMemberWithString",
+        .path = "enumConstantMemberWithString.ts",
+        .source =
+        \\// @target: es2015
+        \\enum T1 {
+        \\    a = "1",
+        \\    b = "1" + "2",
+        \\    c = "1" + "2" + "3",
+        \\    d = "a" - "a",
+        \\    e = "a" + 1
+        \\}
+        \\
+        \\enum T2 {
+        \\    a = "1",
+        \\    b = "1" + "2"
+        \\}
+        \\
+        \\enum T3 {
+        \\    a = "1",
+        \\    b = "1" + "2",
+        \\    c = 1,
+        \\    d = 1 + 2
+        \\}
+        \\
+        \\enum T4 {
+        \\    a = "1"
+        \\}
+        \\
+        \\enum T5 {
+        \\    a = "1" + "2"
+        \\}
+        \\
+        \\declare enum T6 {
+        \\    a = "1",
+        \\    b = "1" + "2"
+        \\}
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\enumConstantMemberWithString.ts(5,9): error TS2362: The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.
+        \\enumConstantMemberWithString.ts(5,15): error TS2363: The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.
+        ,
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: enumConstantMemberWithStringEmitDeclaration passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "enumConstantMemberWithStringEmitDeclaration",
+        .path = "enumConstantMemberWithStringEmitDeclaration.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\enum T1 {
+        \\    a = "1",
+        \\    b = "1" + "2",
+        \\    c = "1" + "2" + "3"
+        \\}
+        \\
+        \\enum T2 {
+        \\    a = "1",
+        \\    b = "1" + "2"
+        \\}
+        \\
+        \\enum T3 {
+        \\    a = "1",
+        \\    b = "1" + "2"
+        \\}
+        \\
+        \\enum T4 {
+        \\    a = "1"
+        \\}
+        \\
+        \\enum T5 {
+        \\    a = "1" + "2"
+        \\}
+        \\
+        \\declare enum T6 {
+        \\    a = "1",
+        \\    b = "1" + "2"
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: enumConstantMemberWithTemplateLiteralsEmitDeclaration passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "enumConstantMemberWithTemplateLiteralsEmitDeclaration",
+        .path = "enumConstantMemberWithTemplateLiteralsEmitDeclaration.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\enum T1 {
+        \\    a = `1`
+        \\}
+        \\
+        \\enum T2 {
+        \\    a = `1`,
+        \\    b = "2",
+        \\    c = 3
+        \\}
+        \\
+        \\enum T3 {
+        \\    a = `1` + `1`
+        \\}
+        \\
+        \\enum T4 {
+        \\    a = `1`,
+        \\    b = `1` + `1`,
+        \\    c = `1` + "2",
+        \\    d = "2" + `1`,
+        \\    e = "2" + `1` + `1`
+        \\}
+        \\
+        \\enum T5 {
+        \\    a = `1`,
+        \\    b = `1` + `2`,
+        \\    c = `1` + `2` + `3`,
+        \\    d = 1
+        \\}
+        \\
+        \\enum T6 {
+        \\    a = 1,
+        \\    b = `12`.length
+        \\}
+        \\
+        \\declare enum T7 {
+        \\    a = `1`,
+        \\    b = `1` + `1`,
+        \\    c = "2" + `1`
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: parserInterfaceKeywordInEnum passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "parserInterfaceKeywordInEnum",
@@ -21446,7 +21601,6 @@ test "conformance: additionOperatorWithConstrainedTypeParameter passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
-
 test "conformance: subtypesOfTypeParameterWithConstraints3 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "subtypesOfTypeParameterWithConstraints3",
@@ -21665,7 +21819,6 @@ test "conformance: typeGuardOfFormFunctionEquality passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
-
 test "conformance: parserSbp_7_9_A9_T3 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "parserSbp_7.9_A9_T3",
@@ -21697,7 +21850,6 @@ test "conformance: parserSbp_7_9_A9_T3 passes clean" {
     }
     try T.expectEqual(Outcome.passed, result.outcome);
 }
-
 
 test "conformance: iterableArrayPattern20 passes clean" {
     const result = try runOneEntry(T.allocator, .{
@@ -22039,7 +22191,6 @@ test "conformance: constructorImplementationWithDefaultValues passes clean" {
     }
     try T.expectEqual(Outcome.passed, result.outcome);
 }
-
 
 test "conformance: unionTypeReduction passes clean" {
     const result = try runOneEntry(T.allocator, .{
@@ -22429,7 +22580,6 @@ test "conformance: stringLiteralTypesInUnionTypes03 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
-
 test "conformance: iterableArrayPattern3 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "iterableArrayPattern3",
@@ -22501,7 +22651,6 @@ test "conformance: iterableArrayPattern4 passes clean" {
     }
     try T.expectEqual(Outcome.passed, result.outcome);
 }
-
 
 test "conformance: typeParametersAvailableInNestedScope3 passes clean" {
     const result = try runOneEntry(T.allocator, .{
@@ -23276,7 +23425,6 @@ test "conformance: constEnumPropertyAccess3 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
-
 test "conformance: generatorReturnTypeFallback_5 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "generatorReturnTypeFallback.5",
@@ -23788,7 +23936,6 @@ test "conformance: iteratorSpreadInArray3 passes clean" {
     }
     try T.expectEqual(Outcome.passed, result.outcome);
 }
-
 
 test "conformance: strictBindCallApply2 passes clean" {
     const result = try runOneEntry(T.allocator, .{
@@ -24424,7 +24571,6 @@ test "conformance: for-of31 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
-
 test "conformance: extendNumberInterface passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "extendNumberInterface",
@@ -24967,7 +25113,6 @@ test "conformance: decoratorInAmbientContext passes clean" {
     }
     try T.expectEqual(Outcome.passed, result.outcome);
 }
-
 
 test "conformance: objectLiteralShorthandPropertiesFunctionArgument passes clean" {
     const result = try runOneEntry(T.allocator, .{
@@ -26787,7 +26932,6 @@ test "conformance: parserOptionalTypeMembers1 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
-
 test "conformance: thisTypeInBasePropertyAndDerivedContainerOfBase01 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "thisTypeInBasePropertyAndDerivedContainerOfBase01",
@@ -27488,7 +27632,6 @@ test "conformance: for-of44 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
-
 test "conformance: parserEnum2 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "parserEnum2",
@@ -27591,7 +27734,6 @@ test "conformance: intersectionMemberOfUnionNarrowsCorrectly passes clean" {
     }
     try T.expectEqual(Outcome.passed, result.outcome);
 }
-
 
 test "conformance: emitDefaultParametersFunctionES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
@@ -29776,7 +29918,6 @@ test "conformance: controlFlowStringIndex passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
-
 test "conformance: seeTag1 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "seeTag1",
@@ -30173,7 +30314,6 @@ test "conformance: ModuleAndEnumWithSameNameAndCommonRoot passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
-
 test "conformance: thisTypeOptionalCall passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "thisTypeOptionalCall",
@@ -30334,7 +30474,6 @@ test "conformance: generatorInAmbientContext6 passes clean" {
     }
     try T.expectEqual(Outcome.passed, result.outcome);
 }
-
 
 test "conformance: taggedTemplateStringsWithTagNamedDeclareES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
@@ -32033,7 +32172,6 @@ test "conformance: numericSeparators_octal passes clean" {
     }
     try T.expectEqual(Outcome.passed, result.outcome);
 }
-
 
 test "conformance: parserSymbolIndexer1 passes clean" {
     const result = try runOneEntry(T.allocator, .{
@@ -33769,7 +33907,6 @@ test "conformance: classWithSemicolonClassElementES61 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
-
 test "conformance: VariableDeclaration10_es6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "VariableDeclaration10_es6",
@@ -34076,7 +34213,6 @@ test "conformance: emitArrowFunctionWhenUsingArguments09_ES6 passes clean" {
     }
     try T.expectEqual(Outcome.passed, result.outcome);
 }
-
 
 test "conformance: parserForOfStatement23 passes clean" {
     const result = try runOneEntry(T.allocator, .{

@@ -1321,12 +1321,16 @@ pub const Checker = struct {
     signature_param_name_occurrences: std.AutoHashMapUnmanaged(TypeId, []hir_mod.StringId),
     /// `(enum_name, member_name) → numeric value` for enum members
     /// whose value the checker resolved (either from an explicit
-    /// numeric initializer or auto-incremented from the prior
-    /// member). String-valued members are not recorded — their value
-    /// type is the string literal itself. Populated by
-    /// `checkEnumDecl`; consulted by member-access typing on enum
-    /// receivers and (in a follow-up) by `const enum` inlining.
+    /// numeric initializer or auto-incremented from the prior member).
+    /// Populated by `checkEnumDecl`; consulted by member-access typing
+    /// on enum receivers and (in a follow-up) by `const enum` inlining.
     enum_member_values: std.AutoHashMapUnmanaged(MemberKey, f64),
+    /// `(enum_name, member_name) → string value` for enum members
+    /// whose initializer folds to a string constant. TypeScript allows
+    /// string-literal and no-substitution-template `+` chains in enum
+    /// members; recording them lets later enum members and member
+    /// accesses keep the concrete string literal type.
+    enum_member_string_values: std.AutoHashMapUnmanaged(MemberKey, hir_mod.StringId),
     /// Enum declarations marked `const`, keyed by enum name. This
     /// lets member-access typing prefer literal values even in
     /// checker-only tests that do not attach a binder module.
@@ -1535,6 +1539,7 @@ pub const Checker = struct {
             .signature_param_names = .empty,
             .signature_param_name_occurrences = .empty,
             .enum_member_values = .empty,
+            .enum_member_string_values = .empty,
             .const_enums = .empty,
             .numeric_enums = .empty,
             .var_decl_types = .empty,
@@ -1734,6 +1739,7 @@ pub const Checker = struct {
         while (spno_it.next()) |names| self.gpa.free(names.*);
         self.signature_param_name_occurrences.deinit(self.gpa);
         self.enum_member_values.deinit(self.gpa);
+        self.enum_member_string_values.deinit(self.gpa);
         self.const_enums.deinit(self.gpa);
         self.numeric_enums.deinit(self.gpa);
         self.var_decl_types.deinit(self.gpa);
@@ -25114,46 +25120,37 @@ pub const Checker = struct {
 
             // Has an initializer — resolve a small constant-expression
             // subset first so unqualified references to earlier enum
-            // members (`B = A`, `C = A + 1`) are treated as enum
-            // constants rather than unresolved value identifiers.
-            const init_kind = self.hir.kindOf(prop.value);
-            switch (init_kind) {
-                .literal_string => {
-                    saw_string = true;
-                    const lit = hir_mod.literalStringOf(self.hir, prop.value);
-                    try member_literal_types.append(self.gpa, self.interner.internStringLiteral(lit.value) catch return error.OutOfMemory);
-                    next_numeric = null;
-                },
-                else => {
-                    if (self.nodeSourceStringLiteralId(prop.value)) |sid| {
-                        saw_string = true;
-                        try member_literal_types.append(self.gpa, self.interner.internStringLiteral(sid) catch return error.OutOfMemory);
-                        next_numeric = null;
-                        continue;
+            // members (`B = A`, `C = A + 1`, `D = "a" + "b"`) are
+            // treated as enum constants rather than unresolved value
+            // identifiers or non-numeric computed members.
+            if (try self.evalEnumStringExpression(enum_name, prop.value)) |sid| {
+                saw_string = true;
+                try self.enum_member_string_values.put(self.gpa, key, sid);
+                try member_literal_types.append(self.gpa, self.interner.internStringLiteral(sid) catch return error.OutOfMemory);
+                next_numeric = null;
+                continue;
+            }
+            if (self.evalEnumConstExpression(enum_name, prop.value)) |v| {
+                if (e.is_const) {
+                    if (std.math.isNan(v)) {
+                        try self.report(prop.value, TsCodes.const_enum_disallowed_value_nan, "'const' enum member initializer was evaluated to disallowed value 'NaN'.");
+                    } else if (!std.math.isFinite(v)) {
+                        try self.report(prop.value, TsCodes.const_enum_non_finite_value, "'const' enum member initializer was evaluated to a non-finite value.");
                     }
-                    if (self.evalEnumConstExpression(enum_name, prop.value)) |v| {
-                        if (e.is_const) {
-                            if (std.math.isNan(v)) {
-                                try self.report(prop.value, TsCodes.const_enum_disallowed_value_nan, "'const' enum member initializer was evaluated to disallowed value 'NaN'.");
-                            } else if (!std.math.isFinite(v)) {
-                                try self.report(prop.value, TsCodes.const_enum_non_finite_value, "'const' enum member initializer was evaluated to a non-finite value.");
-                            }
-                        }
-                        try self.enum_member_values.put(self.gpa, key, v);
-                        try member_literal_types.append(self.gpa, self.interner.internNumberLiteral(v) catch return error.OutOfMemory);
-                        next_numeric = v + 1;
-                    } else {
-                        if (e.is_const and self.hir.kindOf(prop.value) != .identifier) {
-                            try self.report(prop.value, TsCodes.const_enum_initializer_must_be_constant, "const enum member initializers must be constant expressions.");
-                        } else if (!e.is_const) {
-                            const value_t = try self.checkExpression(prop.value);
-                            if (!self.enumInitializerTypeIsNumberLike(value_t)) {
-                                try self.reportComputedEnumInitializerType(prop.value, value_t);
-                            }
-                        }
-                        next_numeric = null;
+                }
+                try self.enum_member_values.put(self.gpa, key, v);
+                try member_literal_types.append(self.gpa, self.interner.internNumberLiteral(v) catch return error.OutOfMemory);
+                next_numeric = v + 1;
+            } else {
+                if (e.is_const and self.hir.kindOf(prop.value) != .identifier) {
+                    try self.report(prop.value, TsCodes.const_enum_initializer_must_be_constant, "const enum member initializers must be constant expressions.");
+                } else if (!e.is_const) {
+                    const value_t = try self.checkExpression(prop.value);
+                    if (!self.enumInitializerTypeIsNumberLike(value_t)) {
+                        try self.reportComputedEnumInitializerType(prop.value, value_t);
                     }
-                },
+                }
+                next_numeric = null;
             }
         }
         const enum_t: TypeId = if (saw_string and member_literal_types.items.len > 0)
@@ -25191,6 +25188,55 @@ pub const Checker = struct {
             .{type_name},
         );
         try self.report(node, TsCodes.enum_value_not_number, msg);
+    }
+
+    fn evalEnumStringExpression(self: *Checker, enum_name: hir_mod.StringId, node: NodeId) CheckError!?hir_mod.StringId {
+        return switch (self.hir.kindOf(node)) {
+            .literal_string => try self.literalStringCookedId(node),
+            .template_literal => try self.templateLiteralConcreteString(node),
+            .identifier => blk: {
+                const id = hir_mod.identifierOf(self.hir, node);
+                break :blk self.enum_member_string_values.get(.{ .obj_name = enum_name, .prop_name = id.name });
+            },
+            .member_access => blk: {
+                const m = hir_mod.memberOf(self.hir, node);
+                if (self.hir.kindOf(m.object) != .identifier) break :blk null;
+                const obj = hir_mod.identifierOf(self.hir, m.object);
+                break :blk self.enum_member_string_values.get(.{ .obj_name = obj.name, .prop_name = m.name });
+            },
+            .binary_op => blk: {
+                const b = hir_mod.binopOf(self.hir, node);
+                if (b.op != .add) break :blk null;
+                const lhs_string = try self.evalEnumStringExpression(enum_name, b.lhs);
+                const rhs_string = try self.evalEnumStringExpression(enum_name, b.rhs);
+                if (lhs_string == null and rhs_string == null) break :blk null;
+                const lhs = lhs_string orelse if (self.evalEnumConstExpression(enum_name, b.lhs)) |v|
+                    try self.enumNumberToStringId(v)
+                else
+                    break :blk null;
+                const rhs = rhs_string orelse if (self.evalEnumConstExpression(enum_name, b.rhs)) |v|
+                    try self.enumNumberToStringId(v)
+                else
+                    break :blk null;
+                var buf: std.ArrayListUnmanaged(u8) = .empty;
+                defer buf.deinit(self.gpa);
+                try buf.appendSlice(self.gpa, self.string_interner.get(lhs));
+                try buf.appendSlice(self.gpa, self.string_interner.get(rhs));
+                break :blk self.string_interner.intern(buf.items) catch return error.OutOfMemory;
+            },
+            else => null,
+        };
+    }
+
+    fn enumNumberToStringId(self: *Checker, value: f64) CheckError!hir_mod.StringId {
+        if (std.math.isNan(value)) return self.string_interner.intern("NaN") catch return error.OutOfMemory;
+        if (std.math.isPositiveInf(value)) return self.string_interner.intern("Infinity") catch return error.OutOfMemory;
+        if (std.math.isNegativeInf(value)) return self.string_interner.intern("-Infinity") catch return error.OutOfMemory;
+        if (value == 0) return self.string_interner.intern("0") catch return error.OutOfMemory;
+
+        const text = try std.fmt.allocPrint(self.gpa, "{d}", .{value});
+        defer self.gpa.free(text);
+        return self.string_interner.intern(text) catch return error.OutOfMemory;
     }
 
     fn evalEnumConstExpression(self: *Checker, enum_name: hir_mod.StringId, node: NodeId) ?f64 {
@@ -25319,6 +25365,9 @@ pub const Checker = struct {
         };
         if (!is_const_enum) return null;
         const key: MemberKey = .{ .obj_name = obj_name, .prop_name = prop_name };
+        if (self.enum_member_string_values.get(key)) |sid| {
+            return self.interner.internStringLiteral(sid) catch null;
+        }
         if (self.enum_member_values.get(key)) |v| {
             return self.interner.internNumberLiteral(v) catch null;
         }
@@ -25328,54 +25377,12 @@ pub const Checker = struct {
             const prop = hir_mod.objectPropertyOf(self.hir, member);
             if (prop.key == hir_mod.none_node_id or self.hir.kindOf(prop.key) != .identifier) continue;
             if (hir_mod.identifierOf(self.hir, prop.key).name != prop_name) continue;
-            if (prop.value != hir_mod.none_node_id and self.hir.kindOf(prop.value) == .literal_string) {
-                const lit = hir_mod.literalStringOf(self.hir, prop.value);
-                return self.interner.internStringLiteral(lit.value) catch null;
-            }
             if (prop.value != hir_mod.none_node_id) {
-                if (self.nodeSourceStringLiteralId(prop.value)) |sid| {
+                if (self.evalEnumStringExpression(obj_name, prop.value) catch null) |sid| {
                     return self.interner.internStringLiteral(sid) catch null;
                 }
             }
             return types.Primitive.number_t;
-        }
-        return null;
-    }
-
-    fn nodeSourceStringLiteralId(self: *Checker, node: NodeId) ?hir_mod.StringId {
-        const src = self.source orelse return null;
-        const sp = self.hir.spanOf(node);
-        if (sp.end > src.len or sp.start >= sp.end) return null;
-        const text = std.mem.trim(u8, src[sp.start..sp.end], " \t\r\n");
-        if (text.len < 2) return null;
-        const quote = text[0];
-        if ((quote == '"' or quote == '\'') and text[text.len - 1] == quote) {
-            // Reject expressions like `"1" + "2"` whose trimmed text
-            // happens to start and end with the same quote but
-            // contains an unescaped closing-then-reopening quote in
-            // the middle (i.e. real source operators). Without this
-            // guard the enum-initializer fast-path swallows such
-            // binops as string members and skips the operand-type
-            // diagnostics (TS2362/TS2363). Mirrors fixture
-            // `enumConstantMemberWithString` (`"a" - "a"`).
-            const inner = text[1 .. text.len - 1];
-            var i: usize = 0;
-            while (i < inner.len) : (i += 1) {
-                const ch = inner[i];
-                if (ch == '\\') {
-                    i += 1;
-                    continue;
-                }
-                if (ch == quote) return null;
-            }
-            return self.string_interner.intern(inner) catch null;
-        }
-        if (sp.start > 0 and sp.end < src.len) {
-            const before = src[sp.start - 1];
-            const after = src[sp.end];
-            if ((before == '"' or before == '\'') and after == before) {
-                return self.string_interner.intern(src[sp.start..sp.end]) catch null;
-            }
         }
         return null;
     }
@@ -25387,14 +25394,18 @@ pub const Checker = struct {
         anchor: NodeId,
     ) ?TypeId {
         const decl = self.enumDeclForNameAt(obj_name, anchor) orelse return null;
+        if (self.enum_member_string_values.get(.{ .obj_name = obj_name, .prop_name = prop_name })) |sid| {
+            return self.interner.internStringLiteral(sid) catch null;
+        }
         for (hir_mod.enumMembers(self.hir, decl)) |member| {
             if (self.hir.kindOf(member) != .object_property) continue;
             const prop = hir_mod.objectPropertyOf(self.hir, member);
             if (prop.key == hir_mod.none_node_id or self.hir.kindOf(prop.key) != .identifier) continue;
             if (hir_mod.identifierOf(self.hir, prop.key).name != prop_name) continue;
-            if (prop.value != hir_mod.none_node_id and self.hir.kindOf(prop.value) == .literal_string) {
-                const lit = hir_mod.literalStringOf(self.hir, prop.value);
-                return self.interner.internStringLiteral(lit.value) catch null;
+            if (prop.value != hir_mod.none_node_id) {
+                if (self.evalEnumStringExpression(obj_name, prop.value) catch null) |sid| {
+                    return self.interner.internStringLiteral(sid) catch null;
+                }
             }
             return null;
         }
@@ -74855,6 +74866,53 @@ test "checker: enum initializer `\"a\" - \"a\"` fires TS2362 + TS2363" {
     }
     try T.expectEqual(@as(usize, 1), left_count);
     try T.expectEqual(@as(usize, 1), right_count);
+}
+
+test "checker: enum string constant expressions fold literal and template plus chains" {
+    const s = try newSetup(
+        \\enum T1 {
+        \\  a = "1",
+        \\  b = "1" + "2",
+        \\  c = "1" + "2" + "3",
+        \\  d = "a" + 1,
+        \\}
+        \\enum T2 {
+        \\  a = `1`,
+        \\  b = `1` + `2`,
+        \\  c = "2" + `1`,
+        \\}
+        \\declare enum T3 {
+        \\  a = "1",
+        \\  b = "1" + "2",
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.enum_value_not_number);
+        try T.expect(d.code != TsCodes.const_enum_initializer_must_be_constant);
+    }
+
+    const t1 = try s.sint.intern("T1");
+    const t2 = try s.sint.intern("T2");
+    const t3 = try s.sint.intern("T3");
+    const b = try s.sint.intern("b");
+    const c = try s.sint.intern("c");
+    const d = try s.sint.intern("d");
+
+    const t1_b = s.checker.enum_member_string_values.get(.{ .obj_name = t1, .prop_name = b }) orelse return error.TestExpectedEqual;
+    const t1_c = s.checker.enum_member_string_values.get(.{ .obj_name = t1, .prop_name = c }) orelse return error.TestExpectedEqual;
+    const t1_d = s.checker.enum_member_string_values.get(.{ .obj_name = t1, .prop_name = d }) orelse return error.TestExpectedEqual;
+    const t2_b = s.checker.enum_member_string_values.get(.{ .obj_name = t2, .prop_name = b }) orelse return error.TestExpectedEqual;
+    const t2_c = s.checker.enum_member_string_values.get(.{ .obj_name = t2, .prop_name = c }) orelse return error.TestExpectedEqual;
+    const t3_b = s.checker.enum_member_string_values.get(.{ .obj_name = t3, .prop_name = b }) orelse return error.TestExpectedEqual;
+
+    try T.expectEqualStrings("12", s.checker.string_interner.get(t1_b));
+    try T.expectEqualStrings("123", s.checker.string_interner.get(t1_c));
+    try T.expectEqualStrings("a1", s.checker.string_interner.get(t1_d));
+    try T.expectEqualStrings("12", s.checker.string_interner.get(t2_b));
+    try T.expectEqualStrings("21", s.checker.string_interner.get(t2_c));
+    try T.expectEqualStrings("12", s.checker.string_interner.get(t3_b));
 }
 
 test "checker: enum auto-increment — `enum E { A, B, C }` assigns A=0, B=1, C=2" {
