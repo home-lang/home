@@ -1,5 +1,122 @@
 const std = @import("std");
 
+/// Parsed PostgreSQL CommandComplete message.
+///
+/// The wire payload is a zero-terminated command tag, for example
+/// "INSERT 0 1\x00" or "SELECT 3\x00".
+pub const CommandComplete = struct {
+    tag: []const u8,
+    command_tag: CommandTag,
+
+    pub fn affectedRows(self: CommandComplete) usize {
+        return self.command_tag.affectedRows();
+    }
+};
+
+pub const CommandTagKind = enum {
+    insert,
+    delete,
+    update,
+    select,
+    move,
+    fetch,
+    copy,
+    merge,
+    create,
+    alter,
+    drop,
+    truncate,
+    begin,
+    commit,
+    rollback,
+    other,
+};
+
+pub const CommandTag = struct {
+    raw: []const u8,
+    command: []const u8,
+    kind: CommandTagKind,
+    oid: ?u64 = null,
+    rows: ?usize = null,
+
+    pub fn parse(tag: []const u8) CommandTag {
+        var iter = std.mem.splitScalar(u8, tag, ' ');
+        const command = nextCommandTagPart(&iter) orelse "";
+        const kind = commandTagKind(command);
+
+        var oid: ?u64 = null;
+        var rows: ?usize = null;
+
+        switch (kind) {
+            .insert => {
+                if (nextCommandTagPart(&iter)) |part| {
+                    oid = std.fmt.parseInt(u64, part, 10) catch null;
+                }
+                if (nextCommandTagPart(&iter)) |part| {
+                    rows = std.fmt.parseInt(usize, part, 10) catch null;
+                }
+            },
+            .delete, .update, .select, .move, .fetch, .copy, .merge => {
+                if (nextCommandTagPart(&iter)) |part| {
+                    rows = std.fmt.parseInt(usize, part, 10) catch null;
+                }
+            },
+            else => {},
+        }
+
+        return .{
+            .raw = tag,
+            .command = command,
+            .kind = kind,
+            .oid = oid,
+            .rows = rows,
+        };
+    }
+
+    pub fn affectedRows(self: CommandTag) usize {
+        return self.rows orelse 0;
+    }
+};
+
+pub fn decodeCommandComplete(payload: []const u8) !CommandComplete {
+    const tag = readZeroTerminatedCommandTag(payload) orelse return error.MalformedCommandComplete;
+    return .{
+        .tag = tag,
+        .command_tag = CommandTag.parse(tag),
+    };
+}
+
+fn readZeroTerminatedCommandTag(payload: []const u8) ?[]const u8 {
+    const end = std.mem.indexOfScalar(u8, payload, 0) orelse return null;
+    return payload[0..end];
+}
+
+fn nextCommandTagPart(iter: *std.mem.SplitIterator(u8, .scalar)) ?[]const u8 {
+    while (iter.next()) |part| {
+        if (part.len > 0) return part;
+    }
+    return null;
+}
+
+fn commandTagKind(command: []const u8) CommandTagKind {
+    if (std.ascii.eqlIgnoreCase(command, "INSERT")) return .insert;
+    if (std.ascii.eqlIgnoreCase(command, "DELETE")) return .delete;
+    if (std.ascii.eqlIgnoreCase(command, "UPDATE")) return .update;
+    if (std.ascii.eqlIgnoreCase(command, "SELECT")) return .select;
+    if (std.ascii.eqlIgnoreCase(command, "MOVE")) return .move;
+    if (std.ascii.eqlIgnoreCase(command, "FETCH")) return .fetch;
+    if (std.ascii.eqlIgnoreCase(command, "COPY")) return .copy;
+    if (std.ascii.eqlIgnoreCase(command, "MERGE")) return .merge;
+    if (std.ascii.eqlIgnoreCase(command, "CREATE")) return .create;
+    if (std.ascii.eqlIgnoreCase(command, "ALTER")) return .alter;
+    if (std.ascii.eqlIgnoreCase(command, "DROP")) return .drop;
+    if (std.ascii.eqlIgnoreCase(command, "TRUNCATE")) return .truncate;
+    if (std.ascii.eqlIgnoreCase(command, "BEGIN")) return .begin;
+    if (std.ascii.eqlIgnoreCase(command, "COMMIT")) return .commit;
+    if (std.ascii.eqlIgnoreCase(command, "ROLLBACK")) return .rollback;
+    return .other;
+}
+
 /// PostgreSQL client driver
 ///
 /// Features:
@@ -222,8 +339,7 @@ pub const PostgreSQL = struct {
                     try result.rows.append(row);
                 },
                 'C' => { // CommandComplete
-                    // Parse affected rows from command tag
-                    result.affected_rows = self.parseCommandTag(msg.payload);
+                    result.affected_rows = (try decodeCommandComplete(msg.payload)).affectedRows();
                 },
                 'Z' => { // ReadyForQuery
                     self.transaction_status = @enumFromInt(msg.payload[0]);
@@ -366,19 +482,7 @@ pub const PostgreSQL = struct {
 
     fn parseCommandTag(self: *PostgreSQL, payload: []const u8) usize {
         _ = self;
-        // Extract number from command tag (e.g., "INSERT 0 1" -> 1)
-        var iter = std.mem.splitScalar(u8, payload, ' ');
-        var last: ?[]const u8 = null;
-        while (iter.next()) |part| {
-            if (part.len > 0 and part[0] != 0) {
-                last = part;
-            }
-        }
-
-        if (last) |l| {
-            return std.fmt.parseInt(usize, l, 10) catch 0;
-        }
-        return 0;
+        return (decodeCommandComplete(payload) catch return 0).affectedRows();
     }
 
     fn sendBindMessage(self: *PostgreSQL, name: []const u8, params: []const []const u8) !void {
@@ -443,7 +547,7 @@ pub const PostgreSQL = struct {
                     try result.rows.append(row);
                 },
                 'C' => {
-                    result.affected_rows = self.parseCommandTag(msg.payload);
+                    result.affected_rows = (try decodeCommandComplete(msg.payload)).affectedRows();
                 },
                 'Z' => {
                     self.transaction_status = @enumFromInt(msg.payload[0]);

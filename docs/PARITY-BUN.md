@@ -1310,6 +1310,12 @@ The copied `bun/src/sql/postgres/CommandTag.zig` parser now lives in
 copy preserves the PostgreSQL command row-count parser and omits only the
 upstream JSC bridge re-exports until `sql_jsc/postgres` lands.
 
+The Home database package now carries a native `CommandComplete` decoder
+derived from Bun's `src/sql/postgres/protocol/CommandComplete.zig`
+behavior. It decodes zero-terminated PostgreSQL command tags, preserves
+INSERT OIDs, classifies common command kinds, and routes query/execute
+affected-row counts through the shared parser.
+
 ## Summary
 
 Substrate file-count progress (the only objective number today):

@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const database = @import("database");
+const postgresql = database.postgresql;
 
 test "database: open in-memory database" {
     const allocator = testing.allocator;
@@ -9,6 +10,43 @@ test "database: open in-memory database" {
     defer conn.close();
 
     try testing.expect(conn.db != null);
+}
+
+test "postgresql: decode command complete row counts" {
+    const cases = [_]struct {
+        payload: []const u8,
+        kind: postgresql.CommandTagKind,
+        rows: ?usize,
+        affected_rows: usize,
+    }{
+        .{ .payload = "INSERT 0 1\x00", .kind = .insert, .rows = 1, .affected_rows = 1 },
+        .{ .payload = "UPDATE 42\x00", .kind = .update, .rows = 42, .affected_rows = 42 },
+        .{ .payload = "DELETE 0\x00", .kind = .delete, .rows = 0, .affected_rows = 0 },
+        .{ .payload = "SELECT 3\x00", .kind = .select, .rows = 3, .affected_rows = 3 },
+        .{ .payload = "COPY 9\x00", .kind = .copy, .rows = 9, .affected_rows = 9 },
+        .{ .payload = "MERGE 5\x00", .kind = .merge, .rows = 5, .affected_rows = 5 },
+        .{ .payload = "CREATE TABLE\x00", .kind = .create, .rows = null, .affected_rows = 0 },
+    };
+
+    for (cases) |case| {
+        const decoded = try postgresql.decodeCommandComplete(case.payload);
+        try testing.expectEqual(case.kind, decoded.command_tag.kind);
+        try testing.expectEqual(case.rows, decoded.command_tag.rows);
+        try testing.expectEqual(case.affected_rows, decoded.affectedRows());
+    }
+}
+
+test "postgresql: decode command complete preserves insert oid" {
+    const decoded = try postgresql.decodeCommandComplete("INSERT 123 7\x00");
+
+    try testing.expectEqual(postgresql.CommandTagKind.insert, decoded.command_tag.kind);
+    try testing.expectEqual(@as(?u64, 123), decoded.command_tag.oid);
+    try testing.expectEqual(@as(?usize, 7), decoded.command_tag.rows);
+    try testing.expectEqual(@as(usize, 7), decoded.affectedRows());
+}
+
+test "postgresql: decode command complete requires zero terminator" {
+    try testing.expectError(error.MalformedCommandComplete, postgresql.decodeCommandComplete("UPDATE 1"));
 }
 
 test "database: create table" {

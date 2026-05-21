@@ -1,5 +1,6 @@
 const std = @import("std");
 pub const sqlite = @import("sqlite.zig");
+pub const postgresql = @import("postgresql.zig");
 
 /// Simple spinlock mutex (SpinMutex removed in Zig 0.16). Uses an atomic
 /// bool as the lock word since std.atomic.Mutex doesn't exist.

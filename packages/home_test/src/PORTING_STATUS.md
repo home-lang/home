@@ -861,6 +861,12 @@ system JavaScriptCore's public C API does not expose Bun's synthetic
 module hooks directly. This is a stepping stone for corpus bring-up, not
 a substitute for the vendored Zig runner below.
 
+The Home database package now includes a native PostgreSQL
+`CommandComplete` decoder modeled on Bun's protocol parser. It decodes
+zero-terminated command tags, preserves INSERT OIDs, classifies common
+command kinds, and feeds query / execute affected-row counts through the
+shared parser without requiring a live PostgreSQL server in tests.
+
 > **Why a verbatim copy?** Per direction 2026-05-14: Bun is shifting
 > its core to Rust; we want to continue maintaining the Zig portion
 > ourselves. Vendoring lets us adapt the test runner to Home's HIR /
