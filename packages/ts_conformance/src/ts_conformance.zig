@@ -4121,6 +4121,323 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
 }
 
 
+test "conformance: computedPropertyNames11_ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "computedPropertyNames11_ES6",
+        .path = "computedPropertyNames11_ES6.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es6
+        \\var s: string;
+        \\var n: number;
+        \\var a: any;
+        \\var v = {
+        \\    get [s]() { return 0; },
+        \\    set [n](v) { },
+        \\    get [s + s]() { return 0; },
+        \\    set [s + n](v) { },
+        \\    get [+s]() { return 0; },
+        \\    set [""](v) { },
+        \\    get [0]() { return 0; },
+        \\    set [a](v) { },
+        \\    get [<any>true]() { return 0; },
+        \\    set [`hello bye`](v) { },
+        \\    get [`hello ${a} bye`]() { return 0; }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: destructuringCatch passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "destructuringCatch",
+        .path = "destructuringCatch.ts",
+        .source =
+        \\// @target: es2015
+        \\// @noImplicitAny: true
+        \\// @useUnknownInCatchVariables: false
+        \\
+        \\try {
+        \\    throw [0, 1];
+        \\}
+        \\catch ([a, b]) {
+        \\    a + b;
+        \\}
+        \\
+        \\try {
+        \\    throw { a: 0, b: 1 };
+        \\}
+        \\catch ({a, b}) {
+        \\    a + b;
+        \\}
+        \\
+        \\try {
+        \\    throw [{ x: [0], z: 1 }];
+        \\}
+        \\catch ([{x: [y], z}]) {
+        \\    y + z;
+        \\}
+        \\
+        \\// Test of comment ranges. A fix to GH#11755 should update this.
+        \\try {
+        \\}
+        \\catch (/*Test comment ranges*/[/*a*/a]) {
+        \\
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: genericAndNonGenericInterfaceWithTheSameName2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "genericAndNonGenericInterfaceWithTheSameName2",
+        .path = "genericAndNonGenericInterfaceWithTheSameName2.ts",
+        .source =
+        \\// @target: es2015
+        \\// generic and non-generic interfaces with the same name do not merge
+        \\
+        \\namespace M {
+        \\    interface A<T> {
+        \\        bar: T;
+        \\    }
+        \\}
+        \\
+        \\namespace M2 {
+        \\    interface A { // ok
+        \\        foo: string;
+        \\    }
+        \\}
+        \\
+        \\namespace N {
+        \\    namespace M {
+        \\        interface A<T> {
+        \\            bar: T;
+        \\        }
+        \\    }
+        \\
+        \\    namespace M2 {
+        \\        interface A { // ok
+        \\            foo: string;
+        \\        }
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: computedPropertyNames16_ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "computedPropertyNames16_ES6",
+        .path = "computedPropertyNames16_ES6.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es6
+        \\var s: string;
+        \\var n: number;
+        \\var a: any;
+        \\class C {
+        \\    get [s]() { return 0;}
+        \\    set [n](v) { }
+        \\    static get [s + s]() { return 0; }
+        \\    set [s + n](v) { }
+        \\    get [+s]() { return 0; }
+        \\    static set [""](v) { }
+        \\    get [0]() { return 0; }
+        \\    set [a](v) { }
+        \\    static get [<any>true]() { return 0; }
+        \\    set [`hello bye`](v) { }
+        \\    get [`hello ${a} bye`]() { return 0; }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: anonymousClassAccessorsDeclarationEmit1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "anonymousClassAccessorsDeclarationEmit1",
+        .path = "anonymousClassAccessorsDeclarationEmit1.ts",
+        .source =
+        \\// @strict: true
+        \\// @target: esnext
+        \\// @declaration: true
+        \\
+        \\export abstract class Base {
+        \\  accessor a = 1;
+        \\}
+        \\
+        \\export function middle(Super = Base) {
+        \\  abstract class Middle extends Super {}
+        \\  return Middle;
+        \\}
+        \\
+        \\class A {
+        \\  constructor(...args: any[]) {}
+        \\}
+        \\
+        \\export function Mixin<T extends typeof A>(Super: T) {
+        \\  return class B extends Super {
+        \\    get myName(): string {
+        \\      return "B";
+        \\    }
+        \\    set myName(arg: string) {}
+        \\  };
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: symbolProperty60 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "symbolProperty60",
+        .path = "symbolProperty60.ts",
+        .source =
+        \\// @target: es2015
+        \\// https://github.com/Microsoft/TypeScript/issues/20146
+        \\interface I1 {
+        \\    [Symbol.toStringTag]: string;
+        \\    [key: string]: number;
+        \\}
+        \\
+        \\interface I2 {
+        \\    [Symbol.toStringTag]: string;
+        \\    [key: number]: boolean;
+        \\}
+        \\
+        \\declare const mySymbol: unique symbol;
+        \\
+        \\interface I3 {
+        \\    [mySymbol]: string;
+        \\    [key: string]: number;
+        \\}
+        \\
+        \\interface I4 {
+        \\    [mySymbol]: string;
+        \\    [key: number]: boolean;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: esDecorators_classDeclaration_classSuper_4 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "esDecorators-classDeclaration-classSuper.4",
+        .path = "esDecorators-classDeclaration-classSuper.4.ts",
+        .source =
+        \\// @target: es2022
+        \\// @noEmitHelpers: true
+        \\// @noTypesAndSymbols: true
+        \\
+        \\declare var dec: any;
+        \\
+        \\declare class Base {
+        \\    static method(...args: any[]): number;
+        \\}
+        \\
+        \\const method = "method";
+        \\
+        \\@dec
+        \\class C extends Base {
+        \\    static a = super.method();
+        \\    static b = super["method"]();
+        \\    static c = super[method]();
+        \\    static d = super.method``;
+        \\    static e = super["method"]``;
+        \\    static f = super[method]``;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: intersectionIncludingPropFromGlobalAugmentation passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "intersectionIncludingPropFromGlobalAugmentation",
+        .path = "intersectionIncludingPropFromGlobalAugmentation.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\// @noEmit: true
+        \\
+        \\// repro from https://github.com/microsoft/TypeScript/issues/54345
+        \\
+        \\interface Test1 { toString: null | 'string'; }
+        \\type Test2 = Test1 & { optional?: unknown };
+        \\declare const source: Test1;
+        \\const target: Test2 = { ...source };
+        \\
+        \\const toString = target.toString;
+        \\const hasOwn = target.hasOwnProperty; // not an own member but it should still be accessible
+        \\
+        \\export {}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: stringLiteralTypesInUnionTypes04 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "stringLiteralTypesInUnionTypes04",
