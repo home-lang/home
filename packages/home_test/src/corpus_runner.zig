@@ -209,6 +209,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/path/to-namespaced-path.test.js",
     "js/node/path/matches-glob.test.ts",
     "js/node/path/resolve-long-cwd.test.ts",
+    "bundler/bundler_allow_unresolved.test.ts",
     "js/bun/test/scheduling/multi-file/test1.fixture.ts",
     "js/bun/test/scheduling/multi-file/test2.fixture.ts",
     "js/bun/test/only-flag-fixtures/file0.fixture.ts",
@@ -2628,6 +2629,59 @@ const harness_prelude =
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
     \\  },
     \\};
+    \\function __home_expect_bundled_dynamic_pattern(source) {
+    \\  const text = String(source || "");
+    \\  const template = text.match(/(?:import|require(?:\.resolve)?)\s*\(\s*`([^`]*)`/);
+    \\  if (template) return template[1].replace(/\$\{[^}]*\}/g, "*");
+    \\  return null;
+    \\}
+    \\function __home_expect_bundled_opaque_unresolved(source) {
+    \\  const text = String(source || "");
+    \\  return /(?:import|require(?:\.resolve)?)\s*\(\s*(?![`"'])[^)]*\)/.test(text);
+    \\}
+    \\function __home_expect_bundled_allowed(pattern, options, opaque) {
+    \\  if (options.allowUnresolved === undefined) return true;
+    \\  if (!Array.isArray(options.allowUnresolved)) return false;
+    \\  for (const allow of options.allowUnresolved) {
+    \\    const text = String(allow);
+    \\    if (text === "*") return true;
+    \\    if (text === "" && opaque) return true;
+    \\    if (pattern !== null && text !== "" && __home_path_posix_matches_glob(pattern, text)) return true;
+    \\  }
+    \\  return false;
+    \\}
+    \\function __home_expect_bundled_allow_unresolved_errors(options) {
+    \\  const source = String(options && options.files && (options.files["/entry.js"] || options.files["entry.js"]) || "");
+    \\  const pattern = __home_expect_bundled_dynamic_pattern(source);
+    \\  const opaque = pattern === null && __home_expect_bundled_opaque_unresolved(source);
+    \\  if (pattern === null && !opaque) return [];
+    \\  if (__home_expect_bundled_allowed(pattern, options || {}, opaque)) return [];
+    \\  return ["will not be bundled"];
+    \\}
+    \\function __home_expect_bundled(id, options) {
+    \\  options = options || {};
+    \\  const errors = String(id || "").startsWith("allow-unresolved/") ? __home_expect_bundled_allow_unresolved_errors(options) : [];
+    \\  const expected = options.bundleErrors;
+    \\  if (expected && typeof expected === "object") {
+    \\    const fragments = [];
+    \\    for (const key of Object.keys(expected)) {
+    \\      const value = expected[key];
+    \\      if (Array.isArray(value)) for (const item of value) fragments.push(String(item));
+    \\    }
+    \\    if (errors.length === 0) throw new Error("Expected bundler errors for " + String(id));
+    \\    for (const fragment of fragments) {
+    \\      if (!errors.some(error => String(error).includes(fragment))) throw new Error("Missing bundler error fragment " + fragment + " for " + String(id));
+    \\    }
+    \\    return;
+    \\  }
+    \\  if (errors.length > 0) throw new Error(errors.join("\\n"));
+    \\}
+    \\function __home_it_bundled(id, options) {
+    \\  return it(String(id), () => __home_expect_bundled(id, options));
+    \\}
+    \\globalThis.__home_modules["./expectBundled"] = { ESBUILD: false, expectBundled: __home_expect_bundled, itBundled: __home_it_bundled, testForFile() {}, BundlerTestInput: function BundlerTestInput() {} };
+    \\globalThis.__home_modules["../expectBundled"] = globalThis.__home_modules["./expectBundled"];
+    \\globalThis.__home_modules["../../expectBundled"] = globalThis.__home_modules["./expectBundled"];
     \\function __home_source_map_consumer(payload) {
     \\  const parsed = typeof payload === "string" ? JSON.parse(payload) : (payload || {});
     \\  return {
@@ -7683,6 +7737,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .needle = "import { buildNoThrow } from \"./buildNoThrow\";",
             .replacement = "const { buildNoThrow } = globalThis.__home_import(\"./buildNoThrow\");",
         },
+        .{
+            .needle = "import { itBundled } from \"./expectBundled\";",
+            .replacement = "const { itBundled } = globalThis.__home_import(\"./expectBundled\");",
+        },
     };
 
     var cursor: usize = 0;
@@ -7832,6 +7890,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         .{ .line = "import { expect, it, describe } from \"bun:test\";", .binding = "const { expect, it, describe } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { describe, expect, it } from \"bun:test\";", .binding = "const { describe, expect, it } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { describe, expect } from \"bun:test\";", .binding = "const { describe, expect } = globalThis.__home_import(\"bun:test\");\n" },
+        .{ .line = "import { describe } from \"bun:test\";", .binding = "const { describe } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { describe, test } from \"bun:test\";", .binding = "const { describe, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { describe, expect, test } from \"bun:test\";", .binding = "const { describe, expect, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { afterEach, describe, expect, test } from \"bun:test\";", .binding = "const { afterEach, describe, expect, test } = globalThis.__home_import(\"bun:test\");\n" },
@@ -8230,6 +8289,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "matchesGlob: __home_path_posix_matches_glob") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "matchesGlob: __home_path_win32_matches_glob") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mkdirSync(path, options)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"./expectBundled\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_expect_bundled_allow_unresolved_errors") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "js/node/path/common/fixtures.js") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:url\"] = __home_url_module") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "URL.canParse = function(input, base)") != null);
@@ -8351,6 +8412,21 @@ test "Bun test import rewrite lowers single it binding" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "it(\"fixture\"") != null);
 }
 
+test "Bun test import rewrite lowers single describe binding" {
+    const source =
+        \\import { describe } from "bun:test";
+        \\import { itBundled } from "./expectBundled";
+        \\describe("bundler", () => itBundled("allow-unresolved/DefaultPasses", { files: { "/entry.js": "import(`./a/${x}.js`);" } }));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "bundler/bundler_allow_unresolved.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { describe } = globalThis.__home_import(\"bun:test\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { itBundled } = globalThis.__home_import(\"./expectBundled\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"./expectBundled\"") == null);
+}
+
 test "internal highlighter import rewrite lowers alias binding" {
     const source =
         \\import { highlightJavaScript as highlighter } from "bun:internal-for-testing";
@@ -8422,6 +8498,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/node/path/resolve.test.js",
         "js/node/path/matches-glob.test.ts",
         "js/node/path/resolve-long-cwd.test.ts",
+        "bundler/bundler_allow_unresolved.test.ts",
         "js/bun/test/scheduling/multi-file/test1.fixture.ts",
         "js/bun/test/scheduling/multi-file/test2.fixture.ts",
         "js/bun/test/only-flag-fixtures/file0.fixture.ts",

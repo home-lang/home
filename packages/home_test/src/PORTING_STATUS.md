@@ -712,6 +712,12 @@ cwd/tsconfig path mapping, `Bun.spawn` pipe `.text()` helpers, split
 output hash/path identity, and copied memory-growth subprocess smokes.
 Native parity still needs Bun's real bundler, resolver, plugin API,
 source map writer, bytecode output, and BuildArtifact implementation.
+The copied `bundler/bundler_allow_unresolved.test.ts` fixture now passes
+as `16` tests through the Home `expectBundled` harness, covering Bun's
+dynamic `import()`, `require()`, and `require.resolve()` unresolved
+path decisions for API and CLI-style `allowUnresolved` settings. Native
+parity still needs the real Bun parser, resolver, and build argument
+plumbing for these diagnostics.
 The copied `bundler/bun-build-compile-sourcemap.test.ts` fixture now
 passes as `9` tests through a narrow compile-mode model for build output
 paths, filesystem-backed `Bun.file().exists()` / `.text()`,

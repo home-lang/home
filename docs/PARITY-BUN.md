@@ -207,12 +207,13 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes one hundred sixty-nine allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes one hundred seventy allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator. On macOS this
 JSC path is now part of the default `./pantry/.bin/zig build test` graph
 (`-Denable_jsc=false` remains available for constrained hosts): the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-four
-regression smokes, one bundler constant-fold smoke, two `Bun.build` API
+regression smokes, one bundler constant-fold smoke, one bundler
+`allowUnresolved` API / CLI smoke, two `Bun.build` API
 smokes, one bun-types `test.each` type-shape smoke, six test-runner
 expectation smokes plus `expect().toBeEmpty`, one nested-describe smoke, two `expectTypeOf` type-only smokes, a narrow `Bun.TOML.parse` throw smoke, a TOML build invalid-source diagnostic `lineText` crash-regression smoke, CSS `intFromFloat` serialization snapshots, `Bun.stripANSI` and
 `Bun.wrapAnsi`, `Bun.semver.satisfies`, and `bun:internal-for-testing` regexp / PowerShell escaping smokes, retry/repeats runner behavior, `test.concurrent.each`, `expect().pass`, a narrow `mock.clearAllMocks` / `toHaveBeenCalledTimes` smoke, a narrow `jest.fn` / `HTMLRewriter` element-callback smoke, a narrow TypeScript constructor-modifier rewrite smoke, narrow `assert` / `assert/strict`, `node:path` including `matchesGlob` and long-CWD POSIX subprocess coverage, `node:url`, and relative CJS fixture smokes, a narrow inline-snapshot Unicode object formatting smoke, a `node:vm.runInNewContext` / `process.on` throw propagation smoke, Deno harness `test(options, fn)` / permission skip / `test.ignore` / `test.todo` call-shape parity, Deno `Event` / `CustomEvent` / `AbortController`, and a Deno `URLSearchParams` bootstrap smoke, plus narrow bootstrap coverage for Node `DOMException`, Web
@@ -303,7 +304,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `169` files, `740` passed, `0` failed,
+Latest measured subset run: `170` files, `756` passed, `0` failed,
 `42` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
@@ -1096,6 +1097,15 @@ hash/path identity, and the copied memory-growth subprocess smokes.
 Native parity still requires Bun's real bundler, resolver, plugin API,
 source map writer, bytecode output, and BuildArtifact implementation from
 copied source.
+
+The copied `bundler/bundler_allow_unresolved.test.ts` fixture now passes
+in Home as `16` passed, `0` failed, `0` unsupported, `0` todo. The
+bootstrap `expectBundled` harness models Bun's `allowUnresolved`
+decisions for dynamic `import()`, opaque expressions, `require()`,
+`require.resolve()`, matching / non-matching glob patterns, `*`, the
+empty-string opaque-expression escape hatch, and API / CLI-style paths.
+Native parity still requires Bun's real parser, resolver, and build
+argument plumbing from copied source.
 
 The copied `bundler/bun-build-compile-sourcemap.test.ts` fixture now
 passes in Home as `9` passed, `0` failed, `0` unsupported, `0` todo. The
