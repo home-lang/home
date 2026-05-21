@@ -4120,6 +4120,56 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: classExtendingNull passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "classExtendingNull",
+        .path = "classExtendingNull.ts",
+        .source =
+        \\// @target: es2015
+        \\class C1 extends null { }
+        \\class C2 extends (null) { }
+        \\class C3 extends null { x = 1; }
+        \\class C4 extends (null) { x = 1; }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: classExtendingBuiltinType passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "classExtendingBuiltinType",
+        .path = "classExtendingBuiltinType.ts",
+        .source =
+        \\// @target: es2015
+        \\class C1 extends Object { }
+        \\class C2 extends Function { }
+        \\class C3 extends String { }
+        \\class C4 extends Boolean { }
+        \\class C5 extends Number { }
+        \\class C6 extends Date { }
+        \\class C7 extends RegExp { }
+        \\class C8 extends Error { }
+        \\class C9 extends Array { }
+        \\class C10 extends Array<number> { }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: classWithSemicolonClassElement1 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "classWithSemicolonClassElement1",
