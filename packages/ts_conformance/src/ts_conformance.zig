@@ -4120,6 +4120,191 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+
+test "conformance: stringLiteralTypesInUnionTypes04 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringLiteralTypesInUnionTypes04",
+        .path = "stringLiteralTypesInUnionTypes04.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// @declaration: true
+        \\
+        \\type T = "" | "foo";
+        \\
+        \\let x: T = undefined;
+        \\let y: T = undefined;
+        \\
+        \\if (x === "") {
+        \\    let a = x;
+        \\}
+        \\
+        \\if (x !== "") {
+        \\    let b = x;
+        \\}
+        \\
+        \\if (x == "") {
+        \\    let c = x;
+        \\}
+        \\
+        \\if (x != "") {
+        \\    let d = x;
+        \\}
+        \\
+        \\if (x) {
+        \\    let e = x;
+        \\}
+        \\
+        \\if (!x) {
+        \\    let f = x;
+        \\}
+        \\
+        \\if (!!x) {
+        \\    let g = x;
+        \\}
+        \\
+        \\if (!!!x) {
+        \\    let h = x;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: esDecorators_classDeclaration_classSuper_1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "esDecorators-classDeclaration-classSuper.1",
+        .path = "esDecorators-classDeclaration-classSuper.1.ts",
+        .source =
+        \\// @target: es2022
+        \\// @noEmitHelpers: true
+        \\// @noTypesAndSymbols: true
+        \\
+        \\declare var dec: any;
+        \\
+        \\declare class Base {
+        \\    static method(...args: any[]): void;
+        \\}
+        \\
+        \\const method = "method";
+        \\
+        \\@dec
+        \\class C extends Base {
+        \\    static {
+        \\        super.method();
+        \\        super["method"]();
+        \\        super[method]();
+        \\
+        \\        super.method``;
+        \\        super["method"]``;
+        \\        super[method]``;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: taggedTemplateStringsWithTagsTypedAsAnyES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "taggedTemplateStringsWithTagsTypedAsAnyES6",
+        .path = "taggedTemplateStringsWithTagsTypedAsAnyES6.ts",
+        .source =
+        \\// @target: ES6
+        \\var f: any;
+        \\f `abc`
+        \\
+        \\f `abc${1}def${2}ghi`;
+        \\
+        \\f.g.h `abc`
+        \\
+        \\f.g.h `abc${1}def${2}ghi`;
+        \\
+        \\f `abc`.member
+        \\
+        \\f `abc${1}def${2}ghi`.member;
+        \\
+        \\f `abc`["member"];
+        \\
+        \\f `abc${1}def${2}ghi`["member"];
+        \\
+        \\f `abc`["member"].someOtherTag `abc${1}def${2}ghi`;
+        \\
+        \\f `abc${1}def${2}ghi`["member"].someOtherTag `abc${1}def${2}ghi`;
+        \\
+        \\f.thisIsNotATag(`abc`);
+        \\
+        \\f.thisIsNotATag(`abc${1}def${2}ghi`);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: mixinAccessors4 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "mixinAccessors4",
+        .path = "mixinAccessors4.ts",
+        .source =
+        \\// @strict: true
+        \\// @target: esnext
+        \\// @declaration: true
+        \\
+        \\// https://github.com/microsoft/TypeScript/issues/44938
+        \\
+        \\class A {
+        \\  constructor(...args: any[]) {}
+        \\  get myName(): string {
+        \\    return "A";
+        \\  }
+        \\}
+        \\
+        \\function Mixin<T extends typeof A>(Super: T) {
+        \\  return class B extends Super {
+        \\    get myName(): string {
+        \\      return "B";
+        \\    }
+        \\  };
+        \\}
+        \\
+        \\class C extends Mixin(A) {
+        \\  get myName(): string {
+        \\    return "C";
+        \\  }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: controlFlowForInStatement2 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "controlFlowForInStatement2",
