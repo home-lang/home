@@ -72,7 +72,13 @@ import surfaces.
 delegates to a native Home host callback for the Bun corpus bootstrap,
 including real OS subprocess execution, corpus-relative cwd/path
 resolution, and pipe/inherit/ignore stdio modes. The full Bun API surface
-and `Bun.spawn` remain unported.
+and `Bun.spawn` remain unported. The runtime source port now includes
+Bun's POSIX `WaitPidResult`, `posix_spawnattr_t`, and
+`posix_spawn_file_actions_t` wrapper substrate in
+`packages/runtime/src/runtime/api/bun/spawn.zig`, rewritten for Home fd
+aliases and Pantry Zig 0.17's Darwin `std.c.POSIX_SPAWN` flag type; the
+actual `spawnZ` / `waitpid` execution glue remains parked until the
+`posix_spawn_bun` shim and `home_rt.sys.Error` surface land.
 
 ### `Bun.$ (shell)`
 

@@ -10,6 +10,8 @@
 //   - bun.FD                                       → local fd_t alias
 //   - bun.Environment                              → home_rt.Environment
 //   - bun.sys.Maybe                                → home_rt.sys.Maybe
+//   - std.c.POSIX_SPAWN packed flags               → bit-cast helpers for
+//     Zig 0.17's Darwin libc declarations
 //
 // Aggressive skeleton:
 //   - `BunSpawn.Action` (extern struct), `Actions`, `Attr` ports verbatim;
@@ -18,11 +20,13 @@
 //     Bun's C++ side ships — Home will need its own copy of that shim
 //     before the spawn surface goes live, but the type layout that the
 //     shim consumes is here.
-//   - `PosixSpawn.PosixSpawnAttr`/`PosixSpawnActions` and the wrapper
-//     `spawnZ`/`waitpid`/`wait4`/`BunSpawnRequest` are PARKED. They
-//     depend on `bun.sys.syslog`, `bun.sys.Error.Int`, `bun.c.POSIX_SPAWN_*`,
-//     and `process.zig` (not yet ported). Re-attach in Phase 12.3 once
-//     `home_rt.sys.Error`/`process` land.
+//   - `PosixSpawn.WaitPidResult`, `PosixSpawnAttr`, and
+//     `PosixSpawnActions` are copied from Bun's POSIX substrate with local
+//     fd/path rewrites.
+//   - `PosixSpawn.spawnZ`, `waitpid`, `wait4`, and `BunSpawnRequest` are
+//     PARKED. They depend on `bun.sys.syslog`, `bun.sys.Error.Int`,
+//     `bun.c.POSIX_SPAWN_*`, and `process.zig` (not yet ported).
+//     Re-attach in Phase 12.3 once `home_rt.sys.Error`/`process` land.
 //   - `Stdio` import is parked (`./spawn/stdio.zig`); not yet ported.
 
 const std = @import("std");
@@ -30,6 +34,19 @@ const std = @import("std");
 const fd_t = std.posix.fd_t;
 const mode_t = std.posix.mode_t;
 const pid_t = std.posix.pid_t;
+const system = std.posix.system;
+const errno = std.posix.errno;
+const unexpectedErrno = std.posix.unexpectedErrno;
+
+const SpawnFlags = @TypeOf(std.mem.zeroes(system.POSIX_SPAWN));
+
+fn spawnFlagsFromBits(flags: u16) SpawnFlags {
+    return @bitCast(flags);
+}
+
+fn spawnFlagsToBits(flags: SpawnFlags) u16 {
+    return @bitCast(flags);
+}
 
 pub const BunSpawn = struct {
     pub const Action = extern struct {
@@ -158,16 +175,152 @@ pub const BunSpawn = struct {
     };
 };
 
-// ---- Parked: PosixSpawn substrate ----------------------------------
+// Mostly taken from Bun's copy of Zig's posix_spawn.zig.
+pub const PosixSpawn = struct {
+    pub const WaitPidResult = struct {
+        pid: pid_t,
+        status: u32,
+    };
+
+    pub const PosixSpawnAttr = struct {
+        attr: system.posix_spawnattr_t,
+        detached: bool = false,
+        pty_slave_fd: i32 = -1,
+
+        pub fn init() !PosixSpawnAttr {
+            var attr: system.posix_spawnattr_t = undefined;
+            switch (errno(system.posix_spawnattr_init(&attr))) {
+                .SUCCESS => return PosixSpawnAttr{ .attr = attr },
+                .NOMEM => return error.SystemResources,
+                .INVAL => unreachable,
+                else => |err| return unexpectedErrno(err),
+            }
+        }
+
+        pub fn deinit(self: *PosixSpawnAttr) void {
+            _ = system.posix_spawnattr_destroy(&self.attr);
+        }
+
+        pub fn get(self: PosixSpawnAttr) !u16 {
+            var flags: SpawnFlags = undefined;
+            switch (errno(system.posix_spawnattr_getflags(&self.attr, &flags))) {
+                .SUCCESS => return spawnFlagsToBits(flags),
+                .INVAL => unreachable,
+                else => |err| return unexpectedErrno(err),
+            }
+        }
+
+        pub fn set(self: *PosixSpawnAttr, flags: u16) !void {
+            switch (errno(system.posix_spawnattr_setflags(&self.attr, spawnFlagsFromBits(flags)))) {
+                .SUCCESS => return,
+                .INVAL => unreachable,
+                else => |err| return unexpectedErrno(err),
+            }
+        }
+
+        pub fn resetSignals(this: *PosixSpawnAttr) !void {
+            if (posix_spawnattr_reset_signals(&this.attr) != 0) {
+                return error.SystemResources;
+            }
+        }
+
+        extern fn posix_spawnattr_reset_signals(attr: *system.posix_spawnattr_t) c_int;
+    };
+
+    pub const PosixSpawnActions = struct {
+        actions: system.posix_spawn_file_actions_t,
+
+        pub fn init() !PosixSpawnActions {
+            var actions: system.posix_spawn_file_actions_t = undefined;
+            switch (errno(system.posix_spawn_file_actions_init(&actions))) {
+                .SUCCESS => return PosixSpawnActions{ .actions = actions },
+                .NOMEM => return error.SystemResources,
+                .INVAL => unreachable,
+                else => |err| return unexpectedErrno(err),
+            }
+        }
+
+        pub fn deinit(self: *PosixSpawnActions) void {
+            _ = system.posix_spawn_file_actions_destroy(&self.actions);
+            self.* = undefined;
+        }
+
+        pub fn open(self: *PosixSpawnActions, fd: fd_t, path: []const u8, flags: u32, mode: mode_t) !void {
+            const posix_path = try std.posix.toPosixPath(path);
+            return self.openZ(fd, &posix_path, flags, mode);
+        }
+
+        pub fn openZ(self: *PosixSpawnActions, fd: fd_t, path: [*:0]const u8, flags: u32, mode: mode_t) !void {
+            switch (errno(system.posix_spawn_file_actions_addopen(&self.actions, fd, path, @as(c_int, @bitCast(flags)), mode))) {
+                .SUCCESS => return,
+                .BADF => return error.InvalidFileDescriptor,
+                .NOMEM => return error.SystemResources,
+                .NAMETOOLONG => return error.NameTooLong,
+                .INVAL => unreachable,
+                else => |err| return unexpectedErrno(err),
+            }
+        }
+
+        pub fn close(self: *PosixSpawnActions, fd: fd_t) !void {
+            switch (errno(system.posix_spawn_file_actions_addclose(&self.actions, fd))) {
+                .SUCCESS => return,
+                .BADF => return error.InvalidFileDescriptor,
+                .NOMEM => return error.SystemResources,
+                .INVAL => unreachable,
+                .NAMETOOLONG => unreachable,
+                else => |err| return unexpectedErrno(err),
+            }
+        }
+
+        pub fn dup2(self: *PosixSpawnActions, fd: fd_t, newfd: fd_t) !void {
+            if (fd == newfd) {
+                return self.inherit(fd);
+            }
+
+            switch (errno(system.posix_spawn_file_actions_adddup2(&self.actions, fd, newfd))) {
+                .SUCCESS => return,
+                .BADF => return error.InvalidFileDescriptor,
+                .NOMEM => return error.SystemResources,
+                .INVAL => unreachable,
+                .NAMETOOLONG => unreachable,
+                else => |err| return unexpectedErrno(err),
+            }
+        }
+
+        pub fn inherit(self: *PosixSpawnActions, fd: fd_t) !void {
+            switch (errno(system.posix_spawn_file_actions_addinherit_np(&self.actions, fd))) {
+                .SUCCESS => return,
+                .BADF => return error.InvalidFileDescriptor,
+                .NOMEM => return error.SystemResources,
+                .INVAL => unreachable,
+                .NAMETOOLONG => unreachable,
+                else => |err| return unexpectedErrno(err),
+            }
+        }
+
+        pub fn chdir(self: *PosixSpawnActions, path: []const u8) !void {
+            const posix_path = try std.posix.toPosixPath(path);
+            return self.chdirZ(&posix_path);
+        }
+
+        fn chdirZ(self: *PosixSpawnActions, path: [*:0]const u8) !void {
+            switch (errno(system.posix_spawn_file_actions_addchdir_np(&self.actions, path))) {
+                .SUCCESS => return,
+                .NOMEM => return error.SystemResources,
+                .NAMETOOLONG => return error.NameTooLong,
+                .BADF => unreachable,
+                .INVAL => unreachable,
+                else => |err| return unexpectedErrno(err),
+            }
+        }
+    };
+};
+
+// ---- Parked: PosixSpawn execution glue ------------------------------
 //
-// `PosixSpawn.spawnZ`, `BunSpawnRequest`, `waitpid`, `wait4`, and the
-// PosixSpawnAttr/PosixSpawnActions thin wrappers are not yet ported.
-// They depend on `home_rt.sys.Error` + a `posix_spawn_bun` C shim that
-// Bun ships in `src/runtime/bun.js/bindings/bun-spawn.cpp`. Phase 12.3.
-//
-// The `Action`/`Actions`/`Attr` types above are sufficient for the
-// upstream `posix_spawn_bun` ABI, so once the shim and Error types
-// land the remaining glue is mechanical.
+// `PosixSpawn.spawnZ`, `BunSpawnRequest`, `waitpid`, and `wait4` still
+// depend on `home_rt.sys.Error` + a `posix_spawn_bun` C shim that Bun
+// ships in `src/runtime/bun.js/bindings/bun-spawn.cpp`. Phase 12.3.
 
 test "spawn: BunSpawn.Action default kind is .none" {
     const a = try BunSpawn.Action.init();
@@ -235,6 +388,31 @@ test "spawn: BunSpawn.Attr round-trips flags through set/get" {
 
     try attr.resetSignals();
     try std.testing.expect(attr.reset_signals);
+}
+
+test "spawn: PosixSpawn.WaitPidResult pins pid/status fields" {
+    const result = PosixSpawn.WaitPidResult{ .pid = 123, .status = 9 };
+    try std.testing.expectEqual(@as(pid_t, 123), result.pid);
+    try std.testing.expectEqual(@as(u32, 9), result.status);
+}
+
+test "spawn: PosixSpawnAttr init/get/set/deinit round-trips flags" {
+    var attr = try PosixSpawn.PosixSpawnAttr.init();
+    defer attr.deinit();
+
+    try attr.set(0);
+    try std.testing.expectEqual(@as(u16, 0), try attr.get());
+}
+
+test "spawn: PosixSpawnActions init/deinit and file action helpers" {
+    var actions = try PosixSpawn.PosixSpawnActions.init();
+    defer actions.deinit();
+
+    try actions.close(3);
+    try actions.dup2(4, 5);
+    try actions.inherit(6);
+    try actions.openZ(7, "/tmp/home-spawn-posix-action", 0o2, 0o644);
+    try actions.chdir("/tmp");
 }
 
 test "spawn: BunSpawn.Action layout is C-ABI compatible" {
