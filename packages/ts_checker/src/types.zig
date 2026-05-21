@@ -263,6 +263,8 @@ pub const SignaturePayload = struct {
     return_type: TypeId,
     /// True for constructor signatures.
     is_construct: bool,
+    /// True for `abstract new` constructor signatures.
+    is_abstract_construct: bool = false,
     /// True if this is the `this` parameter signature variant.
     has_this_type: bool,
 };

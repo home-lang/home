@@ -896,7 +896,12 @@ pub const Engine = struct {
                 self.validOrUnknown(try self.substituteTpDeepLimit(r, map, depth + 1))
             else
                 Primitive.void_t;
-            return self.interner.internSignature(params.items, ret, sig_payload.is_construct) catch t;
+            return self.interner.internSignatureWithAbstract(
+                params.items,
+                ret,
+                sig_payload.is_construct,
+                sig_payload.is_abstract_construct,
+            ) catch t;
         }
         return t;
     }
@@ -967,6 +972,14 @@ pub const Engine = struct {
         target: TypeId,
         force_strict_params: bool,
     ) anyerror!bool {
+        const source_payload = self.interner.pool.signature_payloads.items[self.interner.pool.payloadOf(source)];
+        const target_payload = self.interner.pool.signature_payloads.items[self.interner.pool.payloadOf(target)];
+        if (source_payload.is_construct and target_payload.is_construct and
+            source_payload.is_abstract_construct and !target_payload.is_abstract_construct)
+        {
+            return false;
+        }
+
         const sp_raw = self.interner.signatureParams(source);
         const tp_raw = self.interner.signatureParams(target);
         // §4.A.X TS 4.0 — when either signature is a rest signature

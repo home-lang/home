@@ -790,6 +790,7 @@ pub const FnTypePayload = struct {
     type_params_len: u32,
     return_type: NodeId,
     is_constructor: bool,
+    is_abstract_constructor: bool = false,
 };
 
 /// `T[K]`.
@@ -2415,6 +2416,7 @@ pub const Builder = struct {
         params: []const NodeId,
         return_type: NodeId,
         is_constructor: bool,
+        is_abstract_constructor: bool,
     ) !NodeId {
         const tp_start: u32 = @intCast(self.hir.child_pool.items.len);
         try self.hir.child_pool.appendSlice(self.hir.gpa, type_params);
@@ -2428,6 +2430,7 @@ pub const Builder = struct {
             .params_len = @intCast(params.len),
             .return_type = return_type,
             .is_constructor = is_constructor,
+            .is_abstract_constructor = is_abstract_constructor,
         });
         const kind: NodeKind = if (is_constructor) .constructor_type else .fn_type;
         const id = try self.newNode(kind, span, payload_idx);
