@@ -4120,6 +4120,422 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: restElementWithAssignmentPattern3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "restElementWithAssignmentPattern3",
+        .path = "restElementWithAssignmentPattern3.ts",
+        .source =
+        \\// @target: es2015
+        \\var a: string, b: number;
+        \\var tuple: [string, number] = ["", 1];
+        \\[...[a, b = 0]] = tuple;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: for-of40 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "for-of40",
+        .path = "for-of40.ts",
+        .source =
+        \\//@target: ES6
+        \\var map = new Map([["", true]]);
+        \\for (var [k = "", v = false] of map) {
+        \\    k;
+        \\    v;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: for-of41 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "for-of41",
+        .path = "for-of41.ts",
+        .source =
+        \\//@target: ES6
+        \\var array = [{x: [0], y: {p: ""}}]
+        \\for (var {x: [a], y: {p}} of array) {
+        \\    a;
+        \\    p;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: for-of42 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "for-of42",
+        .path = "for-of42.ts",
+        .source =
+        \\//@target: ES6
+        \\var array = [{ x: "", y: 0 }]
+        \\for (var {x: a, y: b} of array) {
+        \\    a;
+        \\    b;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: for-of43 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "for-of43",
+        .path = "for-of43.ts",
+        .source =
+        \\//@target: ES6
+        \\var array = [{ x: "", y: 0 }]
+        \\for (var {x: a = "", y: b = true} of array) {
+        \\    a;
+        \\    b;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: YieldExpression19_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "YieldExpression19_es6",
+        .path = "YieldExpression19_es6.ts",
+        .source =
+        \\// @target: es6
+        \\function*foo() {
+        \\  function bar() {
+        \\    function* quux() {
+        \\      yield(foo);
+        \\    }
+        \\  }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: taggedTemplateStringsWithTagNamedDeclare passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "taggedTemplateStringsWithTagNamedDeclare",
+        .path = "taggedTemplateStringsWithTagNamedDeclare.ts",
+        .source =
+        \\// @target: es2015
+        \\
+        \\
+        \\function declare(x: any, ...ys: any[]) {
+        \\}
+        \\
+        \\declare `Hello ${0} world!`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: computedPropertyNames1_ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "computedPropertyNames1_ES6",
+        .path = "computedPropertyNames1_ES6.ts",
+        .source =
+        \\// @target: es6
+        \\var v = {
+        \\    get [0 + 1]() { return 0 },
+        \\    set [0 + 1](v: string) { } //No error
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: destructuringObjectBindingPatternAndAssignment5 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "destructuringObjectBindingPatternAndAssignment5",
+        .path = "destructuringObjectBindingPatternAndAssignment5.ts",
+        .source =
+        \\// @target: es2015
+        \\function a () {
+        \\    let x: number;
+        \\    let y: any
+        \\    ({ x, ...y } = ({ } as any));
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emptyObjectBindingPatternParameter02 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emptyObjectBindingPatternParameter02",
+        .path = "emptyObjectBindingPatternParameter02.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// @declaration: true
+        \\
+        \\function f(a, {}) {
+        \\    var x, y, z;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emptyObjectBindingPatternParameter03 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emptyObjectBindingPatternParameter03",
+        .path = "emptyObjectBindingPatternParameter03.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// @declaration: true
+        \\
+        \\function f({}, a) {
+        \\    var x, y, z;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emptyArrayBindingPatternParameter02 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emptyArrayBindingPatternParameter02",
+        .path = "emptyArrayBindingPatternParameter02.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// @declaration: true
+        \\
+        \\function f(a, []) {
+        \\    var x, y, z;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emptyObjectBindingPatternParameter04 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emptyObjectBindingPatternParameter04",
+        .path = "emptyObjectBindingPatternParameter04.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\
+        \\function f({} = {a: 1, b: "2", c: true}) {
+        \\    var x, y, z;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringPlainCharactersThatArePartsOfEscapes01 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringPlainCharactersThatArePartsOfEscapes01",
+        .path = "templateStringPlainCharactersThatArePartsOfEscapes01.ts",
+        .source =
+        \\// @target: es2015
+        \\
+        \\`0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 2028 2029 0085 t v f b r n`
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emitRestParametersFunctionES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emitRestParametersFunctionES6",
+        .path = "emitRestParametersFunctionES6.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es6
+        \\function bar(...rest) { }
+        \\function foo(x: number, y: string, ...rest) { }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emitClassDeclarationWithPropertyAccessInHeritageClause1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emitClassDeclarationWithPropertyAccessInHeritageClause1",
+        .path = "emitClassDeclarationWithPropertyAccessInHeritageClause1.ts",
+        .source =
+        \\// @target: es2015
+        \\class B {}
+        \\function foo() {
+        \\    return {B: B};
+        \\}
+        \\class C extends (foo()).B {}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parser_breakTarget3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parser_breakTarget3",
+        .path = "parser_breakTarget3.ts",
+        .source =
+        \\// @target: es2015
+        \\// @allowUnusedLabels: true
+        \\
+        \\target1:
+        \\target2:
+        \\while (true) {
+        \\  break target1;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parser_breakTarget4 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parser_breakTarget4",
+        .path = "parser_breakTarget4.ts",
+        .source =
+        \\// @target: es2015
+        \\// @allowUnusedLabels: true
+        \\
+        \\target1:
+        \\target2:
+        \\while (true) {
+        \\  break target2;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: typePredicateASI passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "typePredicateASI",
