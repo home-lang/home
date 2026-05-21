@@ -4120,6 +4120,417 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: scannerEnum1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "scannerEnum1",
+        .path = "scannerEnum1.ts",
+        .source =
+        \\// @target: es2015
+        \\    export enum CodeGenTarget {
+        \\        ES3 = 0,
+        \\        ES5 = 1,
+        \\    }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: functionOverloadCompatibilityWithVoid02 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "functionOverloadCompatibilityWithVoid02",
+        .path = "functionOverloadCompatibilityWithVoid02.ts",
+        .source =
+        \\// @target: es2015
+        \\function f(x: string): void;
+        \\function f(x: string): number {
+        \\    return 0;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: functionOverloadCompatibilityWithVoid03 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "functionOverloadCompatibilityWithVoid03",
+        .path = "functionOverloadCompatibilityWithVoid03.ts",
+        .source =
+        \\// @target: es2015
+        \\function f(x: string): void;
+        \\function f(x: string): void {
+        \\    return;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emptyArrayBindingPatternParameter04 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emptyArrayBindingPatternParameter04",
+        .path = "emptyArrayBindingPatternParameter04.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\
+        \\function f([] = [1,2,3,4]) {
+        \\    var x, y, z;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: declarationEmitReadonly passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "declarationEmitReadonly",
+        .path = "declarationEmitReadonly.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\
+        \\class C {
+        \\    constructor(readonly x: number) {}
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: generatorInAmbientContext6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "generatorInAmbientContext6",
+        .path = "generatorInAmbientContext6.ts",
+        .source =
+        \\//@target: ES6
+        \\//@declaration: true
+        \\namespace M {
+        \\    export function *generator(): any { }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+
+test "conformance: taggedTemplateStringsWithTagNamedDeclareES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "taggedTemplateStringsWithTagNamedDeclareES6",
+        .path = "taggedTemplateStringsWithTagNamedDeclareES6.ts",
+        .source =
+        \\//@target: es6
+        \\
+        \\function declare(x: any, ...ys: any[]) {
+        \\}
+        \\
+        \\declare `Hello ${0} world!`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: asyncArrowFunction2_es2017 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "asyncArrowFunction2_es2017",
+        .path = "asyncArrowFunction2_es2017.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es2017
+        \\// @noEmitHelpers: true
+        \\var f = (await) => {
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: asyncArrowFunction1_es2017 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "asyncArrowFunction1_es2017",
+        .path = "asyncArrowFunction1_es2017.ts",
+        .source =
+        \\// @target: es2017
+        \\// @noEmitHelpers: true
+        \\
+        \\var foo = async (): Promise<void> => {
+        \\};
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: asyncFunctionDeclaration1_es2017 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "asyncFunctionDeclaration1_es2017",
+        .path = "asyncFunctionDeclaration1_es2017.ts",
+        .source =
+        \\// @target: es2017
+        \\// @noEmitHelpers: true
+        \\async function foo(): Promise<void> {
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: asyncFunctionDeclaration2_es2017 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "asyncFunctionDeclaration2_es2017",
+        .path = "asyncFunctionDeclaration2_es2017.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es2017
+        \\// @noEmitHelpers: true
+        \\function f(await) {
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: FunctionDeclaration9_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "FunctionDeclaration9_es6",
+        .path = "FunctionDeclaration9_es6.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es6
+        \\function * foo() {
+        \\  var v = { [yield]: foo }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emptyAssignmentPatterns03_ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emptyAssignmentPatterns03_ES6",
+        .path = "emptyAssignmentPatterns03_ES6.ts",
+        .source =
+        \\// @target: es6
+        \\// @declaration: true
+        \\
+        \\var a: any;
+        \\
+        \\({} = {} = a);
+        \\([] = [] = a);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: nullishCoalescingOperator6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nullishCoalescingOperator6",
+        .path = "nullishCoalescingOperator6.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\
+        \\function foo(foo: string, bar = foo ?? "bar") { }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: for-inStatementsAsyncIdentifier passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "for-inStatementsAsyncIdentifier",
+        .path = "for-inStatementsAsyncIdentifier.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: esnext
+        \\
+        \\var async;
+        \\for (async in { a: 1, b: 2 }) {}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: es2022LocalesObjectArgument passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "es2022LocalesObjectArgument",
+        .path = "es2022LocalesObjectArgument.ts",
+        .source =
+        \\// @target: es2022
+        \\
+        \\const enUS = new Intl.Locale("en-US");
+        \\const deDE = new Intl.Locale("de-DE");
+        \\const jaJP = new Intl.Locale("ja-JP");
+        \\
+        \\new Intl.Segmenter(enUS);
+        \\new Intl.Segmenter([deDE, jaJP]);
+        \\Intl.Segmenter.supportedLocalesOf(enUS);
+        \\Intl.Segmenter.supportedLocalesOf([deDE, jaJP]);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: es2021LocalesObjectArgument passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "es2021LocalesObjectArgument",
+        .path = "es2021LocalesObjectArgument.ts",
+        .source =
+        \\// @target: es2021
+        \\
+        \\const enUS = new Intl.Locale("en-US");
+        \\const deDE = new Intl.Locale("de-DE");
+        \\const jaJP = new Intl.Locale("ja-JP");
+        \\
+        \\new Intl.ListFormat(enUS);
+        \\new Intl.ListFormat([deDE, jaJP]);
+        \\Intl.ListFormat.supportedLocalesOf(enUS);
+        \\Intl.ListFormat.supportedLocalesOf([deDE, jaJP]);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: mixedPropertyElementAccessAssignmentDeclaration passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "mixedPropertyElementAccessAssignmentDeclaration",
+        .path = "mixedPropertyElementAccessAssignmentDeclaration.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// Should not crash: #34642
+        \\var arr = [];
+        \\arr[0].prop[2] = {};
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: templateStringWithEmbeddedTemplateString passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "templateStringWithEmbeddedTemplateString",
