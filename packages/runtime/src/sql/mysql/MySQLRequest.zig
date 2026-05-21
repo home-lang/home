@@ -7,11 +7,6 @@
 // zero by passing `0` to `writer.start`, write the 1-byte command
 // type, then the raw query bytes, then close the packet.
 //
-// Bodies reach into the wave-21 NewWriter stub method surface
-// (`start`, `int1`, `write`); exercising either helper trips a
-// natural compile error pointing back at the stub until the real
-// `bun.ByteList`-backed writer lands (Phase 12.2).
-
 pub fn executeQuery(
     query: []const u8,
     comptime Context: type,
@@ -39,20 +34,61 @@ pub fn prepareRequest(
     try packet.end();
 }
 
-test "executeQuery + prepareRequest are addressable as fn pointers" {
-    const std = @import("std");
-    // Touching the comptime fn-pointers without instantiating the
-    // generic body keeps the NewWriter stub method surface unscanned,
-    // but proves the symbols + signatures are exported cleanly.
-    const exec: *const @TypeOf(executeQuery) = &executeQuery;
-    const prep: *const @TypeOf(prepareRequest) = &prepareRequest;
-    try std.testing.expect(@intFromPtr(exec) != 0);
-    try std.testing.expect(@intFromPtr(prep) != 0);
-    try std.testing.expect(@intFromEnum(CommandType.COM_QUERY) != @intFromEnum(CommandType.COM_STMT_PREPARE));
+test "executeQuery writes a COM_QUERY packet" {
+    var buf: [32]u8 = undefined;
+    var len: usize = 0;
+    const ctx = TestWriter.init(&buf, &len);
+    const writer = NewWriter(TestWriter){ .wrapped = ctx };
+
+    try executeQuery("select 1", TestWriter, writer);
+
+    try std.testing.expectEqualSlices(u8, &.{ 9, 0, 0, 0, 0x03, 's', 'e', 'l', 'e', 'c', 't', ' ', '1' }, ctx.slice());
+}
+
+test "prepareRequest writes a COM_STMT_PREPARE packet" {
+    var buf: [32]u8 = undefined;
+    var len: usize = 0;
+    const ctx = TestWriter.init(&buf, &len);
+    const writer = NewWriter(TestWriter){ .wrapped = ctx };
+
+    try prepareRequest("select 1", TestWriter, writer);
+
+    try std.testing.expectEqualSlices(u8, &.{ 9, 0, 0, 0, 0x16, 's', 'e', 'l', 'e', 'c', 't', ' ', '1' }, ctx.slice());
 }
 
 const debug = home_rt.Output.scoped(.MySQLRequest, .visible);
 
 const home_rt = @import("home_rt");
+const std = @import("std");
+const AnyMySQLError = @import("./protocol/AnyMySQLError.zig");
 const CommandType = @import("./protocol/CommandType.zig").CommandType;
 const NewWriter = @import("./protocol/NewWriter.zig").NewWriter;
+
+const TestWriter = struct {
+    bytes: []u8,
+    len: *usize,
+
+    fn init(bytes: []u8, len: *usize) TestWriter {
+        len.* = 0;
+        return .{ .bytes = bytes, .len = len };
+    }
+
+    fn slice(this: TestWriter) []const u8 {
+        return this.bytes[0..this.len.*];
+    }
+
+    pub fn offset(this: TestWriter) usize {
+        return this.len.*;
+    }
+
+    pub fn write(this: TestWriter, bytes: []const u8) AnyMySQLError.Error!void {
+        if (this.len.* + bytes.len > this.bytes.len) return error.ShortRead;
+        @memcpy(this.bytes[this.len.*..][0..bytes.len], bytes);
+        this.len.* += bytes.len;
+    }
+
+    pub fn pwrite(this: TestWriter, bytes: []const u8, offset_value: usize) AnyMySQLError.Error!void {
+        if (offset_value + bytes.len > this.len.*) return error.ShortRead;
+        @memcpy(this.bytes[offset_value..][0..bytes.len], bytes);
+    }
+};

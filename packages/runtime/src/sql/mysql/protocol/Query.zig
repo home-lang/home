@@ -1,10 +1,7 @@
 // Copied from bun/src/sql/mysql/protocol/Query.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../../cli/LICENSE.bun.md.
 //
-// COM_QUERY packet writer leaf. Bodies intentionally continue to depend
-// on the MySQL `NewWriter` method surface; callers that exercise them
-// before the real writer lands will get the natural Zig compile error
-// from the stub.
+// COM_QUERY packet writer leaf.
 
 pub const Execute = struct {
     query: []const u8,
@@ -70,6 +67,7 @@ const debug = home_rt.Output.scoped(.MySQLQuery, .visible);
 
 const home_rt = @import("home_rt");
 const std = @import("std");
+const AnyMySQLError = @import("./AnyMySQLError.zig");
 const CommandType = @import("./CommandType.zig").CommandType;
 const Data = @import("../../shared/Data.zig").Data;
 const Param = @import("../MySQLParam.zig").Param;
@@ -90,3 +88,43 @@ test "MySQL Query exports write entrypoints without instantiating writer body" {
     try testing.expect(@typeInfo(@TypeOf(Execute.write)) == .@"fn");
     try testing.expectEqual(@as(u8, 0x03), @intFromEnum(CommandType.COM_QUERY));
 }
+
+test "MySQL Query.execute writes a COM_QUERY packet" {
+    var buf: [32]u8 = undefined;
+    var len: usize = 0;
+    const ctx = TestWriter.init(&buf, &len);
+    const writer = NewWriter(TestWriter){ .wrapped = ctx };
+
+    try execute("select 1", writer);
+
+    try std.testing.expectEqualSlices(u8, &.{ 9, 0, 0, 0, 0x03, 's', 'e', 'l', 'e', 'c', 't', ' ', '1' }, ctx.slice());
+}
+
+const TestWriter = struct {
+    bytes: []u8,
+    len: *usize,
+
+    fn init(bytes: []u8, len: *usize) TestWriter {
+        len.* = 0;
+        return .{ .bytes = bytes, .len = len };
+    }
+
+    fn slice(this: TestWriter) []const u8 {
+        return this.bytes[0..this.len.*];
+    }
+
+    pub fn offset(this: TestWriter) usize {
+        return this.len.*;
+    }
+
+    pub fn write(this: TestWriter, bytes: []const u8) AnyMySQLError.Error!void {
+        if (this.len.* + bytes.len > this.bytes.len) return error.ShortRead;
+        @memcpy(this.bytes[this.len.*..][0..bytes.len], bytes);
+        this.len.* += bytes.len;
+    }
+
+    pub fn pwrite(this: TestWriter, bytes: []const u8, offset_value: usize) AnyMySQLError.Error!void {
+        if (offset_value + bytes.len > this.len.*) return error.ShortRead;
+        @memcpy(this.bytes[offset_value..][0..bytes.len], bytes);
+    }
+};
