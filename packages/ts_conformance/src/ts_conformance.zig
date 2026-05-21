@@ -5532,6 +5532,358 @@ test "conformance: constructorNameInObjectLiteralAccessor passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: controlFlowDestructuringDeclaration passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "controlFlowDestructuringDeclaration",
+        .path = "controlFlowDestructuringDeclaration.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strictNullChecks: true
+        \\
+        \\function f1() {
+        \\    let x: string | number = 1;
+        \\    x;
+        \\    let y: string | undefined = "";
+        \\    y;
+        \\}
+        \\
+        \\function f2() {
+        \\    let [x]: [string | number] = [1];
+        \\    x;
+        \\    let [y]: [string | undefined] = [""];
+        \\    y;
+        \\    let [z = ""]: [string | undefined] = [undefined];
+        \\    z;
+        \\}
+        \\
+        \\function f3() {
+        \\    let [x]: (string | number)[] = [1];
+        \\    x;
+        \\    let [y]: (string | undefined)[] = [""];
+        \\    y;
+        \\    let [z = ""]: (string | undefined)[] = [undefined];
+        \\    z;
+        \\}
+        \\
+        \\function f4() {
+        \\    let { x }: { x: string | number } = { x: 1 };
+        \\    x;
+        \\    let { y }: { y: string | undefined } = { y: "" };
+        \\    y;
+        \\    let { z = "" }: { z: string | undefined } = { z: undefined };
+        \\    z;
+        \\}
+        \\
+        \\function f5() {
+        \\    let { x }: { x?: string | number } = { x: 1 };
+        \\    x;
+        \\    let { y }: { y?: string | undefined } = { y: "" };
+        \\    y;
+        \\    let { z = "" }: { z?: string | undefined } = { z: undefined };
+        \\    z;
+        \\}
+        \\
+        \\function f6() {
+        \\    let { x }: { x?: string | number } = {};
+        \\    x;
+        \\    let { y }: { y?: string | undefined } = {};
+        \\    y;
+        \\    let { z = "" }: { z?: string | undefined } = {};
+        \\    z;
+        \\}
+        \\
+        \\function f7() {
+        \\    let o: { [x: string]: number } = { x: 1 };
+        \\    let { x }: { [x: string]: string | number } = o;
+        \\    x;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = false },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: controlFlowInOperator passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "controlFlowInOperator",
+        .path = "controlFlowInOperator.ts",
+        .source =
+        \\// @target: es2015
+        \\const a = 'a';
+        \\const b = 'b';
+        \\const d = 'd';
+        \\
+        \\type A = { [a]: number; };
+        \\type B = { [b]: string; };
+        \\
+        \\declare const c: A | B;
+        \\
+        \\if ('a' in c) {
+        \\    c;      // A
+        \\    c['a']; // number;
+        \\}
+        \\
+        \\if ('d' in c) {
+        \\    c; // never
+        \\}
+        \\
+        \\if (a in c) {
+        \\    c;    // A
+        \\    c[a]; // number;
+        \\}
+        \\
+        \\if (d in c) {
+        \\    c; // never
+        \\}
+        \\
+        \\// repro from https://github.com/microsoft/TypeScript/issues/54790
+        \\
+        \\function uniqueID_54790(
+        \\  id: string | undefined,
+        \\  seenIDs: { [key: string]: string }
+        \\): string {
+        \\  if (id === undefined) {
+        \\    id = "1";
+        \\  }
+        \\  if (!(id in seenIDs)) {
+        \\    return id;
+        \\  }
+        \\  for (let i = 1; i < Number.MAX_VALUE; i++) {
+        \\    const newID = `${id}-${i}`;
+        \\    if (!(newID in seenIDs)) {
+        \\      return newID;
+        \\    }
+        \\  }
+        \\  throw Error("heat death of the universe");
+        \\}
+        \\
+        \\function uniqueID_54790_2(id: string | number, seenIDs: object) {
+        \\  id = "a";
+        \\  for (let i = 1; i < 3; i++) {
+        \\    const newID = `${id}`;
+        \\    if (newID in seenIDs) {
+        \\    }
+        \\  }
+        \\}
+        \\
+        \\function uniqueID_54790_3(id: string | number, seenIDs: object) {
+        \\  id = "a";
+        \\  for (let i = 1; i < 3; i++) {
+        \\    const newID = id;
+        \\    if (newID in seenIDs) {
+        \\    }
+        \\  }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: arrayLiteralInference passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "arrayLiteralInference",
+        .path = "arrayLiteralInference.ts",
+        .source =
+        \\// @strict: true
+        \\// @target: es2015
+        \\
+        \\// Repro from #31204
+        \\
+        \\export enum AppType {
+        \\    HeaderDetail = 'HeaderDetail',
+        \\    HeaderMultiDetail = 'HeaderMultiDetail',
+        \\    AdvancedList = 'AdvancedList',
+        \\    Standard = 'Standard',
+        \\    Relationship = 'Relationship',
+        \\    Report = 'Report',
+        \\    Composite = 'Composite',
+        \\    ListOnly = 'ListOnly',
+        \\    ModuleSettings = 'ModuleSettings'
+        \\}
+        \\
+        \\export enum AppStyle {
+        \\    Tree,
+        \\    TreeEntity,
+        \\    Standard,
+        \\    MiniApp,
+        \\    PivotTable
+        \\}
+        \\
+        \\const appTypeStylesWithError: Map<AppType, Array<AppStyle>> = new Map([
+        \\    [AppType.Standard, [AppStyle.Standard, AppStyle.MiniApp]],
+        \\    [AppType.Relationship, [AppStyle.Standard, AppStyle.Tree, AppStyle.TreeEntity]],
+        \\    [AppType.AdvancedList, [AppStyle.Standard, AppStyle.MiniApp]]
+        \\]);
+        \\
+        \\// Repro from #31204
+        \\
+        \\declare function foo<T>(...args: T[]): T[];
+        \\let b1: { x: boolean }[] = foo({ x: true }, { x: false });
+        \\let b2: boolean[][] = foo([true], [false]);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: contextuallyTypedIife passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "contextuallyTypedIife",
+        .path = "contextuallyTypedIife.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// arrow
+        \\(jake => { })("build");
+        \\// function expression
+        \\(function (cats) { })("lol");
+        \\// Lots of Irritating Superfluous Parentheses
+        \\(function (x) { } ("!"));
+        \\((((function (y) { }))))("-");
+        \\// multiple arguments
+        \\((a, b, c) => { })("foo", 101, false);
+        \\// default parameters
+        \\((m = 10) => m + 1)(12);
+        \\((n = 10) => n + 1)();
+        \\// optional parameters
+        \\((j?) => j + 1)(12);
+        \\((k?) => k + 1)();
+        \\((l, o?) => l + o)(12); // o should be any
+        \\// rest parameters
+        \\((...numbers) => numbers.every(n => n > 0))(5,6,7);
+        \\((...mixed) => mixed.every(n => !!n))(5,'oops','oh no');
+        \\((...noNumbers) => noNumbers.some(n => n > 0))();
+        \\((first, ...rest) => first ? [] : rest.map(n => n > 0))(8,9,10);
+        \\// destructuring parameters (with defaults too!)
+        \\(({ q }) => q)({ q : 13 });
+        \\(({ p = 14 }) => p)({ p : 15 });
+        \\(({ r = 17 } = { r: 18 }) => r)({r : 19});
+        \\(({ u = 22 } = { u: 23 }) => u)();
+        \\// contextually typed parameters.
+        \\let twelve = (f => f(12))(i => i);
+        \\let eleven = (o => o.a(11))({ a: function(n) { return n; } });
+        \\// missing arguments
+        \\(function(x, undefined) { return x; })(42);
+        \\((x, y, z) => 42)();
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: inferringClassMembersFromAssignments8 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "inferringClassMembersFromAssignments8",
+        .path = "inferringClassMembersFromAssignments8.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// no inference in TS files, even for `this` aliases:
+        \\
+        \\var app = function() {
+        \\    var _this = this;
+        \\    _this.swap = function() { }
+        \\}
+        \\var a = new app()
+        \\a
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: mergedInterfacesWithConflictingPropertyNames2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "mergedInterfacesWithConflictingPropertyNames2",
+        .path = "mergedInterfacesWithConflictingPropertyNames2.ts",
+        .source =
+        \\// @target: es2015
+        \\interface A {
+        \\    x: string; // error
+        \\}
+        \\
+        \\interface A {
+        \\    x: string; // error
+        \\}
+        \\
+        \\namespace M {
+        \\    interface A<T> {
+        \\        x: T;
+        \\    }
+        \\
+        \\    interface A<T> {
+        \\        x: T;  // error
+        \\    }
+        \\}
+        \\
+        \\namespace M2 {
+        \\    interface A<T> {
+        \\        x: T;
+        \\    }
+        \\}
+        \\
+        \\namespace M2 {
+        \\    interface A<T> {
+        \\        x: T;  // ok, different declaration space than other M2
+        \\    }
+        \\}
+        \\
+        \\namespace M3 {
+        \\    export interface A<T> {
+        \\        x: T;
+        \\    }
+        \\}
+        \\
+        \\namespace M3 {
+        \\    export interface A<T> {
+        \\        x: T;  // error
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
