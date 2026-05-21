@@ -369,6 +369,11 @@ pub const TsCodes = struct {
     /// files and a member like `AST` is referenced but never declared.
     pub const namespace_no_exported_member: u32 = 2694;
     pub const class_name_object_es5_module: u32 = 2725;
+    /// TS8004 — "Type parameter declarations can only be used in
+    /// TypeScript files." Emitted for generic functions/classes inside
+    /// `.js`/`.jsx`/`.mjs`/`.cjs` virtual sections, even without
+    /// `@checkJs`, because the type parameter list is TS-only syntax.
+    pub const ts_only_type_parameter_in_js: u32 = 8004;
     pub const ts_only_decl_in_js: u32 = 8006;
     /// TS8009 — "The '?' modifier can only be used in TypeScript
     /// files." Emitted when a parameter is declared with a `?`
@@ -12249,9 +12254,9 @@ pub const Checker = struct {
     /// walk so type-param references inside the body still resolve.
     fn checkFnSignatureOnly(self: *Checker, node: NodeId) CheckError!TypeId {
         const f = hir_mod.fnDeclOf(self.hir, node);
-        // parserArrowFunctionExpression10/13/14/15/16/17: surface
-        // TS8010 / TS8009 for any TS-only annotation in a `.js`
-        // virtual section opted into `@allowjs`/`@checkjs`.
+        // Surface JS-file TS-only signature syntax. Type parameter
+        // lists are syntax errors even without `@checkJs`; annotations
+        // stay gated to checked JS below.
         try self.checkJsOnlySignatureAnnotations(node);
         try self.checkJsDocThisTagOnArrowFunction(node);
         try self.checkJsDocFunctionTypeReturnAnnotations(node);
@@ -13837,6 +13842,8 @@ pub const Checker = struct {
         try self.checkClassMemberDecoratorDiagnostics(members);
         try self.detectClassMemberDuplicates(members);
         try self.checkClassNamedObjectInCommonJsLikeModule(node);
+        const type_params = self.hir.childSlice(c.type_params_start, c.type_params_len);
+        try self.checkJsOnlyTypeParameters(node, type_params);
         const class_name_scope = c.name != hir_mod.none_node_id and
             self.hir.kindOf(c.name) == .identifier;
         if (class_name_scope) {
@@ -13845,7 +13852,6 @@ pub const Checker = struct {
             try self.recordNarrow(cid.name, types.Primitive.any);
         }
         defer if (class_name_scope) self.popNarrowScope();
-        const type_params = self.hir.childSlice(c.type_params_start, c.type_params_len);
         try self.checkTypeParameterDeclList(type_params);
         if (type_params.len > 0) try self.pushNarrowScope();
         defer if (type_params.len > 0) self.popNarrowScope();
@@ -32388,6 +32394,26 @@ pub const Checker = struct {
         });
     }
 
+    /// TS8004 for type parameter declarations that appear in JS-like
+    /// virtual sections. Unlike checked-JS type annotation diagnostics,
+    /// this is emitted even without `@checkJs` because the syntax itself
+    /// is TS-only. The type-parameter HIR span starts at the name token
+    /// for ordinary `<T>`, matching upstream's `function F<T>() { }`
+    /// column at the `T`.
+    fn checkJsOnlyTypeParameters(self: *Checker, owner: NodeId, type_params: []const NodeId) CheckError!void {
+        if (!self.virtualSectionIsJsLike(owner)) return;
+        for (type_params) |tp| {
+            if (self.hir.kindOf(tp) != .type_parameter) continue;
+            const span = self.hir.spanOf(tp);
+            try self.diagnostics.append(self.gpa, .{
+                .node = tp,
+                .pos = span.start,
+                .code = TsCodes.ts_only_type_parameter_in_js,
+                .message = try self.diag_arena.allocator().dupe(u8, "Type parameter declarations can only be used in TypeScript files."),
+            });
+        }
+    }
+
     /// parserArrowFunctionExpression10/13/14/15/16/17: emit TS8010 for
     /// every parameter type annotation, every return-type annotation,
     /// and TS8009 for every `?` optional marker that appears on a
@@ -32399,6 +32425,7 @@ pub const Checker = struct {
     /// name and its `:` annotation (or trailing `,`/`)`).
     fn checkJsOnlySignatureAnnotations(self: *Checker, node: NodeId) CheckError!void {
         if (!self.virtualSectionIsJsLike(node)) return;
+        try self.checkJsOnlyTypeParameters(node, hir_mod.fnTypeParams(self.hir, node));
         if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return;
         const src = self.source orelse return;
         const f = hir_mod.fnDeclOf(self.hir, node);
@@ -64829,6 +64856,24 @@ test "checker: override modifier in JS emits TS8009" {
         if (d.code == TsCodes.override_modifier_in_js) {
             found = true;
             try T.expect(std.mem.indexOf(u8, d.message, "'override' modifier") != null);
+        }
+    }
+    try T.expect(found);
+}
+
+test "checker: generic function in unchecked JS emits TS8004" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @Filename: a.js
+        \\function F<T>() { }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.ts_only_type_parameter_in_js) {
+            found = true;
+            try T.expect(std.mem.indexOf(u8, d.message, "Type parameter declarations") != null);
         }
     }
     try T.expect(found);

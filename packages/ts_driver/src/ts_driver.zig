@@ -1322,6 +1322,10 @@ fn checkerDiagnosticSurfacesInUncheckedJs(code: u32, message: []const u8, source
     // which emits this unconditionally for JS sources. Fires for
     // `typeSatisfaction_js`.
     if (code == ts_checker.check.TsCodes.ts_only_satisfies_in_js) return true;
+    // TS8004 — generic declarations (`function f<T>() {}` /
+    // `class C<T> {}`) are TS-only syntax in JS files. Like TS8037,
+    // this surfaces under bare `--allowJs` without `--checkJs`.
+    if (code == ts_checker.check.TsCodes.ts_only_type_parameter_in_js) return true;
     // TS2839 — strict equality between fresh object/array/function
     // references is reported even in unchecked `--allowJs` files.
     // Mirrors `plainJSTypeErrors`, where `{} === {}` errors while
@@ -1631,6 +1635,22 @@ test "driver: unchecked allowJs still surfaces satisfies JS grammar diagnostic" 
     var found = false;
     for (c.diagnostics.items) |d| {
         if (d.code == ts_checker.check.TsCodes.ts_only_satisfies_in_js) found = true;
+    }
+    try T.expect(found);
+}
+
+test "driver: unchecked allowJs still surfaces generic declaration JS grammar diagnostic" {
+    var c = try compileSource(T.allocator,
+        \\function F<T>() { }
+    , .{ .no_emit = true, .suppress_js_check_diagnostics = true, .importer_path = "/src/a.js" });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == ts_checker.check.TsCodes.ts_only_type_parameter_in_js) found = true;
     }
     try T.expect(found);
 }

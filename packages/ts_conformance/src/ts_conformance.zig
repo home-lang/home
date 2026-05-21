@@ -40390,9 +40390,19 @@ const default_ts_root = "/Users/chrisbreuer/Code/typescript-go";
 const TsCorpusPaths = struct { cases: []u8, baselines: []u8 };
 
 fn resolveTsCorpusPaths(gpa: std.mem.Allocator) !?TsCorpusPaths {
+    return resolveTsCaseFamilyPaths(gpa, "conformance");
+}
+
+fn resolveTsCaseFamilyPaths(gpa: std.mem.Allocator, family: []const u8) !?TsCorpusPaths {
     const root_env = std.c.getenv("HOME_TS_CONFORMANCE_ROOT");
-    const root_slice = if (root_env) |r| std.mem.span(r) else default_ts_root;
-    const cases = try std.fmt.allocPrint(gpa, "{s}/_submodules/TypeScript/tests/cases/conformance", .{root_slice});
+    const suite_root_env = std.c.getenv("HOME_TS_SUITE_ROOT");
+    const root_slice = if (suite_root_env) |r|
+        std.mem.span(r)
+    else if (root_env) |r|
+        std.mem.span(r)
+    else
+        default_ts_root;
+    const cases = try std.fmt.allocPrint(gpa, "{s}/_submodules/TypeScript/tests/cases/{s}", .{ root_slice, family });
     errdefer gpa.free(cases);
     const baselines = try std.fmt.allocPrint(gpa, "{s}/_submodules/TypeScript/tests/baselines/reference", .{root_slice});
     errdefer gpa.free(baselines);
@@ -40410,6 +40420,103 @@ fn resolveTsCorpusPaths(gpa: std.mem.Allocator) !?TsCorpusPaths {
         return null;
     };
     return .{ .cases = cases, .baselines = baselines };
+}
+
+fn runOptInTsSuiteFamily(
+    comptime label: []const u8,
+    comptime family: []const u8,
+    comptime env_prefix: []const u8,
+) !void {
+    const full_env = env_prefix ++ "_FULL";
+    const enabled_raw = std.c.getenv(full_env) orelse return;
+    const enabled = std.mem.span(enabled_raw);
+    if (!std.mem.eql(u8, enabled, "1")) return;
+
+    const paths_or_null = try resolveTsCaseFamilyPaths(T.allocator, family);
+    if (paths_or_null == null) return;
+    const paths = paths_or_null.?;
+    defer {
+        T.allocator.free(paths.cases);
+        T.allocator.free(paths.baselines);
+    }
+
+    const start_env = env_prefix ++ "_START";
+    const limit_env = env_prefix ++ "_LIMIT";
+    const exact_env = env_prefix ++ "_EXACT";
+    const trace_env = env_prefix ++ "_TRACE";
+    const requested_start = envUsize(start_env, 0);
+    const requested_limit = envUsizeOpt(limit_env);
+    const want_exact = envBoolOne(exact_env);
+    const trace_fixtures = envBoolOne(trace_env);
+
+    const corpus = try loadDirectoryWithOptions(T.allocator, paths.cases, .{
+        .baseline_root = paths.baselines,
+        .strict_default_for_expected_errors = true,
+        .exact_error_headers = want_exact,
+        .load_start = requested_start,
+        .load_limit = requested_limit,
+    });
+    defer {
+        for (corpus) |entry| freeOwnedCorpusEntry(T.allocator, entry);
+        T.allocator.free(corpus);
+    }
+
+    var results: std.ArrayListUnmanaged(Result) = .empty;
+    defer {
+        freeResults(T.allocator, results.items);
+        results.deinit(T.allocator);
+    }
+
+    var stats: Stats = .{};
+    const display_total = requested_start + corpus.len;
+    for (corpus, requested_start..) |entry, idx| {
+        if (trace_fixtures) {
+            std.debug.print("[ts_suite {s}] RUN {d}/{d} {s}\n", .{ label, idx + 1, display_total, entry.name });
+        }
+        const r = try runOneEntry(T.allocator, .{
+            .name = entry.name,
+            .source = entry.source,
+            .path = entry.path,
+            .expects_error = entry.expects_error,
+            .expected_errors = entry.expected_errors,
+            .use_exact_errors = entry.use_exact_errors,
+            .is_tsx = entry.is_tsx,
+            .is_declaration_file = entry.is_declaration_file,
+            .strict_flags = entry.strict_flags,
+            .always_strict = entry.always_strict,
+            .syntax_target_es2015 = entry.syntax_target_es2015,
+            .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
+            .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
+            .raw_source = entry.raw_source,
+            .baseline_module_resolution = entry.baseline_module_resolution,
+        });
+        switch (r.outcome) {
+            .passed => stats.passed += 1,
+            .failed => stats.failed += 1,
+            .skipped => stats.skipped += 1,
+        }
+        try results.append(T.allocator, r);
+    }
+
+    std.debug.print(
+        "[ts_suite {s}] total={d} passed={d} failed={d} skipped={d} pass_rate={d:.2}\n",
+        .{ label, stats.total(), stats.passed, stats.failed, stats.skipped, stats.passRate() },
+    );
+
+    const fail_cap: u32 = if (want_exact) 200 else 20;
+    var printed: u32 = 0;
+    for (results.items) |r| {
+        if (r.outcome != .failed) continue;
+        if (printed >= fail_cap) break;
+        printed += 1;
+        std.debug.print("  FAIL  {s}: {s}\n", .{ r.name, r.detail });
+    }
+
+    if (requested_start == 0 and requested_limit == null) {
+        try T.expect(stats.total() > 1000);
+    } else {
+        try T.expectEqual(@as(u32, @intCast(corpus.len)), stats.total());
+    }
 }
 
 // NOTE: an always-on exact-baseline ratchet test was prototyped
@@ -40539,6 +40646,10 @@ test "conformance: opt-in full local TypeScript corpus survey" {
     } else {
         try T.expect(stats.total() == end - start);
     }
+}
+
+test "compiler: opt-in local TypeScript compiler corpus survey" {
+    try runOptInTsSuiteFamily("compiler", "compiler", "HOME_TS_COMPILER");
 }
 
 test "conformance: runOwnedCorpus matches runCorpus on equal inputs" {
