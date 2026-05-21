@@ -200,7 +200,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes one hundred fifty-six allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes one hundred fifty-seven allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-four
@@ -239,6 +239,7 @@ selector / handler validation plus element callback methods,
 `describe.each` synchronous table expansion with done-callback injection,
 `node:url.domainToASCII` / `domainToUnicode` invalid-punycode handling,
 POSIX `node:url.pathToFileURL` path encoding,
+`Bun.fileURLToPath` / `pathToFileURL` conversion and throw behavior,
 `process.binding("constants")` / `process.binding("uv")` smoke coverage,
 Jest fake-timer Date / `Intl.DateTimeFormat` smoke coverage,
 `bun:internal-for-testing.highlightJavaScript` template-literal coverage,
@@ -283,7 +284,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `156` files, `661` passed, `0` failed,
+Latest measured subset run: `157` files, `681` passed, `0` failed,
 `40` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
@@ -1267,6 +1268,12 @@ in Home as `4` passed, `0` failed, `0` unsupported, `0` todo. The
 bootstrap adds `path.toNamespacedPath`, `path._makeLong`, and the
 `posix` / `win32` namespace variants, plus a narrow path fixture module
 mapping for the upstream `./common/fixtures.js` import.
+
+The copied `js/bun/util/fileUrl.test.js` fixture now passes in Home as
+`20` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap lowers
+the Bun file URL helper import, exports `Bun.pathToFileURL`, tightens
+`Bun.fileURLToPath` throw behavior, normalizes long relative `..` paths,
+and maps corpus-relative `import.meta.path` / `import.meta.url` roundtrips.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

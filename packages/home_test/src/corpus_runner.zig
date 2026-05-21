@@ -136,6 +136,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/expect-type-global.test.ts",
     "js/bun/test/expect-type.test.ts",
     "regression/issue/02367.test.ts",
+    "js/bun/util/fileUrl.test.js",
     "js/bun/util/file-type.test.ts",
     "js/node/url/url-pathtofileurl.test.js",
     "js/bun/util/randomUUIDv7.test.ts",
@@ -2493,7 +2494,7 @@ const harness_prelude =
     \\  return globalThis.__home_bun_test;
     \\};
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
-    \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, fileURLToPath: Bun.fileURLToPath, indexOfLine: Bun.indexOfLine, randomUUIDv7: Bun.randomUUIDv7, spawn: Bun.spawn, spawnSync: Bun.spawnSync };
+    \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, spawn: Bun.spawn, spawnSync: Bun.spawnSync };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["bun:build"] = { BuildArtifact, BuildMessage };
     \\globalThis.__home_modules["node:test"] = { test };
@@ -5609,9 +5610,18 @@ const harness_prelude =
     \\function __home_url_path_to_file_url(path) {
     \\  if (typeof path !== "string") throw new TypeError('The "path" argument must be of type string');
     \\  let text = path;
-    \\  if (!text.startsWith("/")) text = __home_build_join(process.cwd(), text);
+    \\  if (!text.startsWith("/") && text !== process.cwd() && text !== globalThis.__home_current_filename) text = __home_build_join(process.cwd(), text);
+    \\  text = __home_path_posix_normalize(text);
     \\  const encoded = text.split("/").map(__home_url_path_encode_segment).join("/");
     \\  return new URL("file://" + (encoded.startsWith("/") ? "" : "/") + encoded);
+    \\}
+    \\function __home_url_file_url_to_path(value) {
+    \\  if (!(typeof value === "string" || value instanceof URL)) throw new TypeError('The "path" argument must be of type string or an instance of URL');
+    \\  const url = value instanceof URL ? value : new URL(value);
+    \\  if (url.protocol !== "file:") throw new TypeError("The URL must be of scheme file");
+    \\  const decoded = decodeURIComponent(url.pathname);
+    \\  if (decoded === "/" + globalThis.__home_current_filename) return globalThis.__home_current_filename;
+    \\  return decoded;
     \\}
     \\const __home_url_module = {
     \\  URL: URL,
@@ -5642,6 +5652,7 @@ const harness_prelude =
     \\  parse(value) {
     \\    __home_unsupported("node:url.parse is only present for skipped bootstrap tests");
     \\  },
+    \\  fileURLToPath: __home_url_file_url_to_path,
     \\  pathToFileURL: __home_url_path_to_file_url,
     \\};
     \\__home_url_module.default = __home_url_module;
@@ -6849,6 +6860,7 @@ fn appendImportMetaReplacement(
         .{ .needle = "import.meta.dirname", .replacement = "__home_import_meta_dirname" },
         .{ .needle = "import.meta.dir", .replacement = "__home_import_meta_dir" },
         .{ .needle = "import.meta.path", .replacement = "__home_import_meta_path" },
+        .{ .needle = "import.meta.url", .replacement = "\"file:///\" + __home_import_meta_path" },
     };
 
     for (replacements) |entry| {
@@ -7350,6 +7362,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { indexOfLine } from \"bun\";",
             .replacement = "const { indexOfLine } = globalThis.__home_import(\"bun\");",
+        },
+        .{
+            .needle = "import { fileURLToPath, pathToFileURL } from \"bun\";",
+            .replacement = "const { fileURLToPath, pathToFileURL } = globalThis.__home_import(\"bun\");",
         },
         .{
             .needle = "import { Buffer } from \"node:buffer\";",
@@ -8272,6 +8288,19 @@ test "Node path import rewrite lowers path fixtures import" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const fixtures = globalThis.__home_import(\"./common/fixtures.js\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"./common/fixtures.js\"") == null);
+}
+
+test "Bun URL import rewrite lowers file URL helpers" {
+    const source =
+        \\import { fileURLToPath, pathToFileURL } from "bun";
+        \\import { test } from "bun:test";
+        \\test("file url", () => fileURLToPath(pathToFileURL("a.txt")));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/bun/util/fileUrl.test.js");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { fileURLToPath, pathToFileURL } = globalThis.__home_import(\"bun\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun\"") == null);
 }
 
 test "Bun harness import rewrite lowers isWindows import" {

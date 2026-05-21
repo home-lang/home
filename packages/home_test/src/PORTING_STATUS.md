@@ -161,6 +161,7 @@ table smokes, posix/win32 relative path table smokes,
 `toNamespacedPath` / `_makeLong` namespace conversion, and path namespace
 / invalid-argument coverage,
 `node:url` URL.canParse, url.format empty-input, POSIX pathToFileURL,
+`Bun.fileURLToPath` / `pathToFileURL` conversion and throw behavior,
 and WHATWG URL auth stripping plus domainToASCII/domainToUnicode smokes,
 skipped Node URL null-character / internal URL smokes,
 `test.skipIf` registration for the Windows-only POSIX relative path smoke,
@@ -828,6 +829,10 @@ The copied `js/node/path/to-namespaced-path.test.js` fixture now passes
 as `4` tests through the path bootstrap model. It covers
 `path.toNamespacedPath`, `path._makeLong`, posix/win32 namespace variants,
 and the upstream `./common/fixtures.js` path helper import.
+The copied `js/bun/util/fileUrl.test.js` fixture now passes as `20`
+tests through the URL bootstrap model. It covers Bun file URL helper
+imports, `Bun.pathToFileURL`, stricter `Bun.fileURLToPath` throws, long
+relative path normalization, and corpus-relative `import.meta` roundtrips.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
