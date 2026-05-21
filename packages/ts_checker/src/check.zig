@@ -41443,6 +41443,13 @@ pub const Checker = struct {
         return std.mem.eql(u8, self.string_interner.get(id.name), "null");
     }
 
+    fn nodeIsUndefinedLiteralish(self: *Checker, node: NodeId) bool {
+        if (self.hir.kindOf(node) == .literal_undefined) return true;
+        if (self.hir.kindOf(node) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, node);
+        return std.mem.eql(u8, self.string_interner.get(id.name), "undefined");
+    }
+
     fn applyTypeGuard(self: *Checker, cond: NodeId, when_true: bool) !void {
         // Aliased conditional narrowing: `if (cond)` where `cond`
         // was bound to a guard expression. Expand the alias and
@@ -41891,52 +41898,44 @@ pub const Checker = struct {
         // X === undefined / X !== undefined / X == undefined / X != undefined (literal_undefined +
         // identifier 'undefined' both occur in source code).
         if (self.hir.kindOf(b.lhs) == .identifier and
-            self.hir.kindOf(b.rhs) == .identifier)
+            self.nodeIsUndefinedLiteralish(b.rhs))
         {
             const lhs = hir_mod.identifierOf(self.hir, b.lhs);
-            const rhs = hir_mod.identifierOf(self.hir, b.rhs);
-            const rhs_name = self.string_interner.get(rhs.name);
-            if (std.mem.eql(u8, rhs_name, "undefined")) {
-                if (positive) {
-                    try self.recordNarrow(lhs.name, types.Primitive.undefined_t);
-                } else {
-                    const current = self.lookupNarrow(lhs.name) orelse self.typeOfIdentifier(b.lhs);
-                    const without_undefined = if (current == types.Primitive.unknown)
-                        types.Primitive.object_t
-                    else
-                        self.subtractType(current, types.Primitive.undefined_t) catch current;
-                    const narrowed = if (b.op == .eq or b.op == .neq)
-                        self.subtractType(without_undefined, types.Primitive.null_t) catch without_undefined
-                    else
-                        without_undefined;
-                    try self.recordNarrow(lhs.name, narrowed);
-                }
-                return;
+            if (positive) {
+                try self.recordNarrow(lhs.name, types.Primitive.undefined_t);
+            } else {
+                const current = self.lookupNarrow(lhs.name) orelse self.typeOfIdentifier(b.lhs);
+                const without_undefined = if (current == types.Primitive.unknown)
+                    types.Primitive.object_t
+                else
+                    self.subtractType(current, types.Primitive.undefined_t) catch current;
+                const narrowed = if (b.op == .eq or b.op == .neq)
+                    self.subtractType(without_undefined, types.Primitive.null_t) catch without_undefined
+                else
+                    without_undefined;
+                try self.recordNarrow(lhs.name, narrowed);
             }
+            return;
         }
         if (self.hir.kindOf(b.rhs) == .identifier and
-            self.hir.kindOf(b.lhs) == .identifier)
+            self.nodeIsUndefinedLiteralish(b.lhs))
         {
-            const lhs = hir_mod.identifierOf(self.hir, b.lhs);
-            const lhs_name = self.string_interner.get(lhs.name);
-            if (std.mem.eql(u8, lhs_name, "undefined")) {
-                const rhs = hir_mod.identifierOf(self.hir, b.rhs);
-                if (positive) {
-                    try self.recordNarrow(rhs.name, types.Primitive.undefined_t);
-                } else {
-                    const current = self.lookupNarrow(rhs.name) orelse self.typeOfIdentifier(b.rhs);
-                    const without_undefined = if (current == types.Primitive.unknown)
-                        types.Primitive.object_t
-                    else
-                        self.subtractType(current, types.Primitive.undefined_t) catch current;
-                    const narrowed = if (b.op == .eq or b.op == .neq)
-                        self.subtractType(without_undefined, types.Primitive.null_t) catch without_undefined
-                    else
-                        without_undefined;
-                    try self.recordNarrow(rhs.name, narrowed);
-                }
-                return;
+            const rhs = hir_mod.identifierOf(self.hir, b.rhs);
+            if (positive) {
+                try self.recordNarrow(rhs.name, types.Primitive.undefined_t);
+            } else {
+                const current = self.lookupNarrow(rhs.name) orelse self.typeOfIdentifier(b.rhs);
+                const without_undefined = if (current == types.Primitive.unknown)
+                    types.Primitive.object_t
+                else
+                    self.subtractType(current, types.Primitive.undefined_t) catch current;
+                const narrowed = if (b.op == .eq or b.op == .neq)
+                    self.subtractType(without_undefined, types.Primitive.null_t) catch without_undefined
+                else
+                    without_undefined;
+                try self.recordNarrow(rhs.name, narrowed);
             }
+            return;
         }
 
         // Member-access narrowing on an identifier-rooted access:
@@ -78604,6 +78603,23 @@ test "checker: template literal strings participate in type guards" {
         try T.expect(d.code != TsCodes.object_possibly_undefined);
         try T.expect(d.code != TsCodes.property_does_not_exist);
         try T.expect(d.code != TsCodes.expected_n_arguments);
+    }
+}
+
+test "checker: undefined-left strict inequality narrows identifier" {
+    const s = try newSetup(
+        \\function test(strOrUndefined: string | undefined) {
+        \\  var str: string = "original";
+        \\  if (undefined !== strOrUndefined) {
+        \\    str = strOrUndefined;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
     }
 }
 

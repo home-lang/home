@@ -5411,6 +5411,38 @@ test "conformance: TypeGuardWithEnumUnion passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: nullOrUndefinedTypeGuardIsOrderIndependent passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nullOrUndefinedTypeGuardIsOrderIndependent",
+        .path = "nullOrUndefinedTypeGuardIsOrderIndependent.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strictNullChecks: true
+        \\function test(strOrNull: string | null, strOrUndefined: string | undefined) {
+        \\    var str: string = "original";
+        \\    var nil: null;
+        \\    if (null === strOrNull) {
+        \\        nil = strOrNull;
+        \\    }
+        \\    else {
+        \\        str = strOrNull;
+        \\    }
+        \\    if (undefined !== strOrUndefined) {
+        \\        str = strOrUndefined;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: typeGuardFunctionGenerics passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "typeGuardFunctionGenerics",
