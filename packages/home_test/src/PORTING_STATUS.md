@@ -176,6 +176,7 @@ JS-only `Bun.serve({ fetch })` / long-lived server-fixture `Bun.spawn`,
 IPC-style server-fixture URL delivery and `new URL(input, base)`,
 interactive third-party prompts stdin/stdout behavior,
 `queueMicrotask` ordering and argument validation,
+`setImmediate` / `clearImmediate` scheduling and cancellation,
 `node:vm.runInNewContext`, DOMException, native constructor identity,
 mutable `globalThis` prototype behavior, comment-only module-load smoke,
 `Bun.file(...).type` explicit and `.css` MIME behavior,
@@ -784,6 +785,10 @@ The copied `js/web/timers/microtask.test.js` fixture now passes as `1`
 test through the timer bootstrap model. It covers `queueMicrotask`
 ordering plus Bun/browser-compatible `TypeError` validation for missing
 or non-function callbacks.
+The copied `js/web/timers/setImmediate.test.js` fixture now passes as
+`3` tests through the timer bootstrap model. It covers scheduled
+callbacks, argument forwarding, `clearImmediate` cancellation, and
+process-exit behavior for pending immediates.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

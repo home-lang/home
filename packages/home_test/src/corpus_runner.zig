@@ -147,6 +147,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/http/req-url-leak.test.ts",
     "js/third_party/prompts/prompts.test.ts",
     "js/web/timers/microtask.test.js",
+    "js/web/timers/setImmediate.test.js",
     "js/web/encoding/text-decoder-cjk.test.ts",
     "js/web/encoding/text-decoder-single-byte.test.ts",
     "regression/issue/fix-bindings-stack-trace.test.ts",
@@ -304,6 +305,18 @@ const harness_prelude =
     \\function queueMicrotask(callback) {
     \\  if (typeof callback !== "function") throw new TypeError("queueMicrotask callback must be a function");
     \\  Promise.resolve().then(callback);
+    \\}
+    \\function setImmediate(callback) {
+    \\  const id = __home_next_timer_id++;
+    \\  const args = Array.prototype.slice.call(arguments, 1);
+    \\  Promise.resolve().then(() => {
+    \\    if (__home_cancelled_timers.has(id)) return;
+    \\    if (typeof callback === "function") callback.apply(undefined, args);
+    \\  });
+    \\  return id;
+    \\}
+    \\function clearImmediate(id) {
+    \\  __home_cancelled_timers.add(id);
     \\}
     \\function setTimeout(callback, delay) {
     \\  const id = __home_next_timer_id++;
@@ -7608,6 +7621,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function it(name, first, second)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "console.warn = console.log") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function queueMicrotask(callback)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function setImmediate(callback)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_is_thenable(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_done_callback(error)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.setPrototypeOf = function(target, prototype)") != null);
