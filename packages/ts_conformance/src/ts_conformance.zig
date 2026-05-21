@@ -5884,6 +5884,378 @@ test "conformance: mergedInterfacesWithConflictingPropertyNames2 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: nullPropertyName passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nullPropertyName",
+        .path = "nullPropertyName.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// @declaration: true
+        \\
+        \\function foo() {}
+        \\// properties
+        \\foo.x = 1;
+        \\foo.y = 1;
+        \\
+        \\// keywords
+        \\foo.break = 1;
+        \\foo.case = 1;
+        \\foo.catch = 1;
+        \\foo.class = 1;
+        \\foo.const = 1;
+        \\foo.continue = 1;
+        \\foo.debugger = 1;
+        \\foo.default = 1;
+        \\foo.delete = 1;
+        \\foo.do = 1;
+        \\foo.else = 1;
+        \\foo.enum = 1;
+        \\foo.export = 1;
+        \\foo.extends = 1;
+        \\foo.false = 1;
+        \\foo.finally = 1;
+        \\foo.for = 1;
+        \\foo.function = 1;
+        \\foo.if = 1;
+        \\foo.import = 1;
+        \\foo.in = 1;
+        \\foo.instanceof = 1;
+        \\foo.new = 1;
+        \\foo.null = 1;
+        \\foo.return = 1;
+        \\foo.super = 1;
+        \\foo.switch = 1;
+        \\foo.this = 1;
+        \\foo.throw = 1;
+        \\foo.true = 1;
+        \\foo.try = 1;
+        \\foo.typeof = 1;
+        \\foo.var = 1;
+        \\foo.void = 1;
+        \\foo.while = 1;
+        \\foo.with = 1;
+        \\foo.implements = 1;
+        \\foo.interface = 1;
+        \\foo.let = 1;
+        \\foo.package = 1;
+        \\foo.private = 1;
+        \\foo.protected = 1;
+        \\foo.public = 1;
+        \\foo.static = 1;
+        \\foo.yield = 1;
+        \\foo.abstract = 1;
+        \\foo.as = 1;
+        \\foo.asserts = 1;
+        \\foo.any = 1;
+        \\foo.async = 1;
+        \\foo.await = 1;
+        \\foo.boolean = 1;
+        \\foo.constructor = 1;
+        \\foo.declare = 1;
+        \\foo.get = 1;
+        \\foo.infer = 1;
+        \\foo.is = 1;
+        \\foo.keyof = 1;
+        \\foo.module = 1;
+        \\foo.namespace = 1;
+        \\foo.never = 1;
+        \\foo.readonly = 1;
+        \\foo.require = 1;
+        \\foo.number = 1;
+        \\foo.object = 1;
+        \\foo.set = 1;
+        \\foo.string = 1;
+        \\foo.symbol = 1;
+        \\foo.type = 1;
+        \\foo.undefined = 1;
+        \\foo.unique = 1;
+        \\foo.unknown = 1;
+        \\foo.from = 1;
+        \\foo.global = 1;
+        \\foo.bigint = 1;
+        \\foo.of = 1;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: localTypes2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "localTypes2",
+        .path = "localTypes2.ts",
+        .source =
+        \\// @target: es2015
+        \\function f1() {
+        \\    function f() {
+        \\        class C {
+        \\            constructor(public x: number, public y: number) { }
+        \\        }
+        \\        return C;
+        \\    }
+        \\    let C = f();
+        \\    let v = new C(10, 20);
+        \\    let x = v.x;
+        \\    let y = v.y;
+        \\}
+        \\
+        \\function f2() {
+        \\    function f(x: number) {
+        \\        class C {
+        \\            public x = x;
+        \\            constructor(public y: number) { }
+        \\        }
+        \\        return C;
+        \\    }
+        \\    let C = f(10);
+        \\    let v = new C(20);
+        \\    let x = v.x;
+        \\    let y = v.y;
+        \\}
+        \\
+        \\function f3() {
+        \\    function f(x: number, y: number) {
+        \\        class C {
+        \\            public x = x;
+        \\            public y = y;
+        \\        }
+        \\        return C;
+        \\    }
+        \\    let C = f(10, 20);
+        \\    let v = new C();
+        \\    let x = v.x;
+        \\    let y = v.y;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: localTypes3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "localTypes3",
+        .path = "localTypes3.ts",
+        .source =
+        \\// @target: es2015
+        \\function f1() {
+        \\    function f() {
+        \\        class C<X, Y> {
+        \\            constructor(public x: X, public y: Y) { }
+        \\        }
+        \\        return C;
+        \\    }
+        \\    let C = f();
+        \\    let v = new C(10, "hello");
+        \\    let x = v.x;
+        \\    let y = v.y;
+        \\}
+        \\
+        \\function f2() {
+        \\    function f<X>(x: X) {
+        \\        class C<Y> {
+        \\            public x = x;
+        \\            constructor(public y: Y) { }
+        \\        }
+        \\        return C;
+        \\    }
+        \\    let C = f(10);
+        \\    let v = new C("hello");
+        \\    let x = v.x;
+        \\    let y = v.y;
+        \\}
+        \\
+        \\function f3() {
+        \\    function f<X, Y>(x: X, y: Y) {
+        \\        class C {
+        \\            public x = x;
+        \\            public y = y;
+        \\        }
+        \\        return C;
+        \\    }
+        \\    let C = f(10, "hello");
+        \\    let v = new C();
+        \\    let x = v.x;
+        \\    let y = v.y;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: thisTypeInInterfaces passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "thisTypeInInterfaces",
+        .path = "thisTypeInInterfaces.ts",
+        .source =
+        \\// @target: es2015
+        \\interface I1 {
+        \\    x: this;
+        \\    f(x: this): this;
+        \\}
+        \\
+        \\interface I2 {
+        \\    (x: this): this;
+        \\    new (x: this): this;
+        \\    [x: string]: this;
+        \\}
+        \\
+        \\interface Foo<T> {
+        \\    x: T;
+        \\    y: this;
+        \\}
+        \\
+        \\interface I3 {
+        \\    a: this[];
+        \\    b: [this, this];
+        \\    c: this | Date;
+        \\    d: this & Date;
+        \\    e: (((this)));
+        \\    f: (x: this) => this;
+        \\    g: new (x: this) => this;
+        \\    h: Foo<this>;
+        \\    i: Foo<this | (() => this)>;
+        \\    j: (x: any) => x is this;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: declarationEmitThisPredicates01 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "declarationEmitThisPredicates01",
+        .path = "declarationEmitThisPredicates01.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\// @module: commonjs
+        \\
+        \\export class C {
+        \\    m(): this is D {
+        \\        return this instanceof D;
+        \\    }
+        \\}
+        \\
+        \\export class D extends C {
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: declarationEmitIdentifierPredicates01 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "declarationEmitIdentifierPredicates01",
+        .path = "declarationEmitIdentifierPredicates01.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\// @module: commonjs
+        \\
+        \\export function f(x: any): x is number {
+        \\    return typeof x === "number";
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: typeGuardsTypeParameters passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeGuardsTypeParameters",
+        .path = "typeGuardsTypeParameters.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strictNullChecks: true
+        \\
+        \\// Type guards involving type parameters produce intersection types
+        \\
+        \\class C {
+        \\    prop: string = "";
+        \\}
+        \\
+        \\function f1<T>(x: T) {
+        \\    if (x instanceof C) {
+        \\        let v1: T = x;
+        \\        let v2: C = x;
+        \\        x.prop;
+        \\    }
+        \\}
+        \\
+        \\function f2<T>(x: T) {
+        \\    if (typeof x === "string") {
+        \\        let v1: T = x;
+        \\        let v2: string = x;
+        \\        x.length;
+        \\    }
+        \\}
+        \\
+        \\// Repro from #13872
+        \\
+        \\function fun<T>(item: { [P in keyof T]: T[P] }) {
+        \\    const strings: string[] = [];
+        \\    for (const key in item) {
+        \\        const value = item[key];
+        \\        if (typeof value === "string") {
+        \\            strings.push(value);
+        \\        }
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = false },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
