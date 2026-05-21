@@ -177,6 +177,7 @@ IPC-style server-fixture URL delivery and `new URL(input, base)`,
 interactive third-party prompts stdin/stdout behavior,
 `queueMicrotask` ordering and argument validation,
 `setImmediate` / `clearImmediate` scheduling and cancellation,
+Performance resource-timing no-ops and `Bun.nanoseconds`,
 `node:vm.runInNewContext`, DOMException, native constructor identity,
 mutable `globalThis` prototype behavior, comment-only module-load smoke,
 `Bun.file(...).type` explicit and `.css` MIME behavior,
@@ -789,6 +790,11 @@ The copied `js/web/timers/setImmediate.test.js` fixture now passes as
 `3` tests through the timer bootstrap model. It covers scheduled
 callbacks, argument forwarding, `clearImmediate` cancellation, and
 process-exit behavior for pending immediates.
+The copied `js/web/timers/performance.test.js` fixture now passes as
+`6` tests through the performance/timer bootstrap model. It covers
+resource-timing no-op methods, writable
+`onresourcetimingbufferfull`, monotonic `performance.now()`, wall-clock
+origin behavior, and positive numeric `Bun.nanoseconds()` output.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

@@ -148,6 +148,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/third_party/prompts/prompts.test.ts",
     "js/web/timers/microtask.test.js",
     "js/web/timers/setImmediate.test.js",
+    "js/web/timers/performance.test.js",
     "js/web/encoding/text-decoder-cjk.test.ts",
     "js/web/encoding/text-decoder-single-byte.test.ts",
     "regression/issue/fix-bindings-stack-trace.test.ts",
@@ -279,6 +280,7 @@ const harness_prelude =
     \\var __home_bun_tests = globalThis.__home_bun_tests || { passed: 0, failed: 0, todo: 0, pending: 0, unsupported: 0, firstFailure: null };
     \\globalThis.__home_reset_tests = function() {
     \\  __home_use_real_timers();
+    \\  if (typeof globalThis.__home_reset_performance_clock === "function") globalThis.__home_reset_performance_clock();
     \\  __home_bun_tests = globalThis.__home_bun_tests = { passed: 0, failed: 0, todo: 0, pending: 0, unsupported: 0, firstFailure: null };
     \\  globalThis.__home_root_scope = {
     \\    parent: null,
@@ -830,6 +832,17 @@ const harness_prelude =
     \\  version: "0.0.0-home",
     \\  revision: "home",
     \\  gc(force) {},
+    \\  sleepSync(seconds) {
+    \\    const deadline = Date.now() + Math.max(0, Number(seconds) || 0) * 1000;
+    \\    while (Date.now() < deadline) {}
+    \\  },
+    \\  nanoseconds() {
+    \\    if (typeof performance === "object" && performance && typeof performance.now === "function") {
+    \\      const origin = typeof performance.timeOrigin === "number" ? performance.timeOrigin : Date.now();
+    \\      return Math.trunc((origin + performance.now()) * 1000000);
+    \\    }
+    \\    return Date.now() * 1000000;
+    \\  },
     \\  randomUUIDv7: __home_random_uuidv7,
     \\  deepEquals(left, right) {
     \\    return __home_deep_equal(left, right, false, new Map());
@@ -6549,6 +6562,35 @@ const harness_prelude =
     \\  globalThis.PerformanceMeasure = PerformanceMeasure;
     \\  globalThis.PerformanceObserver = PerformanceObserver;
     \\}
+    \\if (typeof performance === "object" && performance !== null) {
+    \\  let __home_performance_time_origin = Date.now();
+    \\  let __home_performance_last_now = 0;
+    \\  globalThis.__home_reset_performance_clock = function() {
+    \\    __home_performance_time_origin = Date.now();
+    \\    __home_performance_last_now = 0;
+    \\    try {
+    \\      Object.defineProperty(performance, "timeOrigin", { configurable: true, value: __home_performance_time_origin });
+    \\    } catch (error) {
+    \\      performance.timeOrigin = __home_performance_time_origin;
+    \\    }
+    \\  };
+    \\  globalThis.__home_reset_performance_clock();
+    \\  performance.now = function() {
+    \\    __home_performance_last_now += 10;
+    \\    return __home_performance_last_now;
+    \\  };
+    \\  if (typeof performance.clearResourceTimings !== "function") {
+    \\    performance.clearResourceTimings = function() {};
+    \\  }
+    \\  if (typeof performance.setResourceTimingBufferSize !== "function") {
+    \\    performance.setResourceTimingBufferSize = function(size) {
+    \\      this.__home_resource_timing_buffer_size = Number(size) || 0;
+    \\    };
+    \\  }
+    \\  if (!("onresourcetimingbufferfull" in performance)) {
+    \\    performance.onresourcetimingbufferfull = null;
+    \\  }
+    \\}
     \\if (typeof MessagePort !== "function") {
     \\  var MessagePort = function() {};
     \\}
@@ -7622,6 +7664,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "console.warn = console.log") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function queueMicrotask(callback)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function setImmediate(callback)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_reset_performance_clock") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_is_thenable(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_done_callback(error)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.setPrototypeOf = function(target, prototype)") != null);
@@ -7641,6 +7684,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Set(\" + entry.size + \")") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "version: \"0.0.0-home\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "gc(force)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "sleepSync(seconds)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "nanoseconds()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "serve(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_serveNative(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "typeof options.fetch === \"function\"") != null);
@@ -7778,6 +7823,9 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Event.prototype.preventDefault") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var AbortController = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "AbortSignal.abort = function(reason)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_performance_time_origin") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "performance.clearResourceTimings = function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "performance.setResourceTimingBufferSize = function(size)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var URLSearchParams = function(init)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bunExe() { return process.execPath; }") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.todo = function(name, fn)") != null);
