@@ -19824,6 +19824,173 @@ test "conformance: templateStringWithEmbeddedCommentsES6 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: templateStringInPropertyAssignmentES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringInPropertyAssignmentES6",
+        .path = "templateStringInPropertyAssignmentES6.ts",
+        .source =
+        \\var x = {
+        \\    a: `abc${ 123 }def${ 456 }ghi`
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringInFunctionExpressionES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringInFunctionExpressionES6",
+        .path = "templateStringInFunctionExpressionES6.ts",
+        .source =
+        \\var x = function y() {
+        \\    `abc${ 0 }def`
+        \\    return `abc${ 0 }def`;
+        \\};
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringInUnaryPlusES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringInUnaryPlusES6",
+        .path = "templateStringInUnaryPlusES6.ts",
+        .source =
+        \\var x = +`abc${ 123 }def`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringWithEmbeddedMultiplication passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringWithEmbeddedMultiplication",
+        .path = "templateStringWithEmbeddedMultiplication.ts",
+        .source =
+        \\var x = `abc${ 7 * 6 }def`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringWithEmbeddedMultiplicationES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringWithEmbeddedMultiplicationES6",
+        .path = "templateStringWithEmbeddedMultiplicationES6.ts",
+        .source =
+        \\var x = `abc${ 7 * 6 }def`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringWithEmbeddedDivisionES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringWithEmbeddedDivisionES6",
+        .path = "templateStringWithEmbeddedDivisionES6.ts",
+        .source =
+        \\var x = `abc${ 1 / 1 }def`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringWithEmbeddedAddition passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringWithEmbeddedAddition",
+        .path = "templateStringWithEmbeddedAddition.ts",
+        .source =
+        \\var x = `abc${ 10 + 10 }def`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringWithEmbeddedModuloES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringWithEmbeddedModuloES6",
+        .path = "templateStringWithEmbeddedModuloES6.ts",
+        .source =
+        \\var x = `abc${ 1 % 1 }def`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringWithEmbeddedTypeOfOperator passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringWithEmbeddedTypeOfOperator",
+        .path = "templateStringWithEmbeddedTypeOfOperator.ts",
+        .source =
+        \\var x = `abc${ typeof "hi" }def`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
