@@ -314,6 +314,9 @@ pub const PosixSpawn = struct {
             }
         }
     };
+
+    pub const Actions = BunSpawn.Actions;
+    pub const Attr = BunSpawn.Attr;
 };
 
 // ---- Parked: PosixSpawn execution glue ------------------------------
@@ -413,6 +416,11 @@ test "spawn: PosixSpawnActions init/deinit and file action helpers" {
     try actions.inherit(6);
     try actions.openZ(7, "/tmp/home-spawn-posix-action", 0o2, 0o644);
     try actions.chdir("/tmp");
+}
+
+test "spawn: PosixSpawn aliases active action and attr wrappers" {
+    try std.testing.expectEqual(BunSpawn.Actions, PosixSpawn.Actions);
+    try std.testing.expectEqual(BunSpawn.Attr, PosixSpawn.Attr);
 }
 
 test "spawn: BunSpawn.Action layout is C-ABI compatible" {
