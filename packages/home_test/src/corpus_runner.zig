@@ -214,6 +214,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/third_party/jsonwebtoken/issue_147.test.js",
     "js/third_party/jsonwebtoken/encoding.test.js",
     "js/third_party/jsonwebtoken/set_headers.test.js",
+    "js/third_party/jsonwebtoken/undefined_secretOrPublickey.test.js",
     "js/node/path/is-absolute.test.js",
     "js/node/path/zero-length-strings.test.js",
     "js/bun/util/concat.test.js",
@@ -6534,6 +6535,7 @@ const harness_prelude =
     \\  return __home_jwt_encode_segment(JSON.stringify(header), undefined) + "." + __home_jwt_encode_segment(payloadText, opts.encoding) + ".home";
     \\}
     \\function __home_jwt_verify(token, secret, callback) {
+    \\  if (secret === null || secret === undefined) throw __home_jwt_error("JsonWebTokenError", "secret or public key must be provided");
     \\  let payload = __home_jwt_decode(token);
     \\  let error = null;
     \\  if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "exp")) {
@@ -11312,6 +11314,20 @@ test "bootstrap runner covers jsonwebtoken sign and verify fixtures" {
         \\    var decoded = jwt.decode(token, { complete: true });
         \\    expect(decoded.header.alg).toEqual("HS512");
         \\  });
+        \\
+        \\  it("rejects null verify secrets", function () {
+        \\    var token = jwt.sign({}, "123");
+        \\    expect(function () {
+        \\      jwt.verify(token, null);
+        \\    }).toThrow(/secret or public key must be provided/);
+        \\  });
+        \\
+        \\  it("rejects missing verify secrets", function () {
+        \\    var token = jwt.sign({}, "123");
+        \\    expect(function () {
+        \\      jwt.verify(token);
+        \\    }).toThrow(/secret or public key must be provided/);
+        \\  });
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/third_party/jsonwebtoken/noTimestamp.test.js");
@@ -11324,7 +11340,7 @@ test "bootstrap runner covers jsonwebtoken sign and verify fixtures" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 16), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 18), file_run.result.passed);
 }
 
 test "bootstrap runner covers Node path bootstrap smokes" {
