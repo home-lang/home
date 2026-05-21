@@ -13764,6 +13764,189 @@ test "conformance: objectTypeWithStringNamedPropertyOfIllegalCharacters passes c
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: accessorsOverrideProperty9 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "accessorsOverrideProperty9",
+        .path = "accessorsOverrideProperty9.ts",
+        .source =
+        \\// @strict: true
+        \\// @target: es2017
+        \\
+        \\export type Constructor<T = {}> = new (...args: any[]) => T;
+        \\export type PropertiesOf<T> = { [K in keyof T]: T[K] };
+        \\
+        \\interface IApiItemConstructor extends Constructor<ApiItem>, PropertiesOf<typeof ApiItem> {}
+        \\
+        \\class ApiItem {
+        \\  public get members(): ReadonlyArray<ApiItem> {
+        \\    return [];
+        \\  }
+        \\}
+        \\
+        \\class ApiEnumMember extends ApiItem {
+        \\}
+        \\
+        \\interface ApiItemContainerMixin extends ApiItem {
+        \\  readonly members: ReadonlyArray<ApiItem>;
+        \\}
+        \\
+        \\function ApiItemContainerMixin<TBaseClass extends IApiItemConstructor>(
+        \\  baseClass: TBaseClass
+        \\): TBaseClass & (new (...args: any[]) => ApiItemContainerMixin) {
+        \\  abstract class MixedClass extends baseClass implements ApiItemContainerMixin {
+        \\    public constructor(...args: any[]) {
+        \\      super(...args);
+        \\    }
+        \\
+        \\    public get members(): ReadonlyArray<ApiItem> {
+        \\      return [];
+        \\    }
+        \\  }
+        \\
+        \\  return MixedClass;
+        \\}
+        \\
+        \\export class ApiEnum extends ApiItemContainerMixin(ApiItem) {
+        \\  public get members(): ReadonlyArray<ApiEnumMember> {
+        \\    return [];
+        \\  }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: autoAccessorAllowedModifiers passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "autoAccessorAllowedModifiers",
+        .path = "autoAccessorAllowedModifiers.ts",
+        .source =
+        \\// @target: esnext
+        \\// @noTypesAndSymbols: true
+        \\
+        \\abstract class C1 {
+        \\    accessor a: any;
+        \\    public accessor b: any;
+        \\    private accessor c: any;
+        \\    protected accessor d: any;
+        \\    abstract accessor e: any;
+        \\    static accessor f: any;
+        \\    public static accessor g: any;
+        \\    private static accessor h: any;
+        \\    protected static accessor i: any;
+        \\    accessor #j: any;
+        \\    accessor "k": any;
+        \\    accessor 108: any;
+        \\    accessor ["m"]: any;
+        \\    accessor n!: number;
+        \\}
+        \\
+        \\class C2 extends C1 {
+        \\    override accessor e: any;
+        \\    static override accessor i: any;
+        \\}
+        \\
+        \\declare class C3 {
+        \\    accessor a: any;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: autoAccessor9 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "autoAccessor9",
+        .path = "autoAccessor9.ts",
+        .source =
+        \\// @target: esnext
+        \\// @useDefineForClassFields: false
+        \\
+        \\class C1 {
+        \\    accessor x = 1;
+        \\}
+        \\
+        \\class C2 {
+        \\    x = 1;
+        \\    accessor y = 2;
+        \\    z = 3;
+        \\}
+        \\
+        \\class C3 {
+        \\    #x = 1;
+        \\    accessor y = 2;
+        \\}
+        \\
+        \\class C4 {
+        \\    x = 1;
+        \\    #y = 2;
+        \\    z = 3;
+        \\}
+        \\
+        \\class C5 {
+        \\    #x = 1;
+        \\    accessor y = 2;
+        \\    z = 3;
+        \\}
+        \\
+        \\class C6 {
+        \\    static accessor x = 1;
+        \\}
+        \\
+        \\class C7 {
+        \\    static x = 1;
+        \\    static accessor y = 2;
+        \\    static z = 3;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: optionalMethod passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "optionalMethod",
+        .path = "optionalMethod.ts",
+        .source =
+        \\// @target: esnext
+        \\// @noTypesAndSymbols: true
+        \\class Base {
+        \\    method?() { }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
