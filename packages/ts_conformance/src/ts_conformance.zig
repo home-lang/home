@@ -4120,6 +4120,42 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: protectedClassPropertyAccessibleWithinSubclass passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "protectedClassPropertyAccessibleWithinSubclass",
+        .path = "protectedClassPropertyAccessibleWithinSubclass.ts",
+        .source =
+        \\// @target: es2015
+        \\// no errors
+        \\
+        \\class B {
+        \\    protected x: string;
+        \\    protected static x: string;
+        \\}
+        \\
+        \\class C extends B {
+        \\    protected get y() { return this.x; }
+        \\    protected set y(x) { this.y = this.x; }
+        \\    protected foo() { return this.x; }
+        \\    protected bar() { return this.foo(); }
+        \\
+        \\    protected static get y() { return this.x; }
+        \\    protected static set y(x) { this.y = this.x; }
+        \\    protected static foo() { return this.x; }
+        \\    protected static bar() { this.foo(); }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: classPropertyIsPublicByDefault passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "classPropertyIsPublicByDefault",
