@@ -65,10 +65,10 @@ Drop-in Bun replacement. Detailed per-area status:
 
 | Capability | Status |
 |---|---|
-| Bun source files ported | 🚧 471 / 1,193 (~39.5%) |
-| JSC bring-up (Phase 12.2) | 🚧 M1-M6 landed (95 files); JS-callable bridge pending |
-| `node:*` namespace substrate | 🚧 21 files (`assert`, `buffer`, `events`, `fs`, `path`, `stream`, `util` + bindings) |
-| `bun` compat shim (`packages/compat/`) | 🚧 7 / ~103 Tier-0 symbols |
+| Bun source files ported | 🚧 539 / 1,193 (~45.2%) |
+| JSC bring-up (Phase 12.2) | 🚧 M1-M6 landed (128 files); JS-callable bridge pending |
+| `node:*` namespace substrate | 🚧 28 files (`assert`, `buffer`, `events`, `fs`, `path`, `stream`, `util`, `crypto`, `process`, `string_decoder`, `tty` + bindings) |
+| `bun` compat shim (`packages/compat/`) | 🚧 16 / ~103 Tier-0/Tier-1 symbols |
 | Functional runtime (`home run app.ts`) | 🚧 Awaiting JSC JS-callable wire-up |
 | `home test` runner | 🚧 Blocked on JSC + Phase 12.8 |
 | Acceptance gate (Bun `test/` corpus 100%) | ❌ Not yet (becomes enforceable after Phase 12.2 + 12.8) |

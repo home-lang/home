@@ -6,12 +6,15 @@ row is in the
 [README parity status](../README.md#bun-runtime-port-packagesruntime)
 section.
 
-> **Status:** Substrate + JSC M6 landed. 515 / 1,193 Bun source
-> files integrated (~43.2%), and the remaining filtered Bun Zig source
-> files are now present as a dormant raw import; the runtime is not yet JavaScript-callable
-> end-to-end, but Phase 12.2 (JSC bring-up) has reached the M6
+> **Status:** Substrate + JSC M6 landed. `packages/runtime/src/`
+> currently contains 1,289 Zig source files. Of the audited 1,193-file
+> Bun baseline, 539 files are integrated into Home (~45.2%): rewritten
+> for Home imports, Zig 0.17-clean, build-wired, and tested. The remaining
+> staged Bun files are an integration backlog, not parity credit; the
+> runtime is not yet JavaScript-callable end-to-end, but Phase 12.2
+> (JSC bring-up) has reached the M6
 > milestone — JSON + Promise + Iterator + Global helpers — across
-> 97 files in `packages/runtime/src/jsc/`, including a live
+> 128 files in `packages/runtime/src/jsc/`, including a live
 > `JSEvaluateScript` smoke and the public JavaScriptCore
 > `JSObjectMakeDeferredPromise` deferred-promise constructor bridge.
 > Full audit:
@@ -28,7 +31,7 @@ Legend:
 | Sub-phase | Source under `~/Code/bun/src/` | Destination | Status |
 |---|---|---|---|
 | 12.1 | `cli/` | `src/cli/` | 🟡 scaffold landed (CLI flag parsing partial) |
-| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone + native eval smoke landed (97 files: JSON + Promise + Iterator + Global helpers + `JSEvaluateScript` + `JSObjectMakeDeferredPromise`) |
+| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone + native eval smoke landed (128 files: JSON + Promise + Iterator + Global helpers + `JSEvaluateScript` + `JSObjectMakeDeferredPromise`) |
 | 12.3 | `event_loop/`, `io/`, `async/` | `src/event_loop/` | 🟡 substrate landing (~30+ leaves ported) |
 | 12.4 | `resolver/`, `module_loader.zig` | `src/module_loader/` | 🔴 blocked on 12.2 |
 | 12.5 | `web/`, `http/`, `csrf/`, `dns/` | `src/web/` | 🔴 blocked on 12.3 |
@@ -81,8 +84,9 @@ aliases and Pantry Zig 0.17's Darwin `std.c.POSIX_SPAWN` flag type; the
 ported `BunSpawn.Attr.set()` now re-derives `detached` from the packed
 `SETSID` flag when the platform exposes it while preserving Bun's
 no-flag fallback for FreeBSD-style targets. The
-actual `spawnZ` / `waitpid` execution glue remains parked until the
-`posix_spawn_bun` shim and `home_rt.sys.Error` surface land.
+actual `spawnZ` / `waitpid` execution glue still requires the
+`posix_spawn_bun` shim and `home_rt.sys.Error` surface before it can
+count as integrated.
 
 ### `Bun.$ (shell)`
 
@@ -1383,18 +1387,21 @@ Zig 0.17 map/padding syntax.
 
 ## Summary
 
-Substrate file-count progress. "Integrated" means Home-import-rewritten,
-Zig 0.17-dev-clean, build-wired, and tested. "Dormant" means copied from
-Bun for parity work but not yet exported or compiled through Home.
+Substrate file-count progress. "Present" is the live Zig file count under
+`packages/runtime/src/`; it includes Home glue and staged Bun backlog.
+"Integrated" means Home-import-rewritten, Zig 0.17-dev-clean,
+build-wired, and tested. Staged Bun files do not count as parity progress
+until they are exported or compiled through Home.
 
 | Metric | Count | Notes |
 |---|---|---|
 | Bun upstream files (excluding test/codegen/jsc/macros) | 1,193 | pinned at `fd0b6f1a` |
-| Upstream files present in `packages/runtime/src/` | 1,193 / 1,193 | existing Home ports plus dormant raw imports |
-| Files integrated into Home | 515 | ~43.2% |
-| Dormant raw Bun Zig files awaiting integration | 768 | copied in `ba157c27`, see `packages/runtime/DORMANT_BUN_ZIG_IMPORT_2026-05-21.txt` |
-| Files remaining to integrate | 678 | ~56.8%; excludes raw copy-only files that duplicate already-integrated Home paths |
-| JSC bring-up (`packages/runtime/src/jsc/`) | 97 files | Phase 12.2 M6 milestone + native eval smoke |
+| Runtime Zig files present in `packages/runtime/src/` | 1,289 | live `find packages/runtime/src -type f -name '*.zig'` count |
+| Audited Bun baseline files present in `packages/runtime/src/` | 1,193 / 1,193 | existing Home ports plus staged integration backlog |
+| Files integrated into Home | 539 | ~45.2% |
+| Staged Bun Zig files awaiting integration | 768 | copied in `ba157c27`, see `packages/runtime/DORMANT_BUN_ZIG_IMPORT_2026-05-21.txt`; not counted as ported |
+| Files remaining to integrate | 654 | ~54.8%; excludes raw copy-only files that duplicate already-integrated Home paths |
+| JSC bring-up (`packages/runtime/src/jsc/`) | 128 files | Phase 12.2 M6 milestone + native eval smoke |
 | Node namespace (`packages/runtime/src/node/`) | 28 files | Phase 12.7 round-15 |
 | Bake lifetime carrier (`packages/runtime/src/runtime/bake/`) | 5 files | DevServer/HmrSocket deinit substrate, JS surface pending |
 | Server lifecycle carrier (`packages/runtime/src/runtime/server/server.zig`) | 1 file | DevServer detach/deinit gate, JS surface pending |

@@ -1,8 +1,11 @@
 # Home Runtime (`packages/runtime/`)
 
-> **Status (2026-05-20):** **492 / 1,193 Bun source files ported (~41.2%).**
+> **Status (2026-05-21):** `packages/runtime/src/` currently contains
+> **1,289 Zig source files**. Of the audited **1,193-file Bun baseline**,
+> **539 files are integrated into Home (~45.2%)**: Home-import-rewritten,
+> Zig 0.17-clean, build-wired, and tested.
 > Phase 12.2 (JSC bring-up) has reached the M6 milestone — JSON + Promise
-> + Iterator + Global helpers across 97 files. Phase 12.7 round-15
+> + Iterator + Global helpers across 128 files. Phase 12.7 round-15
 > has top-level `node:*` substrate modules for `buffer`, `stream`,
 > `fs`, `events`, `util`, `assert`, `os`, `url`, `querystring`, and
 > `crypto`, `process`, `string_decoder`, and `tty`. End-to-end
@@ -16,18 +19,19 @@ This package is Home's JavaScript / TypeScript runtime, equivalent to Bun in sur
 
 ## Hard rules for every copy
 
-1. **Zig 0.17 dev compatibility is non-negotiable.** Every copied file must compile under Pantry-managed `0.17.0-dev.263+0add2dfc4`. Bun upstream targets a more recent Zig; some files use APIs that moved between 0.16 → 0.17 (e.g. `std.array_list.Managed(T)` is 0.17+, `std.heap.stackFallback` was relocated, `std.io.fixedBufferStream` was removed in favor of `std.Io.Writer.fixed`, `Child.init` was replaced by `process.spawn`). Files that don't compile under 0.17 stay parked with a `// Zig 0.17 compat: ...` note in `home_rt.zig` until an adapter lands.
+1. **Zig 0.17 dev compatibility is non-negotiable.** Every copied file must compile under Pantry-managed `0.17.0-dev.263+0add2dfc4`. Bun upstream targets a more recent Zig; some files use APIs that moved between 0.16 → 0.17 (e.g. `std.array_list.Managed(T)` is 0.17+, `std.heap.stackFallback` was relocated, `std.io.fixedBufferStream` was removed in favor of `std.Io.Writer.fixed`, `Child.init` was replaced by `process.spawn`). Files that don't compile under 0.17 must be tracked as integration blockers with a `// Zig 0.17 compat: ...` note near the blocked import or adapter; they do not count as integrated until the adapter lands and the file is build-wired.
 2. Verify `git -C ~/Code/bun rev-parse HEAD` matches `UPSTREAM_SHA.txt` before copying. If they diverge, rewind Bun or update the SHA in a **separate** commit.
 3. Rewrite `@import("bun")` → `@import("home_rt")` and every `bun.X` → `home_rt.X` at copy time. **No semantic edits in the same commit.**
 4. Drop JSC-bridge re-exports (`.toJS`, `.fromJS`, `Bun__X` externs) with a `// JSC-bridge X omitted — re-lands in Phase 12.2` note.
 5. Every copied file must add **at least one** inline `test "..."` that exercises a method or invariant.
 6. After integrating: run `./pantry/.bin/zig build test --summary all` AND `home test` in `~/Code/Apps/settlers-iii`. Both must stay green; commit only if so.
 
-The 2026-05-21 bulk import is deliberately different: it copied the
-remaining filtered Bun Zig source into `src/` as dormant raw files
-without overwriting integrated Home ports. Those files are tracked in
-`DORMANT_BUN_ZIG_IMPORT_2026-05-21.txt` and must still go through the
-integration rules above before being exported or build-wired.
+The 2026-05-21 bulk import is deliberately different: it staged the
+remaining filtered Bun Zig source in `src/` without overwriting
+integrated Home ports. Those files are tracked in
+`DORMANT_BUN_ZIG_IMPORT_2026-05-21.txt` as an integration backlog only:
+they do not count as ported until they go through the rules above and
+are exported, build-wired, and tested.
 
 ## Upstream pin
 
@@ -66,7 +70,7 @@ packages while the execution engine is still blocked.
 ## What's here today
 
 - `src/home_rt.zig` — aggregator that re-exports every ported subsystem.
-- `src/jsc/` — 97 files; Phase 12.2 milestones M1-M6 plus the first
+- `src/jsc/` — 128 files; Phase 12.2 milestones M1-M6 plus the first
   native `JSEvaluateScript` helper and the public
   `JSObjectMakeDeferredPromise` deferred-promise constructor bridge.
   Default tests compile the surface; run
@@ -84,14 +88,14 @@ packages while the execution engine is still blocked.
   active websockets must all clear before a DevServer is detached and
   deinitialized.
 - `src/install/` — `home <-> pantry` shim. Pantry replaces `bun install` entirely.
-- `src/event_loop/`, `src/io/`, `src/async/`, `src/web/`, `src/http/`, `src/runtime/`, `src/string/`, `src/threading/`, `src/css/`, `src/sql/`, `src/uws_sys/`, … — 60 subsystem directories under `src/`, most populated by wave-19+ grinder rounds (Tier-0 / Tier-1 leaves, no JSC dependency yet).
+- `src/event_loop/`, `src/io/`, `src/async/`, `src/web/`, `src/http/`, `src/runtime/`, `src/string/`, `src/threading/`, `src/css/`, `src/sql/`, `src/uws_sys/`, … — 85 subsystem directories under `src/`, most populated by wave-19+ grinder rounds (Tier-0 / Tier-1 leaves, no JSC dependency yet).
 
 ## What's deferred to follow-up sub-phases
 
 | Sub-phase | Source under `~/Code/bun/src/` | Destination | Status |
 |---|---|---|---|
 | 12.1 | `cli/` | `src/cli/` | 🟡 scaffold landed |
-| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone landed (97 files; JS-callable bridge pending) |
+| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone landed (128 files; JS-callable bridge pending) |
 | 12.3 | `event_loop/`, `io/`, `async/` | `src/event_loop/` | 🟡 substrate landing (~30+ leaves via wave-19+ grinders) |
 | 12.4 | `resolver/`, `module_loader.zig` | `src/module_loader/` | 🔴 blocked on 12.2 |
 | 12.5 | `web/`, `http/`, `csrf/`, `dns/` | `src/web/` | 🔴 blocked on 12.3 |
