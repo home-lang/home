@@ -17450,6 +17450,449 @@ test "conformance: asyncGeneratorPromiseNextType passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: stringLiteralTypesOverloads01 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringLiteralTypesOverloads01",
+        .path = "stringLiteralTypesOverloads01.ts",
+        .source =
+        \\type PrimitiveName = 'string' | 'number' | 'boolean';
+        \\
+        \\function getFalsyPrimitive(x: "string"): string;
+        \\function getFalsyPrimitive(x: "number"): number;
+        \\function getFalsyPrimitive(x: "boolean"): boolean;
+        \\function getFalsyPrimitive(x: "boolean" | "string"): boolean | string;
+        \\function getFalsyPrimitive(x: "boolean" | "number"): boolean | number;
+        \\function getFalsyPrimitive(x: "number" | "string"): number | string;
+        \\function getFalsyPrimitive(x: "number" | "string" | "boolean"): number | string | boolean;
+        \\function getFalsyPrimitive(x: PrimitiveName): number | string | boolean {
+        \\    if (x === "string") {
+        \\        return "";
+        \\    }
+        \\    if (x === "number") {
+        \\        return 0;
+        \\    }
+        \\    if (x === "boolean") {
+        \\        return false;
+        \\    }
+        \\
+        \\    throw "Invalid value";
+        \\}
+        \\
+        \\namespace Consts1 {
+        \\    const EMPTY_STRING = getFalsyPrimitive("string");
+        \\    const ZERO = getFalsyPrimitive('number');
+        \\    const FALSE = getFalsyPrimitive("boolean");
+        \\}
+        \\
+        \\const string: "string" = "string"
+        \\const number: "number" = "number"
+        \\const boolean: "boolean" = "boolean"
+        \\
+        \\const stringOrNumber = string || number;
+        \\const stringOrBoolean = string || boolean;
+        \\const booleanOrNumber = number || boolean;
+        \\const stringOrBooleanOrNumber = stringOrBoolean || number;
+        \\
+        \\namespace Consts2 {
+        \\    const EMPTY_STRING = getFalsyPrimitive(string);
+        \\    const ZERO = getFalsyPrimitive(number);
+        \\    const FALSE = getFalsyPrimitive(boolean);
+        \\
+        \\    const a = getFalsyPrimitive(stringOrNumber);
+        \\    const b = getFalsyPrimitive(stringOrBoolean);
+        \\    const c = getFalsyPrimitive(booleanOrNumber);
+        \\    const d = getFalsyPrimitive(stringOrBooleanOrNumber);
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: stringLiteralTypesOverloads02 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringLiteralTypesOverloads02",
+        .path = "stringLiteralTypesOverloads02.ts",
+        .source =
+        \\function getFalsyPrimitive(x: "string"): string;
+        \\function getFalsyPrimitive(x: "number"): number;
+        \\function getFalsyPrimitive(x: "boolean"): boolean;
+        \\function getFalsyPrimitive(x: "boolean" | "string"): boolean | string;
+        \\function getFalsyPrimitive(x: "boolean" | "number"): boolean | number;
+        \\function getFalsyPrimitive(x: "number" | "string"): number | string;
+        \\function getFalsyPrimitive(x: "number" | "string" | "boolean"): number | string | boolean;
+        \\function getFalsyPrimitive(x: string): string | number | boolean {
+        \\    if (x === "string") {
+        \\        return "";
+        \\    }
+        \\    if (x === "number") {
+        \\        return 0;
+        \\    }
+        \\    if (x === "boolean") {
+        \\        return false;
+        \\    }
+        \\
+        \\    throw "Invalid value";
+        \\}
+        \\
+        \\namespace Consts1 {
+        \\    const EMPTY_STRING = getFalsyPrimitive("string");
+        \\    const ZERO = getFalsyPrimitive('number');
+        \\    const FALSE = getFalsyPrimitive("boolean");
+        \\}
+        \\
+        \\const string = "string"
+        \\const number = "number"
+        \\const boolean = "boolean"
+        \\
+        \\const stringOrNumber = string || number;
+        \\const stringOrBoolean = string || boolean;
+        \\const booleanOrNumber = number || boolean;
+        \\const stringOrBooleanOrNumber = stringOrBoolean || number;
+        \\
+        \\namespace Consts2 {
+        \\    const EMPTY_STRING = getFalsyPrimitive(string);
+        \\    const ZERO = getFalsyPrimitive(number);
+        \\    const FALSE = getFalsyPrimitive(boolean);
+        \\
+        \\    const a = getFalsyPrimitive(stringOrNumber);
+        \\    const b = getFalsyPrimitive(stringOrBoolean);
+        \\    const c = getFalsyPrimitive(booleanOrNumber);
+        \\    const d = getFalsyPrimitive(stringOrBooleanOrNumber);
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: stringLiteralTypesInUnionTypes02 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringLiteralTypesInUnionTypes02",
+        .path = "stringLiteralTypesInUnionTypes02.ts",
+        .source =
+        \\type T = string | "foo" | "bar" | "baz";
+        \\
+        \\var x: "foo" | "bar" | "baz" | string = undefined;
+        \\var y: T = undefined;
+        \\
+        \\if (x === "foo") {
+        \\    let a = x;
+        \\}
+        \\else if (x !== "bar") {
+        \\    let b = x || y;
+        \\}
+        \\else {
+        \\    let c = x;
+        \\    let d = y;
+        \\    let e: (typeof x) | (typeof y) = c || d;
+        \\}
+        \\
+        \\x = y;
+        \\y = x;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: mappedTypeOverlappingStringEnumKeys passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "mappedTypeOverlappingStringEnumKeys",
+        .path = "mappedTypeOverlappingStringEnumKeys.ts",
+        .source =
+        \\enum TerrestrialAnimalTypes {
+        \\  CAT = "cat",
+        \\  DOG = "dog"
+        \\};
+        \\
+        \\enum AlienAnimalTypes {
+        \\  CAT = "cat",
+        \\};
+        \\
+        \\type AnimalTypes = TerrestrialAnimalTypes | AlienAnimalTypes;
+        \\
+        \\interface TerrestrialCat {
+        \\  type: TerrestrialAnimalTypes.CAT;
+        \\  address: string;
+        \\}
+        \\
+        \\interface AlienCat {
+        \\  type: AlienAnimalTypes.CAT
+        \\  planet: string;
+        \\}
+        \\
+        \\type Cats = TerrestrialCat | AlienCat;
+        \\
+        \\type CatMap = {
+        \\  [V in AnimalTypes]: Extract<Cats, { type: V }>[]
+        \\};
+        \\
+        \\const catMap: CatMap = {
+        \\  cat: [
+        \\    { type: TerrestrialAnimalTypes.CAT, address: "" },
+        \\    { type: AlienAnimalTypes.CAT, planet: "" }
+        \\  ],
+        \\  dog: [] as never[]
+        \\};
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: stringEnumLiteralTypes1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringEnumLiteralTypes1",
+        .path = "stringEnumLiteralTypes1.ts",
+        .source =
+        \\const enum Choice { Unknown = "", Yes = "yes", No = "no" };
+        \\
+        \\type YesNo = Choice.Yes | Choice.No;
+        \\type NoYes = Choice.No | Choice.Yes;
+        \\type UnknownYesNo = Choice.Unknown | Choice.Yes | Choice.No;
+        \\
+        \\function f1() {
+        \\    var a: YesNo;
+        \\    var a: NoYes;
+        \\    var a: Choice.Yes | Choice.No;
+        \\    var a: Choice.No | Choice.Yes;
+        \\}
+        \\
+        \\function f2(a: YesNo, b: UnknownYesNo, c: Choice) {
+        \\    b = a;
+        \\    c = a;
+        \\    c = b;
+        \\}
+        \\
+        \\function f3(a: Choice.Yes, b: YesNo) {
+        \\    var x = a + b;
+        \\    var y = a == b;
+        \\    var y = a != b;
+        \\    var y = a === b;
+        \\    var y = a !== b;
+        \\    var y = a > b;
+        \\    var y = a < b;
+        \\    var y = a >= b;
+        \\    var y = a <= b;
+        \\    var y = !b;
+        \\}
+        \\
+        \\declare function g(x: Choice.Yes): string;
+        \\declare function g(x: Choice.No): boolean;
+        \\declare function g(x: Choice): number;
+        \\
+        \\function f5(a: YesNo, b: UnknownYesNo, c: Choice) {
+        \\    var z1 = g(Choice.Yes);
+        \\    var z2 = g(Choice.No);
+        \\    var z3 = g(a);
+        \\    var z4 = g(b);
+        \\    var z5 = g(c);
+        \\}
+        \\
+        \\function assertNever(x: never): never {
+        \\    throw new Error("Unexpected value");
+        \\}
+        \\
+        \\function f10(x: YesNo) {
+        \\    switch (x) {
+        \\        case Choice.Yes: return "true";
+        \\        case Choice.No: return "false";
+        \\    }
+        \\}
+        \\
+        \\function f11(x: YesNo) {
+        \\    switch (x) {
+        \\        case Choice.Yes: return "true";
+        \\        case Choice.No: return "false";
+        \\    }
+        \\    return assertNever(x);
+        \\}
+        \\
+        \\function f12(x: UnknownYesNo) {
+        \\    if (x) {
+        \\        x;
+        \\    }
+        \\    else {
+        \\        x;
+        \\    }
+        \\}
+        \\
+        \\function f13(x: UnknownYesNo) {
+        \\    if (x === Choice.Yes) {
+        \\        x;
+        \\    }
+        \\    else {
+        \\        x;
+        \\    }
+        \\}
+        \\
+        \\type Item =
+        \\    { kind: Choice.Yes, a: string } |
+        \\    { kind: Choice.No, b: string };
+        \\
+        \\function f20(x: Item) {
+        \\    switch (x.kind) {
+        \\        case Choice.Yes: return x.a;
+        \\        case Choice.No: return x.b;
+        \\    }
+        \\}
+        \\
+        \\function f21(x: Item) {
+        \\    switch (x.kind) {
+        \\        case Choice.Yes: return x.a;
+        \\        case Choice.No: return x.b;
+        \\    }
+        \\    return assertNever(x);
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: booleanLiteralTypes1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "booleanLiteralTypes1",
+        .path = "booleanLiteralTypes1.ts",
+        .source =
+        \\type A1 = true | false;
+        \\type A2 = false | true;
+        \\
+        \\function f1() {
+        \\    var a: A1;
+        \\    var a: A2;
+        \\    var a: true | false;
+        \\    var a: false | true;
+        \\}
+        \\
+        \\function f2(a: true | false, b: boolean) {
+        \\    a = b;
+        \\    b = a;
+        \\}
+        \\
+        \\function f3(a: true | false, b: true | false) {
+        \\    var x = a || b;
+        \\    var x = a && b;
+        \\    var x = !a;
+        \\}
+        \\
+        \\function f4(t: true, f: false) {
+        \\    var x1 = t && f;
+        \\    var x2 = f && t;
+        \\    var x3 = t || f;
+        \\    var x4 = f || t;
+        \\    var x5 = !t;
+        \\    var x6 = !f;
+        \\}
+        \\
+        \\declare function g(x: true): string;
+        \\declare function g(x: false): boolean;
+        \\declare function g(x: boolean): number;
+        \\
+        \\function f5(b: boolean) {
+        \\    var z1 = g(true);
+        \\    var z2 = g(false);
+        \\    var z3 = g(b);
+        \\}
+        \\
+        \\function assertNever(x: never): never {
+        \\    throw new Error("Unexpected value");
+        \\}
+        \\
+        \\function f10(x: true | false) {
+        \\    switch (x) {
+        \\        case true: return "true";
+        \\        case false: return "false";
+        \\    }
+        \\}
+        \\
+        \\function f11(x: true | false) {
+        \\    switch (x) {
+        \\        case true: return "true";
+        \\        case false: return "false";
+        \\    }
+        \\    return assertNever(x);
+        \\}
+        \\
+        \\function f12(x: true | false) {
+        \\    if (x) {
+        \\        x;
+        \\    }
+        \\    else {
+        \\        x;
+        \\    }
+        \\}
+        \\
+        \\function f13(x: true | false) {
+        \\    if (x === true) {
+        \\        x;
+        \\    }
+        \\    else {
+        \\        x;
+        \\    }
+        \\}
+        \\
+        \\type Item =
+        \\    { kind: true, a: string } |
+        \\    { kind: false, b: string };
+        \\
+        \\function f20(x: Item) {
+        \\    switch (x.kind) {
+        \\        case true: return x.a;
+        \\        case false: return x.b;
+        \\    }
+        \\}
+        \\
+        \\function f21(x: Item) {
+        \\    switch (x.kind) {
+        \\        case true: return x.a;
+        \\        case false: return x.b;
+        \\    }
+        \\    return assertNever(x);
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
