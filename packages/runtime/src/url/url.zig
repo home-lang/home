@@ -46,20 +46,25 @@ pub const URL = struct {
         return this.href.len == blob_specifier_len and strings.hasPrefixComptime(this.href, "blob:");
     }
 
-    pub const fromJS = @import("../url_jsc/url_jsc.zig").urlFromJS;
+    // JSC bridge is intentionally parked for the Home runtime leaf. Bun wires
+    // this through `url_jsc/url_jsc.zig`; Home reattaches it with the JSC phase.
+    pub const fromJS = unavailableFromJS;
 
-    pub fn fromString(allocator: std.mem.Allocator, input: bun.String) !URL {
-        var href = jsc.URL.hrefFromString(input);
-        if (href.tag == .Dead) {
-            return error.InvalidURL;
+    fn unavailableFromJS() noreturn {
+        @compileError("URL.fromJS is JSC-bound and is not available in the pure Home URL leaf yet");
+    }
+
+    pub fn fromString(allocator: std.mem.Allocator, input: anytype) !URL {
+        const Input = @TypeOf(input);
+        if (comptime Input == []const u8 or Input == [:0]const u8) {
+            return fromUTF8(allocator, input);
         }
 
-        defer href.deref();
-        return URL.parse(try href.toOwnedSlice(allocator));
+        @compileError("URL.fromString currently accepts UTF-8 slices in the pure Home URL leaf");
     }
 
     pub fn fromUTF8(allocator: std.mem.Allocator, input: []const u8) !URL {
-        return fromString(allocator, bun.String.borrowUTF8(input));
+        return URL.parse(try allocator.dupe(u8, input));
     }
 
     pub fn isLocalhost(this: *const URL) bool {
@@ -189,7 +194,7 @@ pub const URL = struct {
             bun.copy(u8, buf[buf_i..], part);
             buf_i += part.len;
         }
-        return resolve_path.normalizeStringBuf(buf[0..buf_i], out, false, .loose, false);
+        return normalizeURLPath(buf[0..buf_i], out);
     }
 
     pub fn joinWrite(
@@ -639,10 +644,10 @@ pub const QueryStringMap = struct {
         // this over-allocates
         // TODO: refactor this to support multiple slices instead of copying the whole thing
         var buf = try std.array_list.Managed(u8).initCapacity(allocator, estimated_str_len);
-        var writer = buf.writer();
+        var writer = ManagedU8Writer{ .list = &buf };
         var buf_writer_pos: u32 = 0;
 
-        const Writer = @TypeOf(writer);
+        const Writer = *ManagedU8Writer;
         while (scanner.pathname.next()) |result| {
             var name = result.name;
             var value = result.value;
@@ -655,7 +660,7 @@ pub const QueryStringMap = struct {
 
             const name_hash: u64 = bun.hash(name_slice);
 
-            value.length = PercentEncoding.decode(Writer, writer, result.rawValue(scanner.pathname.pathname)) catch continue;
+            value.length = PercentEncoding.decode(Writer, &writer, result.rawValue(scanner.pathname.pathname)) catch continue;
             value.offset = buf_writer_pos;
             buf_writer_pos += value.length;
 
@@ -671,7 +676,7 @@ pub const QueryStringMap = struct {
             var value = result.value;
             var name_hash: u64 = undefined;
             if (result.name_needs_decoding) {
-                name.length = PercentEncoding.decode(Writer, writer, scanner.query.query_string[name.offset..][0..name.length]) catch continue;
+                name.length = PercentEncoding.decode(Writer, &writer, scanner.query.query_string[name.offset..][0..name.length]) catch continue;
                 name.offset = buf_writer_pos;
                 buf_writer_pos += name.length;
                 name_hash = bun.hash(buf.items[name.offset..][0..name.length]);
@@ -687,13 +692,13 @@ pub const QueryStringMap = struct {
 
                     name = list_slice.items(.name)[index];
                 } else {
-                    name.length = PercentEncoding.decode(Writer, writer, scanner.query.query_string[name.offset..][0..name.length]) catch continue;
+                    name.length = PercentEncoding.decode(Writer, &writer, scanner.query.query_string[name.offset..][0..name.length]) catch continue;
                     name.offset = buf_writer_pos;
                     buf_writer_pos += name.length;
                 }
             }
 
-            value.length = PercentEncoding.decode(Writer, writer, scanner.query.query_string[value.offset..][0..value.length]) catch continue;
+            value.length = PercentEncoding.decode(Writer, &writer, scanner.query.query_string[value.offset..][0..value.length]) catch continue;
             value.offset = buf_writer_pos;
             buf_writer_pos += value.length;
 
@@ -754,17 +759,17 @@ pub const QueryStringMap = struct {
         }
 
         var buf = try std.array_list.Managed(u8).initCapacity(allocator, estimated_str_len);
-        const writer = buf.writer();
+        var writer = ManagedU8Writer{ .list = &buf };
         var buf_writer_pos: u32 = 0;
 
         var list_slice = list.slice();
-        const Writer = @TypeOf(writer);
+        const Writer = *ManagedU8Writer;
         while (scanner.next()) |result| {
             var name = result.name;
             var value = result.value;
             var name_hash: u64 = undefined;
             if (result.name_needs_decoding) {
-                name.length = PercentEncoding.decode(Writer, writer, query_string[name.offset..][0..name.length]) catch continue;
+                name.length = PercentEncoding.decode(Writer, &writer, query_string[name.offset..][0..name.length]) catch continue;
                 name.offset = buf_writer_pos;
                 buf_writer_pos += name.length;
                 name_hash = bun.hash(buf.items[name.offset..][0..name.length]);
@@ -773,13 +778,13 @@ pub const QueryStringMap = struct {
                 if (std.mem.indexOfScalar(u64, list_slice.items(.name_hash), name_hash)) |index| {
                     name = list_slice.items(.name)[index];
                 } else {
-                    name.length = PercentEncoding.decode(Writer, writer, query_string[name.offset..][0..name.length]) catch continue;
+                    name.length = PercentEncoding.decode(Writer, &writer, query_string[name.offset..][0..name.length]) catch continue;
                     name.offset = buf_writer_pos;
                     buf_writer_pos += name.length;
                 }
             }
 
-            value.length = PercentEncoding.decode(Writer, writer, query_string[value.offset..][0..value.length]) catch continue;
+            value.length = PercentEncoding.decode(Writer, &writer, query_string[value.offset..][0..value.length]) catch continue;
             value.offset = buf_writer_pos;
             buf_writer_pos += value.length;
 
@@ -818,9 +823,8 @@ pub const PercentEncoding = struct {
         const buf = try allocator.alloc(u8, input.len);
         errdefer allocator.free(buf);
 
-        var stream = std.io.fixedBufferStream(buf);
-        const writer = stream.writer();
-        const len = try decode(@TypeOf(writer), writer, input);
+        var writer = FixedBufferWriter{ .buffer = buf };
+        const len = try decode(*FixedBufferWriter, &writer, input);
 
         return buf[0..len];
     }
@@ -882,12 +886,15 @@ pub const PercentEncoding = struct {
     }
 };
 
-pub const FormData = @import("../runtime/webcore/FormData.zig").FormData;
+// FormData moved to `runtime/webcore/FormData.zig` upstream. Keep the name
+// present for old imports without pulling the JSC/webcore subtree into this
+// pure URL helper leaf.
+pub const FormData = struct {};
 
 pub const CombinedScanner = struct {
     query: Scanner,
     pathname: PathnameScanner,
-    pub fn init(query_string: string, pathname: string, routename: string, url_params: *ParamsList) CombinedScanner {
+    pub fn init(query_string: string, pathname: string, routename: string, url_params: anytype) CombinedScanner {
         return CombinedScanner{
             .query = Scanner.init(query_string),
             .pathname = PathnameScanner.init(pathname, routename, url_params),
@@ -926,24 +933,44 @@ fn stringPointerFromStrings(parent: string, in: string) api.StringPointer {
 }
 
 pub const PathnameScanner = struct {
-    params: *ParamsList,
+    params: *anyopaque,
+    lenFn: *const fn (*anyopaque) usize,
+    getFn: *const fn (*anyopaque, usize) RouteParam,
     pathname: string,
     routename: string,
     i: usize = 0,
 
     pub inline fn isDone(this: *const PathnameScanner) bool {
-        return this.params.len <= this.i;
+        return this.lenFn(this.params) <= this.i;
     }
 
     pub fn reset(this: *PathnameScanner) void {
         this.i = 0;
     }
 
-    pub fn init(pathname: string, routename: string, params: *ParamsList) PathnameScanner {
+    pub fn init(pathname: string, routename: string, params: anytype) PathnameScanner {
+        const ParamsPtr = @TypeOf(params);
+        const Params = @typeInfo(ParamsPtr).pointer.child;
+        const VTable = struct {
+            fn len(ctx: *anyopaque) usize {
+                const typed: ParamsPtr = @ptrCast(@alignCast(ctx));
+                return typed.len;
+            }
+
+            fn get(ctx: *anyopaque, index: usize) RouteParam {
+                const typed: ParamsPtr = @ptrCast(@alignCast(ctx));
+                const param = typed.get(index);
+                return RouteParam{ .name = param.name, .value = param.value };
+            }
+        };
+        _ = Params;
+
         return PathnameScanner{
             .pathname = pathname,
             .routename = routename,
-            .params = params,
+            .params = @ptrCast(params),
+            .lenFn = VTable.len,
+            .getFn = VTable.get,
         };
     }
 
@@ -953,7 +980,7 @@ pub const PathnameScanner = struct {
         }
 
         defer this.i += 1;
-        const param = this.params.get(this.i);
+        const param = this.getFn(this.params, this.i);
 
         return Scanner.Result{
             // TODO: fix this technical debt
@@ -1070,16 +1097,278 @@ pub const Scanner = struct {
     }
 };
 
+const RouteParam = struct {
+    name: string,
+    value: string,
+};
+
 const string = []const u8;
 
-const resolve_path = @import("../paths/resolve_path.zig");
 const std = @import("std");
-const ParamsList = @import("../router/router.zig").Param.List;
 const expect = std.testing.expect;
 
-const bun = @import("bun");
-const Environment = bun.Environment;
-const Output = bun.Output;
-const jsc = bun.jsc;
-const strings = bun.strings;
-const api = bun.schema.api;
+const builtin = @import("builtin");
+
+const Environment = struct {
+    pub const allow_assert = builtin.mode == .Debug;
+    pub const isDebug = builtin.mode == .Debug;
+};
+
+const Output = struct {
+    pub fn scoped(comptime _: anytype, comptime _: anytype) type {
+        return struct {};
+    }
+};
+
+const api = struct {
+    pub const StringPointer = extern struct {
+        offset: u32 = 0,
+        length: u32 = 0,
+    };
+};
+
+const StringFns = struct {
+    pub inline fn eqlComptime(a: []const u8, comptime b: []const u8) bool {
+        return std.mem.eql(u8, a, b);
+    }
+
+    pub inline fn hasPrefixComptime(a: []const u8, comptime b: []const u8) bool {
+        return std.mem.startsWith(u8, a, b);
+    }
+
+    pub inline fn endsWithComptime(a: []const u8, comptime b: []const u8) bool {
+        return std.mem.endsWith(u8, a, b);
+    }
+
+    pub inline fn indexOfChar(a: []const u8, c: u8) ?usize {
+        return std.mem.indexOfScalar(u8, a, c);
+    }
+
+    pub inline fn containsChar(a: []const u8, c: u8) bool {
+        return std.mem.indexOfScalar(u8, a, c) != null;
+    }
+
+    pub inline fn indexOf(a: []const u8, b: []const u8) ?usize {
+        return std.mem.indexOf(u8, a, b);
+    }
+
+    pub inline fn eqlLong(a: []const u8, b: []const u8, _: bool) bool {
+        return std.mem.eql(u8, a, b);
+    }
+
+    pub inline fn isASCIIHexDigit(c: u8) bool {
+        return std.ascii.isHex(c);
+    }
+
+    pub inline fn toASCIIHexValue(c: u8) u8 {
+        return std.fmt.charToDigit(c, 16) catch 0;
+    }
+
+    pub fn isIPAddress(input: []const u8) bool {
+        if (std.mem.indexOfScalar(u8, input, ':') != null) {
+            return true;
+        }
+
+        var parts = std.mem.splitScalar(u8, input, '.');
+        var count: usize = 0;
+        while (parts.next()) |part| {
+            if (part.len == 0) return false;
+            _ = std.fmt.parseInt(u8, part, 10) catch return false;
+            count += 1;
+        }
+        return count == 4;
+    }
+};
+
+const strings = StringFns;
+
+const bun = struct {
+    pub const OOM = error{OutOfMemory};
+    pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .Debug) .auto else .always_inline;
+    pub const strings = StringFns;
+    pub const bit_set = std.bit_set;
+
+    pub const fmt = struct {
+        pub const HostFormatter = struct {
+            host: []const u8,
+            port: ?u16 = null,
+            is_https: bool = false,
+        };
+    };
+
+    pub inline fn assert(ok: bool) void {
+        std.debug.assert(ok);
+    }
+
+    pub inline fn copy(comptime T: type, dest: []T, src: []const T) void {
+        @memcpy(dest[0..src.len], src);
+    }
+
+    pub inline fn hash(input: []const u8) u64 {
+        return std.hash.Wyhash.hash(0, input);
+    }
+
+    pub fn isSliceInBuffer(slice: []const u8, buffer: []const u8) bool {
+        if (slice.len == 0) return true;
+        if (buffer.len == 0) return false;
+        const slice_start = @intFromPtr(slice.ptr);
+        const slice_end = slice_start + slice.len;
+        const buffer_start = @intFromPtr(buffer.ptr);
+        const buffer_end = buffer_start + buffer.len;
+        return slice_start >= buffer_start and slice_end <= buffer_end;
+    }
+
+    pub fn rangeOfSliceInBuffer(slice: []const u8, buffer: []const u8) ?[2]u32 {
+        if (!isSliceInBuffer(slice, buffer)) return null;
+        const offset = @intFromPtr(slice.ptr) - @intFromPtr(buffer.ptr);
+        return .{ @as(u32, @truncate(offset)), @as(u32, @truncate(slice.len)) };
+    }
+};
+
+const ManagedU8Writer = struct {
+    list: *std.array_list.Managed(u8),
+
+    pub fn writeAll(this: *ManagedU8Writer, bytes: []const u8) !void {
+        try this.list.appendSlice(bytes);
+    }
+
+    pub fn writeByte(this: *ManagedU8Writer, byte: u8) !void {
+        try this.list.append(byte);
+    }
+};
+
+const FixedBufferWriter = struct {
+    buffer: []u8,
+    pos: usize = 0,
+
+    pub fn writeAll(this: *FixedBufferWriter, bytes: []const u8) !void {
+        if (this.pos + bytes.len > this.buffer.len) return error.NoSpaceLeft;
+        @memcpy(this.buffer[this.pos..][0..bytes.len], bytes);
+        this.pos += bytes.len;
+    }
+
+    pub fn writeByte(this: *FixedBufferWriter, byte: u8) !void {
+        if (this.pos >= this.buffer.len) return error.NoSpaceLeft;
+        this.buffer[this.pos] = byte;
+        this.pos += 1;
+    }
+};
+
+fn normalizeURLPath(input: []const u8, out: []u8) []const u8 {
+    var segments: [128][]const u8 = undefined;
+    var segment_count: usize = 0;
+
+    var it = std.mem.splitScalar(u8, input, '/');
+    while (it.next()) |segment| {
+        if (segment.len == 0 or std.mem.eql(u8, segment, ".")) {
+            continue;
+        }
+
+        if (std.mem.eql(u8, segment, "..")) {
+            if (segment_count > 0) segment_count -= 1;
+            continue;
+        }
+
+        if (segment_count < segments.len) {
+            segments[segment_count] = segment;
+            segment_count += 1;
+        }
+    }
+
+    var i: usize = 0;
+    out[i] = '/';
+    i += 1;
+
+    for (segments[0..segment_count], 0..) |segment, index| {
+        if (index > 0) {
+            out[i] = '/';
+            i += 1;
+        }
+        @memcpy(out[i..][0..segment.len], segment);
+        i += segment.len;
+    }
+
+    return out[0..i];
+}
+
+test "URL.parse slices common URL components" {
+    const url = URL.parse("https://user:pass@example.com:9443/a/b?x=1#top");
+    try std.testing.expectEqualStrings("https", url.protocol);
+    try std.testing.expectEqualStrings("user", url.username);
+    try std.testing.expectEqualStrings("pass", url.password);
+    try std.testing.expectEqualStrings("example.com:9443", url.host);
+    try std.testing.expectEqualStrings("example.com", url.hostname);
+    try std.testing.expectEqualStrings("9443", url.port);
+    try std.testing.expectEqualStrings("/a/b?x=1", url.pathname);
+    try std.testing.expectEqualStrings("?x=1", url.search);
+    try std.testing.expectEqualStrings("#top", url.hash);
+    try std.testing.expectEqual(@as(?u16, 9443), url.getPort());
+}
+
+test "URL.hostWithPath returns host plus path without trailing slash" {
+    const url = URL.parse("http://localhost:3000/assets/app/");
+    try std.testing.expectEqualStrings("localhost:3000/assets/app", url.hostWithPath());
+}
+
+test "Scanner skips empty parameters and preserves bare keys" {
+    var scanner = Scanner.init("?&&a=1&b&c=three");
+    var first = scanner.next().?;
+    try std.testing.expectEqualStrings("a", first.rawName(scanner.query_string));
+    try std.testing.expectEqualStrings("1", first.rawValue(scanner.query_string));
+
+    var second = scanner.next().?;
+    try std.testing.expectEqualStrings("b", second.rawName(scanner.query_string));
+    try std.testing.expectEqualStrings("", second.rawValue(scanner.query_string));
+
+    var third = scanner.next().?;
+    try std.testing.expectEqualStrings("c", third.rawName(scanner.query_string));
+    try std.testing.expectEqualStrings("three", third.rawValue(scanner.query_string));
+}
+
+test "QueryStringMap decodes percent encoded names and values" {
+    var map = (try QueryStringMap.init(std.testing.allocator, "?na%6De=va%6Cue&name=second")).?;
+    defer map.deinit();
+
+    try std.testing.expect(map.has("name"));
+    try std.testing.expectEqualStrings("value", map.get("name").?);
+
+    var values: [4]string = undefined;
+    try std.testing.expectEqual(@as(usize, 2), map.getAll("name", &values));
+    try std.testing.expectEqualStrings("value", values[0]);
+    try std.testing.expectEqualStrings("second", values[1]);
+}
+
+test "CombinedScanner merges route params before query params" {
+    const Param = struct {
+        name: string,
+        value: string,
+    };
+
+    var params = std.MultiArrayList(Param){};
+    defer params.deinit(std.testing.allocator);
+    try params.append(std.testing.allocator, .{ .name = "slug", .value = "hello%20home" });
+
+    var map = (try QueryStringMap.initWithScanner(
+        std.testing.allocator,
+        CombinedScanner.init("?slug=query&view=list", "/posts/hello%20home", "/posts/[slug]", &params),
+    )).?;
+    defer map.deinit();
+
+    try std.testing.expectEqualStrings("hello home", map.get("slug").?);
+    try std.testing.expectEqualStrings("list", map.get("view").?);
+}
+
+test "PercentEncoding.decode rejects malformed escapes" {
+    var buf: [16]u8 = undefined;
+    var writer = FixedBufferWriter{ .buffer = &buf };
+
+    try std.testing.expectEqual(@as(u32, 3), try PercentEncoding.decode(*FixedBufferWriter, &writer, "a%2Fb"));
+    try std.testing.expectEqualStrings("a/b", buf[0..writer.pos]);
+    try std.testing.expectError(error.DecodingError, PercentEncoding.decode(*FixedBufferWriter, &writer, "%zz"));
+}
+
+test "URL.joinNormalize collapses dot segments" {
+    var out: [256]u8 = undefined;
+    const normalized = URL.joinNormalize(&out, "assets/", "pages/../home", "index", ".js");
+    try std.testing.expectEqualStrings("/assets/home/index.js", normalized);
+}
