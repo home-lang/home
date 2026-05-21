@@ -197,7 +197,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes one hundred fifty-three allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes one hundred fifty-four allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-four
@@ -249,6 +249,7 @@ interactive third-party prompts stdin/stdout coverage,
 inline `clearImmediate(setImmediate(...))` subprocess GC coverage,
 Performance resource-timing no-ops and `Bun.nanoseconds`,
 `bun:jsc.estimateShallowMemoryUsageOf(performance)` entry-growth coverage,
+Web `URLSearchParams` Bun-extension coverage,
 `import.meta.resolve` / `resolveSync` bad-parent throw behavior,
 `jest.resetAllMocks` / `mockReturnThis`, `node:path` isAbsolute and
 zero-length string behavior plus basename/extname/normalize/join/dirname,
@@ -277,7 +278,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `153` files, `645` passed, `0` failed,
+Latest measured subset run: `154` files, `656` passed, `0` failed,
 `40` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
@@ -1241,6 +1242,14 @@ passes in Home as `1` passed, `0` failed, `0` unsupported, `0` todo. The
 bootstrap lowers the named `bun:jsc` memory-estimator import and models
 shallow `performance` growth from mark/measure entries for this upstream
 fixture.
+
+The copied `js/web/html/URLSearchParams.test.ts` fixture now passes in
+Home as `11` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap
+erases the fixture's indexed-access TypeScript cast, adds Bun-compatible
+`URLSearchParams.prototype.toJSON`, `.length`, configurable/enumerable
+`size`, value-aware `.has()` / `.delete()` semantics, and
+`Bun.inspect(URLSearchParams)` formatting while preserving the older Deno
+URLSearchParams smoke.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

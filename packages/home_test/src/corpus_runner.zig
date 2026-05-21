@@ -152,6 +152,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/web/timers/clearImmediate-gc.test.ts",
     "js/web/timers/performance.test.js",
     "js/web/timers/performance-entries.test.ts",
+    "js/web/html/URLSearchParams.test.ts",
     "js/web/encoding/text-decoder-cjk.test.ts",
     "js/web/encoding/text-decoder-single-byte.test.ts",
     "regression/issue/fix-bindings-stack-trace.test.ts",
@@ -1305,6 +1306,18 @@ const harness_prelude =
     \\  },
     \\  inspect(value) {
     \\    if (value && value.__home_error_event === true) return __home_inspect_error_event(value);
+    \\    if (typeof URLSearchParams === "function" && value instanceof URLSearchParams) {
+    \\      const json = value.toJSON();
+    \\      const keys = Object.keys(json);
+    \\      const lines = ["URLSearchParams {"];
+    \\      for (const key of keys) {
+    \\        const entry = json[key];
+    \\        if (Array.isArray(entry)) lines.push("  " + JSON.stringify(key) + ": [ " + entry.map(item => JSON.stringify(item)).join(", ") + " ],");
+    \\        else lines.push("  " + JSON.stringify(key) + ": " + JSON.stringify(entry) + ",");
+    \\      }
+    \\      lines.push("}");
+    \\      return lines.join("\n");
+    \\    }
     \\    if (value === null || typeof value !== "object" || Array.isArray(value)) __home_unsupported("Only Bun.inspect({ key: Set<string> }) is supported by the Home Bun corpus bootstrap runner");
     \\    const keys = Object.keys(value);
     \\    const lines = ["{"];
@@ -5993,6 +6006,57 @@ const harness_prelude =
     \\    return this.__home_pairs.map(pair => __home_url_encode(pair[0]) + "=" + __home_url_encode(pair[1])).join("&");
     \\  };
     \\}
+    \\if (typeof URLSearchParams === "function") {
+    \\  function __home_url_search_params_json(params) {
+    \\    const json = {};
+    \\    for (const pair of params.entries()) {
+    \\      const key = String(pair[0]);
+    \\      const value = String(pair[1]);
+    \\      if (Object.prototype.hasOwnProperty.call(json, key)) {
+    \\        if (Array.isArray(json[key])) json[key].push(value);
+    \\        else json[key] = [json[key], value];
+    \\      } else {
+    \\        json[key] = value;
+    \\      }
+    \\    }
+    \\    return json;
+    \\  }
+    \\  const __home_url_search_params_delete = URLSearchParams.prototype.delete;
+    \\  const __home_url_search_params_has = URLSearchParams.prototype.has;
+    \\  URLSearchParams.prototype.toJSON = function() {
+    \\    return __home_url_search_params_json(this);
+    \\  };
+    \\  URLSearchParams.prototype.delete = function(name, value) {
+    \\    if (arguments.length < 1) throw new TypeError("delete requires 1 argument");
+    \\    if (arguments.length < 2 || value === undefined) return __home_url_search_params_delete.call(this, name);
+    \\    const key = String(name);
+    \\    const wanted = String(value);
+    \\    const kept = [];
+    \\    const names = [];
+    \\    for (const pair of this.entries()) {
+    \\      if (!names.includes(pair[0])) names.push(pair[0]);
+    \\      if (!(pair[0] === key && pair[1] === wanted)) kept.push(pair);
+    \\    }
+    \\    for (const existing of names) __home_url_search_params_delete.call(this, existing);
+    \\    for (const pair of kept) this.append(pair[0], pair[1]);
+    \\  };
+    \\  URLSearchParams.prototype.has = function(name, value) {
+    \\    if (arguments.length < 1) throw new TypeError("has requires 1 argument");
+    \\    if (arguments.length < 2) return __home_url_search_params_has.call(this, name);
+    \\    const key = String(name);
+    \\    const wanted = String(value);
+    \\    for (const pair of this.entries()) if (pair[0] === key && pair[1] === wanted) return true;
+    \\    return false;
+    \\  };
+    \\  try {
+    \\    Object.defineProperty(URLSearchParams.prototype, "size", { configurable: true, enumerable: true, get() { return Array.from(this.entries()).length; } });
+    \\  } catch (error) {}
+    \\  try {
+    \\    Object.defineProperty(URLSearchParams.prototype, "length", { configurable: true, enumerable: false, get() { return this.size; } });
+    \\  } catch (error) {
+    \\    URLSearchParams.prototype.length = 0;
+    \\  }
+    \\}
     \\if (typeof Buffer !== "function") {
     \\  function __home_utf8_bytes(value) {
     \\    const text = String(value);
@@ -6890,6 +6954,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = " as (err?: unknown) => void", .replacement = "" },
         .{ .needle = " as Error", .replacement = "" },
         .{ .needle = " as SourceMap", .replacement = "" },
+        .{ .needle = " as keyof typeof props", .replacement = "" },
         .{ .needle = " as string[][]", .replacement = "" },
         .{ .needle = " as string", .replacement = "" },
         .{ .needle = " as any", .replacement = "" },
@@ -7715,6 +7780,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Invalid loader:") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "satisfies(version, range)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "inspect(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "URLSearchParams {") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Set(\" + entry.size + \")") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "version: \"0.0.0-home\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "gc(force)") != null);
@@ -7863,6 +7929,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "performance.clearResourceTimings = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "performance.setResourceTimingBufferSize = function(size)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var URLSearchParams = function(init)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "URLSearchParams.prototype.toJSON = function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.defineProperty(URLSearchParams.prototype, \"length\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bunExe() { return process.execPath; }") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "describe.todo = function(name, fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "test.skip = it.todo") != null);
@@ -8470,6 +8538,26 @@ test "bootstrap rewrite erases Deno URLSearchParams type syntax" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, " as ") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "IterableIterator") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "append(name, value)") != null);
+}
+
+test "bootstrap rewrite erases URLSearchParams indexed access type syntax" {
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("params", () => {
+        \\  const props = { name: "Home" };
+        \\  const params = new URLSearchParams();
+        \\  for (const key in props) params.set(key, props[key as keyof typeof props]);
+        \\  const descriptor = Object.getOwnPropertyDescriptor(URLSearchParams.prototype, "size");
+        \\  expect(descriptor!.configurable).toBe(true);
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/web/html/URLSearchParams.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, " as keyof typeof props") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "descriptor!.") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "props[key]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "descriptor.configurable") != null);
 }
 
 test "bootstrap rewrite erases TypeScript constructor accessibility modifiers" {

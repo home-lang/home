@@ -181,6 +181,7 @@ interactive third-party prompts stdin/stdout behavior,
 inline `clearImmediate(setImmediate(...))` subprocess GC coverage,
 Performance resource-timing no-ops and `Bun.nanoseconds`,
 `bun:jsc.estimateShallowMemoryUsageOf(performance)` entry-growth coverage,
+Web `URLSearchParams` Bun-extension coverage,
 `node:vm.runInNewContext`, DOMException, native constructor identity,
 mutable `globalThis` prototype behavior, comment-only module-load smoke,
 `Bun.file(...).type` explicit and `.css` MIME behavior,
@@ -811,6 +812,12 @@ The copied `js/web/timers/performance-entries.test.ts` fixture now
 passes as `1` test through the performance/JSC bootstrap model. It
 covers named `bun:jsc` import lowering plus shallow performance memory
 growth as marks and measures are registered.
+The copied `js/web/html/URLSearchParams.test.ts` fixture now passes as
+`11` tests through the URL bootstrap model. It covers the indexed-access
+TypeScript cast rewrite, Bun's `toJSON` / `.length` extensions,
+configurable/enumerable `size`, value-aware `.has()` / `.delete()`, and
+`Bun.inspect(URLSearchParams)` formatting without regressing the Deno
+URLSearchParams smoke.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
