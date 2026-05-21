@@ -10,8 +10,10 @@
 // in the subdirectory `PORTING_STATUS.md` files.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const upstream_sha = "fd0b6f1a271fca0b8124b69f230b100f4d636af6";
+pub const callconv_inline: std.builtin.CallingConvention = if (builtin.mode == .Debug) .auto else .@"inline";
 
 // ---- Foundational primitives ------------------------------------------
 // These are Home-original implementations of the small Bun stdlib subset
@@ -32,6 +34,17 @@ pub const assert = Global.assert;
 pub const OOM = Global.OOM;
 pub const handleOom = Global.handleOom;
 pub const default_allocator: std.mem.Allocator = std.heap.smp_allocator;
+
+pub inline fn copy(comptime T: type, dest: []T, src: []const T) void {
+    @memcpy(dest[0..src.len], src);
+}
+
+/// Memory is typically not decommitted immediately when freed. Zero the slice
+/// before returning it to the allocator, matching Bun's sensitive-free helper.
+pub fn freeSensitive(allocator: std.mem.Allocator, slice: anytype) void {
+    std.crypto.secureZero(std.meta.Child(@TypeOf(slice)), @constCast(slice));
+    allocator.free(slice);
+}
 
 /// Wave-15 Tier-1 grinder stub — Bun's `bun.hash(content)` is a trivial
 /// Wyhash wrapper. Re-attaches to the full hash family (hashWithSeed,
@@ -88,7 +101,7 @@ const identity_context = @import("collections/identity_context.zig");
 pub const IdentityContext = identity_context.IdentityContext;
 pub const ArrayIdentityContext = identity_context.ArrayIdentityContext;
 
-const bit_set = @import("collections/bit_set.zig");
+pub const bit_set = @import("collections/bit_set.zig");
 pub const AutoBitSet = bit_set.AutoBitSet;
 pub const StaticBitSet = bit_set.StaticBitSet;
 pub const IntegerBitSet = bit_set.IntegerBitSet;
@@ -108,6 +121,11 @@ pub const AutoStaticHashMap = static_hash_map.AutoStaticHashMap;
 pub const StaticHashMap = static_hash_map.StaticHashMap;
 pub const HashMap = static_hash_map.HashMap;
 pub const SortedHashMap = static_hash_map.SortedHashMap;
+
+const baby_list = @import("collections/baby_list.zig");
+pub const BabyList = baby_list.BabyList;
+pub const ByteList = baby_list.ByteList;
+pub const OffsetByteList = baby_list.OffsetByteList;
 
 // Fourth-wave collection additions (2026-05-17):
 const hive_array = @import("collections/hive_array.zig");
@@ -338,6 +356,7 @@ pub const meta = struct {
 // signal handlers) re-lands in a later sub-phase.
 pub const crash_handler = struct {
     pub const handle_oom = @import("crash_handler/handle_oom.zig");
+    pub const StoredTrace = @import("crash_handler/StoredTrace.zig").StoredTrace;
     // Wave-16 Tier-1 grinder (2026-05-18):
     pub const CPUFeatures = @import("crash_handler/CPUFeatures.zig");
 };
@@ -359,15 +378,19 @@ pub const BoundedArrayAligned = @import("core/bounded_array.zig").BoundedArrayAl
 // data and land first so other subsystems can name them.
 pub const install_types = struct {
     pub const NodeLinker = @import("install_types/NodeLinker.zig").NodeLinker;
-    // Twelfth-wave port batch (2026-05-18). Pure-data leaves of the semver
-    // vocabulary. SemverString is a tagged-union { inline | external }
-    // with Wyhash11 stringHash; ExternalString = SemverString + cached
-    // u64 hash; SlicedString = { buf, slice } pair tracking a sub-slice
-    // of an owned buffer.
+    // Legacy install_types compatibility aliases for callers that still
+    // name Bun's pre-split semver strings through install_types. The
+    // Bun-compatible semver namespace is exported as home_rt.Semver below.
     pub const SemverString = @import("install_types/SemverString.zig").String;
     pub const ExternalString = @import("install_types/ExternalString.zig").ExternalString;
     pub const SlicedString = @import("install_types/SlicedString.zig").SlicedString;
 };
+
+// ---- src/semver/ -------------------------------------------------------
+// Bun-compatible semver aggregator. The pure Zig leaves are local; the
+// JSC-backed SemverObject remains blocked in semver/semver.zig until the
+// semver_jsc bridge lands.
+pub const Semver = @import("semver/semver.zig");
 
 // ---- src/install/ ------------------------------------------------------
 // Pure-Zig install/ leaves. Home replaces Bun's package manager with
@@ -805,6 +828,8 @@ pub const safety = struct {
     pub const asan = @import("safety/asan.zig");
     pub const CriticalSection = @import("safety/CriticalSection.zig");
     pub const ThreadLock = @import("safety/ThreadLock.zig");
+    pub const alloc = @import("safety/alloc.zig");
+    pub const CheckedAllocator = @import("safety/alloc.zig").CheckedAllocator;
     // Thirteenth-wave port batch (2026-05-18). Upstream's `safety/safety.zig`
     // aggregator — re-exports `alloc`, `CheckedAllocator`, `CriticalSection`,
     // `ThreadLock` exactly the way Bun does. Wired as a sibling namespace so
@@ -812,6 +837,7 @@ pub const safety = struct {
     // they want the upstream-style flat surface.
     pub const aggregator = @import("safety/safety.zig");
 };
+pub const asan = safety.asan;
 
 // ---- src/threading/ ----------------------------------------------------
 // Fifth-wave port batch (2026-05-18). Mutex/Condition/Futex + WaitGroup
@@ -1443,6 +1469,7 @@ test {
     _ = sql;
     _ = options_types;
     _ = install_types;
+    _ = Semver;
     _ = uws_sys;
     _ = event_loop;
     _ = unicode;
@@ -1861,6 +1888,18 @@ test "home_rt.install_types.NodeLinker.fromStr maps canonical strings" {
     try std.testing.expectEqual(install_types.NodeLinker.hoisted, install_types.NodeLinker.fromStr("hoisted").?);
     try std.testing.expectEqual(install_types.NodeLinker.isolated, install_types.NodeLinker.fromStr("isolated").?);
     try std.testing.expect(install_types.NodeLinker.fromStr("nope") == null);
+}
+
+test "home_rt.Semver exposes Bun semver leaves" {
+    const version_input = "1.2.3";
+    const version = Semver.Version.parseUTF8(version_input);
+    try std.testing.expect(version.valid);
+
+    const range_input = "^1.0.0";
+    const group = try Semver.Query.parse(std.testing.allocator, range_input, Semver.SlicedString.init(range_input, range_input));
+    defer group.deinit();
+
+    try std.testing.expect(group.satisfies(version.version.min(), range_input, version_input));
 }
 
 test "home_rt.uws_sys.quic exposes the QUIC opaques" {

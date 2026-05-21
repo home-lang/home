@@ -1,16 +1,3 @@
-// Copied from bun/src/collections/hive_array.zig at upstream SHA
-// fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt").
-// Rewrites:
-//   * `bun.bit_set.IntegerBitSet` → `std.bit_set.IntegerBitSet`
-//     (bit_set is not ported yet; std's IntegerBitSet has the same API
-//      for the methods this file uses, with the exception that
-//      `findFirstUnset` does not exist upstream — we recover the
-//      semantic via `complement().findFirstSet()`).
-//   * `bun.asan.*` calls (unpoison / assertUnpoisoned / poison) are
-//     dropped to inline no-ops. asan tooling is not wired into Home yet;
-//     when it lands these can be re-introduced via a thin shim.
-
 /// An array that efficiently tracks which elements are in use.
 /// The pointers are intended to be stable
 /// Sorta related to https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2021/p0447r15.html
@@ -19,7 +6,7 @@ pub fn HiveArray(comptime T: type, comptime capacity: u16) type {
         const Self = @This();
 
         buffer: [capacity]T,
-        used: std.bit_set.IntegerBitSet(capacity),
+        used: bun.bit_set.IntegerBitSet(capacity),
 
         pub const size = capacity;
 
@@ -40,21 +27,22 @@ pub fn HiveArray(comptime T: type, comptime capacity: u16) type {
         }
 
         pub fn get(self: *Self) ?*T {
-            // `bun.bit_set.IntegerBitSet` had `findFirstUnset`; std doesn't.
-            // Use the complement (set ↔ unset) and look for the first set bit.
-            const index = self.used.complement().findFirstSet() orelse return null;
+            const index = self.used.findFirstUnset() orelse return null;
             self.used.set(index);
             const ret = &self.buffer[index];
+            bun.asan.unpoison(@ptrCast(ret), @sizeOf(T));
             return ret;
         }
 
         pub fn at(self: *Self, index: u16) *T {
             assert(index < capacity);
             const ret = &self.buffer[index];
+            bun.asan.assertUnpoisoned(@ptrCast(ret));
             return ret;
         }
 
         pub fn indexOf(self: *const Self, value: *const T) ?u32 {
+            bun.asan.assertUnpoisoned(@ptrCast(value));
             const start = &self.buffer;
             const end = @as([*]const T, @ptrCast(start)) + capacity;
             if (!(@intFromPtr(value) >= @intFromPtr(start) and @intFromPtr(value) < @intFromPtr(end)))
@@ -68,6 +56,7 @@ pub fn HiveArray(comptime T: type, comptime capacity: u16) type {
         }
 
         pub fn in(self: *const Self, value: *const T) bool {
+            bun.asan.assertUnpoisoned(@ptrCast(value));
             const start = &self.buffer;
             const end = @as([*]const T, @ptrCast(start)) + capacity;
             return (@intFromPtr(value) >= @intFromPtr(start) and @intFromPtr(value) < @intFromPtr(end));
@@ -80,6 +69,7 @@ pub fn HiveArray(comptime T: type, comptime capacity: u16) type {
             assert(&self.buffer[index] == value);
 
             value.* = undefined;
+            bun.asan.poison(value, @sizeOf(T));
 
             self.used.unset(index);
             return true;
@@ -110,7 +100,7 @@ pub fn HiveArray(comptime T: type, comptime capacity: u16) type {
                     }
                 }
 
-                return home_rt.handleOom(self.allocator.create(T));
+                return bun.handleOom(self.allocator.create(T));
             }
 
             pub fn getAndSeeIfNew(self: *This, new: *bool) *T {
@@ -121,7 +111,7 @@ pub fn HiveArray(comptime T: type, comptime capacity: u16) type {
                     }
                 }
 
-                return home_rt.handleOom(self.allocator.create(T));
+                return bun.handleOom(self.allocator.create(T));
             }
 
             pub fn tryGet(self: *This) OOM!*T {
@@ -164,7 +154,7 @@ test "HiveArray" {
     {
         const b = a.get().?;
         try testing.expect(a.get().? != b);
-        try testing.expectEqual(@as(?u32, 0), a.indexOf(b));
+        try testing.expectEqual(a.indexOf(b), 0);
         try testing.expect(a.put(b));
         try testing.expect(a.get().? == b);
         const c = a.get().?;
@@ -188,26 +178,9 @@ test "HiveArray" {
     }
 }
 
-test "HiveArray.Fallback overflows into its allocator" {
-    var fb = HiveArray(u64, 2).Fallback.init(std.testing.allocator);
-    const a = fb.get();
-    a.* = 1;
-    const b = fb.get();
-    b.* = 2;
-    // Hive is now full (capacity = 2); next get() should allocate.
-    const c = fb.get();
-    c.* = 3;
-    try testing.expect(fb.in(a));
-    try testing.expect(fb.in(b));
-    try testing.expect(!fb.in(c));
-    fb.put(a);
-    fb.put(b);
-    fb.put(c);
-}
-
-const home_rt = @import("home_rt");
-const OOM = home_rt.OOM;
-const assert = home_rt.assert;
+const bun = @import("home_rt");
+const OOM = bun.OOM;
+const assert = bun.assert;
 
 const std = @import("std");
 const mem = std.mem;

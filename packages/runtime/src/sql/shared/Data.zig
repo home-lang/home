@@ -1,72 +1,70 @@
-// Wave-18 stub (2026-05-18) — minimal forward-decl for the sql wire
-// `Data` union. Upstream `bun/src/sql/shared/Data.zig` is a 94-line
-// union with two helpers (`toOwned`, `zdeinit`) that require
-// `bun.ByteList` + `bun.BoundedArray` + `bun.default_allocator` +
-// `bun.freeSensitive`. Only `BoundedArray` is wired in home_rt today,
-// so the rest of the surface is parked.
-//
-// This stub keeps the union shape (`.owned`, `.temporary`,
-// `.inline_storage`, `.empty`) so packet decoders/encoders that store
-// fields of type `Data` compile, plus the `slice()` / `sliceZ()` /
-// `substring()` / `deinit()` / `Empty` declarations users reach for
-// at the API boundary. `toOwned` + `zdeinit` + `create` get
-// `@compileError` bodies — invoking them is the trigger to port the
-// real `Data` and drop this stub.
-//
-// TODO(phase-12-N): replace with the verbatim upstream copy once
-// `bun.ByteList` + `bun.freeSensitive` are ported.
+// Copied from bun/src/sql/shared/Data.zig at upstream SHA
+// fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT - see ../../cli/LICENSE.bun.md.
+// Imports rewritten: `@import("bun")` -> `@import("home_rt")`.
 
+// Represents data that can be either owned or temporary
 pub const Data = union(enum) {
-    owned: ByteList,
+    owned: bun.ByteList,
     temporary: []const u8,
     inline_storage: InlineStorage,
     empty: void,
 
-    /// Stand-in for `bun.ByteList`. Real type is a SSO-friendly
-    /// length-prefixed byte slice. The stub holds just the field shape
-    /// (slice + len) needed by `.owned` / `slice()` so users that only
-    /// hold or read borrowed data compile.
-    pub const ByteList = extern struct {
-        ptr: [*]u8 = @ptrFromInt(@alignOf(u8)),
-        len: u32 = 0,
-        cap: u32 = 0,
-
-        pub fn slice(this: @This()) []const u8 {
-            return this.ptr[0..this.len];
-        }
-    };
-
-    pub const InlineStorage = struct {
-        // Zig 0.17 dropped `.{0} ** N` tuple-init repetition; use the
-        // builtin `@splat` form instead. Behavior is identical: all 15
-        // bytes initialized to 0.
-        buffer: [15]u8 = @splat(0),
-        len: u8 = 0,
-
-        pub fn slice(this: *const @This()) []const u8 {
-            return this.buffer[0..this.len];
-        }
-    };
+    pub const ByteList = bun.ByteList;
+    pub const InlineStorage = bun.BoundedArray(u8, 15);
 
     pub const Empty: Data = .{ .empty = {} };
 
-    pub fn create(_: []const u8, _: std.mem.Allocator) !Data {
-        @compileError("sql/shared/Data: create() not wired — port bun.ByteList first");
+    pub fn create(possibly_inline_bytes: []const u8, allocator: std.mem.Allocator) !Data {
+        if (possibly_inline_bytes.len == 0) {
+            return .{ .empty = {} };
+        }
+
+        if (possibly_inline_bytes.len <= 15) {
+            var inline_storage = InlineStorage{};
+            @memcpy(inline_storage.buffer[0..possibly_inline_bytes.len], possibly_inline_bytes);
+            inline_storage.len = @truncate(possibly_inline_bytes.len);
+            return .{ .inline_storage = inline_storage };
+        }
+        return .{
+            .owned = bun.ByteList.fromOwnedSlice(try allocator.dupe(u8, possibly_inline_bytes)),
+        };
     }
 
-    pub fn toOwned(_: @This()) !ByteList {
-        @compileError("sql/shared/Data: toOwned() not wired — port bun.ByteList first");
+    pub fn toOwned(this: @This()) !bun.ByteList {
+        return switch (this) {
+            .owned => this.owned,
+            .temporary => bun.ByteList.fromOwnedSlice(
+                try bun.default_allocator.dupe(u8, this.temporary),
+            ),
+            .empty => bun.ByteList.empty,
+            .inline_storage => bun.ByteList.fromOwnedSlice(
+                try bun.default_allocator.dupe(u8, this.inline_storage.slice()),
+            ),
+        };
     }
 
     pub fn deinit(this: *@This()) void {
         switch (this.*) {
-            .owned => {}, // freeing owned needs allocator wiring — see TODO
-            .temporary, .empty, .inline_storage => {},
+            .owned => |*owned| owned.clearAndFree(bun.default_allocator),
+            .temporary => {},
+            .empty => {},
+            .inline_storage => {},
         }
     }
 
-    pub fn zdeinit(_: *@This()) void {
-        @compileError("sql/shared/Data: zdeinit() not wired — port bun.freeSensitive first");
+    /// Zero bytes before deinit
+    /// Generally, for security reasons.
+    pub fn zdeinit(this: *@This()) void {
+        switch (this.*) {
+            .owned => |*owned| {
+                // Zero bytes before deinit
+                bun.freeSensitive(bun.default_allocator, owned.slice());
+                owned.deinit(bun.default_allocator);
+            },
+            .temporary => {},
+            .empty => {},
+            .inline_storage => {},
+        }
     }
 
     pub fn slice(this: *const @This()) []const u8 {
@@ -86,26 +84,47 @@ pub const Data = union(enum) {
             .inline_storage => .{ .temporary = this.inline_storage.slice()[start_index..end_index] },
         };
     }
+
+    pub fn sliceZ(this: *const @This()) [:0]const u8 {
+        return switch (this.*) {
+            .owned => this.owned.slice()[0..this.owned.len :0],
+            .temporary => this.temporary[0..this.temporary.len :0],
+            .empty => "",
+            .inline_storage => this.inline_storage.slice()[0..this.inline_storage.len :0],
+        };
+    }
 };
 
-test "Data.empty slices to empty string" {
-    const std_local = @import("std");
-    const d: Data = .{ .empty = {} };
-    try std_local.testing.expectEqualStrings("", d.slice());
+test "Data.create stores small payloads inline" {
+    const data = try Data.create("home", std.testing.allocator);
+    try std.testing.expectEqualStrings("home", data.slice());
+    try std.testing.expectEqual(@as(u8, 4), data.inline_storage.len);
 }
 
-test "Data.temporary slices through" {
-    const std_local = @import("std");
-    const d: Data = .{ .temporary = "abc" };
-    try std_local.testing.expectEqualStrings("abc", d.slice());
+test "Data.create owns larger payloads" {
+    var data = try Data.create("0123456789abcdef", bun.default_allocator);
+    defer data.deinit();
+
+    try std.testing.expectEqualStrings("0123456789abcdef", data.slice());
+    try std.testing.expectEqual(@as(u32, 16), data.owned.len);
 }
 
-test "Data.Empty constant is the empty variant" {
-    const d = Data.Empty;
-    switch (d) {
-        .empty => {},
-        else => @panic("Data.Empty must be the .empty variant"),
-    }
+test "Data.toOwned clones temporary and inline data" {
+    var temporary = try (Data{ .temporary = "wire" }).toOwned();
+    defer temporary.deinit(bun.default_allocator);
+    try std.testing.expectEqualStrings("wire", temporary.slice());
+
+    var inline_data = try Data.create("sql", std.testing.allocator);
+    var owned = try inline_data.toOwned();
+    defer owned.deinit(bun.default_allocator);
+    try std.testing.expectEqualStrings("sql", owned.slice());
 }
 
+test "Data.substring returns temporary views" {
+    const data = Data{ .temporary = "postgres" };
+    const part = data.substring(4, 8);
+    try std.testing.expectEqualStrings("gres", part.slice());
+}
+
+const bun = @import("home_rt");
 const std = @import("std");

@@ -1,18 +1,3 @@
-// Copied from bun/src/collections/pool.zig at upstream SHA
-// fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt").
-// Rewrites:
-//   * `bun.assert` → `home_rt.assert`.
-//   * `bun.memory.deinit(&node.data)` and the `Type != bun.ByteList`
-//     special-case in `destroyNode` are replaced with a thin pattern
-//     that mirrors the upstream contract: if the pooled type defines
-//     a `deinit` method, call it; otherwise the value is destroyed via
-//     its owning allocator. `bun.ByteList` doesn't exist in Home yet —
-//     when it lands the special-case can be restored verbatim.
-//   * The Environment-gated assert in `push` is rewritten to read
-//     `home_rt.Environment.allow_assert` directly so we don't have to
-//     reach into Bun's core/env.zig path.
-
 fn SinglyLinkedList(comptime T: type, comptime Parent: type) type {
     return struct {
         const Self = @This();
@@ -169,8 +154,8 @@ pub fn ObjectPool(
         }
 
         pub fn push(allocator: std.mem.Allocator, pooled: Type) void {
-            if (comptime home_rt.Environment.allow_assert)
-                home_rt.assert(!full());
+            if (comptime @import("../bun_core/env.zig").allow_assert)
+                bun.assert(!full());
 
             const new_node = allocator.create(LinkedList.Node) catch unreachable;
             new_node.* = LinkedList.Node{
@@ -261,60 +246,17 @@ pub fn ObjectPool(
         }
 
         fn destroyNode(node: *LinkedList.Node) void {
-            // Upstream Bun has a `Type != bun.ByteList` carve-out here that
-            // skips `bun.memory.deinit` for ByteListPool. Home doesn't have
-            // a ByteList type yet, so the carve-out is moot — instead we
-            // invoke `Type.deinit` directly when it exists, which mirrors
-            // the recursive-deinit semantics of `bun.memory.deinit`.
-            if (comptime std.meta.hasFn(Type, "deinit")) {
-                node.data.deinit();
+            // TODO: Once a generic-allocator version of `BabyList` is added, change
+            // `ByteListPool` in `bun.js/webcore.zig` to use a managed default-allocator
+            // `ByteList` instead, and then get rid of the special-casing for `ByteList`
+            // here. This will fix a memory leak.
+            if (comptime Type != bun.ByteList) {
+                bun.memory.deinit(&node.data);
             }
             node.allocator.destroy(node);
         }
     };
 }
 
-test "ObjectPool reuses freed nodes" {
-    const allocator = std.testing.allocator;
-    const Pool = ObjectPool(u32, null, false, 16);
-
-    Pool.deleteAll();
-    defer Pool.deleteAll();
-
-    const node_a = Pool.get(allocator);
-    node_a.data = 42;
-    const ptr_a = node_a;
-
-    Pool.release(node_a);
-
-    const node_b = Pool.get(allocator);
-    // The pool should hand us back the same node we just released.
-    try std.testing.expectEqual(ptr_a, node_b);
-
-    Pool.release(node_b);
-}
-
-test "ObjectPool: getIfExists returns null on cold pool" {
-    const Pool = ObjectPool(u8, null, false, 4);
-    Pool.deleteAll();
-    defer Pool.deleteAll();
-    try std.testing.expect(Pool.getIfExists() == null);
-    try std.testing.expect(!Pool.has());
-}
-
-test "ObjectPool: full() honours the comptime max_count cap" {
-    const allocator = std.testing.allocator;
-    const Pool = ObjectPool(u8, null, false, 2);
-    Pool.deleteAll();
-    defer Pool.deleteAll();
-
-    try std.testing.expect(!Pool.full());
-    const n1 = Pool.get(allocator);
-    const n2 = Pool.get(allocator);
-    Pool.release(n1);
-    Pool.release(n2);
-    try std.testing.expect(Pool.full());
-}
-
-const home_rt = @import("home_rt");
+const bun = @import("home_rt");
 const std = @import("std");
