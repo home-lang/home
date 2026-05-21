@@ -18469,6 +18469,238 @@ test "conformance: functionExpressionContextualTyping1 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: privateNameFieldAccess passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "privateNameFieldAccess",
+        .path = "privateNameFieldAccess.ts",
+        .source =
+        \\class A {
+        \\    #myField = "hello world";
+        \\    constructor() {
+        \\        console.log(this.#myField);
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: privateNameFieldInitializer passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "privateNameFieldInitializer",
+        .path = "privateNameFieldInitializer.ts",
+        .source =
+        \\class A {
+        \\    #field = 10;
+        \\    #uninitialized;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: privateNameStaticFieldAssignment passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "privateNameStaticFieldAssignment",
+        .path = "privateNameStaticFieldAssignment.ts",
+        .source =
+        \\class A {
+        \\    static #field = 0;
+        \\    constructor() {
+        \\        A.#field = 1;
+        \\        A.#field += 2;
+        \\        A.#field -= 3;
+        \\        A.#field /= 4;
+        \\        A.#field *= 5;
+        \\        A.#field **= 6;
+        \\        A.#field %= 7;
+        \\        A.#field <<= 8;
+        \\        A.#field >>= 9;
+        \\        A.#field >>>= 10;
+        \\        A.#field &= 11;
+        \\        A.#field |= 12;
+        \\        A.#field ^= 13;
+        \\        A.getClass().#field = 1;
+        \\        A.getClass().#field += 2;
+        \\        A.getClass().#field -= 3;
+        \\        A.getClass().#field /= 4;
+        \\        A.getClass().#field *= 5;
+        \\        A.getClass().#field **= 6;
+        \\        A.getClass().#field %= 7;
+        \\        A.getClass().#field <<= 8;
+        \\        A.getClass().#field >>= 9;
+        \\        A.getClass().#field >>>= 10;
+        \\        A.getClass().#field &= 11;
+        \\        A.getClass().#field |= 12;
+        \\        A.getClass().#field ^= 13;
+        \\    }
+        \\    static getClass() {
+        \\        return A;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: privateNameFieldUnaryMutation passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "privateNameFieldUnaryMutation",
+        .path = "privateNameFieldUnaryMutation.ts",
+        .source =
+        \\class C {
+        \\    #test: number = 24;
+        \\    constructor() {
+        \\        this.#test++;
+        \\        this.#test--;
+        \\        ++this.#test;
+        \\        --this.#test;
+        \\        const a = this.#test++;
+        \\        const b = this.#test--;
+        \\        const c = ++this.#test;
+        \\        const d = --this.#test;
+        \\        for (this.#test = 0; this.#test < 10; ++this.#test) {}
+        \\        for (this.#test = 0; this.#test < 10; this.#test++) {}
+        \\
+        \\        (this.#test)++;
+        \\        (this.#test)--;
+        \\        ++(this.#test);
+        \\        --(this.#test);
+        \\        const e = (this.#test)++;
+        \\        const f = (this.#test)--;
+        \\        const g = ++(this.#test);
+        \\        const h = --(this.#test);
+        \\        for (this.#test = 0; this.#test < 10; ++(this.#test)) {}
+        \\        for (this.#test = 0; this.#test < 10; (this.#test)++) {}
+        \\    }
+        \\    test() {
+        \\        this.getInstance().#test++;
+        \\        this.getInstance().#test--;
+        \\        ++this.getInstance().#test;
+        \\        --this.getInstance().#test;
+        \\        const a = this.getInstance().#test++;
+        \\        const b = this.getInstance().#test--;
+        \\        const c = ++this.getInstance().#test;
+        \\        const d = --this.getInstance().#test;
+        \\        for (this.getInstance().#test = 0; this.getInstance().#test < 10; ++this.getInstance().#test) {}
+        \\        for (this.getInstance().#test = 0; this.getInstance().#test < 10; this.getInstance().#test++) {}
+        \\
+        \\        (this.getInstance().#test)++;
+        \\        (this.getInstance().#test)--;
+        \\        ++(this.getInstance().#test);
+        \\        --(this.getInstance().#test);
+        \\        const e = (this.getInstance().#test)++;
+        \\        const f = (this.getInstance().#test)--;
+        \\        const g = ++(this.getInstance().#test);
+        \\        const h = --(this.getInstance().#test);
+        \\        for (this.getInstance().#test = 0; this.getInstance().#test < 10; ++(this.getInstance().#test)) {}
+        \\        for (this.getInstance().#test = 0; this.getInstance().#test < 10; (this.getInstance().#test)++) {}
+        \\    }
+        \\    getInstance() { return new C(); }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: privateNameStaticFieldUnaryMutation passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "privateNameStaticFieldUnaryMutation",
+        .path = "privateNameStaticFieldUnaryMutation.ts",
+        .source =
+        \\class C {
+        \\    static #test: number = 24;
+        \\    constructor() {
+        \\        C.#test++;
+        \\        C.#test--;
+        \\        ++C.#test;
+        \\        --C.#test;
+        \\        const a = C.#test++;
+        \\        const b = C.#test--;
+        \\        const c = ++C.#test;
+        \\        const d = --C.#test;
+        \\        for (C.#test = 0; C.#test < 10; ++C.#test) {}
+        \\        for (C.#test = 0; C.#test < 10; C.#test++) {}
+        \\    }
+        \\    test() {
+        \\        this.getClass().#test++;
+        \\        this.getClass().#test--;
+        \\        ++this.getClass().#test;
+        \\        --this.getClass().#test;
+        \\        const a = this.getClass().#test++;
+        \\        const b = this.getClass().#test--;
+        \\        const c = ++this.getClass().#test;
+        \\        const d = --this.getClass().#test;
+        \\        for (this.getClass().#test = 0; this.getClass().#test < 10; ++this.getClass().#test) {}
+        \\        for (this.getClass().#test = 0; this.getClass().#test < 10; this.getClass().#test++) {}
+        \\    }
+        \\    getClass() { return C; }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: privateNameLateSuper passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "privateNameLateSuper",
+        .path = "privateNameLateSuper.ts",
+        .source =
+        \\class B {}
+        \\class A extends B {
+        \\    #x;
+        \\    constructor() {
+        \\        void 0;
+        \\        super();
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
