@@ -9329,6 +9329,373 @@ test "conformance: generatorReturnTypeIndirectReferenceToGlobalType passes clean
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: typeGuardOfFormExpr1AndExpr2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeGuardOfFormExpr1AndExpr2",
+        .path = "typeGuardOfFormExpr1AndExpr2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\var str: string;
+        \\var bool: boolean;
+        \\var num: number;
+        \\var strOrNum: string | number;
+        \\var strOrNumOrBool: string | number | boolean;
+        \\var numOrBool: number | boolean;
+        \\class C { private p; }
+        \\var c: C;
+        \\var cOrBool: C| boolean;
+        \\var strOrNumOrBoolOrC: string | number | boolean | C;
+        \\
+        \\if (typeof strOrNumOrBool !== "string" && typeof strOrNumOrBool !== "number") {
+        \\    bool = strOrNumOrBool;
+        \\}
+        \\else {
+        \\    strOrNum = strOrNumOrBool;
+        \\}
+        \\if (typeof strOrNumOrBoolOrC !== "string" && typeof strOrNumOrBoolOrC !== "number" && typeof strOrNumOrBoolOrC !== "boolean") {
+        \\    c = strOrNumOrBoolOrC;
+        \\}
+        \\else {
+        \\    strOrNumOrBool = strOrNumOrBoolOrC;
+        \\}
+        \\if (typeof strOrNumOrBoolOrC !== "string" && typeof strOrNumOrBoolOrC !== "number" && typeof strOrNumOrBool === "boolean") {
+        \\    cOrBool = strOrNumOrBoolOrC;
+        \\    bool = strOrNumOrBool;
+        \\}
+        \\else {
+        \\    var r1: string | number | boolean | C = strOrNumOrBoolOrC;
+        \\    var r2: string | number | boolean = strOrNumOrBool;
+        \\}
+        \\if (typeof strOrNumOrBool !== "string" && numOrBool !== strOrNumOrBool) {
+        \\    numOrBool = strOrNumOrBool;
+        \\}
+        \\else {
+        \\    var r3: string | number | boolean = strOrNumOrBool;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: typeGuardOfFormExpr1OrExpr2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeGuardOfFormExpr1OrExpr2",
+        .path = "typeGuardOfFormExpr1OrExpr2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\var str: string;
+        \\var bool: boolean;
+        \\var num: number;
+        \\var strOrNum: string | number;
+        \\var strOrNumOrBool: string | number | boolean;
+        \\var numOrBool: number | boolean;
+        \\class C { private p; }
+        \\var c: C;
+        \\var cOrBool: C| boolean;
+        \\var strOrNumOrBoolOrC: string | number | boolean | C;
+        \\
+        \\if (typeof strOrNumOrBool === "string" || typeof strOrNumOrBool === "number") {
+        \\    strOrNum = strOrNumOrBool;
+        \\}
+        \\else {
+        \\    bool = strOrNumOrBool;
+        \\}
+        \\if (typeof strOrNumOrBoolOrC === "string" || typeof strOrNumOrBoolOrC === "number" || typeof strOrNumOrBoolOrC === "boolean") {
+        \\    strOrNumOrBool = strOrNumOrBoolOrC;
+        \\}
+        \\else {
+        \\    c = strOrNumOrBoolOrC;
+        \\}
+        \\if (typeof strOrNumOrBoolOrC === "string" || typeof strOrNumOrBoolOrC === "number" || typeof strOrNumOrBool !== "boolean") {
+        \\    var r1: string | number | boolean | C = strOrNumOrBoolOrC;
+        \\    var r2: string | number | boolean = strOrNumOrBool;
+        \\}
+        \\else {
+        \\    cOrBool = strOrNumOrBoolOrC;
+        \\    bool = strOrNumOrBool;
+        \\}
+        \\if (typeof strOrNumOrBool === "string" || numOrBool !== strOrNumOrBool) {
+        \\    var r3: string | number | boolean = strOrNumOrBool;
+        \\}
+        \\else {
+        \\    numOrBool = strOrNumOrBool;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: nullishCoalescingOperator2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nullishCoalescingOperator2",
+        .path = "nullishCoalescingOperator2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\
+        \\declare const a1: 'literal' | undefined | null
+        \\declare const a2: '' | undefined | null
+        \\declare const a3: 1 | undefined | null
+        \\declare const a4: 0 | undefined | null
+        \\declare const a5: true | undefined | null
+        \\declare const a6: false | undefined | null
+        \\declare const a7: unknown | null
+        \\declare const a8: never | null
+        \\declare const a9: any | null
+        \\
+        \\
+        \\const aa1 = a1 ?? 'whatever'
+        \\const aa2 = a2 ?? 'whatever'
+        \\const aa3 = a3 ?? 'whatever'
+        \\const aa4 = a4 ?? 'whatever'
+        \\const aa5 = a5 ?? 'whatever'
+        \\const aa6 = a6 ?? 'whatever'
+        \\const aa7 = a7 ?? 'whatever'
+        \\const aa8 = a8 ?? 'whatever'
+        \\const aa9 = a9 ?? 'whatever'
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: nullishCoalescingOperator3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nullishCoalescingOperator3",
+        .path = "nullishCoalescingOperator3.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\
+        \\declare const a1: 'literal' | undefined | null
+        \\declare const a2: '' | undefined | null
+        \\declare const a3: 1 | undefined | null
+        \\declare const a4: 0 | undefined | null
+        \\declare const a5: true | undefined | null
+        \\declare const a6: false | undefined | null
+        \\
+        \\
+        \\const aa1 = a1 ?? a2 ?? a3 ?? a4 ?? a5 ?? a6 ?? 'whatever'
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: nullishCoalescingOperator7 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nullishCoalescingOperator7",
+        .path = "nullishCoalescingOperator7.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\
+        \\declare const a: string | undefined;
+        \\declare const b: string | undefined;
+        \\declare const c: string | undefined;
+        \\
+        \\const foo1 = a ? 1 : 2;
+        \\const foo2 = a ?? 'foo' ? 1 : 2;
+        \\const foo3 = a ?? 'foo' ? (b ?? 'bar') : (c ?? 'baz');
+        \\
+        \\function f () {
+        \\    const foo4 = a ?? 'foo' ? b ?? 'bar' : c ?? 'baz';
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: nullishCoalescingOperator_es2020 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nullishCoalescingOperator_es2020",
+        .path = "nullishCoalescingOperator_es2020.ts",
+        .source =
+        \\// @strict: true
+        \\// @target: es2020
+        \\
+        \\declare const a1: 'literal' | undefined | null
+        \\declare const a2: '' | undefined | null
+        \\declare const a3: 1 | undefined | null
+        \\declare const a4: 0 | undefined | null
+        \\declare const a5: true | undefined | null
+        \\declare const a6: false | undefined | null
+        \\declare const a7: unknown | null
+        \\declare const a8: never | null
+        \\declare const a9: any | null
+        \\
+        \\
+        \\const aa1 = a1 ?? 'whatever'
+        \\const aa2 = a2 ?? 'whatever'
+        \\const aa3 = a3 ?? 'whatever'
+        \\const aa4 = a4 ?? 'whatever'
+        \\const aa5 = a5 ?? 'whatever'
+        \\const aa6 = a6 ?? 'whatever'
+        \\const aa7 = a7 ?? 'whatever'
+        \\const aa8 = a8 ?? 'whatever'
+        \\const aa9 = a9 ?? 'whatever'
+        \\
+        \\
+        \\declare let a: any, b: any, c: any;
+        \\
+        \\let x1 = (a ?? b as any) || c;
+        \\let x2 = c || (a ?? b as any);
+        \\let x3 = ((a ?? b) as any) || c;
+        \\let x4 = c || ((a ?? b) as any);
+        \\let x5 = (a ?? b) as any || c;
+        \\let x6 = c || (a ?? b) as any;
+        \\
+        \\let y1 = (a ?? b as any) && c;
+        \\let y2 = c && (a ?? b as any);
+        \\let y3 = ((a ?? b) as any) && c;
+        \\let y4 = c && ((a ?? b) as any);
+        \\let y5 = (a ?? b) as any && c;
+        \\let y6 = c && (a ?? b) as any;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: nullishCoalescingOperator_not_strict passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nullishCoalescingOperator_not_strict",
+        .path = "nullishCoalescingOperator_not_strict.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\declare const a1: 'literal' | undefined | null
+        \\declare const a2: '' | undefined | null
+        \\declare const a3: 1 | undefined | null
+        \\declare const a4: 0 | undefined | null
+        \\declare const a5: true | undefined | null
+        \\declare const a6: false | undefined | null
+        \\declare const a7: unknown | null
+        \\declare const a8: never | null
+        \\declare const a9: any | null
+        \\
+        \\
+        \\const aa1 = a1 ?? 'whatever'
+        \\const aa2 = a2 ?? 'whatever'
+        \\const aa3 = a3 ?? 'whatever'
+        \\const aa4 = a4 ?? 'whatever'
+        \\const aa5 = a5 ?? 'whatever'
+        \\const aa6 = a6 ?? 'whatever'
+        \\const aa7 = a7 ?? 'whatever'
+        \\const aa8 = a8 ?? 'whatever'
+        \\const aa9 = a9 ?? 'whatever'
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: commaOperatorWithSecondOperandAnyType passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "commaOperatorWithSecondOperandAnyType",
+        .path = "commaOperatorWithSecondOperandAnyType.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// @allowUnreachableCode: true
+        \\
+        \\var ANY: any;
+        \\var BOOLEAN: boolean;
+        \\var NUMBER: number;
+        \\var STRING: string;
+        \\var OBJECT: Object;
+        \\
+        \\ANY, ANY;
+        \\BOOLEAN, ANY;
+        \\NUMBER, ANY;
+        \\STRING, ANY;
+        \\OBJECT, ANY;
+        \\
+        \\var resultIsAny1 = (ANY, ANY);
+        \\var resultIsAny2 = (BOOLEAN, ANY);
+        \\var resultIsAny3 = (NUMBER, ANY);
+        \\var resultIsAny4 = (STRING, ANY);
+        \\var resultIsAny5 = (OBJECT, ANY);
+        \\
+        \\var x: any;
+        \\
+        \\1, ANY;
+        \\++NUMBER, ANY;
+        \\"string", [null, 1];
+        \\"string".charAt(0), [null, 1];
+        \\true, x("any");
+        \\!BOOLEAN, x.doSomeThing();
+        \\
+        \\var resultIsAny6 = (1, ANY);
+        \\var resultIsAny7 = (++NUMBER, ANY);
+        \\var resultIsAny8 = ("string", null);
+        \\var resultIsAny9 = ("string".charAt(0), undefined);
+        \\var resultIsAny10 = (true, x("any"));
+        \\var resultIsAny11 = (!BOOLEAN, x.doSomeThing());
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
