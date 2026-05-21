@@ -15287,6 +15287,153 @@ test "conformance: parser_numericSeparators_octal passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: parserSymbolIndexer4 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserSymbolIndexer4",
+        .path = "parserSymbolIndexer4.ts",
+        .source =
+        \\//@target: ES6
+        \\var x: {
+        \\    [s: symbol]: string;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserSymbolProperty4 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserSymbolProperty4",
+        .path = "parserSymbolProperty4.ts",
+        .source =
+        \\//@target: ES6
+        \\declare class C {
+        \\    [Symbol.toPrimitive]: string;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserModifierOnPropertySignature2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserModifierOnPropertySignature2",
+        .path = "parserModifierOnPropertySignature2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\interface Foo{
+        \\    public
+        \\    biz;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserObjectType1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserObjectType1",
+        .path = "parserObjectType1.ts",
+        .source =
+        \\// @target: es2015
+        \\var v: {};
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserMemberVariableDeclaration5 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserMemberVariableDeclaration5",
+        .path = "parserMemberVariableDeclaration5.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\class C {
+        \\  declare Foo;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserMethodSignature8 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserMethodSignature8",
+        .path = "parserMethodSignature8.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\interface I {
+        \\  "H"?<T>();
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserRegularExpression1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserRegularExpression1",
+        .path = "parserRegularExpression1.ts",
+        .source =
+        \\// @target: es2015
+        \\/(#?-?\d*\.\d\w*%?)|(@?#?[\w-?]+%?)/g;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
