@@ -13227,6 +13227,336 @@ test "conformance: contextuallyTypeAsyncFunctionReturnType passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: callSignatureWithoutReturnTypeAnnotationInference passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "callSignatureWithoutReturnTypeAnnotationInference",
+        .path = "callSignatureWithoutReturnTypeAnnotationInference.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// @allowUnreachableCode: true
+        \\
+        \\function foo(x) {
+        \\    return 1;
+        \\}
+        \\var r = foo(1);
+        \\
+        \\function foo2(x) {
+        \\    return foo(x);
+        \\}
+        \\var r2 = foo2(1);
+        \\
+        \\function foo3() {
+        \\    return foo3();
+        \\}
+        \\var r3 = foo3();
+        \\
+        \\function foo4<T>(x: T) {
+        \\    return x;
+        \\}
+        \\var r4 = foo4(1);
+        \\
+        \\function foo5(x) {
+        \\    if (true) {
+        \\        return 1;
+        \\    } else {
+        \\        return 2;
+        \\    }
+        \\}
+        \\var r5 = foo5(1);
+        \\
+        \\function foo6(x) {
+        \\    try {
+        \\    }
+        \\    catch (e) {
+        \\        return [];
+        \\    }
+        \\    finally {
+        \\        return [];
+        \\    }
+        \\}
+        \\var r6 = foo6(1);
+        \\
+        \\function foo7(x) {
+        \\    return typeof x;
+        \\}
+        \\var r7 = foo7(1);
+        \\
+        \\function foo8(x: number) {
+        \\    return { x: x };
+        \\}
+        \\var r8 = foo8(1);
+        \\
+        \\interface I {
+        \\    foo: string;
+        \\}
+        \\function foo9(x: number) {
+        \\    var i: I;
+        \\    return i;
+        \\}
+        \\var r9 = foo9(1);
+        \\
+        \\class C {
+        \\    foo: string;
+        \\}
+        \\function foo10(x: number) {
+        \\    var c: C;
+        \\    return c;
+        \\}
+        \\var r10 = foo10(1);
+        \\
+        \\namespace M {
+        \\    export var x = 1;
+        \\    export class C { foo: string }
+        \\}
+        \\function foo11() {
+        \\    return M;
+        \\}
+        \\var r11 = foo11();
+        \\
+        \\interface I2 {
+        \\    x: number;
+        \\}
+        \\interface I2 {
+        \\    y: number;
+        \\}
+        \\function foo12() {
+        \\    var i2: I2;
+        \\    return i2;
+        \\}
+        \\var r12 = foo12();
+        \\
+        \\function m1() { return 1; }
+        \\namespace m1 { export var y = 2; }
+        \\function foo13() {
+        \\    return m1;
+        \\}
+        \\var r13 = foo13();
+        \\
+        \\class c1 {
+        \\    foo: string;
+        \\    constructor(x) { }
+        \\}
+        \\namespace c1 {
+        \\    export var x = 1;
+        \\}
+        \\function foo14() {
+        \\    return c1;
+        \\}
+        \\var r14 = foo14();
+        \\
+        \\enum e1 { A }
+        \\namespace e1 { export var y = 1; }
+        \\function foo15() {
+        \\    return e1;
+        \\}
+        \\var r15 = foo15();
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectSpreadRepeatedComplexity passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectSpreadRepeatedComplexity",
+        .path = "objectSpreadRepeatedComplexity.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\function f(cnd: Record<number, boolean>){
+        \\    return {
+        \\        ...(cnd[1] &&
+        \\            cnd[2] && {
+        \\            prop0: 0,
+        \\        }),
+        \\
+        \\        ...(cnd[3] && {
+        \\            prop3a: 1,
+        \\            prop3b: 1,
+        \\        }),
+        \\        ...(cnd[4] && {
+        \\            prop4a: 1,
+        \\            prop4b: 1,
+        \\        }),
+        \\        ...(cnd[5] && {
+        \\            prop5a: 1,
+        \\            prop5b: 1,
+        \\        }),
+        \\        ...(cnd[6] && {
+        \\            prop6a: 1,
+        \\            prop6b: 1,
+        \\        }),
+        \\        ...(cnd[7] && {
+        \\            prop7a: 1,
+        \\            prop7b: 1,
+        \\        }),
+        \\        ...(cnd[8] && {
+        \\            prop8a: 1,
+        \\            prop8b: 1,
+        \\        }),
+        \\        ...(cnd[9] && {
+        \\            prop9a: 1,
+        \\            prop9b: 1,
+        \\        }),
+        \\        ...(cnd[10] && {
+        \\            prop10a: 1,
+        \\            prop10b: 1,
+        \\        }),
+        \\        ...(cnd[11] && {
+        \\            prop11a: 1,
+        \\            prop11b: 1,
+        \\        }),
+        \\        ...(cnd[12] && {
+        \\            prop12a: 1,
+        \\            prop12b: 1,
+        \\        }),
+        \\        ...(cnd[13] && {
+        \\            prop13a: 1,
+        \\            prop13b: 1,
+        \\        }),
+        \\        ...(cnd[14] && {
+        \\            prop14a: 1,
+        \\            prop14b: 1,
+        \\        }),
+        \\        ...(cnd[15] && {
+        \\            prop15a: 1,
+        \\            prop15b: 1,
+        \\        }),
+        \\        ...(cnd[16] && {
+        \\            prop16a: 1,
+        \\            prop16b: 1,
+        \\        }),
+        \\        ...(cnd[17] && {
+        \\            prop17a: 1,
+        \\            prop17b: 1,
+        \\        }),
+        \\        ...(cnd[18] && {
+        \\            prop18a: 1,
+        \\            prop18b: 1,
+        \\        }),
+        \\        ...(cnd[19] && {
+        \\            prop19a: 1,
+        \\            prop19b: 1,
+        \\        }),
+        \\        ...(cnd[20] && {
+        \\            prop20a: 1,
+        \\            prop20b: 1,
+        \\        }),
+        \\    };
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectRestForOf passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectRestForOf",
+        .path = "objectRestForOf.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es2015
+        \\let array: { x: number, y: string }[];
+        \\for (let { x, ...restOf } of array) {
+        \\    [x, restOf];
+        \\}
+        \\let xx: number;
+        \\let rrestOff: { y: string };
+        \\for ({ x: xx, ...rrestOff } of array ) {
+        \\    [xx, rrestOff];
+        \\}
+        \\for (const norest of array.map(a => ({ ...a, x: 'a string' }))) {
+        \\    [norest.x, norest.y];
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectRestAssignment passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectRestAssignment",
+        .path = "objectRestAssignment.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es2015
+        \\let ka: any;
+        \\let nested: { ki };
+        \\let other: number;
+        \\let rest: { };
+        \\let complex: { x: { ka, ki }, y: number };
+        \\({x: { ka, ...nested }, y: other, ...rest} = complex);
+        \\
+        \\let overEmit: { a: { ka: string, x: string }[], b: { z: string, ki: string, ku: string }, ke: string, ko: string };
+        \\
+        \\var { a: [{ ...nested2 }, ...y], b: { z, ...c }, ...rest2 } = overEmit;
+        \\({ a: [{ ...nested2 }, ...y], b: { z, ...c }, ...rest2 } = overEmit);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectRest2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectRest2",
+        .path = "objectRest2.ts",
+        .source =
+        \\// @strict: false
+        \\// @lib: es2015
+        \\// @target: es2015
+        \\declare function connectionFromArray(objects: number, args: any): {};
+        \\function rootConnection(name: string) {
+        \\  return {
+        \\    resolve: async (context, args) => {
+        \\        const { objects } = await { objects: 12 };
+        \\      return {
+        \\        ...connectionFromArray(objects, args)
+        \\      };
+        \\    }
+        \\  };
+        \\}
+        \\rootConnection('test');
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
