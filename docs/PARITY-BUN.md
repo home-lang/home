@@ -207,7 +207,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes two hundred thirty-eight allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes two hundred thirty-nine allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator. On macOS this
 JSC path is now part of the default `./pantry/.bin/zig build test` graph
 (`-Denable_jsc=false` remains available for constrained hosts): the
@@ -227,8 +227,8 @@ fetch body async-iterator and abort smokes, AbortController GC reason,
 MessagePort context cleanup,
 and Deno Request string-body `text()` / clone call shapes,
 narrow Deno URL authority/hash/origin parsing, a Deno `performance`
-bootstrap nucleus (`now`, `timeOrigin`, `toJSON`, marks, measures, and
-entry lookup), WebSocket failed-connect `ErrorEvent` snapshots, JSC
+fixture covering timer-delayed measures, marks, observers, constructors,
+and EventTarget behavior, WebSocket failed-connect `ErrorEvent` snapshots, JSC
 `ShadowRealm`, native constructor identity, mutable
 `globalThis` prototype behavior, a comment-only module-load smoke, Bun file metadata and
 `Bun.file(...).type` MIME behavior, `Bun.randomUUIDv7`, `Bun.sleepSync`
@@ -313,7 +313,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `238` files, `1,078` passed, `0` failed,
+Latest measured subset run: `239` files, `1,091` passed, `0` failed,
 `45` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now

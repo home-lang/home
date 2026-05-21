@@ -209,7 +209,8 @@ a Deno `URLSearchParams` bootstrap smoke, async-function `toThrow`
 matching for empty-body `Response.json()` / `Request.json()` SyntaxError
 rejections, EventTarget, AbortSignal,
 narrow Deno URL authority/hash/origin parsing, a Deno `performance`
-bootstrap nucleus, WebSocket failed-connect `ErrorEvent` snapshots, Node
+fixture covering timer-delayed measures, marks, observers, constructors,
+and EventTarget behavior, WebSocket failed-connect `ErrorEvent` snapshots, Node
 `Buffer.alloc` / fill / `Buffer.from(..., "utf-16le")` / compare /
 write / toString / inspect-limit / isEncoding subsets, `Bun.JSONC.parse`
 comments / trailing commas / deep-nesting `RangeError`s, Node

@@ -148,6 +148,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/util/bun-isMainThread.test.js",
     "js/bun/util/pathToFileURL-invalid.test.ts",
     "js/node/url/pathToFileURL.test.ts",
+    "js/deno/performance/performance.test.ts",
     "regression/issue/015201.test.ts",
     "js/node/process-binding.test.ts",
     "js/bun/test/test-timers.test.ts",
@@ -439,7 +440,11 @@ const harness_prelude =
     \\      const started = Date.now();
     \\      while (Date.now() - started < delayMs) {}
     \\    }
-    \\    globalThis.__home_performance_clock = (globalThis.__home_performance_clock || 0) + delayMs;
+    \\    if (typeof globalThis.__home_advance_performance_clock === "function") {
+    \\      globalThis.__home_advance_performance_clock(delayMs);
+    \\    } else {
+    \\      globalThis.__home_performance_clock = (globalThis.__home_performance_clock || 0) + delayMs;
+    \\    }
     \\    if (typeof callback === "function") callback.apply(undefined, args);
     \\  });
     \\  return __home_timer_handle(id);
@@ -7243,6 +7248,10 @@ const harness_prelude =
     \\    __home_performance_last_now += 10;
     \\    return __home_performance_last_now;
     \\  };
+    \\  globalThis.__home_advance_performance_clock = function(milliseconds) {
+    \\    __home_performance_last_now += Math.max(0, Number(milliseconds) || 0);
+    \\    globalThis.__home_performance_clock = __home_performance_last_now;
+    \\  };
     \\  if (typeof performance.clearResourceTimings !== "function") {
     \\    performance.clearResourceTimings = function() {};
     \\  }
@@ -8627,6 +8636,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function setImmediate(callback)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "unref() { return this; }") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_reset_performance_clock") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_advance_performance_clock") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_is_thenable(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_done_callback(error)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.setPrototypeOf = function(target, prototype)") != null);
