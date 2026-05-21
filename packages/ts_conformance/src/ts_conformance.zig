@@ -16539,6 +16539,274 @@ test "conformance: parser_continueTarget3 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: controlFlowElementAccessNoCrash1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "controlFlowElementAccessNoCrash1",
+        .path = "controlFlowElementAccessNoCrash1.ts",
+        .source =
+        \\interface TestTscEdit {
+        \\  caption: string;
+        \\  commandLineArgs?: readonly string[];
+        \\}
+        \\
+        \\interface TestTscCompile {
+        \\  subScenario: string;
+        \\  commandLineArgs: readonly string[];
+        \\}
+        \\
+        \\interface VerifyTscEditDiscrepanciesInput {
+        \\  index: number;
+        \\  edits: readonly TestTscEdit[];
+        \\  commandLineArgs: TestTscCompile["commandLineArgs"];
+        \\}
+        \\
+        \\function testTscCompile(input: TestTscCompile) {}
+        \\
+        \\function verifyTscEditDiscrepancies({
+        \\  index,
+        \\  edits,
+        \\  commandLineArgs,
+        \\}: VerifyTscEditDiscrepanciesInput) {
+        \\  const { caption } = edits[index];
+        \\  testTscCompile({
+        \\    subScenario: caption,
+        \\    commandLineArgs: edits[index].commandLineArgs || commandLineArgs,
+        \\  });
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: thisMethodCall passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "thisMethodCall",
+        .path = "thisMethodCall.ts",
+        .source =
+        \\class C {
+        \\    method?() {}
+        \\    other() {
+        \\        this.method?.();
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: superMethodCall passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "superMethodCall",
+        .path = "superMethodCall.ts",
+        .source =
+        \\class Base {
+        \\    method?() { }
+        \\}
+        \\
+        \\class Derived extends Base {
+        \\    method() {
+        \\        return super.method?.();
+        \\    }
+        \\
+        \\    async asyncMethod() {
+        \\        return super.method?.();
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateLiteralTypes6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateLiteralTypes6",
+        .path = "templateLiteralTypes6.ts",
+        .source =
+        \\type Registry = {
+        \\  a: { a1: {} };
+        \\  b: { b1: {} };
+        \\};
+        \\
+        \\type Keyof<T> = keyof T & string;
+        \\
+        \\declare function f1<
+        \\  Scope extends Keyof<Registry>,
+        \\  Event extends Keyof<Registry[Scope]>,
+        \\>(eventPath: `${Scope}:${Event}`): void;
+        \\
+        \\function f2<
+        \\  Scope extends Keyof<Registry>,
+        \\  Event extends Keyof<Registry[Scope]>,
+        \\>(scope: Scope, event: Event) {
+        \\  f1(`${scope}:${event}`);
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: nestedModules passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nestedModules",
+        .path = "nestedModules.ts",
+        .source =
+        \\namespace A.B.C {
+        \\    export interface Point {
+        \\        x: number;
+        \\        y: number;
+        \\    }
+        \\}
+        \\
+        \\namespace A {
+        \\    export namespace B {
+        \\        var Point: C.Point = { x: 0, y: 0 };
+        \\    }
+        \\}
+        \\
+        \\namespace M2.X {
+        \\    export interface Point {
+        \\        x: number; y: number;
+        \\    }
+        \\}
+        \\
+        \\namespace M2 {
+        \\    export namespace X {
+        \\        export var Point: number;
+        \\    }
+        \\}
+        \\
+        \\var m = M2.X;
+        \\var point: number;
+        \\var point = m.Point;
+        \\
+        \\var p: { x: number; y: number; }
+        \\var p: M2.X.Point;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: asiPreventsParsingAsNamespace04 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "asiPreventsParsingAsNamespace04",
+        .path = "asiPreventsParsingAsNamespace04.ts",
+        .source =
+        \\let module = 10;
+        \\module in {}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: everyTypeWithInitializer passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "everyTypeWithInitializer",
+        .path = "everyTypeWithInitializer.ts",
+        .source =
+        \\interface I {
+        \\    id: number;
+        \\}
+        \\
+        \\class C implements I {
+        \\    id: number;
+        \\}
+        \\
+        \\class D<T>{
+        \\    source: T;
+        \\    recurse: D<T>;
+        \\    wrapped: D<D<T>>
+        \\}
+        \\
+        \\function F(x: string): number { return 42; }
+        \\
+        \\namespace M {
+        \\    export class A {
+        \\        name: string;
+        \\    }
+        \\
+        \\    export function F2(x: number): string { return x.toString(); }
+        \\}
+        \\
+        \\var aNumber = 9.9;
+        \\var aString = 'this is a string';
+        \\var aDate = new Date(12);
+        \\var anObject = new Object();
+        \\
+        \\var anAny = null;
+        \\var anOtherAny = <any> new C();
+        \\var anUndefined = undefined;
+        \\
+        \\
+        \\var aClass = new C();
+        \\var aGenericClass = new D<string>();
+        \\var anObjectLiteral = { id: 12 };
+        \\
+        \\var aFunction = F;
+        \\var aLambda = (x) => 2;
+        \\
+        \\var aModule = M;
+        \\var aClassInModule = new M.A();
+        \\var aFunctionInModule = M.F2;
+        \\
+        \\var x;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
