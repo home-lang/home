@@ -4120,6 +4120,250 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: typePredicateASI passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typePredicateASI",
+        .path = "typePredicateASI.ts",
+        .source =
+        \\// @target: es2015
+        \\interface I {
+        \\    foo(callback: (a: any, b: any) => void): I
+        \\    is(): boolean;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: nullishCoalescingOperator10 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nullishCoalescingOperator10",
+        .path = "nullishCoalescingOperator10.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\
+        \\declare function f(): string | undefined;
+        \\
+        \\let gg = f() ?? 'foo'
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{
+            .strict_null_checks = true,
+            .strict_property_initialization = true,
+        },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: nullishCoalescingOperator12 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nullishCoalescingOperator12",
+        .path = "nullishCoalescingOperator12.ts",
+        .source =
+        \\// @strict: true
+        \\// @target: ES2015
+        \\
+        \\const obj: { arr: any[] } = { arr: [] };
+        \\for (const i of obj?.arr ?? []) { }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{
+            .strict_null_checks = true,
+            .strict_property_initialization = true,
+        },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: classExpression4 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "classExpression4",
+        .path = "classExpression4.ts",
+        .source =
+        \\// @target: es2015
+        \\let C = class {
+        \\    foo() {
+        \\        return new C();
+        \\    }
+        \\};
+        \\let x = (new C).foo();
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: logicalAssignment9 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "logicalAssignment9",
+        .path = "logicalAssignment9.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\declare let x: { a?: boolean };
+        \\
+        \\x.a ??= true;
+        \\x.a &&= false;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{
+            .strict_null_checks = true,
+            .strict_property_initialization = true,
+        },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: iterableArrayPattern30 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "iterableArrayPattern30",
+        .path = "iterableArrayPattern30.ts",
+        .source =
+        \\// @strict: false
+        \\//@target: ES6
+        \\const [[k1, v1], [k2, v2]] = new Map([["", true], ["hello", true]])
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: asiPreventsParsingAsNamespace05 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "asiPreventsParsingAsNamespace05",
+        .path = "asiPreventsParsingAsNamespace05.ts",
+        .source =
+        \\// @target: es2015
+        \\
+        \\let namespace = 10;
+        \\namespace a.b {
+        \\    export let c = 20;
+        \\}
+        \\
+        \\namespace
+        \\a.b.c
+        \\{
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: typeOfThisInStaticMembers2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeOfThisInStaticMembers2",
+        .path = "typeOfThisInStaticMembers2.ts",
+        .source =
+        \\// @target: es2015
+        \\class C {
+        \\    static foo = this; // ok
+        \\}
+        \\
+        \\class C2<T> {
+        \\    static foo = this; // ok
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: privateNameMethodInStaticFieldInit passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "privateNameMethodInStaticFieldInit",
+        .path = "privateNameMethodInStaticFieldInit.ts",
+        .source =
+        \\// @target: es2015
+        \\
+        \\class C {
+        \\    static s = new C().#method();
+        \\    #method() { return 42; }
+        \\}
+        \\
+        \\console.log(C.s);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringPlainCharactersThatArePartsOfEscapes01_ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringPlainCharactersThatArePartsOfEscapes01_ES6",
+        .path = "templateStringPlainCharactersThatArePartsOfEscapes01_ES6.ts",
+        .source =
+        \\// @target: es6
+        \\
+        \\`0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 2028 2029 0085 t v f b r n`
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: stringLiteralType passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "stringLiteralType",
