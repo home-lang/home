@@ -49827,6 +49827,7 @@ pub const Checker = struct {
         else
             try self.expressionLiteralType(l.lhs, lhs);
         const rhs_result = try self.expressionLiteralType(l.rhs, rhs);
+        if (l.op == .@"or" and self.typeIsAlwaysTruthyForLogicalOr(lhs_result)) return lhs_result;
         return self.interner.internUnion(&.{ lhs_result, rhs_result }) catch error.OutOfMemory;
     }
 
@@ -59112,6 +59113,12 @@ pub const Checker = struct {
         return self.subtractNullUndefined(t);
     }
 
+    fn typeIsAlwaysTruthyForLogicalOr(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        return flags.is_signature;
+    }
+
     /// Widen `t` with `undefined` when `noUncheckedIndexedAccess`
     /// is enabled. Returns `t` unchanged when the option is off,
     /// when `t` is already `undefined`, or when `t` already contains
@@ -59994,6 +60001,24 @@ test "checker: Function call prototype checks original parameters" {
         if (d.code == TsCodes.argument_type_mismatch) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: logical or keeps always-truthy function signature result" {
+    const b = try newBoundSetup(
+        \\declare function resolver<T>(): () => void;
+        \\declare function wrapResolver<T>(resolverFunction: () => void): void;
+        \\wrapResolver(resolver() || []);
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+        .no_implicit_any = true,
+    });
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
 }
 
 test "checker: later declarators in a variable declaration list bind" {
