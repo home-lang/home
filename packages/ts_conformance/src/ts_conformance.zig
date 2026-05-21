@@ -3953,6 +3953,192 @@ test "conformance: instanceMemberInitialization passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: doWhileBreakStatements passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "doWhileBreakStatements",
+        .path = "doWhileBreakStatements.ts",
+        .source =
+        \\// @target: es2015
+        \\// @allowUnusedLabels: true
+        \\// @allowUnreachableCode: true
+        \\
+        \\do {
+        \\    break;
+        \\} while(true)
+        \\
+        \\ONE:
+        \\do {
+        \\    break ONE;
+        \\}
+        \\while (true)
+        \\
+        \\TWO:
+        \\THREE:
+        \\do {
+        \\    break THREE;
+        \\}while (true)
+        \\
+        \\FOUR:
+        \\do {
+        \\    FIVE:
+        \\    do {
+        \\        break FOUR;
+        \\    }while (true)
+        \\}while (true)
+        \\
+        \\do {
+        \\    SIX:
+        \\    do break SIX; while(true)
+        \\}while (true)
+        \\
+        \\SEVEN:
+        \\do do do break SEVEN; while (true) while (true)  while (true)
+        \\
+        \\EIGHT:
+        \\do{
+        \\    var fn = function () { }
+        \\    break EIGHT;
+        \\}while(true)
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: whileBreakStatements passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "whileBreakStatements",
+        .path = "whileBreakStatements.ts",
+        .source =
+        \\// @target: es2015
+        \\// @allowUnusedLabels: true
+        \\// @allowUnreachableCode: true
+        \\
+        \\while(true) {
+        \\    break;
+        \\}
+        \\
+        \\ONE:
+        \\
+        \\while (true) {
+        \\    break ONE;
+        \\}
+        \\
+        \\TWO:
+        \\THREE:
+        \\while (true) {
+        \\    break THREE;
+        \\}
+        \\
+        \\FOUR:
+        \\while (true) {
+        \\    FIVE:
+        \\    while (true) {
+        \\        break FOUR;
+        \\    }
+        \\}
+        \\
+        \\while (true) {
+        \\    SIX:
+        \\    while (true)
+        \\        break SIX;
+        \\}
+        \\
+        \\SEVEN:
+        \\while (true)
+        \\    while (true)
+        \\        while (true)
+        \\            break SEVEN;
+        \\
+        \\EIGHT:
+        \\while (true) {
+        \\    var fn = function () { }
+        \\    break EIGHT;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: throwInEnclosingStatements passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "throwInEnclosingStatements",
+        .path = "throwInEnclosingStatements.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// @allowUnreachableCode: true
+        \\
+        \\function fn(x) {
+        \\    throw x;
+        \\}
+        \\
+        \\<T>(x: T) => { throw x; }
+        \\
+        \\var y: string;
+        \\switch (y) {
+        \\    case 'a':
+        \\        throw y;
+        \\    default:
+        \\        throw y;
+        \\}
+        \\
+        \\var z = 0;
+        \\while (z < 10) {
+        \\    throw z;
+        \\}
+        \\
+        \\for (var i = 0; ;) { throw i; }
+        \\
+        \\for (var idx in {}) { throw idx; }
+        \\
+        \\do { throw null; }while(true)
+        \\
+        \\var j = 0;
+        \\while (j < 0) { throw j; }
+        \\
+        \\class C<T> {
+        \\    private value: T;
+        \\    biz() {
+        \\        throw this.value;
+        \\    }
+        \\
+        \\    constructor() {
+        \\        throw this;
+        \\    }
+        \\}
+        \\
+        \\var aa = {
+        \\    id:12,
+        \\    biz() {
+        \\        throw this;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: keyofIntersection passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "keyofIntersection",
