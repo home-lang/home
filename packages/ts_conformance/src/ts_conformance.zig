@@ -11457,6 +11457,113 @@ test "conformance: discriminatedUnionTypes4 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: neverInference passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "neverInference",
+        .path = "neverInference.ts",
+        .source =
+        \\// @lib: es2015
+        \\// @strict: true
+        \\// @target: es2015
+        \\
+        \\declare function f1<T>(x: T[]): T;
+        \\
+        \\let neverArray: never[] = [];
+        \\
+        \\let a1 = f1([]);
+        \\let a2 = f1(neverArray);
+        \\
+        \\type Comparator<T> = (x: T, y: T) => number;
+        \\
+        \\interface LinkedList<T> {
+        \\    comparator: Comparator<T>,
+        \\    nodes: Node<T>
+        \\}
+        \\
+        \\type Node<T> = { value: T, next: Node<T> } | null
+        \\
+        \\declare function compareNumbers(x: number, y: number): number;
+        \\declare function mkList<T>(items: T[], comparator: Comparator<T>): LinkedList<T>;
+        \\
+        \\const list: LinkedList<number> = mkList([], compareNumbers);
+        \\
+        \\declare function f2<a>(as1: a[], as2: a[], cmp: (a1: a, a2: a) => number): void;
+        \\f2(Array.from([0]), [], (a1, a2) => a1 - a2);
+        \\f2(Array.from([]), [0], (a1, a2) => a1 - a2);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: mappedTypes1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "mappedTypes1",
+        .path = "mappedTypes1.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strictNullChecks: true
+        \\// @declaration: true
+        \\
+        \\type Item = { a: string, b: number, c: boolean };
+        \\
+        \\type T00 = { [P in "x" | "y"]: number };
+        \\type T01 = { [P in "x" | "y"]: P };
+        \\type T02 = { [P in "a" | "b"]: Item[P]; }
+        \\type T03 = { [P in keyof Item]: Date };
+        \\
+        \\type T10 = { [P in keyof Item]: Item[P] };
+        \\type T11 = { [P in keyof Item]?: Item[P] };
+        \\type T12 = { readonly [P in keyof Item]: Item[P] };
+        \\type T13 = { readonly [P in keyof Item]?: Item[P] };
+        \\
+        \\type T20 = { [P in keyof Item]: Item[P] | null };
+        \\type T21 = { [P in keyof Item]: Array<Item[P]> };
+        \\
+        \\type T30 = { [P in keyof any]: void };
+        \\type T31 = { [P in keyof string]: void };
+        \\type T32 = { [P in keyof number]: void };
+        \\type T33 = { [P in keyof boolean]: void };
+        \\type T34 = { [P in keyof undefined]: void };
+        \\type T35 = { [P in keyof null]: void };
+        \\type T36 = { [P in keyof void]: void };
+        \\type T37 = { [P in keyof symbol]: void };
+        \\type T38 = { [P in keyof never]: void };
+        \\
+        \\type T40 = { [P in string]: void };
+        \\type T43 = { [P in "a" | "b"]: void };
+        \\type T44 = { [P in "a" | "b" | "0" | "1"]: void };
+        \\type T47 = { [P in string | "a" | "b" | "0" | "1"]: void };
+        \\
+        \\declare function f1<T1>(): { [P in keyof T1]: void };
+        \\declare function f2<T1 extends string>(): { [P in keyof T1]: void };
+        \\declare function f3<T1 extends number>(): { [P in keyof T1]: void };
+        \\declare function f4<T1 extends Number>(): { [P in keyof T1]: void };
+        \\
+        \\let x1 = f1();
+        \\let x2 = f2();
+        \\let x3 = f3();
+        \\let x4 = f4();
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = false },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
