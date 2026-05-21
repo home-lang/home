@@ -2,11 +2,9 @@
 // at upstream SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see
 // ../../../cli/LICENSE.bun.md. No `@import("bun")` references.
 //
-// MySQL OK / EOF (deprecated) packet. Decoder body calls the wave-18
-// NewReader stub method surface (`reader.int`, `reader.peek`,
-// `reader.read`, `reader.encodedLenIntWithSize`); those trip a natural
-// compile error if invoked today, so the leaf compiles as a
-// declaration.
+// MySQL OK / EOF (deprecated) packet. Decoder body consumes the concrete
+// NewReader method surface (`reader.int`, `reader.peek`, `reader.read`,
+// `reader.encodedLenIntWithSize`) now exercised by the decode test below.
 
 // OK Packet
 const OKPacket = @This();
@@ -60,9 +58,29 @@ test "OKPacket defaults zero" {
     try std.testing.expectEqual(@as(u64, 0), p.last_insert_id);
 }
 
+test "OKPacket decodes length-encoded counters flags warnings and info" {
+    const std = @import("std");
+    var offset: usize = 0;
+    var message_start: usize = 0;
+    const reader = StackReader.init(&.{ 0x00, 0x01, 0x02, 0x02, 0x00, 0x04, 0x00, 'o', 'k' }, &offset, &message_start);
+
+    var p: OKPacket = .{ .packet_size = 9 };
+    defer p.deinit();
+    try p.decode(reader);
+
+    try std.testing.expectEqual(@as(u8, 0x00), p.header);
+    try std.testing.expectEqual(@as(u64, 1), p.affected_rows);
+    try std.testing.expectEqual(@as(u64, 2), p.last_insert_id);
+    try std.testing.expectEqual(@as(u16, 2), p.status_flags.toInt());
+    try std.testing.expectEqual(@as(u16, 4), p.warnings);
+    try std.testing.expectEqualStrings("ok", p.info.slice());
+    try std.testing.expectEqual(@as(usize, 9), offset);
+}
+
 const Data = @import("../../shared/Data.zig").Data;
 
 const StatusFlags = @import("../StatusFlags.zig").StatusFlags;
 
 const NewReader = @import("./NewReader.zig").NewReader;
 const decoderWrap = @import("./NewReader.zig").decoderWrap;
+const StackReader = @import("./StackReader.zig");

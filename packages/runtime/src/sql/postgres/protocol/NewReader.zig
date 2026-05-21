@@ -22,6 +22,7 @@ pub fn NewReaderWrap(
         const markMessageStartFn = markMessageStartFn_;
 
         pub const Ctx = Context;
+        pub const is_wrapped = true;
 
         pub inline fn markMessageStart(this: @This()) void {
             markMessageStartFn(this.wrapped);

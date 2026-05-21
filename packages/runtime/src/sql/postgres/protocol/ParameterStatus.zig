@@ -4,10 +4,7 @@
 //
 // Postgres ParameterStatus ('S') backend packet. Imports rewritten:
 // `@import("bun")` dropped — upstream body's only reference is
-// `bun.assert(length >= 4)` which lowers to `std.debug.assert`. Decoder
-// body reaches into the wave-16 NewReader stub method surface
-// (reader.length, reader.readZ); those trip a natural compile error if
-// exercised today.
+// `bun.assert(length >= 4)` which lowers to `std.debug.assert`.
 
 const ParameterStatus = @This();
 
@@ -39,7 +36,20 @@ test "ParameterStatus defaults to empty name and value" {
     try std_local.testing.expectEqualStrings("", s.value.slice());
 }
 
+test "ParameterStatus decodes NUL-terminated name and value" {
+    var offset: usize = 0;
+    var message_start: usize = 0;
+    const reader = StackReader.init(&.{ 0, 0, 0, 8, 'a', 0, 'b', 0 }, &offset, &message_start);
+    var status: ParameterStatus = .{};
+
+    try status.decode(reader);
+
+    try std.testing.expectEqualStrings("a", status.name.slice());
+    try std.testing.expectEqualStrings("b", status.value.slice());
+}
+
 const std = @import("std");
 const Data = @import("../../shared/Data.zig").Data;
 const DecoderWrap = @import("./DecoderWrap.zig").DecoderWrap;
 const NewReader = @import("./NewReader.zig").NewReader;
+const StackReader = @import("./StackReader.zig");

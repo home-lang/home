@@ -29,7 +29,19 @@ test "ReadyForQuery defaults to .I (idle)" {
     try std_local.testing.expectEqual(TransactionStatusIndicator.I, r.status);
 }
 
+test "ReadyForQuery decodes transaction status" {
+    var offset: usize = 0;
+    var message_start: usize = 0;
+    const reader = StackReader.init(&.{ 0, 0, 0, 5, 'T' }, &offset, &message_start);
+    var ready: ReadyForQuery = .{};
+
+    try ready.decode(reader);
+
+    try std.testing.expectEqual(TransactionStatusIndicator.T, ready.status);
+}
+
 const std = @import("std");
 const DecoderWrap = @import("./DecoderWrap.zig").DecoderWrap;
 const NewReader = @import("./NewReader.zig").NewReader;
+const StackReader = @import("./StackReader.zig");
 const TransactionStatusIndicator = @import("./TransactionStatusIndicator.zig").TransactionStatusIndicator;

@@ -4,10 +4,7 @@
 //
 // Imports rewritten: @import("bun") dropped — the upstream body's only
 // reference is `bun.assert(length >= 4)`, replaced here with
-// `std.debug.assert`. The wire reader body references the wave-16
-// NewReader stub method surface (reader.length, reader.readZ); calls
-// trip `@compileError` until the real reader returns, so this leaf is
-// declaration-only today.
+// `std.debug.assert`.
 
 const CommandComplete = @This();
 
@@ -36,7 +33,20 @@ test "CommandComplete defaults to empty command_tag" {
     c.deinit();
 }
 
+test "CommandComplete decodes command tag" {
+    var offset: usize = 0;
+    var message_start: usize = 0;
+    const reader = StackReader.init(&.{ 0, 0, 0, 13, 'S', 'E', 'L', 'E', 'C', 'T', ' ', '1', 0 }, &offset, &message_start);
+    var command: CommandComplete = .{};
+
+    try command.decode(reader);
+    defer command.deinit();
+
+    try std.testing.expectEqualStrings("SELECT 1", command.command_tag.slice());
+}
+
 const std = @import("std");
 const Data = @import("../../shared/Data.zig").Data;
 const DecoderWrap = @import("./DecoderWrap.zig").DecoderWrap;
 const NewReader = @import("./NewReader.zig").NewReader;
+const StackReader = @import("./StackReader.zig");

@@ -4,10 +4,7 @@
 //
 // Postgres backend-key-data packet: the server sends a (process_id,
 // secret_key) pair after authentication that the client must echo when
-// it later sends a CancelRequest. The decoder body uses the wave-16
-// NewReader stub for its method surface (expectInt/int4) — the calls
-// trip `@compileError` until the real reader returns, so the leaf is
-// declaration-only today.
+// it later sends a CancelRequest.
 
 const BackendKeyData = @This();
 
@@ -33,6 +30,20 @@ test "BackendKeyData.process_id/secret_key default to zero" {
     try std.testing.expectEqual(@as(u32, 0), bkd.secret_key);
 }
 
+test "BackendKeyData decodes process id and secret key" {
+    const std = @import("std");
+    var offset: usize = 0;
+    var message_start: usize = 0;
+    const reader = StackReader.init(&.{ 0, 0, 0, 12, 0, 0, 0, 7, 0, 0, 0, 9 }, &offset, &message_start);
+    var bkd: BackendKeyData = .{};
+
+    try bkd.decode(reader);
+
+    try std.testing.expectEqual(@as(u32, 7), bkd.process_id);
+    try std.testing.expectEqual(@as(u32, 9), bkd.secret_key);
+}
+
 const DecoderWrap = @import("./DecoderWrap.zig").DecoderWrap;
 
 const NewReader = @import("./NewReader.zig").NewReader;
+const StackReader = @import("./StackReader.zig");

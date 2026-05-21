@@ -6,7 +6,7 @@
 // plugin_data). The body uses `bun.strings.indexOfChar` and `bun.assert`;
 // rewritten to `home_rt.strings.indexOfChar` / `home_rt.assert`. The
 // `NewReader` and `decoderWrap` factories live in this directory's
-// `NewReader.zig` stub — see the wave-18 sql/mysql/protocol batch.
+// concrete `NewReader.zig`; the decode test below exercises that path.
 
 const AuthSwitchRequest = @This();
 header: u8 = 0xfe,
@@ -58,3 +58,22 @@ test "AuthSwitchRequest defaults expose 0xfe header + empty plugin payload" {
     try std.testing.expect(req.plugin_name == .empty);
     try std.testing.expect(req.plugin_data == .empty);
 }
+
+test "AuthSwitchRequest decodes plugin name and data" {
+    const std = @import("std");
+    const packet = "\xfemysql_native_password\x00salt";
+    var offset: usize = 0;
+    var message_start: usize = 0;
+    const reader = StackReader.init(packet, &offset, &message_start);
+
+    var req = AuthSwitchRequest{ .packet_size = packet.len };
+    defer req.deinit();
+    try req.decode(reader);
+
+    try std.testing.expectEqual(@as(u8, 0xfe), req.header);
+    try std.testing.expectEqualStrings("mysql_native_password", req.plugin_name.slice());
+    try std.testing.expectEqualStrings("salt", req.plugin_data.slice());
+    try std.testing.expectEqual(@as(usize, packet.len), offset);
+}
+
+const StackReader = @import("./StackReader.zig");

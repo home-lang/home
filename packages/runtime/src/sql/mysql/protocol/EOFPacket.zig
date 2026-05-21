@@ -2,10 +2,8 @@
 // upstream SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see
 // ../../../cli/LICENSE.bun.md. No `@import("bun")` references.
 //
-// MySQL EOF (server response) packet. `decodeInternal` calls the
-// wave-18 NewReader stub method surface (reader.int) which trips a
-// natural compile error if invoked today; the leaf compiles as a
-// declaration so other packet code that names `EOFPacket` works.
+// MySQL EOF (server response) packet. `decodeInternal` consumes the
+// concrete NewReader method surface now exercised by the decode test below.
 
 const EOFPacket = @This();
 header: u8 = 0xfe,
@@ -31,7 +29,23 @@ test "EOFPacket default header is 0xfe" {
     try std.testing.expectEqual(@as(u16, 0), p.warnings);
 }
 
+test "EOFPacket decodes wire header warnings and status flags" {
+    const std = @import("std");
+    var offset: usize = 0;
+    var message_start: usize = 0;
+    const reader = StackReader.init(&.{ 0xfe, 0x02, 0x00, 0x03, 0x00 }, &offset, &message_start);
+
+    var p: EOFPacket = .{};
+    try p.decode(reader);
+
+    try std.testing.expectEqual(@as(u8, 0xfe), p.header);
+    try std.testing.expectEqual(@as(u16, 2), p.warnings);
+    try std.testing.expectEqual(@as(u16, 3), p.status_flags.toInt());
+    try std.testing.expectEqual(@as(usize, 5), offset);
+}
+
 const StatusFlags = @import("../StatusFlags.zig").StatusFlags;
 
 const NewReader = @import("./NewReader.zig").NewReader;
 const decoderWrap = @import("./NewReader.zig").decoderWrap;
+const StackReader = @import("./StackReader.zig");
