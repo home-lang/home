@@ -19439,6 +19439,202 @@ test "conformance: emitArrowFunctionES6 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: emitExponentiationOperatorInTemplateString1ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emitExponentiationOperatorInTemplateString1ES6",
+        .path = "emitExponentiationOperatorInTemplateString1ES6.ts",
+        .source =
+        \\var t1 = 10;
+        \\var t2 = 10;
+        \\var s;
+        \\
+        \\`${t1 ** t2}`;
+        \\`${t1 ** t2 ** t1}`;
+        \\`${t1 + t2 ** t1}`;
+        \\`${t1 ** t2 + t1}`;
+        \\`${t1 + t2 ** t2 + t1 }`;
+        \\`${typeof (t1 ** t2 ** t1) }`;
+        \\`${1 + typeof (t1 ** t2 ** t1) }`;
+        \\
+        \\`${t1 ** t2}${t1 ** t2}`;
+        \\`${t1 ** t2 ** t1}${t1 ** t2 ** t1}`;
+        \\`${t1 + t2 ** t1}${t1 + t2 ** t1}`;
+        \\`${t1 ** t2 + t1}${t1 ** t2 + t1}`;
+        \\`${t1 + t2 ** t2 + t1}${t1 + t2 ** t2 + t1}`;
+        \\`${typeof (t1 ** t2 ** t1)}${typeof (t1 ** t2 ** t1)}`;
+        \\
+        \\`${t1 ** t2} hello world ${t1 ** t2}`;
+        \\`${t1 ** t2 ** t1} hello world ${t1 ** t2 ** t1}`;
+        \\`${t1 + t2 ** t1} hello world ${t1 + t2 ** t1}`;
+        \\`${t1 ** t2 + t1} hello world ${t1 ** t2 + t1}`;
+        \\`${t1 + t2 ** t2 + t1} hello world ${t1 + t2 ** t2 + t1}`;
+        \\`${typeof (t1 ** t2 ** t1) } hello world ${typeof (t1 ** t2 ** t1) }`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emitExponentiationOperatorInTemplateString2ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emitExponentiationOperatorInTemplateString2ES6",
+        .path = "emitExponentiationOperatorInTemplateString2ES6.ts",
+        .source =
+        \\var t1 = 10;
+        \\var t2 = 10;
+        \\var s;
+        \\
+        \\`hello ${t1 ** t2}`;
+        \\`hello ${t1 ** t2 ** t1}`;
+        \\`hello ${t1 + t2 ** t1}`;
+        \\`hello ${t1 ** t2 + t1}`;
+        \\`hello ${t1 + t2 ** t2 + t1 }`;
+        \\`hello ${typeof (t1 ** t2 ** t1) }`;
+        \\`hello ${1 + typeof (t1 ** t2 ** t1) }`;
+        \\
+        \\`hello ${t1 ** t2}${t1 ** t2}`;
+        \\`hello ${t1 ** t2 ** t1}${t1 ** t2 ** t1}`;
+        \\`hello ${t1 + t2 ** t1}${t1 + t2 ** t1}`;
+        \\`hello ${t1 ** t2 + t1}${t1 ** t2 + t1}`;
+        \\`hello ${t1 + t2 ** t2 + t1}${t1 + t2 ** t2 + t1}`;
+        \\`hello ${typeof (t1 ** t2 ** t1) }${typeof (t1 ** t2 ** t1) }`;
+        \\
+        \\`hello ${t1 ** t2} hello world ${t1 ** t2}`;
+        \\`hello ${t1 ** t2 ** t1} hello world ${t1 ** t2 ** t1}`;
+        \\`hello ${t1 + t2 ** t1} hello world ${t1 + t2 ** t1}`;
+        \\`hello ${t1 ** t2 + t1} hello world ${t1 ** t2 + t1}`;
+        \\`hello ${t1 + t2 ** t2 + t1} hello world ${t1 + t2 ** t2 + t1}`;
+        \\`hello ${typeof (t1 ** t2 ** t1) } hello world ${typeof (t1 ** t2 ** t1) }`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emitExponentiationOperatorInTemplateString3ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emitExponentiationOperatorInTemplateString3ES6",
+        .path = "emitExponentiationOperatorInTemplateString3ES6.ts",
+        .source =
+        \\var t1 = 10;
+        \\var t2 = 10;
+        \\var s;
+        \\
+        \\`${t1 ** t2} world`;
+        \\`${t1 ** t2 ** t1} world`;
+        \\`${t1 + t2 ** t1} world`;
+        \\`${t1 ** t2 + t1} world`;
+        \\`${t1 + t2 ** t2 + t1 } world`;
+        \\`${typeof (t1 ** t2 ** t1) } world`;
+        \\`${1 + typeof (t1 ** t2 ** t1) } world`;
+        \\
+        \\`${t1 ** t2}${t1 ** t2} world`;
+        \\`${t1 ** t2 ** t1}${t1 ** t2 ** t1} world`;
+        \\`${t1 + t2 ** t1}${t1 + t2 ** t1} world`;
+        \\`${t1 ** t2 + t1}${t1 ** t2 + t1} world`;
+        \\`${t1 + t2 ** t2 + t1}${t1 + t2 ** t2 + t1} world`;
+        \\`${typeof (t1 ** t2 ** t1) }${typeof (t1 ** t2 ** t1) } world`;
+        \\
+        \\`${t1 ** t2} hello world ${t1 ** t2} !!`;
+        \\`${t1 ** t2 ** t1} hello world ${t1 ** t2 ** t1} !!`;
+        \\`${t1 + t2 ** t1} hello world ${t1 + t2 ** t1} !!`;
+        \\`${t1 ** t2 + t1} hello world ${t1 ** t2 + t1} !!`;
+        \\`${t1 + t2 ** t2 + t1} hello world ${t1 + t2 ** t2 + t1} !!`;
+        \\`${typeof (t1 ** t2 ** t1) } hello world ${typeof (t1 ** t2 ** t1)} !!`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emitExponentiationOperatorInTempalteString4ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emitExponentiationOperatorInTempalteString4ES6",
+        .path = "emitExponentiationOperatorInTempalteString4ES6.ts",
+        .source =
+        \\var t1 = 10;
+        \\var t2 = 10;
+        \\var s;
+        \\
+        \\`${t1 ** -t2} world`;
+        \\`${(-t1) ** t2 - t1} world`;
+        \\`${(-++t1) ** t2 - t1} world`;
+        \\`${(-t1++) ** t2 - t1} world`;
+        \\`${(~t1) ** t2 ** --t1 } world`;
+        \\`${typeof (t1 ** t2 ** t1) } world`;
+        \\
+        \\`${t1 ** -t2} hello world ${t1 ** -t2}`;
+        \\`${(-t1) ** t2 - t1} hello world ${(-t1) ** t2 - t1}`;
+        \\`${(-++t1) ** t2 - t1} hello world ${t1 ** (-++t1) **- t1}`;
+        \\`${(-t1++) ** t2 - t1} hello world ${t2 ** (-t1++) **  - t1}`;
+        \\`${(~t1) ** t2 ** --t1 } hello world ${(~t1) ** t2 ** --t1 }`;
+        \\`${typeof (t1 ** t2 ** t1)} hello world ${typeof (t1 ** t2 ** t1)}`;
+        \\
+        \\`hello ${(-t1) ** t2 - t1}`;
+        \\`hello ${(-++t1) ** t2 - t1}`;
+        \\`hello ${(-t1++) ** t2 - t1}`;
+        \\`hello ${(~t1) ** t2 ** --t1 }`;
+        \\`hello ${typeof (t1 ** t2 ** t1)}`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emitArrowFunctionWhenUsingArguments19_ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emitArrowFunctionWhenUsingArguments19_ES6",
+        .path = "emitArrowFunctionWhenUsingArguments19_ES6.ts",
+        .source =
+        \\function f() {
+        \\    function g() {
+        \\        var _arguments = 10;
+        \\        function h() {
+        \\            var capture = () => arguments;
+        \\            foo(_arguments);
+        \\        }
+        \\    }
+        \\
+        \\    function foo(x: any) {
+        \\        return 100;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
