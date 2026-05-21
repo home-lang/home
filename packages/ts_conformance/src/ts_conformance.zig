@@ -14481,6 +14481,214 @@ test "conformance: awaitCallExpression8_es6 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: asyncFunctionDeclaration1_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "asyncFunctionDeclaration1_es6",
+        .path = "asyncFunctionDeclaration1_es6.ts",
+        .source =
+        \\// @target: ES6
+        \\// @noEmitHelpers: true
+        \\async function foo(): Promise<void> {
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: asyncFunctionDeclaration2_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "asyncFunctionDeclaration2_es6",
+        .path = "asyncFunctionDeclaration2_es6.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: ES6
+        \\// @noEmitHelpers: true
+        \\function f(await) {
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: asyncFunctionDeclaration14_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "asyncFunctionDeclaration14_es6",
+        .path = "asyncFunctionDeclaration14_es6.ts",
+        .source =
+        \\// @target: ES6
+        \\// @noEmitHelpers: true
+        \\async function foo(): Promise<void> {
+        \\  return;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: asyncAliasReturnType_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "asyncAliasReturnType_es6",
+        .path = "asyncAliasReturnType_es6.ts",
+        .source =
+        \\// @target: ES6
+        \\// @noEmitHelpers: true
+        \\type PromiseAlias<T> = Promise<T>;
+        \\
+        \\async function f(): PromiseAlias<void> {
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: asyncMethodWithSuper_es2017 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "asyncMethodWithSuper_es2017",
+        .path = "asyncMethodWithSuper_es2017.ts",
+        .source =
+        \\// @target: es2017
+        \\// @noEmitHelpers: true
+        \\class A {
+        \\    x() {
+        \\    }
+        \\    y() {
+        \\    }
+        \\}
+        \\
+        \\class B extends A {
+        \\    async simple() {
+        \\        super.x();
+        \\        super.y();
+        \\
+        \\        super["x"]();
+        \\
+        \\        const a = super.x;
+        \\
+        \\        const b = super["x"];
+        \\    }
+        \\
+        \\    async advanced() {
+        \\        const f = () => {};
+        \\
+        \\        super.x();
+        \\
+        \\        super["x"]();
+        \\
+        \\        const a = super.x;
+        \\
+        \\        const b = super["x"];
+        \\
+        \\        super.x = f;
+        \\
+        \\        super["x"] = f;
+        \\
+        \\        ({ f: super.x } = { f });
+        \\
+        \\        ({ f: super["x"] } = { f });
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: asyncMethodWithSuperConflict_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "asyncMethodWithSuperConflict_es6",
+        .path = "asyncMethodWithSuperConflict_es6.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es6
+        \\class A {
+        \\    x() {
+        \\    }
+        \\    y() {
+        \\    }
+        \\}
+        \\
+        \\class B extends A {
+        \\    async simple() {
+        \\        const _super = null;
+        \\        const _superIndex = null;
+        \\        super.x();
+        \\        super.y();
+        \\
+        \\        super["x"]();
+        \\
+        \\        const a = super.x;
+        \\
+        \\        const b = super["x"];
+        \\    }
+        \\
+        \\    async advanced() {
+        \\        const _super = null;
+        \\        const _superIndex = null;
+        \\        const f = () => {};
+        \\
+        \\        super.x();
+        \\
+        \\        super["x"]();
+        \\
+        \\        const a = super.x;
+        \\
+        \\        const b = super["x"];
+        \\
+        \\        super.x = f;
+        \\
+        \\        super["x"] = f;
+        \\
+        \\        ({ f: super.x } = { f });
+        \\
+        \\        ({ f: super["x"] } = { f });
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
