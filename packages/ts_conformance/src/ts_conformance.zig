@@ -4120,6 +4120,104 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: stringNamedPropertyAccess TS2454 baseline" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringNamedPropertyAccess",
+        .path = "stringNamedPropertyAccess.ts",
+        .source =
+        \\// @target: es2015
+        \\class C {
+        \\    "a b": number;
+        \\    static "c d": number;
+        \\}
+        \\var c: C;
+        \\var r1 = c["a b"];
+        \\var r1b = C['c d'];
+        \\
+        \\interface I {
+        \\    "a b": number;
+        \\}
+        \\var i: I;
+        \\var r2 = i["a b"];
+        \\
+        \\var a: {
+        \\    "a b": number;
+        \\}
+        \\var r3 = a["a b"];
+        \\
+        \\var b = {
+        \\    "a b": 1
+        \\}
+        \\var r4 = b["a b"];
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\stringNamedPropertyAccess.ts(6,10): error TS2454: Variable 'c' is used before being assigned.
+        \\stringNamedPropertyAccess.ts(13,10): error TS2454: Variable 'i' is used before being assigned.
+        \\stringNamedPropertyAccess.ts(18,10): error TS2454: Variable 'a' is used before being assigned.
+        ,
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    if (result.outcome != .passed) {
+        std.debug.print("stringNamedPropertyAccess detail:\n{s}\n", .{result.detail});
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: constructSignaturesWithOverloadsThatDifferOnlyByReturnType passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "constructSignaturesWithOverloadsThatDifferOnlyByReturnType",
+        .path = "constructSignaturesWithOverloadsThatDifferOnlyByReturnType.ts",
+        .source =
+        \\// @target: es2015
+        \\// Error for construct signature overloads to differ only by return type
+        \\
+        \\class C {
+        \\    constructor(x: number) { }
+        \\}
+        \\
+        \\class C2<T> {
+        \\    constructor(x: T, y?: string) { }
+        \\}
+        \\
+        \\interface I {
+        \\    new(x: number, y: string): C;
+        \\    new(x: number, y: string): C2<number>; // error
+        \\}
+        \\
+        \\interface I2<T> {
+        \\    new (x: T, y: string): C2<number>;
+        \\    new (x: T, y: string): C; // error
+        \\    new <T>(x: T, y: string): C2<T>;
+        \\    new <T>(x: T, y: string): C; // error
+        \\
+        \\}
+        \\
+        \\var a: {
+        \\    new (x: number, y: string): C2<number>;
+        \\    new (x: number, y: string): C; // error
+        \\}
+        \\
+        \\var b: {
+        \\    new <T>(x: T, y: string): C2<T>;
+        \\    new <T>(x: T, y: string): C; // error
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: callSignaturesThatDifferOnlyByReturnType passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "callSignaturesThatDifferOnlyByReturnType",
