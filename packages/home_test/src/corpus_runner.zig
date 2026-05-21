@@ -139,6 +139,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/26631.test.ts",
     "regression/issue/26844.test.ts",
     "regression/issue/02367.test.ts",
+    "regression/issue/02369.test.ts",
     "js/bun/util/fileUrl.test.js",
     "js/bun/util/file-type.test.ts",
     "js/node/url/url-pathtofileurl.test.js",

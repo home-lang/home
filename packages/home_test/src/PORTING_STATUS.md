@@ -788,6 +788,10 @@ The copied `regression/issue/02367.test.ts` fixture now passes as `1`
 test through the Web Body + matcher bootstrap model. It covers Bun's
 empty `Response.json()` / `Request.json()` rejection shape and the async
 function form of `expect(...).toThrow(SyntaxError)`.
+The copied `regression/issue/02369.test.ts` fixture now passes as `1`
+test through the Web Request bootstrap model. It covers repeated fresh
+`Request` construction with string JSON bodies and `await request.json()`
+parsing into deep-equal array/object payloads.
 The copied `cli/run/commonjs-invalid.test.ts` fixture now passes as `1`
 test through the real subprocess path, including piped stderr and the
 malformed CommonJS wrapper diagnostic.
