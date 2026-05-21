@@ -35,6 +35,36 @@ pub const OOM = Global.OOM;
 pub const handleOom = Global.handleOom;
 pub const default_allocator: std.mem.Allocator = std.heap.smp_allocator;
 
+pub const String = struct {
+    bytes: []const u8 = "",
+
+    pub const empty = String{};
+
+    pub fn borrowUTF8(value: []const u8) String {
+        return .{ .bytes = value };
+    }
+
+    pub fn ascii(value: []const u8) String {
+        return borrowUTF8(value);
+    }
+
+    pub fn slice(this: String) []const u8 {
+        return this.bytes;
+    }
+
+    pub fn byteSlice(this: String) []const u8 {
+        return this.bytes;
+    }
+
+    pub fn isEmpty(this: String) bool {
+        return this.bytes.len == 0;
+    }
+
+    pub fn toUTF8(this: String, _: std.mem.Allocator) jsc.ZigString.Slice {
+        return jsc.ZigString.Slice.fromUTF8NeverFree(this.bytes);
+    }
+};
+
 pub inline fn copy(comptime T: type, dest: []T, src: []const T) void {
     @memcpy(dest[0..src.len], src);
 }
@@ -191,6 +221,7 @@ pub const jsc = struct {
     pub const JSString = @import("jsc/JSString.zig");
     pub const RefString = @import("jsc/RefString.zig").RefString;
     pub const StringBuilder = @import("jsc/StringBuilder.zig").StringBuilder;
+    pub const ZigString = @import("jsc/ZigString.zig").ZigString;
     pub const SystemError = @import("jsc/SystemError.zig").SystemError;
     pub const WTF = @import("jsc/WTF.zig");
     pub const Weak = @import("jsc/Weak.zig");
@@ -1339,11 +1370,12 @@ pub const sql = struct {
             pub const zHelpers = @import("sql/postgres/protocol/zHelpers.zig");
             // Sixteenth-wave port batch (2026-05-18). Generic
             // decoder/writer factories + concrete BackendKeyData
-            // packet leaf. NewReader/NewWriter are TODO(phase-12-N)
-            // stubs pending the bun.strings + Data.zig port.
+            // packet leaf.
             pub const DecoderWrap = @import("sql/postgres/protocol/DecoderWrap.zig").DecoderWrap;
             pub const WriteWrap = @import("sql/postgres/protocol/WriteWrap.zig").WriteWrap;
             pub const BackendKeyData = @import("sql/postgres/protocol/BackendKeyData.zig");
+            pub const NewWriterWrap = @import("sql/postgres/protocol/NewWriter.zig").NewWriterWrap;
+            pub const NewWriter = @import("sql/postgres/protocol/NewWriter.zig").NewWriter;
             // Wave-18 Tier-0 grinder (2026-05-18). Postgres
             // wire-protocol writer/reader packet leaves. All reach
             // into the wave-16 NewReader/NewWriter stub method
