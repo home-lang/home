@@ -7,7 +7,8 @@ row is in the
 section.
 
 > **Status:** Substrate + JSC M6 landed. 497 / 1,193 Bun source
-> files ported (~41.7%); the runtime is not yet JavaScript-callable
+> files integrated (~41.7%), and the remaining filtered Bun Zig source
+> files are now present as a dormant raw import; the runtime is not yet JavaScript-callable
 > end-to-end, but Phase 12.2 (JSC bring-up) has reached the M6
 > milestone — JSON + Promise + Iterator + Global helpers — across
 > 97 files in `packages/runtime/src/jsc/`, including a live
@@ -1382,13 +1383,17 @@ Zig 0.17 map/padding syntax.
 
 ## Summary
 
-Substrate file-count progress (the only objective number today):
+Substrate file-count progress. "Integrated" means Home-import-rewritten,
+Zig 0.17-dev-clean, build-wired, and tested. "Dormant" means copied from
+Bun for parity work but not yet exported or compiled through Home.
 
 | Metric | Count | Notes |
 |---|---|---|
 | Bun upstream files (excluding test/codegen/jsc/macros) | 1,193 | pinned at `fd0b6f1a` |
-| Files ported to `packages/runtime/src/` | 497 | ~41.7% |
-| Files remaining to port | 696 | ~58.3% |
+| Upstream files present in `packages/runtime/src/` | 1,193 / 1,193 | existing Home ports plus dormant raw imports |
+| Files integrated into Home | 497 | ~41.7% |
+| Dormant raw Bun Zig files awaiting integration | 786 | copied in `ba157c27`, see `packages/runtime/DORMANT_BUN_ZIG_IMPORT_2026-05-21.txt` |
+| Files remaining to integrate | 696 | ~58.3%; excludes raw copy-only files that duplicate already-integrated Home paths |
 | JSC bring-up (`packages/runtime/src/jsc/`) | 97 files | Phase 12.2 M6 milestone + native eval smoke |
 | Node namespace (`packages/runtime/src/node/`) | 28 files | Phase 12.7 round-15 |
 | Bake lifetime carrier (`packages/runtime/src/runtime/bake/`) | 5 files | DevServer/HmrSocket deinit substrate, JS surface pending |

@@ -23,6 +23,12 @@ This package is Home's JavaScript / TypeScript runtime, equivalent to Bun in sur
 5. Every copied file must add **at least one** inline `test "..."` that exercises a method or invariant.
 6. After integrating: run `./pantry/.bin/zig build test --summary all` AND `home test` in `~/Code/Apps/settlers-iii`. Both must stay green; commit only if so.
 
+The 2026-05-21 bulk import is deliberately different: it copied the
+remaining filtered Bun Zig source into `src/` as dormant raw files
+without overwriting integrated Home ports. Those files are tracked in
+`DORMANT_BUN_ZIG_IMPORT_2026-05-21.txt` and must still go through the
+integration rules above before being exported or build-wired.
+
 ## Upstream pin
 
 `UPSTREAM_SHA.txt` holds the exact Bun commit our copy is anchored against. Today: `fd0b6f1a271fca0b8124b69f230b100f4d636af6` (`http: port fetch TCP keepalive to on_open in lib.rs`).
