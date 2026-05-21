@@ -11852,6 +11852,321 @@ test "conformance: enumLiteralTypes1 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: nullAssignableToEveryType passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nullAssignableToEveryType",
+        .path = "nullAssignableToEveryType.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\class C {
+        \\    foo: string;
+        \\}
+        \\var ac: C;
+        \\interface I {
+        \\    foo: string;
+        \\}
+        \\var ai: I;
+        \\
+        \\enum E { A }
+        \\var ae: E;
+        \\
+        \\var b: number = null;
+        \\var c: string = null;
+        \\var d: boolean = null;
+        \\var e: Date = null;
+        \\var f: any = null;
+        \\var g: void = null;
+        \\var h: Object = null;
+        \\var i: {} = null;
+        \\var j: () => {} = null;
+        \\var k: Function = null;
+        \\var l: (x: number) => string = null;
+        \\ac = null;
+        \\ai = null;
+        \\ae = null;
+        \\var m: number[] = null;
+        \\var n: { foo: string } = null;
+        \\var o: <T>(x: T) => T = null;
+        \\var p: Number = null;
+        \\var q: String = null;
+        \\
+        \\function foo<T, U, V extends Date>(x: T, y: U, z: V) {
+        \\    x = null;
+        \\    y = null;
+        \\    z = null;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: assignmentCompatWithObjectMembers passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "assignmentCompatWithObjectMembers",
+        .path = "assignmentCompatWithObjectMembers.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\namespace SimpleTypes {
+        \\    class S { foo: string; }
+        \\    class T { foo: string; }
+        \\    var s: S;
+        \\    var t: T;
+        \\
+        \\    interface S2 { foo: string; }
+        \\    interface T2 { foo: string; }
+        \\    var s2: S2;
+        \\    var t2: T2;
+        \\
+        \\    var a: { foo: string; }
+        \\    var b: { foo: string; }
+        \\
+        \\    var a2 = { foo: '' };
+        \\    var b2 = { foo: '' };
+        \\
+        \\    s = t;
+        \\    t = s;
+        \\    s = s2;
+        \\    s = a2;
+        \\
+        \\    s2 = t2;
+        \\    t2 = s2;
+        \\    s2 = t;
+        \\    s2 = b;
+        \\    s2 = a2;
+        \\
+        \\    a = b;
+        \\    b = a;
+        \\    a = s;
+        \\    a = s2;
+        \\    a = a2;
+        \\
+        \\    a2 = b2;
+        \\    b2 = a2;
+        \\    a2 = b;
+        \\    a2 = t2;
+        \\    a2 = t;
+        \\}
+        \\
+        \\namespace ObjectTypes {
+        \\    class S { foo: S; }
+        \\    class T { foo: T; }
+        \\    var s: S;
+        \\    var t: T;
+        \\
+        \\    interface S2 { foo: S2; }
+        \\    interface T2 { foo: T2; }
+        \\    var s2: S2;
+        \\    var t2: T2;
+        \\
+        \\    var a: { foo: typeof a; }
+        \\    var b: { foo: typeof b; }
+        \\
+        \\    var a2 = { foo: a2 };
+        \\    var b2 = { foo: b2 };
+        \\
+        \\    s = t;
+        \\    t = s;
+        \\    s = s2;
+        \\    s = a2;
+        \\
+        \\    s2 = t2;
+        \\    t2 = s2;
+        \\    s2 = t;
+        \\    s2 = b;
+        \\    s2 = a2;
+        \\
+        \\    a = b;
+        \\    b = a;
+        \\    a = s;
+        \\    a = s2;
+        \\    a = a2;
+        \\
+        \\    a2 = b2;
+        \\    b2 = a2;
+        \\    a2 = b;
+        \\    a2 = t2;
+        \\    a2 = t;
+        \\
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: narrowingConstrainedTypeVariable passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "narrowingConstrainedTypeVariable",
+        .path = "narrowingConstrainedTypeVariable.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\
+        \\class C { }
+        \\
+        \\function f1<T extends C>(v: T | string): void {
+        \\    if (v instanceof C) {
+        \\        const x: T = v;
+        \\    }
+        \\    else {
+        \\        const s: string = v;
+        \\    }
+        \\}
+        \\
+        \\class D { }
+        \\
+        \\function f2<T extends C, U extends D>(v: T | U) {
+        \\    if (v instanceof C) {
+        \\        const x: T = v;
+        \\    }
+        \\    else {
+        \\        const y: U = v;
+        \\    }
+        \\}
+        \\
+        \\class E { x: string | undefined }
+        \\
+        \\function f3<T extends E>(v: T | { x: string }) {
+        \\    if (v instanceof E) {
+        \\        const x: T = v;
+        \\    }
+        \\    else {
+        \\        const y: { x: string } = v;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: nullIsSubtypeOfEverythingButUndefined passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nullIsSubtypeOfEverythingButUndefined",
+        .path = "nullIsSubtypeOfEverythingButUndefined.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\var r0 = true ? null : null;
+        \\var r0 = true ? null : null;
+        \\
+        \\var u: typeof undefined;
+        \\var r0b = true ? u : null;
+        \\var r0b = true ? null : u;
+        \\
+        \\var r1 = true ? 1 : null;
+        \\var r1 = true ? null : 1;
+        \\
+        \\var r2 = true ? '' : null;
+        \\var r2 = true ? null : '';
+        \\
+        \\var r3 = true ? true : null;
+        \\var r3 = true ? null : true;
+        \\
+        \\var r4 = true ? new Date() : null;
+        \\var r4 = true ? null : new Date();
+        \\
+        \\var r5 = true ? /1/ : null;
+        \\var r5 = true ? null : /1/;
+        \\
+        \\var r6 = true ? { foo: 1 } : null;
+        \\var r6 = true ? null : { foo: 1 };
+        \\
+        \\var r7 = true ? () => { } : null;
+        \\var r7 = true ? null : () => { };
+        \\
+        \\var r8 = true ? <T>(x: T) => { return x } : null;
+        \\var r8b = true ? null : <T>(x: T) => { return x };
+        \\
+        \\interface I1 { foo: number; }
+        \\var i1: I1;
+        \\var r9 = true ? i1 : null;
+        \\var r9 = true ? null : i1;
+        \\
+        \\class C1 { foo: number; }
+        \\var c1: C1;
+        \\var r10 = true ? c1 : null;
+        \\var r10 = true ? null : c1;
+        \\
+        \\class C2<T> { foo: T; }
+        \\var c2: C2<number>;
+        \\var r12 = true ? c2 : null;
+        \\var r12 = true ? null : c2;
+        \\
+        \\enum E { A }
+        \\var r13 = true ? E : null;
+        \\var r13 = true ? null : E;
+        \\
+        \\var r14 = true ? E.A : null;
+        \\var r14 = true ? null : E.A;
+        \\
+        \\function f() { }
+        \\namespace f {
+        \\    export var bar = 1;
+        \\}
+        \\var af: typeof f;
+        \\var r15 = true ? af : null;
+        \\var r15 = true ? null : af;
+        \\
+        \\class c { baz: string }
+        \\namespace c {
+        \\    export var bar = 1;
+        \\}
+        \\var ac: typeof c;
+        \\var r16 = true ? ac : null;
+        \\var r16 = true ? null : ac;
+        \\
+        \\function f17<T>(x: T) {
+        \\    var r17 = true ? x : null;
+        \\    var r17 = true ? null : x;
+        \\}
+        \\
+        \\function f18<T, U>(x: U) {
+        \\    var r18 = true ? x : null;
+        \\    var r18 = true ? null : x;
+        \\}
+        \\
+        \\var r19 = true ? new Object() : null;
+        \\var r19 = true ? null : new Object();
+        \\
+        \\var r20 = true ? {} : null;
+        \\var r20 = true ? null : {};
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
