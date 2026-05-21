@@ -18156,6 +18156,259 @@ test "conformance: memberFunctionsWithPublicOverloads passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: mixinAbstractClasses passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "mixinAbstractClasses",
+        .path = "mixinAbstractClasses.ts",
+        .source =
+        \\interface Mixin {
+        \\    mixinMethod(): void;
+        \\}
+        \\
+        \\function Mixin<TBaseClass extends abstract new (...args: any) => any>(baseClass: TBaseClass): TBaseClass & (abstract new (...args: any) => Mixin) {
+        \\    abstract class MixinClass extends baseClass implements Mixin {
+        \\        mixinMethod() {
+        \\        }
+        \\    }
+        \\    return MixinClass;
+        \\}
+        \\
+        \\class ConcreteBase {
+        \\    baseMethod() {}
+        \\}
+        \\
+        \\abstract class AbstractBase {
+        \\    abstract abstractBaseMethod(): void;
+        \\}
+        \\
+        \\class DerivedFromConcrete extends Mixin(ConcreteBase) {
+        \\}
+        \\
+        \\const wasConcrete = new DerivedFromConcrete();
+        \\wasConcrete.baseMethod();
+        \\wasConcrete.mixinMethod();
+        \\
+        \\class DerivedFromAbstract extends Mixin(AbstractBase) {
+        \\    abstractBaseMethod() {}
+        \\}
+        \\
+        \\const wasAbstract = new DerivedFromAbstract();
+        \\wasAbstract.abstractBaseMethod();
+        \\wasAbstract.mixinMethod();
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: mixinAbstractClassesReturnTypeInference passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "mixinAbstractClassesReturnTypeInference",
+        .path = "mixinAbstractClassesReturnTypeInference.ts",
+        .source =
+        \\interface Mixin1 {
+        \\    mixinMethod(): void;
+        \\}
+        \\
+        \\abstract class AbstractBase {
+        \\    abstract abstractBaseMethod(): void;
+        \\}
+        \\
+        \\function Mixin2<TBase extends abstract new (...args: any[]) => any>(baseClass: TBase) {
+        \\    abstract class MixinClass extends baseClass implements Mixin1 {
+        \\        mixinMethod(): void {}
+        \\        static staticMixinMethod(): void {}
+        \\    }
+        \\    return MixinClass;
+        \\}
+        \\
+        \\class DerivedFromAbstract2 extends Mixin2(AbstractBase) {
+        \\    abstractBaseMethod() {}
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: mixinClassesAnonymous passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "mixinClassesAnonymous",
+        .path = "mixinClassesAnonymous.ts",
+        .source =
+        \\type Constructor<T> = new(...args: any[]) => T;
+        \\
+        \\class Base {
+        \\    constructor(public x: number, public y: number) {}
+        \\}
+        \\
+        \\class Derived extends Base {
+        \\    constructor(x: number, y: number, public z: number) {
+        \\        super(x, y);
+        \\    }
+        \\}
+        \\
+        \\const Printable = <T extends Constructor<Base>>(superClass: T) => class extends superClass {
+        \\    static message = "hello";
+        \\    print() {
+        \\        const output = this.x + "," + this.y;
+        \\    }
+        \\}
+        \\
+        \\function Tagged<T extends Constructor<{}>>(superClass: T) {
+        \\    class C extends superClass {
+        \\        _tag: string;
+        \\        constructor(...args: any[]) {
+        \\            super(...args);
+        \\            this._tag = "hello";
+        \\        }
+        \\    }
+        \\    return C;
+        \\}
+        \\
+        \\const Thing1 = Tagged(Derived);
+        \\const Thing2 = Tagged(Printable(Derived));
+        \\Thing2.message;
+        \\
+        \\function f1() {
+        \\    const thing = new Thing1(1, 2, 3);
+        \\    thing.x;
+        \\    thing._tag;
+        \\}
+        \\
+        \\function f2() {
+        \\    const thing = new Thing2(1, 2, 3);
+        \\    thing.x;
+        \\    thing._tag;
+        \\    thing.print();
+        \\}
+        \\
+        \\class Thing3 extends Thing2 {
+        \\    constructor(tag: string) {
+        \\        super(10, 20, 30);
+        \\        this._tag = tag;
+        \\    }
+        \\    test() {
+        \\        this.print();
+        \\    }
+        \\}
+        \\
+        \\const Timestamped = <CT extends Constructor<object>>(Base: CT) => {
+        \\    return class extends Base {
+        \\        timestamp = new Date();
+        \\    };
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: privateNameFieldAssignment passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "privateNameFieldAssignment",
+        .path = "privateNameFieldAssignment.ts",
+        .source =
+        \\class A {
+        \\    #field = 0;
+        \\    constructor() {
+        \\        this.#field = 1;
+        \\        this.#field += 2;
+        \\        this.#field -= 3;
+        \\        this.#field /= 4;
+        \\        this.#field *= 5;
+        \\        this.#field **= 6;
+        \\        this.#field %= 7;
+        \\        this.#field <<= 8;
+        \\        this.#field >>= 9;
+        \\        this.#field >>>= 10;
+        \\        this.#field &= 11;
+        \\        this.#field |= 12;
+        \\        this.#field ^= 13;
+        \\        A.getInstance().#field = 1;
+        \\        A.getInstance().#field += 2;
+        \\        A.getInstance().#field -= 3;
+        \\        A.getInstance().#field /= 4;
+        \\        A.getInstance().#field *= 5;
+        \\        A.getInstance().#field **= 6;
+        \\        A.getInstance().#field %= 7;
+        \\        A.getInstance().#field <<= 8;
+        \\        A.getInstance().#field >>= 9;
+        \\        A.getInstance().#field >>>= 10;
+        \\        A.getInstance().#field &= 11;
+        \\        A.getInstance().#field |= 12;
+        \\        A.getInstance().#field ^= 13;
+        \\    }
+        \\    static getInstance() {
+        \\        return new A();
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: privateNameStaticFieldClassExpression passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "privateNameStaticFieldClassExpression",
+        .path = "privateNameStaticFieldClassExpression.ts",
+        .source =
+        \\class B {
+        \\    static #foo = class {
+        \\        constructor() {
+        \\            console.log("hello");
+        \\            new B.#foo2();
+        \\        }
+        \\        static test = 123;
+        \\        field = 10;
+        \\    };
+        \\    static #foo2 = class Foo {
+        \\        static otherClass = 123;
+        \\    };
+        \\
+        \\    m() {
+        \\        console.log(B.#foo.test)
+        \\        B.#foo.test = 10;
+        \\        new B.#foo().field;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
