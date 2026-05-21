@@ -170,6 +170,8 @@ pub const minimal_js_files = [_][]const u8{
     "js/web/timers/performance-entries.test.ts",
     "js/web/fetch/blob-cow.test.ts",
     "js/web/fetch/blob-array-fast-path.test.ts",
+    "regression/issue/02368.test.ts",
+    "js/web/request/request.test.ts",
     "js/web/fetch/body-async-iterator.test.ts",
     "js/web/fetch/fetch-abort-queued.test.ts",
     "js/web/fetch/fetch-abort-stream-body.test.ts",
@@ -6374,6 +6376,18 @@ const harness_prelude =
     \\function __home_response_body_text(body) {
     \\  if (body == null) return "";
     \\  if (typeof body === "string") return body;
+    \\  if (body instanceof ArrayBuffer) return __home_utf8_bytes_to_text(Array.from(new Uint8Array(body)));
+    \\  if (ArrayBuffer.isView(body)) return __home_utf8_bytes_to_text(Array.from(new Uint8Array(body.buffer, body.byteOffset, body.byteLength)));
+    \\  if (body && Array.isArray(body.__home_blob_bytes)) return __home_utf8_bytes_to_text(body.__home_blob_bytes);
+    \\  if (body && Array.isArray(body.__home_chunks)) {
+    \\    const bytes = [];
+    \\    for (const chunk of body.__home_chunks) {
+    \\      const chunkText = __home_response_body_text(chunk);
+    \\      const chunkBytes = __home_text_to_utf8_bytes(chunkText);
+    \\      for (let i = 0; i < chunkBytes.length; i++) bytes.push(chunkBytes[i]);
+    \\    }
+    \\    return __home_utf8_bytes_to_text(bytes);
+    \\  }
     \\  if (typeof body.toString === "function") return body.toString();
     \\  return String(body);
     \\}
@@ -6387,6 +6401,9 @@ const harness_prelude =
     \\};
     \\Response.prototype.json = function() {
     \\  return Promise.resolve().then(() => __home_parse_json_body_text(__home_response_body_text(this.body)));
+    \\};
+    \\Response.prototype.clone = function() {
+    \\  return new Response(this.body, { status: this.status, headers: this.headers });
     \\};
     \\Response.redirect = function(url, status) {
     \\  return new Response(null, { status: status || 302, headers: { Location: String(url) } });
@@ -6621,9 +6638,8 @@ const harness_prelude =
     \\if (typeof Request !== "function" || typeof Request.prototype.text !== "function" || typeof Request.prototype.clone !== "function") {
     \\  function __home_request_body_text(value) {
     \\    if (value === null || value === undefined) return "";
-    \\    if (typeof value === "string") return value;
     \\    if (value && Object.prototype.hasOwnProperty.call(value, "__home_text")) return String(value.__home_text);
-    \\    return String(value);
+    \\    return __home_response_body_text(value);
     \\  }
     \\  function __home_request_clone_headers(headers) {
     \\    return new Headers(headers && headers.__home_headers ? headers.__home_headers : headers);
@@ -6654,7 +6670,7 @@ const harness_prelude =
     \\      this.__home_text = serialized.text;
     \\      if (this.headers.get("content-type") === null) this.headers.set("content-type", "multipart/form-data; boundary=" + serialized.boundary);
     \\    } else if (Object.prototype.hasOwnProperty.call(options, "body")) this.__home_text = __home_request_body_text(options.body);
-    \\    this.body = { __home_text: this.__home_text };
+    \\    this.body = { __home_text: this.__home_text, locked: false };
     \\  };
     \\  Request.prototype.text = function() {
     \\    return Promise.resolve(this.__home_text);
@@ -9372,6 +9388,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.require = function(specifier)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.redirect") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Response.prototype.clone") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var HTMLRewriter = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "HTMLRewriter.prototype.onDocument") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "doctype.remove") != null);

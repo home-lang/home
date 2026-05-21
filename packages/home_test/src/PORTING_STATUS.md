@@ -797,6 +797,14 @@ tests through the CommonJS and dynamic-import bootstrap model. It covers
 the upstream `abort-controller` CommonJS re-export fixture and bare
 `await import("abort-controller")` resolving to the runtime-global
 `AbortController` binding.
+The copied `regression/issue/02368.test.ts` fixture now passes as `2`
+tests through the Web Body bootstrap model. It covers `Response.clone()`
+and `new Request(existingRequest)` preserving status, method, headers,
+and independent readable body text.
+The copied `js/web/request/request.test.ts` fixture now passes as `4`
+tests through the Web Request bootstrap model. It covers undefined and
+null optional fields, cloned string bodies, stream-backed request bodies,
+and unlocked `body.locked` state before and after `request.clone()`.
 The copied `js/web/fetch/blob-cow.test.ts` fixture now passes as `1`
 test through the Web Blob bootstrap model. It covers byte-backed
 construction from typed arrays, copy-on-write `arrayBuffer()` reads,
