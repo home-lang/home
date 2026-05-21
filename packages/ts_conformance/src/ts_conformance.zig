@@ -17334,6 +17334,68 @@ test "conformance: parserUnaryExpression6 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: parser_continueInIterationStatement1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parser_continueInIterationStatement1",
+        .path = "parser_continueInIterationStatement1.ts",
+        .source =
+        \\while (true) {
+        \\  continue;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parser_continueInIterationStatement2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parser_continueInIterationStatement2",
+        .path = "parser_continueInIterationStatement2.ts",
+        .source =
+        \\do {
+        \\  continue;
+        \\}
+        \\while (true);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parser_continueTarget2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parser_continueTarget2",
+        .path = "parser_continueTarget2.ts",
+        .source =
+        \\target:
+        \\while (true) {
+        \\  continue target;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
