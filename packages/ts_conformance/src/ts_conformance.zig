@@ -19635,6 +19635,195 @@ test "conformance: emitArrowFunctionWhenUsingArguments19_ES6 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: templateStringWithEmbeddedDivision passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringWithEmbeddedDivision",
+        .path = "templateStringWithEmbeddedDivision.ts",
+        .source =
+        \\var x = `abc${ 1 / 1 }def`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringBinaryOperations passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringBinaryOperations",
+        .path = "templateStringBinaryOperations.ts",
+        .source =
+        \\var a = 1 + `${ 3 }`;
+        \\var b = 1 + `2${ 3 }`;
+        \\var c = 1 + `${ 3 }4`;
+        \\var d = 1 + `2${ 3 }4`;
+        \\var e = `${ 3 }` + 5;
+        \\var f = `2${ 3 }` + 5;
+        \\var g = `${ 3 }4` + 5;
+        \\var h = `2${ 3 }4` + 5;
+        \\var i = 1 + `${ 3 }` + 5;
+        \\var j = 1 + `2${ 3 }` + 5;
+        \\var k = 1 + `${ 3 }4` + 5;
+        \\var l = 1 + `2${ 3 }4` + 5;
+        \\
+        \\var a2 = 1 + `${ 3 - 4 }`;
+        \\var b2 = 1 + `2${ 3 - 4 }`;
+        \\var c2 = 1 + `${ 3 - 4 }5`;
+        \\var d2 = 1 + `2${ 3 - 4 }5`;
+        \\var e2 = `${ 3 - 4 }` + 6;
+        \\var f2 = `2${ 3 - 4 }` + 6;
+        \\var g2 = `${ 3 - 4 }5` + 6;
+        \\var h2 = `2${ 3 - 4 }5` + 6;
+        \\var i2 = 1 + `${ 3 - 4 }` + 6;
+        \\var j2 = 1 + `2${ 3 - 4 }` + 6;
+        \\var k2 = 1 + `${ 3 - 4 }5` + 6;
+        \\var l2 = 1 + `2${ 3 - 4 }5` + 6;
+        \\
+        \\var a3 = 1 + `${ 3 * 4 }`;
+        \\var b3 = 1 + `2${ 3 * 4 }`;
+        \\var c3 = 1 + `${ 3 * 4 }5`;
+        \\var d3 = 1 + `2${ 3 * 4 }5`;
+        \\var e3 = `${ 3 * 4 }` + 6;
+        \\var f3 = `2${ 3 * 4 }` + 6;
+        \\var g3 = `${ 3 * 4 }5` + 6;
+        \\var h3 = `2${ 3 * 4 }5` + 6;
+        \\var i3 = 1 + `${ 3 * 4 }` + 6;
+        \\var j3 = 1 + `2${ 3 * 4 }` + 6;
+        \\var k3 = 1 + `${ 3 * 4 }5` + 6;
+        \\var l3 = 1 + `2${ 3 * 4 }5` + 6;
+        \\
+        \\var a4 = 1 + `${ 3 & 4 }`;
+        \\var b4 = 1 + `2${ 3 & 4 }`;
+        \\var c4 = 1 + `${ 3 & 4 }5`;
+        \\var d4 = 1 + `2${ 3 & 4 }5`;
+        \\var e4 = `${ 3 & 4 }` + 6;
+        \\var f4 = `2${ 3 & 4 }` + 6;
+        \\var g4 = `${ 3 & 4 }5` + 6;
+        \\var h4 = `2${ 3 & 4 }5` + 6;
+        \\var i4 = 1 + `${ 3 & 4 }` + 6;
+        \\var j4 = 1 + `2${ 3 & 4 }` + 6;
+        \\var k4 = 1 + `${ 3 & 4 }5` + 6;
+        \\var l4 = 1 + `2${ 3 & 4 }5` + 6;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringInWhile passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringInWhile",
+        .path = "templateStringInWhile.ts",
+        .source =
+        \\while (`abc${0}abc`) {
+        \\    `def${1}def`;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringInArray passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringInArray",
+        .path = "templateStringInArray.ts",
+        .source =
+        \\var x = [1, 2, `abc${ 123 }def`];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringWithPropertyAccess passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringWithPropertyAccess",
+        .path = "templateStringWithPropertyAccess.ts",
+        .source =
+        \\`abc${0}abc`.indexOf(`abc`);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringInTypeOfES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringInTypeOfES6",
+        .path = "templateStringInTypeOfES6.ts",
+        .source =
+        \\var x = typeof `abc${ 123 }def`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringWithEmbeddedCommentsES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringWithEmbeddedCommentsES6",
+        .path = "templateStringWithEmbeddedCommentsES6.ts",
+        .source =
+        \\`head${ // single line comment
+        \\10
+        \\}
+        \\middle${
+        \\/* Multi-
+        \\ * line
+        \\ * comment
+        \\ */
+        \\ 20
+        \\ // closing comment
+        \\}
+        \\tail`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
