@@ -11315,6 +11315,148 @@ test "conformance: intersectionOfUnionOfUnitTypes passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: unionTypeCallSignatures7 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "unionTypeCallSignatures7",
+        .path = "unionTypeCallSignatures7.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\// @noEmit: true
+        \\
+        \\interface Callable<Name extends string> {
+        \\  (): `${Name} without id`;
+        \\  (id: number): `${Name} with id`;
+        \\}
+        \\
+        \\declare const f: Callable<"A"> | Callable<"B">;
+        \\const result = f(123);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: unionTypeIndexSignature passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "unionTypeIndexSignature",
+        .path = "unionTypeIndexSignature.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es2015
+        \\var numOrDate: number | Date;
+        \\var anyVar: number;
+        \\
+        \\var unionOfDifferentReturnType: { [a: string]: number; } | { [a: string]: Date; };
+        \\numOrDate = unionOfDifferentReturnType["hello"];
+        \\numOrDate = unionOfDifferentReturnType[10];
+        \\
+        \\var unionOfTypesWithAndWithoutStringSignature: { [a: string]: number; } | boolean;
+        \\anyVar = unionOfTypesWithAndWithoutStringSignature["hello"];
+        \\anyVar = unionOfTypesWithAndWithoutStringSignature[10];
+        \\
+        \\var unionOfDifferentReturnType1: { [a: number]: number; } | { [a: number]: Date; };
+        \\numOrDate = unionOfDifferentReturnType1["hello"];
+        \\numOrDate = unionOfDifferentReturnType1[10];
+        \\
+        \\var unionOfTypesWithAndWithoutStringSignature1: { [a: number]: number; } | boolean;
+        \\anyVar = unionOfTypesWithAndWithoutStringSignature1["hello"];
+        \\anyVar = unionOfTypesWithAndWithoutStringSignature1[10];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: discriminatedUnionTypes4 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "discriminatedUnionTypes4",
+        .path = "discriminatedUnionTypes4.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\// @noEmit: true
+        \\
+        \\enum AnimalType {
+        \\  cat = "cat",
+        \\  dog = "dog",
+        \\}
+        \\
+        \\type Animal =
+        \\  | {
+        \\      type: `${AnimalType.cat}`;
+        \\      meow: string;
+        \\    }
+        \\  | {
+        \\      type: `${AnimalType.dog}`;
+        \\      bark: string;
+        \\    };
+        \\
+        \\function check(p: never) {
+        \\  throw new Error("Error!");
+        \\}
+        \\
+        \\function action1(animal: Animal) {
+        \\  if (animal.type === AnimalType.cat) {
+        \\    console.log(animal.meow);
+        \\  } else if (animal.type === AnimalType.dog) {
+        \\    console.log(animal.bark);
+        \\  } else {
+        \\    check(animal);
+        \\  }
+        \\}
+        \\
+        \\function action2(animal: Animal) {
+        \\  switch (animal.type) {
+        \\    case `${AnimalType.cat}`:
+        \\      console.log(animal.meow);
+        \\      break;
+        \\    case `${AnimalType.dog}`:
+        \\      console.log(animal.bark);
+        \\      break;
+        \\    default:
+        \\      check(animal);
+        \\  }
+        \\}
+        \\
+        \\function action3(animal: Animal) {
+        \\  switch (animal.type) {
+        \\    case AnimalType.cat:
+        \\      console.log(animal.meow);
+        \\      break;
+        \\    case AnimalType.dog:
+        \\      console.log(animal.bark);
+        \\      break;
+        \\    default:
+        \\      check(animal);
+        \\  }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
