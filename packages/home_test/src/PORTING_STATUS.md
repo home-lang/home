@@ -192,7 +192,9 @@ mutable `globalThis` prototype behavior, comment-only module-load smoke,
 `Bun.randomUUIDv7` timestamped / monotonic UUID output,
 `Bun.sleepSync` millisecond timing / argument validation,
 `Bun.readableStreamToArrayBuffer` queued chunk draining,
-`Bun.unsafe.arrayBufferToString` / `Bun.allocUnsafe` smoke coverage, plus
+`Bun.unsafe.arrayBufferToString` / `Bun.allocUnsafe` smoke coverage,
+`bun:internal-for-testing.stringsInternals.toUTF16AllocSentinel`
+UTF-8 replacement behavior, plus
 `Bun.deepEquals`,
 Request/Response/Headers/URL, `node-fetch`, `node:buffer`, `deno:harness`
 including Bun-copied Deno `test(options, fn)` / permission skip /
@@ -778,6 +780,10 @@ through the unsafe utility bootstrap model. It covers `harness.gc`
 lowering, `Bun.unsafe.arrayBufferToString` for byte arrays,
 `ArrayBuffer`, and `Uint16Array`, plus writable `Bun.allocUnsafe`
 `Uint8Array` storage.
+The copied `js/bun/util/toUTF16Alloc.test.ts` fixture now passes as `6`
+tests through the internal string bootstrap model. It covers named
+`stringsInternals` lowering from `bun:internal-for-testing`, valid UTF-8
+decoding, and invalid-byte replacement-character output.
 The copied `js/node/process-binding.test.ts` fixture now passes as `2`
 tests through the `process.binding` bootstrap model. It covers the
 `constants` binding buckets Bun asserts plus the `uv` error-name and

@@ -221,6 +221,8 @@ entry lookup), WebSocket failed-connect `ErrorEvent` snapshots, JSC
 millisecond timing / argument validation,
 `Bun.readableStreamToArrayBuffer` queued chunk draining, and
 `Bun.unsafe.arrayBufferToString` / `Bun.allocUnsafe` smoke coverage, and
+`bun:internal-for-testing.stringsInternals.toUTF16AllocSentinel`
+UTF-8 replacement behavior, and
 `Bun.deepEquals`, Node `Buffer`
 binary/UTF-16LE/compare/inspect-limit/isEncoding behavior, `Map`/`Set`
 deep-equality, `Bun.inspect` Set formatting, `MessageEvent` constructor
@@ -290,7 +292,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `161` files, `692` passed, `0` failed,
+Latest measured subset run: `162` files, `698` passed, `0` failed,
 `41` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
@@ -1186,6 +1188,12 @@ The copied `js/bun/util/unsafe.test.js` fixture now passes in Home as
 the `harness.gc` import and models `Bun.unsafe.arrayBufferToString` for
 `Uint8Array`, `ArrayBuffer`, and `Uint16Array`, plus `Bun.allocUnsafe`
 returning writable `Uint8Array` storage.
+
+The copied `js/bun/util/toUTF16Alloc.test.ts` fixture now passes in Home
+as `6` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap
+lowers `stringsInternals` from `bun:internal-for-testing` and routes the
+sentinel helper through the UTF-8 decoder, including invalid-byte
+replacement characters.
 
 The copied `js/node/process-binding.test.ts` fixture now passes in Home
 as `2` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap

@@ -143,6 +143,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/util/sleepSync.test.ts",
     "js/bun/util/readablestreamtoarraybuffer.test.ts",
     "js/bun/util/unsafe.test.js",
+    "js/bun/util/toUTF16Alloc.test.ts",
     "js/node/process-binding.test.ts",
     "js/bun/test/test-timers.test.ts",
     "internal/highlighter.test.ts",
@@ -5283,6 +5284,11 @@ const harness_prelude =
     \\    if (typeof globalThis.__home_getDevServerDeinitCountNative !== "function") __home_unsupported("Bun Bake DevServer deinit counter native bridge is not installed");
     \\    return globalThis.__home_getDevServerDeinitCountNative();
     \\  },
+    \\  stringsInternals: {
+    \\    toUTF16AllocSentinel(input) {
+    \\      return new TextDecoder("utf-8").decode(input);
+    \\    },
+    \\  },
     \\  frameworkRouterInternals: {
     \\    parseRoutePattern: __home_parse_route_pattern,
     \\    FrameworkRouter: __home_FrameworkRouter,
@@ -6375,6 +6381,46 @@ const harness_prelude =
     \\  }
     \\  return output;
     \\}
+    \\function __home_decode_utf8(bytes) {
+    \\  let output = "";
+    \\  let i = 0;
+    \\  function cont(index) {
+    \\    return index < bytes.length && (bytes[index] & 0xc0) === 0x80;
+    \\  }
+    \\  while (i < bytes.length) {
+    \\    const b0 = bytes[i] & 0xff;
+    \\    if (b0 < 0x80) {
+    \\      output += String.fromCharCode(b0);
+    \\      i++;
+    \\      continue;
+    \\    }
+    \\    if (b0 >= 0xc2 && b0 <= 0xdf && cont(i + 1)) {
+    \\      output += String.fromCharCode(((b0 & 0x1f) << 6) | (bytes[i + 1] & 0x3f));
+    \\      i += 2;
+    \\      continue;
+    \\    }
+    \\    if (b0 >= 0xe0 && b0 <= 0xef && cont(i + 1) && cont(i + 2)) {
+    \\      const b1 = bytes[i + 1] & 0xff;
+    \\      if (!((b0 === 0xe0 && b1 < 0xa0) || (b0 === 0xed && b1 >= 0xa0))) {
+    \\        output += String.fromCharCode(((b0 & 0x0f) << 12) | ((b1 & 0x3f) << 6) | (bytes[i + 2] & 0x3f));
+    \\        i += 3;
+    \\        continue;
+    \\      }
+    \\    }
+    \\    if (b0 >= 0xf0 && b0 <= 0xf4 && cont(i + 1) && cont(i + 2) && cont(i + 3)) {
+    \\      const b1 = bytes[i + 1] & 0xff;
+    \\      if (!((b0 === 0xf0 && b1 < 0x90) || (b0 === 0xf4 && b1 >= 0x90))) {
+    \\        const code = ((b0 & 0x07) << 18) | ((b1 & 0x3f) << 12) | ((bytes[i + 2] & 0x3f) << 6) | (bytes[i + 3] & 0x3f);
+    \\        output += String.fromCodePoint(code);
+    \\        i += 4;
+    \\        continue;
+    \\      }
+    \\    }
+    \\    output += "\uFFFD";
+    \\    i++;
+    \\  }
+    \\  return output;
+    \\}
     \\if (typeof TextDecoder !== "function") {
     \\  var TextDecoder = function(label) {
     \\    this.encoding = label === undefined ? "utf-8" : String(label).toLowerCase();
@@ -6415,6 +6461,7 @@ const harness_prelude =
     \\    };
     \\    const key = this.encoding + ":" + hex;
     \\    if (Object.prototype.hasOwnProperty.call(fixtures, key)) return fixtures[key];
+    \\    if (this.encoding === "utf-8" || this.encoding === "utf8") return __home_decode_utf8(bytes);
     \\    let output = "";
     \\    for (const byte of bytes) output += String.fromCharCode(byte);
     \\    return output;
@@ -7294,6 +7341,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { highlightJavaScript: highlighter } = globalThis.__home_import(\"bun:internal-for-testing\");",
         },
         .{
+            .needle = "import { stringsInternals } from \"bun:internal-for-testing\";",
+            .replacement = "const { stringsInternals } = globalThis.__home_import(\"bun:internal-for-testing\");",
+        },
+        .{
             .needle = "import { frameworkRouterInternals } from \"bun:internal-for-testing\";",
             .replacement = "const { frameworkRouterInternals } = globalThis.__home_import(\"bun:internal-for-testing\");",
         },
@@ -8006,6 +8057,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "escapeRegExpForPackageNameMatching(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "escapePowershell(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "highlightJavaScript(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toUTF16AllocSentinel(input)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "getDevServerDeinitCount()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_getDevServerDeinitCountNative()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun:jsc\"]") != null);
@@ -8268,6 +8320,20 @@ test "Bun internal testing import rewrite lowers named PowerShell import" {
     defer std.testing.allocator.free(rewritten);
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { escapePowershell } = globalThis.__home_import(\"bun:internal-for-testing\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:internal-for-testing\"") == null);
+}
+
+test "Bun internal testing import rewrite lowers strings internals import" {
+    const source =
+        \\import { stringsInternals } from "bun:internal-for-testing";
+        \\import { expect, test } from "bun:test";
+        \\const { toUTF16AllocSentinel } = stringsInternals;
+        \\test("utf16", () => expect(toUTF16AllocSentinel(new Uint8Array([0x80]))).toBe("\uFFFD"));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/bun/util/toUTF16Alloc.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { stringsInternals } = globalThis.__home_import(\"bun:internal-for-testing\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:internal-for-testing\"") == null);
 }
 
@@ -10233,6 +10299,43 @@ test "bootstrap Bun unsafe array buffer helpers cover copied fixture shape" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+}
+
+test "bootstrap stringsInternals.toUTF16AllocSentinel decodes replacement characters" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { stringsInternals } from "bun:internal-for-testing";
+        \\import { describe, expect, test } from "bun:test";
+        \\
+        \\const { toUTF16AllocSentinel } = stringsInternals;
+        \\
+        \\describe("bun.strings.toUTF16AllocForReal(sentinel=true)", () => {
+        \\  test("pure ASCII", () => {
+        \\    expect(toUTF16AllocSentinel(Buffer.from("abc"))).toBe("abc");
+        \\  });
+        \\
+        \\  test("valid UTF-8 with non-ASCII", () => {
+        \\    expect(toUTF16AllocSentinel(Buffer.from("café", "utf8"))).toBe("café");
+        \\    expect(toUTF16AllocSentinel(Buffer.from("アプリケーション", "utf8"))).toBe("アプリケーション");
+        \\  });
+        \\
+        \\  test("invalid byte", () => {
+        \\    expect(toUTF16AllocSentinel(new Uint8Array([0x61, 0x62, 0x63, 0x80]))).toBe("abc\uFFFD");
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/util/toUTF16Alloc.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "bootstrap runner reports pending returned promises as unsupported" {
