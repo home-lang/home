@@ -17396,6 +17396,60 @@ test "conformance: parser_continueTarget2 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: asyncGeneratorPromiseNextType passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "asyncGeneratorPromiseNextType",
+        .path = "asyncGeneratorPromiseNextType.ts",
+        .source =
+        \\type Result = {message: string}
+        \\
+        \\async function *saverGen(): AsyncGenerator<void, void, Promise<Result> | undefined> {
+        \\    let pending: Promise<Result>[] = [];
+        \\    while (true) {
+        \\        const p: Promise<Result> | undefined = yield;
+        \\        if (p != null)
+        \\            pending.push(p);
+        \\        else {
+        \\            const results = await Promise.all(pending);
+        \\            pending = [];
+        \\            console.log('Storing...');
+        \\            await storeResults(results);
+        \\        }
+        \\    }
+        \\}
+        \\
+        \\function storeResults(results: Result[]) {
+        \\    console.log(results);
+        \\    return Promise.resolve();
+        \\}
+        \\
+        \\async function *saverGen2() {
+        \\    let pending: Promise<Result>[] = [];
+        \\    while (true) {
+        \\        const p: Promise<Result> | undefined = yield;
+        \\        if (p != null)
+        \\            pending.push(p);
+        \\        else {
+        \\            const results = await Promise.all(pending);
+        \\            pending = [];
+        \\            console.log('Storing...');
+        \\            await storeResults(results);
+        \\        }
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
