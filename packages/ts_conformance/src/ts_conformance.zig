@@ -10988,6 +10988,224 @@ test "conformance: optionalMethods passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: classWithOptionalParameter passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "classWithOptionalParameter",
+        .path = "classWithOptionalParameter.ts",
+        .source =
+        \\// @target: es2015
+        \\
+        \\class C {
+        \\    x?: string;
+        \\    f?() {}
+        \\}
+        \\
+        \\class C2<T> {
+        \\    x?: T;
+        \\    f?(x: T) {}
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: classWithPublicProperty passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "classWithPublicProperty",
+        .path = "classWithPublicProperty.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\class C {
+        \\    public x;
+        \\    public a = '';
+        \\    public b: string = '';
+        \\    public c() { return '' }
+        \\    public d = () => '';
+        \\    public static e;
+        \\    public static f() { return '' }
+        \\    public static g = () => '';
+        \\}
+        \\
+        \\var c = new C();
+        \\var r1: string = c.x;
+        \\var r2: string = c.a;
+        \\var r3: string = c.b;
+        \\var r4: string = c.c();
+        \\var r5: string = c.d();
+        \\var r6: string = C.e;
+        \\var r7: string = C.f();
+        \\var r8: string = C.g();
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: classWithProtectedProperty passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "classWithProtectedProperty",
+        .path = "classWithProtectedProperty.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\class C {
+        \\    protected x;
+        \\    protected a = '';
+        \\    protected b: string = '';
+        \\    protected c() { return '' }
+        \\    protected d = () => '';
+        \\    protected static e;
+        \\    protected static f() { return '' }
+        \\    protected static g = () => '';
+        \\}
+        \\
+        \\class D extends C {
+        \\    method() {
+        \\        var d = new D();
+        \\        var r1: string = d.x;
+        \\        var r2: string = d.a;
+        \\        var r3: string = d.b;
+        \\        var r4: string = d.c();
+        \\        var r5: string = d.d();
+        \\        var r6: string = C.e;
+        \\        var r7: string = C.f();
+        \\        var r8: string = C.g();
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: intersectionThisTypes passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "intersectionThisTypes",
+        .path = "intersectionThisTypes.ts",
+        .source =
+        \\// @target: es2015
+        \\interface Thing1 {
+        \\    a: number;
+        \\    self(): this;
+        \\}
+        \\
+        \\interface Thing2 {
+        \\    b: number;
+        \\    me(): this;
+        \\}
+        \\
+        \\type Thing3 = Thing1 & Thing2;
+        \\type Thing4 = Thing3 & string[];
+        \\
+        \\function f1(t: Thing3) {
+        \\    t = t.self();
+        \\    t = t.me().self().me();
+        \\}
+        \\
+        \\interface Thing5 extends Thing4 {
+        \\    c: string;
+        \\}
+        \\
+        \\function f2(t: Thing5) {
+        \\    t = t.self();
+        \\    t = t.me().self().me();
+        \\}
+        \\
+        \\interface Component {
+        \\    extend<T>(props: T): this & T;
+        \\}
+        \\
+        \\interface Label extends Component {
+        \\    title: string;
+        \\}
+        \\
+        \\function test(label: Label) {
+        \\    const extended = label.extend({ id: 67 }).extend({ tag: "hello" });
+        \\    extended.id;
+        \\    extended.tag;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: operatorsAndIntersectionTypes passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "operatorsAndIntersectionTypes",
+        .path = "operatorsAndIntersectionTypes.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\type Guid = string & { $Guid };
+        \\type SerialNo = number & { $SerialNo };
+        \\
+        \\function createGuid() {
+        \\    return "21EC2020-3AEA-4069-A2DD-08002B30309D" as Guid;
+        \\}
+        \\
+        \\function createSerialNo() {
+        \\    return 12345 as SerialNo;
+        \\}
+        \\
+        \\let map1: { [x: string]: number } = {};
+        \\let guid = createGuid();
+        \\map1[guid] = 123;
+        \\
+        \\let map2: { [x: number]: string } = {};
+        \\let serialNo = createSerialNo();
+        \\map2[serialNo] = "hello";
+        \\
+        \\const s1 = "{" + guid + "}";
+        \\const s2 = guid.toLowerCase();
+        \\const s3 = guid + guid;
+        \\const s4 = guid + serialNo;
+        \\const s5 = serialNo.toPrecision(0);
+        \\const n1 = serialNo * 3;
+        \\const n2 = serialNo + serialNo;
+        \\const b1 = guid === "";
+        \\const b2 = guid === guid;
+        \\const b3 = serialNo === 0;
+        \\const b4 = serialNo === serialNo;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
