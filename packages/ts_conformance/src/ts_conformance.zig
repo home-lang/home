@@ -8502,6 +8502,423 @@ test "conformance: emitRestParametersFunctionPropertyES6 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: controlFlowTruthiness passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "controlFlowTruthiness",
+        .path = "controlFlowTruthiness.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strictNullChecks: true
+        \\
+        \\declare function foo(): string | undefined;
+        \\
+        \\function f1() {
+        \\    let x = foo();
+        \\    if (x) {
+        \\        x; // string
+        \\    }
+        \\    else {
+        \\        x; // string | undefined
+        \\    }
+        \\}
+        \\
+        \\function f2() {
+        \\    let x: string | undefined;
+        \\    x = foo();
+        \\    if (x) {
+        \\        x; // string
+        \\    }
+        \\    else {
+        \\        x; // string | undefined
+        \\    }
+        \\}
+        \\
+        \\function f3() {
+        \\    let x: string | undefined;
+        \\    if (x = foo()) {
+        \\        x; // string
+        \\    }
+        \\    else {
+        \\        x; // string | undefined
+        \\    }
+        \\}
+        \\
+        \\function f4() {
+        \\    let x: string | undefined;
+        \\    if (!(x = foo())) {
+        \\        x; // string | undefined
+        \\    }
+        \\    else {
+        \\        x; // string
+        \\    }
+        \\}
+        \\
+        \\function f5() {
+        \\    let x: string | undefined;
+        \\    let y: string | undefined;
+        \\    if (x = y = foo()) {
+        \\        x; // string
+        \\        y; // string | undefined
+        \\    }
+        \\    else {
+        \\        x; // string | undefined
+        \\        y; // string | undefined
+        \\    }
+        \\}
+        \\
+        \\function f6() {
+        \\    let x: string | undefined;
+        \\    let y: string | undefined;
+        \\    if (x = foo(), y = foo()) {
+        \\        x; // string | undefined
+        \\        y; // string
+        \\    }
+        \\    else {
+        \\        x; // string | undefined
+        \\        y; // string | undefined
+        \\    }
+        \\}
+        \\
+        \\function f7(x: {}) {
+        \\    if (x) {
+        \\        x; // {}
+        \\    }
+        \\    else {
+        \\        x; // {}
+        \\    }
+        \\}
+        \\
+        \\function f8<T>(x: T) {
+        \\    if (x) {
+        \\        x; // {}
+        \\    }
+        \\    else {
+        \\        x; // {}
+        \\    }
+        \\}
+        \\
+        \\function f9<T extends object>(x: T) {
+        \\    if (x) {
+        \\        x; // {}
+        \\    }
+        \\    else {
+        \\        x; // never
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = false },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: controlFlowOptionalChain2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "controlFlowOptionalChain2",
+        .path = "controlFlowOptionalChain2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strictNullChecks: true
+        \\
+        \\type A = {
+        \\  type: 'A';
+        \\  name: string;
+        \\}
+        \\
+        \\type B = {
+        \\  type: 'B';
+        \\}
+        \\
+        \\function funcTwo(arg: A | B | undefined) {
+        \\  if (arg?.type === 'B') {
+        \\    arg; // `B`
+        \\    return;
+        \\  }
+        \\
+        \\  arg;
+        \\  arg?.name;
+        \\}
+        \\
+        \\function funcThree(arg: A | B | null) {
+        \\  if (arg?.type === 'B') {
+        \\    arg; // `B`
+        \\    return;
+        \\  }
+        \\
+        \\  arg;
+        \\  arg?.name;
+        \\}
+        \\
+        \\type U = { kind: undefined, u: 'u' }
+        \\type N = { kind: null, n: 'n' }
+        \\type X = { kind: 'X', x: 'x' }
+        \\
+        \\function f1(x: X | U | undefined) {
+        \\    if (x?.kind === undefined) {
+        \\        x; // U | undefined
+        \\    }
+        \\    else {
+        \\        x; // X
+        \\    }
+        \\}
+        \\
+        \\function f2(x: X | N | undefined) {
+        \\    if (x?.kind === undefined) {
+        \\        x; // undefined
+        \\    }
+        \\    else {
+        \\        x; // X | N
+        \\    }
+        \\}
+        \\
+        \\function f3(x: X | U | null) {
+        \\    if (x?.kind === undefined) {
+        \\        x; // U | null
+        \\    }
+        \\    else {
+        \\        x; // X
+        \\    }
+        \\}
+        \\
+        \\function f4(x: X | N | null) {
+        \\    if (x?.kind === undefined) {
+        \\        x; // null
+        \\    }
+        \\    else {
+        \\        x; // X | N
+        \\    }
+        \\}
+        \\
+        \\function f5(x: X | U | undefined) {
+        \\    if (x?.kind === null) {
+        \\        x; // never
+        \\    }
+        \\    else {
+        \\        x; // X | U | undefined
+        \\    }
+        \\}
+        \\
+        \\function f6(x: X | N | undefined) {
+        \\    if (x?.kind === null) {
+        \\        x; // N
+        \\    }
+        \\    else {
+        \\        x; // X | undefined
+        \\    }
+        \\}
+        \\
+        \\function f7(x: X | U | null) {
+        \\    if (x?.kind === null) {
+        \\        x; // never
+        \\    }
+        \\    else {
+        \\        x; // X | U | null
+        \\    }
+        \\}
+        \\
+        \\function f8(x: X | N | null) {
+        \\    if (x?.kind === null) {
+        \\        x; // N
+        \\    }
+        \\    else {
+        \\        x; // X | null
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = false },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: typeGuardsNestedAssignments passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeGuardsNestedAssignments",
+        .path = "typeGuardsNestedAssignments.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strictNullChecks: true
+        \\
+        \\class Foo {
+        \\    x: string = "";
+        \\}
+        \\
+        \\declare function getFooOrNull(): Foo | null;
+        \\declare function getStringOrNumberOrNull(): string | number | null;
+        \\
+        \\function f1() {
+        \\    let foo: Foo | null;
+        \\    if ((foo = getFooOrNull()) !== null) {
+        \\        foo;  // Foo
+        \\    }
+        \\}
+        \\
+        \\function f2() {
+        \\    let foo1: Foo | null;
+        \\    let foo2: Foo | null;
+        \\    if ((foo1 = getFooOrNull(), foo2 = foo1) !== null) {
+        \\        foo1;  // Foo | null
+        \\        foo2;  // Foo
+        \\    }
+        \\}
+        \\
+        \\function f3() {
+        \\    let obj: Object | null;
+        \\    if ((obj = getFooOrNull()) instanceof Foo) {
+        \\        obj;
+        \\    }
+        \\}
+        \\
+        \\function f4() {
+        \\    let x: string | number | null;
+        \\    if (typeof (x = getStringOrNumberOrNull()) === "number") {
+        \\        x;
+        \\    }
+        \\}
+        \\
+        \\// Repro from #8851
+        \\
+        \\const re = /./g
+        \\let match: RegExpExecArray | null
+        \\
+        \\while ((match = re.exec("xxx")) != null) {
+        \\    const length = match[1].length + match[2].length
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = false },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: dependentDestructuredVariablesWithExport passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "dependentDestructuredVariablesWithExport",
+        .path = "dependentDestructuredVariablesWithExport.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\// @noEmit: true
+        \\
+        \\// https://github.com/microsoft/TypeScript/issues/59652
+        \\
+        \\declare function mutuallyEnabledPair(): {
+        \\    discriminator: true,
+        \\    value: string,
+        \\  } | {
+        \\    discriminator: false,
+        \\    value: null | undefined,
+        \\  }
+        \\
+        \\const { discriminator: discriminator1, value: value1 } = mutuallyEnabledPair()
+        \\
+        \\if (discriminator1) {
+        \\  value1;
+        \\}
+        \\
+        \\export const { discriminator: discriminator2, value: value2 } = mutuallyEnabledPair()
+        \\
+        \\if (discriminator2) {
+        \\  value2;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: functionWithUseStrictAndSimpleParameterList passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "functionWithUseStrictAndSimpleParameterList",
+        .path = "functionWithUseStrictAndSimpleParameterList.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\function a(a = 10) {
+        \\    "use strict";
+        \\}
+        \\
+        \\export var foo = 10;
+        \\function b(a = 10) {
+        \\}
+        \\
+        \\function container() {
+        \\    "use strict";
+        \\    function f(a = 10) {
+        \\    }
+        \\}
+        \\
+        \\function rest(...args: any[]) {
+        \\    'use strict';
+        \\}
+        \\
+        \\function rest1(a = 1, ...args) {
+        \\    'use strict';
+        \\}
+        \\
+        \\function paramDefault(param = 1) {
+        \\    'use strict';
+        \\}
+        \\
+        \\function objectBindingPattern({foo}: any) {
+        \\    'use strict';
+        \\}
+        \\
+        \\function arrayBindingPattern([foo]: any[]) {
+        \\    'use strict';
+        \\}
+        \\
+        \\function manyParameter(a = 10, b = 20) {
+        \\    "use strict";
+        \\}
+        \\
+        \\function manyPrologue(a = 10, b = 20) {
+        \\    "foo";
+        \\    "use strict";
+        \\}
+        \\
+        \\function invalidPrologue(a = 10, b = 20) {
+        \\    "foo";
+        \\    const c = 1;
+        \\    "use strict";
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
