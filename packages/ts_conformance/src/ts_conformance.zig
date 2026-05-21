@@ -4533,6 +4533,487 @@ test "conformance: iteratorSpreadInArray2 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+
+test "conformance: forBreakStatements passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "forBreakStatements",
+        .path = "forBreakStatements.ts",
+        .source =
+        \\// @target: es2015
+        \\// @allowUnusedLabels: true
+        \\// @allowUnreachableCode: true
+        \\
+        \\for (; ;) {
+        \\    break;
+        \\}
+        \\
+        \\ONE:
+        \\for (; ;) {
+        \\    break ONE;
+        \\}
+        \\
+        \\TWO:
+        \\THREE:
+        \\for (; ;) {
+        \\    break THREE;
+        \\}
+        \\
+        \\FOUR:
+        \\for (; ;) {
+        \\    FIVE:
+        \\    for (; ;) {
+        \\        break FOUR;
+        \\    }
+        \\}
+        \\
+        \\for (; ;) {
+        \\    SIX:
+        \\    for (; ;) break SIX;
+        \\}
+        \\
+        \\SEVEN:
+        \\for (; ;) for (; ;) for (; ;) break SEVEN;
+        \\
+        \\EIGHT:
+        \\for (; ;) {
+        \\    var fn = function () { }
+        \\    break EIGHT;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: forInBreakStatements passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "forInBreakStatements",
+        .path = "forInBreakStatements.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// @allowUnusedLabels: true
+        \\
+        \\for(var x in {}) {
+        \\    break;
+        \\}
+        \\
+        \\ONE:
+        \\for(var x in {}) {
+        \\    break ONE;
+        \\}
+        \\
+        \\TWO:
+        \\THREE:
+        \\for(var x in {}) {
+        \\    break THREE;
+        \\}
+        \\
+        \\FOUR:
+        \\for(var x in {}) {
+        \\    FIVE:
+        \\    for(var x in {}) {
+        \\        break FOUR;
+        \\    }
+        \\}
+        \\
+        \\for(var x in {}) {
+        \\    SIX:
+        \\    for(var x in {}) break SIX;
+        \\}
+        \\
+        \\SEVEN:
+        \\for (var x in {}) for (var x in {}) for (var x in {}) break SEVEN;
+        \\
+        \\EIGHT:
+        \\for (var x in {}){
+        \\    var fn = function () { }
+        \\    break EIGHT;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: doWhileContinueStatements passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "doWhileContinueStatements",
+        .path = "doWhileContinueStatements.ts",
+        .source =
+        \\// @target: es2015
+        \\// @allowUnreachableCode: true
+        \\
+        \\do {
+        \\    continue;
+        \\} while(true)
+        \\
+        \\ONE:
+        \\do {
+        \\    continue ONE;
+        \\}
+        \\while (true)
+        \\
+        \\TWO:
+        \\THREE:
+        \\do {
+        \\    continue THREE;
+        \\}while (true)
+        \\
+        \\FOUR:
+        \\do {
+        \\    FIVE:
+        \\    do {
+        \\        continue FOUR;
+        \\    }while (true)
+        \\}while (true)
+        \\
+        \\do {
+        \\    SIX:
+        \\    do continue SIX; while(true)
+        \\}while (true)
+        \\
+        \\SEVEN:
+        \\do do do continue SEVEN; while (true) while (true)  while (true)
+        \\
+        \\EIGHT:
+        \\do{
+        \\    var fn = function () { }
+        \\    continue EIGHT;
+        \\}while(true)
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: whileContinueStatements passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "whileContinueStatements",
+        .path = "whileContinueStatements.ts",
+        .source =
+        \\// @target: es2015
+        \\while(true) {
+        \\    continue;
+        \\}
+        \\
+        \\while (true) {
+        \\    if (true) {
+        \\        continue;
+        \\    }
+        \\}
+        \\
+        \\ONE:
+        \\
+        \\while (true) {
+        \\    continue ONE;
+        \\}
+        \\
+        \\TWO:
+        \\THREE:
+        \\while (true) {
+        \\    continue THREE;
+        \\}
+        \\
+        \\FOUR:
+        \\while (true) {
+        \\    FIVE:
+        \\    while (true) {
+        \\        continue FOUR;
+        \\    }
+        \\}
+        \\
+        \\while (true) {
+        \\    SIX:
+        \\    while (true)
+        \\        continue SIX;
+        \\}
+        \\
+        \\SEVEN:
+        \\while (true)
+        \\    while (true)
+        \\        while (true)
+        \\            continue SEVEN;
+        \\
+        \\EIGHT:
+        \\while (true) {
+        \\    var fn = function () { }
+        \\    continue EIGHT;
+        \\}
+        \\
+        \\NINE:
+        \\while (true) {
+        \\    if (true) { continue NINE; }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: forInContinueStatements passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "forInContinueStatements",
+        .path = "forInContinueStatements.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// @allowUnusedLabels: true
+        \\
+        \\for(var x in {}) {
+        \\    continue;
+        \\}
+        \\
+        \\ONE:
+        \\for(var x in {}) {
+        \\    continue ONE;
+        \\}
+        \\
+        \\TWO:
+        \\THREE:
+        \\for(var x in {}) {
+        \\    continue THREE;
+        \\}
+        \\
+        \\FOUR:
+        \\for(var x in {}) {
+        \\    FIVE:
+        \\    for(var x in {}) {
+        \\        continue FOUR;
+        \\    }
+        \\}
+        \\
+        \\for(var x in {}) {
+        \\    SIX:
+        \\    for(var x in {}) continue SIX;
+        \\}
+        \\
+        \\SEVEN:
+        \\for (var x in {}) for (var x in {}) for (var x in {}) continue SEVEN;
+        \\
+        \\EIGHT:
+        \\for (var x in {}){
+        \\    var fn = function () { }
+        \\    continue EIGHT;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: recursiveInitializer passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "recursiveInitializer",
+        .path = "recursiveInitializer.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// number unless otherwise specified
+        \\var n1 = n1++;
+        \\var n2: number = n2 + n2;
+        \\var n3 /* any */ = n3 + n3;
+        \\
+        \\// string unless otherwise specified
+        \\var s1 = s1 + '';
+        \\var s2 /* any */ = s2 + s2;
+        \\var s3 : string = s3 + s3;
+        \\var s4 = '' + s4;
+        \\
+        \\// boolean unless otherwise specified
+        \\var b1 = !b1;
+        \\var b2 = !!b2;
+        \\var b3 = !b3 || b3; // expected boolean here. actually 'any'
+        \\var b4 = (!b4) && b4; // expected boolean here. actually 'any'
+        \\
+        \\// (x:string) => any
+        \\var f = (x: string) => f(x);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: controlFlowCommaOperator passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "controlFlowCommaOperator",
+        .path = "controlFlowCommaOperator.ts",
+        .source =
+        \\// @target: es2015
+        \\function f(x: string | number | boolean) {
+        \\    let y: string | number | boolean = false;
+        \\    let z: string | number | boolean = false;
+        \\    if (y = "", typeof x === "string") {
+        \\        x; // string
+        \\        y; // string
+        \\        z; // boolean
+        \\    }
+        \\    else if (z = 1, typeof x === "number") {
+        \\        x; // number
+        \\        y; // string
+        \\        z; // number
+        \\    }
+        \\    else {
+        \\        x; // boolean
+        \\        y; // string
+        \\        z; // number
+        \\    }
+        \\    x; // string | number | boolean
+        \\    y; // string
+        \\    z; // number | boolean
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: for_inStatementsAsyncIdentifier passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "for-inStatementsAsyncIdentifier",
+        .path = "for-inStatementsAsyncIdentifier.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: esnext
+        \\
+        \\var async;
+        \\for (async in { a: 1, b: 2 }) {}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: for_inStatementsArray passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "for-inStatementsArray",
+        .path = "for-inStatementsArray.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\let a: Date[];
+        \\let b: boolean[];
+        \\
+        \\for (let x in a) {
+        \\    let a1 = a[x];
+        \\    let a2 = a[(x)];
+        \\    let a3 = a[+x];
+        \\    let b1 = b[x];
+        \\    let b2 = b[(x)];
+        \\    let b3 = b[+x];
+        \\}
+        \\
+        \\for (let x in a) {
+        \\    for (let y in a) {
+        \\        for (let z in a) {
+        \\            let a1 = a[x];
+        \\            let a2 = a[y];
+        \\            let a3 = a[z];
+        \\        }
+        \\    }
+        \\}
+        \\
+        \\let i: string;
+        \\let j: string;
+        \\for (i in a) {
+        \\    for (j in b) {
+        \\        let a1 = a[i];
+        \\        let a2 = a[j];
+        \\    }
+        \\}
+        \\
+        \\var s: string;
+        \\for (var s in a) {
+        \\    let a1 = a[s];
+        \\}
+        \\for (s in a) {
+        \\    let a1 = a[s];
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: exportDefaultExpressionComments passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "exportDefaultExpressionComments",
+        .path = "exportDefaultExpressionComments.ts",
+        .source =
+        \\// @module: commonjs
+        \\// @target: es2015
+        \\// @declaration: true
+        \\
+        \\/**
+        \\ * JSDoc Comments
+        \\ */
+        \\export default null
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
