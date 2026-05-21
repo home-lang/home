@@ -7172,6 +7172,363 @@ test "conformance: emptyAssignmentPatterns01_ES6 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: VariableDeclaration3_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "VariableDeclaration3_es6",
+        .path = "VariableDeclaration3_es6.ts",
+        .source =
+        \\// @target:es6
+        \\const a = 1
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: VariableDeclaration7_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "VariableDeclaration7_es6",
+        .path = "VariableDeclaration7_es6.ts",
+        .source =
+        \\// @target:es6
+        \\let a
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: VariableDeclaration9_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "VariableDeclaration9_es6",
+        .path = "VariableDeclaration9_es6.ts",
+        .source =
+        \\// @target:es6
+        \\let a: number
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: destructuringArrayBindingPatternAndAssignment5SiblingInitializer passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "destructuringArrayBindingPatternAndAssignment5SiblingInitializer",
+        .path = "destructuringArrayBindingPatternAndAssignment5SiblingInitializer.ts",
+        .source =
+        \\// @target: es2015
+        \\// @noImplicitAny: true
+        \\
+        \\// To be inferred as `number`
+        \\function f1() {
+        \\    const [a1, b1 = a1] = [1];
+        \\    const [a2, b2 = 1 + a2] = [1];
+        \\}
+        \\
+        \\// To be inferred as `string`
+        \\function f2() {
+        \\    const [a1, b1 = a1] = ['hi'];
+        \\    const [a2, b2 = a2 + '!'] = ['hi'];
+        \\}
+        \\
+        \\// To be inferred as `string | number`
+        \\function f3() {
+        \\    const [a1, b1 = a1] = ['hi', 1];
+        \\    const [a2, b2 = a2 + '!'] = ['hi', 1];
+        \\}
+        \\
+        \\// Based on comment:
+        \\//   - https://github.com/microsoft/TypeScript/issues/49989#issuecomment-1852694486
+        \\declare const yadda: [number, number] | undefined
+        \\function f4() {
+        \\    const [ a, b = a ] = yadda ?? [];
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: destructuringObjectBindingPatternAndAssignment9SiblingInitializer passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "destructuringObjectBindingPatternAndAssignment9SiblingInitializer",
+        .path = "destructuringObjectBindingPatternAndAssignment9SiblingInitializer.ts",
+        .source =
+        \\// @target: es2015
+        \\// @noImplicitAny: true
+        \\
+        \\// To be inferred as `number`
+        \\function f1() {
+        \\    const { a1, b1 = a1 } = { a1: 1 };
+        \\    const { a2, b2 = 1 + a2 } = { a2: 1 };
+        \\}
+        \\
+        \\// To be inferred as `string`
+        \\function f2() {
+        \\    const { a1, b1 = a1 } = { a1: 'hi' };
+        \\    const { a2, b2 = a2 + '!' } = { a2: 'hi' };
+        \\}
+        \\
+        \\// To be inferred as `string | number`
+        \\function f3() {
+        \\    const { a1, b1 = a1 } = { a1: 'hi', b1: 1 };
+        \\    const { a2, b2 = a2 + '!' } = { a2: 'hi', b2: 1 };
+        \\}
+        \\
+        \\// Based on comment:
+        \\//   - https://github.com/microsoft/TypeScript/issues/49989#issuecomment-1852694486
+        \\declare const yadda: { a?: number, b?: number } | undefined
+        \\function f4() {
+        \\    const { a, b = a } = yadda ?? {};
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectBindingPatternKeywordIdentifiers05 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectBindingPatternKeywordIdentifiers05",
+        .path = "objectBindingPatternKeywordIdentifiers05.ts",
+        .source =
+        \\// @target: es2015
+        \\
+        \\var { as } = { as: 1 }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectBindingPatternKeywordIdentifiers06 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectBindingPatternKeywordIdentifiers06",
+        .path = "objectBindingPatternKeywordIdentifiers06.ts",
+        .source =
+        \\// @target: es2015
+        \\
+        \\var { as: as } = { as: 1 }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: nonIterableRestElement1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nonIterableRestElement1",
+        .path = "nonIterableRestElement1.ts",
+        .source =
+        \\// @target: es2015
+        \\var c = {};
+        \\[...c] = ["", 0];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: nonIterableRestElement2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nonIterableRestElement2",
+        .path = "nonIterableRestElement2.ts",
+        .source =
+        \\//@target: ES6
+        \\var c = {};
+        \\[...c] = ["", 0];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: restElementWithAssignmentPattern5 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "restElementWithAssignmentPattern5",
+        .path = "restElementWithAssignmentPattern5.ts",
+        .source =
+        \\// @target: es2015
+        \\var s: string, s2: string;
+        \\[...[s, s2]] = ["", ""];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emptyArrayBindingPatternParameter03 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emptyArrayBindingPatternParameter03",
+        .path = "emptyArrayBindingPatternParameter03.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// @declaration: true
+        \\
+        \\function f(a, []) {
+        \\    var x, y, z;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emptyVariableDeclarationBindingPatterns01_ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emptyVariableDeclarationBindingPatterns01_ES6",
+        .path = "emptyVariableDeclarationBindingPatterns01_ES6.ts",
+        .source =
+        \\// @target: es6
+        \\
+        \\(function () {
+        \\    var a: any;
+        \\
+        \\    var {} = a;
+        \\    let {} = a;
+        \\    const {} = a;
+        \\
+        \\    var [] = a;
+        \\    let [] = a;
+        \\    const [] = a;
+        \\
+        \\    var {} = a, [] = a;
+        \\    let {} = a, [] = a;
+        \\    const {} = a, [] = a;
+        \\
+        \\    var { p1: {}, p2: [] } = a;
+        \\    let { p1: {}, p2: [] } = a;
+        \\    const { p1: {}, p2: [] } = a;
+        \\
+        \\    for (var {} = {}, {} = {}; false; void 0) {
+        \\    }
+        \\
+        \\    function f({} = a, [] = a, { p: {} = a} = a) {
+        \\        return ({} = a, [] = a, { p: {} = a } = a) => a;
+        \\    }
+        \\})();
+        \\
+        \\(function () {
+        \\    const ns: number[][] = [];
+        \\
+        \\    for (var {} of ns) {
+        \\    }
+        \\
+        \\    for (let {} of ns) {
+        \\    }
+        \\
+        \\    for (const {} of ns) {
+        \\    }
+        \\
+        \\    for (var [] of ns) {
+        \\    }
+        \\
+        \\    for (let [] of ns) {
+        \\    }
+        \\
+        \\    for (const [] of ns) {
+        \\    }
+        \\})();
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: arrayAssignmentPatternWithAny passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "arrayAssignmentPatternWithAny",
+        .path = "arrayAssignmentPatternWithAny.ts",
+        .source =
+        \\// @target: es2015
+        \\var a: any;
+        \\var x: string;
+        \\[x] = a;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
