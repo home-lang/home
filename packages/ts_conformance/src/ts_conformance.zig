@@ -5280,6 +5280,258 @@ test "conformance: mixinAccessors5 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: controlFlowIfStatement passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "controlFlowIfStatement",
+        .path = "controlFlowIfStatement.ts",
+        .source =
+        \\// @target: es2015
+        \\// @allowUnreachableCode: true
+        \\
+        \\let x: string | number | boolean | RegExp;
+        \\let cond: boolean;
+        \\
+        \\x = /a/;
+        \\if (x /* RegExp */, (x = true)) {
+        \\    x; // boolean
+        \\    x = "";
+        \\}
+        \\else {
+        \\    x; // boolean
+        \\    x = 42;
+        \\}
+        \\x; // string | number
+        \\
+        \\function a() {
+        \\    let x: string | number;
+        \\    if (cond) {
+        \\        x = 42;
+        \\    }
+        \\    else {
+        \\        x = "";
+        \\        return;
+        \\    }
+        \\    x; // number
+        \\}
+        \\function b() {
+        \\    let x: string | number;
+        \\    if (cond) {
+        \\        x = 42;
+        \\        throw "";
+        \\    }
+        \\    else {
+        \\        x = "";
+        \\    }
+        \\    x; // string
+        \\}
+        \\function c<T>(data: string | T): T {
+        \\    if (typeof data === 'string') {
+        \\        return JSON.parse(data);
+        \\    }
+        \\    else {
+        \\        return data;
+        \\    }
+        \\}
+        \\function d<T extends string>(data: string | T): never {
+        \\    if (typeof data === 'string') {
+        \\        throw new Error('will always happen');
+        \\    }
+        \\    else {
+        \\        return data;
+        \\    }
+        \\}
+        \\
+        \\interface I<T> {
+        \\  p: T;
+        \\}
+        \\function e(x: I<"A" | "B">) {
+        \\    if (x.p === "A") {
+        \\        let a: "A" = (null as unknown as typeof x.p)
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: TypeGuardWithEnumUnion passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "TypeGuardWithEnumUnion",
+        .path = "TypeGuardWithEnumUnion.ts",
+        .source =
+        \\// @target: es2015
+        \\enum Color { R, G, B }
+        \\
+        \\function f1(x: Color | string) {
+        \\    if (typeof x === "number") {
+        \\        var y = x;
+        \\        var y: Color;
+        \\    }
+        \\    else {
+        \\        var z = x;
+        \\        var z: string;
+        \\    }
+        \\}
+        \\
+        \\function f2(x: Color | string | string[]) {
+        \\    if (typeof x === "object") {
+        \\        var y = x;
+        \\        var y: string[];
+        \\    }
+        \\    if (typeof x === "number") {
+        \\        var z = x;
+        \\        var z: Color;
+        \\    }
+        \\    else {
+        \\        var w = x;
+        \\        var w: string | string[];
+        \\    }
+        \\    if (typeof x === "string") {
+        \\        var a = x;
+        \\        var a: string;
+        \\    }
+        \\    else {
+        \\        var b = x;
+        \\        var b: Color | string[];
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: typeGuardFunctionGenerics passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeGuardFunctionGenerics",
+        .path = "typeGuardFunctionGenerics.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\class A {
+        \\    propA: number;
+        \\}
+        \\
+        \\class B {
+        \\    propB: number;
+        \\}
+        \\
+        \\class C extends A {
+        \\    propC: number;
+        \\}
+        \\
+        \\declare function isB(p1): p1 is B;
+        \\declare function isC(p1): p1 is C;
+        \\declare function retC(x): C;
+        \\
+        \\declare function funA<T>(p1: (p1) => T): T;
+        \\declare function funB<T>(p1: (p1) => T, p2: any): p2 is T;
+        \\declare function funC<T>(p1: (p1) => p1 is T): T;
+        \\declare function funD<T>(p1: (p1) => p1 is T, p2: any): p2 is T;
+        \\declare function funE<T, U>(p1: (p1) => p1 is T, p2: U): T;
+        \\
+        \\let a: A;
+        \\let test1: boolean = funA(isB);
+        \\if (funB(retC, a)) {
+        \\    a.propC;
+        \\}
+        \\let test2: B = funC(isB);
+        \\if (funD(isC, a)) {
+        \\    a.propC;
+        \\}
+        \\let test3: B = funE(isB, 1);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: generatorOverloads4 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "generatorOverloads4",
+        .path = "generatorOverloads4.ts",
+        .source =
+        \\//@target: ES6
+        \\class C {
+        \\    f(s: string): Iterable<any>;
+        \\    f(s: number): Iterable<any>;
+        \\    *f(s: any): Iterable<any> { }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: generatorTypeCheck15 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "generatorTypeCheck15",
+        .path = "generatorTypeCheck15.ts",
+        .source =
+        \\//@target: ES6
+        \\function* g() {
+        \\    return "";
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: constructorNameInObjectLiteralAccessor passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "constructorNameInObjectLiteralAccessor",
+        .path = "constructorNameInObjectLiteralAccessor.ts",
+        .source =
+        \\// @target: esnext
+        \\const c1 = {
+        \\    get constructor() { return },
+        \\    set constructor(value) {}
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
