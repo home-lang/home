@@ -1,14 +1,21 @@
-/// This type can be used with `bun.ptr.Owned` to model "maybe owned" pointers:
+// Copied from bun/src/bun_alloc/maybe_owned.zig at upstream
+// SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT - see ../cli/LICENSE.bun.md.
+//
+// Imports rewritten: `@import("bun")` -> `@import("home_rt")`.
+// The generic allocator facade is exposed through `home_rt.allocators` so this
+// Bun allocator leaf participates in Home's runtime module graph.
+
+/// This type models allocator state for values that can be either owned or borrowed:
 ///
 /// ```
-/// // Either owned by the default allocator, or borrowed
-/// const MaybeOwnedFoo = bun.ptr.OwnedIn(*Foo, bun.allocators.MaybeOwned(bun.DefaultAllocator));
+/// // Either forwards to a parent allocator, or is borrowed.
+/// const MaybeOwnedStd = home_rt.allocators.MaybeOwned(std.mem.Allocator);
 ///
-/// var owned_foo: MaybeOwnedFoo = .new(makeFoo());
-/// var borrowed_foo: MaybeOwnedFoo = .fromRawIn(some_foo_ptr, .initBorrowed());
+/// var owned_alloc = MaybeOwnedStd.initOwned(std.testing.allocator);
+/// var borrowed_alloc = MaybeOwnedStd.initBorrowed();
 ///
-/// owned_foo.deinit(); // calls `Foo.deinit` and frees the memory
-/// borrowed_foo.deinit(); // no-op
+/// owned_alloc.deinit(); // deinitializes the parent if it owns resources
+/// borrowed_alloc.deinit(); // no-op
 /// ```
 ///
 /// This type is a `GenericAllocator`; see `src/allocators.zig`.
@@ -16,7 +23,7 @@ pub fn MaybeOwned(comptime Allocator: type) type {
     return struct {
         const Self = @This();
 
-        _parent: bun.allocators.Nullable(Allocator),
+        _parent: home_rt.allocators.Nullable(Allocator),
 
         /// Same as `.initBorrowed()`. This allocator cannot be used to allocate memory; a panic
         /// will occur.
@@ -26,7 +33,7 @@ pub fn MaybeOwned(comptime Allocator: type) type {
         ///
         /// Allocations are forwarded to a default-initialized `Allocator`.
         pub fn init() Self {
-            return .initOwned(bun.memory.initDefault(Allocator));
+            return .initOwned(defaultParent(Allocator));
         }
 
         /// Creates a `MaybeOwned` allocator that owns memory, and forwards to a specific
@@ -47,7 +54,7 @@ pub fn MaybeOwned(comptime Allocator: type) type {
         pub fn deinit(self: *Self) void {
             var maybe_parent = self.intoParent();
             if (maybe_parent) |*parent_alloc| {
-                bun.memory.deinit(parent_alloc);
+                home_rt.memory.deinit(parent_alloc);
             }
         }
 
@@ -58,17 +65,17 @@ pub fn MaybeOwned(comptime Allocator: type) type {
         pub fn allocator(self: Self) std.mem.Allocator {
             const maybe_parent = self.rawParent();
             return if (maybe_parent) |parent_alloc|
-                bun.allocators.asStd(parent_alloc)
+                home_rt.allocators.asStd(parent_alloc)
             else
                 .{ .ptr = undefined, .vtable = &null_vtable };
         }
 
-        const BorrowedParent = bun.allocators.Borrowed(Allocator);
+        const BorrowedParent = home_rt.allocators.Borrowed(Allocator);
 
         pub fn parent(self: Self) ?BorrowedParent {
             const maybe_parent = self.rawParent();
             return if (maybe_parent) |parent_alloc|
-                bun.allocators.borrow(parent_alloc)
+                home_rt.allocators.borrow(parent_alloc)
             else
                 null;
         }
@@ -78,21 +85,28 @@ pub fn MaybeOwned(comptime Allocator: type) type {
             return self.rawParent();
         }
 
-        /// Used by smart pointer types and allocator wrappers. See `bun.allocators.borrow`.
+        /// Used by smart pointer types and allocator wrappers. See `home_rt.allocators.borrow`.
         pub const Borrowed = MaybeOwned(BorrowedParent);
 
         pub fn borrow(self: Self) Borrowed {
-            return .{ ._parent = bun.allocators.initNullable(BorrowedParent, self.parent()) };
+            return .{ ._parent = home_rt.allocators.initNullable(BorrowedParent, self.parent()) };
         }
 
         fn initRaw(parent_alloc: ?Allocator) Self {
-            return .{ ._parent = bun.allocators.initNullable(Allocator, parent_alloc) };
+            return .{ ._parent = home_rt.allocators.initNullable(Allocator, parent_alloc) };
         }
 
         fn rawParent(self: Self) ?Allocator {
-            return bun.allocators.unpackNullable(Allocator, self._parent);
+            return home_rt.allocators.unpackNullable(Allocator, self._parent);
         }
     };
+}
+
+fn defaultParent(comptime Allocator: type) Allocator {
+    return if (comptime Allocator == std.mem.Allocator)
+        home_rt.default_allocator
+    else
+        home_rt.memory.initDefault(Allocator);
 }
 
 fn nullAlloc(ptr: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*]u8 {
@@ -107,6 +121,40 @@ const null_vtable: std.mem.Allocator.VTable = .{
     .free = std.mem.Allocator.noFree,
 };
 
-const bun = @import("bun");
+const home_rt = @import("home_rt");
 const std = @import("std");
 const Alignment = std.mem.Alignment;
+
+test "MaybeOwned: borrowed std allocator has no parent" {
+    const BorrowedStd = MaybeOwned(std.mem.Allocator);
+    const borrowed = BorrowedStd.initBorrowed();
+
+    try std.testing.expect(!borrowed.isOwned());
+    try std.testing.expect(borrowed.parent() == null);
+}
+
+test "MaybeOwned: owned std allocator forwards allocations" {
+    var owned = MaybeOwned(std.mem.Allocator).initOwned(std.testing.allocator);
+    defer owned.deinit();
+
+    try std.testing.expect(owned.isOwned());
+    try std.testing.expect(owned.parent() != null);
+
+    const allocator = owned.allocator();
+    const bytes = try allocator.alloc(u8, 12);
+    defer allocator.free(bytes);
+    @memset(bytes, 0xC3);
+
+    const expected: [12]u8 = @splat(0xC3);
+    try std.testing.expectEqualSlices(u8, &expected, bytes);
+}
+
+test "MaybeOwned: borrow keeps std allocator usable without taking ownership" {
+    const owned = MaybeOwned(std.mem.Allocator).initOwned(std.testing.allocator);
+    const borrowed_view = owned.borrow();
+
+    try std.testing.expect(borrowed_view.isOwned());
+    const allocator = borrowed_view.allocator();
+    const bytes = try allocator.alloc(u8, 4);
+    allocator.free(bytes);
+}

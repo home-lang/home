@@ -1,13 +1,9 @@
 // Copied from bun/src/install/ExternalSlice.zig at upstream
-// SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → @import("home_rt"). The bottom-of-file
-// concrete type aliases (`ExternalStringList = ExternalSlice(ExternalString)`,
-// `ExternalPackageNameHashList = ExternalSlice(PackageNameHash)`,
-// `VersionSlice = ExternalSlice(Semver.Version)`) depend on `Semver.String`,
-// `bun.install.PackageNameHash`, and `Semver.Version` — none of which are
-// available in `home_rt` until the Semver port lands. They are intentionally
-// omitted here and will be re-attached when the broader install/ subtree is
-// copied. `ExternalStringMap` is omitted for the same reason.
+// SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT - see ../cli/LICENSE.bun.md.
+// Imports rewritten:
+//   `bun.Environment` / `bun.assert` -> local Debug-mode assert shim
+//   `bun.install.PackageNameHash` -> sibling `PackageID.zig`
+//   `bun.Semver` -> sibling `../semver/semver.zig`
 
 pub fn ExternalSlice(comptime Type: type) type {
     return extern struct {
@@ -29,16 +25,16 @@ pub fn ExternalSlice(comptime Type: type) type {
         }
 
         pub inline fn get(this: Slice, in: []const Type) []const Type {
-            if (comptime Environment.allow_assert) {
-                home_rt.assert(this.off + this.len <= in.len);
+            if (comptime allow_assert) {
+                std.debug.assert(this.off + this.len <= in.len);
             }
             // it should be impossible to address this out of bounds due to the minimum here
             return in.ptr[this.off..@min(in.len, this.off + this.len)];
         }
 
         pub inline fn mut(this: Slice, in: []Type) []Type {
-            if (comptime Environment.allow_assert) {
-                home_rt.assert(this.off + this.len <= in.len);
+            if (comptime allow_assert) {
+                std.debug.assert(this.off + this.len <= in.len);
             }
             return in.ptr[this.off..@min(in.len, this.off + this.len)];
         }
@@ -53,7 +49,7 @@ pub fn ExternalSlice(comptime Type: type) type {
 
         pub fn init(buf: []const Type, in: []const Type) Slice {
             // if (comptime Environment.allow_assert) {
-            //     home_rt.assert(bun.isSliceInBuffer(in, buf));
+            //     std.debug.assert(isSliceInBuffer(in, buf));
             // }
 
             return Slice{
@@ -64,9 +60,14 @@ pub fn ExternalSlice(comptime Type: type) type {
     };
 }
 
-// Concrete `ExternalStringList` / `ExternalPackageNameHashList` /
-// `VersionSlice` / `ExternalStringMap` aliases omitted — re-land alongside
-// the install/ + semver/ port.
+pub const ExternalStringMap = extern struct {
+    name: ExternalStringList = .{},
+    value: ExternalStringList = .{},
+};
+
+pub const ExternalStringList = ExternalSlice(ExternalString);
+pub const ExternalPackageNameHashList = ExternalSlice(PackageNameHash);
+pub const VersionSlice = ExternalSlice(Semver.Version);
 
 test "ExternalSlice.init computes offset/length from pointer arithmetic" {
     var buf = [_]u32{ 10, 20, 30, 40, 50 };
@@ -107,6 +108,42 @@ test "ExternalSlice.mut returns a mutable view into the buffer" {
     try std.testing.expectEqual(@as(u8, 'Z'), buf[1]);
 }
 
+test "ExternalStringList slices ExternalString buffers" {
+    var buf = [_]ExternalString{
+        ExternalString.from("alpha"),
+        ExternalString.from("beta"),
+        ExternalString.from("gamma"),
+    };
+    const slice = ExternalStringList.init(&buf, buf[1..]);
+    try std.testing.expectEqual(@as(u32, 1), slice.off);
+    try std.testing.expectEqual(@as(u32, 2), slice.len);
+    try std.testing.expectEqualStrings("beta", slice.get(&buf)[0].slice(""));
+}
+
+test "ExternalPackageNameHashList slices package name hashes" {
+    const buf = [_]PackageNameHash{ 11, 22, 33 };
+    const slice = ExternalPackageNameHashList.init(&buf, buf[0..2]);
+    try std.testing.expectEqualSlices(PackageNameHash, &.{ 11, 22 }, slice.get(&buf));
+}
+
+test "VersionSlice slices semver versions" {
+    const buf = [_]Semver.Version{
+        .{ .major = 1, .minor = 0, .patch = 0 },
+        .{ .major = 2, .minor = 0, .patch = 0 },
+    };
+    const slice = VersionSlice.init(&buf, buf[1..]);
+    try std.testing.expectEqual(@as(u64, 2), slice.get(&buf)[0].major);
+}
+
+test "ExternalStringMap defaults to empty name/value lists" {
+    const map = ExternalStringMap{};
+    try std.testing.expectEqual(@as(u32, 0), map.name.len);
+    try std.testing.expectEqual(@as(u32, 0), map.value.len);
+}
+
 const std = @import("std");
-const home_rt = @import("home_rt");
-const Environment = home_rt.Environment;
+const allow_assert = @import("builtin").mode == .Debug;
+const PackageNameHash = @import("PackageID.zig").PackageNameHash;
+
+const Semver = @import("../semver/semver.zig");
+const ExternalString = Semver.ExternalString;

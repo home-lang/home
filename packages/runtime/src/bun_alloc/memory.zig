@@ -1,14 +1,17 @@
+// Copied from bun/src/bun_alloc/memory.zig at upstream
+// SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT - see ../cli/LICENSE.bun.md.
+//
+// Imports rewritten: `@import("bun")` -> `@import("home_rt")`.
+// The allocator helpers are wired through Home's runtime facade while keeping
+// the same public memory utility surface for downstream Bun leaves.
+
 //! Basic utilities for working with memory and objects.
 
 /// Allocates memory for a value of type `T` using the provided allocator, and initializes the
 /// memory with `value`.
 ///
-/// If `allocator` is `bun.default_allocator`, this will internally use `bun.tryNew` to benefit from
-/// the added assertions.
-pub fn create(comptime T: type, allocator: std.mem.Allocator, value: T) bun.OOM!*T {
-    if ((comptime Environment.allow_assert) and isDefault(allocator)) {
-        return bun.tryNew(T, value);
-    }
+/// Mirrors Bun's memory helper API for Home runtime callers.
+pub fn create(comptime T: type, allocator: std.mem.Allocator, value: T) home_rt.OOM!*T {
     const ptr = try allocator.create(T);
     ptr.* = value;
     return ptr;
@@ -19,11 +22,7 @@ pub fn create(comptime T: type, allocator: std.mem.Allocator, value: T) bun.OOM!
 /// The memory must have been allocated by the `create` function in this namespace, not
 /// directly by `allocator.create`.
 pub fn destroy(allocator: std.mem.Allocator, ptr: anytype) void {
-    if ((comptime Environment.allow_assert) and isDefault(allocator)) {
-        bun.destroy(ptr);
-    } else {
-        allocator.destroy(ptr);
-    }
+    allocator.destroy(ptr);
 }
 
 /// Default-initializes a value of type `T`.
@@ -73,8 +72,8 @@ fn deinitIsVoid(comptime T: type) bool {
 /// * If `ptr_or_slice` is a single-item pointer of type `*T`:
 ///   - If `T` is a struct or tagged union, calls `ptr_or_slice.deinit()`
 ///   - If `T` is an optional, checks if `ptr_or_slice` points to a non-null value, and if so,
-///     calls `bun.memory.deinit` with a pointer to the payload.
-/// * If `ptr_or_slice` is a slice, for each element of the slice, calls `bun.memory.deinit` with
+///     calls `home_rt.memory.deinit` with a pointer to the payload.
+/// * If `ptr_or_slice` is a slice, for each element of the slice, calls `home_rt.memory.deinit` with
 ///   a pointer to the element.
 ///
 /// Then, if `ptr_or_slice` is non-const, this function also sets all memory referenced by the
@@ -179,12 +178,7 @@ pub fn rebaseSlice(slice: []const u8, old_base: [*]const u8, new_base: [*]const 
 /// Most allocators will perform this operation without allocating any memory, but unlike a simple
 /// cast, this function will not cause issues with allocators that need to know the exact size of
 /// the allocation to free it.
-pub fn dropSentinel(ptr: anytype, allocator: std.mem.Allocator) blk: {
-    var info = @typeInfo(@TypeOf(ptr));
-    info.pointer.size = .slice;
-    info.pointer.sentinel_ptr = null;
-    break :blk bun.OOM!@Type(info);
-} {
+pub fn dropSentinel(ptr: anytype, allocator: std.mem.Allocator) home_rt.OOM!DropSentinel(@TypeOf(ptr)) {
     const info = @typeInfo(@TypeOf(ptr)).pointer;
     const Child = info.child;
     if (comptime info.sentinel_ptr == null) {
@@ -196,15 +190,83 @@ pub fn dropSentinel(ptr: anytype, allocator: std.mem.Allocator) blk: {
         .slice => ptr,
         else => @compileError("only slices and many-item pointers are supported"),
     };
+    const unsentinel: DropSentinel(@TypeOf(ptr)) = slice[0..slice.len];
 
-    if (allocator.remap(@constCast(slice), slice.len)) |new| return new;
-    defer allocator.free(slice);
-    return allocator.dupe(Child, slice);
+    if (allocator.remap(@constCast(unsentinel), unsentinel.len)) |new| return new;
+    defer allocator.free(unsentinel);
+    return allocator.dupe(Child, unsentinel);
+}
+
+fn DropSentinel(comptime Ptr: type) type {
+    const info = @typeInfo(Ptr).pointer;
+    return if (info.is_const) []const info.child else []info.child;
 }
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const bun = @import("bun");
-const Environment = bun.Environment;
-const isDefault = bun.allocators.isDefault;
+const home_rt = @import("home_rt");
+
+test "memory: create initializes and destroy frees" {
+    const Payload = struct {
+        a: u32,
+        b: []const u8,
+    };
+
+    const ptr = try create(Payload, std.testing.allocator, .{ .a = 42, .b = "home" });
+    defer destroy(std.testing.allocator, ptr);
+
+    try std.testing.expectEqual(@as(u32, 42), ptr.a);
+    try std.testing.expectEqualStrings("home", ptr.b);
+}
+
+test "memory: initDefault prefers initDefault then init then empty" {
+    const WithInitDefault = struct {
+        value: u8,
+        pub fn initDefault() @This() {
+            return .{ .value = 1 };
+        }
+    };
+    const WithInit = struct {
+        value: u8,
+        pub fn init() @This() {
+            return .{ .value = 2 };
+        }
+    };
+    const Empty = struct {};
+
+    try std.testing.expectEqual(@as(u8, 1), initDefault(WithInitDefault).value);
+    try std.testing.expectEqual(@as(u8, 2), initDefault(WithInit).value);
+    try std.testing.expectEqual(Empty{}, initDefault(Empty));
+}
+
+test "memory: deinit handles optionals and slices" {
+    const Item = struct {
+        count: *usize,
+
+        pub fn deinit(self: *@This()) void {
+            self.count.* += 1;
+        }
+    };
+
+    var count: usize = 0;
+    var maybe: ?Item = .{ .count = &count };
+    deinit(&maybe);
+    try std.testing.expectEqual(@as(usize, 1), count);
+
+    var items = [_]Item{
+        .{ .count = &count },
+        .{ .count = &count },
+    };
+    deinit(items[0..]);
+    try std.testing.expectEqual(@as(usize, 3), count);
+}
+
+test "memory: dropSentinel returns a freeable slice" {
+    const allocator = std.testing.allocator;
+    const value = try allocator.dupeZ(u8, "home");
+    const slice = try dropSentinel(value, allocator);
+    defer allocator.free(slice);
+
+    try std.testing.expectEqualStrings("home", slice);
+}

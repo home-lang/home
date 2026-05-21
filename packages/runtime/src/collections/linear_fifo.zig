@@ -1,3 +1,7 @@
+// Copied from bun/src/collections/linear_fifo.zig at upstream SHA
+// fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT - see ../cli/LICENSE.bun.md.
+// Imports rewritten: this leaf now uses only local std-backed shims.
+//
 // clone of zig stdlib
 // except, this one vectorizes
 
@@ -460,6 +464,18 @@ test "LinearFifo(u8, .Dynamic) discard(0) from empty buffer should not error on 
 
     // If overflow is not explicitly allowed this will crash in debug / safe mode
     fifo.discard(0);
+}
+
+test "home_rt.linear_fifo: writer print feeds reader" {
+    var fifo = LinearFifo(u8, .Dynamic).init(testing.allocator);
+    defer fifo.deinit();
+
+    try fifo.writer().print("{s}:{d}", .{ "home", 17 });
+
+    var buf: [16]u8 = undefined;
+    const read = fifo.read(&buf);
+    try testing.expectEqualStrings("home:17", buf[0..read]);
+    try testing.expectEqual(@as(usize, 0), fifo.readableLength());
 }
 
 test "LinearFifo(u8, .Dynamic)" {

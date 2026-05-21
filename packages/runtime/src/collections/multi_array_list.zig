@@ -180,12 +180,10 @@ pub fn MultiArrayList(comptime T: type) type {
                 data[i] = .{
                     .size = @sizeOf(field_info.type),
                     .size_index = i,
-                    // Zig 0.17: `Type.StructField.alignment` became `?usize`
-                    // (null = default = @alignOf(field.type)).
                     .alignment = if (@sizeOf(field_info.type) == 0)
                         1
                     else
-                        (field_info.alignment orelse @alignOf(field_info.type)),
+                        fieldAlignment(field_info),
                 };
             }
             const Sort = struct {
@@ -669,6 +667,14 @@ const meta = std.meta;
 
 const mem = std.mem;
 const Allocator = mem.Allocator;
+
+fn fieldAlignment(comptime field_info: anytype) usize {
+    const alignment = field_info.alignment;
+    return switch (@typeInfo(@TypeOf(alignment))) {
+        .optional => alignment orelse @alignOf(field_info.type),
+        else => alignment,
+    };
+}
 
 // ----------------------------------------------------------------------
 // Bun-compat shim. Upstream pulls `bun.safety.CheckedAllocator` here; we

@@ -48,6 +48,14 @@ pub inline fn debugAssert(ok: bool) void {
     }
 }
 
+pub inline fn cast(comptime To: type, value: anytype) To {
+    if (@typeInfo(@TypeOf(value)) == .int) {
+        return @ptrFromInt(@as(usize, value));
+    }
+
+    return @ptrCast(@alignCast(value));
+}
+
 /// Wave-15 Tier-1 grinder stub — Bun's `bun.destroy(ptr)` is the
 /// allocator-aware mirror of `allocator.destroy`. Skips heap-breakdown +
 /// RefCount sanity checks (`bun.heap_breakdown` / `bun.ptr.ref_count` not
@@ -79,6 +87,27 @@ pub fn ComptimeEnumMap(comptime T: type) type {
 const identity_context = @import("collections/identity_context.zig");
 pub const IdentityContext = identity_context.IdentityContext;
 pub const ArrayIdentityContext = identity_context.ArrayIdentityContext;
+
+const bit_set = @import("collections/bit_set.zig");
+pub const AutoBitSet = bit_set.AutoBitSet;
+pub const StaticBitSet = bit_set.StaticBitSet;
+pub const IntegerBitSet = bit_set.IntegerBitSet;
+pub const DynamicBitSet = bit_set.DynamicBitSet;
+pub const DynamicBitSetUnmanaged = bit_set.DynamicBitSetUnmanaged;
+
+const multi_array_list = @import("collections/multi_array_list.zig");
+pub const MultiArrayList = multi_array_list.MultiArrayList;
+
+const linear_fifo = @import("collections/linear_fifo.zig");
+pub const LinearFifo = linear_fifo.LinearFifo;
+pub const LinearFifoBufferType = linear_fifo.LinearFifoBufferType;
+
+const static_hash_map = @import("collections/StaticHashMap.zig");
+pub const AutoHashMap = static_hash_map.AutoHashMap;
+pub const AutoStaticHashMap = static_hash_map.AutoStaticHashMap;
+pub const StaticHashMap = static_hash_map.StaticHashMap;
+pub const HashMap = static_hash_map.HashMap;
+pub const SortedHashMap = static_hash_map.SortedHashMap;
 
 // Fourth-wave collection additions (2026-05-17):
 const hive_array = @import("collections/hive_array.zig");
@@ -345,7 +374,24 @@ pub const install_types = struct {
 // Pantry (docs/TS_PARITY_PLAN.md §12.9); only small leaves other
 // runtime subsystems still need are copied.
 pub const install = struct {
-    pub const ExternalSlice = @import("install/ExternalSlice.zig").ExternalSlice;
+    pub const ids = @import("install/PackageID.zig");
+    pub const PackageID = ids.PackageID;
+    pub const DependencyID = ids.DependencyID;
+    pub const invalid_package_id = ids.invalid_package_id;
+    pub const invalid_dependency_id = ids.invalid_dependency_id;
+    pub const PackageNameAndVersionHash = ids.PackageNameAndVersionHash;
+    pub const PackageNameHash = ids.PackageNameHash;
+    pub const TruncatedPackageNameHash = ids.TruncatedPackageNameHash;
+    pub const external = @import("install/ExternalSlice.zig");
+    pub const ExternalSlice = external.ExternalSlice;
+    pub const ExternalStringMap = external.ExternalStringMap;
+    pub const ExternalStringList = external.ExternalStringList;
+    pub const ExternalPackageNameHashList = external.ExternalPackageNameHashList;
+    pub const VersionSlice = external.VersionSlice;
+    pub const versioned_url = @import("install/versioned_url.zig");
+    pub const VersionedURL = versioned_url.VersionedURL;
+    pub const OldV2VersionedURL = versioned_url.OldV2VersionedURL;
+    pub const VersionedURLType = versioned_url.VersionedURLType;
     pub const padding_checker = @import("install/padding_checker.zig");
     pub const ConfigVersion = @import("install/ConfigVersion.zig").ConfigVersion;
 };
@@ -483,6 +529,7 @@ pub const runtime = struct {
         // — upstream `@import("bun")` was unused.
         pub const which_npm_client = @import("runtime/cli/which_npm_client.zig");
         pub const NPMClient = which_npm_client.NPMClient;
+        pub const list_of_yarn_commands = @import("runtime/cli/list-of-yarn-commands.zig");
         // `test_` rather than `test` because `test` is a Zig keyword.
         pub const test_ = struct {
             pub const ParallelRunner = @import("runtime/cli/test/ParallelRunner.zig");
@@ -670,6 +717,74 @@ pub const freeWithoutSize = @import("alloc/fallback.zig").freeWithoutSize;
 pub const alloc = struct {
     pub const fallback = struct {
         pub const z = @import("alloc/fallback/z.zig");
+    };
+};
+pub const memory = @import("bun_alloc/memory.zig");
+pub const allocators = struct {
+    pub const c_allocator = std.heap.c_allocator;
+    pub const z_allocator = @import("bun_alloc/fallback/z.zig").allocator;
+    pub const freeWithoutSize = @import("bun_alloc/fallback.zig").freeWithoutSize;
+
+    pub const NullableAllocator = @import("bun_alloc/NullableAllocator.zig");
+    pub const MaxHeapAllocator = @import("bun_alloc/MaxHeapAllocator.zig");
+    pub const BufferFallbackAllocator = @import("bun_alloc/BufferFallbackAllocator.zig");
+    pub const MaybeOwned = @import("bun_alloc/maybe_owned.zig").MaybeOwned;
+
+    pub fn isDefault(allocator: std.mem.Allocator) bool {
+        return allocator.vtable == @This().c_allocator.vtable;
+    }
+
+    pub fn asStd(allocator: anytype) std.mem.Allocator {
+        return if (comptime @TypeOf(allocator) == std.mem.Allocator)
+            allocator
+        else
+            allocator.allocator();
+    }
+
+    pub fn Borrowed(comptime Allocator: type) type {
+        return if (comptime @hasDecl(Allocator, "Borrowed"))
+            Allocator.Borrowed
+        else
+            Allocator;
+    }
+
+    pub fn borrow(allocator: anytype) Borrowed(@TypeOf(allocator)) {
+        return if (comptime @hasDecl(@TypeOf(allocator), "Borrowed"))
+            allocator.borrow()
+        else
+            allocator;
+    }
+
+    pub fn Nullable(comptime Allocator: type) type {
+        return if (comptime Allocator == std.mem.Allocator)
+            NullableAllocator
+        else if (comptime @hasDecl(Allocator, "Nullable"))
+            Allocator.Nullable
+        else
+            ?Allocator;
+    }
+
+    pub fn initNullable(comptime Allocator: type, allocator: ?Allocator) Nullable(Allocator) {
+        return if (comptime Allocator == std.mem.Allocator or @hasDecl(Allocator, "Nullable"))
+            .init(allocator)
+        else
+            allocator;
+    }
+
+    pub fn unpackNullable(comptime Allocator: type, allocator: Nullable(Allocator)) ?Allocator {
+        return if (comptime Allocator == std.mem.Allocator or @hasDecl(Allocator, "Nullable"))
+            allocator.get()
+        else
+            allocator;
+    }
+
+    pub const Default = struct {
+        pub fn allocator(self: Default) std.mem.Allocator {
+            _ = self;
+            return allocators.c_allocator;
+        }
+
+        pub const deinit = void;
     };
 };
 pub const io_heap = @import("io/heap.zig");

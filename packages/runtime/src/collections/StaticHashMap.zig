@@ -1,3 +1,7 @@
+// Copied from bun/src/collections/StaticHashMap.zig at upstream SHA
+// fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT - see ../cli/LICENSE.bun.md.
+// Imports rewritten: this leaf now uses only local std imports.
+//
 // https://github.com/lithdew/rheia/blob/162293d0f0e8d6572a8954c0add83f13f76b3cc6/hash_map.zig
 // Apache License 2.0
 
@@ -607,6 +611,20 @@ test "StaticHashMap: put, get, delete, grow" {
         for (keys, 0..) |key, i| try testing.expectEqual(i, map.get(key).?);
         for (keys, 0..) |key, i| try testing.expectEqual(i, map.delete(key).?);
     }
+}
+
+test "home_rt.StaticHashMap: AutoHashMap getOrPut tracks existing entries" {
+    var map = try AutoHashMap(u32, u8, 80).initCapacity(testing.allocator, 8);
+    defer map.deinit(testing.allocator);
+
+    const first = try map.getOrPut(testing.allocator, 7);
+    try testing.expect(!first.found_existing);
+    first.value_ptr.* = 42;
+
+    const second = try map.getOrPut(testing.allocator, 7);
+    try testing.expect(second.found_existing);
+    try testing.expectEqual(@as(u8, 42), second.value_ptr.*);
+    try testing.expectEqual(@as(?u8, 42), map.get(7));
 }
 
 test "HashMap: put, get, delete, grow" {
