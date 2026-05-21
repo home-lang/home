@@ -1,8 +1,78 @@
 fn deinitImpl(comptime Union: type, value: *Union) void {
     switch (std.meta.activeTag(value.*)) {
-        inline else => |tag| bun.memory.deinit(&@field(value, @tagName(tag))),
+        inline else => |tag| deinitValue(&@field(value, @tagName(tag))),
     }
     value.* = undefined;
+}
+
+fn deinitValue(ptr_or_slice: anytype) void {
+    const PtrType = @TypeOf(ptr_or_slice);
+    const ptr_info = @typeInfo(PtrType);
+    if (ptr_info != .pointer) @compileError("deinitValue expects a pointer or slice");
+
+    switch (comptime ptr_info.pointer.size) {
+        .slice => {
+            for (ptr_or_slice) |*elem| {
+                deinitValue(elem);
+            }
+            return;
+        },
+        .one => {},
+        else => @compileError("unsupported pointer type: " ++ @typeName(PtrType)),
+    }
+
+    const Child = ptr_info.pointer.child;
+    const mutable = !ptr_info.pointer.is_const;
+    defer {
+        if (comptime mutable) {
+            ptr_or_slice.* = undefined;
+        }
+    }
+
+    switch (comptime @typeInfo(Child)) {
+        .void, .bool, .int, .float, .pointer, .comptime_float, .comptime_int => return,
+        .undefined, .null, .error_set, .@"enum", .vector => return,
+        .array => {
+            for (ptr_or_slice) |*elem| {
+                deinitValue(elem);
+            }
+            return;
+        },
+        .optional => {
+            if (ptr_or_slice.*) |*payload| {
+                deinitValue(payload);
+            }
+            return;
+        },
+        .error_union => {
+            if (ptr_or_slice.*) |*payload| {
+                deinitValue(payload);
+            } else |_| {}
+            return;
+        },
+        .@"struct" => {},
+        .@"union" => |u| {
+            if (comptime u.tag_type == null) {
+                @compileError("cannot deinit an untagged union: " ++ @typeName(Child));
+            }
+        },
+        .type, .noreturn, .@"fn", .@"opaque", .frame, .@"anyframe", .enum_literal => {
+            @compileError("unsupported type for deinit: " ++ @typeName(Child));
+        },
+    }
+
+    if (comptime hasCallableDeinit(Child)) {
+        ptr_or_slice.deinit();
+    }
+}
+
+fn hasCallableDeinit(comptime T: type) bool {
+    if (!@hasDecl(T, "deinit")) return false;
+    return switch (@TypeOf(T.deinit)) {
+        type => T.deinit != void,
+        void => false,
+        else => true,
+    };
 }
 
 /// Creates a tagged union with fields corresponding to `field_types`. The fields are named
@@ -232,5 +302,27 @@ pub fn TaggedUnion(comptime field_types: []const type) type {
     };
 }
 
-const bun = @import("bun");
 const std = @import("std");
+
+test "TaggedUnion constructs fields and deinitializes active payload" {
+    const testing = std.testing;
+
+    const Payload = struct {
+        did_deinit: *bool,
+
+        pub fn deinit(self: *@This()) void {
+            self.did_deinit.* = true;
+        }
+    };
+
+    const U = TaggedUnion(&.{ u8, Payload });
+    var did_deinit = false;
+    var value: U = .{ .@"1" = .{ .did_deinit = &did_deinit } };
+
+    try testing.expectEqual(@as(usize, 2), @typeInfo(U).@"union".fields.len);
+    try testing.expectEqualStrings("0", @typeInfo(U).@"union".fields[0].name);
+    try testing.expectEqual(@as(@typeInfo(U).@"union".tag_type.?, .@"1"), std.meta.activeTag(value));
+
+    value.deinit();
+    try testing.expect(did_deinit);
+}

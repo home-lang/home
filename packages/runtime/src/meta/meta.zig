@@ -2,8 +2,8 @@ pub fn OptionalChild(comptime T: type) type {
     const tyinfo = @typeInfo(T);
     if (tyinfo != .pointer) @compileError("OptionalChild(T) requires that T be a pointer to an optional type.");
     const child = @typeInfo(tyinfo.pointer.child);
-    if (child != .Optional) @compileError("OptionalChild(T) requires that T be a pointer to an optional type.");
-    return child.Optional.child;
+    if (child != .optional) @compileError("OptionalChild(T) requires that T be a pointer to an optional type.");
+    return child.optional.child;
 }
 
 pub fn EnumFields(comptime T: type) []const std.builtin.Type.EnumField {
@@ -70,18 +70,25 @@ pub inline fn typeBaseName(comptime fullname: [:0]const u8) [:0]const u8 {
 }
 
 pub fn enumFieldNames(comptime Type: type) []const []const u8 {
-    var names: [std.meta.fields(Type).len][]const u8 = std.meta.fieldNames(Type).*;
-    var i: usize = 0;
-    for (names) |name| {
-        // zig seems to include "_" or an empty string in the list of enum field names
-        // it makes sense, but humans don't want that
-        if (bun.strings.eqlAnyComptime(name, &.{ "_none", "", "_" })) {
-            continue;
-        }
-        names[i] = name;
-        i += 1;
-    }
-    return names[0..i];
+    const Filtered = struct {
+        const raw = blk: {
+            var filtered_names: [std.meta.fields(Type).len][]const u8 = std.meta.fieldNames(Type).*;
+            var i: usize = 0;
+            for (filtered_names) |name| {
+                // zig seems to include "_" or an empty string in the list of enum field names
+                // it makes sense, but humans don't want that
+                if (eqlAnyComptime(name, &.{ "_none", "", "_" })) {
+                    continue;
+                }
+                filtered_names[i] = name;
+                i += 1;
+            }
+            break :blk .{ .names = filtered_names, .len = i };
+        };
+        const len = raw.len;
+        const names: [raw.names.len][]const u8 = raw.names;
+    };
+    return Filtered.names[0..Filtered.len];
 }
 
 pub fn banFieldType(comptime Container: type, comptime T: type) void {
@@ -172,27 +179,7 @@ pub inline fn ConcatArgs4(
 
 // Copied from std.meta
 fn CreateUniqueTuple(comptime N: comptime_int, comptime types: [N]type) type {
-    var tuple_fields: [types.len]std.builtin.Type.StructField = undefined;
-    inline for (types, 0..) |T, i| {
-        @setEvalBranchQuota(10_000);
-        var num_buf: [128]u8 = undefined;
-        tuple_fields[i] = .{
-            .name = std.fmt.bufPrintZ(&num_buf, "{d}", .{i}) catch unreachable,
-            .type = T,
-            .default_value_ptr = null,
-            .is_comptime = false,
-            .alignment = if (@sizeOf(T) > 0) @alignOf(T) else 0,
-        };
-    }
-
-    return @Type(.{
-        .@"struct" = .{
-            .is_tuple = true,
-            .layout = .auto,
-            .decls = &.{},
-            .fields = &tuple_fields,
-        },
-    });
+    return @Tuple(&types);
 }
 
 pub const TaggedUnion = @import("./tagged_union.zig").TaggedUnion;
@@ -200,11 +187,11 @@ pub const TaggedUnion = @import("./tagged_union.zig").TaggedUnion;
 pub fn hasStableMemoryLayout(comptime T: type) bool {
     const tyinfo = @typeInfo(T);
     return switch (tyinfo) {
-        .Type => true,
-        .Void => true,
-        .Bool => true,
-        .Int => true,
-        .Float => true,
+        .type => true,
+        .void => true,
+        .bool => true,
+        .int => true,
+        .float => true,
         .@"enum" => {
             // not supporting this rn
             if (tyinfo.@"enum".is_exhaustive) return false;
@@ -213,7 +200,7 @@ pub fn hasStableMemoryLayout(comptime T: type) bool {
         .@"struct" => switch (tyinfo.@"struct".layout) {
             .auto => {
                 inline for (tyinfo.@"struct".fields) |field| {
-                    if (!hasStableMemoryLayout(field.field_type)) return false;
+                    if (!hasStableMemoryLayout(field.type)) return false;
                 }
                 return true;
             },
@@ -319,11 +306,16 @@ pub fn looksLikeListContainerType(comptime T: type) ?struct { list: ListContaine
 }
 
 pub fn Tagged(comptime U: type, comptime T: type) type {
-    var info: std.builtin.Type.Union = @typeInfo(U).@"union";
-    info.tag_type = T;
-    info.decls = &.{};
-    info.layout = .auto;
-    return @Type(.{ .@"union" = info });
+    const info: std.builtin.Type.Union = @typeInfo(U).@"union";
+    var field_names: [info.fields.len][]const u8 = undefined;
+    var field_types: [info.fields.len]type = undefined;
+    var field_attrs: [info.fields.len]std.builtin.Type.UnionField.Attributes = undefined;
+    for (info.fields, &field_names, &field_types, &field_attrs) |field, *name, *FieldType, *attrs| {
+        name.* = field.name;
+        FieldType.* = field.type;
+        attrs.* = .{ .@"align" = field.alignment };
+    }
+    return @Union(.auto, T, &field_names, &field_types, &field_attrs);
 }
 
 pub fn SliceChild(comptime T: type) type {
@@ -339,17 +331,19 @@ pub fn useAllFields(comptime T: type, _: VoidFields(T)) void {}
 
 fn VoidFields(comptime T: type) type {
     const fields = @typeInfo(T).@"struct".fields;
-    var new_fields = fields[0..fields.len].*;
-    for (&new_fields) |*field| {
-        field.type = void;
-        field.default_value_ptr = null;
+    var field_names: [fields.len][]const u8 = undefined;
+    var field_types: [fields.len]type = undefined;
+    var field_attrs: [fields.len]std.builtin.Type.StructField.Attributes = undefined;
+    for (fields, &field_names, &field_types, &field_attrs) |field, *name, *FieldType, *attrs| {
+        name.* = field.name;
+        FieldType.* = void;
+        attrs.* = .{
+            .@"comptime" = field.is_comptime,
+            .@"align" = field.alignment,
+            .default_value_ptr = null,
+        };
     }
-    return @Type(.{ .@"struct" = .{
-        .layout = .auto,
-        .fields = &new_fields,
-        .decls = &.{},
-        .is_tuple = false,
-    } });
+    return @Struct(.auto, null, &field_names, &field_types, &field_attrs);
 }
 
 pub fn voidFieldTypeDiscardHelper(data: anytype) void {
@@ -370,5 +364,61 @@ pub fn hasField(comptime T: type, comptime name: []const u8) bool {
     };
 }
 
-const bun = @import("bun");
+fn eqlAnyComptime(value: []const u8, comptime needles: []const []const u8) bool {
+    inline for (needles) |needle| {
+        if (std.mem.eql(u8, value, needle)) return true;
+    }
+    return false;
+}
+
 const std = @import("std");
+
+test "meta helper leaves" {
+    const testing = std.testing;
+
+    const Maybe = union(enum) {
+        err: void,
+        result: u32,
+    };
+    const maybeFn = struct {
+        fn call() Maybe {
+            return .{ .result = 1 };
+        }
+    }.call;
+
+    try testing.expectEqual(u32, OptionalChild(*?u32));
+    try testing.expectEqual(u32, ReturnOfMaybe(maybeFn));
+    try testing.expectEqual(u32, ReturnOfType(fn () u32));
+    try testing.expectEqual(u8, Item(*const [4]u8));
+    try testing.expectEqual(u8, SliceChild([]const u8));
+
+    const CreatedTuple = CreateUniqueTuple(2, .{ u8, u16 });
+    try testing.expectEqual(u8, @typeInfo(CreatedTuple).@"struct".fields[0].type);
+    try testing.expectEqual(u16, @typeInfo(CreatedTuple).@"struct".fields[1].type);
+
+    const E = enum(u8) { a, _none, b, _ };
+    const names = enumFieldNames(E);
+    try testing.expectEqual(@as(usize, 2), names.len);
+    try testing.expectEqualStrings("a", names[0]);
+    try testing.expectEqualStrings("b", names[1]);
+
+    const U = union(enum) { a: u8, b: u16 };
+    try testing.expectEqual(@as(usize, 2), EnumFields(U).len);
+
+    const TaggedU = Tagged(union { a: u8, b: u16 }, enum { a, b });
+    const tagged: TaggedU = .{ .a = 3 };
+    try testing.expectEqual(@as(u8, 3), tagged.a);
+
+    const UseFields = struct { a: u8, b: u16 };
+    useAllFields(UseFields, .{ .a = {}, .b = {} });
+
+    const Struct = struct {
+        pub const marker = true;
+        x: u32,
+    };
+    try testing.expect(hasDecl(Struct, "marker"));
+    try testing.expect(hasField(Struct, "x"));
+    try testing.expect(hasStableMemoryLayout(extern struct { x: u32 }));
+    try testing.expect(isSimpleCopyType(?u32));
+    try testing.expect(isSimpleEqlType(packed struct(u8) { a: bool, b: bool, rest: u6 }));
+}

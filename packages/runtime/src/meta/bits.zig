@@ -38,7 +38,7 @@ pub inline fn contains(comptime T: type, lhs: T, rhs: T) bool {
 }
 
 pub inline fn maskOut(comptime T: type, lhs: *T, rhs: T) T {
-    return @"and"(T, lhs, invert(T, rhs));
+    return @"and"(T, lhs.*, invert(T, rhs));
 }
 
 pub inline fn remove(comptime T: type, lhs: *T, rhs: T) void {
@@ -64,7 +64,7 @@ pub inline fn asInt(comptime T: type, value: T) @typeInfo(T).@"struct".backing_i
 
 const std = @import("std");
 
-test "intersects on packed bool struct" {
+test "bitfield helpers on packed bool struct" {
     const Flags = packed struct(u8) {
         read: bool = false,
         write: bool = false,
@@ -78,4 +78,19 @@ test "intersects on packed bool struct" {
 
     try std.testing.expect(intersects(Flags, a, b));
     try std.testing.expect(!intersects(Flags, a, c));
+
+    var value = a;
+    insert(Flags, &value, c);
+    try std.testing.expect(value.execute);
+    try std.testing.expect(contains(Flags, value, c));
+    try std.testing.expectEqual(@as(u8, 0b0000_0111), asInt(Flags, value));
+
+    remove(Flags, &value, b);
+    try std.testing.expect(!value.write);
+    try std.testing.expectEqual(@as(u8, 0b0000_0101), asInt(Flags, value));
+
+    const masked = maskOut(Flags, &value, c);
+    try std.testing.expect(masked.read);
+    try std.testing.expect(!masked.execute);
+    try std.testing.expectEqual(@as(LeadingZerosInt(Flags), 5), leadingZeros(Flags, .{ .execute = true }));
 }

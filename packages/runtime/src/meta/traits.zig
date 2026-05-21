@@ -108,4 +108,16 @@ test "isContainer / isIndexable / isSlice classifiers" {
 
     try std.testing.expect(isSlice([]const u8));
     try std.testing.expect(!isSlice(*const u8));
+
+    try std.testing.expect(isZigString([]const u8));
+    try std.testing.expect(isZigString(*const [4]u8));
+    try std.testing.expect(!isZigString([*]const u8));
+    try std.testing.expect(isNumber(comptime_int));
+    try std.testing.expect(isNumber(f64));
+    try std.testing.expect(isSingleItemPtr(*const u8));
+    try std.testing.expect(isConstPtr(*const u8));
+    try std.testing.expect(!isConstPtr(*u8));
+
+    const Extern = extern struct { x: u8 };
+    try std.testing.expect(isExternContainer(Extern));
 }
