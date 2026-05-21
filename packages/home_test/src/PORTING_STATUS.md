@@ -955,6 +955,12 @@ tests through the Bun test bootstrap and spawned-child fixture model. It
 covers the `xit`, `xtest`, and `xdescribe` aliases as global helpers and
 named `bun:test` imports, matching `test.skip` and `describe.skip`
 behavior.
+The copied `regression/issue/26377.test.ts` fixture now passes as `3`
+tests through the Web Streams bootstrap model. It covers
+`ReadableStreamDefaultController.desiredSize` before enqueueing, after
+`close()`, after `error()`, and after failed `pipeTo()` cleanup, plus the
+`expect().toBeOneOf()` matcher and the TypeScript generic/union
+annotation erasure needed for the upstream fixture.
 The copied `js/node/path/to-namespaced-path.test.js` fixture now passes
 as `4` tests through the path bootstrap model. It covers
 `path.toNamespacedPath`, `path._makeLong`, posix/win32 namespace variants,

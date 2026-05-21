@@ -205,6 +205,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/mock/mock-module-non-string.test.ts",
     "regression/issue/09563/09563.test.ts",
     "regression/issue/5228.test.js",
+    "regression/issue/26377.test.ts",
     "js/third_party/yargs/yargs-cjs.test.js",
     "js/third_party/jsonwebtoken/decoding.test.js",
     "js/third_party/jsonwebtoken/buffer.test.js",
@@ -2436,6 +2437,11 @@ const harness_prelude =
     \\    toBeWithin(start, end) {
     \\      if (arguments.length < 2) __home_fail("toBeWithin() requires 2 arguments");
     \\      __home_assert(value >= start && value <= end, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be within " + __home_format(start) + " and " + __home_format(end));
+    \\    },
+    \\    toBeOneOf(expected) {
+    \\      if (!Array.isArray(expected)) __home_fail("toBeOneOf() requires an array");
+    \\      const pass = expected.some(item => __home_deep_equal(value, item, false, new Map()));
+    \\      __home_assert(pass, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to be one of " + __home_format(expected));
     \\    },
     \\    toHaveLength(expected) {
     \\      if (!Number.isInteger(expected) || expected < 0) __home_fail("toHaveLength() requires a non-negative integer");
@@ -7151,6 +7157,108 @@ const harness_prelude =
     \\    if (underlyingSource && typeof underlyingSource.start === "function") underlyingSource.start(controller);
     \\  };
     \\}
+    \\if (typeof WritableStream !== "function") {
+    \\  var WritableStream = function(underlyingSink) {
+    \\    this.__home_writable_sink = underlyingSink || {};
+    \\  };
+    \\}
+    \\if (typeof ReadableStream === "function" && !ReadableStream.__home_controller_capture) {
+    \\  const __home_NativeReadableStream = ReadableStream;
+    \\  const __home_stream_controllers = new WeakMap();
+    \\  ReadableStream = function(underlyingSource, strategy) {
+    \\    let capturedController = null;
+    \\    let source = underlyingSource;
+    \\    if (source && typeof source.start === "function") {
+    \\      source = Object.assign({}, source, {
+    \\        start(controller) {
+    \\          controller.__home_desired_size = 1;
+    \\          const controllerProxy = new Proxy(controller, {
+    \\            get(target, property, receiver) {
+    \\              if (property === "desiredSize") {
+    \\                if (target.__home_detached_stream) return null;
+    \\                return target.__home_desired_size;
+    \\              }
+    \\              if (property === "close") {
+    \\                return function() {
+    \\                  target.__home_desired_size = 0;
+    \\                  return target.close.apply(target, arguments);
+    \\                };
+    \\              }
+    \\              if (property === "error") {
+    \\                return function() {
+    \\                  target.__home_desired_size = null;
+    \\                  return typeof target.error === "function" ? target.error.apply(target, arguments) : undefined;
+    \\                };
+    \\              }
+    \\              if (property === "enqueue") {
+    \\                return function() {
+    \\                  const result = target.enqueue.apply(target, arguments);
+    \\                  target.__home_desired_size = 0;
+    \\                  return result;
+    \\                };
+    \\              }
+    \\              const value = Reflect.get(target, property, receiver);
+    \\              return typeof value === "function" ? value.bind(target) : value;
+    \\            },
+    \\            set(target, property, value, receiver) {
+    \\              return Reflect.set(target, property, value, receiver);
+    \\            },
+    \\          });
+    \\          capturedController = controllerProxy;
+    \\          return underlyingSource.start(controllerProxy);
+    \\        },
+    \\      });
+    \\    }
+    \\    const stream = new __home_NativeReadableStream(source, strategy);
+    \\    if (capturedController) __home_stream_controllers.set(stream, capturedController);
+    \\    return stream;
+    \\  };
+    \\  ReadableStream.prototype = __home_NativeReadableStream.prototype;
+    \\  Object.setPrototypeOf(ReadableStream, __home_NativeReadableStream);
+    \\  ReadableStream.__home_controller_capture = true;
+    \\  ReadableStream.__home_controllers = __home_stream_controllers;
+    \\}
+    \\if (typeof ReadableStreamDefaultController === "function" && ReadableStreamDefaultController.prototype && !ReadableStreamDefaultController.prototype.__home_desired_size_normalized) {
+    \\  const __home_desired_size_descriptor = Object.getOwnPropertyDescriptor(ReadableStreamDefaultController.prototype, "desiredSize");
+    \\  if (__home_desired_size_descriptor && typeof __home_desired_size_descriptor.get === "function") {
+    \\    Object.defineProperty(ReadableStreamDefaultController.prototype, "__home_desired_size_normalized", { value: true });
+    \\    Object.defineProperty(ReadableStreamDefaultController.prototype, "desiredSize", {
+    \\      configurable: true,
+    \\      get() {
+    \\        const value = __home_desired_size_descriptor.get.call(this);
+    \\        return value === undefined ? null : value;
+    \\      },
+    \\    });
+    \\  }
+    \\}
+    \\if (typeof ReadableStream === "function" && ReadableStream.prototype && !ReadableStream.prototype.__home_pipe_to_writable_shim) {
+    \\  const __home_readable_stream_pipe_to = ReadableStream.prototype.pipeTo;
+    \\  Object.defineProperty(ReadableStream.prototype, "__home_pipe_to_writable_shim", { value: true });
+    \\  ReadableStream.prototype.pipeTo = function(destination, options) {
+    \\    if (destination && destination.__home_writable_sink) {
+    \\      const sink = destination.__home_writable_sink;
+    \\      const reader = typeof this.getReader === "function" ? this.getReader() : null;
+    \\      if (!reader || typeof reader.read !== "function") return Promise.reject(new TypeError("ReadableStream reader is unavailable"));
+    \\      return reader.read().then(({ value }) => {
+    \\        return Promise.resolve(typeof sink.write === "function" ? sink.write(value) : undefined).then(
+    \\          () => undefined,
+    \\          error => {
+    \\            if (typeof reader.cancel === "function") {
+    \\              const controller = ReadableStream.__home_controllers && ReadableStream.__home_controllers.get(this);
+    \\              if (controller) controller.__home_detached_stream = true;
+    \\              try {
+    \\                reader.cancel(error);
+    \\              } catch (cancelError) {}
+    \\            }
+    \\            return Promise.reject(error);
+    \\          },
+    \\        );
+    \\      });
+    \\    }
+    \\    if (typeof __home_readable_stream_pipe_to === "function") return __home_readable_stream_pipe_to.call(this, destination, options);
+    \\    return Promise.reject(new TypeError("ReadableStream.pipeTo is unavailable"));
+    \\  };
+    \\}
     \\expect.any = function(ctor) {
     \\  return { __home_expect_any: true, ctor };
     \\};
@@ -7724,6 +7832,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": WebSocket[] =", .replacement = " =" },
         .{ .needle = ": Promise<any>[] =", .replacement = " =" },
         .{ .needle = ": Promise<void>[] =", .replacement = " =" },
+        .{ .needle = ": ReadableStreamDefaultController<Uint8Array> | null =", .replacement = " =" },
+        .{ .needle = ": number | null | undefined;", .replacement = ";" },
         .{ .needle = ": Record<string, \"no-op\" | \"polyfill\" | \"error\"> =", .replacement = " =" },
         .{ .needle = ": Promise<any>", .replacement = "" },
         .{ .needle = ": any =", .replacement = " =" },
@@ -7761,6 +7871,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": Array<[any, (event: any) => string]>", .replacement = "" },
         .{ .needle = "<{ a: number }>", .replacement = "" },
         .{ .needle = "<{ a: 1 }>", .replacement = "" },
+        .{ .needle = "<Uint8Array>", .replacement = "" },
         .{ .needle = "<void>", .replacement = "" },
         .{ .needle = "<SourceMap>", .replacement = "" },
         .{ .needle = "<[string]>", .replacement = "" },
