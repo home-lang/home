@@ -4120,6 +4120,169 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: for-of21 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "for-of21",
+        .path = "for-of21.ts",
+        .source =
+        \\//@target: ES6
+        \\class Foo { }
+        \\class FooIterator {
+        \\    next() {
+        \\        return {
+        \\            value: new Foo,
+        \\            done: false
+        \\        };
+        \\    }
+        \\    [Symbol.iterator]() {
+        \\        return this;
+        \\    }
+        \\}
+        \\
+        \\for (const v of new FooIterator) {
+        \\    v;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: esDecorators_classExpression_namedEvaluation_11 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "esDecorators-classExpression-namedEvaluation.11",
+        .path = "esDecorators-classExpression-namedEvaluation.11.ts",
+        .source =
+        \\// @target: es2022
+        \\// @noEmitHelpers: true
+        \\// @noTypesAndSymbols: true
+        \\
+        \\declare let dec: any;
+        \\
+        \\// No NamedEvaluation, no class name
+        \\
+        \\(@dec class {});
+        \\(class { @dec y: any });
+        \\
+        \\// No NamedEvaluation, class name
+        \\
+        \\(@dec class C {});
+        \\(class C { @dec y: any });
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: constEnumPropertyAccess3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "constEnumPropertyAccess3",
+        .path = "constEnumPropertyAccess3.ts",
+        .source =
+        \\// @target: es2015
+        \\const enum E {
+        \\    A = ~1,
+        \\    B = -1,
+        \\    C = ~(1 + 1),
+        \\    D = -(1 + 2),
+        \\    E = 1 - 10,
+        \\}
+        \\
+        \\E.A.toString();
+        \\E.B.toString();
+        \\E.C.toString();
+        \\E.D.toString();
+        \\
+        \\E["A"].toString();
+        \\E["B"].toString();
+        \\E["C"].toString();
+        \\E["D"].toString();
+        \\E["E"].toString();
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+
+test "conformance: generatorReturnTypeFallback_5 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "generatorReturnTypeFallback.5",
+        .path = "generatorReturnTypeFallback.5.ts",
+        .source =
+        \\// @target: esnext
+        \\// @lib: es5,es2015.iterable
+        \\// @noemit: true
+        \\// @strict: true
+        \\
+        \\// Allow generators to fallback to IterableIterator if they do not need a type for the sent value while in strictNullChecks mode.
+        \\function* f(): IterableIterator<number> {
+        \\    yield 1;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: iteratorSpreadInCall11 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "iteratorSpreadInCall11",
+        .path = "iteratorSpreadInCall11.ts",
+        .source =
+        \\//@target: ES6
+        \\function foo<T>(...s: T[]) { return s[0] }
+        \\class SymbolIterator {
+        \\    next() {
+        \\        return {
+        \\            value: Symbol(),
+        \\            done: false
+        \\        };
+        \\    }
+        \\
+        \\    [Symbol.iterator]() {
+        \\        return this;
+        \\    }
+        \\}
+        \\
+        \\foo(...new SymbolIterator);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: stringEnumInElementAccess01 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "stringEnumInElementAccess01",
