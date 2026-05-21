@@ -10263,6 +10263,208 @@ test "conformance: newOperatorConformance passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: instanceofOperatorWithLHSIsTypeParameter passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "instanceofOperatorWithLHSIsTypeParameter",
+        .path = "instanceofOperatorWithLHSIsTypeParameter.ts",
+        .source =
+        \\// @target: es2015
+        \\function foo<T>(t: T) {
+        \\    var x: any;
+        \\    var r = t instanceof x;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: instanceofOperatorWithInvalidStaticToString passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "instanceofOperatorWithInvalidStaticToString",
+        .path = "instanceofOperatorWithInvalidStaticToString.ts",
+        .source =
+        \\// @target: es2015
+        \\declare class StaticToString {
+        \\    static toString(): void;
+        \\}
+        \\
+        \\function foo(staticToString: StaticToString) {
+        \\    return staticToString instanceof StaticToString;
+        \\}
+        \\
+        \\declare class StaticToNumber {
+        \\    static toNumber(): void;
+        \\}
+        \\function bar(staticToNumber: StaticToNumber) {
+        \\    return staticToNumber instanceof StaticToNumber;
+        \\}
+        \\
+        \\declare class NormalToString {
+        \\    toString(): void;
+        \\}
+        \\function baz(normal: NormalToString) {
+        \\    return normal instanceof NormalToString;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: comparisonOperatorWithSubtypeObjectOnProperty passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "comparisonOperatorWithSubtypeObjectOnProperty",
+        .path = "comparisonOperatorWithSubtypeObjectOnProperty.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\class Base {
+        \\    public a: string;
+        \\}
+        \\
+        \\class Derived extends Base {
+        \\    public b: string;
+        \\}
+        \\
+        \\class A1 {
+        \\    public a: Base;
+        \\    public b: Base;
+        \\}
+        \\
+        \\class B1 {
+        \\    public a: Base;
+        \\    public b: Derived;
+        \\}
+        \\
+        \\class A2 {
+        \\    private a;
+        \\}
+        \\
+        \\class B2 extends A2 {
+        \\    private b;
+        \\}
+        \\
+        \\var a1: A1;
+        \\var a2: A2;
+        \\var b1: B1;
+        \\var b2: B2;
+        \\
+        \\var ra1 = a1 < b1;
+        \\var ra2 = a2 < b2;
+        \\var ra3 = b1 < a1;
+        \\var ra4 = b2 < a2;
+        \\
+        \\var rb1 = a1 > b1;
+        \\var rb2 = a2 > b2;
+        \\var rb3 = b1 > a1;
+        \\var rb4 = b2 > a2;
+        \\
+        \\var rc1 = a1 <= b1;
+        \\var rc2 = a2 <= b2;
+        \\var rc3 = b1 <= a1;
+        \\var rc4 = b2 <= a2;
+        \\
+        \\var rd1 = a1 >= b1;
+        \\var rd2 = a2 >= b2;
+        \\var rd3 = b1 >= a1;
+        \\var rd4 = b2 >= a2;
+        \\
+        \\var re1 = a1 == b1;
+        \\var re2 = a2 == b2;
+        \\var re3 = b1 == a1;
+        \\var re4 = b2 == a2;
+        \\
+        \\var rf1 = a1 != b1;
+        \\var rf2 = a2 != b2;
+        \\var rf3 = b1 != a1;
+        \\var rf4 = b2 != a2;
+        \\
+        \\var rg1 = a1 === b1;
+        \\var rg2 = a2 === b2;
+        \\var rg3 = b1 === a1;
+        \\var rg4 = b2 === a2;
+        \\
+        \\var rh1 = a1 !== b1;
+        \\var rh2 = a2 !== b2;
+        \\var rh3 = b1 !== a1;
+        \\var rh4 = b2 !== a2;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: comparisonOperatorWithNoRelationshipObjectsOnOptionalProperty passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "comparisonOperatorWithNoRelationshipObjectsOnOptionalProperty",
+        .path = "comparisonOperatorWithNoRelationshipObjectsOnOptionalProperty.ts",
+        .source =
+        \\// @target: es2015
+        \\interface A1 {
+        \\    b?: number;
+        \\}
+        \\
+        \\interface B1 {
+        \\    b?: string;
+        \\}
+        \\
+        \\declare var a: A1;
+        \\declare var b: B1;
+        \\
+        \\var ra1 = a < b;
+        \\var ra2 = b < a;
+        \\
+        \\var rb1 = a > b;
+        \\var rb2 = b > a;
+        \\
+        \\var rc1 = a <= b;
+        \\var rc2 = b <= a;
+        \\
+        \\var rd1 = a >= b;
+        \\var rd2 = b >= a;
+        \\
+        \\var re1 = a == b;
+        \\var re2 = b == a;
+        \\
+        \\var rf1 = a != b;
+        \\var rf2 = b != a;
+        \\
+        \\var rg1 = a === b;
+        \\var rg2 = b === a;
+        \\
+        \\var rh1 = a !== b;
+        \\var rh2 = b !== a;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
