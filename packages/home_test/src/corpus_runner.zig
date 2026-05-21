@@ -198,6 +198,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/24191.test.ts",
     "js/bun/resolve/resolve-bad-parent.test.mjs",
     "regression/issue/issue-1825-jest-mock-functions.test.ts",
+    "js/bun/test/expect-toHaveReturnedWith.test.js",
     "js/node/path/is-absolute.test.js",
     "js/node/path/zero-length-strings.test.js",
     "js/bun/util/concat.test.js",
@@ -2209,14 +2210,53 @@ const harness_prelude =
     \\  globalThis.__home_current_finished_callbacks.push(fn);
     \\}
     \\function mock(implementation) {
-    \\  const fn = typeof implementation === "function" ? implementation : function() {};
+    \\  let currentImplementation = typeof implementation === "function" ? implementation : function() {};
+    \\  const onceImplementations = [];
     \\  const wrapped = function() {
     \\    wrapped.mock.calls.push(Array.prototype.slice.call(arguments));
-    \\    return fn.apply(this, arguments);
+    \\    const fn = onceImplementations.length > 0 ? onceImplementations.shift() : currentImplementation;
+    \\    try {
+    \\      const result = fn.apply(this, arguments);
+    \\      wrapped.mock.results.push({ type: "return", value: result });
+    \\      return result;
+    \\    } catch (error) {
+    \\      wrapped.mock.results.push({ type: "throw", value: error });
+    \\      throw error;
+    \\    }
     \\  };
     \\  wrapped.__home_is_mock = true;
-    \\  wrapped.mock = { calls: [] };
+    \\  wrapped.mock = { calls: [], results: [] };
     \\  wrapped.mockReturnThis = function() {
+    \\    currentImplementation = function() { return this; };
+    \\    return wrapped;
+    \\  };
+    \\  wrapped.mockImplementation = function(fn) {
+    \\    if (typeof fn !== "function") throw new TypeError("mockImplementation() requires a function");
+    \\    currentImplementation = fn;
+    \\    return wrapped;
+    \\  };
+    \\  wrapped.mockImplementationOnce = function(fn) {
+    \\    if (typeof fn !== "function") throw new TypeError("mockImplementationOnce() requires a function");
+    \\    onceImplementations.push(fn);
+    \\    return wrapped;
+    \\  };
+    \\  wrapped.mockReturnValue = function(value) {
+    \\    currentImplementation = function() { return value; };
+    \\    return wrapped;
+    \\  };
+    \\  wrapped.mockReturnValueOnce = function(value) {
+    \\    onceImplementations.push(function() { return value; });
+    \\    return wrapped;
+    \\  };
+    \\  wrapped.mockClear = function() {
+    \\    wrapped.mock.calls = [];
+    \\    wrapped.mock.results = [];
+    \\    return wrapped;
+    \\  };
+    \\  wrapped.mockReset = function() {
+    \\    wrapped.mockClear();
+    \\    onceImplementations.length = 0;
+    \\    currentImplementation = function() {};
     \\    return wrapped;
     \\  };
     \\  globalThis.__home_mocks.push(wrapped);
@@ -2233,8 +2273,11 @@ const harness_prelude =
     \\    [key]: function() {
     \\      calls.push(Array.prototype.slice.call(arguments));
     \\      try {
-    \\        return original.apply(this, arguments);
+    \\        const result = original.apply(this, arguments);
+    \\        wrapped.mock.results.push({ type: "return", value: result });
+    \\        return result;
     \\      } catch (error) {
+    \\        wrapped.mock.results.push({ type: "throw", value: error });
     \\        if (error && typeof error.stack === "string" && !error.stack.includes("at " + key + " ")) {
     \\          const normalized = error.stack.split("\n").map(function(line) {
     \\            const at = line.indexOf("@");
@@ -2254,13 +2297,14 @@ const harness_prelude =
     \\  };
     \\  const wrapped = holder[key];
     \\  wrapped.__home_is_mock = true;
-    \\  wrapped.mock = { calls };
+    \\  wrapped.mock = { calls, results: [] };
     \\  wrapped.mockRestore = function() {
     \\    if (descriptor) Object.defineProperty(target, key, descriptor);
     \\    else delete target[key];
     \\  };
     \\  wrapped.mockClear = function() {
     \\    calls.length = 0;
+    \\    wrapped.mock.results = [];
     \\    return wrapped;
     \\  };
     \\  wrapped.mockReset = wrapped.mockClear;
@@ -2274,9 +2318,11 @@ const harness_prelude =
     \\  return wrapped;
     \\}
     \\mock.clearAllMocks = function() {
-    \\  for (const fn of globalThis.__home_mocks) fn.mock.calls = [];
+    \\  for (const fn of globalThis.__home_mocks) if (fn && typeof fn.mockClear === "function") fn.mockClear();
     \\};
-    \\mock.resetAllMocks = mock.clearAllMocks;
+    \\mock.resetAllMocks = function() {
+    \\  for (const fn of globalThis.__home_mocks) if (fn && typeof fn.mockReset === "function") fn.mockReset();
+    \\};
     \\const jest = {
     \\  __home_is_jest_object: true,
     \\  fn: mock,
@@ -2371,6 +2417,17 @@ const harness_prelude =
     \\      if (!Number.isInteger(expected) || expected < 0) __home_fail("toHaveBeenCalledTimes() requires a non-negative integer");
     \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.calls)) __home_fail("toHaveBeenCalledTimes() value must be a mock function");
     \\      __home_assert(value.mock.calls.length === expected, isNot, "Expected mock" + (isNot ? " not" : "") + " to have been called " + String(expected) + " times");
+    \\    },
+    \\    toHaveReturnedWith(expected) {
+    \\      if (!value || value.__home_is_mock !== true || !value.mock || !Array.isArray(value.mock.results)) __home_fail("Expected value must be a mock function");
+    \\      let pass = false;
+    \\      for (const result of value.mock.results) {
+    \\        if (result && result.type === "return" && __home_deep_equal(result.value, expected, false, new Map())) {
+    \\          pass = true;
+    \\          break;
+    \\        }
+    \\      }
+    \\      __home_assert(pass, isNot, "Expected mock" + (isNot ? " not" : "") + " to have returned with " + __home_format(expected));
     \\    },
     \\    toMatchInlineSnapshot(expected) {
     \\      if (arguments.length < 1) __home_fail("toMatchInlineSnapshot() requires 1 argument");
@@ -8616,6 +8673,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeTruthy()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeFalse()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toHaveBeenCalledTimes(expected)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toHaveReturnedWith(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toMatchInlineSnapshot(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_format_snapshot(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeGreaterThan(expected)") != null);
@@ -8634,6 +8692,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function mock(implementation)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function spyOn(target, property)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapped.mockRestore = function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapped.mockReturnValueOnce = function(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapped.mockImplementationOnce = function(fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock.clearAllMocks") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock.resetAllMocks") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "useFakeTimers()") != null);
@@ -8886,6 +8946,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "regression/issue/24191.test.ts",
         "js/bun/resolve/resolve-bad-parent.test.mjs",
         "regression/issue/issue-1825-jest-mock-functions.test.ts",
+        "js/bun/test/expect-toHaveReturnedWith.test.js",
         "js/node/path/is-absolute.test.js",
         "js/node/path/zero-length-strings.test.js",
         "js/bun/util/concat.test.js",

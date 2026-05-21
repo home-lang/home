@@ -1040,6 +1040,13 @@ Mocks: `toHaveBeenCalled`, `toHaveBeenCalledOnce`,
 `toHaveLastReturnedWith`, `toHaveNthReturnedWith`, `toHaveReturned`,
 `toHaveReturnedTimes`, `toHaveReturnedWith`.
 
+The bootstrap facade now tracks mock return results, thrown calls,
+one-shot mock implementations, and one-shot return values well enough for
+the copied `js/bun/test/expect-toHaveReturnedWith.test.js` fixture to
+pass as `13` tests. This preserves Bun's `toHaveReturnedWith()` behavior:
+omitting the expected argument matches an `undefined` return value rather
+than failing argument validation.
+
 Errors: `toThrow`, `toSatisfy`.
 
 Snapshots: `toMatchSnapshot`, `toMatchInlineSnapshot`,

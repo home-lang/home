@@ -207,7 +207,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes two hundred thirty-six allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes two hundred thirty-seven allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator. On macOS this
 JSC path is now part of the default `./pantry/.bin/zig build test` graph
 (`-Denable_jsc=false` remains available for constrained hosts): the
@@ -219,7 +219,7 @@ drop/env/footer, HTML server, minify-symbol, npm, Promise.all dead-code,
 regression, process `execArgv`, plugin exception, and transpiler
 decorator / use-strict / template-literal
 smokes, two `Bun.build` API
-smokes, one bun-types `test.each` type-shape smoke, six test-runner
+smokes, one bun-types `test.each` type-shape smoke, seven test-runner
 expectation smokes plus `expect().toBeEmpty`, one nested-describe smoke, two `expectTypeOf` type-only smokes, a narrow `Bun.TOML.parse` throw smoke, a TOML build invalid-source diagnostic `lineText` crash-regression smoke, CSS `intFromFloat` serialization snapshots, `Bun.stripANSI` and
 `Bun.wrapAnsi`, `Bun.semver.satisfies`, and `bun:internal-for-testing` regexp / PowerShell escaping smokes, retry/repeats runner behavior, `test.concurrent.each`, `expect().pass`, a narrow `mock.clearAllMocks` / `toHaveBeenCalledTimes` smoke, a narrow `jest.fn` / `HTMLRewriter` element-callback smoke, a narrow TypeScript constructor-modifier rewrite smoke, narrow `assert` / `assert/strict`, `node:path` including `matchesGlob` and long-CWD POSIX subprocess coverage, `node:url`, relative CJS fixture smokes, Node worker/fs/dns/readline one-shot smokes, and a WebSocket close-reentrancy smoke, a narrow inline-snapshot Unicode object formatting smoke, a `node:vm.runInNewContext` / `process.on` throw propagation smoke, Deno harness `test(options, fn)` / permission skip / `test.ignore` / `test.todo` call-shape parity, Deno `Event` / `CustomEvent` / `AbortController`, and a Deno `URLSearchParams` bootstrap smoke, plus narrow bootstrap coverage for Node `DOMException`, Web
 `Response.json` / `Response.redirect`, Web `Request` cache/mode/clone,
@@ -305,14 +305,15 @@ snapshot body remains intentionally unexecuted. The bootstrap harness is install
 per JSC engine, resets counters before each file, lowers supported
 `bun:test` imports through a virtual
 `globalThis.__home_import("bun:test")` module shim, exposes `spyOn` /
-`jest.spyOn` call tracking and stack-safe wrapper behavior, and fails closed as
+`jest.spyOn` call tracking, return-result tracking, one-shot mock
+implementations/return values, `toHaveReturnedWith`, and stack-safe wrapper behavior, and fails closed as
 unsupported for unsupported module syntax,
 pending async work, async `onTestFinished` callbacks, explicit unsupported shim paths, and files that
 register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `236` files, `1,063` passed, `0` failed,
+Latest measured subset run: `237` files, `1,076` passed, `0` failed,
 `45` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
