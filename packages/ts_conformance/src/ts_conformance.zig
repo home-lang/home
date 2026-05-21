@@ -2789,11 +2789,46 @@ pub fn inferFixtureStrictOn(input: StrictInferenceInput) bool {
 /// incorrectly.
 fn sourceHasUninitializedField(source: []const u8) bool {
     if (std.mem.indexOf(u8, source, "class ") == null) return false;
+    var in_class = false;
+    var pending_class = false;
+    var class_depth: i32 = 0;
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (line.len == 0) continue;
         if (std.mem.startsWith(u8, line, "//")) continue;
+        if (!in_class) {
+            if (std.mem.indexOf(u8, line, "class ") != null) pending_class = true;
+            if (pending_class) {
+                for (line) |c| {
+                    if (c == '{') {
+                        class_depth += 1;
+                        in_class = true;
+                    } else if (c == '}' and class_depth > 0) {
+                        class_depth -= 1;
+                    }
+                }
+                if (class_depth == 0) {
+                    in_class = false;
+                    pending_class = false;
+                }
+            }
+            continue;
+        }
+        defer {
+            for (line) |c| {
+                if (c == '{') {
+                    class_depth += 1;
+                } else if (c == '}' and class_depth > 0) {
+                    class_depth -= 1;
+                }
+            }
+            if (class_depth == 0) {
+                in_class = false;
+                pending_class = false;
+            }
+        }
+        if (class_depth != 1) continue;
         if (std.mem.indexOfScalar(u8, line, '=') != null) continue;
         if (std.mem.indexOfScalar(u8, line, '(') != null) continue;
         if (std.mem.indexOfScalar(u8, line, ':') == null) continue;
@@ -39225,6 +39260,41 @@ test "conformance: inferFixtureStrictOn flips off for uninit fields when baselin
         .case_src =
         \\class C {
         \\    x: number;
+        \\}
+        ,
+        .baseline_path = baseline_path,
+        .gpa = T.allocator,
+    }));
+}
+
+test "conformance: inferFixtureStrictOn ignores interface members when scanning class fields" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const io = std.testing.io;
+    {
+        var f = try tmp.dir.createFile(io, "interfaceMembers.errors.txt", .{ .truncate = true });
+        defer f.close(io);
+        try f.writeStreamingAll(
+            io,
+            "interfaceMembers.ts(10,7): error TS2322: Type 'null' is not assignable to type 'ILineTokens'.",
+        );
+    }
+    const baseline_path = try tmp.dir.realPathFileAlloc(io, "interfaceMembers.errors.txt", T.allocator);
+    defer T.allocator.free(baseline_path);
+
+    try T.expect(inferFixtureStrictOn(.{
+        .case_src =
+        \\interface IToken {
+        \\    startIndex: number;
+        \\}
+        \\interface ILineTokens {
+        \\    tokens: IToken[];
+        \\}
+        \\class C {
+        \\    tokenize(): ILineTokens {
+        \\        return null;
+        \\    }
         \\}
         ,
         .baseline_path = baseline_path,

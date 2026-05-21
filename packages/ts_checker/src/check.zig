@@ -15499,7 +15499,7 @@ pub const Checker = struct {
                 try self.reportUnresolvedTypeRefHeritage(impl_node, type_params);
                 const target_t = self.lowererLowerWithTypeParams(impl_node) catch types.Primitive.unknown;
                 if (self.objectHasNoOverlapWithWeakTarget(instance_t, target_t) or
-                    !(self.heritageAssignable(instance_t, target_t) catch true))
+                    !(self.classImplementsAssignable(instance_t, target_t) catch true))
                 {
                     // Render the child name with its own type-parameter
                     // list so `class B3<T> implements A<T>` prints as
@@ -20204,6 +20204,39 @@ pub const Checker = struct {
         return false;
     }
 
+    fn classImplementsAssignable(self: *Checker, source: TypeId, target: TypeId) CheckError!bool {
+        if (self.heritageAssignable(source, target) catch false) return true;
+        if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return false;
+        const sf = self.interner.pool.flagsOf(source);
+        const tf = self.interner.pool.flagsOf(target);
+        if (!sf.is_object_type or !tf.is_object_type) return false;
+        if (self.interner.objectStringIndex(target) != types.Primitive.none or
+            self.interner.objectNumberIndex(target) != types.Primitive.none or
+            self.interner.objectSymbolIndex(target) != types.Primitive.none)
+        {
+            return false;
+        }
+        const source_members = self.interner.objectMembers(source);
+        const target_members = self.interner.objectMembers(target);
+        for (target_members) |tm| {
+            var saw_name = false;
+            for (source_members) |sm| {
+                if (sm.name != tm.name) continue;
+                saw_name = true;
+                if (!tm.is_optional and sm.is_optional) continue;
+                const ok = if (sm.is_method and tm.is_method)
+                    try self.methodOverrideAssignable(sm.type, tm.type)
+                else
+                    try self.heritageMemberAssignable(sm.type, tm.type);
+                if (ok) break;
+            } else {
+                if (tm.is_optional and !saw_name) continue;
+                return false;
+            }
+        }
+        return true;
+    }
+
     fn zeroArgSignatureReturnType(self: *Checker, t: TypeId) CheckError!?TypeId {
         if (!self.interner.isSignature(t)) return null;
         if (self.interner.signatureParams(t).len != 0) return null;
@@ -23576,11 +23609,11 @@ pub const Checker = struct {
             if (self.hir.kindOf(tp) != .type_parameter) continue;
             const tpp = hir_mod.typeParameterOf(self.hir, tp);
             const constraint: TypeId = if (tpp.constraint != hir_mod.none_node_id)
-                try self.lowerer.lower(tpp.constraint)
+                try self.lowererLowerWithTypeParams(tpp.constraint)
             else
                 types.Primitive.unknown;
             const def: TypeId = if (tpp.default != hir_mod.none_node_id)
-                try self.lowerer.lower(tpp.default)
+                try self.lowererLowerWithTypeParams(tpp.default)
             else
                 types.Primitive.none;
             const tp_id = self.interner.internFreshTypeParameterWithFlags(
@@ -27119,6 +27152,12 @@ pub const Checker = struct {
                 if (self.enumDeclForNameAt(id.name, type_node)) |decl| {
                     const e = hir_mod.enumOf(self.hir, decl);
                     if (!e.is_const and (self.enumDeclIsNumeric(decl, id.name) orelse false)) return try self.enumNominalType(id.name);
+                }
+                if (self.generic_aliases.get(id.name)) |info| {
+                    if (self.genericAliasHasMissingRequiredArgs(info, 0)) {
+                        try self.reportGenericTypeRequiresArgs(type_node, id.name, info);
+                    }
+                    return info.body;
                 }
                 if (try self.resolveForwardClassInstanceType(type_node, id.name)) |t| return t;
                 if (std.mem.eql(u8, name_str, "Object")) {
@@ -52313,6 +52352,7 @@ pub const Checker = struct {
             }
             try names.append(self.gpa, tp.name);
             try constraints.append(self.gpa, self.constraintTypeParameterName(tp.constraint));
+            try self.reportBareGenericAliasConstraintMissingArgs(tp.constraint);
             try self.reportUnresolvedBodylessSignatureTypeRefs(tp.constraint, type_params);
         }
 
@@ -52347,6 +52387,41 @@ pub const Checker = struct {
         const r = hir_mod.typeRefOf(self.hir, constraint);
         if (r.qualifier_len != 0) return null;
         return r.name;
+    }
+
+    fn reportBareGenericAliasConstraintMissingArgs(self: *Checker, constraint: NodeId) CheckError!void {
+        if (constraint == hir_mod.none_node_id) return;
+        const name = switch (self.hir.kindOf(constraint)) {
+            .identifier => hir_mod.identifierOf(self.hir, constraint).name,
+            .type_ref => blk: {
+                const r = hir_mod.typeRefOf(self.hir, constraint);
+                if (r.qualifier_len != 0 or r.args_len != 0) return;
+                break :blk r.name;
+            },
+            else => return,
+        };
+        const decl = self.findTypeAliasDeclInScope(constraint, name) orelse return;
+        const ta = hir_mod.typeAliasOf(self.hir, decl);
+        const params = self.hir.childSlice(ta.type_params_start, ta.type_params_len);
+        if (params.len == 0) return;
+        for (params) |tp_node| {
+            if (self.hir.kindOf(tp_node) != .type_parameter) return;
+            if (hir_mod.typeParameterOf(self.hir, tp_node).default == hir_mod.none_node_id) break;
+        } else return;
+        for (self.diagnostics.items) |d| {
+            if (d.node == constraint and d.code == TsCodes.generic_type_requires_args) return;
+        }
+
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Generic type '{s}' requires {d} type argument(s).",
+            .{ self.string_interner.get(name), params.len },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = constraint,
+            .code = TsCodes.generic_type_requires_args,
+            .message = msg,
+        });
     }
 
     fn typeParameterConstraintHasCycle(
@@ -65422,6 +65497,30 @@ test "checker: class implements interface checks instance shape" {
     try T.expect(found);
 }
 
+test "checker: class implements interface treats method parameters bivariantly" {
+    const s = try newSetup(
+        \\interface IState {}
+        \\interface IToken { startIndex: number; }
+        \\interface ILineTokens { tokens: IToken[]; endState: IState; }
+        \\interface IMode {
+        \\  tokenize(line: string, state: IState, includeStates: boolean): ILineTokens;
+        \\}
+        \\class Bug implements IMode {
+        \\  tokenize(line: string, tokens: IToken[], includeStates: boolean): ILineTokens {
+        \\    return { tokens: [], endState: {} };
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{
+        .strict_function_types = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.class_incorrectly_implements_interface);
+    }
+}
+
 test "checker: constructor parameter properties contribute to instance shape" {
     const s = try newSetup(
         \\interface Point { x: number; y: number; }
@@ -74850,6 +74949,24 @@ test "checker: qualified bare generic type reference without defaults emits TS23
     var found = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.generic_type_requires_args) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: bare generic type alias in type parameter constraint emits TS2314" {
+    const s = try newSetup(
+        \\export type callback<T> = () => T;
+        \\export type CallbackArray<T extends callback> = () => T;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.generic_type_requires_args and
+            std.mem.indexOf(u8, d.message, "Generic type 'callback' requires 1 type argument") != null)
+        {
+            found = true;
+        }
     }
     try T.expect(found);
 }
