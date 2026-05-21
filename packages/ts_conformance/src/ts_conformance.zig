@@ -18828,6 +18828,70 @@ test "conformance: anyAssignableToEveryType2 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: generatorInAmbientContext5 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "generatorInAmbientContext5",
+        .path = "generatorInAmbientContext5.ts",
+        .source =
+        \\class C {
+        \\    *generator(): any { }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: generatorTypeCheck59 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "generatorTypeCheck59",
+        .path = "generatorTypeCheck59.ts",
+        .source =
+        \\function* g() {
+        \\    class C {
+        \\        @(yield "")
+        \\        m() { }
+        \\    };
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: generatorTypeCheck61 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "generatorTypeCheck61",
+        .path = "generatorTypeCheck61.ts",
+        .source =
+        \\function * g() {
+        \\    @(yield 0)
+        \\    class C {};
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
