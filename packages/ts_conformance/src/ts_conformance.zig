@@ -4120,6 +4120,169 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: parserForStatement9 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserForStatement9",
+        .path = "parserForStatement9.ts",
+        .source =
+        \\// @target: es2015
+        \\// repro from https://github.com/microsoft/TypeScript/issues/54769
+        \\
+        \\for (let [x = 'a' in {}] = []; !x; x = !x) console.log(x)
+        \\for (let {x = 'a' in {}} = {}; !x; x = !x) console.log(x)
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: typeParametersAvailableInNestedScope2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeParametersAvailableInNestedScope2",
+        .path = "typeParametersAvailableInNestedScope2.ts",
+        .source =
+        \\// @target: es2015
+        \\function foo<T, U>(x: T, y: U) {
+        \\    function bar<V>(z: V) {
+        \\        function baz<W>(a: W) {
+        \\            var c: T;
+        \\            var d: U;
+        \\            var e: V;
+        \\        }
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: instanceMemberWithComputedPropertyName passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "instanceMemberWithComputedPropertyName",
+        .path = "instanceMemberWithComputedPropertyName.ts",
+        .source =
+        \\// @target: es2015
+        \\// https://github.com/microsoft/TypeScript/issues/30953
+        \\"use strict";
+        \\const x = 1;
+        \\class C {
+        \\    [x] = true;
+        \\    constructor() {
+        \\        const { a, b } = { a: 1, b: 2 };
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: computedPropertyNamesContextualType6_ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "computedPropertyNamesContextualType6_ES6",
+        .path = "computedPropertyNamesContextualType6_ES6.ts",
+        .source =
+        \\// @target: es6
+        \\interface I<T> {
+        \\    [s: string]: T;
+        \\}
+        \\
+        \\declare function foo<T>(obj: I<T>): T
+        \\
+        \\foo({
+        \\    p: "",
+        \\    0: () => { },
+        \\    ["hi" + "bye"]: true,
+        \\    [0 + 1]: 0,
+        \\    [+"hi"]: [0]
+        \\});
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: ExportVariableWithAccessibleTypeInTypeAnnotation passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "ExportVariableWithAccessibleTypeInTypeAnnotation",
+        .path = "ExportVariableWithAccessibleTypeInTypeAnnotation.ts",
+        .source =
+        \\// @target: es2015
+        \\namespace A {
+        \\
+        \\    export interface Point {
+        \\        x: number;
+        \\        y: number;
+        \\    }
+        \\
+        \\    // valid since Point is exported
+        \\    export var Origin: Point = { x: 0, y: 0 };
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emitClassDeclarationWithExtensionAndTypeArgumentInES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emitClassDeclarationWithExtensionAndTypeArgumentInES6",
+        .path = "emitClassDeclarationWithExtensionAndTypeArgumentInES6.ts",
+        .source =
+        \\// @target: es6
+        \\class B<T> {
+        \\    constructor(a: T) { }
+        \\}
+        \\class C extends B<string> { }
+        \\class D extends B<number> {
+        \\    constructor(a: any)
+        \\    constructor(b: number) {
+        \\        super(b);
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames41_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames41_ES6",
