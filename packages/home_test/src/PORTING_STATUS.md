@@ -940,6 +940,11 @@ The copied `js/third_party/jsonwebtoken/non_object_values.test.js`,
 header and payload segment decoding, custom header merges, UTF-8 and
 binary payload encoding, non-object payload verification, and numeric
 `expiresIn` handling on sealed object payloads.
+The copied
+`js/third_party/jsonwebtoken/undefined_secretOrPublickey.test.js`
+fixture now passes as `2` tests through the CommonJS bootstrap model. It
+covers `jwt.verify()` validation for null and missing secret/public key
+arguments with the upstream error message matcher.
 The copied `js/node/path/to-namespaced-path.test.js` fixture now passes
 as `4` tests through the path bootstrap model. It covers
 `path.toNamespacedPath`, `path._makeLong`, posix/win32 namespace variants,
