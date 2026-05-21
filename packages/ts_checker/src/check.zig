@@ -595,6 +595,15 @@ pub const TsCodes = struct {
     /// member not declared in the base class, but a near-match name
     /// exists there.
     pub const jsdoc_override_not_in_base_did_you_mean: u32 = 4123;
+    /// `noImplicitOverride` in checked JavaScript: a class member
+    /// overrides a base member but lacks a JSDoc `@override` tag.
+    pub const missing_jsdoc_override: u32 = 4119;
+    /// A JSDoc `@override` tag was used but the containing class has
+    /// no `extends` clause.
+    pub const jsdoc_override_without_base: u32 = 4121;
+    /// A JSDoc `@override` tag was used but the base class has no
+    /// matching member.
+    pub const jsdoc_override_not_in_base: u32 = 4122;
     /// `override` cannot be used with a dynamic computed member name.
     pub const override_dynamic_name: u32 = 4127;
     /// `noImplicitOverride`: a class member overrides a base member
@@ -607,6 +616,9 @@ pub const TsCodes = struct {
     /// from the base class but lacks the `override` modifier. Distinct
     /// from TS4114 because the parent member is declared `abstract`.
     pub const missing_override_for_abstract: u32 = 4116;
+    /// Alias for TS8009 when the TS-only modifier is `override` in a
+    /// JavaScript file.
+    pub const override_modifier_in_js: u32 = 8009;
     /// TS legacy `private` modifier violation. Emitted when a
     /// member declared `private` is accessed from outside the
     /// declaring class body.
@@ -17739,6 +17751,17 @@ pub const Checker = struct {
 
     fn overrideBaseClassDiagnosticNameFromExtends(self: *Checker, extends_node: NodeId) ?[]const u8 {
         if (extends_node == hir_mod.none_node_id) return null;
+        if (self.source) |src| {
+            const span = self.hir.spanOf(extends_node);
+            if (span.start < span.end and span.end <= src.len) {
+                const text = std.mem.trim(u8, src[span.start..span.end], " \t\r\n");
+                if (std.mem.startsWith(u8, text, "class") and
+                    (text.len == "class".len or !isIdentifierPartByte(text["class".len])))
+                {
+                    return "(Anonymous class)";
+                }
+            }
+        }
         const k = self.hir.kindOf(extends_node);
         if (k == .identifier) {
             return self.string_interner.get(hir_mod.identifierOf(self.hir, extends_node).name);
@@ -17756,7 +17779,7 @@ pub const Checker = struct {
     }
 
     /// Anchor an override-modifier diagnostic (TS4112/4113/4114/4115/
-    /// 4117/4123) at the member NAME rather than the member's span
+    /// 4117/4119/4121/4122/4123) at the member NAME rather than the member's span
     /// start. Upstream tsc underlines the method/field identifier,
     /// not the leading modifier keyword run (`static override foo()`
     /// underlines `foo`, not `static`). Mirrors `override1.ts(11,14)`
@@ -17779,7 +17802,63 @@ pub const Checker = struct {
             else => return null,
         };
         if (name_node == hir_mod.none_node_id) return null;
+        if (self.computedMemberBracketAnchorPos(node, name_node)) |pos| return pos;
         return self.hir.spanOf(name_node).start;
+    }
+
+    fn computedMemberBracketAnchorPos(self: *Checker, node: NodeId, name_node: NodeId) ?u32 {
+        const src = self.source orelse return null;
+        const member_span = self.hir.spanOf(node);
+        const name_span = self.hir.spanOf(name_node);
+        if (name_span.start == 0 or name_span.start > src.len) return null;
+        var scan_start: usize = @min(@as(usize, member_span.start), @as(usize, name_span.start));
+        while (scan_start > 0 and src[scan_start - 1] != '\n' and src[scan_start - 1] != '\r') {
+            scan_start -= 1;
+        }
+        const before_name = src[scan_start..name_span.start];
+        if (std.mem.lastIndexOfScalar(u8, before_name, '[')) |rel| {
+            return @intCast(scan_start + rel);
+        }
+        return null;
+    }
+
+    fn overrideDiagnosticAnchorPos(self: *Checker, node: NodeId, is_parameter_property: bool) ?u32 {
+        if (is_parameter_property) return self.hir.spanOf(node).start;
+        return self.overrideAnchorPos(node);
+    }
+
+    fn overrideMemberIsConstStringComputed(self: *Checker, node: NodeId) bool {
+        const name_node: NodeId = switch (self.hir.kindOf(node)) {
+            .fn_decl, .fn_expr, .arrow_fn => hir_mod.fnDeclOf(self.hir, node).name,
+            .object_property => hir_mod.objectPropertyOf(self.hir, node).key,
+            else => return false,
+        };
+        if (name_node == hir_mod.none_node_id) return false;
+        if (self.computedMemberBracketAnchorPos(node, name_node) == null) return false;
+        if (self.hir.kindOf(name_node) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, name_node);
+        return (self.sourceConstStringMemberName(self.string_interner.get(id.name)) catch null) != null;
+    }
+
+    fn overrideKeywordPos(self: *Checker, node: NodeId) ?u32 {
+        const src = self.source orelse return null;
+        const span = self.hir.spanOf(node);
+        if (span.start >= src.len) return null;
+        var line_start: usize = span.start;
+        while (line_start > 0 and src[line_start - 1] != '\n' and src[line_start - 1] != '\r') {
+            line_start -= 1;
+        }
+        const key_start = (self.overrideAnchorPos(node) orelse span.start);
+        const scan_end = @min(@as(usize, key_start), src.len);
+        var i: usize = line_start;
+        while (i + "override".len <= scan_end) : (i += 1) {
+            if (!std.mem.startsWith(u8, src[i..], "override")) continue;
+            const before_ok = i == line_start or !isIdentifierPartByte(src[i - 1]);
+            const end = i + "override".len;
+            const after_ok = end >= src.len or !isIdentifierPartByte(src[end]);
+            if (before_ok and after_ok) return @intCast(i);
+        }
+        return null;
     }
 
     fn checkOverrideModifierWithContext(
@@ -17795,17 +17874,52 @@ pub const Checker = struct {
         const has_base = self.baseClassHasMember(parent_t, name);
         const has_jsdoc_override = !has_override and !is_parameter_property and
             self.sourceHasCheckJsDirective() and self.leadingJsDocHasOverride(node);
+        if (has_override and self.virtualSectionIsJsLike(node)) {
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .pos = self.overrideKeywordPos(node) orelse self.hir.spanOf(node).start,
+                .code = TsCodes.override_modifier_in_js,
+                .message = try self.diag_arena.allocator().dupe(u8, "The 'override' modifier can only be used in TypeScript files."),
+            });
+            return;
+        }
         // Render the base-class name when available so the diagnostic
         // matches upstream's `... 'B'.` suffix. Mirrors `override1.ts`
         // / `override5.ts` baselines.
         const base_name_opt: ?[]const u8 = blk: {
-            const pt = parent_t orelse break :blk base_class_name_from_extends;
-            break :blk (self.simpleDiagnosticTypeName(pt) catch null) orelse base_class_name_from_extends;
+            if (base_class_name_from_extends) |extends_name| {
+                if (std.mem.eql(u8, extends_name, "(Anonymous class)")) break :blk extends_name;
+            }
+            const pt = parent_t orelse break :blk null;
+            const rendered: ?[]const u8 = rendered_blk: {
+                if (try self.simpleDiagnosticTypeName(pt)) |type_name| break :rendered_blk type_name;
+                break :rendered_blk try self.allocAbstractParentTypeName(pt);
+            };
+            if (rendered) |display_name| {
+                if (std.mem.startsWith(u8, display_name, "typeof ")) {
+                    break :blk base_class_name_from_extends orelse display_name;
+                }
+                break :blk display_name;
+            }
+            break :blk base_class_name_from_extends;
         };
-        const anchor_pos = self.overrideAnchorPos(node);
+        const anchor_pos = self.overrideDiagnosticAnchorPos(node, is_parameter_property);
         if ((has_override or has_jsdoc_override) and !has_base) {
             if (containing_class_name_when_no_extends) |cls_name| {
-                if (!has_jsdoc_override) {
+                if (has_jsdoc_override) {
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "This member cannot have a JSDoc comment with an '@override' tag because its containing class '{s}' does not extend another class.",
+                        .{cls_name},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = node,
+                        .pos = anchor_pos,
+                        .code = TsCodes.jsdoc_override_without_base,
+                        .message = msg,
+                    });
+                    return;
+                } else {
                     const msg = try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
                         "This member cannot have an 'override' modifier because its containing class '{s}' does not extend another class.",
@@ -17850,24 +17964,37 @@ pub const Checker = struct {
                         });
                     }
                 } else {
-                    const msg = try std.fmt.allocPrint(
-                        self.diag_arena.allocator(),
-                        "This member cannot have an 'override' modifier because it is not declared in the base class '{s}'.",
-                        .{bn},
-                    );
+                    const msg = if (has_jsdoc_override)
+                        try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "This member cannot have a JSDoc comment with an '@override' tag because it is not declared in the base class '{s}'.",
+                            .{bn},
+                        )
+                    else
+                        try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "This member cannot have an 'override' modifier because it is not declared in the base class '{s}'.",
+                            .{bn},
+                        );
                     try self.diagnostics.append(self.gpa, .{
                         .node = node,
                         .pos = anchor_pos,
-                        .code = TsCodes.override_not_in_base,
+                        .code = if (has_jsdoc_override) TsCodes.jsdoc_override_not_in_base else TsCodes.override_not_in_base,
                         .message = msg,
                     });
                 }
             } else {
-                try self.reportAt(node, anchor_pos, TsCodes.override_not_in_base, "This member cannot have an 'override' modifier because it is not declared in the base class.");
+                if (has_jsdoc_override) {
+                    try self.reportAt(node, anchor_pos, TsCodes.jsdoc_override_not_in_base, "This member cannot have a JSDoc comment with an '@override' tag because it is not declared in the base class.");
+                } else {
+                    try self.reportAt(node, anchor_pos, TsCodes.override_not_in_base, "This member cannot have an 'override' modifier because it is not declared in the base class.");
+                }
             }
             return;
         }
-        if (!has_override and has_base and self.strict_flags.no_implicit_override) {
+        if (!has_override and !has_jsdoc_override and has_base and self.strict_flags.no_implicit_override) {
+            if (!is_parameter_property and self.classMemberSourceHasLeadingKeyword(node, "declare")) return;
+            if (!is_parameter_property and self.overrideMemberIsConstStringComputed(node)) return;
             // Look up whether the parent member is `abstract` once —
             // both the TS4116 branch and the TS4114 suppression below
             // depend on it. Concrete child + abstract parent = silent
@@ -17921,6 +18048,24 @@ pub const Checker = struct {
             //    overrides a member in the base class 'X'." — with `the`.
             const prefix: []const u8 = if (is_parameter_property) "This parameter property" else "This member";
             const article: []const u8 = if (is_parameter_property) "" else "the ";
+            if (!is_parameter_property and self.sourceHasCheckJsDirective() and self.virtualSectionIsJsLike(node)) {
+                if (base_name_opt) |bn| {
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "This member must have a JSDoc comment with an '@override' tag because it overrides a member in the base class '{s}'.",
+                        .{bn},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = node,
+                        .pos = anchor_pos,
+                        .code = TsCodes.missing_jsdoc_override,
+                        .message = msg,
+                    });
+                } else {
+                    try self.reportAt(node, anchor_pos, TsCodes.missing_jsdoc_override, "This member must have a JSDoc comment with an '@override' tag because it overrides a member in the base class.");
+                }
+                return;
+            }
             if (base_name_opt) |bn| {
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
@@ -17978,37 +18123,41 @@ pub const Checker = struct {
     }
 
     fn localValueDeclExistsBefore(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        return self.findLocalValueDeclBefore(node, name) != null;
+    }
+
+    fn findLocalValueDeclBefore(self: *Checker, node: NodeId, name: hir_mod.StringId) ?NodeId {
         var scope = self.hir.parentOf(node);
         if (scope != hir_mod.none_node_id and self.hir.kindOf(scope) == .export_decl) {
             scope = self.hir.parentOf(scope);
         }
-        if (scope == hir_mod.none_node_id) return false;
+        if (scope == hir_mod.none_node_id) return null;
         const stmts: []const NodeId = switch (self.hir.kindOf(scope)) {
             .block_stmt => hir_mod.blockStmts(self.hir, scope),
             .namespace_decl => hir_mod.namespaceBody(self.hir, scope),
-            else => return false,
+            else => return null,
         };
         for (stmts) |s| {
-            if (s == node or (self.hir.kindOf(s) == .export_decl and hir_mod.exportOf(self.hir, s).decl == node)) return false;
+            if (s == node or (self.hir.kindOf(s) == .export_decl and hir_mod.exportOf(self.hir, s).decl == node)) return null;
             const decl = if (self.hir.kindOf(s) == .export_decl) hir_mod.exportOf(self.hir, s).decl else s;
             if (decl == hir_mod.none_node_id) continue;
             switch (self.hir.kindOf(decl)) {
                 .var_decl, .let_decl, .const_decl => {
                     const v = hir_mod.varDeclOf(self.hir, decl);
-                    if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier and hir_mod.identifierOf(self.hir, v.name).name == name) return true;
+                    if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier and hir_mod.identifierOf(self.hir, v.name).name == name) return decl;
                 },
                 .fn_decl, .fn_expr => {
                     const f = hir_mod.fnDeclOf(self.hir, decl);
-                    if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier and hir_mod.identifierOf(self.hir, f.name).name == name) return true;
+                    if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier and hir_mod.identifierOf(self.hir, f.name).name == name) return decl;
                 },
                 .class_decl, .class_expr => {
                     const c = hir_mod.classOf(self.hir, decl);
-                    if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier and hir_mod.identifierOf(self.hir, c.name).name == name) return true;
+                    if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier and hir_mod.identifierOf(self.hir, c.name).name == name) return decl;
                 },
                 else => {},
             }
         }
-        return false;
+        return null;
     }
 
     fn classMemberNameFromPropertyKey(self: *Checker, key: NodeId, is_computed: bool) CheckError!?hir_mod.StringId {
@@ -18017,6 +18166,9 @@ pub const Checker = struct {
                 const name = hir_mod.identifierOf(self.hir, key).name;
                 if (!is_computed) break :blk name;
                 const raw = self.string_interner.get(name);
+                if (self.computedKeyBelongsToClassMember(key)) {
+                    if (try self.sourceConstStringMemberName(raw)) |member_name| break :blk member_name;
+                }
                 if (try self.sourceConstSymbolMemberName(raw)) |member_name| break :blk member_name;
                 if (!self.sourceHasDirectConstSymbolInit(raw)) break :blk null;
                 const synthetic = try std.fmt.allocPrint(self.gpa, "[computed:{s}]", .{raw});
@@ -18036,6 +18188,24 @@ pub const Checker = struct {
                 break :blk self.string_interner.intern(synthetic) catch return error.OutOfMemory;
             },
             else => null,
+        };
+    }
+
+    fn computedKeyBelongsToClassMember(self: *Checker, key: NodeId) bool {
+        const owner = self.hir.parentOf(key);
+        if (owner == hir_mod.none_node_id) return false;
+        switch (self.hir.kindOf(owner)) {
+            .fn_decl, .fn_expr, .arrow_fn, .object_property => {},
+            else => return false,
+        }
+        var container = self.hir.parentOf(owner);
+        if (container != hir_mod.none_node_id and self.hir.kindOf(container) == .export_decl) {
+            container = self.hir.parentOf(container);
+        }
+        if (container == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(container)) {
+            .class_decl, .class_expr => true,
+            else => false,
         };
     }
 
@@ -20121,6 +20291,11 @@ pub const Checker = struct {
                 if (try self.constructReturnType(static_t)) |instance_t| break :blk instance_t;
                 break :blk null;
             },
+            .call_expr => blk: {
+                const static_t = try self.checkExpression(extends_expr);
+                if (try self.constructReturnType(static_t)) |instance_t| break :blk instance_t;
+                break :blk null;
+            },
             else => null,
         };
     }
@@ -20333,6 +20508,17 @@ pub const Checker = struct {
     }
 
     fn heritageValueType(self: *Checker, at_node: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
+        if (self.findLocalValueDeclBefore(self.enclosingClassNode(at_node), name)) |decl| {
+            switch (self.hir.kindOf(decl)) {
+                .var_decl, .let_decl, .const_decl => {
+                    const v = hir_mod.varDeclOf(self.hir, decl);
+                    if (v.type_annotation != hir_mod.none_node_id) {
+                        return try self.lowerValueTypeAnnotation(name, v.type_annotation);
+                    }
+                },
+                else => {},
+            }
+        }
         if (self.lookupNarrow(name)) |t| return t;
         return try self.typeOfVisibleNameNoDiag(at_node, name);
     }
@@ -64096,7 +64282,74 @@ test "checker: JSDoc override tag rejects members absent from base class" {
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.override_not_in_base) found = true;
+        if (d.code == TsCodes.jsdoc_override_not_in_base) {
+            found = true;
+            try T.expect(std.mem.indexOf(u8, d.message, "JSDoc comment with an '@override' tag") != null);
+        }
+    }
+    try T.expect(found);
+}
+
+test "checker: JSDoc override without extends emits TS4121" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\class C {
+        \\  /** @override */
+        \\  n(): void {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.jsdoc_override_without_base) {
+            found = true;
+            try T.expect(std.mem.indexOf(u8, d.message, "containing class 'C' does not extend another class") != null);
+        }
+    }
+    try T.expect(found);
+}
+
+test "checker: checked JS missing override asks for JSDoc tag" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: a.js
+        \\class A { m() {} }
+        \\class B extends A { m() {} }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_override = true });
+    try s.checker.checkSourceFile(s.root);
+    var saw_jsdoc = false;
+    var saw_modifier = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.missing_jsdoc_override) {
+            saw_jsdoc = true;
+            try T.expect(std.mem.indexOf(u8, d.message, "JSDoc comment with an '@override' tag") != null);
+        }
+        if (d.code == TsCodes.missing_override) saw_modifier = true;
+    }
+    try T.expect(saw_jsdoc);
+    try T.expect(!saw_modifier);
+}
+
+test "checker: override modifier in JS emits TS8009" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: a.js
+        \\class A { m() {} }
+        \\class B extends A { override m() {} }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.override_modifier_in_js) {
+            found = true;
+            try T.expect(std.mem.indexOf(u8, d.message, "'override' modifier") != null);
+        }
     }
     try T.expect(found);
 }
@@ -64113,14 +64366,11 @@ test "checker: computed class override checks base computed members" {
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_override = true });
     try s.checker.checkSourceFile(s.root);
-    var saw_missing = false;
     var saw_not_base = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.missing_override) saw_missing = true;
         if (d.code == TsCodes.override_not_in_base or
             d.code == TsCodes.override_not_in_base_did_you_mean) saw_not_base = true;
     }
-    try T.expect(saw_missing);
     try T.expect(saw_not_base);
 }
 

@@ -4915,6 +4915,9 @@ pub const Parser = struct {
                     },
                     .kw_static => {
                         const mod = self.advance();
+                        if (mods.is_override) {
+                            try self.reportCodeAt(mod.span.start, mod.line, 1029, "'static' modifier must precede 'override' modifier.");
+                        }
                         if (mods.is_static) {
                             try self.reportCodeAt(mod.span.start, mod.line, 1434, "Unexpected keyword or identifier.");
                         }
@@ -4928,6 +4931,9 @@ pub const Parser = struct {
                     },
                     .kw_override => {
                         const mod = self.peek();
+                        if (mods.is_async) {
+                            try self.reportCodeAt(mod.span.start, mod.line, 1029, "'override' modifier must precede 'async' modifier.");
+                        }
                         if (mods.is_override) {
                             try self.reportCodeAt(mod.span.start, mod.line, 1030, "'override' modifier already seen.");
                         }
@@ -14920,6 +14926,27 @@ test "parser: accessibility modifier after readonly on parameter property report
     try T.expect(saw_public);
     try T.expect(saw_protected);
     try T.expect(saw_private);
+}
+
+test "parser: override modifier order reports async/static TS1029" {
+    var s = try newTestSetup(
+        \\class Base { static s() {} m() {} }
+        \\class D extends Base {
+        \\  async override m() {}
+        \\  override static s() {}
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var saw_async = false;
+    var saw_static = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code != 1029) continue;
+        if (std.mem.indexOf(u8, d.message, "'override' modifier must precede 'async' modifier") != null) saw_async = true;
+        if (std.mem.indexOf(u8, d.message, "'static' modifier must precede 'override' modifier") != null) saw_static = true;
+    }
+    try T.expect(saw_async);
+    try T.expect(saw_static);
 }
 
 test "parser: accessibility modifier before readonly on parameter property is silent" {
