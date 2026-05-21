@@ -19082,6 +19082,57 @@ test "conformance: subtypingWithCallSignatures passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: decoratorOnClassMethod18 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "decoratorOnClassMethod18",
+        .path = "decoratorOnClassMethod18.ts",
+        .source =
+        \\declare var decorator: any;
+        \\
+        \\class Foo {
+        \\    p1
+        \\
+        \\    @decorator()
+        \\    p2;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: decoratorOnClassConstructorParameter5 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "decoratorOnClassConstructorParameter5",
+        .path = "decoratorOnClassConstructorParameter5.ts",
+        .source =
+        \\interface IFoo { }
+        \\declare const IFoo: any;
+        \\class BulkEditPreviewProvider {
+        \\    static readonly Schema = 'vscode-bulkeditpreview';
+        \\    static emptyPreview = { scheme: BulkEditPreviewProvider.Schema };
+        \\    constructor(
+        \\        @IFoo private readonly _modeService: IFoo,
+        \\    ) { }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
