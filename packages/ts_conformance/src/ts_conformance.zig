@@ -4120,6 +4120,352 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: validUndefinedValues passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "validUndefinedValues",
+        .path = "validUndefinedValues.ts",
+        .source = "// @target: es2015\nvar x: typeof undefined;\nx = undefined;",
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: asiPreventsParsingAsTypeAlias01 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "asiPreventsParsingAsTypeAlias01",
+        .path = "asiPreventsParsingAsTypeAlias01.ts",
+        .source =
+        \\// @target: es2015
+        \\
+        \\var type;
+        \\var string;
+        \\var Foo;
+        \\
+        \\type
+        \\Foo = string;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: validVoidAssignments passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "validVoidAssignments",
+        .path = "validVoidAssignments.ts",
+        .source =
+        \\// @target: es2015
+        \\var x: void;
+        \\var y: any;
+        \\var z: void;
+        \\y = x;
+        \\x = y;
+        \\x = z;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: booleanPropertyAccess passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "booleanPropertyAccess",
+        .path = "booleanPropertyAccess.ts",
+        .source =
+        \\// @target: es2015
+        \\var x = true;
+        \\
+        \\var a = x.toString();
+        \\var b = x['toString']();
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectRestCatchES5 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectRestCatchES5",
+        .path = "objectRestCatchES5.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\let a = 1, b = 2;
+        \\try {} catch ({ a, ...b }) {}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: typeofThisWithImplicitThis passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeofThisWithImplicitThis",
+        .path = "typeofThisWithImplicitThis.ts",
+        .source =
+        \\// @target: es2015
+        \\// @noImplicitThis: false
+        \\
+        \\function Test1() {
+        \\    let x: typeof this.no = 1
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: validStringAssignments passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "validStringAssignments",
+        .path = "validStringAssignments.ts",
+        .source =
+        \\// @target: es2015
+        \\var x = '';
+        \\
+        \\var a: any = x;
+        \\var b: Object = x;
+        \\var c: string = x;
+        \\var d: String = x;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: contextuallyTypeLogicalAnd01 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "contextuallyTypeLogicalAnd01",
+        .path = "contextuallyTypeLogicalAnd01.ts",
+        .source =
+        \\// @target: es2015
+        \\// @noImplicitAny: true
+        \\
+        \\let x: (a: string) => string;
+        \\let y = true;
+        \\
+        \\x = y && (a => a);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: validBooleanAssignments passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "validBooleanAssignments",
+        .path = "validBooleanAssignments.ts",
+        .source =
+        \\// @target: es2015
+        \\var x = true;
+        \\
+        \\var a: any = x;
+        \\var b: Object = x;
+        \\var c: Boolean = x;
+        \\var d: boolean = x;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: spreadNonPrimitive passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "spreadNonPrimitive",
+        .path = "spreadNonPrimitive.ts",
+        .source =
+        \\// @target: es2015
+        \\declare let o: object;
+        \\const x: { a: number, b: number } = { a: 1, ...o, b: 2 };
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: spreadUnion4 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "spreadUnion4",
+        .path = "spreadUnion4.ts",
+        .source =
+        \\// @target: es2015
+        \\declare const a: { x: () => void }
+        \\declare const b: { x?: () => void }
+        \\
+        \\const c = { ...a, ...b };
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectSpreadNoTransform passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectSpreadNoTransform",
+        .path = "objectSpreadNoTransform.ts",
+        .source =
+        \\// @target: esnext
+        \\const y = { a: 'yes', b: 'no' };
+        \\const o = { x: 1, ...y };
+        \\var b;
+        \\var rest: any;
+        \\({ b, ...rest } = o);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: spreadExcessProperty passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "spreadExcessProperty",
+        .path = "spreadExcessProperty.ts",
+        .source =
+        \\// @target: es2015
+        \\type A = { a: string, b: string };
+        \\const extra1 = { a: "a", b: "b", extra: "extra" };
+        \\const a1: A = { ...extra1 }; // spread should not give excess property errors
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectSpreadComputedProperty passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectSpreadComputedProperty",
+        .path = "objectSpreadComputedProperty.ts",
+        .source =
+        \\// @target: es2015
+        \\// fixes #12200
+        \\function f() {
+        \\    let n: number = 12;
+        \\    let m: number = 13;
+        \\    let a: any = null;
+        \\    const o1 = { ...{}, [n]: n };
+        \\    const o2 = { ...{}, [a]: n };
+        \\    const o3 = { [a]: n, ...{}, [n]: n, ...{}, [m]: m };
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: spreadContextualTypedBindingPattern passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "spreadContextualTypedBindingPattern",
+        .path = "spreadContextualTypedBindingPattern.ts",
+        .source =
+        \\// @target: es2015
+        \\// #18308
+        \\interface Person {
+        \\  naam: string,
+        \\  age: number
+        \\}
+        \\
+        \\declare const bob: Person
+        \\declare const alice: Person
+        \\
+        \\// [ts] Initializer provides no value for this binding element and the binding element has no default value.
+        \\const { naam, age } = {...bob, ...alice}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: tupleElementTypes2 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "tupleElementTypes2",
