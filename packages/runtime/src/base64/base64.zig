@@ -1,3 +1,10 @@
+// Copied from bun/src/base64/base64.zig at upstream SHA
+// fd0b6f1a271fca0b8124b69f230b100f4d636af6.
+//
+// Home subset: keep Bun's copied Zig base64 codec and WHATWG-forgiving mixed
+// alphabet fallback, but replace Bun's simdutf/JSC entry points with local
+// Zig paths so this leaf is buildable before runtime export wiring lands.
+
 const mixed_decoder = brk: {
     var decoder = zig_base64.standard.decoderWithIgnore("\xff \t\r\n" ++ [_]u8{
         std.ascii.control_code.vt,
@@ -11,24 +18,52 @@ const mixed_decoder = brk: {
     break :brk decoder;
 };
 
-pub fn decode(destination: []u8, source: []const u8) bun.simdutf.SIMDUTFResult {
-    const result = bun.simdutf.base64.decode(source, destination, false);
+const mixed_no_pad_decoder = brk: {
+    var decoder = zig_base64.standard_no_pad.decoderWithIgnore("\xff \t\r\n" ++ [_]u8{
+        std.ascii.control_code.vt,
+        std.ascii.control_code.ff,
+    });
 
-    if (!result.isSuccessful()) {
-        // The input does not follow the WHATWG forgiving-base64 specification
-        // https://infra.spec.whatwg.org/#forgiving-base64-decode
-        // https://github.com/nodejs/node/blob/2eff28fb7a93d3f672f80b582f664a7c701569fb/src/string_bytes.cc#L359
-        var wrote: usize = 0;
-        mixed_decoder.decode(destination, source, &wrote) catch {
+    for (zig_base64.url_safe_alphabet_chars[62..], 62..) |c, i| {
+        decoder.decoder.char_to_index[c] = @as(u8, @intCast(i));
+    }
+
+    break :brk decoder;
+};
+
+pub const DecodeStatus = enum {
+    success,
+    invalid_base64_character,
+};
+
+pub const DecodeResult = struct {
+    count: usize,
+    status: DecodeStatus,
+
+    pub fn isSuccessful(result: DecodeResult) bool {
+        return result.status == .success;
+    }
+};
+
+pub const ByteList = struct {
+    ptr: [*]u8,
+    len: u32,
+    cap: u32,
+};
+
+pub fn decode(destination: []u8, source: []const u8) DecodeResult {
+    var wrote: usize = 0;
+    mixed_decoder.decode(destination, source, &wrote) catch {
+        mixed_no_pad_decoder.decode(destination, source, &wrote) catch {
             return .{
                 .count = wrote,
                 .status = .invalid_base64_character,
             };
         };
         return .{ .count = wrote, .status = .success };
-    }
+    };
 
-    return result;
+    return .{ .count = wrote, .status = .success };
 }
 
 pub fn decodeAlloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
@@ -42,10 +77,10 @@ pub fn decodeAlloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
 }
 
 pub fn encode(destination: []u8, source: []const u8) usize {
-    return bun.simdutf.base64.encode(source, destination, false);
+    return zig_base64.standard.Encoder.encode(destination, source).len;
 }
 
-pub fn encodeAlloc(allocator: std.mem.Allocator, source: []const u8) !bun.ByteList {
+pub fn encodeAlloc(allocator: std.mem.Allocator, source: []const u8) !ByteList {
     const len = encodeLen(source);
     const destination = try allocator.alloc(u8, len);
     const encoded_len = encode(destination, source);
@@ -57,7 +92,7 @@ pub fn encodeAlloc(allocator: std.mem.Allocator, source: []const u8) !bun.ByteLi
 }
 
 pub fn simdutfEncodeLenUrlSafe(source_len: usize) usize {
-    return bun.simdutf.base64.encode_len(source_len, true);
+    return ((source_len * 4) + 2) / 3;
 }
 
 /// Encode with the following differences from regular `encode` function:
@@ -67,7 +102,7 @@ pub fn simdutfEncodeLenUrlSafe(source_len: usize) usize {
 ///
 /// See the documentation for simdutf's `binary_to_base64` function for more details (simdutf_impl.h).
 pub fn simdutfEncodeUrlSafe(destination: []u8, source: []const u8) usize {
-    return bun.simdutf.base64.encode(source, destination, true);
+    return zig_base64.url_safe_no_pad.Encoder.encode(destination, source).len;
 }
 
 pub fn decodeLenUpperBound(len: usize) usize {
@@ -97,14 +132,12 @@ pub fn urlSafeEncodeLen(source: anytype) usize {
     // Copied from WebKit
     return ((source.len * 4) + 2) / 3;
 }
-extern fn WTF__base64URLEncode(input: [*]const u8, input_len: usize, output: [*]u8, output_len: usize) usize;
 pub fn encodeURLSafe(dest: []u8, source: []const u8) usize {
-    bun.jsc.markBinding(@src());
-    return WTF__base64URLEncode(source.ptr, source.len, dest.ptr, dest.len);
+    return simdutfEncodeUrlSafe(dest, source);
 }
 
 const zig_base64 = struct {
-    const assert = bun.assert;
+    const assert = std.debug.assert;
     const testing = std.testing;
     const mem = std.mem;
 
@@ -182,7 +215,7 @@ const zig_base64 = struct {
         /// A bunch of assertions, then simply pass the data right through.
         pub fn init(alphabet_chars: [64]u8, pad_char: ?u8) Base64Encoder {
             assert(alphabet_chars.len == 64);
-            var char_in_alphabet = [_]bool{false} ** 256;
+            var char_in_alphabet: [256]bool = @splat(false);
             for (alphabet_chars) |c| {
                 assert(!char_in_alphabet[c]);
                 assert(pad_char == null or c != pad_char.?);
@@ -250,11 +283,11 @@ const zig_base64 = struct {
 
         pub fn init(alphabet_chars: [64]u8, pad_char: ?u8) Base64Decoder {
             var result = Base64Decoder{
-                .char_to_index = [_]u8{invalid_char} ** 256,
+                .char_to_index = @splat(invalid_char),
                 .pad_char = pad_char,
             };
 
-            var char_in_alphabet = [_]bool{false} ** 256;
+            var char_in_alphabet: [256]bool = @splat(false);
             for (alphabet_chars, 0..) |c, i| {
                 assert(!char_in_alphabet[c]);
                 assert(pad_char == null or c != pad_char.?);
@@ -341,7 +374,7 @@ const zig_base64 = struct {
         pub fn init(alphabet_chars: [64]u8, pad_char: ?u8, ignore_chars: []const u8) Base64DecoderWithIgnore {
             var result = Base64DecoderWithIgnore{
                 .decoder = Base64Decoder.init(alphabet_chars, pad_char),
-                .char_is_ignored = [_]bool{false} ** 256,
+                .char_is_ignored = @splat(false),
             };
             for (ignore_chars) |c| {
                 assert(result.decoder.char_to_index[c] == Base64Decoder.invalid_char);
@@ -514,8 +547,9 @@ const zig_base64 = struct {
         {
             const decoder_ignore_nothing = codecs.decoderWithIgnore("");
             var buffer: [0x100]u8 = undefined;
-            var decoded = buffer[0..try decoder_ignore_nothing.calcSizeUpperBound(expected_encoded.len)];
-            const written = try decoder_ignore_nothing.decode(decoded, expected_encoded);
+            var decoded = buffer[0..decoder_ignore_nothing.calcSizeUpperBound(expected_encoded.len)];
+            var written: usize = 0;
+            try decoder_ignore_nothing.decode(decoded, expected_encoded, &written);
             try testing.expect(written <= decoded.len);
             try testing.expectEqualSlices(u8, expected_decoded, decoded[0..written]);
         }
@@ -524,8 +558,9 @@ const zig_base64 = struct {
     fn testDecodeIgnoreSpace(codecs: Codecs, expected_decoded: []const u8, encoded: []const u8) !void {
         const decoder_ignore_space = codecs.decoderWithIgnore(" ");
         var buffer: [0x100]u8 = undefined;
-        var decoded = buffer[0..try decoder_ignore_space.calcSizeUpperBound(encoded.len)];
-        const written = try decoder_ignore_space.decode(decoded, encoded);
+        var decoded = buffer[0..decoder_ignore_space.calcSizeUpperBound(encoded.len)];
+        var written: usize = 0;
+        try decoder_ignore_space.decode(decoded, encoded, &written);
         try testing.expectEqualSlices(u8, expected_decoded, decoded[0..written]);
     }
 
@@ -539,7 +574,8 @@ const zig_base64 = struct {
             } else |err| if (err != expected_err) return err;
         } else |err| if (err != expected_err) return err;
 
-        if (decoder_ignore_space.decode(buffer[0..], encoded)) |_| {
+        var written: usize = 0;
+        if (decoder_ignore_space.decode(buffer[0..], encoded, &written)) |_| {
             return error.ExpectedError;
         } else |err| if (err != expected_err) return err;
     }
@@ -548,11 +584,40 @@ const zig_base64 = struct {
         const decoder_ignore_space = codecs.decoderWithIgnore(" ");
         var buffer: [0x100]u8 = undefined;
         const decoded = buffer[0 .. (try codecs.Decoder.calcSizeForSlice(encoded)) - 1];
-        if (decoder_ignore_space.decode(decoded, encoded)) |_| {
+        var written: usize = 0;
+        if (decoder_ignore_space.decode(decoded, encoded, &written)) |_| {
             return error.ExpectedError;
         } else |err| if (err != error.NoSpaceLeft) return err;
     }
 };
 
-const bun = @import("bun");
+test "base64: standard encode and forgiving decode" {
+    var encoded: [encodeLenFromSize("foobar".len)]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 8), encode(&encoded, "foobar"));
+    try std.testing.expectEqualSlices(u8, "Zm9vYmFy", &encoded);
+
+    var decoded: [decodeLen(" Z m 9 v Y m F y ") + 8]u8 = undefined;
+    const result = decode(&decoded, " Z m 9 v Y m F y ");
+    try std.testing.expect(result.isSuccessful());
+    try std.testing.expectEqualSlices(u8, "foobar", decoded[0..result.count]);
+}
+
+test "base64: forgiving decode accepts url-safe alphabet without padding" {
+    var decoded: [decodeLen("SGVsbG8td29ybGRf") + 8]u8 = undefined;
+    const result = decode(&decoded, "SGVsbG8td29ybGRf");
+    try std.testing.expect(result.isSuccessful());
+    try std.testing.expectEqualSlices(u8, "Hello-world_", decoded[0..result.count]);
+}
+
+test "base64: url-safe encode omits padding" {
+    var encoded: [urlSafeEncodeLen("hello?")]u8 = undefined;
+    const len = encodeURLSafe(&encoded, "hello?");
+    try std.testing.expectEqualSlices(u8, "aGVsbG8_", encoded[0..len]);
+}
+
+test "base64: copied Zig codec standard and url-safe suites" {
+    try zig_base64.testBase64();
+    try zig_base64.testBase64UrlSafeNoPad();
+}
+
 const std = @import("std");

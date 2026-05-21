@@ -1,3 +1,8 @@
+// Copied verbatim from bun/src/bun_core/string/immutable/exact_size_matcher.zig
+// at upstream SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6.
+//
+// No rewrites: file is pure stdlib (only depends on @import("std")).
+
 pub fn ExactSizeMatcher(comptime max_bytes: usize) type {
     switch (max_bytes) {
         1, 2, 4, 8, 12, 16 => {},
@@ -70,3 +75,34 @@ pub fn ExactSizeMatcher(comptime max_bytes: usize) type {
 }
 
 const std = @import("std");
+
+test "ExactSizeMatcher.match exact length returns little-endian integer" {
+    const M = ExactSizeMatcher(4);
+    try std.testing.expectEqual(@as(u32, 0x64636261), M.match("abcd"));
+}
+
+test "ExactSizeMatcher.match empty string returns 0" {
+    const M = ExactSizeMatcher(4);
+    try std.testing.expectEqual(@as(u32, 0), M.match(""));
+}
+
+test "ExactSizeMatcher.match overlong string returns maxInt" {
+    const M = ExactSizeMatcher(4);
+    try std.testing.expectEqual(std.math.maxInt(u32), M.match("abcde"));
+}
+
+test "ExactSizeMatcher.match under-length pads with zeros" {
+    const M = ExactSizeMatcher(4);
+    try std.testing.expectEqual(@as(u32, 0x61), M.match("a"));
+}
+
+test "ExactSizeMatcher.matchLower lowercases ASCII before matching" {
+    const M = ExactSizeMatcher(4);
+    try std.testing.expectEqual(M.match("abc"), M.matchLower("ABC"));
+}
+
+test "ExactSizeMatcher.case comptime variant matches runtime match" {
+    const M = ExactSizeMatcher(4);
+    try std.testing.expectEqual(M.case("abcd"), M.match("abcd"));
+    try std.testing.expectEqual(M.case("ab"), M.match("ab"));
+}

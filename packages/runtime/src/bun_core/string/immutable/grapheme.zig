@@ -1,3 +1,9 @@
+// Copied from bun/src/bun_core/string/immutable/grapheme.zig at upstream SHA
+// fd0b6f1a271fca0b8124b69f230b100f4d636af6.
+//
+// Imports rewritten: `bun.assert` -> `std.debug.assert`. Algorithm + types
+// are upstream-verbatim.
+
 // Grapheme break implementation using uucode's approach.
 // Includes GB9c (Indic Conjunct Break) support.
 // Types and algorithm are self-contained; no runtime dependency on uucode.
@@ -127,7 +133,7 @@ const Precompute = struct {
             }
         }
 
-        bun.assert(@sizeOf(@TypeOf(result)) == 8192);
+        std.debug.assert(@sizeOf(@TypeOf(result)) == 8192);
         break :precompute result;
     };
 };
@@ -326,6 +332,27 @@ fn isExtendedPictographic(gb: GraphemeBreakNoControl) bool {
     return gb == .extended_pictographic or gb == .emoji_modifier_base;
 }
 
-const bun = @import("bun");
-const grapheme_tables = @import("./grapheme_tables.zig");
+test "grapheme: ASCII codepoints always break (GB999)" {
+    var st: BreakState = .default;
+    try std.testing.expect(graphemeBreak(0x0061, 0x0062, &st));
+    try std.testing.expect(st == .default);
+}
+
+test "grapheme: ZWJ between extended pictographic does not break (GB11)" {
+    var st: BreakState = .default;
+    try std.testing.expect(!graphemeBreak(0x1F468, 0x200D, &st));
+    try std.testing.expect(st == .extended_pictographic);
+    try std.testing.expect(!graphemeBreak(0x200D, 0x1F469, &st));
+    try std.testing.expect(st == .default);
+}
+
+test "grapheme: regional indicator pairs cluster, third breaks (GB12/GB13)" {
+    var st: BreakState = .default;
+    try std.testing.expect(!graphemeBreak(0x1F1FA, 0x1F1F8, &st));
+    try std.testing.expect(st == .regional_indicator);
+    try std.testing.expect(graphemeBreak(0x1F1F8, 0x1F1FA, &st));
+    try std.testing.expect(st == .default);
+}
+
+const grapheme_tables = @import("grapheme_tables.zig");
 const std = @import("std");
