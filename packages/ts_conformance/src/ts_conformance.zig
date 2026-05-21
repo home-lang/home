@@ -10686,6 +10686,308 @@ test "conformance: typeGuardFunction passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: literalTypes1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "literalTypes1",
+        .path = "literalTypes1.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strictNullChecks: true
+        \\
+        \\let zero: 0 = 0;
+        \\let one: 1 = 1;
+        \\let two: 2 = 2;
+        \\let oneOrTwo: 1 | 2 = <1 | 2>1;
+        \\
+        \\function f1(x: 0 | 1 | 2) {
+        \\    switch (x) {
+        \\        case zero:
+        \\            x;
+        \\            break;
+        \\        case one:
+        \\            x;
+        \\            break;
+        \\        case two:
+        \\            x;
+        \\            break;
+        \\        default:
+        \\            x;
+        \\    }
+        \\}
+        \\
+        \\function f2(x: 0 | 1 | 2) {
+        \\    switch (x) {
+        \\        case zero:
+        \\            x;
+        \\            break;
+        \\        case oneOrTwo:
+        \\            x;
+        \\            break;
+        \\        default:
+        \\            x;
+        \\    }
+        \\}
+        \\
+        \\type Falsy = false | 0 | "" | null | undefined;
+        \\
+        \\function f3(x: Falsy) {
+        \\    if (x) {
+        \\        x;
+        \\    }
+        \\    else {
+        \\        x;
+        \\    }
+        \\}
+        \\
+        \\function f4(x: 0 | 1 | true | string) {
+        \\    switch (x) {
+        \\        case 0:
+        \\            x;
+        \\            break;
+        \\        case 1:
+        \\            x;
+        \\            break;
+        \\        case "abc":
+        \\        case "def":
+        \\            x;
+        \\            break;
+        \\        case null:
+        \\            x;
+        \\            break;
+        \\        case undefined:
+        \\            x;
+        \\            break;
+        \\        default:
+        \\            x;
+        \\    }
+        \\}
+        \\
+        \\function f5(x: string | number | boolean) {
+        \\    switch (x) {
+        \\        case "abc":
+        \\            x;
+        \\            break;
+        \\        case 0:
+        \\        case 1:
+        \\            x;
+        \\            break;
+        \\        case true:
+        \\            x;
+        \\            break;
+        \\        case "hello":
+        \\        case 123:
+        \\            x;
+        \\            break;
+        \\        default:
+        \\            x;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = false },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: booleanLiteralTypes2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "booleanLiteralTypes2",
+        .path = "booleanLiteralTypes2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strictNullChecks: true
+        \\
+        \\type A1 = true | false;
+        \\type A2 = false | true;
+        \\
+        \\function f1() {
+        \\    var a: A1;
+        \\    var a: A2;
+        \\    var a: true | false;
+        \\    var a: false | true;
+        \\}
+        \\
+        \\function f2(a: true | false, b: boolean) {
+        \\    a = b;
+        \\    b = a;
+        \\}
+        \\
+        \\function f3(a: true | false, b: true | false) {
+        \\    var x = a || b;
+        \\    var x = a && b;
+        \\    var x = !a;
+        \\}
+        \\
+        \\function f4(t: true, f: false) {
+        \\    var x1 = t && f;
+        \\    var x2 = f && t;
+        \\    var x3 = t || f;
+        \\    var x4 = f || t;
+        \\    var x5 = !t;
+        \\    var x6 = !f;
+        \\}
+        \\
+        \\declare function g(x: true): string;
+        \\declare function g(x: false): boolean;
+        \\declare function g(x: boolean): number;
+        \\
+        \\function f5(b: boolean) {
+        \\    var z1 = g(true);
+        \\    var z2 = g(false);
+        \\    var z3 = g(b);
+        \\}
+        \\
+        \\function assertNever(x: never): never {
+        \\    throw new Error("Unexpected value");
+        \\}
+        \\
+        \\function f10(x: true | false) {
+        \\    switch (x) {
+        \\        case true: return "true";
+        \\        case false: return "false";
+        \\    }
+        \\}
+        \\
+        \\function f11(x: true | false) {
+        \\    switch (x) {
+        \\        case true: return "true";
+        \\        case false: return "false";
+        \\    }
+        \\    return assertNever(x);
+        \\}
+        \\
+        \\function f12(x: true | false) {
+        \\    if (x) {
+        \\        x;
+        \\    }
+        \\    else {
+        \\        x;
+        \\    }
+        \\}
+        \\
+        \\function f13(x: true | false) {
+        \\    if (x === true) {
+        \\        x;
+        \\    }
+        \\    else {
+        \\        x;
+        \\    }
+        \\}
+        \\
+        \\type Item =
+        \\    { kind: true, a: string } |
+        \\    { kind: false, b: string };
+        \\
+        \\function f20(x: Item) {
+        \\    switch (x.kind) {
+        \\        case true: return x.a;
+        \\        case false: return x.b;
+        \\    }
+        \\}
+        \\
+        \\function f21(x: Item) {
+        \\    switch (x.kind) {
+        \\        case true: return x.a;
+        \\        case false: return x.b;
+        \\    }
+        \\    return assertNever(x);
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = false },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: optionalMethods passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "optionalMethods",
+        .path = "optionalMethods.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strictNullChecks: true
+        \\// @declaration: true
+        \\
+        \\interface Foo {
+        \\    a: number;
+        \\    b?: number;
+        \\    f(): number;
+        \\    g?(): number;
+        \\}
+        \\
+        \\function test1(x: Foo) {
+        \\    x.a;
+        \\    x.b;
+        \\    x.f;
+        \\    x.g;
+        \\    let f1 = x.f();
+        \\    let g1 = x.g && x.g();
+        \\    let g2 = x.g ? x.g() : 0;
+        \\}
+        \\
+        \\class Bar {
+        \\    a: number = 0;
+        \\    b?: number;
+        \\    c? = 2;
+        \\    constructor(public d?: number, public e = 10) {}
+        \\    f() {
+        \\        return 1;
+        \\    }
+        \\    g?(): number;
+        \\    h?() {
+        \\        return 2;
+        \\    }
+        \\}
+        \\
+        \\function test2(x: Bar) {
+        \\    x.a;
+        \\    x.b;
+        \\    x.c;
+        \\    x.d;
+        \\    x.e;
+        \\    x.f;
+        \\    x.g;
+        \\    let f1 = x.f();
+        \\    let g1 = x.g && x.g();
+        \\    let g2 = x.g ? x.g() : 0;
+        \\    let h1 = x.h && x.h();
+        \\    let h2 = x.h ? x.h() : 0;
+        \\}
+        \\
+        \\class Base {
+        \\    a?: number;
+        \\    f?(): number;
+        \\}
+        \\
+        \\class Derived extends Base {
+        \\    a = 1;
+        \\    f(): number { return 1; }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = false },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
