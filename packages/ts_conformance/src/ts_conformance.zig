@@ -18409,6 +18409,66 @@ test "conformance: privateNameStaticFieldClassExpression passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: functionExpressionContextualTyping1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "functionExpressionContextualTyping1",
+        .path = "functionExpressionContextualTyping1.ts",
+        .source =
+        \\enum E { red, blue }
+        \\
+        \\var a0: (n: number, s: string) => number = (num, str) => {
+        \\    num.toExponential();
+        \\    return 0;
+        \\}
+        \\
+        \\class Class<T> {
+        \\    foo() { }
+        \\}
+        \\
+        \\var a1: (c: Class<Number>) => number = (a1) => {
+        \\    a1.foo();
+        \\    return 1;
+        \\}
+        \\
+        \\var b1: ((s: string, w: boolean) => void) | ((s: string, w: boolean) => string);
+        \\b1 = (k, h) => { };
+        \\var b2: typeof a0 | ((n: number, s: string) => string);
+        \\b2 = (foo, bar) => { return foo + 1; }
+        \\b2 = (foo, bar) => { return "hello"; }
+        \\var b3: (name: string, num: number, boo: boolean) => void;
+        \\b3 = (name, number) => { };
+        \\
+        \\var b4: (n: E) => string = (number = 1) => { return "hello"; };
+        \\var b5: (n: {}) => string = (number = "string") => { return "hello"; };
+        \\
+        \\var b6: ((s: string, w: boolean) => void) | ((n: number) => number);
+        \\var b7: ((s: string, w: boolean) => void) | ((s: string, w: number) => string);
+        \\b6 = (k) => { k.toLowerCase() };
+        \\b6 = (i) => {
+        \\    i.toExponential();
+        \\    return i;
+        \\};
+        \\b7 = (j, m) => { };
+        \\
+        \\class C<T, U> {
+        \\    constructor() {
+        \\        var k: ((j: T, k: U) => (T|U)[]) | ((j: number,k :U) => number[]) = (j, k) => {
+        \\            return [j, k];
+        \\        }
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
