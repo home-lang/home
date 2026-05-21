@@ -1145,6 +1145,7 @@ pub const sql = struct {
         pub const SSLMode = @import("sql/postgres/SSLMode.zig").SSLMode;
         pub const Status = @import("sql/postgres/Status.zig").Status;
         pub const TLSStatus = @import("sql/postgres/TLSStatus.zig").TLSStatus;
+        pub const CommandTag = @import("sql/postgres/CommandTag.zig").CommandTag;
         pub const AnyPostgresError = @import("sql/postgres/AnyPostgresError.zig").AnyPostgresError;
         pub const PostgresErrorOptions = @import("sql/postgres/AnyPostgresError.zig").PostgresErrorOptions;
         // Fifteenth-wave port batch (2026-05-18). Debug-only socket-monitor
@@ -1741,6 +1742,12 @@ test "home_rt.options_types.OfflineMode.Prefer maps strings to enum tags" {
 test "home_rt.sql.postgres.types.int_types.Int32 encodes big-endian" {
     const bytes = sql.postgres.types.int_types.Int32(@as(u32, 0x0a0b0c0d));
     try std.testing.expectEqualSlices(u8, &.{ 0x0a, 0x0b, 0x0c, 0x0d }, &bytes);
+}
+
+test "home_rt.sql.postgres.CommandTag parses command rows" {
+    try std.testing.expectEqual(sql.postgres.CommandTag{ .UPDATE = 2 }, sql.postgres.CommandTag.init("UPDATE 2"));
+    try std.testing.expectEqual(sql.postgres.CommandTag{ .INSERT = 3 }, sql.postgres.CommandTag.init("INSERT 0 3"));
+    try std.testing.expectEqualStrings("VACUUM", sql.postgres.CommandTag.init("VACUUM").other);
 }
 
 test "home_rt.sql.mysql.QueryStatus.isRunning identifies in-flight states" {

@@ -94,6 +94,7 @@ test {
     _ = @import("sql/postgres/protocol/ReadyForQuery.zig");
     _ = @import("sql/postgres/protocol/ParameterStatus.zig");
     _ = @import("sql/postgres/protocol/DataRow.zig");
+    _ = @import("sql/postgres/CommandTag.zig");
     // Wave-18 Tier-1 grinder (2026-05-18) — additional sql wire-protocol
     // leaves + css/properties/text.
     _ = @import("sql/postgres/protocol/Close.zig");

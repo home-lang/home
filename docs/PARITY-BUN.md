@@ -1287,6 +1287,12 @@ smoke verifies the source is not lowered through the bootstrap
 `globalThis.__home_import("bun:test")` rewrite path and records the
 runtime blocker as `native-esm-loader-missing`.
 
+The copied `bun/src/sql/postgres/CommandTag.zig` parser now lives in
+`packages/runtime/src/sql/postgres/CommandTag.zig`, wired through
+`home_rt.sql.postgres.CommandTag` and the phase smoke imports. The Home
+copy preserves the PostgreSQL command row-count parser and omits only the
+upstream JSC bridge re-exports until `sql_jsc/postgres` lands.
+
 ## Summary
 
 Substrate file-count progress (the only objective number today):
@@ -1294,8 +1300,8 @@ Substrate file-count progress (the only objective number today):
 | Metric | Count | Notes |
 |---|---|---|
 | Bun upstream files (excluding test/codegen/jsc/macros) | 1,193 | pinned at `fd0b6f1a` |
-| Files ported to `packages/runtime/src/` | 492 | ~41.2% |
-| Files remaining to port | 701 | ~58.8% |
+| Files ported to `packages/runtime/src/` | 493 | ~41.3% |
+| Files remaining to port | 700 | ~58.7% |
 | JSC bring-up (`packages/runtime/src/jsc/`) | 97 files | Phase 12.2 M6 milestone + native eval smoke |
 | Node namespace (`packages/runtime/src/node/`) | 28 files | Phase 12.7 round-15 |
 | Bake lifetime carrier (`packages/runtime/src/runtime/bake/`) | 5 files | DevServer/HmrSocket deinit substrate, JS surface pending |
