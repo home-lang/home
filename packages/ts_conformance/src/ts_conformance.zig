@@ -18038,6 +18038,124 @@ test "conformance: constraintSatisfactionWithAny2 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: classStaticBlock28 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "classStaticBlock28",
+        .path = "classStaticBlock28.ts",
+        .source =
+        \\let foo: number;
+        \\
+        \\class C {
+        \\    static {
+        \\        foo = 1
+        \\    }
+        \\}
+        \\
+        \\console.log(foo)
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: staticIndexSignature6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "staticIndexSignature6",
+        .path = "staticIndexSignature6.ts",
+        .source =
+        \\function foo () {
+        \\    return class<T> {
+        \\        static [s: string]: number
+        \\        static [s: number]: 42
+        \\
+        \\        foo(v: T) { return v }
+        \\    }
+        \\}
+        \\
+        \\const C = foo()
+        \\C.a;
+        \\C.a = 1;
+        \\C[2];
+        \\C[2] = 42;
+        \\
+        \\const c = new C<number>();
+        \\c.foo(1);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: memberFunctionsWithPublicOverloads passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "memberFunctionsWithPublicOverloads",
+        .path = "memberFunctionsWithPublicOverloads.ts",
+        .source =
+        \\class C {
+        \\    public foo(x: number);
+        \\    public foo(x: number, y: string);
+        \\    public foo(x: any, y?: any) { }
+        \\
+        \\    public bar(x: 'hi');
+        \\    public bar(x: string);
+        \\    public bar(x: number, y: string);
+        \\    public bar(x: any, y?: any) { }
+        \\
+        \\    public static foo(x: number);
+        \\    public static foo(x: number, y: string);
+        \\    public static foo(x: any, y?: any) { }
+        \\
+        \\    public static bar(x: 'hi');
+        \\    public static bar(x: string);
+        \\    public static bar(x: number, y: string);
+        \\    public static bar(x: any, y?: any) { }
+        \\}
+        \\
+        \\class D<T> {
+        \\    public foo(x: number);
+        \\    public foo(x: T, y: T);
+        \\    public foo(x: any, y?: any) { }
+        \\
+        \\    public bar(x: 'hi');
+        \\    public bar(x: string);
+        \\    public bar(x: T, y: T);
+        \\    public bar(x: any, y?: any) { }
+        \\
+        \\    public static foo(x: number);
+        \\    public static foo(x: number, y: string);
+        \\    public static foo(x: any, y?: any) { }
+        \\
+        \\    public static bar(x: 'hi');
+        \\    public static bar(x: string);
+        \\    public static bar(x: number, y: string);
+        \\    public static bar(x: any, y?: any) { }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
