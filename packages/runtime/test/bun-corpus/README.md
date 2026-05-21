@@ -17,10 +17,10 @@ macOS, Linux, and the WASM target.
   bootstrap path exists for the current allowlist:
   `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
-  Latest measured subset run: `214` files, `1,023` passed, `0` failed,
+  Latest measured subset run: `234` files, `1,062` passed, `0` failed,
   `44` todo. That subset currently executes the todo-registration smoke, three Node
   `assert` CommonJS smokes, Node `path` smokes, two Node `url` smokes, the Web
-  `atob`/`btoa` smoke, thirty-eight regression smokes, one bundler
+  `atob`/`btoa` smoke, fifty-three regression smokes, one bundler
   constant-fold smoke, bundler `allowUnresolved`, banner, barrel,
   browser-target builtin diagnostics, CJS, CJS-to-ESM, compile-autoload,
   compile-splitting, decorator metadata, drop/env/footer, HTML server,
@@ -35,7 +35,7 @@ macOS, Linux, and the WASM target.
   element-callback smoke, a narrow TypeScript constructor-modifier
   rewrite smoke, narrow `assert` / `assert/strict`, `node:path`, `node:url`
   including POSIX `pathToFileURL`, Bun file URL helper conversion, Node `fileURLToPath` POSIX roundtrips, path `toNamespacedPath` / `_makeLong` / `matchesGlob`, long-CWD POSIX resolution subprocess coverage, and relative CJS fixture smokes, a narrow inline-snapshot Unicode object
-  formatting smoke, Node worker/fs/dns/readline one-shot smokes, a WebSocket
+  formatting smoke, Node console/watch/worker/fs/dns/readline one-shot smokes, a WebSocket
   close-reentrancy smoke, a `node:vm.runInNewContext` / `process.on` throw
   propagation smoke, `process.binding("constants")` /
   `process.binding("uv")` smoke coverage, Jest fake-timer Date /
@@ -55,8 +55,9 @@ macOS, Linux, and the WASM target.
   `bun:jsc.estimateShallowMemoryUsageOf(performance)` entry-growth coverage, Deno `Event` / `CustomEvent` /
   `AbortController`, a Deno `URLSearchParams` bootstrap smoke, and narrow bootstrap coverage for Node
   `DOMException`, Web `Response.json` / `Response.redirect`, Web `Request`
-  cache/mode/clone, fetch body async-iterator and abort-stream smokes, JSC
-  `ShadowRealm`, native constructor identity, mutable
+  cache/mode/clone, fetch body async-iterator and abort smokes,
+  AbortController GC reason, MessagePort context cleanup, JSC `ShadowRealm`,
+  native constructor identity, mutable
   `globalThis` prototype behavior, a comment-only module-load smoke, Bun file metadata and
   `Bun.file(...).type` MIME behavior, `Bun.randomUUIDv7` /
   `Bun.sleepSync` millisecond timing and validation /
