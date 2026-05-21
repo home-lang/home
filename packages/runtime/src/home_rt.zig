@@ -1374,14 +1374,13 @@ pub const sql = struct {
             pub const DecoderWrap = @import("sql/postgres/protocol/DecoderWrap.zig").DecoderWrap;
             pub const WriteWrap = @import("sql/postgres/protocol/WriteWrap.zig").WriteWrap;
             pub const BackendKeyData = @import("sql/postgres/protocol/BackendKeyData.zig");
+            pub const NewReaderWrap = @import("sql/postgres/protocol/NewReader.zig").NewReaderWrap;
+            pub const NewReader = @import("sql/postgres/protocol/NewReader.zig").NewReader;
             pub const NewWriterWrap = @import("sql/postgres/protocol/NewWriter.zig").NewWriterWrap;
             pub const NewWriter = @import("sql/postgres/protocol/NewWriter.zig").NewWriter;
             // Wave-18 Tier-0 grinder (2026-05-18). Postgres
             // wire-protocol writer/reader packet leaves. All reach
-            // into the wave-16 NewReader/NewWriter stub method
-            // surface — exercising the runtime decode/write path
-            // trips a natural compile error until Data.zig is fully
-            // wired (Phase 12.2).
+            // into the wave-16 NewReader/NewWriter method surface.
             pub const PasswordMessage = @import("sql/postgres/protocol/PasswordMessage.zig");
             pub const SASLResponse = @import("sql/postgres/protocol/SASLResponse.zig");
             pub const SASLInitialResponse = @import("sql/postgres/protocol/SASLInitialResponse.zig");
