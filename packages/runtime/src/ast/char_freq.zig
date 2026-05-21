@@ -1,4 +1,18 @@
+// Home Runtime - ported from Bun.
+// Upstream:  /Users/chrisbreuer/Code/bun/src/ast/char_freq.zig
+// Pinned SHA: fd0b6f1a271fca0b8124b69f230b100f4d636af6
+//
+// Renames/adaptations:
+//   - `@import("bun")` -> `@import("home_rt")`
+//   - `bun.assert` -> `home_rt.assert`
+//   - `js_ast.CharFreq` -> local `@This()`
+//   - `js_ast.NameMinifier` -> local pure-data copy from
+//     `src/js_parser/js_parser.zig` so this AST leaf does not pull in the
+//     parser/logger-wide AST graph.
+//   - Dropped the `Class = G.Class` re-export; that depends on `g.zig`.
+
 pub const char_freq_count = 64;
+
 pub const CharAndCount = struct {
     char: u8 = 0,
     count: i32 = 0,
@@ -19,13 +33,69 @@ pub const CharAndCount = struct {
     }
 };
 
-const Vector = @Vector(char_freq_count, i32);
+pub const NameMinifier = struct {
+    head: std.array_list.Managed(u8),
+    tail: std.array_list.Managed(u8),
+
+    pub const default_head = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$";
+    pub const default_tail = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$";
+
+    pub fn init(allocator: std.mem.Allocator) NameMinifier {
+        return .{
+            .head = std.array_list.Managed(u8).init(allocator),
+            .tail = std.array_list.Managed(u8).init(allocator),
+        };
+    }
+
+    pub fn deinit(this: *NameMinifier) void {
+        this.head.deinit();
+        this.tail.deinit();
+    }
+
+    pub fn numberToMinifiedName(this: *NameMinifier, name: *std.array_list.Managed(u8), _i: isize) !void {
+        name.clearRetainingCapacity();
+        var i = _i;
+        var j = @as(usize, @intCast(@mod(i, 54)));
+        try name.appendSlice(this.head.items[j .. j + 1]);
+        i = @divFloor(i, 54);
+
+        while (i > 0) {
+            i -= 1;
+            j = @as(usize, @intCast(@mod(i, char_freq_count)));
+            try name.appendSlice(this.tail.items[j .. j + 1]);
+            i = @divFloor(i, char_freq_count);
+        }
+    }
+
+    pub fn defaultNumberToMinifiedName(allocator: std.mem.Allocator, _i: isize) ![]const u8 {
+        var i = _i;
+        var j = @as(usize, @intCast(@mod(i, 54)));
+        var name = std.array_list.Managed(u8).init(allocator);
+        try name.appendSlice(default_head[j .. j + 1]);
+        i = @divFloor(i, 54);
+
+        while (i > 0) {
+            i -= 1;
+            j = @as(usize, @intCast(@mod(i, char_freq_count)));
+            try name.appendSlice(default_tail[j .. j + 1]);
+            i = @divFloor(i, char_freq_count);
+        }
+
+        return name.items;
+    }
+};
+
 const Buffer = [char_freq_count]i32;
 
 freqs: Buffer align(1) = undefined,
 
 const scan_big_chunk_size = 32;
-pub fn scan(this: *CharFreq, text: string, delta: i32) void {
+
+pub fn initEmpty() CharFreq {
+    return .{ .freqs = @splat(0) };
+}
+
+pub fn scan(this: *CharFreq, text: []const u8, delta: i32) void {
     if (delta == 0)
         return;
 
@@ -36,22 +106,20 @@ pub fn scan(this: *CharFreq, text: string, delta: i32) void {
     }
 }
 
-fn scanBig(out: *align(1) Buffer, text: string, delta: i32) void {
-    // https://zig.godbolt.org/z/P5dPojWGK
+fn scanBig(out: *align(1) Buffer, text: []const u8, delta: i32) void {
     var freqs = out.*;
     defer out.* = freqs;
-    var deltas: [256]i32 = [_]i32{0} ** 256;
+    var deltas: [256]i32 = @splat(0);
     var remain = text;
 
-    bun.assert(remain.len >= scan_big_chunk_size);
+    home_rt.assert(remain.len >= scan_big_chunk_size);
 
     const unrolled = remain.len - (remain.len % scan_big_chunk_size);
-    const remain_end = remain.ptr + unrolled;
-    var unrolled_ptr = remain.ptr;
+    var unrolled_index: usize = 0;
     remain = remain[unrolled..];
 
-    while (unrolled_ptr != remain_end) : (unrolled_ptr += scan_big_chunk_size) {
-        const chunk = unrolled_ptr[0..scan_big_chunk_size].*;
+    while (unrolled_index < unrolled) : (unrolled_index += scan_big_chunk_size) {
+        const chunk = text[unrolled_index..][0..scan_big_chunk_size].*;
         inline for (0..scan_big_chunk_size) |i| {
             deltas[@as(usize, chunk[i])] += delta;
         }
@@ -68,7 +136,7 @@ fn scanBig(out: *align(1) Buffer, text: string, delta: i32) void {
     freqs[63] = deltas['$'];
 }
 
-fn scanSmall(out: *align(1) Buffer, text: string, delta: i32) void {
+fn scanSmall(out: *align(1) Buffer, text: []const u8, delta: i32) void {
     var freqs: [char_freq_count]i32 = out.*;
     defer out.* = freqs;
 
@@ -86,7 +154,6 @@ fn scanSmall(out: *align(1) Buffer, text: string, delta: i32) void {
 }
 
 pub fn include(this: *CharFreq, other: CharFreq) void {
-    // https://zig.godbolt.org/z/Mq8eK6K9s
     const left: @Vector(char_freq_count, i32) = this.freqs;
     const right: @Vector(char_freq_count, i32) = other.freqs;
 
@@ -113,7 +180,6 @@ pub fn compile(this: *const CharFreq, allocator: std.mem.Allocator) NameMinifier
     var minifier = NameMinifier.init(allocator);
     minifier.head.ensureTotalCapacityPrecise(NameMinifier.default_head.len) catch unreachable;
     minifier.tail.ensureTotalCapacityPrecise(NameMinifier.default_tail.len) catch unreachable;
-    // TODO: investigate counting number of < 0 and > 0 and pre-allocating
     for (array) |item| {
         if (item.char < '0' or item.char > '9') {
             minifier.head.append(item.char) catch unreachable;
@@ -124,14 +190,52 @@ pub fn compile(this: *const CharFreq, allocator: std.mem.Allocator) NameMinifier
     return minifier;
 }
 
-pub const Class = G.Class;
+const CharFreq = @This();
 
-const string = []const u8;
-
-const bun = @import("bun");
 const std = @import("std");
+const home_rt = @import("home_rt");
 
-const js_ast = bun.ast;
-const CharFreq = js_ast.CharFreq;
-const G = js_ast.G;
-const NameMinifier = js_ast.NameMinifier;
+test "CharFreq.scan counts identifier characters" {
+    var freq = CharFreq.initEmpty();
+
+    freq.scan("azAZ09_$.-", 1);
+
+    try std.testing.expectEqual(@as(i32, 1), freq.freqs[0]);
+    try std.testing.expectEqual(@as(i32, 1), freq.freqs[25]);
+    try std.testing.expectEqual(@as(i32, 1), freq.freqs[26]);
+    try std.testing.expectEqual(@as(i32, 1), freq.freqs[51]);
+    try std.testing.expectEqual(@as(i32, 1), freq.freqs[52]);
+    try std.testing.expectEqual(@as(i32, 1), freq.freqs[61]);
+    try std.testing.expectEqual(@as(i32, 1), freq.freqs[62]);
+    try std.testing.expectEqual(@as(i32, 1), freq.freqs[63]);
+}
+
+test "CharFreq.include adds frequency buffers" {
+    var left = CharFreq.initEmpty();
+    var right = CharFreq.initEmpty();
+
+    left.scan("aaB", 1);
+    right.scan("aB$", 1);
+    left.include(right);
+
+    try std.testing.expectEqual(@as(i32, 3), left.freqs[0]);
+    try std.testing.expectEqual(@as(i32, 2), left.freqs[27]);
+    try std.testing.expectEqual(@as(i32, 1), left.freqs[63]);
+}
+
+test "CharFreq.compile orders frequent characters first" {
+    const allocator = std.testing.allocator;
+    var freq = CharFreq.initEmpty();
+    freq.scan("zzzzzaaB", 1);
+
+    var minifier = freq.compile(allocator);
+    defer minifier.deinit();
+
+    try std.testing.expectEqualStrings("z", minifier.head.items[0..1]);
+    try std.testing.expectEqualStrings("z", minifier.tail.items[0..1]);
+
+    var name = std.array_list.Managed(u8).init(allocator);
+    defer name.deinit();
+    try minifier.numberToMinifiedName(&name, 0);
+    try std.testing.expectEqualStrings("z", name.items);
+}
