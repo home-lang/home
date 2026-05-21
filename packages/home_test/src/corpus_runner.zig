@@ -236,6 +236,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/url/url-fileurltopath.test.js",
     "regression/issue/19412.test.ts",
     "regression/issue/02369.test.ts",
+    "regression/issue/09739.test.ts",
     "regression/issue/04011.test.ts",
     "regression/issue/06946/06946.test.ts",
     "regression/issue/08965/08965.test.ts",
@@ -6044,10 +6045,21 @@ const harness_prelude =
     \\
     \\  new Error().stack;
     \\};
+    \\globalThis.__home_cjs_factories["regression/issue/abort-controller-fixture.js"] = function(module, exports, require) {
+    \\  Object.defineProperty(exports, "__esModule", { value: true });
+    \\  const source = require("abort-controller");
+    \\  for (const key in source) {
+    \\    if (key === "default" || Object.prototype.hasOwnProperty.call(exports, key)) continue;
+    \\    Object.defineProperty(exports, key, { enumerable: true, get() { return source[key]; } });
+    \\  }
+    \\};
     \\function __home_resolve_require(specifier) {
     \\  const name = String(specifier);
     \\  if (name === "./013880-fixture.cjs" && globalThis.__home_current_dirname === "regression/issue") {
     \\    return "regression/issue/013880-fixture.cjs";
+    \\  }
+    \\  if (name === "./abort-controller-fixture" && globalThis.__home_current_dirname === "regression/issue") {
+    \\    return "regression/issue/abort-controller-fixture.js";
     \\  }
     \\  if (name === "./index.html" && globalThis.__home_current_dirname === "bake/fixtures/deinitialization") {
     \\    return "bake/fixtures/deinitialization/index.html";
@@ -7596,6 +7608,8 @@ const harness_prelude =
     \\  AbortController.prototype.toString = function() { return "[object AbortController]"; };
     \\  Object.defineProperty(AbortController.prototype, Symbol.toStringTag, { value: "AbortController" });
     \\}
+    \\globalThis.__home_modules["abort-controller"] = {};
+    \\Object.defineProperty(globalThis.__home_modules["abort-controller"], "AbortController", { enumerable: true, get() { return AbortController; } });
     \\if (typeof Promise.withResolvers !== "function") {
     \\  Promise.withResolvers = function() {
     \\    let resolve, reject;
@@ -7961,6 +7975,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": string, value: string)", .replacement = ", value)" },
         .{ .needle = ": ReturnType<typeof setTimeout> | null =", .replacement = " =" },
         .{ .needle = "await import(\"mock-module-non-string-test-fixture\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"mock-module-non-string-test-fixture\"))" },
+        .{ .needle = "await import(\"abort-controller\")", .replacement = "await globalThis.__home_dynamic_import(\"abort-controller\")" },
         .{ .needle = "import(\"./empty.ts\" + \"?i\" + i)", .replacement = "globalThis.__home_dynamic_import(\"./empty.ts\" + \"?i\" + i)" },
         .{ .needle = "await using ", .replacement = "const " },
         .{ .needle = "using ", .replacement = "const " },
@@ -9232,6 +9247,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var ReadableStream = function(underlyingSource)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "readableStreamToArrayBuffer(stream)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_cjs_factories[\"regression/issue/013880-fixture.cjs\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_cjs_factories[\"regression/issue/abort-controller-fixture.js\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"abort-controller\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_resolve_require(specifier)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_dynamic_import = function(specifier)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"assert\"] = __home_assert_module") != null);
@@ -12240,6 +12257,38 @@ test "bootstrap runner covers relative CJS fixture require" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers abort-controller require and dynamic import interop" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\const node_js_shim = require("./abort-controller-fixture");
+        \\
+        \\test("AbortController from abort-controller fixture works when used with ESM -> CJS -> ESM", () => {
+        \\  expect(node_js_shim.AbortController).toBe(AbortController);
+        \\});
+        \\
+        \\test("AbortController from abort-controller fixture works when used with ESM -> ESM", async () => {
+        \\  delete require.cache["abort-controller"];
+        \\  const node_js_shim = await import("abort-controller");
+        \\  expect(node_js_shim.AbortController).toBe(AbortController);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/09739.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await globalThis.__home_dynamic_import(\"abort-controller\")") != null);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner covers mutable globalThis prototype smoke" {

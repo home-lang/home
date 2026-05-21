@@ -311,7 +311,8 @@ WHATWG `node:url.format(URL, { auth: false })` coverage, and
 expectation-object matchers, the Bake deinitialization DevServer teardown
 fixture, CommonJS invalid-wrapper and empty-file CLI subprocess smokes,
 queried relative dynamic imports for the empty async-transpiler
-regression fixture,
+regression fixture, CommonJS re-export and bare dynamic import interop
+for the upstream `abort-controller` fixture,
 third-party `yargs/yargs` CommonJS function require coverage,
 third-party `jsonwebtoken` default-import decode/sign/verify and compact-token
 header/encoding plus missing-secret validation coverage,
@@ -331,7 +332,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `260` files, `1,138` passed, `0` failed,
+Latest measured subset run: `261` files, `1,140` passed, `0` failed,
 `45` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now

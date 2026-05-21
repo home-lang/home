@@ -792,6 +792,11 @@ The copied `regression/issue/02369.test.ts` fixture now passes as `1`
 test through the Web Request bootstrap model. It covers repeated fresh
 `Request` construction with string JSON bodies and `await request.json()`
 parsing into deep-equal array/object payloads.
+The copied `regression/issue/09739.test.ts` fixture now passes as `2`
+tests through the CommonJS and dynamic-import bootstrap model. It covers
+the upstream `abort-controller` CommonJS re-export fixture and bare
+`await import("abort-controller")` resolving to the runtime-global
+`AbortController` binding.
 The copied `cli/run/commonjs-invalid.test.ts` fixture now passes as `1`
 test through the real subprocess path, including piped stderr and the
 malformed CommonJS wrapper diagnostic.
