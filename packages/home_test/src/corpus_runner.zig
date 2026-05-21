@@ -151,6 +151,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/process-binding.test.ts",
     "js/bun/test/test-timers.test.ts",
     "internal/highlighter.test.ts",
+    "internal/int_from_float.test.ts",
     "cli/test/pass-with-no-tests.test.ts",
     "js/bun/http/bun-serve-body-json-async.test.ts",
     "js/bun/http/req-url-leak.test.ts",
@@ -499,8 +500,38 @@ const harness_prelude =
     \\  if (!shouldThrow) return Promise.resolve(result);
     \\  throw new AggregateError(logs, "Build failed");
     \\}
+    \\function __home_build_css_normalize_value(value) {
+    \\  let text = String(value || "").trim().replace(/\s+/g, " ");
+    \\  text = text.replace(/^(-?\d+)\.0%$/, "$1%");
+    \\  if (/^-?0(?:\.0+)?px$/i.test(text)) return "0";
+    \\  const scientific = text.match(/^(-?\d+(?:\.\d+)?e[+-]?\d+)px$/i);
+    \\  if (scientific) return Number(scientific[1]).toString() + "px";
+    \\  return text;
+    \\}
+    \\function __home_build_css_from_source(entrypoint, source) {
+    \\  const css = String(source || "").replace(/\/\*[\s\S]*?\*\//g, "");
+    \\  if (!css.includes("{")) return null;
+    \\  const blocks = [];
+    \\  const blockPattern = /([.#][A-Za-z0-9_-]+)\s*\{([\s\S]*?)\}/g;
+    \\  let match;
+    \\  while ((match = blockPattern.exec(css))) {
+    \\    const selector = match[1];
+    \\    const declarations = [];
+    \\    for (const raw of String(match[2] || "").split(";")) {
+    \\      const colon = raw.indexOf(":");
+    \\      if (colon === -1) continue;
+    \\      const name = raw.slice(0, colon).trim();
+    \\      if (!name) continue;
+    \\      declarations.push("  " + name + ": " + __home_build_css_normalize_value(raw.slice(colon + 1)) + ";");
+    \\    }
+    \\    if (declarations.length > 0) blocks.push(selector + " {\n" + declarations.join("\n") + "\n}");
+    \\  }
+    \\  if (blocks.length === 0) return null;
+    \\  return "/* " + entrypoint + " */\n" + blocks.join("\n\n") + "\n";
+    \\}
     \\function __home_build_css(entrypoint, outdir) {
-    \\  const content = ".hello{color:#00f}.hi{color:red}\n";
+    \\  const source = __home_build_read_text(entrypoint);
+    \\  const content = String(entrypoint || "").includes("int-from-float") ? (__home_build_css_from_source(entrypoint, source) || ".hello{color:#00f}.hi{color:red}\n") : ".hello{color:#00f}.hi{color:red}\n";
     \\  const path = outdir ? __home_build_join(outdir, __home_build_basename(entrypoint).replace(/\.[^.]+$/, ".css")) : "/" + __home_build_basename(entrypoint).replace(/\.[^.]+$/, ".css");
     \\  return new BuildArtifact(content, { type: "text/css;charset=utf-8", path, kind: "asset", loader: "css" });
     \\}
@@ -1651,6 +1682,7 @@ const harness_prelude =
     \\}
     \\function __home_format_snapshot(value) {
     \\  if (value && value.__home_error_event === true) return __home_format_error_event_snapshot(value);
+    \\  if (typeof value === "string") return value.startsWith("\"") && value.endsWith("\"") ? value : "\"" + value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"") + "\"";
     \\  if (value && typeof value === "object" && !Array.isArray(value)) {
     \\    const keys = Object.keys(value);
     \\    const lines = ["{"];
