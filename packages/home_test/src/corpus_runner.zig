@@ -168,6 +168,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/web/timers/clearImmediate-gc.test.ts",
     "js/web/timers/performance.test.js",
     "js/web/timers/performance-entries.test.ts",
+    "js/web/fetch/blob-cow.test.ts",
     "js/web/fetch/body-async-iterator.test.ts",
     "js/web/fetch/fetch-abort-queued.test.ts",
     "js/web/fetch/fetch-abort-stream-body.test.ts",
@@ -6485,12 +6486,58 @@ const harness_prelude =
     \\  }
     \\  if (typeof this.onclose === "function") this.onclose({ type: "close" });
     \\};
-    \\if (typeof Blob !== "function") {
-    \\  var Blob = function(parts, options) {
-    \\    this.parts = Array.isArray(parts) ? parts.slice() : [];
-    \\    this.type = options && options.type ? String(options.type) : "";
-    \\  };
+    \\function __home_blob_part_to_bytes(part) {
+    \\  if (part && Array.isArray(part.__home_blob_bytes)) return part.__home_blob_bytes.slice();
+    \\  if (part instanceof ArrayBuffer) return Array.from(new Uint8Array(part));
+    \\  if (ArrayBuffer.isView(part)) return Array.from(new Uint8Array(part.buffer, part.byteOffset, part.byteLength));
+    \\  return __home_text_to_utf8_bytes(String(part));
     \\}
+    \\function __home_blob_parts(parts) {
+    \\  if (parts === undefined || parts === null) return [];
+    \\  if (typeof parts === "string") throw new TypeError("Blob constructor argument must be an array");
+    \\  if (parts instanceof ArrayBuffer || ArrayBuffer.isView(parts)) return [parts];
+    \\  if (Array.isArray(parts)) {
+    \\    const out = [];
+    \\    for (let i = 0; i < parts.length; i++) if (i in parts) out.push(parts[i]);
+    \\    return out;
+    \\  }
+    \\  return Array.from(parts);
+    \\}
+    \\var Blob = function(parts, options) {
+    \\  const source = __home_blob_parts(parts);
+    \\  const bytes = [];
+    \\  for (const part of source) {
+    \\    const partBytes = __home_blob_part_to_bytes(part);
+    \\    for (let i = 0; i < partBytes.length; i++) bytes.push(partBytes[i]);
+    \\  }
+    \\  this.parts = source.slice();
+    \\  this.__home_blob_bytes = bytes;
+    \\  this.size = bytes.length;
+    \\  this.type = options && options.type ? String(options.type) : "";
+    \\};
+    \\Blob.prototype.arrayBuffer = function() {
+    \\  return Promise.resolve(new Uint8Array(this.__home_blob_bytes || []).buffer);
+    \\};
+    \\Blob.prototype.bytes = function() {
+    \\  return Promise.resolve(new Uint8Array(this.__home_blob_bytes || []));
+    \\};
+    \\Blob.prototype.text = function() {
+    \\  return Promise.resolve(__home_utf8_bytes_to_text(this.__home_blob_bytes || []));
+    \\};
+    \\Blob.prototype.slice = function(start, end, contentType) {
+    \\  const size = this.size || 0;
+    \\  let first = start === undefined ? 0 : Number(start);
+    \\  let last = end === undefined ? size : Number(end);
+    \\  first = Number.isNaN(first) ? 0 : first < 0 ? Math.max(size + first, 0) : Math.min(first, size);
+    \\  last = Number.isNaN(last) ? 0 : last < 0 ? Math.max(size + last, 0) : Math.min(last, size);
+    \\  const blob = Object.create(Blob.prototype);
+    \\  blob.parts = [];
+    \\  blob.__home_blob_bytes = (this.__home_blob_bytes || []).slice(first, Math.max(first, last));
+    \\  blob.size = blob.__home_blob_bytes.length;
+    \\  blob.type = contentType === undefined ? "" : String(contentType);
+    \\  return blob;
+    \\};
+    \\globalThis.Blob = Blob;
     \\if (typeof HTMLRewriter !== "function") {
     \\  var HTMLRewriter = function() {
     \\    this.__home_html_handlers = [];
@@ -9241,6 +9288,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var FormData = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_formdata_serialize") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "UnreachableError") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Blob.prototype.arrayBuffer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_blob_part_to_bytes(part)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest, mock, onTestFinished, spyOn, test") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "concatArrayBuffers: __home_concat_array_buffers") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var TextEncoder = function()") != null);
@@ -10032,6 +10081,38 @@ test "bootstrap runner covers FormData Request multipart content type" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/07917/7917.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers Blob byte storage and copy-on-read" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("Blob bytes are copied from typed arrays and arrayBuffers", async () => {
+        \\  const bytes = new Uint8Array([65, 66, 67]);
+        \\  const blob = new Blob(["x", bytes, new Blob(["y"])]);
+        \\  bytes.fill(90);
+        \\  expect(blob.size).toBe(5);
+        \\  expect(await blob.text()).toBe("xABCy");
+        \\  const first = new Uint8Array(await blob.arrayBuffer());
+        \\  first[0] = 81;
+        \\  const second = new Uint8Array(await blob.arrayBuffer());
+        \\  expect(second[0]).toBe(120);
+        \\  expect(new Uint8Array(await blob.slice(1, 4).arrayBuffer()).length).toBe(3);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/fetch/blob-cow.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);

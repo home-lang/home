@@ -287,6 +287,8 @@ interactive third-party prompts stdin/stdout coverage,
 `setImmediate` interaction with JS-only `Bun.serve` / fetch,
 inline `clearImmediate(setImmediate(...))` subprocess GC coverage,
 Performance resource-timing no-ops and `Bun.nanoseconds`,
+Web `Blob.arrayBuffer()` copy-on-write and `Blob.slice().arrayBuffer()`
+coverage,
 `bun:jsc.estimateShallowMemoryUsageOf(performance)` entry-growth coverage,
 Web `URLSearchParams` Bun-extension coverage,
 FormData missing-file serialization leak subprocess coverage,
@@ -332,7 +334,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `261` files, `1,140` passed, `0` failed,
+Latest measured subset run: `262` files, `1,141` passed, `0` failed,
 `45` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now

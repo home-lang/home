@@ -797,6 +797,10 @@ tests through the CommonJS and dynamic-import bootstrap model. It covers
 the upstream `abort-controller` CommonJS re-export fixture and bare
 `await import("abort-controller")` resolving to the runtime-global
 `AbortController` binding.
+The copied `js/web/fetch/blob-cow.test.ts` fixture now passes as `1`
+test through the Web Blob bootstrap model. It covers byte-backed
+construction from typed arrays, copy-on-write `arrayBuffer()` reads,
+`size`, and sliced `arrayBuffer()` reads without sharing mutable buffers.
 The copied `cli/run/commonjs-invalid.test.ts` fixture now passes as `1`
 test through the real subprocess path, including piped stderr and the
 malformed CommonJS wrapper diagnostic.
