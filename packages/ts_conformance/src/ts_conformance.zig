@@ -12746,6 +12746,197 @@ test "conformance: partiallyNamedTuples passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: typeParameterAsTypeParameterConstraintTransitively passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeParameterAsTypeParameterConstraintTransitively",
+        .path = "typeParameterAsTypeParameterConstraintTransitively.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\interface A { foo: number }
+        \\interface B extends A { bar: string; }
+        \\interface C extends B { baz: boolean; }
+        \\var a: A;
+        \\var b: B;
+        \\var c: C;
+        \\
+        \\function foo<T, U, V>(x: T, y: U, z: V): V { return z; }
+        \\
+        \\foo(1, 2, 3);
+        \\foo({ x: 1 }, { x: 1, y: '' }, { x: 2, y: '', z: true });
+        \\foo(a, b, c);
+        \\foo(a, b, { foo: 1, bar: '', hm: true });
+        \\foo((x: number, y) => { }, (x) => { }, () => { });
+        \\
+        \\function foo2<T extends A, U, V>(x: T, y: U, z: V): V { return z; }
+        \\foo(a, a, a);
+        \\foo(a, b, c);
+        \\foo(b, b, { foo: 1, bar: '', hm: '' });
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: constraintSatisfactionWithEmptyObject passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "constraintSatisfactionWithEmptyObject",
+        .path = "constraintSatisfactionWithEmptyObject.ts",
+        .source =
+        \\// @target: es2015
+        \\
+        \\function foo<T extends Object>(x: T) { }
+        \\var r = foo({});
+        \\var a = {};
+        \\var r = foo({});
+        \\
+        \\class C<T extends Object> {
+        \\    constructor(public x: T) { }
+        \\}
+        \\
+        \\var r2 = new C({});
+        \\
+        \\interface I<T extends Object> {
+        \\    x: T;
+        \\}
+        \\var i: I<{}>;
+        \\
+        \\function foo2<T extends {}>(x: T) { }
+        \\var r = foo2({});
+        \\var a = {};
+        \\var r = foo2({});
+        \\
+        \\class C2<T extends {}> {
+        \\    constructor(public x: T) { }
+        \\}
+        \\
+        \\var r2 = new C2({});
+        \\
+        \\interface I2<T extends {}> {
+        \\    x: T;
+        \\}
+        \\var i2: I2<{}>;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: propertyAccessOnTypeParameterWithoutConstraints passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "propertyAccessOnTypeParameterWithoutConstraints",
+        .path = "propertyAccessOnTypeParameterWithoutConstraints.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\class C<T> {
+        \\    f() {
+        \\        var x: T;
+        \\        var a = x['toString']();
+        \\        return a + x.toString();
+        \\    }
+        \\}
+        \\
+        \\var r = (new C<number>()).f();
+        \\
+        \\interface I<T> {
+        \\    foo: T;
+        \\}
+        \\var i: I<number>;
+        \\var r2 = i.foo.toString();
+        \\var r2b = i.foo['toString']();
+        \\
+        \\var a: {
+        \\    <T>(): T;
+        \\}
+        \\var r3: string = a().toString();
+        \\var r3b: string = a()['toString']();
+        \\
+        \\var b = {
+        \\    foo: <T>(x: T) => {
+        \\        var a = x['toString']();
+        \\        return a + x.toString();
+        \\    }
+        \\}
+        \\
+        \\var r4 = b.foo(1);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: typeParameterUsedAsConstraint passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeParameterUsedAsConstraint",
+        .path = "typeParameterUsedAsConstraint.ts",
+        .source =
+        \\// @target: es2015
+        \\class C<T, U extends T> { }
+        \\class C2<T extends U, U> { }
+        \\class C3<T extends Date, U extends T> { }
+        \\class C4<T extends U, U extends Date> { }
+        \\class C5<T extends U, U extends V, V> { }
+        \\class C6<T, U extends T, V extends U> { }
+        \\
+        \\interface I<T, U extends T> { }
+        \\interface I2<T extends U, U> { }
+        \\interface I3<T extends Date, U extends T> { }
+        \\interface I4<T extends U, U extends Date> { }
+        \\interface I5<T extends U, U extends V, V> { }
+        \\interface I6<T, U extends T, V extends U> { }
+        \\
+        \\function f<T, U extends T>() { }
+        \\function f2<T extends U, U>() { }
+        \\function f3<T extends Date, U extends T>() { }
+        \\function f4<T extends U, U extends Date>() { }
+        \\function f5<T extends U, U extends V, V>() { }
+        \\function f6<T, U extends T, V extends U>() { }
+        \\
+        \\var e = <T, U extends T>() => { }
+        \\var e2 = <T extends U, U>() => { }
+        \\var e3 = <T extends Date, U extends T>() => { }
+        \\var e4 = <T extends U, U extends Date>() => { }
+        \\var e5 = <T extends U, U extends V, V>() => { }
+        \\var e6 = <T, U extends T, V extends U>() => { }
+        \\
+        \\var a: { <T, U extends T>(): void }
+        \\var a2: { <T extends U, U>(): void }
+        \\var a3: { <T extends Date, U extends T>(): void }
+        \\var a4: { <T extends U, U extends Date>(): void }
+        \\var a5: { <T extends U, U extends V, V>(): void }
+        \\var a6: { <T, U extends T, V extends U>(): void }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
