@@ -1117,6 +1117,10 @@ pub const sql = struct {
             // from Bun; it compiles over the current NewWriter shape and
             // becomes executable once the full writer body lands.
             pub const Query = @import("sql/mysql/protocol/Query.zig");
+            // Wave-27 grinder (2026-05-20). Client authentication
+            // response packet writer copied from Bun. Connect attributes
+            // use std.StringHashMapUnmanaged until the Bun alias lands.
+            pub const HandshakeResponse41 = @import("sql/mysql/protocol/HandshakeResponse41.zig");
             // Wave-22 grinder (2026-05-19). Three additional MySQL
             // wire-protocol leaves from less-mined corners:
             //   - ResultSetHeader (`field_count`): leading row-set
@@ -1692,6 +1696,7 @@ test {
     _ = @import("sql/mysql/protocol/OKPacket.zig");
     _ = @import("sql/mysql/protocol/StackReader.zig");
     _ = @import("sql/mysql/protocol/Query.zig");
+    _ = @import("sql/mysql/protocol/HandshakeResponse41.zig");
     _ = @import("sql/postgres/protocol/PasswordMessage.zig");
     _ = @import("sql/postgres/protocol/SASLResponse.zig");
     _ = @import("sql/postgres/protocol/SASLInitialResponse.zig");

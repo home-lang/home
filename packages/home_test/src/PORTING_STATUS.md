@@ -912,6 +912,12 @@ writer leaf. The port keeps Bun's packet-framing logic and debug scope,
 with execution still gated by the current `NewWriter` method stub until
 the full writer surface is ported.
 
+The runtime package now includes the copied MySQL `HandshakeResponse41`
+client authentication response writer. It preserves Bun's capability
+flag handling, auth-response mode branches, database/plugin fields, and
+connect-attribute length accounting while adapting the allocator,
+`StringHashMapUnmanaged`, and padding syntax for Home on Zig 0.17 dev.
+
 > **Why a verbatim copy?** Per direction 2026-05-14: Bun is shifting
 > its core to Rust; we want to continue maintaining the Zig portion
 > ourselves. Vendoring lets us adapt the test runner to Home's HIR /
