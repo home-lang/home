@@ -100,7 +100,7 @@ pub fn parseParam(line: []const u8) !Param(Help) {
     } else if (found_comma) {
         return error.TrailingComma;
     } else if (short_name == null) {
-        return parseParamRest(mem.trimLeft(u8, line, " \t"));
+        return parseParamRest(mem.trimStart(u8, line, " \t"));
     } else null;
 
     var res = parseParamRest(it.rest());
@@ -108,10 +108,19 @@ pub fn parseParam(line: []const u8) !Param(Help) {
 
     // Parse long names - supports multiple variants separated by '/'
     // e.g., "--test-name-pattern/--grep" becomes primary "test-name-pattern" with alias "grep"
-    const long_names = parseLongNames(param_str);
+    const long_names = if (@inComptime()) parseLongNames(param_str) else parseLongNamesRuntime(param_str);
     res.names.long = long_names.long;
     res.names.long_aliases = long_names.long_aliases;
     return res;
+}
+
+fn parseLongNamesRuntime(param_str: []const u8) Names {
+    if (!mem.startsWith(u8, param_str, "--")) {
+        return .{ .long = null, .long_aliases = &.{} };
+    }
+
+    const slash = mem.indexOfScalar(u8, param_str, '/') orelse param_str.len;
+    return .{ .long = param_str[2..slash], .long_aliases = &.{} };
 }
 
 fn parseLongNames(comptime param_str: []const u8) Names {
@@ -183,81 +192,81 @@ fn parseParamRest(line: []const u8) Param(Help) {
     return .{ .id = .{ .msg = mem.trim(u8, line, " \t") } };
 }
 
-fn expectParam(expect: Param(Help), actual: Param(Help)) void {
-    testing.expectEqualStrings(expect.id.msg, actual.id.msg);
-    testing.expectEqualStrings(expect.id.value, actual.id.value);
-    testing.expectEqual(expect.names.short, actual.names.short);
-    testing.expectEqual(expect.takes_value, actual.takes_value);
+fn expectParam(expect: Param(Help), actual: Param(Help)) !void {
+    try testing.expectEqualStrings(expect.id.msg, actual.id.msg);
+    try testing.expectEqualStrings(expect.id.value, actual.id.value);
+    try testing.expectEqual(expect.names.short, actual.names.short);
+    try testing.expectEqual(expect.takes_value, actual.takes_value);
     if (expect.names.long) |long| {
-        testing.expectEqualStrings(long, actual.names.long.?);
+        try testing.expectEqualStrings(long, actual.names.long.?);
     } else {
-        testing.expectEqual(@as(?[]const u8, null), actual.names.long);
+        try testing.expectEqual(@as(?[]const u8, null), actual.names.long);
     }
 }
 
 test "parseParam" {
-    expectParam(Param(Help){
+    try expectParam(Param(Help){
         .id = .{ .msg = "Help text", .value = "value" },
         .names = .{ .short = 's', .long = "long" },
         .takes_value = .one,
     }, try parseParam("-s, --long <value> Help text"));
 
-    expectParam(Param(Help){
+    try expectParam(Param(Help){
         .id = .{ .msg = "Help text", .value = "value" },
         .names = .{ .short = 's', .long = "long" },
         .takes_value = .many,
     }, try parseParam("-s, --long <value>... Help text"));
 
-    expectParam(Param(Help){
+    try expectParam(Param(Help){
         .id = .{ .msg = "Help text", .value = "value" },
         .names = .{ .long = "long" },
         .takes_value = .one,
     }, try parseParam("--long <value> Help text"));
 
-    expectParam(Param(Help){
+    try expectParam(Param(Help){
         .id = .{ .msg = "Help text", .value = "value" },
         .names = .{ .short = 's' },
         .takes_value = .one,
     }, try parseParam("-s <value> Help text"));
 
-    expectParam(Param(Help){
+    try expectParam(Param(Help){
         .id = .{ .msg = "Help text" },
         .names = .{ .short = 's', .long = "long" },
     }, try parseParam("-s, --long Help text"));
 
-    expectParam(Param(Help){
+    try expectParam(Param(Help){
         .id = .{ .msg = "Help text" },
         .names = .{ .short = 's' },
     }, try parseParam("-s Help text"));
 
-    expectParam(Param(Help){
+    try expectParam(Param(Help){
         .id = .{ .msg = "Help text" },
         .names = .{ .long = "long" },
     }, try parseParam("--long Help text"));
 
-    expectParam(Param(Help){
+    try expectParam(Param(Help){
         .id = .{ .msg = "Help text", .value = "A | B" },
         .names = .{ .long = "long" },
         .takes_value = .one,
     }, try parseParam("--long <A | B> Help text"));
 
-    expectParam(Param(Help){
+    try expectParam(Param(Help){
         .id = .{ .msg = "Help text", .value = "A" },
         .names = .{},
         .takes_value = .one,
     }, try parseParam("<A> Help text"));
 
-    expectParam(Param(Help){
+    try expectParam(Param(Help){
         .id = .{ .msg = "Help text", .value = "A" },
         .names = .{},
         .takes_value = .many,
     }, try parseParam("<A>... Help text"));
 
-    testing.expectError(error.TrailingComma, parseParam("--long, Help"));
-    testing.expectError(error.TrailingComma, parseParam("-s, Help"));
-    testing.expectError(error.InvalidShortParam, parseParam("-ss Help"));
-    testing.expectError(error.InvalidShortParam, parseParam("-ss <value> Help"));
-    testing.expectError(error.InvalidShortParam, parseParam("- Help"));
+    try testing.expectError(error.TrailingComma, parseParam("--long, Help"));
+    try testing.expectError(error.TrailingComma, parseParam("-s, Help"));
+    try testing.expectError(error.InvalidShortParam, parseParam("-ss Help"));
+    try testing.expectError(error.InvalidShortParam, parseParam("-ss <value> Help"));
+    try testing.expectError(error.InvalidShortParam, parseParam("- Help"));
 }
 
 /// Optional diagnostics used for reporting useful errors
@@ -267,7 +276,7 @@ pub const Diagnostic = struct {
 
     /// Default diagnostics reporter when all you want is English with no colors.
     /// Use this as a reference for implementing your own if needed.
-    pub fn report(diag: Diagnostic, _: anytype, err: anyerror) !void {
+    pub fn report(diag: Diagnostic, writer: anytype, err: anyerror) !void {
         var name_buf: [1024]u8 = undefined;
         const name = if (diag.name.short) |s| short: {
             name_buf[0] = '-';
@@ -284,27 +293,26 @@ pub const Diagnostic = struct {
 
         switch (err) {
             error.DoesntTakeValue => {
-                Output.prettyErrorln("<red>error<r><d>:<r> The argument '{s}' does not take a value.", .{name});
+                try writer.print("The argument '{s}' does not take a value\n", .{name});
             },
             error.MissingValue => {
-                Output.prettyErrorln("<red>error<r><d>:<r> The argument '{s}' requires a value but none was supplied.", .{name});
+                try writer.print("The argument '{s}' requires a value but none was supplied\n", .{name});
             },
             error.InvalidArgument => {
-                Output.prettyErrorln("<red>error<r><d>:<r> Invalid Argument '{s}'", .{name});
+                try writer.print("Invalid argument '{s}'\n", .{name});
             },
             else => {
-                Output.prettyErrorln("<red>error<r><d>:<r> {s} while parsing argument '{s}'", .{ @errorName(err), name });
+                try writer.print("{s} while parsing argument '{s}'\n", .{ @errorName(err), name });
             },
         }
-        Output.flush();
     }
 };
 
-fn testDiag(diag: Diagnostic, err: anyerror, expected: []const u8) void {
+fn testDiag(diag: Diagnostic, err: anyerror, expected: []const u8) !void {
     var buf: [1024]u8 = undefined;
-    var slice_stream = io.fixedBufferStream(&buf);
-    diag.report(slice_stream.writer(), err) catch unreachable;
-    testing.expectEqualStrings(expected, slice_stream.getWritten());
+    var writer = io.Writer.fixed(&buf);
+    diag.report(&writer, err) catch unreachable;
+    try testing.expectEqualStrings(expected, writer.buffered());
 }
 
 pub fn Args(comptime Id: type, comptime params: []const Param(Id)) type {
@@ -408,10 +416,11 @@ pub fn helpFull(
     const max_spacing = blk: {
         var res: usize = 0;
         for (params) |param| {
-            var cs = io.countingWriter(io.null_writer);
-            try printParam(cs.writer(), Id, param, Error, context, valueText);
-            if (res < cs.bytes_written)
-                res = @as(usize, @intCast(cs.bytes_written));
+            var count_buffer: [256]u8 = undefined;
+            var cs = io.Writer.Discarding.init(&count_buffer);
+            try printParam(&cs.writer, Id, param, Error, context, valueText);
+            if (res < cs.fullCount())
+                res = @as(usize, @intCast(cs.fullCount()));
         }
 
         break :blk res;
@@ -424,10 +433,12 @@ pub fn helpFull(
         const help_text = try helpText(context, param);
         // only print flag if description is defined
         if (help_text.len > 0) {
-            var cs = io.countingWriter(stream);
+            var count_buffer: [256]u8 = undefined;
+            var cs = io.Writer.Discarding.init(&count_buffer);
             try stream.print("\t", .{});
-            try printParam(cs.writer(), Id, param, Error, context, valueText);
-            try stream.splatByteAll(' ', max_spacing - @as(usize, @intCast(cs.bytes_written)));
+            try printParam(&cs.writer, Id, param, Error, context, valueText);
+            try printParam(stream, Id, param, Error, context, valueText);
+            try stream.splatByteAll(' ', max_spacing - @as(usize, @intCast(cs.fullCount())));
             try stream.print("\t{s}\n", .{try helpText(context, param)});
         }
     }
@@ -572,7 +583,7 @@ pub fn simpleHelpBunTopLevel(
     comptime params: []const Param(Help),
 ) void {
     const max_spacing = 30;
-    const space_buf: *const [max_spacing]u8 = " " ** max_spacing;
+    const space_buf: *const [max_spacing]u8 = " " * *max_spacing;
 
     const computed_max_spacing = comptime blk: {
         var res: usize = 2;
@@ -638,19 +649,25 @@ pub fn usageFull(
     context: anytype,
     valueText: fn (@TypeOf(context), Param(Id)) Error![]const u8,
 ) !void {
-    var cos = io.countingWriter(stream);
-    const cs = cos.writer();
+    var count_buffer: [256]u8 = undefined;
+    var cos = io.Writer.Discarding.init(&count_buffer);
+    const cs = &cos.writer;
     for (params) |param| {
         const name = param.names.short orelse continue;
         if (param.takes_value != .none)
             continue;
 
-        if (cos.bytes_written == 0)
+        if (cos.fullCount() == 0) {
             try stream.writeAll("[-");
+            try cs.writeAll("[-");
+        }
         try cs.writeByte(name);
+        try stream.writeByte(name);
     }
-    if (cos.bytes_written != 0)
+    if (cos.fullCount() != 0) {
         try cs.writeByte(']');
+        try stream.writeByte(']');
+    }
 
     var positional: ?Param(Id) = null;
     for (params) |param| {
@@ -665,24 +682,44 @@ pub fn usageFull(
             positional = param;
             continue;
         };
-        if (cos.bytes_written != 0)
+        if (cos.fullCount() != 0) {
             try cs.writeByte(' ');
+            try stream.writeByte(' ');
+        }
 
         try cs.print("[{s}{s}", .{ prefix, name });
+        try stream.print("[{s}{s}", .{ prefix, name });
         switch (param.takes_value) {
             .none => {},
-            .one => try cs.print(" <{s}>", .{try valueText(context, param)}),
-            .one_optional => try cs.print(" <{s}>?", .{try valueText(context, param)}),
-            .many => try cs.print(" <{s}>...", .{try valueText(context, param)}),
+            .one => {
+                const value = try valueText(context, param);
+                try cs.print(" <{s}>", .{value});
+                try stream.print(" <{s}>", .{value});
+            },
+            .one_optional => {
+                const value = try valueText(context, param);
+                try cs.print(" <{s}>?", .{value});
+                try stream.print(" <{s}>?", .{value});
+            },
+            .many => {
+                const value = try valueText(context, param);
+                try cs.print(" <{s}>...", .{value});
+                try stream.print(" <{s}>...", .{value});
+            },
         }
 
         try cs.writeByte(']');
+        try stream.writeByte(']');
     }
 
     if (positional) |p| {
-        if (cos.bytes_written != 0)
+        if (cos.fullCount() != 0)
             try cs.writeByte(' ');
-        try cs.print("<{s}>", .{try valueText(context, p)});
+        if (cos.fullCount() != 0)
+            try stream.writeByte(' ');
+        const value = try valueText(context, p);
+        try cs.print("<{s}>", .{value});
+        try stream.print("<{s}>", .{value});
     }
 }
 
@@ -719,16 +756,16 @@ pub fn usage(stream: anytype, params: []const Param(Help)) !void {
 
 fn testUsage(expected: []const u8, params: []const Param(Help)) !void {
     var buf: [1024]u8 = undefined;
-    var fbs = io.fixedBufferStream(&buf);
-    try usage(fbs.writer(), params);
-    testing.expectEqualStrings(expected, fbs.getWritten());
+    var writer = io.Writer.fixed(&buf);
+    try usage(&writer, params);
+    try testing.expectEqualStrings(expected, writer.buffered());
 }
 
-const Output = @import("../bun_core/output.zig");
-const bun = @import("bun");
+const bun = @import("./home_compat.zig");
+const Output = bun.Output;
 
 const std = @import("std");
 const heap = std.heap;
-const io = std.io;
+const io = std.Io;
 const mem = std.mem;
 const testing = std.testing;
