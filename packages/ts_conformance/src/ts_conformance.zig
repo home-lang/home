@@ -18892,6 +18892,196 @@ test "conformance: generatorTypeCheck61 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: subtypesOfAny passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "subtypesOfAny",
+        .path = "subtypesOfAny.ts",
+        .source =
+        \\interface I {
+        \\    [x: string]: any;
+        \\    foo: any;
+        \\}
+        \\
+        \\interface I2 {
+        \\    [x: string]: any;
+        \\    foo: number;
+        \\}
+        \\
+        \\interface I3 {
+        \\    [x: string]: any;
+        \\    foo: string;
+        \\}
+        \\
+        \\interface I4 {
+        \\    [x: string]: any;
+        \\    foo: boolean;
+        \\}
+        \\
+        \\interface I5 {
+        \\    [x: string]: any;
+        \\    foo: Date;
+        \\}
+        \\
+        \\interface I6 {
+        \\    [x: string]: any;
+        \\    foo: RegExp;
+        \\}
+        \\
+        \\interface I7 {
+        \\    [x: string]: any;
+        \\    foo: { bar: number };
+        \\}
+        \\
+        \\interface I8 {
+        \\    [x: string]: any;
+        \\    foo: number[];
+        \\}
+        \\
+        \\interface I9 {
+        \\    [x: string]: any;
+        \\    foo: I8;
+        \\}
+        \\
+        \\class A { foo: number; }
+        \\interface I10 {
+        \\    [x: string]: any;
+        \\    foo: A;
+        \\}
+        \\
+        \\class A2<T> { foo: T; }
+        \\interface I11 {
+        \\    [x: string]: any;
+        \\    foo: A2<number>;
+        \\}
+        \\
+        \\interface I12 {
+        \\    [x: string]: any;
+        \\    foo: (x) => number;
+        \\}
+        \\
+        \\interface I13 {
+        \\    [x: string]: any;
+        \\    foo: <T>(x:T) => T;
+        \\}
+        \\
+        \\enum E { A }
+        \\interface I14 {
+        \\    [x: string]: any;
+        \\    foo: E;
+        \\}
+        \\
+        \\function f() { }
+        \\namespace f {
+        \\    export var bar = 1;
+        \\}
+        \\interface I15 {
+        \\    [x: string]: any;
+        \\    foo: typeof f;
+        \\}
+        \\
+        \\class c { baz: string }
+        \\namespace c {
+        \\    export var bar = 1;
+        \\}
+        \\interface I16 {
+        \\    [x: string]: any;
+        \\    foo: typeof c;
+        \\}
+        \\
+        \\interface I17<T> {
+        \\    [x: string]: any;
+        \\    foo: T;
+        \\}
+        \\
+        \\interface I18<T, U> {
+        \\    [x: string]: any;
+        \\    foo: U;
+        \\}
+        \\
+        \\interface I19 {
+        \\    [x: string]: any;
+        \\    foo: Object;
+        \\}
+        \\
+        \\interface I20 {
+        \\    [x: string]: any;
+        \\    foo: {};
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: arrayLiteralWidened passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "arrayLiteralWidened",
+        .path = "arrayLiteralWidened.ts",
+        .source =
+        \\var a = [];
+        \\var a = [,,];
+        \\
+        \\var a = [null, null];
+        \\var a = [undefined, undefined];
+        \\
+        \\var b = [[], [null, null]];
+        \\var b = [[], []];
+        \\var b = [[undefined, undefined]];
+        \\
+        \\var c = [[[]]];
+        \\var c = [[[null]],[undefined]]
+        \\
+        \\var x: undefined = undefined;
+        \\
+        \\var d = [x];
+        \\var d = [, x];
+        \\var d = [undefined, x];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: subtypingWithCallSignatures passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "subtypingWithCallSignatures",
+        .path = "subtypingWithCallSignatures.ts",
+        .source =
+        \\namespace CallSignature {
+        \\    declare function foo1(cb: (x: number) => void): typeof cb;
+        \\    declare function foo1(cb: any): any;
+        \\    var r = foo1((x: number) => 1);
+        \\    var r2 = foo1(<T>(x: T) => '');
+        \\
+        \\    declare function foo2(cb: (x: number, y: number) => void): typeof cb;
+        \\    declare function foo2(cb: any): any;
+        \\    var r3 = foo2((x: number, y: number) => 1);
+        \\    var r4 = foo2(<T>(x: T) => '');
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
