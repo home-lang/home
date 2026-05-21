@@ -207,7 +207,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes two hundred forty-one allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes two hundred forty-two allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator. On macOS this
 JSC path is now part of the default `./pantry/.bin/zig build test` graph
 (`-Denable_jsc=false` remains available for constrained hosts): the
@@ -303,6 +303,8 @@ WHATWG `node:url.format(URL, { auth: false })` coverage, and
 `expect.extend` matcher validation plus installed
 expectation-object matchers, the Bake deinitialization DevServer teardown
 fixture, CommonJS invalid-wrapper and empty-file CLI subprocess smokes,
+queried relative dynamic imports for the empty async-transpiler
+regression fixture,
 plus one snapshot `test.todo` fixture whose
 snapshot body remains intentionally unexecuted. The bootstrap harness is installed once
 per JSC engine, resets counters before each file, lowers supported
@@ -317,7 +319,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `241` files, `1,097` passed, `0` failed,
+Latest measured subset run: `242` files, `1,098` passed, `0` failed,
 `45` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
@@ -1374,6 +1376,12 @@ Home as `1` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap
 models `FormData.append()`, iteration, and `Request(..., { body:
 formData })` multipart text serialization with an unquoted
 `content-type` boundary parameter.
+
+The copied `regression/issue/09563/09563.test.ts` fixture now passes in
+Home as `1` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap
+lowers its queried relative `import("./empty.ts" + "?i" + i)` calls into
+the Home import shim so the empty module resolves and the async
+transpiler regression's `Promise.all()` settles.
 
 The copied `js/node/path/to-namespaced-path.test.js` fixture now passes
 in Home as `4` passed, `0` failed, `0` unsupported, `0` todo. The
