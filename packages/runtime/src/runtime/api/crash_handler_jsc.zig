@@ -159,16 +159,17 @@ test "crash_handler_jsc: generate returns the stubbed JSValue.zero" {
     try std.testing.expectEqual(js_bindings.JSValue.zero, js_bindings.generate(g));
 }
 
-test "crash_handler_jsc: jsGetMachOImageZeroOffset is js_undefined off-mac" {
-    if (home_rt.Environment.isMac) return error.SkipZigTest;
+test "crash_handler_jsc: jsGetMachOImageZeroOffset follows host platform" {
     var dummy: u8 = 0;
     var cf_dummy: u8 = 0;
     const g: *js_bindings.JSGlobalObject = @ptrCast(&dummy);
     const cf: *js_bindings.CallFrame = @ptrCast(&cf_dummy);
-    try std.testing.expectEqual(
-        js_bindings.JSValue.js_undefined,
-        try js_bindings.jsGetMachOImageZeroOffset(g, cf),
-    );
+    const actual = try js_bindings.jsGetMachOImageZeroOffset(g, cf);
+    if (home_rt.Environment.isMac) {
+        try std.testing.expectEqual(js_bindings.JSValue.zero, actual);
+    } else {
+        try std.testing.expectEqual(js_bindings.JSValue.js_undefined, actual);
+    }
 }
 
 test "crash_handler_jsc: JSValue tag is ABI-compatible with i64" {

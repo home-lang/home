@@ -98,10 +98,10 @@ pub fn build(b: *std.Build) void {
     const enable_sanitize_undefined = b.option(bool, "sanitize-undefined", "Enable UndefinedBehaviorSanitizer") orelse false;
     const enable_sanitize_thread = b.option(bool, "sanitize-thread", "Enable ThreadSanitizer for data race detection") orelse false;
 
-    // Phase 12.2 M3 prep: link JavaScriptCore into home_rt tests. Default
-    // false — most CI hosts lack JSC C++; flipping to true expects a
-    // system-installed `JavaScriptCore.framework` (macOS) or libwebkit.
-    const enable_jsc = b.option(bool, "enable_jsc", "Link JavaScriptCore into home_rt tests (default false; requires JSC C++ install)") orelse false;
+    // Link JavaScriptCore-backed runtime and bootstrap tests whenever the
+    // target platform has a native framework we can faithfully exercise.
+    // Keep the option override for constrained hosts and cross targets.
+    const enable_jsc = b.option(bool, "enable_jsc", "Link JavaScriptCore into home_rt/home_test tests (default true on macOS)") orelse (target.result.os.tag == .macos);
 
     // Create package modules using helper function (with zig-test-framework)
     const lexer_pkg = createPackage(b, "packages/lexer/src/lexer.zig", target, optimize, zig_test_framework);

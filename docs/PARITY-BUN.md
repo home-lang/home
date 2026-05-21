@@ -208,8 +208,9 @@ skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
 --bun-corpus-native-subset=minimal-js` executes one hundred sixty-eight allowlisted JS
-or plain-syntax TS corpus files through Home's JSC evaluator when
-`home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
+or plain-syntax TS corpus files through Home's JSC evaluator. On macOS this
+JSC path is now part of the default `./pantry/.bin/zig build test` graph
+(`-Denable_jsc=false` remains available for constrained hosts): the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-four
 regression smokes, one bundler constant-fold smoke, two `Bun.build` API
 smokes, one bun-types `test.each` type-shape smoke, six test-runner
