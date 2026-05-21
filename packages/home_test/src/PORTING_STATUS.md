@@ -190,7 +190,8 @@ FormData missing-file serialization leak subprocess coverage,
 mutable `globalThis` prototype behavior, comment-only module-load smoke,
 `Bun.file(...).type` explicit and `.css` MIME behavior,
 `Bun.randomUUIDv7` timestamped / monotonic UUID output,
-`Bun.sleepSync` millisecond timing / argument validation, plus
+`Bun.sleepSync` millisecond timing / argument validation,
+`Bun.readableStreamToArrayBuffer` queued chunk draining, plus
 `Bun.deepEquals`,
 Request/Response/Headers/URL, `node-fetch`, `node:buffer`, `deno:harness`
 including Bun-copied Deno `test(options, fn)` / permission skip /
@@ -766,6 +767,11 @@ tests through the `Bun.sleepSync` bootstrap model. It covers
 millisecond timing, missing / non-number / negative argument validation,
 and named `import { sleepSync } from "bun"` lowering while keeping the
 fixture byte-identical to upstream Bun.
+The copied `js/bun/util/readablestreamtoarraybuffer.test.ts` fixture now
+passes as `1` test through the stream bootstrap model. It covers queued
+`ReadableStream` chunks, `TextEncoder` / `TextDecoder` ArrayBuffer
+roundtrips, and an internal-promise-style implementation that ignores
+user overrides of `Promise.prototype.then`.
 The copied `js/node/process-binding.test.ts` fixture now passes as `2`
 tests through the `process.binding` bootstrap model. It covers the
 `constants` binding buckets Bun asserts plus the `uv` error-name and

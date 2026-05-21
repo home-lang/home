@@ -141,6 +141,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/url/url-pathtofileurl.test.js",
     "js/bun/util/randomUUIDv7.test.ts",
     "js/bun/util/sleepSync.test.ts",
+    "js/bun/util/readablestreamtoarraybuffer.test.ts",
     "js/node/process-binding.test.ts",
     "js/bun/test/test-timers.test.ts",
     "internal/highlighter.test.ts",
@@ -308,6 +309,10 @@ const harness_prelude =
     \\  globalThis.__home_mocks = [];
     \\};
     \\globalThis.__home_reset_tests();
+    \\const __home_promise_then = Promise.prototype.then;
+    \\function __home_then(value, onFulfilled, onRejected) {
+    \\  return __home_promise_then.call(Promise.resolve(value), onFulfilled, onRejected);
+    \\}
     \\if (typeof console !== "object" || console === null) var console = {};
     \\if (typeof console.log !== "function") console.log = function() {};
     \\if (typeof console.warn !== "function") console.warn = console.log;
@@ -878,6 +883,9 @@ const harness_prelude =
     \\  randomUUIDv7: __home_random_uuidv7,
     \\  deepEquals(left, right) {
     \\    return __home_deep_equal(left, right, false, new Map());
+    \\  },
+    \\  readableStreamToArrayBuffer(stream) {
+    \\    return __home_readable_stream_to_array_buffer(stream);
     \\  },
     \\  __home_next_js_serve_id: 1,
     \\  fileURLToPath(url) {
@@ -1794,14 +1802,14 @@ const harness_prelude =
     \\}
     \\function __home_track_test_thenable(result) {
     \\  __home_bun_tests.pending++;
-    \\  return Promise.resolve(result).then(
+    \\  return __home_then(__home_then(result,
     \\    function() {
     \\      __home_bun_tests.passed++;
     \\    },
     \\    function(error) {
     \\      __home_record_async_failure(error);
     \\    },
-    \\  ).then(
+    \\  ),
     \\    function() {
     \\      __home_bun_tests.pending--;
     \\    },
@@ -1813,12 +1821,12 @@ const harness_prelude =
     \\}
     \\function __home_track_sequence_thenable(result) {
     \\  __home_bun_tests.pending++;
-    \\  Promise.resolve(result).then(
+    \\  return __home_then(__home_then(result,
     \\    function() {},
     \\    function(error) {
     \\      __home_record_async_failure(error);
     \\    },
-    \\  ).then(
+    \\  ),
     \\    function() {
     \\      __home_bun_tests.pending--;
     \\    },
@@ -1931,7 +1939,7 @@ const harness_prelude =
     \\  }
     \\  for (const entry of queue) {
     \\    if (chain) {
-    \\      chain = chain.then(function() { return runEntry(entry); });
+    \\      chain = __home_then(chain, function() { return runEntry(entry); });
     \\      continue;
     \\    }
     \\    const result = runEntry(entry);
@@ -6356,7 +6364,11 @@ const harness_prelude =
     \\    this.encoding = label === undefined ? "utf-8" : String(label).toLowerCase();
     \\  };
     \\  TextDecoder.prototype.decode = function(input) {
-    \\    const bytes = input === undefined ? [] : Array.from(input);
+    \\    let bytes;
+    \\    if (input === undefined) bytes = [];
+    \\    else if (input instanceof ArrayBuffer) bytes = Array.from(new Uint8Array(input));
+    \\    else if (ArrayBuffer.isView(input)) bytes = Array.from(new Uint8Array(input.buffer, input.byteOffset, input.byteLength));
+    \\    else bytes = Array.from(input);
     \\    if (this.encoding === "replacement") return "\uFFFD";
     \\    if (this.encoding === "x-user-defined") {
     \\      let output = "";
@@ -6392,6 +6404,32 @@ const harness_prelude =
     \\    return output;
     \\  };
     \\}
+    \\if (typeof TextEncoder !== "function") {
+    \\  var TextEncoder = function() {};
+    \\  TextEncoder.prototype.encode = function(input) {
+    \\    const text = String(input === undefined ? "" : input);
+    \\    const bytes = new Uint8Array(text.length);
+    \\    for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i) & 0xff;
+    \\    return bytes;
+    \\  };
+    \\}
+    \\if (typeof ReadableStream !== "function") {
+    \\  var ReadableStream = function(underlyingSource) {
+    \\    this.__home_chunks = [];
+    \\    this.__home_closed = false;
+    \\    const stream = this;
+    \\    const controller = {
+    \\      enqueue(chunk) {
+    \\        if (stream.__home_closed) throw new TypeError("ReadableStream is closed");
+    \\        stream.__home_chunks.push(chunk);
+    \\      },
+    \\      close() {
+    \\        stream.__home_closed = true;
+    \\      },
+    \\    };
+    \\    if (underlyingSource && typeof underlyingSource.start === "function") underlyingSource.start(controller);
+    \\  };
+    \\}
     \\expect.any = function(ctor) {
     \\  return { __home_expect_any: true, ctor };
     \\};
@@ -6415,6 +6453,10 @@ const harness_prelude =
     \\    offset += take;
     \\  }
     \\  return asUint8Array ? output : output.buffer;
+    \\}
+    \\function __home_readable_stream_to_array_buffer(stream) {
+    \\  if (!stream || !Array.isArray(stream.__home_chunks)) throw new TypeError("Expected ReadableStream");
+    \\  return __home_concat_array_buffers(stream.__home_chunks);
     \\}
     \\var ShadowRealm = (function() {
     \\  class HomeShadowRealm {
@@ -7917,6 +7959,9 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "UnreachableError") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest, mock, onTestFinished, test") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "concatArrayBuffers: __home_concat_array_buffers") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var TextEncoder = function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var ReadableStream = function(underlyingSource)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "readableStreamToArrayBuffer(stream)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_cjs_factories[\"regression/issue/013880-fixture.cjs\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_resolve_require(specifier)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"assert\"] = __home_assert_module") != null);
@@ -10055,6 +10100,46 @@ test "bootstrap Bun.randomUUIDv7 exposes timestamped monotonic ids" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/util/randomUUIDv7.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap Bun.readableStreamToArrayBuffer drains queued chunks" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("readableStreamToArrayBuffer", async () => {
+        \\  let counter = 0;
+        \\  const originalThen = Promise.prototype.then;
+        \\  Promise.prototype.then = (...args) => {
+        \\    counter++;
+        \\    return originalThen.apply(this, args);
+        \\  };
+        \\  try {
+        \\    const result = await Bun.readableStreamToArrayBuffer(new ReadableStream({
+        \\      async start(controller) {
+        \\        controller.enqueue(new TextEncoder().encode("bun is"));
+        \\        controller.enqueue(new TextEncoder().encode(" awesome!"));
+        \\        controller.close();
+        \\      },
+        \\    }));
+        \\    expect(counter).toBe(0);
+        \\    expect(new TextDecoder().decode(result)).toBe("bun is awesome!");
+        \\  } finally {
+        \\    Promise.prototype.then = originalThen;
+        \\  }
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/util/readablestreamtoarraybuffer.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
