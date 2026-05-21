@@ -16105,6 +16105,132 @@ test "conformance: parser645086_3 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: parserVariableStatement1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserVariableStatement1",
+        .path = "parserVariableStatement1.ts",
+        .source =
+        \\// @target: es2015
+        \\var a,
+        \\    b,
+        \\    c
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserVariableStatement2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserVariableStatement2",
+        .path = "parserVariableStatement2.ts",
+        .source =
+        \\// @target: es2015
+        \\var a
+        \\  , b
+        \\  , c
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserVariableStatement3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserVariableStatement3",
+        .path = "parserVariableStatement3.ts",
+        .source =
+        \\// @target: es2015
+        \\var
+        \\  a,
+        \\  b,
+        \\  c
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserVariableStatement4 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserVariableStatement4",
+        .path = "parserVariableStatement4.ts",
+        .source =
+        \\// @target: es2015
+        \\var
+        \\    a
+        \\  , b
+        \\  , c
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserDoStatement2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserDoStatement2",
+        .path = "parserDoStatement2.ts",
+        .source =
+        \\// @target: es2015
+        \\do{;}while(false)false
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parser645484 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parser645484",
+        .path = "parser645484.ts",
+        .source =
+        \\// @target: es2015
+        \\var c : {
+        \\    new?(): any;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
