@@ -6256,6 +6256,252 @@ test "conformance: typeGuardsTypeParameters passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: computedPropertyNames7_ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "computedPropertyNames7_ES6",
+        .path = "computedPropertyNames7_ES6.ts",
+        .source =
+        \\// @target: es6
+        \\enum E {
+        \\    member
+        \\}
+        \\var v = {
+        \\    [E.member]: 0
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: computedPropertyNames10_ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "computedPropertyNames10_ES6",
+        .path = "computedPropertyNames10_ES6.ts",
+        .source =
+        \\// @target: es6
+        \\var s: string;
+        \\var n: number;
+        \\var a: any;
+        \\var v = {
+        \\    [s]() { },
+        \\    [n]() { },
+        \\    [s + s]() { },
+        \\    [s + n]() { },
+        \\    [+s]() { },
+        \\    [""]() { },
+        \\    [0]() { },
+        \\    [a]() { },
+        \\    [<any>true]() { },
+        \\    [`hello bye`]() { },
+        \\    [`hello ${a} bye`]() { }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: computedPropertyNames20_ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "computedPropertyNames20_ES6",
+        .path = "computedPropertyNames20_ES6.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es6
+        \\var obj = {
+        \\    [this.bar]: 0
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: computedPropertyNames22_ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "computedPropertyNames22_ES6",
+        .path = "computedPropertyNames22_ES6.ts",
+        .source =
+        \\// @target: es6
+        \\class C {
+        \\    bar() {
+        \\        var obj = {
+        \\            [this.bar()]() { }
+        \\        };
+        \\        return 0;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: computedPropertyNamesContextualType7_ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "computedPropertyNamesContextualType7_ES6",
+        .path = "computedPropertyNamesContextualType7_ES6.ts",
+        .source =
+        \\// @target: es6
+        \\interface I<T> {
+        \\    [n: number]: T;
+        \\}
+        \\interface J<T> {
+        \\    [s: string]: T;
+        \\}
+        \\
+        \\declare function foo<T>(obj: I<T>): T;
+        \\declare function g<T>(obj: J<T>): T;
+        \\
+        \\foo({
+        \\    0: () => { },
+        \\    ["hi" + "bye"]: true,
+        \\    [0 + 1]: 0,
+        \\    [+"hi"]: [0]
+        \\});
+        \\
+        \\g({ p: "" });
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectLiteralShorthandPropertiesAssignment passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectLiteralShorthandPropertiesAssignment",
+        .path = "objectLiteralShorthandPropertiesAssignment.ts",
+        .source =
+        \\// @target: es2015
+        \\// @lib: es5
+        \\var id: number = 10000;
+        \\var name: string = "my name";
+        \\
+        \\var person: { name: string; id: number } = { name, id };
+        \\function foo( obj:{ name: string }): void { };
+        \\function bar(name: string, id: number) { return { name, id }; }
+        \\function bar1(name: string, id: number) { return { name }; }
+        \\function baz(name: string, id: number): { name: string; id: number } { return { name, id }; }
+        \\
+        \\foo(person);
+        \\var person1 = bar("Hello", 5);
+        \\var person2: { name: string } = bar("Hello", 5);
+        \\var person3: { name: string; id:number } = bar("Hello", 5);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectLiteralShorthandPropertiesAssignmentES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectLiteralShorthandPropertiesAssignmentES6",
+        .path = "objectLiteralShorthandPropertiesAssignmentES6.ts",
+        .source =
+        \\// @lib: es5
+        \\// @target: es6
+        \\var id: number = 10000;
+        \\var name: string = "my name";
+        \\
+        \\var person: { name: string; id: number } = { name, id };
+        \\function foo(obj: { name: string }): void { };
+        \\function bar(name: string, id: number) { return { name, id }; }
+        \\function bar1(name: string, id: number) { return { name }; }
+        \\function baz(name: string, id: number): { name: string; id: number } { return { name, id }; }
+        \\
+        \\foo(person);
+        \\var person1 = bar("Hello", 5);
+        \\var person2: { name: string } = bar("Hello", 5);
+        \\var person3: { name: string; id: number } = bar("Hello", 5);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: VariableDeclaration8_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "VariableDeclaration8_es6",
+        .path = "VariableDeclaration8_es6.ts",
+        .source =
+        \\// @target:es6
+        \\let a = 1
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: VariableDeclaration12_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "VariableDeclaration12_es6",
+        .path = "VariableDeclaration12_es6.ts",
+        .source =
+        \\// @target:es6
+        \\
+        \\let
+        \\x
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
