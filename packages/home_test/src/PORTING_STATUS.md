@@ -966,6 +966,12 @@ tests through the Node filesystem bootstrap model. It covers
 `node:fs.existsSync`, `node:fs.statSync`, `node:fs/promises.exists`, and
 `node:fs/promises.stat` against `.` and `..`, backed by native access/stat
 bridges and a JS `Stats` wrapper with `isDirectory()`.
+The copied `regression/issue/26844.test.ts` fixture now passes as `2`
+tests through the child-process bootstrap model. It covers
+`child_process.execFileSync` missing-executable ENOENT errors and
+shell-backed `execSync` command failures with Bun-shaped enumerable
+fields and no self-referencing `error` property, so `JSON.stringify(err)`
+does not throw.
 The copied `js/node/path/to-namespaced-path.test.js` fixture now passes
 as `4` tests through the path bootstrap model. It covers
 `path.toNamespacedPath`, `path._makeLong`, posix/win32 namespace variants,

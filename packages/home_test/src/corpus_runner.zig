@@ -137,6 +137,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/expect-type-global.test.ts",
     "js/bun/test/expect-type.test.ts",
     "regression/issue/26631.test.ts",
+    "regression/issue/26844.test.ts",
     "regression/issue/02367.test.ts",
     "js/bun/util/fileUrl.test.js",
     "js/bun/util/file-type.test.ts",
@@ -5612,11 +5613,63 @@ const harness_prelude =
     \\__home_node_os.default = __home_node_os;
     \\globalThis.__home_modules["os"] = __home_node_os;
     \\globalThis.__home_modules["node:os"] = __home_node_os;
-    \\globalThis.__home_modules["child_process"] = {
+    \\function __home_child_process_buffer(value) {
+    \\  return typeof Buffer === "function" ? Buffer.from(String(value || "")) : String(value || "");
+    \\}
+    \\function __home_child_process_exec_file_enoent(file, args) {
+    \\  const text = String(file);
+    \\  const error = new Error("Executable not found in $PATH: \"" + text + "\"");
+    \\  error.code = "ENOENT";
+    \\  error.path = text;
+    \\  error.errno = -2;
+    \\  error.syscall = "spawnSync " + text;
+    \\  error.spawnargs = Array.isArray(args) ? args.map(String) : [];
+    \\  error.signal = null;
+    \\  error.status = undefined;
+    \\  error.output = [null, null, null];
+    \\  error.pid = undefined;
+    \\  error.stdout = null;
+    \\  error.stderr = null;
+    \\  return error;
+    \\}
+    \\function __home_child_process_exec_error(command, result) {
+    \\  const stderr = __home_child_process_buffer(result && result.stderr);
+    \\  const stderrText = stderr && typeof stderr.toString === "function" ? stderr.toString() : String(stderr || "");
+    \\  const error = new Error("Command failed: " + String(command) + (stderrText ? "\n" + stderrText : ""));
+    \\  error.signal = result && result.signalCode !== undefined ? result.signalCode : null;
+    \\  error.status = result && typeof result.exitCode !== "undefined" ? result.exitCode : 1;
+    \\  error.output = [null, __home_child_process_buffer(result && result.stdout), stderr];
+    \\  error.pid = undefined;
+    \\  error.stdout = error.output[1];
+    \\  error.stderr = stderr;
+    \\  return error;
+    \\}
+    \\function __home_child_process_run(command, argv, options, missingFile) {
+    \\  if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("child_process native spawn bridge is not installed");
+    \\  let result;
+    \\  try {
+    \\    result = globalThis.__home_spawnSyncNative({ cmd: argv, cwd: options && options.cwd, stdio: ["ignore", "pipe", "pipe"] });
+    \\  } catch (cause) {
+    \\    if (missingFile) throw __home_child_process_exec_file_enoent(command, argv.slice(1));
+    \\    throw __home_child_process_exec_error(command, { exitCode: 1, stdout: "", stderr: cause && cause.message ? cause.message + "\n" : "" });
+    \\  }
+    \\  if (result && result.exitCode !== 0) throw __home_child_process_exec_error(command, result);
+    \\  return result && typeof result.stdout === "string" ? result.stdout : "";
+    \\}
+    \\const __home_child_process = {
+    \\  execFileSync(file, args, options) {
+    \\    const extra = Array.isArray(args) ? args.map(String) : [];
+    \\    const opts = Array.isArray(args) ? options : args;
+    \\    return __home_child_process_run(file, [String(file)].concat(extra), opts || {}, true);
+    \\  },
     \\  execSync(command, options) {
-    \\    return "";
+    \\    const text = String(command);
+    \\    if (process.platform === "win32") return __home_child_process_run(text, ["cmd.exe", "/d", "/s", "/c", text], options || {});
+    \\    return __home_child_process_run(text, ["/bin/sh", "-c", text], options || {});
     \\  },
     \\};
+    \\globalThis.__home_modules["child_process"] = __home_child_process;
+    \\globalThis.__home_modules["node:child_process"] = __home_child_process;
     \\function __home_framework_route_result(kind, pattern) {
     \\  return { kind, pattern };
     \\}
@@ -8084,6 +8137,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { execSync } from \"child_process\";",
             .replacement = "const { execSync } = globalThis.__home_import(\"child_process\");",
+        },
+        .{
+            .needle = "import { execFileSync, execSync } from \"child_process\";",
+            .replacement = "const { execFileSync, execSync } = globalThis.__home_import(\"child_process\");",
         },
         .{
             .needle = "import { existsSync } from \"fs\";",
@@ -12279,6 +12336,43 @@ test "Bun corpus rewrite lowers node fs stat imports" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"node:fs/promises\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { existsSync, statSync } = globalThis.__home_import(\"node:fs\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { exists, stat } = globalThis.__home_import(\"node:fs/promises\");") != null);
+}
+
+test "Bun corpus child_process sync errors avoid JSON cycles" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { execFileSync, execSync } from "child_process";
+        \\
+        \\test("missing command errors are serializable", () => {
+        \\  try {
+        \\    execFileSync("nonexistent_binary_xyz_123");
+        \\    expect.unreachable();
+        \\  } catch (err) {
+        \\    expect(Object.prototype.hasOwnProperty.call(err, "error")).toBe(false);
+        \\    expect(JSON.stringify(err).includes("ENOENT")).toBe(true);
+        \\  }
+        \\  try {
+        \\    execSync("nonexistent_binary_xyz_123");
+        \\    expect.unreachable();
+        \\  } catch (err) {
+        \\    expect(Object.prototype.hasOwnProperty.call(err, "error")).toBe(false);
+        \\    expect(() => JSON.stringify(err)).not.toThrow();
+        \\  }
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26844.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "Bun corpus rewrite lowers node fs atomic save imports" {
