@@ -11206,6 +11206,115 @@ test "conformance: operatorsAndIntersectionTypes passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: intersectionTypeEquivalence passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "intersectionTypeEquivalence",
+        .path = "intersectionTypeEquivalence.ts",
+        .source =
+        \\// @target: es2015
+        \\interface A { a: string }
+        \\interface B { b: string }
+        \\interface C { c: string }
+        \\
+        \\var y: A & B;
+        \\var y : B & A;
+        \\
+        \\var z : A & B & C;
+        \\var z : (A & B) & C;
+        \\var z : A & (B & C);
+        \\var ab : A & B;
+        \\var bc : B & C;
+        \\var z1: typeof ab & C;
+        \\var z1: A & typeof bc;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: intersectionOfUnionNarrowing passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "intersectionOfUnionNarrowing",
+        .path = "intersectionOfUnionNarrowing.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\
+        \\interface X {
+        \\  a?: { aProp: string };
+        \\  b?: { bProp: string };
+        \\}
+        \\type AorB = { a: object; b: undefined } | { a: undefined; b: object };
+        \\
+        \\declare const q: X & AorB;
+        \\
+        \\if (q.a !== undefined) {
+        \\  q.a.aProp;
+        \\} else {
+        \\  q.b.bProp;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: intersectionOfUnionOfUnitTypes passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "intersectionOfUnionOfUnitTypes",
+        .path = "intersectionOfUnionOfUnitTypes.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict
+        \\
+        \\const enum E { A, B, C, D, E, F }
+        \\
+        \\let x0: ('a' | 'b' | 'c') & ('a' | 'b' | 'c');
+        \\let x1: ('a' | 'b' | 'c') & ('b' | 'c' | 'd');
+        \\let x2: ('a' | 'b' | 'c') & ('c' | 'd' | 'e');
+        \\let x3: ('a' | 'b' | 'c') & ('d' | 'e' | 'f');
+        \\let x4: ('a' | 'b' | 'c') & ('b' | 'c' | 'd') & ('c' | 'd' | 'e');
+        \\let x5: ('a' | 'b' | 'c') & ('b' | 'c' | 'd') & ('c' | 'd' | 'e') & ('d' | 'e' | 'f');
+        \\
+        \\let y0: (0 | 1 | 2) & (0 | 1 | 2);
+        \\let y1: (0 | 1 | 2) & (1 | 2 | 3);
+        \\let y2: (0 | 1 | 2) & (2 | 3 | 4);
+        \\let y3: (0 | 1 | 2) & (3 | 4 | 5);
+        \\let y4: (0 | 1 | 2) & (1 | 2 | 3) & (2 | 3 | 4);
+        \\let y5: (0 | 1 | 2) & (1 | 2 | 3) & (2 | 3 | 4) & (3 | 4 | 5);
+        \\
+        \\let z0: (E.A | E.B | E.C) & (E.A | E.B | E.C);
+        \\let z1: (E.A | E.B | E.C) & (E.B | E.C | E.D);
+        \\let z2: (E.A | E.B | E.C) & (E.C | E.D | E.E);
+        \\let z3: (E.A | E.B | E.C) & (E.D | E.E | E.F);
+        \\let z4: (E.A | E.B | E.C) & (E.B | E.C | E.D) & (E.C | E.D | E.E);
+        \\let z5: (E.A | E.B | E.C) & (E.B | E.C | E.D) & (E.C | E.D | E.E) & (E.D | E.E | E.F);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
