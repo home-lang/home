@@ -1195,6 +1195,12 @@ pub const Checker = struct {
     /// shapes; this guard keeps mutual annotations from re-entering
     /// `typeOfIdentifier` until the stack overflows.
     resolving_value_types: std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    /// JSDoc typedef aliases currently being lowered from source text.
+    /// JSDoc alias bodies can recursively reference sibling aliases,
+    /// including malformed Closure-style namepaths that our trivia
+    /// scanner sees before parser diagnostics are emitted. Re-entering
+    /// the same alias should not recurse forever.
+    resolving_jsdoc_typedef_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, void),
     /// Exported type declarations currently being materialized through
     /// virtual relative-module lookup. Circular module references can
     /// legally mention the exported class/interface before its full body
@@ -1518,6 +1524,7 @@ pub const Checker = struct {
             .generic_aliases = .empty,
             .active_generic_aliases = .empty,
             .resolving_value_types = .empty,
+            .resolving_jsdoc_typedef_aliases = .empty,
             .resolving_exported_type_decls = .empty,
             .generic_fns = .empty,
             .generic_signature_params = .empty,
@@ -1704,6 +1711,7 @@ pub const Checker = struct {
         self.generic_aliases.deinit(self.gpa);
         self.active_generic_aliases.deinit(self.gpa);
         self.resolving_value_types.deinit(self.gpa);
+        self.resolving_jsdoc_typedef_aliases.deinit(self.gpa);
         self.resolving_exported_type_decls.deinit(self.gpa);
         var gf_it = self.generic_fns.valueIterator();
         while (gf_it.next()) |params| self.gpa.free(params.*);
@@ -33565,6 +33573,12 @@ pub const Checker = struct {
         src: []const u8,
         wanted_name: []const u8,
     ) CheckError!?TypeId {
+        if (wanted_name.len == 0) return null;
+        const wanted_id = self.string_interner.intern(wanted_name) catch return error.OutOfMemory;
+        if (self.resolving_jsdoc_typedef_aliases.contains(wanted_id)) return types.Primitive.any;
+        try self.resolving_jsdoc_typedef_aliases.put(self.gpa, wanted_id, {});
+        defer _ = self.resolving_jsdoc_typedef_aliases.remove(wanted_id);
+
         var search_start: usize = 0;
         while (std.mem.indexOfPos(u8, src, search_start, "/**")) |start| {
             const body_start = start + 3;
@@ -33646,6 +33660,12 @@ pub const Checker = struct {
     }
 
     fn jsDocTypedefAliasType(self: *Checker, src: []const u8, wanted_name: []const u8) CheckError!?TypeId {
+        if (wanted_name.len == 0) return null;
+        const wanted_id = self.string_interner.intern(wanted_name) catch return error.OutOfMemory;
+        if (self.resolving_jsdoc_typedef_aliases.contains(wanted_id)) return types.Primitive.any;
+        try self.resolving_jsdoc_typedef_aliases.put(self.gpa, wanted_id, {});
+        defer _ = self.resolving_jsdoc_typedef_aliases.remove(wanted_id);
+
         var search_start: usize = 0;
         while (std.mem.indexOfPos(u8, src, search_start, "/**")) |start| {
             const body_start = start + 3;
@@ -33675,6 +33695,8 @@ pub const Checker = struct {
         const trailing = std.mem.trim(u8, rest[brace_pos + type_len ..], " \t\r\n*");
         var name_end: usize = 0;
         while (name_end < trailing.len and isJsDocIdentChar(trailing[name_end])) : (name_end += 1) {}
+        if (name_end == 0) return null;
+        if (name_end < trailing.len and (trailing[name_end] == '.' or trailing[name_end] == '~')) return null;
         if (!std.mem.eql(u8, trailing[0..name_end], wanted_name)) return null;
         return rest[brace_pos + 1 .. brace_pos + type_len - 1];
     }
@@ -36344,26 +36366,30 @@ pub const Checker = struct {
                 }
                 if (self.interner.isSignature(effective_callee_t)) {
                     if (effective_callee_t == callee_t) {
-                        const param_ts = self.interner.signatureParams(effective_callee_t);
+                        const borrowed_param_ts = self.interner.signatureParams(effective_callee_t);
+                        const param_ts = try self.gpa.dupe(TypeId, borrowed_param_ts);
+                        defer self.gpa.free(param_ts);
                         var call_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                         defer call_subs.deinit(self.gpa);
                         if (self.rest_signatures.contains(effective_callee_t) and param_ts.len > 0) {
                             const fixed_count: usize = param_ts.len - 1;
                             const n = @min(fixed_count, arg_types.items.len);
                             for (0..n) |i| {
-                                if (self.interner.pool.flagsOf(param_ts[i]).is_signature) {
+                                const param_t = param_ts[i];
+                                if (param_t >= self.interner.pool.typeCount()) continue;
+                                if (self.interner.pool.flagsOf(param_t).is_signature) {
                                     const param_pred = self.signature_param_predicates.get(.{
                                         .signature = effective_callee_t,
                                         .param_index = @intCast(i),
                                     });
-                                    if (!try self.inferFromPredicateSignatureArgument(param_ts[i], param_pred, args[i], arg_types.items[i], &call_subs) and
-                                        self.signatureHasBareGenericRestParam(param_ts[i]))
+                                    if (!try self.inferFromPredicateSignatureArgument(param_t, param_pred, args[i], arg_types.items[i], &call_subs) and
+                                        self.signatureHasBareGenericRestParam(param_t))
                                     {
-                                        try self.inferFromArgument(param_ts[i], arg_types.items[i], args[i], &call_subs);
+                                        try self.inferFromArgument(param_t, arg_types.items[i], args[i], &call_subs);
                                     }
                                     continue;
                                 }
-                                try self.inferFromArgument(param_ts[i], arg_types.items[i], args[i], &call_subs);
+                                try self.inferFromArgument(param_t, arg_types.items[i], args[i], &call_subs);
                             }
                             const rest_arr_t = param_ts[param_ts.len - 1];
                             if (rest_arr_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(rest_arr_t).is_type_parameter) {
@@ -36391,19 +36417,21 @@ pub const Checker = struct {
                         } else {
                             const n = @min(param_ts.len, arg_types.items.len);
                             for (0..n) |i| {
-                                if (self.interner.pool.flagsOf(param_ts[i]).is_signature) {
+                                const param_t = param_ts[i];
+                                if (param_t >= self.interner.pool.typeCount()) continue;
+                                if (self.interner.pool.flagsOf(param_t).is_signature) {
                                     const param_pred = self.signature_param_predicates.get(.{
                                         .signature = effective_callee_t,
                                         .param_index = @intCast(i),
                                     });
-                                    if (!try self.inferFromPredicateSignatureArgument(param_ts[i], param_pred, args[i], arg_types.items[i], &call_subs) and
-                                        self.signatureHasBareGenericRestParam(param_ts[i]))
+                                    if (!try self.inferFromPredicateSignatureArgument(param_t, param_pred, args[i], arg_types.items[i], &call_subs) and
+                                        self.signatureHasBareGenericRestParam(param_t))
                                     {
-                                        try self.inferFromArgument(param_ts[i], arg_types.items[i], args[i], &call_subs);
+                                        try self.inferFromArgument(param_t, arg_types.items[i], args[i], &call_subs);
                                     }
                                     continue;
                                 }
-                                try self.inferFromArgument(param_ts[i], arg_types.items[i], args[i], &call_subs);
+                                try self.inferFromArgument(param_t, arg_types.items[i], args[i], &call_subs);
                             }
                         }
                         if (call_subs.count() > 0) {
@@ -77418,6 +77446,36 @@ test "checker: checkjs JSDoc readonly class field emits TS2540 outside construct
         if (d.code == TsCodes.readonly_property) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: checkjs recursive JSDoc typedef aliases do not recurse forever" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\/** @typedef {TreeNode[]} TreeNode */
+        \\/** @type {TreeNode} */
+        \\const node = [];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len < 20);
+}
+
+test "checker: checkjs Closure-style JSDoc namepaths do not resolve as truncated aliases" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @strict: false
+        \\class C {
+        \\  /**
+        \\   * @typedef {C~A} C~B
+        \\   * @typedef {object} C~A
+        \\   */
+        \\  /** @param {C~A} o */
+        \\  constructor(o) {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len < 20);
 }
 
 test "checker: checkjs self-referential JSDoc type on function emits TS8030" {

@@ -40486,8 +40486,11 @@ test "conformance: opt-in full local TypeScript corpus survey" {
     const display_total = requested_start + corpus.len;
 
     var stats: Stats = .{};
+    const trace_fixtures = envBoolOne("HOME_TS_CONFORMANCE_TRACE");
     for (corpus[start..end], requested_start..) |entry, idx| {
-        std.debug.print("[ts_conformance full-corpus] RUN {d}/{d} {s}\n", .{ idx + 1, display_total, entry.name });
+        if (trace_fixtures) {
+            std.debug.print("[ts_conformance full-corpus] RUN {d}/{d} {s}\n", .{ idx + 1, display_total, entry.name });
+        }
         const r = try runOneEntry(T.allocator, .{
             .name = entry.name,
             .source = entry.source,
