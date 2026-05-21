@@ -8122,6 +8122,7 @@ pub const Checker = struct {
                 if (own_name_opt) |own| {
                     if (own == name) continue;
                 }
+                if (self.identifierIsExportEqualsTarget(ref.node)) continue;
                 if (!class_names.contains(name) or declared.contains(name) or reported.contains(name)) continue;
                 if (self.sourceHasCheckJsDirective() and self.virtualSectionIsJsLike(s)) continue;
                 const name_str = self.string_interner.get(name);
@@ -10049,16 +10050,18 @@ pub const Checker = struct {
         for (hir_mod.blockStmts(self.hir, root)) |stmt| {
             if (self.hir.kindOf(stmt) != .import_decl) continue;
             const imp = hir_mod.importOf(self.hir, stmt);
-            const spec = self.string_interner.get(imp.module);
             const binding = if (imp.namespace_binding != hir_mod.none_node_id)
                 imp.namespace_binding
-            else if (imp.default_binding != hir_mod.none_node_id and std.mem.startsWith(u8, spec, ".") and self.importDeclIsRequireAssignment(stmt))
+            else if (imp.default_binding != hir_mod.none_node_id and self.importDeclIsRequireAssignment(stmt))
                 imp.default_binding
             else
                 hir_mod.none_node_id;
             if (binding == hir_mod.none_node_id or self.hir.kindOf(binding) != .identifier) continue;
             const id = hir_mod.identifierOf(self.hir, binding);
             if (id.name != name) continue;
+            if (self.importDeclIsRequireAssignment(stmt)) {
+                if (try self.virtualExportAssignmentTargetStaticType(stmt, imp.module)) |static_t| return static_t;
+            }
             return try self.moduleNamespaceTypeForSpecifier(imp.module, stmt);
         }
         return null;
@@ -10067,9 +10070,7 @@ pub const Checker = struct {
     fn moduleNamespaceTypeForSpecifier(self: *Checker, specifier: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
         if (!self.sourceHasVirtualFilenameSections()) return null;
         const spec = self.string_interner.get(specifier);
-        if (!std.mem.startsWith(u8, spec, ".")) return null;
-        const from = self.virtualSectionFilenameForNode(anchor) orelse return null;
-        const resolved = try self.resolveVirtualRelativePath(from, spec);
+        const resolved = (try self.resolveVirtualModuleSpecifierPath(anchor, spec)) orelse return null;
         defer self.gpa.free(resolved);
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
@@ -10134,6 +10135,23 @@ pub const Checker = struct {
         const namespace_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
         try self.registerModuleNamespaceDisplayName(namespace_t, resolved);
         return namespace_t;
+    }
+
+    fn resolveVirtualModuleSpecifierPath(self: *Checker, anchor: NodeId, spec: []const u8) CheckError!?[]u8 {
+        if (!self.sourceHasVirtualFilenameSections()) return null;
+        if (std.mem.startsWith(u8, spec, ".")) return try self.resolveVirtualRelativePath(self.virtualSectionFilenameForNode(anchor) orelse return null, spec);
+        if (!self.classicBareSiblingResolutionEnabled()) return null;
+        if (std.mem.indexOfScalar(u8, spec, '/') != null) return null;
+        const from = self.virtualSectionFilenameForNode(anchor) orelse return null;
+        var from_path = from;
+        while (std.mem.startsWith(u8, from_path, "/")) from_path = from_path[1..];
+        const dir = if (std.mem.lastIndexOfScalar(u8, from_path, '/')) |slash| from_path[0..slash] else "";
+        const joined = if (dir.len > 0)
+            try std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ dir, spec })
+        else
+            try self.gpa.dupe(u8, spec);
+        defer self.gpa.free(joined);
+        return try self.normalizeVirtualPath(joined);
     }
 
     fn registerModuleNamespaceDisplayName(self: *Checker, t: TypeId, resolved: []const u8) CheckError!void {
@@ -12909,6 +12927,7 @@ pub const Checker = struct {
                     return;
                 }
                 if (self.typeRefNameExists(r.name) or self.visibleTypeDeclarationExistsAt(type_node, r.name)) return;
+                if (self.visibleJsDocTypedefNameExistsAt(type_node, r.name)) return;
                 try self.reportCannotFindNameOnce(type_node, r.name);
             },
             .array_type => try self.reportUnresolvedBodylessSignatureTypeRefs(hir_mod.arrayTypeOf(self.hir, type_node).element, type_params),
@@ -21723,6 +21742,7 @@ pub const Checker = struct {
             null;
         switch (legacy) {
             .none => {
+                if ((try self.resolveVirtualClassicBareSiblingModule(node, spec)) != .none) return true;
                 // External-resolver outcomes drive classification when
                 // the legacy heuristic returned `.none` (typical for
                 // `runProgram`-routed compiles where `@filename:`
@@ -21909,21 +21929,34 @@ pub const Checker = struct {
     }
 
     fn virtualClassicBareModuleExists(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
-        if (!self.sourceHasVirtualFilenameSections()) return false;
-        if (!(self.sourceDirectiveValueMentions("ModuleResolution", "classic") or
-            self.sourceDirectiveValueMentions("moduleResolution", "classic"))) return false;
-        if (std.mem.indexOfScalar(u8, spec, '/') != null) return false;
-        const from = self.virtualSectionFilenameForNode(node) orelse return false;
-        var from_path = from;
-        while (std.mem.startsWith(u8, from_path, "/")) from_path = from_path[1..];
-        const dir = if (std.mem.lastIndexOfScalar(u8, from_path, '/')) |slash| from_path[0..slash] else "";
-        const local_base = if (dir.len > 0)
-            try std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ dir, spec })
-        else
-            try self.gpa.dupe(u8, spec);
+        return (try self.resolveVirtualClassicBareSiblingModule(node, spec)) != .none;
+    }
+
+    fn classicBareSiblingResolutionEnabled(self: *Checker) bool {
+        return self.moduleResolutionIsClassic() or
+            self.sourceDirectiveValueMentions("module", "amd") or
+            self.sourceDirectiveValueMentions("module", "system") or
+            self.sourceDirectiveValueMentions("module", "umd");
+    }
+
+    fn resolveVirtualClassicBareSiblingModule(self: *Checker, node: NodeId, spec: []const u8) CheckError!VirtualModuleResolution {
+        if (!self.sourceHasVirtualFilenameSections()) return .none;
+        if (!self.classicBareSiblingResolutionEnabled()) return .none;
+        if (std.mem.indexOfScalar(u8, spec, '/') != null) return .none;
+        const local_base = (try self.resolveVirtualModuleSpecifierPath(node, spec)) orelse return .none;
         defer self.gpa.free(local_base);
-        if (self.virtualSourceHasFilenameWithExtOrIndex(local_base, ".d.ts")) return true;
-        return self.virtualSourceHasFilenameWithExtOrIndex(spec, ".d.ts");
+        if (self.virtualSourceHasFilenameWithExtOrIndex(local_base, ".d.ts")) return .declaration;
+        if (self.virtualSourceHasFilenameWithExtOrIndex(local_base, ".d.mts")) return .declaration;
+        if (self.virtualSourceHasFilenameWithExtOrIndex(local_base, ".d.cts")) return .declaration;
+        if (self.virtualSourceHasFilenameWithExtOrIndex(local_base, ".ts")) return .declaration;
+        if (self.virtualSourceHasFilenameWithExtOrIndex(local_base, ".tsx")) return .declaration;
+        if (self.virtualSourceHasFilenameWithExtOrIndex(local_base, ".mts")) return .declaration;
+        if (self.virtualSourceHasFilenameWithExtOrIndex(local_base, ".cts")) return .declaration;
+        if (self.virtualSourceHasFilenameWithExtOrIndex(local_base, ".js")) return .implementation;
+        if (self.virtualSourceHasFilenameWithExtOrIndex(local_base, ".jsx")) return .implementation;
+        if (self.virtualSourceHasFilenameWithExtOrIndex(local_base, ".mjs")) return .implementation;
+        if (self.virtualSourceHasFilenameWithExtOrIndex(local_base, ".cjs")) return .implementation;
+        return .none;
     }
 
     fn resolveVirtualRelativeModule(self: *Checker, node: NodeId, spec: []const u8) CheckError!VirtualModuleResolution {
@@ -22754,6 +22787,13 @@ pub const Checker = struct {
             if (self.virtualSectionStartForNode(stmt) != anchor_section) continue;
             const imp = hir_mod.importOf(self.hir, stmt);
             const spec_text = self.string_interner.get(imp.module);
+            if (self.importDeclIsRequireAssignment(stmt) and
+                imp.default_binding != hir_mod.none_node_id and
+                self.hir.kindOf(imp.default_binding) == .identifier and
+                hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name)
+            {
+                if (try self.virtualExportAssignmentTargetInstanceType(anchor, imp.module)) |t| return t;
+            }
             for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
                 if (self.hir.kindOf(spec_node) != .import_specifier) continue;
                 const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
@@ -22780,6 +22820,13 @@ pub const Checker = struct {
             const imp = hir_mod.importOf(self.hir, stmt);
             const spec_text = self.string_interner.get(imp.module);
             if (spec_text.len == 0) continue;
+            if (self.importDeclIsRequireAssignment(stmt) and
+                imp.default_binding != hir_mod.none_node_id and
+                self.hir.kindOf(imp.default_binding) == .identifier and
+                hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name)
+            {
+                if (try self.virtualExportAssignmentTargetInstanceType(anchor, imp.module)) |t| return t;
+            }
             for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
                 if (self.hir.kindOf(spec_node) != .import_specifier) continue;
                 const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
@@ -22797,6 +22844,113 @@ pub const Checker = struct {
             }
         }
         return null;
+    }
+
+    fn importEqualsExportAssignmentGenericInstanceType(self: *Checker, type_node: NodeId, local_name: hir_mod.StringId) CheckError!?TypeId {
+        if (self.hir.kindOf(type_node) != .type_ref) return null;
+        const r = hir_mod.typeRefOf(self.hir, type_node);
+        if (r.name != local_name or r.qualifier_len != 0 or r.args_len == 0) return null;
+        const target = (try self.virtualExportAssignmentTargetDeclForLocal(local_name, type_node)) orelse return null;
+        const target_name = self.declarationName(target) orelse return null;
+        try self.ensureExportAssignmentTargetChecked(target);
+        const info = self.generic_aliases.get(target_name) orelse return self.class_instance_types.get(target_name);
+        const args = hir_mod.typeRefArgs(self.hir, type_node);
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        const npairs = @min(args.len, info.params.len);
+        var i: usize = 0;
+        while (i < npairs) : (i += 1) {
+            const arg_t = try self.lowererLowerWithTypeParams(args[i]);
+            try subs.put(self.gpa, info.params[i], arg_t);
+            try self.checkTypeArgSatisfiesConstraint(args[i], info.params[i], arg_t);
+        }
+        if (args.len < info.params.len) {
+            var j: usize = args.len;
+            while (j < info.params.len) : (j += 1) {
+                const p = info.params[j];
+                if (p >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(p).is_type_parameter) continue;
+                const tp = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(p)];
+                if (tp.default != types.Primitive.none) try subs.put(self.gpa, p, tp.default);
+            }
+        }
+        const instantiated = self.substituteType(info.body, &subs) catch info.body;
+        try self.copyMemberPredicatesFromReceiver(instantiated, info.body);
+        return instantiated;
+    }
+
+    fn virtualExportAssignmentTargetInstanceType(self: *Checker, anchor: NodeId, specifier: hir_mod.StringId) CheckError!?TypeId {
+        const target = (try self.virtualExportAssignmentTargetDecl(anchor, specifier)) orelse return null;
+        const target_name = self.declarationName(target) orelse return null;
+        try self.ensureExportAssignmentTargetChecked(target);
+        if (self.class_instance_types.get(target_name)) |t| return t;
+        const t = self.hir.typeOf(target);
+        return if (t != types.Primitive.none) t else types.Primitive.any;
+    }
+
+    fn virtualExportAssignmentTargetStaticType(self: *Checker, anchor: NodeId, specifier: hir_mod.StringId) CheckError!?TypeId {
+        const target = (try self.virtualExportAssignmentTargetDecl(anchor, specifier)) orelse return null;
+        const target_name = self.declarationName(target) orelse return null;
+        try self.ensureExportAssignmentTargetChecked(target);
+        if (self.class_static_types.get(target_name)) |t| return t;
+        const t = self.hir.typeOf(target);
+        return if (t != types.Primitive.none) t else types.Primitive.any;
+    }
+
+    fn virtualExportAssignmentTargetDeclForLocal(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) CheckError!?NodeId {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const has_sections = self.sourceHasVirtualFilenameSections();
+        const anchor_section = if (has_sections) self.virtualSectionStartForNode(anchor) else 0;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.kindOf(stmt) != .import_decl) continue;
+            if (has_sections and self.virtualSectionStartForNode(stmt) != anchor_section) continue;
+            const imp = hir_mod.importOf(self.hir, stmt);
+            if (!self.importDeclIsRequireAssignment(stmt)) continue;
+            if (imp.default_binding == hir_mod.none_node_id or self.hir.kindOf(imp.default_binding) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, imp.default_binding).name != local_name) continue;
+            return try self.virtualExportAssignmentTargetDecl(stmt, imp.module);
+        }
+        return null;
+    }
+
+    fn virtualExportAssignmentTargetDecl(self: *Checker, anchor: NodeId, specifier: hir_mod.StringId) CheckError!?NodeId {
+        const spec = self.string_interner.get(specifier);
+        const resolved = (try self.resolveVirtualModuleSpecifierPath(anchor, spec)) orelse return null;
+        defer self.gpa.free(resolved);
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (!self.virtualSectionMatchesResolvedModule(stmt, resolved, spec)) continue;
+            if (!self.isExportAssignmentDecl(stmt)) continue;
+            const ex = hir_mod.exportOf(self.hir, stmt);
+            if (ex.decl == hir_mod.none_node_id or self.hir.kindOf(ex.decl) != .identifier) continue;
+            const target_name = hir_mod.identifierOf(self.hir, ex.decl).name;
+            return self.findNamedDeclInVirtualSection(stmt, target_name);
+        }
+        return null;
+    }
+
+    fn findNamedDeclInVirtualSection(self: *Checker, anchor: NodeId, name: hir_mod.StringId) ?NodeId {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const section = self.virtualSectionStartForNode(anchor);
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            if (self.virtualSectionStartForNode(raw) != section) continue;
+            const decl = self.unwrapExportDecl(raw);
+            const decl_name = self.declarationName(decl) orelse continue;
+            if (decl_name == name) return decl;
+        }
+        return null;
+    }
+
+    fn ensureExportAssignmentTargetChecked(self: *Checker, target: NodeId) CheckError!void {
+        switch (self.hir.kindOf(target)) {
+            .class_decl, .class_expr => try self.checkClassDecl(target),
+            .interface_decl => try self.checkInterfaceDecl(target),
+            .type_alias_decl => try self.checkTypeAliasDecl(target),
+            .enum_decl => try self.checkEnumDecl(target),
+            else => {},
+        }
     }
 
     fn virtualDefaultImportTypeForLocal(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
@@ -27558,6 +27712,7 @@ pub const Checker = struct {
                             return self.evalAwaited(inner);
                         }
                     }
+                    if (try self.importEqualsExportAssignmentGenericInstanceType(type_node, r.name)) |t| return t;
                     if (self.generic_aliases.get(r.name)) |info| {
                         if (self.genericAliasHasMissingRequiredArgs(info, r.args_len)) {
                             try self.reportGenericTypeRequiresArgs(type_node, r.name, info);
@@ -33765,6 +33920,83 @@ pub const Checker = struct {
         if (name_end < trailing.len and (trailing[name_end] == '.' or trailing[name_end] == '~')) return null;
         if (!std.mem.eql(u8, trailing[0..name_end], wanted_name)) return null;
         return rest[brace_pos + 1 .. brace_pos + type_len - 1];
+    }
+
+    fn visibleJsDocTypedefNameExistsAt(self: *Checker, anchor: NodeId, name: hir_mod.StringId) bool {
+        if (!self.sourceHasCheckJsDirective()) return false;
+        const src = self.source orelse return false;
+        const wanted = self.string_interner.get(name);
+        if (wanted.len == 0) return false;
+
+        if (!self.sourceHasVirtualFilenameSections()) {
+            if (!self.virtualSectionIsJsLike(anchor) and !self.pathIsJsLike(self.importer_path)) return false;
+            return jsDocTypedefNameExistsInSlice(self.gpa, src, wanted);
+        }
+
+        var section_start: usize = 0;
+        var line_start: usize = 0;
+        while (line_start < src.len) {
+            const line_end = std.mem.indexOfScalarPos(u8, src, line_start, '\n') orelse src.len;
+            const line = src[line_start..line_end];
+            const marker = std.mem.indexOf(u8, line, "@filename:") orelse
+                (std.mem.indexOf(u8, line, "@Filename:") orelse null);
+            if (marker) |m| {
+                if (section_start < line_start and self.jsDocTypedefNameExistsInJsLikeSection(src, section_start, line_start, wanted)) return true;
+                section_start = line_start;
+                const filename = std.mem.trim(u8, line[m + "@filename:".len ..], " \t\r");
+                if (self.pathIsJsLike(filename)) {
+                    const next_start = if (line_end == src.len) src.len else line_end + 1;
+                    var scan = next_start;
+                    while (scan < src.len) {
+                        const next_end = std.mem.indexOfScalarPos(u8, src, scan, '\n') orelse src.len;
+                        const next_line = src[scan..next_end];
+                        if (std.mem.indexOf(u8, next_line, "@filename:") != null or
+                            std.mem.indexOf(u8, next_line, "@Filename:") != null)
+                        {
+                            break;
+                        }
+                        if (next_end == src.len) {
+                            scan = src.len;
+                            break;
+                        }
+                        scan = next_end + 1;
+                    }
+                    if (jsDocTypedefNameExistsInSlice(self.gpa, src[line_start..scan], wanted)) return true;
+                }
+            }
+            if (line_end == src.len) break;
+            line_start = line_end + 1;
+        }
+        if (section_start < src.len and self.jsDocTypedefNameExistsInJsLikeSection(src, section_start, src.len, wanted)) return true;
+        return false;
+    }
+
+    fn jsDocTypedefNameExistsInJsLikeSection(self: *Checker, src: []const u8, start: usize, end: usize, wanted: []const u8) bool {
+        if (start >= end or end > src.len) return false;
+        const line_end = std.mem.indexOfScalarPos(u8, src, start, '\n') orelse end;
+        const line = src[start..@min(line_end, end)];
+        const marker = std.mem.indexOf(u8, line, "@filename:") orelse
+            (std.mem.indexOf(u8, line, "@Filename:") orelse return false);
+        const filename = std.mem.trim(u8, line[marker + "@filename:".len ..], " \t\r");
+        if (!self.pathIsJsLike(filename)) return false;
+        return jsDocTypedefNameExistsInSlice(self.gpa, src[start..end], wanted);
+    }
+
+    fn jsDocTypedefNameExistsInSlice(gpa: std.mem.Allocator, src: []const u8, wanted: []const u8) bool {
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "/**")) |start| {
+            const body_start = start + 3;
+            const end = std.mem.indexOfPos(u8, src, body_start, "*/") orelse return false;
+            search_start = end + 2;
+            const body = src[body_start..end];
+            if (jsDocTypedefTypeText(body, wanted) != null) return true;
+            const tags = ts_parser.jsdoc.parse(gpa, body) catch continue;
+            defer gpa.free(tags);
+            for (tags) |tag| {
+                if (tag.kind == .typedef_tag and std.mem.eql(u8, tag.name, wanted)) return true;
+            }
+        }
+        return false;
     }
 
     fn jsDocBlockHasNamedTag(body: []const u8, tag: []const u8, wanted_name: []const u8) bool {
@@ -43065,6 +43297,15 @@ pub const Checker = struct {
             const t = self.hir.typeOf(decl);
             if (t != types.Primitive.none) return t;
             return types.Primitive.number_t;
+        }
+        if (self.identifierIsExportEqualsTarget(node)) {
+            if (self.findNamedDeclInVirtualSection(node, id.name)) |decl| {
+                self.ensureExportAssignmentTargetChecked(decl) catch {};
+                if (self.class_static_types.get(id.name)) |static_t| return static_t;
+                const t = self.hir.typeOf(decl);
+                if (t != types.Primitive.none) return t;
+                return types.Primitive.any;
+            }
         }
         if (!self.isDeclNameSlot(node) and self.sourceHasVarDeclarationText(id.name)) return types.Primitive.any;
 
@@ -77647,6 +77888,26 @@ test "checker: checkjs recursive JSDoc typedef aliases do not recurse forever" {
     try T.expect(s.checker.diagnostics.items.len < 20);
 }
 
+test "checker: checkjs virtual JSDoc typedef is visible to TS type refs" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: types.ts
+        \\export interface F {
+        \\    (): E;
+        \\}
+        \\export interface D<T extends F = F> {}
+        \\
+        \\// @Filename: other.js
+        \\/** @typedef {import("./types").D} E */
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
 test "checker: checkjs Closure-style JSDoc namepaths do not resolve as truncated aliases" {
     const s = try newSetup(
         \\// @checkJs: true
@@ -78504,6 +78765,35 @@ test "checker: declare global namespace is visible to qualified type refs" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_namespace);
+    }
+}
+
+test "checker: classic import-equals resolves generic export assignment" {
+    const s = try newSetup(
+        \\//@module: amd
+        \\// @Filename: exportAssignmentOfGenericType1_0.ts
+        \\export = T;
+        \\class T<X> { foo: X; }
+        \\
+        \\// @Filename: exportAssignmentOfGenericType1_1.ts
+        \\///<reference path='exportAssignmentOfGenericType1_0.ts'/>
+        \\import q = require("exportAssignmentOfGenericType1_0");
+        \\
+        \\class M extends q<string> { }
+        \\var m: M;
+        \\var r: string = m.foo;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_property_initialization = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.class_used_before_declaration);
+        try T.expect(d.code != TsCodes.cannot_find_module);
+        try T.expect(d.code != TsCodes.cannot_find_name);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
     }
 }
 
