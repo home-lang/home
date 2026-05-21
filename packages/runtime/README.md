@@ -2,7 +2,7 @@
 
 > **Status (2026-05-21):** `packages/runtime/src/` currently contains
 > **1,289 Zig source files**. Of the audited **1,193-file Bun baseline**,
-> **550 files are integrated into Home (~46.1%)**: Home-import-rewritten,
+> **552 files are integrated into Home (~46.3%)**: Home-import-rewritten,
 > Zig 0.17-clean, build-wired, and tested.
 > Phase 12.2 (JSC bring-up) has reached the M6 milestone — JSON + Promise
 > + Iterator + Global helpers across 128 files. Phase 12.7 round-15

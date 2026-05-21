@@ -50,7 +50,7 @@ view; these are the drill-down pages — modeled after Bun's
 | **TypeScript — diagnostic codes** | **~2,076 entries** | mirrors the full upstream `diag(code, …)` table |
 | **LSP wire methods** | **53 / ~70 — ~76%** | `SUPPORTED_METHODS` in `packages/ts_lsp_server/` |
 | **Bun runtime — source files present** | **1,289 files in `packages/runtime/src/`** | live count from `scripts/measure-parity.sh --values`; audited Bun baseline is 1,193 files |
-| **Bun runtime — files integrated** | **550 / 1,193 — ~46.1%** | Home-import-rewritten, Zig 0.17-clean, build-wired, and tested |
+| **Bun runtime — files integrated** | **552 / 1,193 — ~46.3%** | Home-import-rewritten, Zig 0.17-clean, build-wired, and tested |
 | **Bun compat shim — `bun.*` symbols** | **16 / ~103 — ~15.5%** | Tier-0 + Tier-1 (`Output`, `strings`, `String`, `AllocationScope`, `Environment`, `JSError`, `create`, `debugAssert`, `env_var`) lets vendored Bun source compile against Home's stdlib |
 | **Node.js — `node:*` binding files** | **28 files** | Zig substrate landing module-by-module (buffer / stream / fs / events / util / assert / os / url / querystring / crypto / process / string_decoder / tty) |
 | **JSC bring-up (Phase 12.2)** | **128 files** | M6 milestone + native eval smoke landed; JS-callable bridge pending |
@@ -105,7 +105,7 @@ to wire up.
 | Measurement | Coverage | % |
 |---|---|---|
 | **Runtime Zig source files present** | **1,289 files** | live `packages/runtime/src/**/*.zig` count; includes Home glue and staged Bun integration backlog |
-| **Bun source files integrated** | **550 / 1,193** | **~46.1%** |
+| **Bun source files integrated** | **552 / 1,193** | **~46.3%** |
 | Subsystems scaffolded | 85 directories under `packages/runtime/src/` | — |
 | Functional runtime | 🚧 JSC M6 landed; JS-callable bridge pending | — |
 | JSC bring-up (Phase 12.2) | 128 files | M1-M6 landed (Engine stub, exception + coerce + array helpers, call + callback helpers, JSON + Promise + Iterator + Global helpers) |
