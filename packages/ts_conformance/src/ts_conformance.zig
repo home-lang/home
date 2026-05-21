@@ -20506,6 +20506,108 @@ test "conformance: computedPropertyNames28_ES6 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: TwoInternalModulesThatMergeEachWithExportedInterfacesOfTheSameName passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "TwoInternalModulesThatMergeEachWithExportedInterfacesOfTheSameName",
+        .path = "TwoInternalModulesThatMergeEachWithExportedInterfacesOfTheSameName.ts",
+        .source =
+        \\namespace A {
+        \\    export interface Point {
+        \\        x: number;
+        \\        y: number;
+        \\        toCarth(): Point;
+        \\    }
+        \\}
+        \\
+        \\namespace A {
+        \\    export interface Point {
+        \\        fromCarth(): Point;
+        \\    }
+        \\}
+        \\
+        \\var p: { x: number; y: number; toCarth(): A.Point; fromCarth(): A.Point; };
+        \\var p: A.Point;
+        \\
+        \\namespace X.Y.Z {
+        \\    export interface Line {
+        \\        new (start: A.Point, end: A.Point);
+        \\    }
+        \\}
+        \\
+        \\namespace X {
+        \\    export namespace Y.Z {
+        \\        export interface Line {
+        \\            start: A.Point;
+        \\            end: A.Point;
+        \\        }
+        \\    }
+        \\}
+        \\
+        \\var l: { start: A.Point; end: A.Point; new (s: A.Point, e: A.Point); }
+        \\var l: X.Y.Z.Line;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: TwoInternalModulesThatMergeEachWithExportedAndNonExportedInterfacesOfTheSameName passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "TwoInternalModulesThatMergeEachWithExportedAndNonExportedInterfacesOfTheSameName",
+        .path = "TwoInternalModulesThatMergeEachWithExportedAndNonExportedInterfacesOfTheSameName.ts",
+        .source =
+        \\namespace A {
+        \\    export interface Point {
+        \\        x: number;
+        \\        y: number;
+        \\        toCarth(): Point;
+        \\    }
+        \\}
+        \\
+        \\namespace A {
+        \\    interface Point {
+        \\        fromCarth(): Point;
+        \\    }
+        \\}
+        \\
+        \\var p: { x: number; y: number; toCarth(): A.Point; };
+        \\var p: A.Point;
+        \\
+        \\namespace X.Y.Z {
+        \\    export interface Line {
+        \\        new (start: A.Point, end: A.Point);
+        \\    }
+        \\}
+        \\
+        \\namespace X {
+        \\    export namespace Y.Z {
+        \\        interface Line {
+        \\            start: A.Point;
+        \\            end: A.Point;
+        \\        }
+        \\    }
+        \\}
+        \\
+        \\var l: { new (s: A.Point, e: A.Point); }
+        \\var l: X.Y.Z.Line;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
