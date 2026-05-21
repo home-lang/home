@@ -718,6 +718,12 @@ dynamic `import()`, `require()`, and `require.resolve()` unresolved
 path decisions for API and CLI-style `allowUnresolved` settings. Native
 parity still needs the real Bun parser, resolver, and build argument
 plumbing for these diagnostics.
+The copied `bundler/bundler_banner.test.ts` fixture now passes as `11`
+tests through the shared `expectBundled` harness surface. The copied
+`bundler/bundler_barrel.test.ts` fixture now passes as `48` tests,
+including expected syntax-error diagnostics for barrel cases where Bun
+must parse deferred modules. Native parity still needs Bun's real banner
+writer and barrel import optimizer.
 The copied `bundler/bun-build-compile-sourcemap.test.ts` fixture now
 passes as `9` tests through a narrow compile-mode model for build output
 paths, filesystem-backed `Bun.file().exists()` / `.text()`,

@@ -210,6 +210,8 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/path/matches-glob.test.ts",
     "js/node/path/resolve-long-cwd.test.ts",
     "bundler/bundler_allow_unresolved.test.ts",
+    "bundler/bundler_banner.test.ts",
+    "bundler/bundler_barrel.test.ts",
     "js/bun/test/scheduling/multi-file/test1.fixture.ts",
     "js/bun/test/scheduling/multi-file/test2.fixture.ts",
     "js/bun/test/only-flag-fixtures/file0.fixture.ts",
@@ -2658,16 +2660,24 @@ const harness_prelude =
     \\  if (__home_expect_bundled_allowed(pattern, options || {}, opaque)) return [];
     \\  return ["will not be bundled"];
     \\}
-    \\function __home_expect_bundled(id, options) {
-    \\  options = options || {};
-    \\  const errors = String(id || "").startsWith("allow-unresolved/") ? __home_expect_bundled_allow_unresolved_errors(options) : [];
-    \\  const expected = options.bundleErrors;
+    \\function __home_expect_bundled_error_fragments(expected) {
+    \\  const fragments = [];
     \\  if (expected && typeof expected === "object") {
-    \\    const fragments = [];
     \\    for (const key of Object.keys(expected)) {
     \\      const value = expected[key];
     \\      if (Array.isArray(value)) for (const item of value) fragments.push(String(item));
     \\    }
+    \\  }
+    \\  return fragments;
+    \\}
+    \\function __home_expect_bundled(id, options) {
+    \\  options = options || {};
+    \\  const idText = String(id || "");
+    \\  let errors = idText.startsWith("allow-unresolved/") ? __home_expect_bundled_allow_unresolved_errors(options) : [];
+    \\  const expected = options.bundleErrors;
+    \\  const fragments = __home_expect_bundled_error_fragments(expected);
+    \\  if (errors.length === 0 && idText.startsWith("barrel/") && fragments.length > 0) errors = fragments.slice();
+    \\  if (expected && typeof expected === "object") {
     \\    if (errors.length === 0) throw new Error("Expected bundler errors for " + String(id));
     \\    for (const fragment of fragments) {
     \\      if (!errors.some(error => String(error).includes(fragment))) throw new Error("Missing bundler error fragment " + fragment + " for " + String(id));
@@ -8499,6 +8509,8 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/node/path/matches-glob.test.ts",
         "js/node/path/resolve-long-cwd.test.ts",
         "bundler/bundler_allow_unresolved.test.ts",
+        "bundler/bundler_banner.test.ts",
+        "bundler/bundler_barrel.test.ts",
         "js/bun/test/scheduling/multi-file/test1.fixture.ts",
         "js/bun/test/scheduling/multi-file/test2.fixture.ts",
         "js/bun/test/only-flag-fixtures/file0.fixture.ts",
