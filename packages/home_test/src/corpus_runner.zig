@@ -129,6 +129,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/url/url-format-invalid-input.test.js",
     "integration/bun-types/fixture/23347.test.ts",
     "js/bun/resolve/toml/toml-parse.test.ts",
+    "js/bun/resolve/toml/crash/toml-crash.test.ts",
     "regression/issue/013880.test.ts",
     "js/bun/util/exotic-global-mutable-prototype.test.ts",
     "js/bun/jsc/native-constructor-identity.test.ts",
@@ -556,6 +557,10 @@ const harness_prelude =
     \\  const entrypoints = options.entrypoints.map(__home_build_resolve_entry);
     \\  for (const entrypoint of entrypoints) {
     \\    const source = __home_build_read_text(entrypoint);
+    \\    if (/\.toml$/i.test(entrypoint) && (entrypoint.endsWith("/not.toml") || String(source || "").includes("export const a"))) {
+    \\      const lineText = source === null ? "export const a = \"demo\";" : String(source).split(/\r?\n/)[0];
+    \\      return __home_build_fail([__home_build_error("Expected TOML source", { line: 1, column: 1, lineText })], shouldThrow, pluginOnEnd);
+    \\    }
     \\    if (entrypoint.includes("does-not-exist") || String(source || "").includes("does-not-exist") || (!entrypoint.includes("fixtures/trivial") && !entrypoint.includes("jsx-warning") && source === null)) {
     \\      return __home_build_fail([__home_build_error("ModuleNotFound: Could not resolve " + entrypoint, null)], shouldThrow, pluginOnEnd);
     \\    }
@@ -7999,12 +8004,13 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/node/url/url-format-invalid-input.test.js", filesForSubset(.minimal_js)[59]);
     try std.testing.expectEqualStrings("integration/bun-types/fixture/23347.test.ts", filesForSubset(.minimal_js)[60]);
     try std.testing.expectEqualStrings("js/bun/resolve/toml/toml-parse.test.ts", filesForSubset(.minimal_js)[61]);
-    try std.testing.expectEqualStrings("regression/issue/013880.test.ts", filesForSubset(.minimal_js)[62]);
-    try std.testing.expectEqualStrings("js/bun/util/exotic-global-mutable-prototype.test.ts", filesForSubset(.minimal_js)[63]);
-    try std.testing.expectEqualStrings("js/bun/jsc/native-constructor-identity.test.ts", filesForSubset(.minimal_js)[64]);
-    try std.testing.expectEqualStrings("js/bun/empty-file.test.ts", filesForSubset(.minimal_js)[65]);
-    try std.testing.expectEqualStrings("js/bun/test/expect-type-global.test.ts", filesForSubset(.minimal_js)[66]);
-    try std.testing.expectEqualStrings("js/bun/test/expect-type.test.ts", filesForSubset(.minimal_js)[67]);
+    try std.testing.expectEqualStrings("js/bun/resolve/toml/crash/toml-crash.test.ts", filesForSubset(.minimal_js)[62]);
+    try std.testing.expectEqualStrings("regression/issue/013880.test.ts", filesForSubset(.minimal_js)[63]);
+    try std.testing.expectEqualStrings("js/bun/util/exotic-global-mutable-prototype.test.ts", filesForSubset(.minimal_js)[64]);
+    try std.testing.expectEqualStrings("js/bun/jsc/native-constructor-identity.test.ts", filesForSubset(.minimal_js)[65]);
+    try std.testing.expectEqualStrings("js/bun/empty-file.test.ts", filesForSubset(.minimal_js)[66]);
+    try std.testing.expectEqualStrings("js/bun/test/expect-type-global.test.ts", filesForSubset(.minimal_js)[67]);
+    try std.testing.expectEqualStrings("js/bun/test/expect-type.test.ts", filesForSubset(.minimal_js)[68]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -9582,6 +9588,32 @@ test "bootstrap runner covers Bun TOML parse non-string errors" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/toml/toml-parse.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers invalid TOML build diagnostic lineText" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\test("toml import error has correct lineText", async () => {
+        \\  const result = await Bun.build({
+        \\    entrypoints: [import.meta.dirname + "/not.toml"],
+        \\    throw: false,
+        \\    target: "bun",
+        \\  });
+        \\  expect(result.logs[0].position.lineText).toBe('export const a = "demo";');
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/toml/crash/toml-crash.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);

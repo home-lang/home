@@ -139,6 +139,7 @@ rejection, `test.concurrent`, `test.each`, `.not`, `toBe`, `toBeDefined`,
 `Bun` branding plus `Bun.version`, `Bun.revision`, `Bun.stripANSI`,
 `Bun.wrapAnsi`, `Bun.semver.satisfies`, `Bun.concatArrayBuffers`,
 `Bun.escapeHTML`, `Bun.indexOfLine`, `Bun.TOML.parse` non-string input errors,
+TOML build invalid-source diagnostic `position.lineText`,
 `Bun.gc`, `mock.clearAllMocks`,
 `toHaveBeenCalledTimes`, `expect().pass`, `expectTypeOf` type-only no-op checks, narrow TypeScript
 constructor-modifier rewrites, bun-types `test.each` type-shape smoke, synchronous `it.each` / `describe.each` table expansion,
