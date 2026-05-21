@@ -2909,6 +2909,80 @@ pub const Checker = struct {
                 },
             }
         }
+        try self.checkUnusedNamespaceLocals(node);
+    }
+
+    fn checkUnusedNamespaceLocals(self: *Checker, node: NodeId) CheckError!void {
+        if (!self.strict_flags.no_unused_locals) return;
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .namespace_decl) return;
+        var refs: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer refs.deinit(self.gpa);
+        for (hir_mod.namespaceBody(self.hir, node)) |s| {
+            try self.collectIdentifierRefsAcrossNamespaceValueBodies(s, &refs);
+        }
+        for (hir_mod.namespaceBody(self.hir, node)) |raw| {
+            if (self.hir.kindOf(raw) == .export_decl) continue;
+            const k = self.hir.kindOf(raw);
+            if (k != .var_decl and k != .let_decl and k != .const_decl) continue;
+            const v = hir_mod.varDeclOf(self.hir, raw);
+            if (v.is_ambient) continue;
+            if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) continue;
+            const id = hir_mod.identifierOf(self.hir, v.name);
+            const name_str = self.string_interner.get(id.name);
+            if (name_str.len > 0 and name_str[0] == '_') continue;
+            if (refs.contains(id.name)) continue;
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "'{s}' is declared but its value is never read.",
+                .{name_str},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = v.name,
+                .code = TsCodes.declared_but_not_read,
+                .message = msg,
+            });
+        }
+    }
+
+    fn collectIdentifierRefsAcrossNamespaceValueBodies(
+        self: *Checker,
+        node: NodeId,
+        out: *std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .export_decl => {
+                const ex = hir_mod.exportOf(self.hir, node);
+                try self.collectIdentifierRefsAcrossNamespaceValueBodies(ex.decl, out);
+            },
+            .namespace_decl, .module_decl => {
+                for (hir_mod.namespaceBody(self.hir, node)) |s| {
+                    try self.collectIdentifierRefsAcrossNamespaceValueBodies(s, out);
+                }
+            },
+            .fn_decl, .fn_expr, .arrow_fn => {
+                const f = hir_mod.fnDeclOf(self.hir, node);
+                for (hir_mod.fnParams(self.hir, node)) |p| {
+                    if (self.hir.kindOf(p) != .parameter) continue;
+                    const pp = hir_mod.parameterOf(self.hir, p);
+                    try self.collectIdentifierRefsAcrossNamespaceValueBodies(pp.default_value, out);
+                }
+                try self.collectIdentifierRefsAcrossNamespaceValueBodies(f.body, out);
+            },
+            .class_decl, .class_expr => {
+                const c = hir_mod.classOf(self.hir, node);
+                try self.collectIdentifierRefsAcrossNamespaceValueBodies(c.extends, out);
+                for (hir_mod.classMembers(self.hir, node)) |member| {
+                    try self.collectIdentifierRefsAcrossNamespaceValueBodies(member, out);
+                }
+            },
+            .block_stmt => {
+                for (hir_mod.blockStmts(self.hir, node)) |s| {
+                    try self.collectIdentifierRefsAcrossNamespaceValueBodies(s, out);
+                }
+            },
+            else => try self.collectIdentifierRefs(node, out),
+        }
     }
 
     fn checkGlobalAugmentationDiagnostics(self: *Checker, node: NodeId) CheckError!void {
