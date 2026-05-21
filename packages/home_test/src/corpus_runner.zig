@@ -207,6 +207,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/path/posix-relative-on-windows.test.js",
     "js/node/path/resolve.test.js",
     "js/node/path/to-namespaced-path.test.js",
+    "js/node/path/matches-glob.test.ts",
     "js/bun/test/scheduling/multi-file/test1.fixture.ts",
     "js/bun/test/scheduling/multi-file/test2.fixture.ts",
     "js/bun/test/only-flag-fixtures/file0.fixture.ts",
@@ -5086,8 +5087,65 @@ const harness_prelude =
     \\  if (/^\\\\[^\\]+\\[^\\]*/.test(text)) return "\\\\?\\UNC\\" + __home_path_win32_normalize(text).slice(2);
     \\  return __home_path_win32_resolve(text);
     \\}
-    \\const __home_path_posix = { join: __home_path_posix_join, dirname: __home_path_posix_dirname, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_posix_normalize, resolve: __home_path_posix_resolve, relative: __home_path_posix_relative, basename: __home_path_posix_basename, extname: __home_path_posix_extname, parse: __home_path_posix_parse, format: __home_path_posix_format, sep: "/", delimiter: ":" };
-    \\const __home_path_win32 = { join: __home_path_win32_join, dirname: __home_path_win32_dirname, isAbsolute: __home_path_win32_is_absolute, normalize: __home_path_win32_normalize, resolve: __home_path_win32_resolve, relative: __home_path_win32_relative, basename: __home_path_win32_basename, extname: __home_path_win32_extname, parse: __home_path_win32_parse, format: __home_path_win32_format, sep: "\\", delimiter: ";" };
+    \\function __home_path_glob_char_class(pattern, index, chr) {
+    \\  let i = index + 1;
+    \\  let matched = false;
+    \\  while (i < pattern.length && pattern.charCodeAt(i) !== 93) {
+    \\    if (pattern.charAt(i) === chr) matched = true;
+    \\    i++;
+    \\  }
+    \\  if (i >= pattern.length) return null;
+    \\  return { matched, next: i + 1 };
+    \\}
+    \\function __home_path_glob_match(pathname, pattern, win32) {
+    \\  const pathText = win32 ? String(pathname).replace(/\\/g, "/") : String(pathname);
+    \\  const patternText = win32 ? String(pattern).replace(/\\/g, "/") : String(pattern);
+    \\  function matchAt(pi, gi) {
+    \\    while (gi < patternText.length) {
+    \\      const token = patternText.charAt(gi);
+    \\      if (token === "*") {
+    \\        if (patternText.charAt(gi + 1) === "*") {
+    \\          let next = gi + 2;
+    \\          if (patternText.charAt(next) === "/") next++;
+    \\          for (let i = pi; i <= pathText.length; i++) {
+    \\            if (matchAt(i, next)) return true;
+    \\          }
+    \\          return false;
+    \\        }
+    \\        for (let i = pi; i <= pathText.length; i++) {
+    \\          if (i > pi && pathText.charAt(i - 1) === "/") break;
+    \\          if (matchAt(i, gi + 1)) return true;
+    \\        }
+    \\        return false;
+    \\      }
+    \\      if (pi >= pathText.length) return false;
+    \\      if (token === "[") {
+    \\        const cls = __home_path_glob_char_class(patternText, gi, pathText.charAt(pi));
+    \\        if (cls === null || !cls.matched) return false;
+    \\        pi++;
+    \\        gi = cls.next;
+    \\        continue;
+    \\      }
+    \\      if (token !== pathText.charAt(pi)) return false;
+    \\      pi++;
+    \\      gi++;
+    \\    }
+    \\    return pi === pathText.length;
+    \\  }
+    \\  return matchAt(0, 0);
+    \\}
+    \\function __home_path_posix_matches_glob(pathname, pattern) {
+    \\  __home_path_validate_string(pathname, "path");
+    \\  __home_path_validate_string(pattern, "glob");
+    \\  return __home_path_glob_match(pathname, pattern, false);
+    \\}
+    \\function __home_path_win32_matches_glob(pathname, pattern) {
+    \\  __home_path_validate_string(pathname, "path");
+    \\  __home_path_validate_string(pattern, "glob");
+    \\  return __home_path_glob_match(pathname, pattern, true);
+    \\}
+    \\const __home_path_posix = { join: __home_path_posix_join, dirname: __home_path_posix_dirname, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_posix_normalize, resolve: __home_path_posix_resolve, relative: __home_path_posix_relative, basename: __home_path_posix_basename, extname: __home_path_posix_extname, parse: __home_path_posix_parse, format: __home_path_posix_format, matchesGlob: __home_path_posix_matches_glob, sep: "/", delimiter: ":" };
+    \\const __home_path_win32 = { join: __home_path_win32_join, dirname: __home_path_win32_dirname, isAbsolute: __home_path_win32_is_absolute, normalize: __home_path_win32_normalize, resolve: __home_path_win32_resolve, relative: __home_path_win32_relative, basename: __home_path_win32_basename, extname: __home_path_win32_extname, parse: __home_path_win32_parse, format: __home_path_win32_format, matchesGlob: __home_path_win32_matches_glob, sep: "\\", delimiter: ";" };
     \\__home_path_posix.toNamespacedPath = __home_path_posix_to_namespaced_path;
     \\__home_path_posix._makeLong = __home_path_posix_to_namespaced_path;
     \\__home_path_win32.toNamespacedPath = __home_path_win32_to_namespaced_path;
@@ -8162,6 +8220,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_path_posix_resolve") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_path_win32_resolve") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_path_win32_to_namespaced_path") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "matchesGlob: __home_path_posix_matches_glob") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "matchesGlob: __home_path_win32_matches_glob") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "js/node/path/common/fixtures.js") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:url\"] = __home_url_module") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "URL.canParse = function(input, base)") != null);
@@ -8352,6 +8412,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/node/path/path.test.js",
         "js/node/path/posix-relative-on-windows.test.js",
         "js/node/path/resolve.test.js",
+        "js/node/path/matches-glob.test.ts",
         "js/bun/test/scheduling/multi-file/test1.fixture.ts",
         "js/bun/test/scheduling/multi-file/test2.fixture.ts",
         "js/bun/test/only-flag-fixtures/file0.fixture.ts",
