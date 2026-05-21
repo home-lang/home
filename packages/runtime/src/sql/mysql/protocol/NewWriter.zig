@@ -1,10 +1,8 @@
 // Copied from bun/src/sql/mysql/protocol/NewWriter.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT - see ../../../cli/LICENSE.bun.md.
 //
-// MySQL packet writer wrapper. Import rewrites:
-// `bun.Output.scoped` -> `home_rt.Output.scoped`.
-// The upstream `String(bun.String)` helper stays parked here to avoid
-// pulling broader JSC string conversion into this MySQL-only slice.
+// Import rewrites:
+// `@import("bun")` -> `@import("home_rt")`.
 
 pub fn NewWriterWrap(
     comptime Context: type,
@@ -86,6 +84,21 @@ pub fn NewWriterWrap(
         pub fn writeZ(this: @This(), value: []const u8) AnyMySQLError.Error!void {
             try this.write(value);
             if (value.len == 0 or value[value.len - 1] != 0)
+                try this.write(&[_]u8{0});
+        }
+
+        pub fn String(this: @This(), value: home_rt.String) AnyMySQLError.Error!void {
+            if (value.isEmpty()) {
+                try this.write(&[_]u8{0});
+                return;
+            }
+
+            var sliced = value.toUTF8(home_rt.default_allocator);
+            defer sliced.deinit();
+            const slice = sliced.slice();
+
+            try this.write(slice);
+            if (slice.len == 0 or slice[slice.len - 1] != 0)
                 try this.write(&[_]u8{0});
         }
     };
@@ -176,6 +189,17 @@ test "MySQL NewWriter length-encodes strings" {
     try writer.writeLengthEncodedString("abc");
 
     try std.testing.expectEqualSlices(u8, &.{ 3, 'a', 'b', 'c' }, ctx.slice());
+}
+
+test "MySQL NewWriter writes Home String values" {
+    var buf: [8]u8 = undefined;
+    var len: usize = 0;
+    const ctx = TestWriter.init(&buf, &len);
+    const writer = NewWriter(TestWriter){ .wrapped = ctx };
+
+    try writer.String(home_rt.String.borrowUTF8("ok"));
+
+    try std.testing.expectEqualSlices(u8, &.{ 'o', 'k', 0 }, ctx.slice());
 }
 
 const TestWriter = struct {

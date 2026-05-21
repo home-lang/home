@@ -1284,22 +1284,16 @@ pub const sql = struct {
             // codec (MySQL wire-protocol primitive). Depends only on
             // `home_rt.BoundedArray`.
             pub const EncodeInt = @import("sql/mysql/protocol/EncodeInt.zig");
-            // Wave-18 Tier-0 grinder (2026-05-18). MySQL wire-protocol
-            // packet leaves. `NewReader` is a sibling stub mirroring
-            // the postgres pattern — method bodies are absent so any
-            // caller that exercises decode() trips a natural compile
-            // error pointing back at the stub.
+            // Wave-18/28 MySQL wire-protocol reader factory plus packet
+            // leaves that decode over its method table.
             pub const NewReader = @import("sql/mysql/protocol/NewReader.zig").NewReader;
             pub const decoderWrap = @import("sql/mysql/protocol/NewReader.zig").decoderWrap;
             pub const EOFPacket = @import("sql/mysql/protocol/EOFPacket.zig");
             pub const StmtPrepareOKPacket = @import("sql/mysql/protocol/StmtPrepareOKPacket.zig");
             pub const LocalInfileRequest = @import("sql/mysql/protocol/LocalInfileRequest.zig");
             pub const OKPacket = @import("sql/mysql/protocol/OKPacket.zig");
-            // Wave-22 grinder (2026-05-19). MySQL wire-protocol writer
-            // factory + `writeWrap` glue. Stub today (no body for
-            // `start/int1/write/writeLengthEncodedString`) — packet
-            // encoders that field-store `NewWriter(Context)` compile;
-            // the real writer lands once `bun.ByteList` is ported.
+            // Wave-22/28 MySQL wire-protocol writer factory +
+            // `writeWrap` glue.
             pub const NewWriter = @import("sql/mysql/protocol/NewWriter.zig").NewWriter;
             pub const writeWrap = @import("sql/mysql/protocol/NewWriter.zig").writeWrap;
             // Wave-27 grinder (2026-05-20). MySQL in-memory reader copied
@@ -1307,8 +1301,7 @@ pub const sql = struct {
             // backwards skip, and NUL-terminated field reads.
             pub const StackReader = @import("sql/mysql/protocol/StackReader.zig");
             // Wave-27 grinder (2026-05-20). COM_QUERY writer leaf copied
-            // from Bun; it compiles over the current NewWriter shape and
-            // becomes executable once the full writer body lands.
+            // from Bun.
             pub const Query = @import("sql/mysql/protocol/Query.zig");
             // Wave-27 grinder (2026-05-20). Client authentication
             // response packet writer copied from Bun. Connect attributes
