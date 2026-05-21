@@ -4120,6 +4120,197 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: thisMethodCall optional chain passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "thisMethodCall",
+        .path = "thisMethodCall.ts",
+        .source =
+        \\// @strict: true
+        \\// @target: es6
+        \\class C {
+        \\    method?() {}
+        \\    other() {
+        \\        this.method?.();
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: superMethodCall optional chain passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "superMethodCall",
+        .path = "superMethodCall.ts",
+        .source =
+        \\// @strict: true
+        \\// @target: ES6
+        \\class Base {
+        \\    method?() { }
+        \\}
+        \\
+        \\class Derived extends Base {
+        \\    method() {
+        \\        return super.method?.();
+        \\    }
+        \\
+        \\    async asyncMethod() {
+        \\        return super.method?.();
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: typeArgumentInferenceTransitiveConstraints passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeArgumentInferenceTransitiveConstraints",
+        .path = "typeArgumentInferenceTransitiveConstraints.ts",
+        .source =
+        \\// @target: es2015
+        \\
+        \\function fn<A extends Date, B extends A, C extends B>(a: A, b: B, c: C) {
+        \\    return [a, b, c];
+        \\}
+        \\
+        \\var d = fn(new Date(), new Date(), new Date());
+        \\var d: Date[]; // Should be OK (d should be Date[])
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: callWithSpreadES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "callWithSpreadES6",
+        .path = "callWithSpreadES6.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: ES6
+        \\
+        \\interface X {
+        \\    foo(x: number, y: number, ...z: string[]);
+        \\}
+        \\
+        \\function foo(x: number, y: number, ...z: string[]) {
+        \\}
+        \\
+        \\var a: string[];
+        \\var z: number[];
+        \\var obj: X;
+        \\var xa: X[];
+        \\
+        \\foo(1, 2, "abc");
+        \\foo(1, 2, ...a);
+        \\foo(1, 2, ...a, "abc");
+        \\
+        \\obj.foo(1, 2, "abc");
+        \\obj.foo(1, 2, ...a);
+        \\obj.foo(1, 2, ...a, "abc");
+        \\
+        \\(obj.foo)(1, 2, "abc");
+        \\(obj.foo)(1, 2, ...a);
+        \\(obj.foo)(1, 2, ...a, "abc");
+        \\
+        \\xa[1].foo(1, 2, "abc");
+        \\xa[1].foo(1, 2, ...a);
+        \\xa[1].foo(1, 2, ...a, "abc");
+        \\
+        \\(<Function>xa[1].foo)(...[1, 2, "abc"]);
+        \\
+        \\class C {
+        \\    constructor(x: number, y: number, ...z: string[]) {
+        \\        this.foo(x, y);
+        \\        this.foo(x, y, ...z);
+        \\    }
+        \\    foo(x: number, y: number, ...z: string[]) {
+        \\    }
+        \\}
+        \\
+        \\class D extends C {
+        \\    constructor() {
+        \\        super(1, 2);
+        \\        super(1, 2, ...a);
+        \\    }
+        \\    foo() {
+        \\        super.foo(1, 2);
+        \\        super.foo(1, 2, ...a);
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parenthesizedContexualTyping3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parenthesizedContexualTyping3",
+        .path = "parenthesizedContexualTyping3.ts",
+        .source =
+        \\// @target: ES6
+        \\
+        \\// Contextual typing for parenthesized substitution expressions in tagged templates.
+        \\
+        \\/**
+        \\ * tempFun - Can't have fun for too long.
+        \\ */
+        \\function tempFun<T>(tempStrs: TemplateStringsArray, g: (x: T) => T, x: T): T;
+        \\function tempFun<T>(tempStrs: TemplateStringsArray, g: (x: T) => T, h: (y: T) => T, x: T): T;
+        \\function tempFun<T>(tempStrs: TemplateStringsArray, g: (x: T) => T, x: T): T {
+        \\    return g(x);
+        \\}
+        \\
+        \\var a = tempFun `${ x => x }  ${ 10 }`
+        \\var b = tempFun `${ (x => x) }  ${ 10 }`
+        \\var c = tempFun `${ ((x => x)) } ${ 10 }`
+        \\var d = tempFun `${ x => x } ${ x => x } ${ 10 }`
+        \\var e = tempFun `${ x => x } ${ (x => x) } ${ 10 }`
+        \\var f = tempFun `${ x => x } ${ ((x => x)) } ${ 10 }`
+        \\var g = tempFun `${ (x => x) } ${ (((x => x))) } ${ 10 }`
+        \\var h = tempFun `${ (x => x) } ${ (((x => x))) } ${ undefined }`
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: iterableContextualTyping1 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "iterableContextualTyping1",
