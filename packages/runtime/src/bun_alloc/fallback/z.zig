@@ -41,3 +41,30 @@ const c_allocator = std.heap.c_allocator;
 
 const Alignment = std.mem.Alignment;
 const Allocator = std.mem.Allocator;
+
+test "fallback.z: alloc returns zeroed memory" {
+    const bytes = try allocator.alloc(u8, 16);
+    defer allocator.free(bytes);
+
+    const expected: [16]u8 = @splat(0);
+    try std.testing.expectEqualSlices(u8, &expected, bytes);
+}
+
+test "fallback.z: resize growth zeroes the new tail" {
+    var bytes = try allocator.alloc(u8, 4);
+    errdefer allocator.free(bytes);
+    @memset(bytes, 0x7F);
+
+    if (!allocator.resize(bytes, 8)) {
+        allocator.free(bytes);
+        return error.SkipZigTest;
+    }
+
+    bytes = bytes.ptr[0..8];
+    defer allocator.free(bytes);
+
+    const original: [4]u8 = @splat(0x7F);
+    const zeroed: [4]u8 = @splat(0);
+    try std.testing.expectEqualSlices(u8, &original, bytes[0..4]);
+    try std.testing.expectEqualSlices(u8, &zeroed, bytes[4..8]);
+}
