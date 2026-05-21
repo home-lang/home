@@ -12287,6 +12287,105 @@ test "conformance: genericContextualTypes3 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: keyofInferenceLowerPriorityThanReturn passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "keyofInferenceLowerPriorityThanReturn",
+        .path = "keyofInferenceLowerPriorityThanReturn.ts",
+        .source =
+        \\// @target: es2015
+        \\declare class Write {
+        \\    protected dummy: Write;
+        \\}
+        \\
+        \\declare class Col<s, a> {
+        \\    protected dummy: [Col<s, a>, s, a];
+        \\}
+        \\
+        \\declare class Table<Req, Def> {
+        \\    protected dummy: [Table<Req, Def>, Req, Def];
+        \\}
+        \\
+        \\type MakeTable<T1 extends object, T2 extends object> = {
+        \\    [P in keyof T1]: Col<Write, T1[P]>;
+        \\} & {
+        \\        [P in keyof T2]: Col<Write, T2[P]>;
+        \\    };
+        \\
+        \\declare class ConflictTarget<Cols> {
+        \\    public static tableColumns<Cols>(cols: (keyof Cols)[]): ConflictTarget<Cols>;
+        \\    protected dummy: [ConflictTarget<Cols>, Cols];
+        \\}
+        \\
+        \\
+        \\
+        \\const bookTable: Table<BookReq, BookDef> = null as any
+        \\
+        \\interface BookReq {
+        \\    readonly title: string;
+        \\    readonly serial: number;
+        \\}
+        \\
+        \\interface BookDef {
+        \\    readonly author: string;
+        \\    readonly numPages: number | null;
+        \\}
+        \\
+        \\
+        \\function insertOnConflictDoNothing<Req extends object, Def extends object>(_table: Table<Req, Def>, _conflictTarget: ConflictTarget<Req & Def>): boolean {
+        \\    throw new Error();
+        \\}
+        \\
+        \\function f() {
+        \\    insertOnConflictDoNothing(bookTable, ConflictTarget.tableColumns(["serial"]));
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: discriminatedUnionInference passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "discriminatedUnionInference",
+        .path = "discriminatedUnionInference.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\
+        \\type Foo<A> = { type: "foo", (): A[] };
+        \\type Bar<A> = { type: "bar", (): A };
+        \\
+        \\type FooBar<A> = Foo<A> | Bar<A>;
+        \\
+        \\type InferA<T> = T extends FooBar<infer A> ? A : never;
+        \\
+        \\type FooA = InferA<Foo<number>>;
+        \\
+        \\type Item<T> = { kind: 'a', data: T } | { kind: 'b', data: T[] };
+        \\
+        \\declare function foo<T>(item: Item<T>): T;
+        \\
+        \\let x1 = foo({ kind: 'a', data: 42 });
+        \\let x2 = foo({ kind: 'b', data: [1, 2] });
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
