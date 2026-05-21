@@ -4120,6 +4120,189 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: typeFromPropertyAssignment30 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeFromPropertyAssignment30",
+        .path = "typeFromPropertyAssignment30.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\interface Combo {
+        \\    (): number;
+        \\    p?: { [s: string]: number };
+        \\}
+        \\const c: Combo = () => 1
+        \\// should not be an expando object, but contextually typed by Combo.p
+        \\c.p = {}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: iterableArrayPattern1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "iterableArrayPattern1",
+        .path = "iterableArrayPattern1.ts",
+        .source =
+        \\//@target: ES6
+        \\class SymbolIterator {
+        \\    next() {
+        \\        return {
+        \\            value: Symbol(),
+        \\            done: false
+        \\        };
+        \\    }
+        \\
+        \\    [Symbol.iterator]() {
+        \\        return this;
+        \\    }
+        \\}
+        \\
+        \\var [a, b] = new SymbolIterator;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: iterableArrayPattern2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "iterableArrayPattern2",
+        .path = "iterableArrayPattern2.ts",
+        .source =
+        \\//@target: ES6
+        \\class SymbolIterator {
+        \\    next() {
+        \\        return {
+        \\            value: Symbol(),
+        \\            done: false
+        \\        };
+        \\    }
+        \\
+        \\    [Symbol.iterator]() {
+        \\        return this;
+        \\    }
+        \\}
+        \\
+        \\var [a, ...b] = new SymbolIterator;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: symbolProperty18 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "symbolProperty18",
+        .path = "symbolProperty18.ts",
+        .source =
+        \\//@target: ES6
+        \\var i = {
+        \\    [Symbol.iterator]: 0,
+        \\    [Symbol.toStringTag]() { return "" },
+        \\    set [Symbol.toPrimitive](p: boolean) { }
+        \\}
+        \\
+        \\var it = i[Symbol.iterator];
+        \\var str = i[Symbol.toStringTag]();
+        \\i[Symbol.toPrimitive] = false;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: privateNameConstructorSignature passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "privateNameConstructorSignature",
+        .path = "privateNameConstructorSignature.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es2015
+        \\
+        \\interface D {
+        \\    x: number;
+        \\}
+        \\class C {
+        \\    #x;
+        \\    static test() {
+        \\        new C().#x = 10;
+        \\        const y = new C();
+        \\        const z = new y();
+        \\        z.x = 123;
+        \\    }
+        \\}
+        \\interface C {
+        \\    new (): D;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: ExportInterfaceWithInaccessibleTypeInIndexerTypeAnnotations passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "ExportInterfaceWithInaccessibleTypeInIndexerTypeAnnotations",
+        .path = "ExportInterfaceWithInaccessibleTypeInIndexerTypeAnnotations.ts",
+        .source =
+        \\// @target: es2015
+        \\namespace A {
+        \\
+        \\    interface Point {
+        \\        x: number;
+        \\        y: number;
+        \\    }
+        \\
+        \\    export interface points {
+        \\
+        \\        [idx: number]: Point;
+        \\        [idx: string]: Point;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: privateNameClassExpressionLoop passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "privateNameClassExpressionLoop",
