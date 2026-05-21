@@ -14689,6 +14689,185 @@ test "conformance: asyncMethodWithSuperConflict_es6 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: parserDebuggerStatement1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserDebuggerStatement1",
+        .path = "parserDebuggerStatement1.ts",
+        .source =
+        \\// @target: es2015
+        \\debugger
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserEmptyFile1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserEmptyFile1",
+        .path = "parserEmptyFile1.ts",
+        .source =
+        \\// @target: es2015
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserInExpression1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserInExpression1",
+        .path = "parserInExpression1.ts",
+        .source =
+        \\// @target: es2015
+        \\console.log("a" in { "a": true });
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserVoidExpression1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserVoidExpression1",
+        .path = "parserVoidExpression1.ts",
+        .source =
+        \\// @target: es2015
+        \\void 0;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserParenthesizedVariableAndFunctionInTernary passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserParenthesizedVariableAndFunctionInTernary",
+        .path = "parserParenthesizedVariableAndFunctionInTernary.ts",
+        .source =
+        \\// @target: es2015
+        \\let a: any;
+        \\const c = true ? (a) : function() {};
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserForOfStatement18 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserForOfStatement18",
+        .path = "parserForOfStatement18.ts",
+        .source =
+        \\// @strict: false
+        \\//@target: ES6
+        \\for (var of of of) { }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserForOfStatement19 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserForOfStatement19",
+        .path = "parserForOfStatement19.ts",
+        .source =
+        \\// @strict: false
+        \\//@target: ES6
+        \\for (var of in of) { }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parserES3Accessors2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parserES3Accessors2",
+        .path = "parserES3Accessors2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\class C {
+        \\    set Foo(a) { }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parser_numericSeparators_binary passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parser.numericSeparators.binary",
+        .path = "parser.numericSeparators.binary.ts",
+        .source =
+        \\// @target: es2015
+        \\0b00_11;
+        \\0B0_1;
+        \\0b1100_0011;
+        \\0B0_11_0101;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
