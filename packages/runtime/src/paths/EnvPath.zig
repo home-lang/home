@@ -85,8 +85,7 @@ const string = []const u8;
 
 const std = @import("std");
 
-const home_rt = @import("home_rt");
-const OOM = home_rt.OOM;
+const OOM = std.mem.Allocator.Error;
 
 test "EnvPath appends with delimiter between entries" {
     const testing = std.testing;
