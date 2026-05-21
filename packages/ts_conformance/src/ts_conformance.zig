@@ -6502,6 +6502,304 @@ test "conformance: VariableDeclaration12_es6 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: generatorTypeCheck1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "generatorTypeCheck1",
+        .path = "generatorTypeCheck1.ts",
+        .source =
+        \\//@target: ES6
+        \\function* g1(): Iterator<string> { }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: generatorTypeCheck2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "generatorTypeCheck2",
+        .path = "generatorTypeCheck2.ts",
+        .source =
+        \\//@target: ES6
+        \\function* g1(): Iterable<string> { }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: generatorTypeCheck10 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "generatorTypeCheck10",
+        .path = "generatorTypeCheck10.ts",
+        .source =
+        \\//@target: ES6
+        \\function* g(): IterableIterator<any> {
+        \\    return;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: generatorTypeCheck16 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "generatorTypeCheck16",
+        .path = "generatorTypeCheck16.ts",
+        .source =
+        \\//@target: ES6
+        \\function* g() {
+        \\    return;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: generatorTypeCheck36 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "generatorTypeCheck36",
+        .path = "generatorTypeCheck36.ts",
+        .source =
+        \\// @strict: false
+        \\//@target: ES6
+        \\function* g() {
+        \\    yield yield 0;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: generatorTypeCheck40 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "generatorTypeCheck40",
+        .path = "generatorTypeCheck40.ts",
+        .source =
+        \\// @strict: false
+        \\//@target: ES6
+        \\function* g() {
+        \\    class C extends (yield 0) { }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: generatorTypeCheck49 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "generatorTypeCheck49",
+        .path = "generatorTypeCheck49.ts",
+        .source =
+        \\//@target: ES6
+        \\//@noImplicitAny: true
+        \\
+        \\function* g() {
+        \\    yield 0;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: YieldExpression3_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "YieldExpression3_es6",
+        .path = "YieldExpression3_es6.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es6
+        \\function* foo() {
+        \\  yield
+        \\  yield
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: YieldExpression4_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "YieldExpression4_es6",
+        .path = "YieldExpression4_es6.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es6
+        \\function* foo() {
+        \\  yield;
+        \\  yield;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: YieldExpression7_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "YieldExpression7_es6",
+        .path = "YieldExpression7_es6.ts",
+        .source =
+        \\// @target: es6
+        \\function* foo() {
+        \\  yield foo
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: YieldStarExpression4_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "YieldStarExpression4_es6",
+        .path = "YieldStarExpression4_es6.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es6
+        \\function *g() {
+        \\    yield * [];
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringWithEmbeddedArray passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringWithEmbeddedArray",
+        .path = "templateStringWithEmbeddedArray.ts",
+        .source =
+        \\// @target: es2015
+        \\var x = `abc${ [1,2,3] }def`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: taggedTemplateStringsWithTagsTypedAsAny passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "taggedTemplateStringsWithTagsTypedAsAny",
+        .path = "taggedTemplateStringsWithTagsTypedAsAny.ts",
+        .source =
+        \\// @target: es2015
+        \\var f: any;
+        \\
+        \\f `abc`
+        \\
+        \\f `abc${1}def${2}ghi`;
+        \\
+        \\f.g.h `abc`
+        \\
+        \\f.g.h `abc${1}def${2}ghi`;
+        \\
+        \\f `abc`.member
+        \\
+        \\f `abc${1}def${2}ghi`.member;
+        \\
+        \\f `abc`["member"];
+        \\
+        \\f `abc${1}def${2}ghi`["member"];
+        \\
+        \\f `abc`["member"].someOtherTag `abc${1}def${2}ghi`;
+        \\
+        \\f `abc${1}def${2}ghi`["member"].someOtherTag `abc${1}def${2}ghi`;
+        \\
+        \\f.thisIsNotATag(`abc`);
+        \\
+        \\f.thisIsNotATag(`abc${1}def${2}ghi`);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
