@@ -1,9 +1,5 @@
 // Copied from bun/src/paths/string_paths.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT - see ../cli/LICENSE.bun.md.
-//
-// Home port note: this is the pure helper subset. Windows NT-device path
-// helpers are kept as small local shims so callers can compile, while the
-// platform-specific syscall-facing behavior remains parked.
 
 pub const windows = struct {
     pub const long_path_prefix: [4]u16 = .{ '\\', '\\', '?', '\\' };
@@ -221,7 +217,7 @@ pub fn toKernel32Path(wbuf: []u16, utf8: []const u8) [:0]u16 {
 
 pub fn toWPathMaybeDir(wbuf: []u16, utf8: []const u8, comptime add_trailing_slash: bool) [:0]u16 {
     std.debug.assert(wbuf.len > 0);
-    const written = std.unicode.utf8ToUtf16Le(wbuf[0 .. wbuf.len -| (1 + @as(usize, @intFromBool(add_trailing_slash)))], utf8) catch 0;
+    const written = std.unicode.utf8ToUtf16Le(wbuf[0..wbuf.len -| (1 + @as(usize, @intFromBool(add_trailing_slash)))], utf8) catch 0;
     dangerouslyConvertPathToWindowsInPlace(u16, wbuf[0..written]);
 
     var len = written;
@@ -382,31 +378,15 @@ fn containsCharT(comptime T: type, input: []const T, needle: u8) bool {
     return std.mem.indexOfScalar(T, input, @as(T, @intCast(needle))) != null;
 }
 
-fn isDriveLetter(char: u8) bool {
-    return isDriveLetterT(u8, char);
-}
-
-fn isDriveLetterT(comptime T: type, char: T) bool {
-    return (char >= 'a' and char <= 'z') or (char >= 'A' and char <= 'Z');
-}
-
-fn isSepAny(char: u8) bool {
-    return char == '/' or char == '\\';
-}
-
-fn isSepAnyT(comptime T: type, char: T) bool {
-    return char == '/' or char == '\\';
-}
-
-fn dangerouslyConvertPathToWindowsInPlace(comptime T: type, path: []T) void {
-    for (path) |*char| {
-        if (char.* == '/') char.* = '\\';
-    }
-}
-
-const Platform = @import("./resolve_path.zig").Platform;
-const windowsFilesystemRoot = @import("./resolve_path.zig").windowsFilesystemRoot;
-const windowsFilesystemRootT = @import("./resolve_path.zig").windowsFilesystemRootT;
+const paths = @import("./resolve_path.zig");
+const Platform = paths.Platform;
+const dangerouslyConvertPathToWindowsInPlace = paths.dangerouslyConvertPathToWindowsInPlace;
+const isDriveLetter = paths.isDriveLetter;
+const isDriveLetterT = paths.isDriveLetterT;
+const isSepAny = paths.isSepAny;
+const isSepAnyT = paths.isSepAnyT;
+const windowsFilesystemRoot = paths.windowsFilesystemRoot;
+const windowsFilesystemRootT = paths.windowsFilesystemRootT;
 
 const string = []const u8;
 

@@ -750,6 +750,11 @@ pub const sys = struct {
 // the existing std-wrapper namespace; the copied Bun surface lands as
 // `home_rt.paths` (plural) to mirror upstream `src/paths/`.
 pub const paths = struct {
+    pub const Path = @import("paths/paths.zig").Path;
+    pub const AbsPath = @import("paths/paths.zig").AbsPath;
+    pub const AutoAbsPath = @import("paths/paths.zig").AutoAbsPath;
+    pub const RelPath = @import("paths/paths.zig").RelPath;
+    pub const AutoRelPath = @import("paths/paths.zig").AutoRelPath;
     pub const EnvPath = @import("paths/EnvPath.zig").EnvPath;
     pub const MAX_PATH_BYTES = @import("paths/paths.zig").MAX_PATH_BYTES;
     pub const PathBuffer = @import("paths/paths.zig").PathBuffer;
@@ -762,6 +767,22 @@ pub const paths = struct {
     pub const w_path_buffer_pool = @import("paths/path_buffer_pool.zig").w_path_buffer_pool;
     pub const os_path_buffer_pool = @import("paths/path_buffer_pool.zig").os_path_buffer_pool;
 };
+pub const Path = paths.Path;
+pub const AbsPath = paths.AbsPath;
+pub const AutoAbsPath = paths.AutoAbsPath;
+pub const RelPath = paths.RelPath;
+pub const AutoRelPath = paths.AutoRelPath;
+pub const MAX_PATH_BYTES = paths.MAX_PATH_BYTES;
+pub const PathBuffer = paths.PathBuffer;
+pub const PATH_MAX_WIDE = @import("paths/paths.zig").PATH_MAX_WIDE;
+pub const WPathBuffer = paths.WPathBuffer;
+pub const OSPathChar = paths.OSPathChar;
+pub const OSPathSlice = paths.OSPathSlice;
+pub const OSPathSliceZ = paths.OSPathSliceZ;
+pub const OSPathBuffer = paths.OSPathBuffer;
+pub const path_buffer_pool = paths.path_buffer_pool;
+pub const w_path_buffer_pool = paths.w_path_buffer_pool;
+pub const os_path_buffer_pool = paths.os_path_buffer_pool;
 
 // ---- src/picohttp_sys/ -------------------------------------------------
 // Fifth-wave port batch (2026-05-18). Vendored picohttpparser FFI

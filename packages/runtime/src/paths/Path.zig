@@ -67,9 +67,9 @@ const Options = struct {
             .assume_always_less_than_max_path => @compileError("max path length is not needed"),
             .check_for_greater_than_max_path => {
                 return switch (comptime opts.unit) {
-                    .u8 => bun.MAX_PATH_BYTES,
-                    .u16 => bun.PATH_MAX_WIDE,
-                    .os => if (Environment.isWindows) bun.PATH_MAX_WIDE else bun.MAX_PATH_BYTES,
+                    .u8 => MAX_PATH_BYTES,
+                    .u16 => PATH_MAX_WIDE,
+                    .os => if (Environment.isWindows) PATH_MAX_WIDE else MAX_PATH_BYTES,
                 };
             },
         }
@@ -118,7 +118,7 @@ const Options = struct {
                     } else {
                         switch (opts.inputChildType(@TypeOf(characters))) {
                             u8 => {
-                                const converted = bun.strings.convertUTF8toUTF16InBuffer(this.pooled[this.len..], characters);
+                                const converted = convertUTF8toUTF16InBuffer(this.pooled[this.len..], characters);
                                 if (comptime opts.sep != .any) {
                                     for (this.pooled[this.len..][0..converted.len], 0..) |c, off| {
                                         switch (c) {
@@ -130,7 +130,7 @@ const Options = struct {
                                 this.len += converted.len;
                             },
                             u16 => {
-                                const converted = bun.strings.convertUTF16toUTF8InBuffer(this.pooled[this.len..], characters) catch unreachable;
+                                const converted = convertUTF16toUTF8InBuffer(this.pooled[this.len..], characters) catch unreachable;
                                 if (comptime opts.sep != .any) {
                                     for (this.pooled[this.len..][0..converted.len], 0..) |c, off| {
                                         switch (c) {
@@ -180,7 +180,7 @@ const Options = struct {
                     //     .any => {
                     //         switch (opts.notPathUnit()) {
                     //             .u8 => {
-                    //                 const converted = bun.strings.convertUTF8toUTF16InBuffer(this.pooled[this.len..], characters);
+                    //                 const converted = convertUTF8toUTF16InBuffer(this.pooled[this.len..], characters);
                     //             },
                     //         }
                     //     },
@@ -255,12 +255,12 @@ pub fn Path(comptime opts: Options) type {
                     return .{
                         ._buf = .{
                             .pooled = switch (opts.unit) {
-                                .u8 => bun.path_buffer_pool.get(),
-                                .u16 => bun.w_path_buffer_pool.get(),
+                                .u8 => pools.path_buffer_pool.get(),
+                                .u16 => pools.w_path_buffer_pool.get(),
                                 .os => if (comptime Environment.isWindows)
-                                    bun.w_path_buffer_pool.get()
+                                    pools.w_path_buffer_pool.get()
                                 else
-                                    bun.path_buffer_pool.get(),
+                                    pools.path_buffer_pool.get(),
                             },
                             .len = 0,
                         },
@@ -273,12 +273,12 @@ pub fn Path(comptime opts: Options) type {
             switch (comptime opts.buf_type) {
                 .pool => {
                     switch (opts.unit) {
-                        .u8 => bun.path_buffer_pool.put(this._buf.pooled),
-                        .u16 => bun.w_path_buffer_pool.put(this._buf.pooled),
+                        .u8 => pools.path_buffer_pool.put(this._buf.pooled),
+                        .u16 => pools.w_path_buffer_pool.put(this._buf.pooled),
                         .os => if (comptime Environment.isWindows)
-                            bun.w_path_buffer_pool.put(this._buf.pooled)
+                            pools.w_path_buffer_pool.put(this._buf.pooled)
                         else
-                            bun.path_buffer_pool.put(this._buf.pooled),
+                            pools.path_buffer_pool.put(this._buf.pooled),
                     }
                 },
             }
@@ -292,46 +292,43 @@ pub fn Path(comptime opts: Options) type {
         }
 
         pub fn initTopLevelDir() @This() {
-            bun.debugAssert(bun.fs.FileSystem.instance_loaded);
-            const top_level_dir = bun.fs.FileSystem.instance.top_level_dir;
+            var this = init();
+            const top_level_dir = std.process.getCwd(this._buf.pooled) catch unreachable;
 
             const trimmed = switch (comptime opts.kind) {
                 .abs => trimmed: {
-                    bun.debugAssert(isInputAbsolute(top_level_dir));
+                    debugAssert(isInputAbsolute(top_level_dir));
                     break :trimmed trimInput(.abs, top_level_dir);
                 },
                 .rel => @compileError("cannot create a relative path from top_level_dir"),
                 .any => trimInput(.abs, top_level_dir),
             };
 
-            var this = init();
             this._buf.append(trimmed, false);
             return this;
         }
 
         pub fn initTopLevelDirLongPath() @This() {
-            bun.debugAssert(bun.fs.FileSystem.instance_loaded);
-            const top_level_dir = bun.fs.FileSystem.instance.top_level_dir;
+            var this = init();
+            const top_level_dir = std.process.getCwd(this._buf.pooled) catch unreachable;
 
             const trimmed = switch (comptime opts.kind) {
                 .abs => trimmed: {
-                    bun.debugAssert(isInputAbsolute(top_level_dir));
+                    debugAssert(isInputAbsolute(top_level_dir));
                     break :trimmed trimInput(.abs, top_level_dir);
                 },
                 .rel => @compileError("cannot create a relative path from top_level_dir"),
                 .any => trimInput(.abs, top_level_dir),
             };
 
-            var this = init();
-
             if (comptime Environment.isWindows) {
                 switch (comptime opts.unit) {
-                    .u8 => this._buf.append(bun.windows.long_path_prefix_u8, false),
-                    .u16 => this._buf.append(bun.windows.long_path_prefix, false),
+                    .u8 => this._buf.append(windows.long_path_prefix_u8, false),
+                    .u16 => this._buf.append(windows.long_path_prefix, false),
                     .os => if (Environment.isWindows)
-                        this._buf.append(bun.windows.long_path_prefix, false)
+                        this._buf.append(windows.long_path_prefix, false)
                     else
-                        this._buf.append(bun.windows.long_path_prefix_u8, false),
+                        this._buf.append(windows.long_path_prefix_u8, false),
                 }
             }
 
@@ -340,7 +337,7 @@ pub fn Path(comptime opts: Options) type {
             return this;
         }
 
-        pub fn initFdPath(fd: FD) !@This() {
+        pub fn initFdPath(fd: anytype) !@This() {
             switch (comptime opts.kind) {
                 .abs => {},
                 .rel => @compileError("cannot create a relative path from getFdPath"),
@@ -350,7 +347,7 @@ pub fn Path(comptime opts: Options) type {
             var this = init();
             switch (comptime opts.buf_type) {
                 .pool => {
-                    const raw = try fd.getFdPath(this._buf.pooled);
+                    const raw = try getFdPath(fd, this._buf.pooled);
                     const trimmed = trimInput(.abs, raw);
                     this._buf.len = trimmed.len;
                 },
@@ -366,11 +363,11 @@ pub fn Path(comptime opts: Options) type {
             }
             const trimmed = switch (comptime opts.kind) {
                 .abs => trimmed: {
-                    bun.debugAssert(isInputAbsolute(input));
+                    debugAssert(isInputAbsolute(input));
                     break :trimmed trimInput(.abs, input);
                 },
                 .rel => trimmed: {
-                    bun.debugAssert(!isInputAbsolute(input));
+                    debugAssert(!isInputAbsolute(input));
                     break :trimmed trimInput(.rel, input);
                 },
                 .any => trimInput(if (isInputAbsolute(input)) .abs else .rel, input),
@@ -385,12 +382,12 @@ pub fn Path(comptime opts: Options) type {
             var this = init();
             if (comptime Environment.isWindows) {
                 switch (comptime opts.unit) {
-                    .u8 => this._buf.append(bun.windows.long_path_prefix_u8, false),
-                    .u16 => this._buf.append(bun.windows.long_path_prefix, false),
+                    .u8 => this._buf.append(windows.long_path_prefix_u8, false),
+                    .u16 => this._buf.append(windows.long_path_prefix, false),
                     .os => if (Environment.isWindows)
-                        this._buf.append(bun.windows.long_path_prefix, false)
+                        this._buf.append(windows.long_path_prefix, false)
                     else
-                        this._buf.append(bun.windows.long_path_prefix_u8, false),
+                        this._buf.append(windows.long_path_prefix_u8, false),
                 }
             }
 
@@ -400,11 +397,11 @@ pub fn Path(comptime opts: Options) type {
         pub fn from(input: anytype) Result(@This()) {
             const trimmed = switch (comptime opts.kind) {
                 .abs => trimmed: {
-                    bun.debugAssert(isInputAbsolute(input));
+                    debugAssert(isInputAbsolute(input));
                     break :trimmed trimInput(.abs, input);
                 },
                 .rel => trimmed: {
-                    bun.debugAssert(!isInputAbsolute(input));
+                    debugAssert(!isInputAbsolute(input));
                     break :trimmed trimInput(.rel, input);
                 },
                 .any => trimInput(if (isInputAbsolute(input)) .abs else .rel, input),
@@ -430,17 +427,17 @@ pub fn Path(comptime opts: Options) type {
         }
 
         pub fn basename(this: *const @This()) []const opts.pathUnit() {
-            return bun.strings.basename(opts.pathUnit(), this.slice());
+            return string_paths.basename(opts.pathUnit(), this.slice());
         }
 
         pub fn basenameZ(this: *const @This()) [:0]const opts.pathUnit() {
             const full = this.sliceZ();
-            const base = bun.strings.basename(opts.pathUnit(), full);
+            const base = string_paths.basename(opts.pathUnit(), full);
             return full[full.len - base.len ..][0..base.len :0];
         }
 
         pub fn dirname(this: *const @This()) ?[]const opts.pathUnit() {
-            return bun.Dirname.dirname(opts.pathUnit(), this.slice());
+            return dirnamePath(opts.pathUnit(), this.slice());
         }
 
         pub fn slice(this: *const @This()) []const opts.pathUnit() {
@@ -699,9 +696,9 @@ pub fn Path(comptime opts: Options) type {
 
                     if (comptime Environment.isDebug) {
                         if (has_root) {
-                            bun.debugAssert(!isInputAbsolute(input));
+                            debugAssert(!isInputAbsolute(input));
                         } else {
-                            bun.debugAssert(isInputAbsolute(input));
+                            debugAssert(isInputAbsolute(input));
                         }
                     }
 
@@ -720,7 +717,7 @@ pub fn Path(comptime opts: Options) type {
                     this._buf.append(trimmed, needs_sep);
                 },
                 .rel => {
-                    bun.debugAssert(!isInputAbsolute(input));
+                    debugAssert(!isInputAbsolute(input));
 
                     const trimmed = trimInput(.rel, input);
 
@@ -741,7 +738,7 @@ pub fn Path(comptime opts: Options) type {
 
                     if (comptime Environment.isDebug) {
                         if (needs_sep) {
-                            bun.debugAssert(!input_is_absolute);
+                            debugAssert(!input_is_absolute);
                         }
                     }
 
@@ -798,7 +795,7 @@ pub fn Path(comptime opts: Options) type {
                 .abs => {},
                 .rel => @compileError("cannot join with relative path"),
                 .any => {
-                    bun.debugAssert(this.isAbsolute());
+                    debugAssert(this.isAbsolute());
                 },
             }
 
@@ -807,7 +804,7 @@ pub fn Path(comptime opts: Options) type {
 
             switch (comptime opts.buf_type) {
                 .pool => {
-                    const joined = bun.path.joinAbsStringBuf(
+                    const joined = resolve_path.joinAbsStringBuf(
                         cloned.slice(),
                         this._buf.pooled,
                         parts,
@@ -829,7 +826,7 @@ pub fn Path(comptime opts: Options) type {
                 .abs => {},
                 .rel => @compileError("cannot join with relative path"),
                 .any => {
-                    bun.debugAssert(this.isAbsolute());
+                    debugAssert(this.isAbsolute());
                 },
             }
 
@@ -837,13 +834,13 @@ pub fn Path(comptime opts: Options) type {
                 []u8, []const u8 => {
                     switch (comptime opts.pathUnit()) {
                         u8 => {
-                            const cwd_path_buf = bun.path_buffer_pool.get();
-                            defer bun.path_buffer_pool.put(cwd_path_buf);
+                            const cwd_path_buf = pools.path_buffer_pool.get();
+                            defer pools.path_buffer_pool.put(cwd_path_buf);
                             const current_slice = this.slice();
                             const cwd_path = cwd_path_buf[0..current_slice.len];
-                            bun.copy(u8, cwd_path, current_slice);
+                            copyInto(u8, cwd_path, current_slice);
 
-                            const joined = bun.path.joinStringBuf(
+                            const joined = resolve_path.joinStringBuf(
                                 this._buf.pooled,
                                 &[_][]const u8{ cwd_path, part },
                                 switch (opts.sep) {
@@ -857,9 +854,9 @@ pub fn Path(comptime opts: Options) type {
                             this._buf.len = trimmed.len;
                         },
                         u16 => {
-                            const path_buf = bun.w_path_buffer_pool.get();
-                            defer bun.w_path_buffer_pool.put(path_buf);
-                            const converted = bun.strings.convertUTF8toUTF16InBuffer(path_buf, part);
+                            const path_buf = pools.w_path_buffer_pool.get();
+                            defer pools.w_path_buffer_pool.put(path_buf);
+                            const converted = convertUTF8toUTF16InBuffer(path_buf, part);
                             return this.appendJoin(converted);
                         },
                         else => @compileError("unsupported unit type"),
@@ -868,13 +865,13 @@ pub fn Path(comptime opts: Options) type {
                 []u16, []const u16 => {
                     switch (comptime opts.pathUnit()) {
                         u16 => {
-                            const cwd_path_buf = bun.w_path_buffer_pool.get();
-                            defer bun.w_path_buffer_pool.put(cwd_path_buf);
+                            const cwd_path_buf = pools.w_path_buffer_pool.get();
+                            defer pools.w_path_buffer_pool.put(cwd_path_buf);
                             const current_slice = this.slice();
                             const cwd_path = cwd_path_buf[0..current_slice.len];
-                            bun.copy(u16, cwd_path, current_slice);
+                            copyInto(u16, cwd_path, current_slice);
 
-                            const joined = bun.path.joinStringBufW(
+                            const joined = resolve_path.joinStringBufW(
                                 this._buf.pooled,
                                 &[_][]const u16{ cwd_path, part },
                                 switch (opts.sep) {
@@ -888,11 +885,9 @@ pub fn Path(comptime opts: Options) type {
                             this._buf.len = trimmed.len;
                         },
                         u8 => {
-                            const path_buf = bun.path_buffer_pool.get();
-                            defer bun.path_buffer_pool.put(path_buf);
-                            const converted = bun.strings.convertUTF16toUTF8InBuffer(path_buf, part) catch {
-                                return .initError(.MaxPathExceeded);
-                            };
+                            const path_buf = pools.path_buffer_pool.get();
+                            defer pools.path_buffer_pool.put(path_buf);
+                            const converted = convertUTF16toUTF8InBuffer(path_buf, part) catch return error.MaxPathExceeded;
                             return this.appendJoin(converted);
                         },
                         else => @compileError("unsupported unit type"),
@@ -906,7 +901,7 @@ pub fn Path(comptime opts: Options) type {
             switch (comptime opts.buf_type) {
                 .pool => {
                     var output: RelPath(opts) = .init();
-                    const rel = bun.path.relativeBufZ(output._buf.pooled, this.slice(), to.slice());
+                    const rel = resolve_path.relativeBufZ(output._buf.pooled, this.slice(), to.slice());
                     const trimmed = trimInput(.rel, rel);
                     output._buf.len = trimmed.len;
                     return output;
@@ -963,11 +958,79 @@ pub fn Path(comptime opts: Options) type {
     };
 }
 
-const std = @import("std");
+fn convertUTF8toUTF16InBuffer(buf: []u16, input: []const u8) []u16 {
+    if (input.len == 0) return buf[0..0];
+    const written = std.unicode.utf8ToUtf16Le(buf, input) catch 0;
+    return buf[0..written];
+}
 
-const bun = @import("bun");
-const Environment = bun.Environment;
-const FD = bun.FD;
-const Output = bun.Output;
-const PathBuffer = bun.PathBuffer;
-const WPathBuffer = bun.WPathBuffer;
+fn convertUTF16toUTF8InBuffer(buf: []u8, input: []const u16) ![]const u8 {
+    if (input.len == 0) return &.{};
+    const written = try std.unicode.utf16LeToUtf8(buf, input);
+    return buf[0..written];
+}
+
+fn dirnamePath(comptime T: type, path: []const T) ?[]const T {
+    if (T == u8) {
+        const dir = resolve_path.dirname(path, .auto);
+        return if (dir.len == 0) null else dir;
+    }
+
+    const dir = resolve_path.dirnameW(path);
+    return if (dir.len == 0) null else dir;
+}
+
+fn copyInto(comptime Type: type, dest: []Type, src: []const Type) void {
+    @memmove(dest[0..src.len], src);
+}
+
+fn debugAssert(ok: bool) void {
+    if (Environment.isDebug) std.debug.assert(ok);
+}
+
+fn PathBufferUnit(comptime Buffer: type) type {
+    const pointer_child = switch (@typeInfo(Buffer)) {
+        .pointer => |pointer| pointer.child,
+        else => @compileError("expected a path buffer pointer"),
+    };
+    return switch (@typeInfo(pointer_child)) {
+        .array => |array| array.child,
+        else => pointer_child,
+    };
+}
+
+fn getFdPath(fd: anytype, buf: anytype) ![]const PathBufferUnit(@TypeOf(buf)) {
+    const Child = PathBufferUnit(@TypeOf(buf));
+    if (Child == u8) {
+        if (@TypeOf(fd) == std.posix.fd_t) return std.os.getFdPath(fd, buf);
+        if (@hasDecl(@TypeOf(fd), "native")) return std.os.getFdPath(fd.native(), buf);
+        if (@hasField(@TypeOf(fd), "fd")) return std.os.getFdPath(fd.fd, buf);
+        if (@hasField(@TypeOf(fd), "handle")) return std.os.getFdPath(fd.handle, buf);
+        return std.os.getFdPath(fd, buf);
+    }
+
+    if (comptime Environment.isWindows and Child == u16) {
+        var utf8_buf: PathBuffer = undefined;
+        const utf8 = try getFdPath(fd, &utf8_buf);
+        return convertUTF8toUTF16InBuffer(buf, utf8);
+    }
+
+    @compileError("unsupported path buffer unit for getFdPath");
+}
+
+const std = @import("std");
+const builtin = @import("builtin");
+
+const Environment = struct {
+    const isWindows = builtin.os.tag == .windows;
+    const isDebug = builtin.mode == .Debug;
+};
+
+const pools = @import("./path_buffer_pool.zig");
+const resolve_path = @import("./resolve_path.zig");
+const string_paths = @import("./string_paths.zig");
+const windows = string_paths.windows;
+const MAX_PATH_BYTES: usize = std.fs.max_path_bytes;
+const PATH_MAX_WIDE = if (Environment.isWindows) std.os.windows.PATH_MAX_WIDE else 0;
+const PathBuffer = [MAX_PATH_BYTES]u8;
+const WPathBuffer = [PATH_MAX_WIDE]u16;

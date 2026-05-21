@@ -1,10 +1,9 @@
 // Copied from bun/src/paths/path_buffer_pool.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT - see ../cli/LICENSE.bun.md.
 //
-// Home port note: Bun keeps up to four path buffers alive per thread through
-// ObjectPool + thread-local allocator machinery. That allocator substrate is
-// not in Home yet, so this file provides the same public get/put shape with a
-// tiny local heap-backed shim.
+// Bun keeps up to four path buffers alive per thread through ObjectPool +
+// thread-local allocator machinery. Home keeps the same public get/put shape
+// here and uses the runtime heap allocator for the backing slabs.
 
 fn PathBufferPoolT(comptime T: type) type {
     return struct {

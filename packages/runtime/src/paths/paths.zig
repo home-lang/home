@@ -1,8 +1,11 @@
 // Copied from bun/src/paths/paths.zig at upstream SHA
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT - see ../cli/LICENSE.bun.md.
-//
-// Trimmed re-export surface. The full Path/AbsPath/RelPath family is parked
-// behind paths/Path.zig until its allocator and fd dependencies land.
+
+pub const Path = paths.Path;
+pub const AbsPath = paths.AbsPath;
+pub const AutoAbsPath = paths.AutoAbsPath;
+pub const RelPath = paths.RelPath;
+pub const AutoRelPath = paths.AutoRelPath;
 
 pub const EnvPath = @import("./EnvPath.zig").EnvPath;
 
@@ -19,24 +22,9 @@ pub const path_buffer_pool = @import("./path_buffer_pool.zig").path_buffer_pool;
 pub const w_path_buffer_pool = @import("./path_buffer_pool.zig").w_path_buffer_pool;
 pub const os_path_buffer_pool = @import("./path_buffer_pool.zig").os_path_buffer_pool;
 
-// Parked until paths/Path.zig is made buildable without the full Bun runtime.
-pub fn Path(comptime opts: anytype) type {
-    _ = opts;
-    @compileError("paths.Path is not ported in Home yet");
-}
-pub fn AbsPath(comptime opts: anytype) type {
-    _ = opts;
-    @compileError("paths.AbsPath is not ported in Home yet");
-}
-pub fn RelPath(comptime opts: anytype) type {
-    _ = opts;
-    @compileError("paths.RelPath is not ported in Home yet");
-}
-pub const AutoAbsPath = opaque {};
-pub const AutoRelPath = opaque {};
-
 const is_wasm = false;
 
+const paths = @import("./Path.zig");
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -55,4 +43,16 @@ test "OSPathChar matches platform width" {
     } else {
         try std.testing.expectEqual(u8, OSPathChar);
     }
+}
+
+test "AutoAbsPath and AutoRelPath are real path builders" {
+    var abs = AutoAbsPath.from("/tmp");
+    defer abs.deinit();
+    abs.append("home");
+    try std.testing.expectEqualStrings("/tmp/home", abs.slice());
+
+    var rel = AutoRelPath.from("tmp");
+    defer rel.deinit();
+    rel.append("home");
+    try std.testing.expectEqualStrings("tmp/home", rel.slice());
 }

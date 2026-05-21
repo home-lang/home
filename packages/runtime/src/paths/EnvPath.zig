@@ -1,8 +1,4 @@
 // Copied from bun/src/paths/EnvPath.zig at upstream SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Generic PATH-style env-var builder ("/a:/b:/c") with delimiter trimming.
-// The upstream `PathComponentBuilder` nested helper depends on `AbsPath`,
-// which is unported (blocked on paths/Path.zig). It's omitted here and
-// re-attaches when AbsPath ports.
 
 pub const EnvPathOptions = struct {
     //
@@ -32,7 +28,6 @@ fn withoutTrailingSlash(input: string) string {
 }
 
 pub fn EnvPath(comptime opts: EnvPathOptions) type {
-    _ = opts;
     return struct {
         allocator: std.mem.Allocator,
         buf: std.ArrayListUnmanaged(u8) = .empty,
@@ -74,10 +69,30 @@ pub fn EnvPath(comptime opts: EnvPathOptions) type {
             }
         }
 
-        // stubbed: PathComponentBuilder re-attaches when paths/Path.zig's
-        // `AbsPath` lands. Callers that need the builder will `@compileError`
-        // until then; the leaf-level `append([]const u8)` path covers every
-        // existing Home-runtime use site.
+        pub const PathComponentBuilder = struct {
+            env_path: *EnvPath(opts),
+            path_buf: AbsPath(.{ .sep = .auto }),
+
+            pub fn append(this: *@This(), component: string) void {
+                this.path_buf.append(component);
+            }
+
+            pub fn appendFmt(this: *@This(), comptime component_fmt: string, component_args: anytype) void {
+                this.path_buf.appendFmt(component_fmt, component_args);
+            }
+
+            pub fn apply(this: *@This()) OOM!void {
+                try this.env_path.append(&this.path_buf);
+                this.path_buf.deinit();
+            }
+        };
+
+        pub fn pathComponentBuilder(this: *@This()) PathComponentBuilder {
+            return .{
+                .env_path = this,
+                .path_buf = .init(),
+            };
+        }
     };
 }
 
@@ -85,6 +100,7 @@ const string = []const u8;
 
 const std = @import("std");
 
+const AbsPath = @import("./paths.zig").AbsPath;
 const OOM = std.mem.Allocator.Error;
 
 test "EnvPath appends with delimiter between entries" {
@@ -113,4 +129,18 @@ test "EnvPath skips empty entries" {
     try ep.append(@as([]const u8, "/only"));
     try ep.append(@as([]const u8, ""));
     try testing.expectEqualStrings("/only", ep.slice());
+}
+
+test "EnvPath PathComponentBuilder appends path components" {
+    const testing = std.testing;
+    var ep = EnvPath(.{}).init(testing.allocator);
+    defer ep.deinit();
+
+    var builder = ep.pathComponentBuilder();
+    builder.append("/usr");
+    builder.append("local");
+    builder.appendFmt("{s}", .{"bin"});
+    try builder.apply();
+
+    try testing.expectEqualStrings("/usr/local/bin", ep.slice());
 }
