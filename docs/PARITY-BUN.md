@@ -191,7 +191,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes one hundred forty-seven allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes one hundred forty-eight allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-four
@@ -237,6 +237,7 @@ Jest fake-timer Date / `Intl.DateTimeFormat` smoke coverage,
 JS-only `Bun.serve({ fetch })` / long-lived `Bun.spawn` server-fixture coverage,
 IPC-style server-fixture URL delivery and URL(base) coverage,
 interactive third-party prompts stdin/stdout coverage,
+`queueMicrotask` ordering and argument validation,
 `import.meta.resolve` / `resolveSync` bad-parent throw behavior,
 `jest.resetAllMocks` / `mockReturnThis`, `node:path` isAbsolute and
 zero-length string behavior plus basename/extname/normalize/join/dirname,
@@ -265,7 +266,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `147` files, `632` passed, `0` failed,
+Latest measured subset run: `148` files, `633` passed, `0` failed,
 `40` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
@@ -1192,6 +1193,12 @@ Home as `1` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap
 models the interactive `prompts.js` subprocess enough for this upstream
 fixture: initial stdout prompt read, stdin writes for the three answers,
 exit code `0`, and final stdout containing the formatted answers.
+
+The copied `js/web/timers/microtask.test.js` fixture now passes in Home
+as `1` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap now
+lowers `import { it } from "bun:test"` and installs a reusable
+`queueMicrotask()` shim with synchronous `TypeError` validation and
+Promise microtask scheduling.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That

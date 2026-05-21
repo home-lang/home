@@ -175,6 +175,7 @@ Jest fake-timer Date / `Intl.DateTimeFormat` behavior,
 JS-only `Bun.serve({ fetch })` / long-lived server-fixture `Bun.spawn`,
 IPC-style server-fixture URL delivery and `new URL(input, base)`,
 interactive third-party prompts stdin/stdout behavior,
+`queueMicrotask` ordering and argument validation,
 `node:vm.runInNewContext`, DOMException, native constructor identity,
 mutable `globalThis` prototype behavior, comment-only module-load smoke,
 `Bun.file(...).type` explicit and `.css` MIME behavior,
@@ -779,6 +780,10 @@ The copied `js/third_party/prompts/prompts.test.ts` fixture now passes as
 `1` test through the interactive subprocess bootstrap model. It covers
 the initial stdout prompt read, stdin writes, exit code `0`, and formatted
 answer output asserted by Bun.
+The copied `js/web/timers/microtask.test.js` fixture now passes as `1`
+test through the timer bootstrap model. It covers `queueMicrotask`
+ordering plus Bun/browser-compatible `TypeError` validation for missing
+or non-function callbacks.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

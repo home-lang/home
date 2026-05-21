@@ -146,6 +146,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/http/bun-serve-body-json-async.test.ts",
     "js/bun/http/req-url-leak.test.ts",
     "js/third_party/prompts/prompts.test.ts",
+    "js/web/timers/microtask.test.js",
     "js/web/encoding/text-decoder-cjk.test.ts",
     "js/web/encoding/text-decoder-single-byte.test.ts",
     "regression/issue/fix-bindings-stack-trace.test.ts",
@@ -300,6 +301,10 @@ const harness_prelude =
     \\if (typeof console.warn !== "function") console.warn = console.log;
     \\let __home_next_timer_id = 1;
     \\const __home_cancelled_timers = new Set();
+    \\function queueMicrotask(callback) {
+    \\  if (typeof callback !== "function") throw new TypeError("queueMicrotask callback must be a function");
+    \\  Promise.resolve().then(callback);
+    \\}
     \\function setTimeout(callback, delay) {
     \\  const id = __home_next_timer_id++;
     \\  Promise.resolve().then(() => {
@@ -7329,6 +7334,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         .{ .line = "import { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { afterAll, afterEach, beforeAll, beforeEach, describe, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeAll, beforeEach, describe, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect, it } from \"bun:test\";", .binding = "const { expect, it } = globalThis.__home_import(\"bun:test\");\n" },
+        .{ .line = "import { it } from \"bun:test\";", .binding = "const { it } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expect } from \"bun:test\";", .binding = "const { expect } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { expectTypeOf, test } from \"bun:test\";", .binding = "const { expectTypeOf, test } = globalThis.__home_import(\"bun:test\");\n" },
         .{ .line = "import { describe, expect, jest, test } from \"bun:test\";", .binding = "const { describe, expect, jest, test } = globalThis.__home_import(\"bun:test\");\n" },
@@ -7601,6 +7607,7 @@ test "minimal JS subset starts with the todo smoke" {
 test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function it(name, first, second)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "console.warn = console.log") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function queueMicrotask(callback)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_is_thenable(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_done_callback(error)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.setPrototypeOf = function(target, prototype)") != null);
@@ -7795,6 +7802,19 @@ test "Bun test import rewrite lowers single test binding" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { test } = globalThis.__home_import(\"bun:test\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "test(\"fixture\"") != null);
+}
+
+test "Bun test import rewrite lowers single it binding" {
+    const source =
+        \\import { it } from "bun:test";
+        \\it("fixture", () => {});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/web/timers/microtask.test.js");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { it } = globalThis.__home_import(\"bun:test\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "it(\"fixture\"") != null);
 }
 
 test "internal highlighter import rewrite lowers alias binding" {
