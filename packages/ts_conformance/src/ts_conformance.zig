@@ -4120,6 +4120,351 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: identicalCallSignatures passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "identicalCallSignatures",
+        .path = "identicalCallSignatures.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// Each pair of call signatures in these types have a duplicate signature error.
+        \\// Identical call signatures should generate an error.
+        \\interface I {
+        \\    (x): number;
+        \\    (x: any): number;
+        \\    <T>(x: T): T;
+        \\    <U>(x: U): U; // error
+        \\}
+        \\
+        \\interface I2<T> {
+        \\    (x: T): T;
+        \\    (x: T): T; // error
+        \\}
+        \\
+        \\var a: {
+        \\    (x): number;
+        \\    (x: any): number;
+        \\    <T>(x: T): T;
+        \\    <T>(x: T): T; // error
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: parametersWithNoAnnotationAreAny passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "parametersWithNoAnnotationAreAny",
+        .path = "parametersWithNoAnnotationAreAny.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\function foo(x) { return x; }
+        \\var f = function foo(x) { return x; }
+        \\var f2 = (x) => x;
+        \\var f3 = <T>(x) => x;
+        \\
+        \\class C {
+        \\    foo(x) {
+        \\        return x;
+        \\    }
+        \\}
+        \\
+        \\interface I {
+        \\    foo(x);
+        \\    foo2(x, y);
+        \\}
+        \\
+        \\var a: {
+        \\    foo(x);
+        \\}
+        \\
+        \\var b = {
+        \\    foo(x) {
+        \\        return x;
+        \\    },
+        \\    a: function foo(x) {
+        \\        return x;
+        \\    },
+        \\    b: (x) => x
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: identicalCallSignatures2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "identicalCallSignatures2",
+        .path = "identicalCallSignatures2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// Normally it is an error to have multiple overloads with identical signatures in a single type declaration.
+        \\// Here the multiple overloads come from multiple bases.
+        \\
+        \\interface Base<T> {
+        \\    (x: number): string;
+        \\}
+        \\
+        \\interface I extends Base<string>, Base<number> { }
+        \\
+        \\interface I2<T> extends Base<string>, Base<number> { }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: identicalCallSignatures3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "identicalCallSignatures3",
+        .path = "identicalCallSignatures3.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// Normally it is an error to have multiple overloads with identical signatures in a single type declaration.
+        \\// Here the multiple overloads come from multiple merged declarations, so we do not report errors.
+        \\
+        \\interface I {
+        \\    (x: number): string;
+        \\}
+        \\
+        \\interface I {
+        \\    (x: number): string;
+        \\}
+        \\
+        \\interface I2<T> {
+        \\    (x: number): string;
+        \\}
+        \\
+        \\interface I2<T> {
+        \\    (x: number): string;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: specializedSignatureWithOptional passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "specializedSignatureWithOptional",
+        .path = "specializedSignatureWithOptional.ts",
+        .source =
+        \\// @target: es2015
+        \\declare function f(x?: "hi"): void;
+        \\declare function f(x?: string): void;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectTypeLiteralSyntax passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectTypeLiteralSyntax",
+        .path = "objectTypeLiteralSyntax.ts",
+        .source =
+        \\// @target: es2015
+        \\var x: {
+        \\    foo: string;
+        \\    bar: string;
+        \\}
+        \\
+        \\var y: {
+        \\    foo: string;
+        \\    bar: string
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: propertyNameWithoutTypeAnnotation passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "propertyNameWithoutTypeAnnotation",
+        .path = "propertyNameWithoutTypeAnnotation.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\class C {
+        \\    foo;
+        \\}
+        \\
+        \\interface I {
+        \\    foo;
+        \\}
+        \\
+        \\var a: {
+        \\    foo;
+        \\}
+        \\
+        \\var b = {
+        \\    foo: null
+        \\}
+        \\
+        \\// These should all be of type 'any'
+        \\var r1 = (new C()).foo;
+        \\var r2 = (<I>null).foo;
+        \\var r3 = a.foo;
+        \\var r4 = b.foo;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: callSignatureWithoutAnnotationsOrBody passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "callSignatureWithoutAnnotationsOrBody",
+        .path = "callSignatureWithoutAnnotationsOrBody.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// Call signatures without a return type annotation and function body return 'any'
+        \\
+        \\function foo(x) { }
+        \\var r = foo(1); // void since there's a body
+        \\
+        \\interface I {
+        \\    ();
+        \\    f();
+        \\}
+        \\var i: I;
+        \\var r2 = i();
+        \\var r3 = i.f();
+        \\
+        \\var a: {
+        \\    ();
+        \\    f();
+        \\};
+        \\var r4 = a();
+        \\var r5 = a.f();
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: inferTypesWithExtendsDependingOnTypeVariables passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "inferTypesWithExtendsDependingOnTypeVariables",
+        .path = "inferTypesWithExtendsDependingOnTypeVariables.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\// @noEmit: true
+        \\
+        \\// repro from https://github.com/microsoft/TypeScript/issues/54197
+        \\
+        \\type Bar<K, T extends readonly unknown[]> = T extends readonly [any, ...infer X extends readonly K[]] ? X : never;
+        \\type Res1 = Bar<"a" | "b", ["a", "b", "b"]>
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: inferTypes2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "inferTypes2",
+        .path = "inferTypes2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\// @declaration: true
+        \\
+        \\// Repros from #22755
+        \\
+        \\export declare function foo<T>(obj: T): T extends () => infer P ? P : never;
+        \\export function bar<T>(obj: T) {
+        \\    return foo(obj);
+        \\}
+        \\
+        \\export type BadNested<T> = { x: T extends number ? T : string };
+        \\
+        \\export declare function foo2<T>(obj: T): T extends { [K in keyof BadNested<infer P>]: BadNested<infer P>[K] } ? P : never;
+        \\export function bar2<T>(obj: T) {
+        \\    return foo2(obj);
+        \\}
+        \\
+        \\// Repros from #31099
+        \\
+        \\type Weird = any extends infer U ? U : never;
+        \\type AlsoWeird = unknown extends infer U ? U : never;
+        \\
+        \\const a: Weird = null;
+        \\const b: string = a;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: variance passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "variance",
