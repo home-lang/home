@@ -4120,6 +4120,278 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: tupleElementTypes2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "tupleElementTypes2",
+        .path = "tupleElementTypes2.ts",
+        .source = "// @target: es2015\nfunction f([a, b]: [number, any]) { }",
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: tupleElementTypes3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "tupleElementTypes3",
+        .path = "tupleElementTypes3.ts",
+        .source = "// @target: es2015\nvar [a, b] = [0, undefined];",
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: tupleElementTypes4 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "tupleElementTypes4",
+        .path = "tupleElementTypes4.ts",
+        .source = "// @target: es2015\nfunction f([a, b] = [0, undefined]) { }",
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: wideningTuples6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "wideningTuples6",
+        .path = "wideningTuples6.ts",
+        .source =
+        \\// @target: es2015
+        \\//@strict: false
+        \\var [a, b] = [undefined, null];
+        \\a = "";
+        \\b = "";
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: wideningTuples1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "wideningTuples1",
+        .path = "wideningTuples1.ts",
+        .source =
+        \\// @target: es2015
+        \\//@strict: false
+        \\//@noImplicitAny: true
+        \\declare function foo<T extends [any]>(x: T): T;
+        \\
+        \\var y = foo([undefined]);
+        \\y = [""];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: wideningTuples2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "wideningTuples2",
+        .path = "wideningTuples2.ts",
+        .source =
+        \\// @target: es2015
+        \\//@strict: false
+        \\//@noImplicitAny: true
+        \\var foo: () => [any] = function bar() {
+        \\    let intermediate = bar();
+        \\    intermediate = [""];
+        \\    return [undefined];
+        \\};
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: partiallyNamedTuples3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "partiallyNamedTuples3",
+        .path = "partiallyNamedTuples3.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\// @lib: esnext
+        \\
+        \\declare const tuple: [number, name: string, boolean, value: number, string];
+        \\
+        \\const output = ((...args) => args)(...tuple);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: optionalChainingInference passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "optionalChainingInference",
+        .path = "optionalChainingInference.ts",
+        .source =
+        \\// @target: es2015
+        \\// https://github.com/microsoft/TypeScript/issues/34579
+        \\declare function unbox<T>(box: { value: T | undefined }): T;
+        \\declare const su: string | undefined;
+        \\declare const fnu: (() => number) | undefined;
+        \\declare const osu: { prop: string } | undefined;
+        \\declare const ofnu: { prop: () => number } | undefined;
+        \\
+        \\const b1 = { value: su?.length };
+        \\const v1: number = unbox(b1);
+        \\
+        \\const b2 = { value: su?.length as number | undefined };
+        \\const v2: number = unbox(b2);
+        \\
+        \\const b3: { value: number | undefined } = { value: su?.length };
+        \\const v3: number = unbox(b3);
+        \\
+        \\const b4 = { value: fnu?.() };
+        \\const v4: number = unbox(b4);
+        \\
+        \\const b5 = { value: su?.["length"] };
+        \\const v5: number = unbox(b5);
+        \\
+        \\const b6 = { value: osu?.prop.length };
+        \\const v6: number = unbox(b6);
+        \\
+        \\const b7 = { value: osu?.prop["length"] };
+        \\const v7: number = unbox(b7);
+        \\
+        \\const b8 = { value: ofnu?.prop() };
+        \\const v8: number = unbox(b8);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: elementAccessChain passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "elementAccessChain",
+        .path = "elementAccessChain.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\
+        \\declare const o1: undefined | { b: string };
+        \\o1?.["b"];
+        \\
+        \\declare const o2: undefined | { b: { c: string } };
+        \\o2?.["b"].c;
+        \\o2?.b["c"];
+        \\
+        \\declare const o3: { b: undefined | { c: string } };
+        \\o3["b"]?.c;
+        \\o3.b?.["c"];
+        \\
+        \\declare const o4: { b?: { c: { d?: { e: string } } } };
+        \\o4.b?.["c"].d?.e;
+        \\o4.b?.["c"].d?.["e"];
+        \\
+        \\declare const o5: { b?(): { c: { d?: { e: string } } } };
+        \\o5.b?.()["c"].d?.e;
+        \\o5.b?.()["c"].d?.["e"];
+        \\o5["b"]?.()["c"].d?.e;
+        \\o5["b"]?.()["c"].d?.["e"];
+        \\
+        \\// GH#33744
+        \\declare const o6: <T>() => undefined | ({ x: number });
+        \\o6<number>()?.["x"];
+        \\
+        \\// GH#36031
+        \\o2?.["b"]!.c;
+        \\o2?.["b"]!["c"];
+        \\o2?.["b"]!.c!;
+        \\o2?.["b"]!["c"]!;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: elementAccessChain.2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "elementAccessChain.2",
+        .path = "elementAccessChain.2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\declare const o1: undefined | { b: string };
+        \\o1?.["b"];
+        \\
+        \\declare const o2: undefined | { b: { c: string } };
+        \\o2?.["b"].c;
+        \\o2?.b["c"];
+        \\
+        \\declare const o3: { b: undefined | { c: string } };
+        \\o3["b"]?.c;
+        \\o3.b?.["c"];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: thisMethodCall optional chain passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "thisMethodCall",
