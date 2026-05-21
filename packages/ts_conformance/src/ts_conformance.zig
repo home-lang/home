@@ -4120,6 +4120,152 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: callSignaturesThatDifferOnlyByReturnType passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "callSignaturesThatDifferOnlyByReturnType",
+        .path = "callSignaturesThatDifferOnlyByReturnType.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// Each pair of signatures in these types has a signature that should cause an error.
+        \\// Overloads, generic or not, that differ only by return type are an error.
+        \\interface I {
+        \\    (x): number;
+        \\    (x): void; // error
+        \\    <T>(x: T): number;
+        \\    <T>(x: T): string; // error
+        \\}
+        \\
+        \\interface I2 {
+        \\    <T>(x: T): number;
+        \\    <T>(x: T): string; // error
+        \\}
+        \\
+        \\interface I3<T> {
+        \\    (x: T): number;
+        \\    (x: T): string; // error
+        \\}
+        \\
+        \\var a: {
+        \\    (x, y): Object;
+        \\    (x, y): any; // error
+        \\}
+        \\
+        \\var a2: {
+        \\    <T>(x: T): number;
+        \\    <T>(x: T): string; // error
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: specializedSignatureIsSubtypeOfNonSpecializedSignature passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "specializedSignatureIsSubtypeOfNonSpecializedSignature",
+        .path = "specializedSignatureIsSubtypeOfNonSpecializedSignature.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// Specialized signatures must be a subtype of a non-specialized signature
+        \\// All the below should not be errors
+        \\
+        \\function foo(x: 'a');
+        \\function foo(x: string);
+        \\function foo(x: any) { }
+        \\
+        \\class C {
+        \\    foo(x: 'a');
+        \\    foo(x: string);
+        \\    foo(x: any) { }
+        \\}
+        \\
+        \\class C2<T> {
+        \\    foo(x: 'a');
+        \\    foo(x: string);
+        \\    foo(x: T);
+        \\    foo(x: any) { }
+        \\}
+        \\
+        \\class C3<T extends String> {
+        \\    foo(x: 'a');
+        \\    foo(x: string);
+        \\    foo(x: T);
+        \\    foo(x: any) { }
+        \\}
+        \\
+        \\interface I {
+        \\    (x: 'a');
+        \\    (x: number);
+        \\    (x: string);
+        \\    foo(x: 'a');
+        \\    foo(x: string);
+        \\    foo(x: number);
+        \\}
+        \\
+        \\interface I2<T> {
+        \\    (x: 'a');
+        \\    (x: T);
+        \\    (x: string);
+        \\    foo(x: 'a');
+        \\    foo(x: string);
+        \\    foo(x: T);
+        \\}
+        \\
+        \\interface I3<T extends String> {
+        \\    (x: 'a');
+        \\    (x: string);
+        \\    (x: T);
+        \\    foo(x: 'a');
+        \\    foo(x: string);
+        \\    foo(x: T);
+        \\}
+        \\
+        \\var a: {
+        \\    (x: string);
+        \\    (x: 'a');
+        \\    (x: number);
+        \\    foo(x: string);
+        \\    foo(x: 'a');
+        \\    foo(x: number);
+        \\}
+        \\
+        \\var a2: {
+        \\    (x: 'a');
+        \\    (x: string);
+        \\    <T>(x: T);
+        \\    foo(x: string);
+        \\    foo(x: 'a');
+        \\    foo<T>(x: T);
+        \\}
+        \\
+        \\var a3: {
+        \\    (x: 'a');
+        \\    <T>(x: T);
+        \\    (x: string);
+        \\    foo(x: string);
+        \\    foo(x: 'a');
+        \\    foo<T extends String>(x: T);
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: typeParameterUsedAsTypeParameterConstraint2 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "typeParameterUsedAsTypeParameterConstraint2",
