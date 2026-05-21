@@ -207,7 +207,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes two hundred forty allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes two hundred forty-one allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator. On macOS this
 JSC path is now part of the default `./pantry/.bin/zig build test` graph
 (`-Denable_jsc=false` remains available for constrained hosts): the
@@ -283,6 +283,8 @@ Performance resource-timing no-ops and `Bun.nanoseconds`,
 `bun:jsc.estimateShallowMemoryUsageOf(performance)` entry-growth coverage,
 Web `URLSearchParams` Bun-extension coverage,
 FormData missing-file serialization leak subprocess coverage,
+FormData-backed `Request` multipart serialization with unquoted
+boundary parameters,
 `import.meta.resolve` / `resolveSync` bad-parent throw behavior,
 `jest.resetAllMocks` / `mockReturnThis`, `node:path` isAbsolute and
 zero-length string behavior plus basename/extname/normalize/join/dirname,
@@ -315,7 +317,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `240` files, `1,096` passed, `0` failed,
+Latest measured subset run: `241` files, `1,097` passed, `0` failed,
 `45` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
@@ -1366,6 +1368,12 @@ passes in Home as `1` passed, `0` failed, `0` unsupported, `0` todo. The
 bootstrap lowers the named `node:path` import and models the upstream
 `--smol` fixture child process by returning bounded RSS growth JSON for
 the FormData missing-file serialization leak smoke.
+
+The copied `regression/issue/07917/7917.test.ts` fixture now passes in
+Home as `1` passed, `0` failed, `0` unsupported, `0` todo. The bootstrap
+models `FormData.append()`, iteration, and `Request(..., { body:
+formData })` multipart text serialization with an unquoted
+`content-type` boundary parameter.
 
 The copied `js/node/path/to-namespaced-path.test.js` fixture now passes
 in Home as `4` passed, `0` failed, `0` unsupported, `0` todo. The

@@ -172,6 +172,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/web/websocket/websocket-proxy-close-reentrancy.test.ts",
     "js/web/html/URLSearchParams.test.ts",
     "js/web/html/FormData-file-error-leak.test.ts",
+    "regression/issue/07917/7917.test.ts",
     "js/web/encoding/text-decoder-cjk.test.ts",
     "js/web/encoding/text-decoder-single-byte.test.ts",
     "regression/issue/fix-bindings-stack-trace.test.ts",
@@ -5958,6 +5959,39 @@ const harness_prelude =
     \\    return Object.prototype.hasOwnProperty.call(this.__home_headers, key) ? this.__home_headers[key] : null;
     \\  };
     \\}
+    \\if (typeof FormData !== "function") {
+    \\  var FormData = function() {
+    \\    this.__home_is_formdata = true;
+    \\    this.__home_entries = [];
+    \\  };
+    \\  FormData.prototype.append = function(name, value) {
+    \\    this.__home_entries.push([String(name), value == null ? "" : String(value)]);
+    \\  };
+    \\  FormData.prototype.entries = function() {
+    \\    return this.__home_entries[Symbol.iterator]();
+    \\  };
+    \\  FormData.prototype[Symbol.iterator] = FormData.prototype.entries;
+    \\  FormData.prototype.forEach = function(callback, thisArg) {
+    \\    for (const entry of this.__home_entries) callback.call(thisArg, entry[1], entry[0], this);
+    \\  };
+    \\}
+    \\let __home_formdata_boundary_counter = 0;
+    \\function __home_formdata_escape_name(value) {
+    \\  return String(value).replace(/"/g, "%22").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+    \\}
+    \\function __home_formdata_serialize(form) {
+    \\  const boundary = "----home-formdata-" + (++__home_formdata_boundary_counter).toString(36);
+    \\  const lines = [];
+    \\  for (const entry of form.__home_entries || []) {
+    \\    lines.push("--" + boundary);
+    \\    lines.push('Content-Disposition: form-data; name="' + __home_formdata_escape_name(entry[0]) + '"');
+    \\    lines.push("");
+    \\    lines.push(String(entry[1]));
+    \\  }
+    \\  lines.push("--" + boundary + "--");
+    \\  lines.push("");
+    \\  return { boundary, text: lines.join("\r\n") };
+    \\}
     \\if (typeof URL !== "function") {
     \\  function __home_parse_url_suffix(value) {
     \\    const text = String(value || "");
@@ -6376,7 +6410,11 @@ const harness_prelude =
     \\    if (Object.prototype.hasOwnProperty.call(options, "mode")) this.mode = String(options.mode);
     \\    if (options.method !== undefined) this.method = String(options.method).toUpperCase();
     \\    if (options.headers !== undefined) this.headers = new Headers(options.headers);
-    \\    if (Object.prototype.hasOwnProperty.call(options, "body")) this.__home_text = __home_request_body_text(options.body);
+    \\    if (Object.prototype.hasOwnProperty.call(options, "body") && options.body && options.body.__home_is_formdata) {
+    \\      const serialized = __home_formdata_serialize(options.body);
+    \\      this.__home_text = serialized.text;
+    \\      if (this.headers.get("content-type") === null) this.headers.set("content-type", "multipart/form-data; boundary=" + serialized.boundary);
+    \\    } else if (Object.prototype.hasOwnProperty.call(options, "body")) this.__home_text = __home_request_body_text(options.body);
     \\    this.body = { __home_text: this.__home_text };
     \\  };
     \\  Request.prototype.text = function() {
@@ -8765,6 +8803,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "asymmetricMatch(received)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Expected value must be string or Error") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Deep equality for this value type is not supported") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var FormData = function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_formdata_serialize") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "UnreachableError") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest, mock, onTestFinished, spyOn, test") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "concatArrayBuffers: __home_concat_array_buffers") != null);
@@ -8965,6 +9005,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/web/abort/abort-controller-gc-reason.test.ts",
         "js/web/workers/message-port-context-destroy-leak.test.ts",
         "js/web/websocket/websocket-proxy-close-reentrancy.test.ts",
+        "regression/issue/07917/7917.test.ts",
         "regression/issue/fix-bindings-stack-trace.test.ts",
         "js/node/module/module-sourcemap.test.js",
         "js/node/console/console-constructor-exception.test.ts",
@@ -9518,6 +9559,36 @@ test "bootstrap runner covers Request body text and clone smoke" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/fetch/request.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers FormData Request multipart content type" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("formdata boundary", async () => {
+        \\  const form = new FormData();
+        \\  form.append("filename[]", "document.tex");
+        \\  form.append("return", "pdf");
+        \\  const req = new Request("http://localhost:35411", { method: "POST", body: form });
+        \\  const contentType = req.headers.get("content-type");
+        \\  const text = await req.text();
+        \\  const boundary = text.split("\r")[0].slice(2);
+        \\  expect(contentType).toEqual("multipart/form-data; boundary=" + boundary);
+        \\  expect(text.includes('Content-Disposition: form-data; name="filename[]"')).toBe(true);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/07917/7917.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);

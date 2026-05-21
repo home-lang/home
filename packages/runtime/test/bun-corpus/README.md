@@ -17,7 +17,7 @@ macOS, Linux, and the WASM target.
   bootstrap path exists for the current allowlist:
   `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
-  Latest measured subset run: `240` files, `1,096` passed, `0` failed,
+  Latest measured subset run: `241` files, `1,097` passed, `0` failed,
   `45` todo. That subset currently executes the todo-registration smoke, three Node
   `assert` CommonJS smokes, Node `path` smokes, three Node `url` smokes, the Web
   `atob`/`btoa` smoke, fifty-five regression smokes, one bundler
@@ -52,6 +52,8 @@ macOS, Linux, and the WASM target.
   Performance resource-timing no-ops and `Bun.nanoseconds`,
   Web `URLSearchParams` Bun-extension coverage,
   FormData missing-file serialization leak subprocess coverage,
+  FormData-backed `Request` multipart serialization with unquoted
+  boundary parameters,
   `bun:jsc.estimateShallowMemoryUsageOf(performance)` entry-growth coverage, Deno `performance`, Deno `Event` / `CustomEvent` /
   `AbortController`, a Deno `URLSearchParams` bootstrap smoke, and narrow bootstrap coverage for Node
   `DOMException`, Web `Response.json` / `Response.redirect`, Web `Request`

@@ -189,6 +189,8 @@ Performance resource-timing no-ops and `Bun.nanoseconds`,
 `bun:jsc.estimateShallowMemoryUsageOf(performance)` entry-growth coverage,
 Web `URLSearchParams` Bun-extension coverage,
 FormData missing-file serialization leak subprocess coverage,
+FormData-backed `Request` multipart serialization with unquoted
+boundary parameters,
 `node:vm.runInNewContext`, DOMException, native constructor identity,
 mutable `globalThis` prototype behavior, comment-only module-load smoke,
 `Bun.file(...).type` explicit and `.css` MIME behavior,
@@ -904,6 +906,10 @@ The copied `js/web/html/FormData-file-error-leak.test.ts` fixture now
 passes as `1` test through the subprocess fixture model. It covers named
 `node:path` import lowering plus bounded RSS-growth JSON returned for the
 upstream `--smol` FormData missing-file serialization leak child process.
+The copied `regression/issue/07917/7917.test.ts` fixture now passes as
+`1` test through the Web bootstrap model. It covers `FormData.append()`,
+entry iteration, and `Request` multipart body serialization whose
+`content-type` boundary parameter remains unquoted.
 The copied `js/node/path/to-namespaced-path.test.js` fixture now passes
 as `4` tests through the path bootstrap model. It covers
 `path.toNamespacedPath`, `path._makeLong`, posix/win32 namespace variants,
