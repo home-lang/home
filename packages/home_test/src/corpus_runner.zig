@@ -195,6 +195,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/path/path.test.js",
     "js/node/path/posix-relative-on-windows.test.js",
     "js/node/path/resolve.test.js",
+    "js/node/path/to-namespaced-path.test.js",
     "js/bun/test/scheduling/multi-file/test1.fixture.ts",
     "js/bun/test/scheduling/multi-file/test2.fixture.ts",
     "js/bun/test/only-flag-fixtures/file0.fixture.ts",
@@ -4968,8 +4969,29 @@ const harness_prelude =
     \\  }
     \\  return text.slice(0, end);
     \\}
+    \\function __home_path_posix_to_namespaced_path(value) {
+    \\  return value;
+    \\}
+    \\function __home_path_win32_to_namespaced_path(value) {
+    \\  if (typeof value !== "string") return value;
+    \\  if (value.length === 0) return "";
+    \\  let text = value.replace(/\//g, "\\");
+    \\  if (text.startsWith("\\\\.\\")) return text;
+    \\  if (text.startsWith("\\\\?\\")) {
+    \\    let rest = text.slice(4).replace(/\\+/g, "\\");
+    \\    if (!/^[A-Za-z]:\\/.test(rest) && !/^UNC\\/i.test(rest) && !rest.endsWith("\\")) rest += "\\";
+    \\    return "\\\\?\\" + rest;
+    \\  }
+    \\  if (/^[A-Za-z]:\\/.test(text)) return "\\\\?\\" + __home_path_win32_normalize(text);
+    \\  if (/^\\\\[^\\]+\\[^\\]*/.test(text)) return "\\\\?\\UNC\\" + __home_path_win32_normalize(text).slice(2);
+    \\  return __home_path_win32_resolve(text);
+    \\}
     \\const __home_path_posix = { join: __home_path_posix_join, dirname: __home_path_posix_dirname, isAbsolute: __home_path_posix_is_absolute, normalize: __home_path_posix_normalize, resolve: __home_path_posix_resolve, relative: __home_path_posix_relative, basename: __home_path_posix_basename, extname: __home_path_posix_extname, parse: __home_path_posix_parse, format: __home_path_posix_format, sep: "/", delimiter: ":" };
     \\const __home_path_win32 = { join: __home_path_win32_join, dirname: __home_path_win32_dirname, isAbsolute: __home_path_win32_is_absolute, normalize: __home_path_win32_normalize, resolve: __home_path_win32_resolve, relative: __home_path_win32_relative, basename: __home_path_win32_basename, extname: __home_path_win32_extname, parse: __home_path_win32_parse, format: __home_path_win32_format, sep: "\\", delimiter: ";" };
+    \\__home_path_posix.toNamespacedPath = __home_path_posix_to_namespaced_path;
+    \\__home_path_posix._makeLong = __home_path_posix_to_namespaced_path;
+    \\__home_path_win32.toNamespacedPath = __home_path_win32_to_namespaced_path;
+    \\__home_path_win32._makeLong = __home_path_win32_to_namespaced_path;
     \\__home_path_posix.posix = __home_path_posix;
     \\__home_path_posix.win32 = __home_path_win32;
     \\__home_path_win32.posix = __home_path_posix;
@@ -4981,6 +5003,7 @@ const harness_prelude =
     \\globalThis.__home_modules["node:path"] = __home_path_module;
     \\globalThis.__home_modules["path/posix"] = __home_path_posix;
     \\globalThis.__home_modules["path/win32"] = __home_path_win32;
+    \\globalThis.__home_modules["js/node/path/common/fixtures.js"] = { path(name) { return __home_path_posix_join(globalThis.__home_current_dirname, "common", String(name)); } };
     \\globalThis.__home_modules["assert/strict"] = {
     \\  deepStrictEqual(actual, expected) {
     \\    if (!__home_deep_equal(actual, expected, true, new Map())) {
@@ -5397,6 +5420,9 @@ const harness_prelude =
     \\  }
     \\  if (name === "./index.html" && globalThis.__home_current_dirname === "bake/fixtures/deinitialization") {
     \\    return "bake/fixtures/deinitialization/index.html";
+    \\  }
+    \\  if (name === "./common/fixtures.js" && globalThis.__home_current_dirname === "js/node/path") {
+    \\    return "js/node/path/common/fixtures.js";
     \\  }
     \\  return name;
     \\}
@@ -7246,6 +7272,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const path = globalThis.__home_import(\"node:path\");",
         },
         .{
+            .needle = "import fixtures from \"./common/fixtures.js\";",
+            .replacement = "const fixtures = globalThis.__home_import(\"./common/fixtures.js\");",
+        },
+        .{
             .needle = "import { join } from \"node:path\";",
             .replacement = "const { join } = globalThis.__home_import(\"node:path\");",
         },
@@ -7871,6 +7901,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_path_relative") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_path_posix_resolve") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_path_win32_resolve") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_path_win32_to_namespaced_path") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "js/node/path/common/fixtures.js") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:url\"] = __home_url_module") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "URL.canParse = function(input, base)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "domainToASCII(value)") != null);
@@ -8227,6 +8259,19 @@ test "Node path import rewrite lowers named node:path import" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { join } = globalThis.__home_import(\"node:path\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"node:path\"") == null);
+}
+
+test "Node path import rewrite lowers path fixtures import" {
+    const source =
+        \\import { test } from "bun:test";
+        \\import fixtures from "./common/fixtures.js";
+        \\test("fixture", () => fixtures.path("a.js"));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/node/path/to-namespaced-path.test.js");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const fixtures = globalThis.__home_import(\"./common/fixtures.js\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"./common/fixtures.js\"") == null);
 }
 
 test "Bun harness import rewrite lowers isWindows import" {

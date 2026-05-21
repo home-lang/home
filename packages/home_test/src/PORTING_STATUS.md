@@ -157,8 +157,9 @@ type-only `expectTypeOf` doctest module loading,
 `node:path` / `path` join and posix/win32 identity smokes,
 isAbsolute / normalize / resolve / relative empty-string smokes,
 basename / extname / normalize / join / dirname / parse / format / resolve path
-table smokes, posix/win32 relative path table smokes, and path
-namespace / invalid-argument coverage,
+table smokes, posix/win32 relative path table smokes,
+`toNamespacedPath` / `_makeLong` namespace conversion, and path namespace
+/ invalid-argument coverage,
 `node:url` URL.canParse, url.format empty-input, POSIX pathToFileURL,
 and WHATWG URL auth stripping plus domainToASCII/domainToUnicode smokes,
 skipped Node URL null-character / internal URL smokes,
@@ -823,6 +824,10 @@ The copied `js/web/html/FormData-file-error-leak.test.ts` fixture now
 passes as `1` test through the subprocess fixture model. It covers named
 `node:path` import lowering plus bounded RSS-growth JSON returned for the
 upstream `--smol` FormData missing-file serialization leak child process.
+The copied `js/node/path/to-namespaced-path.test.js` fixture now passes
+as `4` tests through the path bootstrap model. It covers
+`path.toNamespacedPath`, `path._makeLong`, posix/win32 namespace variants,
+and the upstream `./common/fixtures.js` path helper import.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers supported `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

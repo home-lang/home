@@ -200,7 +200,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes one hundred fifty-five allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes one hundred fifty-six allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator when
 `home` is built with `./pantry/.bin/zig build -Denable_jsc=true`: the
 todo-registration smoke, the Web `atob`/`btoa` smoke, twenty-four
@@ -257,7 +257,8 @@ FormData missing-file serialization leak subprocess coverage,
 `import.meta.resolve` / `resolveSync` bad-parent throw behavior,
 `jest.resetAllMocks` / `mockReturnThis`, `node:path` isAbsolute and
 zero-length string behavior plus basename/extname/normalize/join/dirname,
-parse/format, resolve, relative path table coverage, and path namespace
+parse/format, resolve, relative path table coverage,
+`toNamespacedPath` / `_makeLong` namespace conversion, and path namespace
 validation / separator coverage,
 `Bun.concatArrayBuffers` and byte-wise ArrayBuffer / typed-array equality,
 the `Bun.escapeHTML` utility corpus smoke, `describe.todo` registration
@@ -282,7 +283,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `155` files, `657` passed, `0` failed,
+Latest measured subset run: `156` files, `661` passed, `0` failed,
 `40` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
@@ -1260,6 +1261,12 @@ passes in Home as `1` passed, `0` failed, `0` unsupported, `0` todo. The
 bootstrap lowers the named `node:path` import and models the upstream
 `--smol` fixture child process by returning bounded RSS growth JSON for
 the FormData missing-file serialization leak smoke.
+
+The copied `js/node/path/to-namespaced-path.test.js` fixture now passes
+in Home as `4` passed, `0` failed, `0` unsupported, `0` todo. The
+bootstrap adds `path.toNamespacedPath`, `path._makeLong`, and the
+`posix` / `win32` namespace variants, plus a narrow path fixture module
+mapping for the upstream `./common/fixtures.js` import.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
