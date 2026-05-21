@@ -207,11 +207,11 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes two hundred thirty-five allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes two hundred thirty-six allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator. On macOS this
 JSC path is now part of the default `./pantry/.bin/zig build test` graph
 (`-Denable_jsc=false` remains available for constrained hosts): the
-todo-registration smoke, the Web `atob`/`btoa` smoke, fifty-four
+todo-registration smoke, the Web `atob`/`btoa` smoke, fifty-five
 regression smokes, one bundler constant-fold smoke, bundler
 `allowUnresolved`, banner, barrel, browser-target builtin diagnostics, CJS,
 CJS-to-ESM, compile-autoload, compile-splitting, decorator metadata,
@@ -304,14 +304,15 @@ plus one snapshot `test.todo` fixture whose
 snapshot body remains intentionally unexecuted. The bootstrap harness is installed once
 per JSC engine, resets counters before each file, lowers supported
 `bun:test` imports through a virtual
-`globalThis.__home_import("bun:test")` module shim, and fails closed as
-unsupported for unsupported import shapes, unsupported module syntax,
+`globalThis.__home_import("bun:test")` module shim, exposes `spyOn` /
+`jest.spyOn` call tracking and stack-safe wrapper behavior, and fails closed as
+unsupported for unsupported module syntax,
 pending async work, async `onTestFinished` callbacks, explicit unsupported shim paths, and files that
 register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `235` files, `1,062` passed, `0` failed,
+Latest measured subset run: `236` files, `1,063` passed, `0` failed,
 `45` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
@@ -1382,9 +1383,9 @@ the upstream invalid-input block remains registered as `test.todo`.
 
 The `home_test` facade now carries a compile-only native ESM smoke for
 the canonical source `import { test, expect } from "bun:test";`. That
-smoke verifies the source is not lowered through the bootstrap
-`globalThis.__home_import("bun:test")` rewrite path and records the
-runtime blocker as `native-esm-loader-missing`.
+smoke preserves the canonical static source, verifies the bootstrap bridge
+can lower it through `globalThis.__home_import("bun:test")`, and records
+the runtime blocker as `native-esm-loader-missing`.
 
 The copied `bun/src/sql/postgres/CommandTag.zig` parser now lives in
 `packages/runtime/src/sql/postgres/CommandTag.zig`, wired through

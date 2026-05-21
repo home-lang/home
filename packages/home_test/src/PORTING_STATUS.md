@@ -112,9 +112,10 @@ apart from the Home license header; the target proves positive matches,
 the copied length-property path used by Bun's matcher implementation.
 
 The facade also includes a compile-only native ESM smoke for the exact
-static source `import { test, expect } from "bun:test";`. It verifies that
-this source intentionally stays outside the bootstrap rewrite path and
-that Home's Bun-derived `JSModuleLoader` bridge shape is visible. Runtime
+static source `import { test, expect } from "bun:test";`. It preserves the
+canonical source, verifies the bootstrap bridge can lower it through
+`globalThis.__home_import("bun:test")`, and checks that Home's Bun-derived
+`JSModuleLoader` bridge shape is visible. Runtime
 execution remains blocked as `native-esm-loader-missing` until Home grows
 the JavaScriptCore C++ module bridge and synthetic `bun:test` module.
 
@@ -913,7 +914,7 @@ The copied `js/node/url/url-fileurltopath.test.js` fixture now passes as
 `1` executable test plus `1` upstream todo through the URL bootstrap
 model. It covers POSIX `url.fileURLToPath` string and `URL` roundtrips.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
-rewrite lowers supported `bun:test` imports to a virtual
+rewrite lowers named `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers
 `import.meta.dir/path` to the same per-file metadata used for the
 directory and filename globals. Unsupported deep-equality types such as

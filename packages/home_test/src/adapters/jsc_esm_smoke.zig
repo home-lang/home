@@ -16,12 +16,12 @@ test "native bun:test ESM smoke keeps canonical static import source" {
     try std.testing.expectEqualStrings("native-esm-loader-missing", blocked_reason);
 }
 
-test "native bun:test ESM smoke documents bootstrap rewrite boundary" {
+test "native bun:test ESM smoke documents bootstrap rewrite bridge" {
     const rewritten = try corpus_runner.rewriteBunTestImport(std.testing.allocator, native_bun_test_import_source, "native/bun-test-esm-smoke.test.js");
     defer std.testing.allocator.free(rewritten);
 
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "import { test, expect } from \"bun:test\";") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rewritten, "globalThis.__home_import(\"bun:test\")") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { test, expect } = globalThis.__home_import(\"bun:test\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "import { test, expect } from \"bun:test\";") == null);
 }
 
 test "native bun:test ESM smoke sees Bun-derived module loader bridge shape" {

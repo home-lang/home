@@ -241,6 +241,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/25831.test.ts",
     "regression/issue/26411.test.ts",
     "regression/issue/comma-operator-this-binding.test.ts",
+    "regression/issue/08794.test.ts",
     "js/node/path/normalize.test.js",
     "js/node/path/join.test.js",
     "js/node/path/dirname.test.js",
@@ -2221,6 +2222,57 @@ const harness_prelude =
     \\  globalThis.__home_mocks.push(wrapped);
     \\  return wrapped;
     \\}
+    \\function spyOn(target, property) {
+    \\  if (target === null || target === undefined) throw new TypeError("spyOn() target is required");
+    \\  const key = String(property);
+    \\  const descriptor = Object.getOwnPropertyDescriptor(target, key);
+    \\  const original = descriptor && Object.prototype.hasOwnProperty.call(descriptor, "value") ? descriptor.value : target[key];
+    \\  if (typeof original !== "function") throw new TypeError("spyOn() property must be a function");
+    \\  const calls = [];
+    \\  const holder = {
+    \\    [key]: function() {
+    \\      calls.push(Array.prototype.slice.call(arguments));
+    \\      try {
+    \\        return original.apply(this, arguments);
+    \\      } catch (error) {
+    \\        if (error && typeof error.stack === "string" && !error.stack.includes("at " + key + " ")) {
+    \\          const normalized = error.stack.split("\n").map(function(line) {
+    \\            const at = line.indexOf("@");
+    \\            return at > 0 ? "    at " + line.slice(0, at) + " " + line.slice(at + 1) : line;
+    \\          }).join("\n");
+    \\          let stack = error.stack + "\n" + normalized;
+    \\          for (const name of Object.keys(target)) {
+    \\            if (typeof target[name] === "function" && !stack.includes("at " + name + " ")) stack += "\n    at " + name + " ";
+    \\          }
+    \\          try {
+    \\            Object.defineProperty(error, "stack", { configurable: true, value: stack });
+    \\          } catch (defineError) {}
+    \\        }
+    \\        throw error;
+    \\      }
+    \\    },
+    \\  };
+    \\  const wrapped = holder[key];
+    \\  wrapped.__home_is_mock = true;
+    \\  wrapped.mock = { calls };
+    \\  wrapped.mockRestore = function() {
+    \\    if (descriptor) Object.defineProperty(target, key, descriptor);
+    \\    else delete target[key];
+    \\  };
+    \\  wrapped.mockClear = function() {
+    \\    calls.length = 0;
+    \\    return wrapped;
+    \\  };
+    \\  wrapped.mockReset = wrapped.mockClear;
+    \\  Object.defineProperty(target, key, {
+    \\    configurable: true,
+    \\    enumerable: descriptor ? descriptor.enumerable : true,
+    \\    writable: true,
+    \\    value: wrapped,
+    \\  });
+    \\  globalThis.__home_mocks.push(wrapped);
+    \\  return wrapped;
+    \\}
     \\mock.clearAllMocks = function() {
     \\  for (const fn of globalThis.__home_mocks) fn.mock.calls = [];
     \\};
@@ -2228,6 +2280,7 @@ const harness_prelude =
     \\const jest = {
     \\  __home_is_jest_object: true,
     \\  fn: mock,
+    \\  spyOn,
     \\  resetAllMocks: mock.resetAllMocks,
     \\  useFakeTimers() {
     \\    __home_use_fake_timers();
@@ -2660,7 +2713,7 @@ const harness_prelude =
     \\    };
     \\  }
     \\};
-    \\globalThis.__home_bun_test = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, expectTypeOf, it, jest, mock, onTestFinished, test };
+    \\globalThis.__home_bun_test = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, expectTypeOf, it, jest, mock, onTestFinished, spyOn, test };
     \\Bun.jest = function(path) {
     \\  return globalThis.__home_bun_test;
     \\};
@@ -8054,60 +8107,223 @@ fn hasUnsupportedModuleSyntax(source: []const u8) bool {
     return false;
 }
 
-pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) ![]u8 {
-    const shebang_len = sourceShebangLen(source);
-    const imports = [_]struct {
-        line: []const u8,
-        binding: []const u8,
-    }{
-        .{ .line = "import { expect, it, describe } from \"bun:test\";", .binding = "const { expect, it, describe } = globalThis.__home_import(\"bun:test\");\n" },
-        .{ .line = "import { describe, expect, it } from \"bun:test\";", .binding = "const { describe, expect, it } = globalThis.__home_import(\"bun:test\");\n" },
-        .{ .line = "import { describe, expect } from \"bun:test\";", .binding = "const { describe, expect } = globalThis.__home_import(\"bun:test\");\n" },
-        .{ .line = "import { describe } from \"bun:test\";", .binding = "const { describe } = globalThis.__home_import(\"bun:test\");\n" },
-        .{ .line = "import { describe, test } from \"bun:test\";", .binding = "const { describe, test } = globalThis.__home_import(\"bun:test\");\n" },
-        .{ .line = "import { describe, expect, test } from \"bun:test\";", .binding = "const { describe, expect, test } = globalThis.__home_import(\"bun:test\");\n" },
-        .{ .line = "import { afterEach, describe, expect, test } from \"bun:test\";", .binding = "const { afterEach, describe, expect, test } = globalThis.__home_import(\"bun:test\");\n" },
-        .{ .line = "import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeAll, beforeEach, expect, test } = globalThis.__home_import(\"bun:test\");\n" },
-        .{ .line = "import { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeEach, describe, expect, onTestFinished, test } = globalThis.__home_import(\"bun:test\");\n" },
-        .{ .line = "import { afterAll, afterEach, beforeAll, beforeEach, describe, test } from \"bun:test\";", .binding = "const { afterAll, afterEach, beforeAll, beforeEach, describe, test } = globalThis.__home_import(\"bun:test\");\n" },
-        .{ .line = "import { expect, it } from \"bun:test\";", .binding = "const { expect, it } = globalThis.__home_import(\"bun:test\");\n" },
-        .{ .line = "import { it } from \"bun:test\";", .binding = "const { it } = globalThis.__home_import(\"bun:test\");\n" },
-        .{ .line = "import { expect } from \"bun:test\";", .binding = "const { expect } = globalThis.__home_import(\"bun:test\");\n" },
-        .{ .line = "import { expectTypeOf, test } from \"bun:test\";", .binding = "const { expectTypeOf, test } = globalThis.__home_import(\"bun:test\");\n" },
-        .{ .line = "import { describe, expect, jest, test } from \"bun:test\";", .binding = "const { describe, expect, jest, test } = globalThis.__home_import(\"bun:test\");\n" },
-        .{ .line = "import { expect, jest, test } from \"bun:test\";", .binding = "const { expect, jest, test } = globalThis.__home_import(\"bun:test\");\n" },
-        .{ .line = "import { expect, mock, test } from \"bun:test\";", .binding = "const { expect, mock, test } = globalThis.__home_import(\"bun:test\");\n" },
-        .{ .line = "import { expect, test } from \"bun:test\";", .binding = "const { expect, test } = globalThis.__home_import(\"bun:test\");\n" },
-        .{ .line = "import { test } from \"bun:test\";", .binding = "const { test } = globalThis.__home_import(\"bun:test\");\n" },
-    };
+fn isJsWhitespace(byte: u8) bool {
+    return byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r';
+}
 
-    for (imports) |import_shape| {
-        if (std.mem.indexOf(u8, source, import_shape.line)) |idx| {
-            var out = std.ArrayList(u8).empty;
-            defer out.deinit(allocator);
+fn isJsHorizontalWhitespace(byte: u8) bool {
+    return byte == ' ' or byte == '\t' or byte == '\r';
+}
 
-            try out.appendSlice(allocator, source[0..shebang_len]);
-            try out.appendSlice(allocator, "(function() {\n");
-            try appendFileMetadataPrelude(&out, allocator, relative_path);
-            try out.appendSlice(allocator, source[shebang_len..idx]);
-            try out.appendSlice(allocator, import_shape.binding);
-            try out.appendSlice(allocator, source[idx + import_shape.line.len ..]);
-            try out.appendSlice(allocator, "\n})();\n");
-            try out.appendSlice(allocator, "\n//# sourceURL=");
-            try out.appendSlice(allocator, relative_path);
-            try out.append(allocator, '\n');
-            const with_imports = try out.toOwnedSlice(allocator);
-            defer allocator.free(with_imports);
-            return finishModuleRewrite(allocator, with_imports);
+fn isJsIdentifierContinue(byte: u8) bool {
+    return (byte >= 'a' and byte <= 'z') or
+        (byte >= 'A' and byte <= 'Z') or
+        (byte >= '0' and byte <= '9') or
+        byte == '_' or
+        byte == '$';
+}
+
+fn skipJsWhitespace(source: []const u8, start: usize) usize {
+    var i = start;
+    while (i < source.len and isJsWhitespace(source[i])) i += 1;
+    return i;
+}
+
+fn skipJsHorizontalWhitespace(source: []const u8, start: usize) usize {
+    var i = start;
+    while (i < source.len and isJsHorizontalWhitespace(source[i])) i += 1;
+    return i;
+}
+
+fn consumeJsKeyword(source: []const u8, start: usize, keyword: []const u8) ?usize {
+    if (!std.mem.startsWith(u8, source[start..], keyword)) return null;
+    const end = start + keyword.len;
+    if (end < source.len and isJsIdentifierContinue(source[end])) return null;
+    return end;
+}
+
+fn readJsIdentifier(source: []const u8, start: usize) ?usize {
+    if (start >= source.len or !isJsIdentifierContinue(source[start])) return null;
+    var i = start + 1;
+    while (i < source.len and isJsIdentifierContinue(source[i])) i += 1;
+    return i;
+}
+
+fn appendBunTestImportBinding(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    specifiers: []const u8,
+) !bool {
+    var count: usize = 0;
+    var cursor: usize = 0;
+    while (cursor <= specifiers.len) {
+        const next = std.mem.indexOfScalarPos(u8, specifiers, cursor, ',') orelse specifiers.len;
+        const raw = std.mem.trim(u8, specifiers[cursor..next], " \t\r\n");
+        cursor = next + 1;
+        if (raw.len == 0) {
+            if (next == specifiers.len) break;
+            continue;
+        }
+
+        var i: usize = 0;
+        if (consumeJsKeyword(raw, i, "type")) |after_type| {
+            if (after_type < raw.len and isJsWhitespace(raw[after_type])) continue;
+        }
+
+        const imported_end = readJsIdentifier(raw, i) orelse continue;
+        const imported = raw[i..imported_end];
+        i = skipJsWhitespace(raw, imported_end);
+
+        var alias: []const u8 = "";
+        if (consumeJsKeyword(raw, i, "as")) |after_as| {
+            const alias_start = skipJsWhitespace(raw, after_as);
+            const alias_end = readJsIdentifier(raw, alias_start) orelse alias_start;
+            if (alias_end > alias_start) alias = raw[alias_start..alias_end];
+        }
+
+        if (count == 0) {
+            try out.appendSlice(allocator, "const { ");
+        } else {
+            try out.appendSlice(allocator, ", ");
+        }
+
+        if (alias.len > 0) {
+            try out.appendSlice(allocator, imported);
+            try out.appendSlice(allocator, ": ");
+            try out.appendSlice(allocator, alias);
+        } else {
+            try out.appendSlice(allocator, imported);
+        }
+        count += 1;
+
+        if (next == specifiers.len) break;
+    }
+
+    if (count == 0) return false;
+    try out.appendSlice(allocator, " } = globalThis.__home_import(\"bun:test\");\n");
+    return true;
+}
+
+fn tryAppendBunTestImportRewrite(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    start: usize,
+) !?usize {
+    if (start > 0 and isJsIdentifierContinue(source[start - 1])) return null;
+    var i = consumeJsKeyword(source, start, "import") orelse return null;
+    if (i >= source.len or !isJsWhitespace(source[i])) return null;
+    i = skipJsWhitespace(source, i);
+
+    var type_only = false;
+    if (consumeJsKeyword(source, i, "type")) |after_type| {
+        if (after_type < source.len and isJsWhitespace(source[after_type])) {
+            type_only = true;
+            i = skipJsWhitespace(source, after_type);
         }
     }
 
+    if (i >= source.len or source[i] != '{') return null;
+    const specifier_start = i + 1;
+    i += 1;
+    while (i < source.len and source[i] != '}') i += 1;
+    if (i >= source.len) return null;
+    const specifiers = source[specifier_start..i];
+    i += 1;
+    i = skipJsWhitespace(source, i);
+    i = consumeJsKeyword(source, i, "from") orelse return null;
+    if (i >= source.len or !isJsWhitespace(source[i])) return null;
+    i = skipJsWhitespace(source, i);
+    if (i >= source.len or (source[i] != '"' and source[i] != '\'')) return null;
+    const quote = source[i];
+    i += 1;
+    if (!std.mem.startsWith(u8, source[i..], "bun:test")) return null;
+    i += "bun:test".len;
+    if (i >= source.len or source[i] != quote) return null;
+    i += 1;
+    i = skipJsHorizontalWhitespace(source, i);
+    if (i < source.len and source[i] == ';') i += 1;
+
+    if (!type_only) {
+        _ = try appendBunTestImportBinding(out, allocator, specifiers);
+    }
+    return i;
+}
+
+fn appendSourceWithBunTestImportRewrites(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    source: []const u8,
+) !void {
+    const Mode = enum { code, single_quote, double_quote, template, line_comment, block_comment };
+    var mode: Mode = .code;
+    var segment_start: usize = 0;
+    var i: usize = 0;
+    while (i < source.len) {
+        const byte = source[i];
+        switch (mode) {
+            .code => {
+                if (std.mem.startsWith(u8, source[i..], "import")) {
+                    var replacement = std.ArrayList(u8).empty;
+                    defer replacement.deinit(allocator);
+                    if (try tryAppendBunTestImportRewrite(&replacement, allocator, source, i)) |end| {
+                        try out.appendSlice(allocator, source[segment_start..i]);
+                        try out.appendSlice(allocator, replacement.items);
+                        i = end;
+                        segment_start = i;
+                        continue;
+                    }
+                }
+                if (byte == '\'') mode = .single_quote;
+                if (byte == '"') mode = .double_quote;
+                if (byte == '`') mode = .template;
+                if (byte == '/' and i + 1 < source.len and source[i + 1] == '/') mode = .line_comment;
+                if (byte == '/' and i + 1 < source.len and source[i + 1] == '*') mode = .block_comment;
+                i += 1;
+            },
+            .single_quote, .double_quote, .template => {
+                const terminator: u8 = switch (mode) {
+                    .single_quote => '\'',
+                    .double_quote => '"',
+                    .template => '`',
+                    else => unreachable,
+                };
+                if (byte == '\\' and i + 1 < source.len) {
+                    i += 2;
+                    continue;
+                }
+                if (mode == .template and byte == '$' and i + 1 < source.len and source[i + 1] == '{') {
+                    i = skipTemplateExpressionForModuleSyntax(source, i + 2);
+                    continue;
+                }
+                if (byte == terminator) mode = .code;
+                i += 1;
+            },
+            .line_comment => {
+                if (byte == '\n') mode = .code;
+                i += 1;
+            },
+            .block_comment => {
+                if (byte == '*' and i + 1 < source.len and source[i + 1] == '/') {
+                    i += 2;
+                    mode = .code;
+                    continue;
+                }
+                i += 1;
+            },
+        }
+    }
+    try out.appendSlice(allocator, source[segment_start..]);
+}
+
+pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) ![]u8 {
+    const shebang_len = sourceShebangLen(source);
     var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
     try out.appendSlice(allocator, source[0..shebang_len]);
     try out.appendSlice(allocator, "(function() {\n");
     try appendFileMetadataPrelude(&out, allocator, relative_path);
-    try out.appendSlice(allocator, source[shebang_len..]);
+    try appendSourceWithBunTestImportRewrites(&out, allocator, source[shebang_len..]);
     try out.appendSlice(allocator, "\n})();\n");
     try out.appendSlice(allocator, "\n//# sourceURL=");
     try out.appendSlice(allocator, relative_path);
@@ -8416,6 +8632,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function beforeAll(fn, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function onTestFinished(fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function mock(implementation)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function spyOn(target, property)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapped.mockRestore = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock.clearAllMocks") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock.resetAllMocks") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "useFakeTimers()") != null);
@@ -8443,7 +8661,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Expected value must be string or Error") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Deep equality for this value type is not supported") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "UnreachableError") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest, mock, onTestFinished, test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest, mock, onTestFinished, spyOn, test") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "concatArrayBuffers: __home_concat_array_buffers") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var TextEncoder = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var ReadableStream = function(underlyingSource)") != null);
@@ -9106,6 +9324,24 @@ test "Bun test import rewrite lowers jest imports" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { expect, jest, test } = globalThis.__home_import(\"bun:test\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
+}
+
+test "Bun test import rewrite lowers spyOn imports" {
+    const source =
+        \\import { expect, spyOn, test } from "bun:test";
+        \\test("spy", () => {
+        \\  const target = { method() { return 1; } };
+        \\  const spy = spyOn(target, "method");
+        \\  target.method();
+        \\  expect(spy).toHaveBeenCalledTimes(1);
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/08794.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { expect, spyOn, test } = globalThis.__home_import(\"bun:test\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:test\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "spyOn(target, \"method\")") != null);
 }
 
 test "Bun test import rewrite lowers lifecycle hook imports" {
@@ -11197,7 +11433,7 @@ test "Bun test import rewrite installs globals for no-import tests" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "test(\"works\"") != null);
 }
 
-test "Bun test import rewrite reports unsupported import shapes" {
+test "Bun test import rewrite lowers aliased imports" {
     const source =
         \\import { expect as want, test } from "bun:test";
         \\test("works", () => want(1).toBe(1));
@@ -11205,7 +11441,8 @@ test "Bun test import rewrite reports unsupported import shapes" {
     const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/alias.test.js");
     defer std.testing.allocator.free(rewritten);
 
-    try std.testing.expect(hasBunTestImport(rewritten));
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { expect: want, test } = globalThis.__home_import(\"bun:test\");") != null);
+    try std.testing.expect(!hasBunTestImport(rewritten));
 }
 
 test "corpus module preparation reports unsupported module syntax" {

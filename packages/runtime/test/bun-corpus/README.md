@@ -17,10 +17,10 @@ macOS, Linux, and the WASM target.
   bootstrap path exists for the current allowlist:
   `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
-  Latest measured subset run: `235` files, `1,062` passed, `0` failed,
+  Latest measured subset run: `236` files, `1,063` passed, `0` failed,
   `45` todo. That subset currently executes the todo-registration smoke, three Node
   `assert` CommonJS smokes, Node `path` smokes, two Node `url` smokes, the Web
-  `atob`/`btoa` smoke, fifty-four regression smokes, one bundler
+  `atob`/`btoa` smoke, fifty-five regression smokes, one bundler
   constant-fold smoke, bundler `allowUnresolved`, banner, barrel,
   browser-target builtin diagnostics, CJS, CJS-to-ESM, compile-autoload,
   compile-splitting, decorator metadata, drop/env/footer, HTML server,
@@ -81,9 +81,9 @@ macOS, Linux, and the WASM target.
   CommonJS invalid-wrapper and empty-file subprocess smokes, and current compile-mode
   Bun.build smokes. It is only a smoke path for JSC + `home_test`; it is not the
   release gate. The bootstrap harness is installed once per JSC engine, resets
-  counters before each file, lowers supported `bun:test` imports through a
+  counters before each file, lowers named `bun:test` imports through a
   virtual `globalThis.__home_import("bun:test")` module shim, and fails closed
-  as unsupported for unsupported import shapes, unsupported module syntax,
+  as unsupported for unsupported module syntax,
   async tests or hooks, explicit unsupported shim paths, and files that
   register zero tests. The bootstrap now exposes a native
   `Bun.spawnSync({ cmd, cwd, stdio })` bridge for real OS subprocesses,
