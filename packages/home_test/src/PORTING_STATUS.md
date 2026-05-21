@@ -218,8 +218,9 @@ comments / trailing commas / deep-nesting `RangeError`s, Node
 constructor shims, Web `TextDecoder` CJK and single-byte encoding smokes,
 a primitive/object `structuredClone` fallback for the string atomization
 smoke, `Bun.inspect({ key: Set<string> })`, `Bun.jest(import.meta.path)`
-as an alias to the existing bootstrap `bun:test` facade, `jest.mock`
-argument validation, `jest.resetAllMocks`, `mockReturnThis`,
+as an alias to the existing bootstrap `bun:test` facade, `jest.mock` /
+`mock.module` argument validation and mock-module import factory routing,
+`jest.resetAllMocks`, `mockReturnThis`,
 `expect.extend` matcher validation plus installed expectation-object
 matchers, validation-only `Bun.S3Client.write`
 numeric path errors, validation-only `Bun.Transpiler` invalid UTF-16
@@ -1051,6 +1052,13 @@ the copied `js/bun/test/expect-toHaveReturnedWith.test.js` fixture to
 pass as `13` tests. This preserves Bun's `toHaveReturnedWith()` behavior:
 omitting the expected argument matches an `undefined` return value rather
 than failing argument validation.
+
+The bootstrap facade also exposes Bun's `mock.module` validation path and
+feeds registered module factories into dynamic imports for the copied
+`js/bun/test/mock/mock-module-non-string.test.ts` fixture, which now
+passes as `5` tests. Mocked module registrations reset between corpus
+files so a Bun fixture's `jest.mock("fs", ...)` cannot shadow the shared
+native `fs` facade in later files.
 
 Errors: `toThrow`, `toSatisfy`.
 

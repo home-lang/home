@@ -207,7 +207,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes two hundred thirty-nine allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes two hundred forty allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator. On macOS this
 JSC path is now part of the default `./pantry/.bin/zig build test` graph
 (`-Denable_jsc=false` remains available for constrained hosts): the
@@ -261,7 +261,8 @@ validation-only `Bun.Transpiler` invalid UTF-16 loader errors,
 `HTMLRewriter.onDocument({ doctype })` removal, narrow HTMLRewriter
 selector / handler validation plus element callback methods,
 `Bun.JSONC.parse` for comments, trailing commas, and deep-nesting
-`RangeError`s, `jest.mock` argument validation, `it.each` /
+`RangeError`s, `jest.mock` / `mock.module` argument validation and
+mock-module import factory routing, `it.each` /
 `describe.each` synchronous table expansion with done-callback injection,
 `node:url.domainToASCII` / `domainToUnicode` invalid-punycode handling,
 POSIX `node:url.pathToFileURL` path encoding,
@@ -306,14 +307,15 @@ per JSC engine, resets counters before each file, lowers supported
 `bun:test` imports through a virtual
 `globalThis.__home_import("bun:test")` module shim, exposes `spyOn` /
 `jest.spyOn` call tracking, return-result tracking, one-shot mock
-implementations/return values, `toHaveReturnedWith`, and stack-safe wrapper behavior, and fails closed as
+implementations/return values, `toHaveReturnedWith`, `mock.module`
+validation plus per-file mocked-module isolation, and stack-safe wrapper behavior, and fails closed as
 unsupported for unsupported module syntax,
 pending async work, async `onTestFinished` callbacks, explicit unsupported shim paths, and files that
 register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `239` files, `1,091` passed, `0` failed,
+Latest measured subset run: `240` files, `1,096` passed, `0` failed,
 `45` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now

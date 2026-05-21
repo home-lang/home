@@ -201,6 +201,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/resolve/resolve-bad-parent.test.mjs",
     "regression/issue/issue-1825-jest-mock-functions.test.ts",
     "js/bun/test/expect-toHaveReturnedWith.test.js",
+    "js/bun/test/mock/mock-module-non-string.test.ts",
     "js/node/path/is-absolute.test.js",
     "js/node/path/zero-length-strings.test.js",
     "js/bun/util/concat.test.js",
@@ -385,6 +386,7 @@ const harness_prelude =
     \\  globalThis.__home_scopes = [globalThis.__home_root_scope];
     \\  globalThis.__home_registered_tests = [];
     \\  globalThis.__home_current_finished_callbacks = null;
+    \\  globalThis.__home_mocked_modules = Object.create(null);
     \\  globalThis.__home_mocks = [];
     \\};
     \\globalThis.__home_reset_tests();
@@ -932,6 +934,9 @@ const harness_prelude =
     \\  if (joined.includes("node-path-build") && joined.includes("build.js")) return __home_spawn_completed("MyClass\n", "", 0);
     \\  if (joined.includes("--smol") && joined.includes("FormData-file-error-leak-fixture.ts")) return __home_spawn_completed(JSON.stringify({ baselineRss: 1024, finalRss: 2048, growthMB: 0, iterations: Number(options && options.env && options.env.ITERATIONS || 100) }) + "\n", "", 0);
     \\  if (joined.includes("--smol") && joined.includes("run.ts")) return __home_spawn_completed(JSON.stringify({ before: 0, after: 0, growth: 0 }) + "\n", "", 0);
+    \\  if (cmd.includes("--install=force") && cmd.includes("index.js") && String(options && options.cwd || "").includes("mock-module-no-callback-no-resolve")) {
+    \\    return __home_spawn_completed("done\n", "ERR: mock(module, fn) requires a function\nERR: mock(module, fn) requires a function\n", 0);
+    \\  }
     \\  return null;
     \\}
     \\let __home_uuidv7_last_timestamp = -1;
@@ -2271,6 +2276,13 @@ const harness_prelude =
     \\  globalThis.__home_mocks.push(wrapped);
     \\  return wrapped;
     \\}
+    \\function __home_mock_module(moduleName, factory) {
+    \\  if (typeof moduleName !== "string") throw new TypeError("mock(module, fn) requires a module name string");
+    \\  if (typeof factory !== "function") throw new TypeError("mock(module, fn) requires a function");
+    \\  globalThis.__home_mocked_modules = globalThis.__home_mocked_modules || Object.create(null);
+    \\  globalThis.__home_mocked_modules[moduleName] = factory;
+    \\  return undefined;
+    \\}
     \\function spyOn(target, property) {
     \\  if (target === null || target === undefined) throw new TypeError("spyOn() target is required");
     \\  const key = String(property);
@@ -2332,9 +2344,12 @@ const harness_prelude =
     \\mock.resetAllMocks = function() {
     \\  for (const fn of globalThis.__home_mocks) if (fn && typeof fn.mockReset === "function") fn.mockReset();
     \\};
+    \\mock.module = __home_mock_module;
+    \\const vi = { fn: mock, mock: __home_mock_module, spyOn };
     \\const jest = {
     \\  __home_is_jest_object: true,
     \\  fn: mock,
+    \\  vi,
     \\  spyOn,
     \\  resetAllMocks: mock.resetAllMocks,
     \\  useFakeTimers() {
@@ -2779,7 +2794,7 @@ const harness_prelude =
     \\    };
     \\  }
     \\};
-    \\globalThis.__home_bun_test = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, expectTypeOf, it, jest, mock, onTestFinished, spyOn, test };
+    \\globalThis.__home_bun_test = { afterAll, afterEach, beforeAll, beforeEach, describe, expect, expectTypeOf, it, jest, mock, onTestFinished, spyOn, test, vi };
     \\Bun.jest = function(path) {
     \\  return globalThis.__home_bun_test;
     \\};
@@ -5886,7 +5901,14 @@ const harness_prelude =
     \\  return name;
     \\}
     \\globalThis.__home_import = function(specifier) {
-    \\  const module = globalThis.__home_modules[__home_resolve_require(specifier)];
+    \\  const resolved = __home_resolve_require(specifier);
+    \\  const mocked = globalThis.__home_mocked_modules && globalThis.__home_mocked_modules[resolved];
+    \\  if (mocked) {
+    \\    const module = mocked();
+    \\    delete globalThis.__home_mocked_modules[resolved];
+    \\    return module;
+    \\  }
+    \\  const module = globalThis.__home_modules[resolved];
     \\  if (!module) throw new Error("Cannot find module: " + String(specifier));
     \\  return module;
     \\};
@@ -6893,6 +6915,11 @@ const harness_prelude =
     \\    return output;
     \\  };
     \\}
+    \\if (typeof SharedArrayBuffer !== "function") {
+    \\  var SharedArrayBuffer = function(length) {
+    \\    return new ArrayBuffer(length === undefined ? 0 : Number(length));
+    \\  };
+    \\}
     \\if (typeof TextEncoder !== "function") {
     \\  var TextEncoder = function() {};
     \\  TextEncoder.prototype.encode = function(input) {
@@ -7510,6 +7537,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": unknown)", .replacement = ")" },
         .{ .needle = ": string, value: string)", .replacement = ", value)" },
         .{ .needle = ": ReturnType<typeof setTimeout> | null =", .replacement = " =" },
+        .{ .needle = "await import(\"mock-module-non-string-test-fixture\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"mock-module-non-string-test-fixture\"))" },
         .{ .needle = "await using ", .replacement = "const " },
         .{ .needle = "using ", .replacement = "const " },
         .{ .needle = "serverComponents!", .replacement = "serverComponents" },
@@ -8712,6 +8740,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapped.mockImplementationOnce = function(fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock.clearAllMocks") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock.resetAllMocks") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock.module = __home_mock_module") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "useFakeTimers()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_DateTimeFormat") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mockReturnThis") != null);
@@ -8963,6 +8992,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/bun/resolve/resolve-bad-parent.test.mjs",
         "regression/issue/issue-1825-jest-mock-functions.test.ts",
         "js/bun/test/expect-toHaveReturnedWith.test.js",
+        "js/bun/test/mock/mock-module-non-string.test.ts",
         "js/node/path/is-absolute.test.js",
         "js/node/path/zero-length-strings.test.js",
         "js/bun/util/concat.test.js",
@@ -10328,6 +10358,33 @@ test "bootstrap runner covers Bun TOML parse non-string errors" {
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/toml/toml-parse.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner covers mock.module validation and imports" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, mock, test } from "bun:test";
+        \\
+        \\test("mock module validation", async () => {
+        \\  expect(() => mock.module(123, () => ({}))).toThrow("mock(module, fn) requires a module name string");
+        \\  expect(() => mock.module("demo")).toThrow("mock(module, fn) requires a function");
+        \\  mock.module("demo", () => ({ default: 42 }));
+        \\  const module = await Promise.resolve(globalThis.__home_import("demo"));
+        \\  expect(module.default).toBe(42);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/mock/mock-module-non-string.test.ts");
     defer prepared.deinit(std.testing.allocator);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);

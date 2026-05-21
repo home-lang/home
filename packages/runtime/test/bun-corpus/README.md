@@ -17,7 +17,7 @@ macOS, Linux, and the WASM target.
   bootstrap path exists for the current allowlist:
   `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
-  Latest measured subset run: `239` files, `1,091` passed, `0` failed,
+  Latest measured subset run: `240` files, `1,096` passed, `0` failed,
   `45` todo. That subset currently executes the todo-registration smoke, three Node
   `assert` CommonJS smokes, Node `path` smokes, three Node `url` smokes, the Web
   `atob`/`btoa` smoke, fifty-five regression smokes, one bundler
@@ -78,7 +78,8 @@ macOS, Linux, and the WASM target.
   Web `TextDecoder`
   CJK and single-byte encoding smokes, Node `module.SourceMap`, and a JSC string atomization smoke through
   `Bun.jest(import.meta.path)` plus a narrow `structuredClone` fallback,
-  CommonJS invalid-wrapper and empty-file subprocess smokes, and current compile-mode
+  CommonJS invalid-wrapper and empty-file subprocess smokes, `mock.module`
+  validation and mocked dynamic-import routing, and current compile-mode
   Bun.build smokes. It is only a smoke path for JSC + `home_test`; it is not the
   release gate. The bootstrap harness is installed once per JSC engine, resets
   counters before each file, lowers named `bun:test` imports through a
