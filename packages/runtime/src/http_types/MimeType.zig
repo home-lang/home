@@ -1,3 +1,10 @@
+// Copied from bun/src/http_types/MimeType.zig at upstream SHA
+// fd0b6f1a271fca0b8124b69f230b100f4d636af6.
+//
+// Home subset: keep Bun's MIME table/category/sniff logic, but replace the
+// raw `bun` import and bundler `Loader` import with local pure-Zig shims so
+// this leaf can be tested before the wider resolver/bundler surface lands.
+
 const MimeType = @This();
 
 value: string,
@@ -1616,7 +1623,11 @@ pub fn sniff(bytes: []const u8) ?MimeType {
 
     inline for (IMAGES_HEADERS) |header| {
         if (bytes.len >= header[0].len) {
-            if (strings.eqlComptime(bytes[0..header[0].len], header[0])) {
+            var matches = true;
+            inline for (header[0], 0..) |byte, index| {
+                if (bytes[index] != byte) matches = false;
+            }
+            if (matches) {
                 return Compact.from(header[1]).toMimeType();
             }
         }
@@ -1628,8 +1639,83 @@ pub fn sniff(bytes: []const u8) ?MimeType {
 const string = []const u8;
 
 const std = @import("std");
-const Loader = @import("../bundler/options.zig").Loader;
+const Loader = enum {
+    tsx,
+    ts,
+    js,
+    jsx,
+    json,
+    css,
+    file,
+};
 
-const bun = @import("bun");
-const ComptimeStringMap = bun.ComptimeStringMap;
-const strings = bun.strings;
+fn ComptimeStringMap(comptime V: type, comptime kvs_list: anytype) type {
+    return struct {
+        pub fn get(input: []const u8) ?V {
+            @setEvalBranchQuota(5000);
+            inline for (kvs_list) |kv| {
+                if (std.mem.eql(u8, kv.@"0", input)) return kv.@"1";
+            }
+            return null;
+        }
+    };
+}
+
+const strings = struct {
+    pub inline fn eqlComptime(a: []const u8, comptime b: []const u8) bool {
+        return std.mem.eql(u8, a, b);
+    }
+
+    pub inline fn eqlComptimeIgnoreLen(a: []const u8, comptime b: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(a, b);
+    }
+
+    pub inline fn indexOfChar(a: []const u8, c: u8) ?usize {
+        return std.mem.indexOfScalar(u8, a, c);
+    }
+};
+
+const bun = struct {
+    pub const Environment = struct {
+        pub const ci_assert = false;
+    };
+
+    pub const Output = struct {
+        pub fn panic(comptime fmt: []const u8, args: anytype) noreturn {
+            std.debug.panic(fmt, args);
+        }
+    };
+
+    pub const StringHashMap = std.StringHashMap;
+
+    pub fn handleOom(result: anytype) @typeInfo(@TypeOf(result)).error_union.payload {
+        return result catch unreachable;
+    }
+};
+
+test "MimeType.Category.init classifies common types" {
+    try std.testing.expectEqual(Category.javascript, Category.init("text/javascript"));
+    try std.testing.expectEqual(Category.json, Category.init("application/json; charset=utf-8"));
+    try std.testing.expectEqual(Category.image, Category.init("image/png"));
+    try std.testing.expectEqual(Category.other, Category.init("application/octet-stream"));
+}
+
+test "MimeType.byExtension returns compact table entries" {
+    try std.testing.expectEqualStrings("text/html;charset=utf-8", byExtension("html").value);
+    try std.testing.expectEqual(Category.html, byExtension("html").category);
+    try std.testing.expectEqualStrings("application/json;charset=utf-8", byExtension("json").value);
+    try std.testing.expectEqual(Category.json, byExtension("json").category);
+    try std.testing.expectEqual(Category.other, byExtension("definitely-missing-extension").category);
+}
+
+test "MimeType.sniff detects common image headers" {
+    try std.testing.expectEqualStrings("image/png", sniff(&.{ 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a }).?.value);
+    try std.testing.expectEqualStrings("image/jpeg", sniff(&.{ 0xff, 0xd8, 0xff, 0x00 }).?.value);
+    try std.testing.expect(sniff(&.{0x00}) == null);
+}
+
+test "MimeType.byLoader matches Bun loader aliases" {
+    try std.testing.expectEqual(javascript, byLoader(.tsx, "tsx"));
+    try std.testing.expectEqual(css, byLoader(.css, "css"));
+    try std.testing.expectEqual(html.category, byLoader(.file, "html").category);
+}
