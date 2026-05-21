@@ -4120,6 +4120,158 @@ test "conformance: nonGenericTypeReferenceWithTypeArguments TS2315 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: typeParameterUsedAsTypeParameterConstraint2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeParameterUsedAsTypeParameterConstraint2",
+        .path = "typeParameterUsedAsTypeParameterConstraint2.ts",
+        .source =
+        \\// @target: es2015
+        \\// Type parameters are in scope in their own and other type parameter lists
+        \\// Nested local functions
+        \\
+        \\function foo<T, U extends T>(x: T, y: U) {
+        \\    function bar<V extends T, W extends U>() {
+        \\        function baz<X extends W, Y extends V>(a: X, b: Y): T {
+        \\            x = y;
+        \\            return y;
+        \\        }
+        \\    }
+        \\}
+        \\
+        \\function foo2<U extends T, T>(x: T, y: U) {
+        \\    function bar<V extends T, W extends U>() {
+        \\        function baz<X extends W, Y extends V>(a: X, b: Y): T {
+        \\            x = y;
+        \\            return y;
+        \\        }
+        \\    }
+        \\}
+        \\
+        \\var f = function <T, U extends T>(x: T, y: U) {
+        \\    function bar<V extends T, W extends U>() {
+        \\        var g = function <X extends W, Y extends V>(a: X, b: Y): T {
+        \\            x = y;
+        \\            return y;
+        \\        }
+        \\    }
+        \\}
+        \\
+        \\var f2 = function <U extends T, T>(x: T, y: U) {
+        \\    function bar<V extends T, W extends U>() {
+        \\        var g = function baz<X extends W, Y extends V>(a: X, b: Y): T {
+        \\            x = y;
+        \\            return y;
+        \\        }
+        \\    }
+        \\}
+        \\
+        \\var f3 = <T, U extends T>(x: T, y: U) => {
+        \\    function bar<V extends T, W extends U>() {
+        \\        var g = <X extends W, Y extends V>(a: X, b: Y): T => {
+        \\            x = y;
+        \\            return y;
+        \\        }
+        \\    }
+        \\}
+        \\
+        \\var f4 = <U extends T, T>(x: T, y: U) => {
+        \\    function bar<V extends T, W extends U>() {
+        \\        var g = <X extends W, Y extends V>(a: X, b: Y): T => {
+        \\            x = y;
+        \\            return y;
+        \\        }
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: callSignaturesWithOptionalParameters2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "callSignaturesWithOptionalParameters2",
+        .path = "callSignaturesWithOptionalParameters2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\// Optional parameters should be valid in all the below casts
+        \\
+        \\function foo(x?: number);
+        \\function foo(x?: number) { }
+        \\
+        \\foo(1);
+        \\foo();
+        \\
+        \\function foo2(x: number);
+        \\function foo2(x: number, y?: number);
+        \\function foo2(x: number, y?: number) { }
+        \\
+        \\foo2(1);
+        \\foo2(1, 2);
+        \\
+        \\class C {
+        \\    foo(x?: number);
+        \\    foo(x?: number) { }
+        \\
+        \\    foo2(x: number);
+        \\    foo2(x: number, y?: number);
+        \\    foo2(x: number, y?: number) { }
+        \\}
+        \\
+        \\var c: C;
+        \\c.foo();
+        \\c.foo(1);
+        \\
+        \\c.foo2(1);
+        \\c.foo2(1, 2);
+        \\
+        \\interface I {
+        \\    (x?: number);
+        \\    (x?: number, y?: number);
+        \\    foo(x: number, y?: number);
+        \\    foo(x: number, y?: number, z?: number);
+        \\}
+        \\
+        \\var i: I;
+        \\i();
+        \\i(1);
+        \\i(1, 2);
+        \\i.foo(1);
+        \\i.foo(1, 2);
+        \\i.foo(1, 2, 3);
+        \\
+        \\var a: {
+        \\    (x?: number);
+        \\    (x?: number, y?: number);
+        \\    foo(x: number, y?: number);
+        \\    foo(x: number, y?: number, z?: number);
+        \\}
+        \\
+        \\a();
+        \\a(1);
+        \\a(1, 2);
+        \\a.foo(1);
+        \\a.foo(1, 2);
+        \\a.foo(1, 2, 3);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: typeParameterUsedAsTypeParameterConstraint3 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "typeParameterUsedAsTypeParameterConstraint3",
