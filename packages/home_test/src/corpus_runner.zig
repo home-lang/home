@@ -142,6 +142,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/02369.test.ts",
     "js/bun/util/fileUrl.test.js",
     "js/bun/util/file-type.test.ts",
+    "js/bun/util/bun-file-read.test.ts",
     "js/node/url/url-pathtofileurl.test.js",
     "js/bun/util/randomUUIDv7.test.ts",
     "js/bun/util/sleepSync.test.ts",
@@ -527,6 +528,24 @@ const harness_prelude =
     \\  const text = String(path || "");
     \\  if (text.startsWith("./") || text.startsWith("../")) return __home_build_normalize(__home_build_join(process.cwd(), text));
     \\  return text;
+    \\}
+    \\function __home_text_to_utf8_bytes(value) {
+    \\  if (typeof TextEncoder === "function") return Array.from(new TextEncoder().encode(String(value)));
+    \\  const bytes = [];
+    \\  for (const ch of String(value)) {
+    \\    const code = ch.codePointAt(0);
+    \\    if (code <= 0x7f) bytes.push(code);
+    \\    else if (code <= 0x7ff) bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+    \\    else if (code <= 0xffff) bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+    \\    else bytes.push(0xf0 | (code >> 18), 0x80 | ((code >> 12) & 0x3f), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+    \\  }
+    \\  return bytes;
+    \\}
+    \\function __home_utf8_bytes_to_text(bytes) {
+    \\  if (typeof TextDecoder === "function") return new TextDecoder().decode(new Uint8Array(bytes));
+    \\  let output = "";
+    \\  for (let i = 0; i < bytes.length; i++) output += String.fromCharCode(bytes[i] & 0xff);
+    \\  return output;
     \\}
     \\function __home_build_read_text(path) {
     \\  if (typeof globalThis.__home_readFileSyncNative !== "function") return null;
@@ -1166,16 +1185,21 @@ const harness_prelude =
     \\    return Promise.resolve();
     \\  },
     \\  file(path, options) {
+    \\    const filePath = String(path);
     \\    return {
-    \\      type: __home_bun_file_type(path, options),
+    \\      type: __home_bun_file_type(filePath, options),
+    \\      get size() {
+    \\        const nativeText = __home_build_read_text(filePath);
+    \\        return nativeText === null ? 0 : __home_text_to_utf8_bytes(nativeText).length;
+    \\      },
     \\      exists() {
-    \\        return Promise.resolve(__home_build_file_exists(String(path)));
+    \\        return Promise.resolve(__home_build_file_exists(filePath));
     \\      },
     \\      text() {
-    \\        const nativeText = __home_build_read_text(String(path));
+    \\        const nativeText = __home_build_read_text(filePath);
     \\        if (nativeText !== null) return Promise.resolve(nativeText);
     \\        if (typeof __home_bake_read_virtual_file !== "function") __home_unsupported("Bun.file virtual Bake reader is not installed");
-    \\        return Promise.resolve(__home_bake_read_virtual_file(String(path)));
+    \\        return Promise.resolve(__home_bake_read_virtual_file(filePath));
     \\      },
     \\      slice(start, end) {
     \\        return {
@@ -1187,6 +1211,14 @@ const harness_prelude =
     \\            const view = new Uint8Array(buffer);
     \\            for (let i = first; i < last; i++) view[i - first] = bytes[i];
     \\            return Promise.resolve(buffer);
+    \\          },
+    \\          text() {
+    \\            const nativeText = __home_build_read_text(filePath);
+    \\            if (nativeText === null) return this.arrayBuffer().then(buffer => __home_utf8_bytes_to_text(Array.from(new Uint8Array(buffer))));
+    \\            const bytes = __home_text_to_utf8_bytes(nativeText);
+    \\            const first = Math.max(0, Number(start) || 0);
+    \\            const last = Math.min(bytes.length, end === undefined ? bytes.length : Math.max(first, Number(end) || 0));
+    \\            return Promise.resolve(__home_utf8_bytes_to_text(bytes.slice(first, last)));
     \\          },
     \\        };
     \\      },
@@ -8126,6 +8158,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { tmpdir } from \"os\";",
             .replacement = "const { tmpdir } = globalThis.__home_import(\"os\");",
+        },
+        .{
+            .needle = "import { tmpdir } from \"node:os\";",
+            .replacement = "const { tmpdir } = globalThis.__home_import(\"node:os\");",
         },
         .{
             .needle = "import { chmodSync } from \"node:fs\";",

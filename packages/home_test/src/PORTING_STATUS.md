@@ -798,6 +798,11 @@ malformed CommonJS wrapper diagnostic.
 The copied `js/bun/util/file-type.test.ts` fixture now passes as `2`
 tests through the `Bun.file` bootstrap model. It covers explicit
 `{ type }` MIME overrides and Bun's `.css` default MIME type.
+The copied `js/bun/util/bun-file-read.test.ts` fixture now passes as
+`1` test through the file-backed `Bun.file` bootstrap model. It covers
+`Bun.write()` to a temp path, `Bun.file(path).size`, byte-offset
+`slice(start, end)`, and `slice.text()` without regressing executable
+header `slice().arrayBuffer()` coverage in compile-mode fixtures.
 The copied `js/node/url/url-pathtofileurl.test.js` fixture now passes on
 this non-Windows host as `2` passed, `0` failed, `0` unsupported, and
 `2` todo. The bootstrap models POSIX path resolution and UTF-8 percent

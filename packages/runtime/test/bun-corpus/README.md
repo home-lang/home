@@ -17,7 +17,7 @@ macOS, Linux, and the WASM target.
   bootstrap path exists for the current allowlist:
   `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
-  Latest measured subset run: `259` files, `1,137` passed, `0` failed,
+  Latest measured subset run: `260` files, `1,138` passed, `0` failed,
   `45` todo. That subset currently executes the todo-registration smoke, three Node
   `assert` CommonJS smokes, Node `path` smokes, three Node `url` smokes, the Web
   `atob`/`btoa` smoke, fifty-five regression smokes, one bundler
@@ -61,8 +61,9 @@ macOS, Linux, and the WASM target.
   fetch body async-iterator and abort smokes,
   AbortController GC reason, MessagePort context cleanup, JSC `ShadowRealm`,
   native constructor identity, mutable
-  `globalThis` prototype behavior, a comment-only module-load smoke, Bun file metadata and
-  `Bun.file(...).type` MIME behavior, `Bun.randomUUIDv7` /
+  `globalThis` prototype behavior, a comment-only module-load smoke, Bun file metadata,
+  `Bun.file(...).type` MIME behavior, file-backed `Bun.file().size` /
+  `slice().text()`, `Bun.randomUUIDv7` /
   `Bun.sleepSync` millisecond timing and validation /
   `Bun.readableStreamToArrayBuffer` queued chunk draining /
   `ReadableStreamDefaultController.desiredSize` close/error/failed-`pipeTo()`
