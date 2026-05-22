@@ -26520,6 +26520,124 @@ test "conformance: usingDeclarationsNamedEvaluationDecoratorsAndClassFields pass
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: destructuringObjectBindingPatternAndAssignment1ES5 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "destructuringObjectBindingPatternAndAssignment1ES5",
+        .path = "destructuringObjectBindingPatternAndAssignment1ES5.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es2015
+        \\
+        \\var { a1 }: any = undefined;
+        \\var { a2 }: any = {};
+        \\
+        \\var { b1, } = { b1:1, };
+        \\var { b2: { b21 } = { b21: "string" }  } = { b2: { b21: "world" } };
+        \\var {1: b3} = { 1: "string" };
+        \\var {b4 = 1}: any = { b4: 100000 };
+        \\var {b5: { b52 }  } = { b5: { b52 } };
+        \\
+        \\interface F {
+        \\    [idx: number]: boolean;
+        \\}
+        \\
+        \\function foo(): F {
+        \\    return {
+        \\        1: true
+        \\    };
+        \\}
+        \\
+        \\function bar(): F {
+        \\    return {
+        \\        2: true
+        \\    };
+        \\}
+        \\var {1: c0} = foo();
+        \\var {1: c1} = bar();
+        \\
+        \\interface F1 {
+        \\    [str: string]: number;
+        \\}
+        \\
+        \\function foo1(): F1 {
+        \\    return {
+        \\        "prop1": 2
+        \\    }
+        \\}
+        \\
+        \\var {"prop1": d1} = foo1();
+        \\var {"prop2": d1} = foo1();
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: destructuringObjectBindingPatternAndAssignment1ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "destructuringObjectBindingPatternAndAssignment1ES6",
+        .path = "destructuringObjectBindingPatternAndAssignment1ES6.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es6
+        \\
+        \\var { a1 }: any = undefined;
+        \\var { a2 }: any = {};
+        \\
+        \\var { b1, } = { b1:1, };
+        \\var { b2: { b21 } = { b21: "string" }  } = { b2: { b21: "world" } };
+        \\var {1: b3} = { 1: "string" };
+        \\var {b4 = 1}: any = { b4: 100000 };
+        \\var {b5: { b52 }  } = { b5: { b52 } };
+        \\
+        \\interface F {
+        \\    [idx: number]: boolean;
+        \\}
+        \\
+        \\function foo(): F {
+        \\    return {
+        \\        1: true
+        \\    };
+        \\}
+        \\
+        \\function bar(): F {
+        \\    return {
+        \\        2: true
+        \\    };
+        \\}
+        \\var {1: c0} = foo();
+        \\var {1: c1} = bar();
+        \\
+        \\interface F1 {
+        \\    [str: string]: number;
+        \\}
+        \\
+        \\function foo1(): F1 {
+        \\    return {
+        \\        "prop1": 2
+        \\    }
+        \\}
+        \\
+        \\var {"prop1": d1} = foo1();
+        \\var {"prop2": d1} = foo1();
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
