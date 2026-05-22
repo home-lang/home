@@ -22140,6 +22140,209 @@ test "conformance: esDecorators_classDeclaration_classSuper_6 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: esDecorators_contextualTypes passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "esDecorators-contextualTypes",
+        .path = "esDecorators-contextualTypes.ts",
+        .source =
+        \\@((t, c) => { })
+        \\class C {
+        \\    @((t, c) => { })
+        \\    static f() {}
+        \\
+        \\    @((t, c) => { })
+        \\    static #f() {}
+        \\
+        \\    @((t, c) => { })
+        \\    static get x() { return 1; }
+        \\
+        \\    @((t, c) => { })
+        \\    static set x(value) { }
+        \\
+        \\    @((t, c) => { })
+        \\    static get #x() { return 1; }
+        \\
+        \\    @((t, c) => { })
+        \\    static set #x(value) { }
+        \\
+        \\    @((t, c) => { })
+        \\    static accessor y = 1;
+        \\
+        \\    @((t, c) => { })
+        \\    static accessor #y = 1;
+        \\
+        \\    @((t, c) => { })
+        \\    static z = 1;
+        \\
+        \\    @((t, c) => { })
+        \\    static #z = 1;
+        \\
+        \\    @((t, c) => { })
+        \\    g() {}
+        \\
+        \\    @((t, c) => { })
+        \\    #g() {}
+        \\
+        \\    @((t, c) => { })
+        \\    get a() { return 1; }
+        \\
+        \\    @((t, c) => { })
+        \\    set a(value) { }
+        \\
+        \\    @((t, c) => { })
+        \\    get #a() { return 1; }
+        \\
+        \\    @((t, c) => { })
+        \\    set #a(value) { }
+        \\
+        \\    @((t, c) => { })
+        \\    accessor b = 1;
+        \\
+        \\    @((t, c) => { })
+        \\    accessor #b = 1;
+        \\
+        \\    @((t, c) => { })
+        \\    c = 1;
+        \\
+        \\    @((t, c) => { })
+        \\    #c = 1;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: esDecorators_classExpression_namedEvaluation_4 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "esDecorators-classExpression-namedEvaluation.4",
+        .path = "esDecorators-classExpression-namedEvaluation.4.ts",
+        .source =
+        \\declare let dec: any, obj: any;
+        \\
+        \\{ const [x = @dec class { }] = obj; }
+        \\{ const [x = class { @dec y: any; }] = obj; }
+        \\
+        \\{ const { x = @dec class { } } = obj; }
+        \\{ const { x = class { @dec y: any; } } = obj; }
+        \\
+        \\{ const { y: x = @dec class { } } = obj; }
+        \\{ const { y: x = class { @dec y: any; } } = obj; }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: esDecorators_classExpression_namedEvaluation_5 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "esDecorators-classExpression-namedEvaluation.5",
+        .path = "esDecorators-classExpression-namedEvaluation.5.ts",
+        .source =
+        \\declare let dec: any, obj: any, x: any;
+        \\
+        \\({ x = @dec class { } } = obj);
+        \\({ x = class { @dec y: any; } } = obj);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: esDecorators_classExpression_classSuper_1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "esDecorators-classExpression-classSuper.1",
+        .path = "esDecorators-classExpression-classSuper.1.ts",
+        .source =
+        \\declare var dec: any;
+        \\
+        \\declare class Base {
+        \\    static method(...args: any[]): void;
+        \\}
+        \\
+        \\const method = "method";
+        \\
+        \\(@dec
+        \\class C extends Base {
+        \\    static {
+        \\        super.method();
+        \\        super["method"]();
+        \\        super[method]();
+        \\
+        \\        super.method``;
+        \\        super["method"]``;
+        \\        super[method]``;
+        \\    }
+        \\});
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: esDecorators_classExpression_classSuper_2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "esDecorators-classExpression-classSuper.2",
+        .path = "esDecorators-classExpression-classSuper.2.ts",
+        .source =
+        \\declare var dec: any;
+        \\
+        \\(@dec
+        \\class C1 extends class { } {
+        \\    static {
+        \\        super.name;
+        \\    }
+        \\});
+        \\
+        \\(@dec
+        \\class C2 extends (function() {} as any) {
+        \\    static {
+        \\        super.name;
+        \\    }
+        \\});
+        \\
+        \\(@dec
+        \\class C3 extends ((() => {}) as any) {
+        \\    static {
+        \\        super.name;
+        \\    }
+        \\});
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
