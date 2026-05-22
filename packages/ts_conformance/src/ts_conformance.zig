@@ -21734,6 +21734,76 @@ test "conformance: symbolProperty61 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: esDecorators_preservesThis passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "esDecorators-preservesThis",
+        .path = "esDecorators-preservesThis.ts",
+        .source =
+        \\declare class DecoratorProvider {
+        \\    decorate<T>(this: DecoratorProvider, v: T, ctx: DecoratorContext): T;
+        \\}
+        \\
+        \\declare const instance: DecoratorProvider;
+        \\
+        \\class C {
+        \\    @instance.decorate
+        \\    method1() { }
+        \\
+        \\    @(instance["decorate"])
+        \\    method2() { }
+        \\
+        \\    @((instance.decorate))
+        \\    method3() { }
+        \\}
+        \\
+        \\class D extends DecoratorProvider {
+        \\    m() {
+        \\        class C {
+        \\            @(super.decorate)
+        \\            method1() { }
+        \\
+        \\            @(super["decorate"])
+        \\            method2() { }
+        \\
+        \\            @((super.decorate))
+        \\            method3() { }
+        \\        }
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: esDecorators_decoratorExpression_3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "esDecorators-decoratorExpression.3",
+        .path = "esDecorators-decoratorExpression.3.ts",
+        .source =
+        \\declare let g: <T>(...args: any) => any;
+        \\
+        \\{ @g<number> class C {} }
+        \\
+        \\{ @g()<number> class C {} }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
