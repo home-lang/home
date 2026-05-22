@@ -23342,6 +23342,82 @@ test "conformance: numericStringLiteralTypes passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: stringMappingReduction passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringMappingReduction",
+        .path = "stringMappingReduction.ts",
+        .source =
+        \\type T00 = "prop" | `p${Lowercase<string>}p`;
+        \\type T01 = "prop" | Lowercase<string>;
+        \\type T02 = "PROP" | Lowercase<string>;
+        \\
+        \\type T10 = "prop" & `p${Lowercase<string>}p`;
+        \\type T11 = "prop" & Lowercase<string>;
+        \\type T12 = "PROP" & Lowercase<string>;
+        \\
+        \\type T20 = "prop" | Capitalize<string>;
+        \\type T21 = "Prop" | Capitalize<string>;
+        \\type T22 = "PROP" | Capitalize<string>;
+        \\
+        \\type T30 = "prop" & Capitalize<string>;
+        \\type T31 = "Prop" & Capitalize<string>;
+        \\type T32 = "PROP" & Capitalize<string>;
+        \\
+        \\type EMap = { event: {} }
+        \\type Keys = keyof EMap
+        \\type EPlusFallback<C> = C extends Keys ? EMap[C] : "unrecognised event";
+        \\type VirtualEvent<T extends string> = { bivarianceHack(event: EPlusFallback<Lowercase<T>>): any; }['bivarianceHack'];
+        \\declare const _virtualOn: (eventQrl: VirtualEvent<Keys>) => void;
+        \\export const virtualOn = <T extends string>(eventQrl: VirtualEvent<T>) => {
+        \\    _virtualOn(eventQrl);
+        \\};
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: stringMappingDeferralInConditionalTypes passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stringMappingDeferralInConditionalTypes",
+        .path = "stringMappingDeferralInConditionalTypes.ts",
+        .source =
+        \\type A<S> = Lowercase<S & string> extends "foo" ? 1 : 0;
+        \\let x1: A<"foo"> = 1;
+        \\
+        \\type B<S> = Lowercase<S & string> extends `f${string}` ? 1 : 0;
+        \\let x2: B<"foo"> = 1;
+        \\
+        \\type C<S> = Capitalize<Lowercase<S & string>> extends "Foo" ? 1 : 0;
+        \\let x3: C<"foo"> = 1;
+        \\
+        \\type D<S extends string> = Capitalize<Lowercase<S>> extends "Foo" ? 1 : 0;
+        \\let x4: D<"foo"> = 1;
+        \\
+        \\type E<S> = Lowercase<`f${S & string}` & `${S & string}f`>;
+        \\type F = E<""> extends "f" ? 1 : 0;
+        \\type G<S> = E<S> extends "f" ? 1 : 0;
+        \\let x5: G<""> = 1;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
