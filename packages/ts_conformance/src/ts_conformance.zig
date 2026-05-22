@@ -20989,6 +20989,148 @@ test "conformance: TwoInternalModulesThatMergeEachWithExportedAndNonExportedInte
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: es2022IntlAPIs passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "es2022IntlAPIs",
+        .path = "es2022IntlAPIs.ts",
+        .source =
+        \\const timezoneNames = ['short', 'long', 'shortOffset', 'longOffset', 'shortGeneric', 'longGeneric'] as const;
+        \\for (const zoneName of timezoneNames) {
+        \\  var formatter = new Intl.DateTimeFormat('en-US', {
+        \\    timeZone: 'America/Los_Angeles',
+        \\    timeZoneName: zoneName,
+        \\  });
+        \\}
+        \\
+        \\const enumerationKeys = ['calendar', 'collation', 'currency', 'numberingSystem', 'timeZone', 'unit'] as const;
+        \\for (const key of enumerationKeys) {
+        \\  var supported = Intl.supportedValuesOf(key);
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: localesObjectArgument passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "localesObjectArgument",
+        .path = "localesObjectArgument.ts",
+        .source =
+        \\const enUS = new Intl.Locale("en-US");
+        \\const deDE = new Intl.Locale("de-DE");
+        \\const jaJP = new Intl.Locale("ja-JP");
+        \\
+        \\const now = new Date();
+        \\const num = 1000;
+        \\const bigint = 123456789123456789n;
+        \\const str = "";
+        \\
+        \\const readonlyLocales: Readonly<string[]> = ['de-DE', 'ja-JP'];
+        \\
+        \\now.toLocaleString(enUS);
+        \\now.toLocaleDateString(enUS);
+        \\now.toLocaleTimeString(enUS);
+        \\now.toLocaleString([deDE, jaJP]);
+        \\now.toLocaleDateString([deDE, jaJP]);
+        \\now.toLocaleTimeString([deDE, jaJP]);
+        \\
+        \\num.toLocaleString(enUS);
+        \\num.toLocaleString([deDE, jaJP]);
+        \\
+        \\bigint.toLocaleString(enUS);
+        \\bigint.toLocaleString([deDE, jaJP]);
+        \\
+        \\str.toLocaleLowerCase(enUS);
+        \\str.toLocaleLowerCase([deDE, jaJP]);
+        \\str.toLocaleUpperCase(enUS);
+        \\str.toLocaleUpperCase([deDE, jaJP]);
+        \\str.localeCompare(str, enUS);
+        \\str.localeCompare(str, [deDE, jaJP]);
+        \\
+        \\new Intl.PluralRules(enUS);
+        \\new Intl.PluralRules([deDE, jaJP]);
+        \\new Intl.PluralRules(readonlyLocales);
+        \\Intl.PluralRules.supportedLocalesOf(enUS);
+        \\Intl.PluralRules.supportedLocalesOf([deDE, jaJP]);
+        \\Intl.PluralRules.supportedLocalesOf(readonlyLocales);
+        \\
+        \\new Intl.RelativeTimeFormat(enUS);
+        \\new Intl.RelativeTimeFormat([deDE, jaJP]);
+        \\new Intl.RelativeTimeFormat(readonlyLocales);
+        \\Intl.RelativeTimeFormat.supportedLocalesOf(enUS);
+        \\Intl.RelativeTimeFormat.supportedLocalesOf([deDE, jaJP]);
+        \\Intl.RelativeTimeFormat.supportedLocalesOf(readonlyLocales);
+        \\
+        \\new Intl.Collator(enUS);
+        \\new Intl.Collator([deDE, jaJP]);
+        \\new Intl.Collator(readonlyLocales);
+        \\Intl.Collator.supportedLocalesOf(enUS);
+        \\Intl.Collator.supportedLocalesOf([deDE, jaJP]);
+        \\
+        \\new Intl.DateTimeFormat(enUS);
+        \\new Intl.DateTimeFormat([deDE, jaJP]);
+        \\new Intl.DateTimeFormat(readonlyLocales);
+        \\Intl.DateTimeFormat.supportedLocalesOf(enUS);
+        \\Intl.DateTimeFormat.supportedLocalesOf([deDE, jaJP]);
+        \\Intl.DateTimeFormat.supportedLocalesOf(readonlyLocales);
+        \\
+        \\new Intl.NumberFormat(enUS);
+        \\new Intl.NumberFormat([deDE, jaJP]);
+        \\new Intl.NumberFormat(readonlyLocales);
+        \\Intl.NumberFormat.supportedLocalesOf(enUS);
+        \\Intl.NumberFormat.supportedLocalesOf(readonlyLocales);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: intlNumberFormatES2020 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "intlNumberFormatES2020",
+        .path = "intlNumberFormatES2020.ts",
+        .source =
+        \\const { notation, style, signDisplay } = new Intl.NumberFormat('en-NZ').resolvedOptions();
+        \\
+        \\new Intl.NumberFormat('en-NZ', {});
+        \\
+        \\new Intl.NumberFormat('en-NZ', { numberingSystem: 'arab' });
+        \\
+        \\const { currency, currencySign } = new Intl.NumberFormat('en-NZ', { style: 'currency', currency: 'NZD', currencySign: 'accounting' }).resolvedOptions();
+        \\
+        \\const { unit, unitDisplay } = new Intl.NumberFormat('en-NZ', { style: 'unit', unit: 'kilogram', unitDisplay: 'narrow' }).resolvedOptions();
+        \\
+        \\const { compactDisplay } = new Intl.NumberFormat('en-NZ', { notation: 'compact', compactDisplay: 'long' }).resolvedOptions();
+        \\
+        \\new Intl.NumberFormat('en-NZ', { signDisplay: 'always' });
+        \\
+        \\const types: Intl.NumberFormatPartTypes[] = [ 'compact', 'unit', 'unknown' ];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
