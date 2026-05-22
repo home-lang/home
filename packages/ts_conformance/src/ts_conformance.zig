@@ -23287,6 +23287,61 @@ test "conformance: literalTypes3 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: numericStringLiteralTypes passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "numericStringLiteralTypes",
+        .path = "numericStringLiteralTypes.ts",
+        .source =
+        \\type T0 = string & `${string}`;
+        \\type T1 = string & `${number}`;
+        \\type T2 = string & `${bigint}`;
+        \\type T3<T extends string> = string & `${T}`;
+        \\type T4<T extends string> = string & `${Capitalize<`${T}`>}`;
+        \\
+        \\function f1(a: boolean[], x: `${number}`) {
+        \\    let s = a[x];
+        \\}
+        \\
+        \\function f2(a: boolean[], x: number | `${number}`) {
+        \\    let s = a[x];
+        \\}
+        \\
+        \\type T10 = boolean[][`${number}`];
+        \\type T11 = boolean[][number | `${number}`];
+        \\
+        \\type T20<T extends number | `${number}`> = T;
+        \\type T21<T extends unknown[]> = { [K in keyof T]: T20<K> };
+        \\
+        \\type Container<T> = {
+        \\    value: T
+        \\}
+        \\
+        \\type UnwrapContainers<T extends Container<unknown>[]> = { [K in keyof T]: T[K]['value'] };
+        \\
+        \\declare function createContainer<T extends unknown>(value: T): Container<T>;
+        \\
+        \\declare function f<T extends Container<unknown>[]>(containers: [...T], callback: (...values: UnwrapContainers<T>) => void): void;
+        \\
+        \\const container1 = createContainer('hi')
+        \\const container2 = createContainer(2)
+        \\
+        \\f([container1, container2], (value1, value2) => {
+        \\    value1;
+        \\    value2;
+        \\});
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
