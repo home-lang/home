@@ -25140,6 +25140,342 @@ test "conformance: privateNameStaticFieldCallExpression passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: mixinClassesMembers passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "mixinClassesMembers",
+        .path = "mixinClassesMembers.ts",
+        .source =
+        \\// @target: es2015
+        \\// @declaration: true
+        \\
+        \\declare class C1 {
+        \\    public a: number;
+        \\    protected b: number;
+        \\    private c: number;
+        \\    constructor(s: string);
+        \\    constructor(n: number);
+        \\}
+        \\
+        \\declare class M1 {
+        \\    constructor(...args: any[]);
+        \\    p: number;
+        \\    static p: number;
+        \\}
+        \\
+        \\declare class M2 {
+        \\    constructor(...args: any[]);
+        \\    f(): number;
+        \\    static f(): number;
+        \\}
+        \\
+        \\declare const Mixed1: typeof M1 & typeof C1;
+        \\declare const Mixed2: typeof C1 & typeof M1;
+        \\declare const Mixed3: typeof M2 & typeof M1 & typeof C1;
+        \\declare const Mixed4: typeof C1 & typeof M1 & typeof M2;
+        \\declare const Mixed5: typeof M1 & typeof M2;
+        \\
+        \\function f1() {
+        \\    let x1 = new Mixed1("hello");
+        \\    let x2 = new Mixed1(42);
+        \\    let x3 = new Mixed2("hello");
+        \\    let x4 = new Mixed2(42);
+        \\    let x5 = new Mixed3("hello");
+        \\    let x6 = new Mixed3(42);
+        \\    let x7 = new Mixed4("hello");
+        \\    let x8 = new Mixed4(42);
+        \\    let x9 = new Mixed5();
+        \\}
+        \\
+        \\function f2() {
+        \\    let x = new Mixed1("hello");
+        \\    x.a;
+        \\    x.p;
+        \\    Mixed1.p;
+        \\}
+        \\
+        \\function f3() {
+        \\    let x = new Mixed2("hello");
+        \\    x.a;
+        \\    x.p;
+        \\    Mixed2.p;
+        \\}
+        \\
+        \\function f4() {
+        \\    let x = new Mixed3("hello");
+        \\    x.a;
+        \\    x.p;
+        \\    x.f();
+        \\    Mixed3.p;
+        \\    Mixed3.f();
+        \\}
+        \\
+        \\function f5() {
+        \\    let x = new Mixed4("hello");
+        \\    x.a;
+        \\    x.p;
+        \\    x.f();
+        \\    Mixed4.p;
+        \\    Mixed4.f();
+        \\}
+        \\
+        \\function f6() {
+        \\    let x = new Mixed5();
+        \\    x.p;
+        \\    x.f();
+        \\    Mixed5.p;
+        \\    Mixed5.f();
+        \\}
+        \\
+        \\class C2 extends Mixed1 {
+        \\    constructor() {
+        \\        super("hello");
+        \\        this.a;
+        \\        this.b;
+        \\        this.p;
+        \\    }
+        \\}
+        \\
+        \\class C3 extends Mixed3 {
+        \\    constructor() {
+        \\        super(42);
+        \\        this.a;
+        \\        this.b;
+        \\        this.p;
+        \\        this.f();
+        \\    }
+        \\    f() { return super.f(); }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: taggedTemplatesWithTypeArguments1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "taggedTemplatesWithTypeArguments1",
+        .path = "taggedTemplatesWithTypeArguments1.ts",
+        .source =
+        \\// @target: esnext
+        \\
+        \\declare function f<T>(strs: TemplateStringsArray, ...callbacks: Array<(x: T) => any>): void;
+        \\
+        \\interface Stuff {
+        \\    x: number;
+        \\    y: string;
+        \\    z: boolean;
+        \\}
+        \\
+        \\export const a = f<Stuff> `
+        \\    hello
+        \\    ${stuff => stuff.x}
+        \\    brave
+        \\    ${stuff => stuff.y}
+        \\    world
+        \\    ${stuff => stuff.z}
+        \\`;
+        \\
+        \\declare function g<Input, T, U, V>(
+        \\    strs: TemplateStringsArray,
+        \\    t: (i: Input) => T, u: (i: Input) => U, v: (i: Input) => V): T | U | V;
+        \\
+        \\export const b = g<Stuff, number, string, boolean> `
+        \\    hello
+        \\    ${stuff => stuff.x}
+        \\    brave
+        \\    ${stuff => stuff.y}
+        \\    world
+        \\    ${stuff => stuff.z}
+        \\`;
+        \\
+        \\declare let obj: {
+        \\    prop: <T>(strs: TemplateStringsArray, x: (input: T) => T) => {
+        \\        returnedObjProp: T
+        \\    }
+        \\}
+        \\
+        \\export let c = obj["prop"]<Stuff> `${(input) => ({ ...input })}`
+        \\c.returnedObjProp.x;
+        \\c.returnedObjProp.y;
+        \\c.returnedObjProp.z;
+        \\
+        \\c = obj.prop<Stuff> `${(input) => ({ ...input })}`
+        \\c.returnedObjProp.x;
+        \\c.returnedObjProp.y;
+        \\c.returnedObjProp.z;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: mappedTypeIndexSignatureModifiers passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "mappedTypeIndexSignatureModifiers",
+        .path = "mappedTypeIndexSignatureModifiers.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\// @noEmit: true
+        \\
+        \\interface Obj1 {
+        \\    readonly [key: string]: string;
+        \\}
+        \\type Res1 = Pick<Obj1, keyof Obj1>
+        \\
+        \\interface Obj2 {
+        \\    concreteProp: 'hello';
+        \\    readonly [key: string]: string;
+        \\}
+        \\type Res2 = Pick<Obj2, keyof Obj2>
+        \\
+        \\interface Obj3 {
+        \\    readonly [key: string]: string;
+        \\    readonly [key: number]: 'foo';
+        \\}
+        \\type Res3 = Pick<Obj3, keyof Obj3>
+        \\
+        \\interface Obj4 {
+        \\    [key: string]: string;
+        \\    readonly [key: number]: 'foo';
+        \\}
+        \\type Res4 = Pick<Obj4, keyof Obj4>
+        \\
+        \\interface Obj5 {
+        \\    readonly [key: string]: string;
+        \\    [key: number]: 'foo';
+        \\}
+        \\type Res5 = Pick<Obj5, keyof Obj5>
+        \\
+        \\type Identity<T> = { [P in keyof T]: T[P]; }
+        \\
+        \\interface Obj6 {
+        \\    readonly [key: `wow${string}`]: 'foo';
+        \\}
+        \\type Res6 = Identity<Obj6>
+        \\
+        \\interface Obj7 {
+        \\    [key: string]: string;
+        \\    readonly [key: `wow${string}`]: 'foo';
+        \\}
+        \\type Res7 = Identity<Obj7>
+        \\
+        \\interface Obj8 {
+        \\    readonly [key: string]: string;
+        \\    [key: `wow${string}`]: 'foo';
+        \\}
+        \\type Res8 = Identity<Obj8>
+        \\
+        \\type StrippingPick<T, K extends keyof T> = { -readonly [P in K]: T[P]; }
+        \\
+        \\interface Obj9 {
+        \\    readonly [key: string]: string;
+        \\}
+        \\type Res9 = StrippingPick<Obj9, keyof Obj9>
+        \\
+        \\interface Obj10 {
+        \\    readonly [key: string]: string;
+        \\    readonly [key: number]: 'foo';
+        \\}
+        \\type Res10 = StrippingPick<Obj10, keyof Obj10>
+        \\
+        \\interface Obj11 {
+        \\    [key: string]: string;
+        \\    readonly [key: number]: 'foo';
+        \\}
+        \\type Res11 = StrippingPick<Obj11, keyof Obj11>
+        \\
+        \\interface Obj12 {
+        \\    readonly [key: string]: string;
+        \\    [key: number]: 'foo';
+        \\}
+        \\type Res12 = StrippingPick<Obj12, keyof Obj12>
+        \\
+        \\type StrippingIdentity<T> = { -readonly [P in keyof T]: T[P]; }
+        \\
+        \\interface Obj13 {
+        \\    readonly [key: `wow${string}`]: 'foo';
+        \\}
+        \\type Res13 = StrippingIdentity<Obj13>
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: legacyDecorators_contextualTypes passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "legacyDecorators-contextualTypes",
+        .path = "legacyDecorators-contextualTypes.ts",
+        .source =
+        \\// @target: esnext
+        \\// @experimentalDecorators: true
+        \\
+        \\@((t) => { })
+        \\class C {
+        \\    constructor(@((t, k, i) => {}) p: any) {}
+        \\
+        \\    @((t, k, d) => { })
+        \\    static f() {}
+        \\
+        \\    @((t, k, d) => { })
+        \\    static get x() { return 1; }
+        \\    static set x(value) { }
+        \\
+        \\    @((t, k, d) => { })
+        \\    static accessor y = 1;
+        \\
+        \\    @((t, k) => { })
+        \\    static z = 1;
+        \\
+        \\    @((t, k, d) => { })
+        \\    g() {}
+        \\
+        \\    @((t, k, d) => { })
+        \\    get a() { return 1; }
+        \\    set a(value) { }
+        \\
+        \\    @((t, k, d) => { })
+        \\    accessor b = 1;
+        \\
+        \\    @((t, k) => { })
+        \\    c = 1;
+        \\
+        \\    static h(@((t, k, i) => {}) p: any) {}
+        \\    h(@((t, k, i) => {}) p: any) {}
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
