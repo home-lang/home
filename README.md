@@ -55,7 +55,7 @@ view; these are the drill-down pages — modeled after Bun's
 | **Node.js — `node:*` binding files** | **28 files** | Zig substrate landing module-by-module (buffer / stream / fs / events / util / assert / os / url / querystring / crypto / process / string_decoder / tty) |
 | **JSC bring-up (Phase 12.2)** | **128 files** | M6 milestone + native eval smoke landed; JS-callable bridge pending |
 | **Language features (capability matrix)** | **18 stable / 43 partial / 2 not-yet — 63 total** | ~28.6% stable, ~68.3% in progress, ~3.2% not yet (includes TS frontend + Runtime/Bun rows) |
-| **Total test count** | **6,596 / 6,597 — ~100%** (1 skipped, 0 failed) | `./pantry/.bin/zig build test --summary all` on Zig 0.17.0-dev — full unit + integration + conformance pin suite |
+| **Total test count** | **6,597 / 6,598 — ~100%** (1 skipped, 0 failed) | `./pantry/.bin/zig build test --summary all` on Zig 0.17.0-dev — full unit + integration + conformance pin suite |
 
 ### TypeScript parity — `home tsc` vs `tsc` / `tsgo`
 
