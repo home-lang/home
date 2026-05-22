@@ -23742,6 +23742,100 @@ test "conformance: literalTypes2 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: arrayLiterals2ES5 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "arrayLiterals2ES5",
+        .path = "arrayLiterals2ES5.ts",
+        .source =
+        \\var a0 = [,, 2, 3, 4]
+        \\var a1 = ["hello", "world"]
+        \\var a2 = [, , , ...a0, "hello"];
+        \\var a3 = [,, ...a0]
+        \\var a4 = [() => 1, ];
+        \\var a5 = [...a0, , ]
+        \\
+        \\var b0: [any, any, any] = [undefined, null, undefined];
+        \\var b1: [number[], string[]] = [[1, 2, 3], ["hello", "string"]];
+        \\
+        \\var [c0, c1] = [1, 2];
+        \\var [c2, c3] = [1, 2, true];
+        \\
+        \\var temp = ["s", "t", "r"];
+        \\var temp1 = [1, 2, 3];
+        \\var temp2: [number[], string[]] = [[1, 2, 3], ["hello", "string"]];
+        \\var temp3 = [undefined, null, undefined];
+        \\var temp4 = [];
+        \\
+        \\interface myArray extends Array<Number> { }
+        \\interface myArray2 extends Array<Number|String> { }
+        \\var d0 = [1, true, ...temp,];
+        \\var d1 = [...temp];
+        \\var d2: number[] = [...temp1];
+        \\var d3: myArray = [...temp1];
+        \\var d4: myArray2 = [...temp, ...temp1];
+        \\var d5 = [...temp3];
+        \\var d6 = [...temp4];
+        \\var d7 = [...[...temp1]];
+        \\var d8: number[][] = [[...temp1]]
+        \\var d9 = [[...temp1], ...["hello"]];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: arrayLiterals2ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "arrayLiterals2ES6",
+        .path = "arrayLiterals2ES6.ts",
+        .source =
+        \\var a0 = [, , 2, 3, 4]
+        \\var a1 = ["hello", "world"]
+        \\var a2 = [, , , ...a0, "hello"];
+        \\var a3 = [, , ...a0]
+        \\var a4 = [() => 1, ];
+        \\var a5 = [...a0, , ]
+        \\
+        \\var b0: [any, any, any] = [undefined, null, undefined];
+        \\var b1: [number[], string[]] = [[1, 2, 3], ["hello", "string"]];
+        \\
+        \\var [c0, c1] = [1, 2];
+        \\var [c2, c3] = [1, 2, true];
+        \\
+        \\var temp = ["s", "t", "r"];
+        \\var temp1 = [1, 2, 3];
+        \\var temp2: [number[], string[]] = [[1, 2, 3], ["hello", "string"]];
+        \\
+        \\interface myArray extends Array<Number> { }
+        \\interface myArray2 extends Array<Number|String> { }
+        \\var d0 = [1, true, ...temp, ];
+        \\var d1 = [...temp];
+        \\var d2: number[] = [...temp1];
+        \\var d3: myArray = [...temp1];
+        \\var d4: myArray2 = [...temp, ...temp1];
+        \\var d5 = [...a2];
+        \\var d6 = [...a3];
+        \\var d7 = [...a4];
+        \\var d8: number[][] = [[...temp1]]
+        \\var d9 = [[...temp1], ...["hello"]];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
