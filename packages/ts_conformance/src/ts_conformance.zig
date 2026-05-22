@@ -24745,6 +24745,161 @@ test "conformance: ExportInterfaceWithAccessibleTypesInTypeParameterConstraints 
 
 
 
+test "conformance: ExportInterfaceWithInaccessibleTypeInTypeParameterConstraint passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "ExportInterfaceWithInaccessibleTypeInTypeParameterConstraint",
+        .path = "ExportInterfaceWithInaccessibleTypeInTypeParameterConstraint.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\namespace A {
+        \\
+        \\    interface Point {
+        \\        x: number;
+        \\        y: number;
+        \\    }
+        \\
+        \\    export var Origin: Point = { x: 0, y: 0 };
+        \\
+        \\    export interface Point3d extends Point {
+        \\        z: number;
+        \\    }
+        \\
+        \\    export var Origin3d: Point3d = { x: 0, y: 0, z: 0 };
+        \\
+        \\    export interface Line<TPoint extends Point>{
+        \\        new (start: TPoint, end: TPoint);
+        \\
+        \\        start: TPoint;
+        \\        end: TPoint;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: ClassAndModuleThatMergeWithStaticFunction passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "ClassAndModuleThatMergeWithStaticFunctionAndNonExportedFunctionThatShareAName",
+        .path = "ClassAndModuleThatMergeWithStaticFunctionAndNonExportedFunctionThatShareAName.ts",
+        .source =
+        \\// @target: es2015
+        \\class Point {
+        \\    constructor(public x: number, public y: number) { }
+        \\
+        \\    static Origin(): Point { return { x: 0, y: 0 }; }
+        \\}
+        \\
+        \\namespace Point {
+        \\    function Origin() { return ""; }
+        \\}
+        \\
+        \\
+        \\namespace A {
+        \\    export class Point {
+        \\        constructor(public x: number, public y: number) { }
+        \\
+        \\        static Origin(): Point { return { x: 0, y: 0 }; }
+        \\    }
+        \\
+        \\    export namespace Point {
+        \\        function Origin() { return ""; }
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: ClassAndModuleThatMergeWithStaticVariable passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "ClassAndModuleThatMergeWithStaticVariableAndNonExportedVarThatShareAName",
+        .path = "ClassAndModuleThatMergeWithStaticVariableAndNonExportedVarThatShareAName.ts",
+        .source =
+        \\// @target: es2015
+        \\class Point {
+        \\    constructor(public x: number, public y: number) { }
+        \\
+        \\    static Origin: Point = { x: 0, y: 0 };
+        \\}
+        \\
+        \\namespace Point {
+        \\    var Origin = "";
+        \\}
+        \\
+        \\
+        \\namespace A {
+        \\    export class Point {
+        \\        constructor(public x: number, public y: number) { }
+        \\
+        \\        static Origin: Point = { x: 0, y: 0 };
+        \\    }
+        \\
+        \\    export namespace Point {
+        \\        var Origin = "";
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: mergeClassInterfaceAndModule passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "mergeClassInterfaceAndModule",
+        .path = "mergeClassInterfaceAndModule.ts",
+        .source =
+        \\// @target: es2015
+        \\
+        \\interface C1 {}
+        \\declare class C1 {}
+        \\namespace C1 {}
+        \\
+        \\declare class C2 {}
+        \\interface C2 {}
+        \\namespace C2 {}
+        \\
+        \\declare class C3 {}
+        \\namespace C3 {}
+        \\interface C3 {}
+        \\
+        \\namespace C4 {}
+        \\declare class C4 {}
+        \\interface C4 {}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
