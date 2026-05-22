@@ -24617,6 +24617,134 @@ test "conformance: compoundAssignmentLHSIsReference passes clean" {
 }
 
 
+
+
+test "conformance: exportImportAlias passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "exportImportAlias",
+        .path = "exportImportAlias.ts",
+        .source =
+        \\// @target: es2015
+        \\
+        \\namespace A {
+        \\
+        \\    export var x = 'hello world'
+        \\    export class Point {
+        \\        constructor(public x: number, public y: number) { }
+        \\    }
+        \\    export namespace B {
+        \\        export interface Id {
+        \\            name: string;
+        \\        }
+        \\    }
+        \\}
+        \\
+        \\namespace C {
+        \\    export import a = A;
+        \\}
+        \\
+        \\var a: string = C.a.x;
+        \\var b: { x: number; y: number; } = new C.a.Point(0, 0);
+        \\var c: { name: string };
+        \\var c: C.a.B.Id;
+        \\
+        \\namespace X {
+        \\    export function Y() {
+        \\        return 42;
+        \\    }
+        \\
+        \\    export namespace Y {
+        \\        export class Point {
+        \\            constructor(public x: number, public y: number) { }
+        \\        }
+        \\    }
+        \\}
+        \\
+        \\namespace Z {
+        \\    export import y = X.Y;
+        \\}
+        \\
+        \\var m: number = Z.y();
+        \\var n: { x: number; y: number; } = new Z.y.Point(0, 0);
+        \\
+        \\namespace K {
+        \\    export class L {
+        \\        constructor(public name: string) { }
+        \\    }
+        \\
+        \\    export namespace L {
+        \\        export var y = 12;
+        \\        export interface Point {
+        \\            x: number;
+        \\            y: number;
+        \\        }
+        \\    }
+        \\}
+        \\
+        \\namespace M {
+        \\    export import D = K.L;
+        \\}
+        \\
+        \\var o: { name: string };
+        \\var o = new M.D('Hello');
+        \\
+        \\var p: { x: number; y: number; }
+        \\var p: M.D.Point;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+
+test "conformance: ExportInterfaceWithAccessibleTypesInTypeParameterConstraints passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "ExportInterfaceWithAccessibleTypesInTypeParameterConstraintsClassHeritageListMemberTypeAnnotations",
+        .path = "ExportInterfaceWithAccessibleTypesInTypeParameterConstraintsClassHeritageListMemberTypeAnnotations.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\namespace A {
+        \\
+        \\    export interface Point {
+        \\        x: number;
+        \\        y: number;
+        \\    }
+        \\
+        \\    export var Origin: Point = { x: 0, y: 0 };
+        \\
+        \\    export interface Point3d extends Point {
+        \\        z: number;
+        \\    }
+        \\
+        \\    export var Origin3d: Point3d = { x: 0, y: 0, z: 0 };
+        \\
+        \\    export interface Line<TPoint extends Point>{
+        \\        new (start: TPoint, end: TPoint);
+        \\        start: TPoint;
+        \\        end: TPoint;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
