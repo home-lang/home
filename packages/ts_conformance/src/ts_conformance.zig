@@ -29777,6 +29777,174 @@ test "conformance: subtypingWithConstructSignatures4 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: objectLiteralGettersAndSetters passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectLiteralGettersAndSetters",
+        .path = "objectLiteralGettersAndSetters.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\var sameName1a = { get 'a'() { return ''; }, set a(n) { var p = n; var p: string; } };
+        \\var sameName2a = { get 0.0() { return ''; }, set 0(n) { var p = n; var p: string; } };
+        \\var sameName3a = { get 0x20() { return ''; }, set 3.2e1(n) { var p = n; var p: string; } };
+        \\var sameName4a = { get ''() { return ''; }, set ""(n) { var p = n; var p: string; } };
+        \\var sameName5a = { get '\t'() { return ''; }, set '\t'(n) { var p = n; var p: string; } };
+        \\var sameName6a = { get 'a'() { return ''; }, set a(n) { var p = n; var p: string; } };
+        \\
+        \\var callSig1 = { num(n: number) { return '' } };
+        \\var callSig1: { num: (n: number) => string; };
+        \\var callSig2 = { num: function (n: number) { return '' } };
+        \\var callSig2: { num: (n: number) => string; };
+        \\var callSig3 = { num: (n: number) => '' };
+        \\var callSig3: { num: (n: number) => string; };
+        \\
+        \\var getter1 = { get x(): string { return undefined; } };
+        \\var getter1: { readonly x: string; }
+        \\
+        \\var getter2 = { get x() { return ''; } };
+        \\var getter2: { readonly x: string; }
+        \\
+        \\var setter1 = { set x(n: number) { } };
+        \\var setter1: { x: number };
+        \\
+        \\var setter2 = { set x(n) { } };
+        \\var setter2: { x: any };
+        \\
+        \\var anyVar: any;
+        \\var sameType1 = { get x(): string { return undefined; }, set x(n: string) { } };
+        \\var sameType2 = { get x(): Array<number> { return undefined; }, set x(n: number[]) { } };
+        \\var sameType3 = { get x(): any { return undefined; }, set x(n: typeof anyVar) { } };
+        \\var sameType4 = { get x(): Date { return undefined; }, set x(n: Date) { } };
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectTypesIdentityWithGenericCallSignaturesDifferingByConstraints2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectTypesIdentityWithGenericCallSignaturesDifferingByConstraints2",
+        .path = "objectTypesIdentityWithGenericCallSignaturesDifferingByConstraints2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\class A {
+        \\    foo<T extends U, U extends Date>(x: T, y: U): string { return null; }
+        \\}
+        \\
+        \\class B<T extends U, U extends Array<number>> {
+        \\    foo(x: T, y: U): string { return null; }
+        \\}
+        \\
+        \\class C<T extends U, U extends String> {
+        \\    foo(x: T, y: U): string { return null; }
+        \\}
+        \\
+        \\class D<T extends U, U extends Number> {
+        \\    foo(x: T, y: U): string { return null; }
+        \\}
+        \\
+        \\interface I<T extends U, U extends Number> {
+        \\    foo(x: T, y: U): string;
+        \\}
+        \\
+        \\interface I2 {
+        \\    foo<T extends U, U extends Boolean>(x: T, y: U): string;
+        \\}
+        \\
+        \\var a: { foo<T extends U, U extends Array<string>>(x: T, y: U): string }
+        \\var b = { foo<T extends U, U extends RegExp>(x: T, y: U) { return ''; } };
+        \\
+        \\function foo1(x: A);
+        \\function foo1(x: A);
+        \\function foo1(x: any) { }
+        \\
+        \\function foo5c(x: C<String, String>);
+        \\function foo5c(x: D<Number, Number>);
+        \\function foo5c(x: any) { }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectTypesIdentityWithGenericCallSignaturesDifferingByConstraints3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectTypesIdentityWithGenericCallSignaturesDifferingByConstraints3",
+        .path = "objectTypesIdentityWithGenericCallSignaturesDifferingByConstraints3.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\class One { foo: string }
+        \\class Two { foo: string }
+        \\interface Three { foo: string }
+        \\interface Four<T> { foo: T }
+        \\interface Five<T> extends Four<T> { }
+        \\interface Six<T, U> {
+        \\    foo: T;
+        \\}
+        \\
+        \\class A {
+        \\    foo<T extends U, U extends One>(x: T, y: U): string { return null; }
+        \\}
+        \\
+        \\class B<T extends U, U extends Two> {
+        \\    foo(x: T, y: U): string { return null; }
+        \\}
+        \\
+        \\class C<T extends U, U extends Three> {
+        \\    foo(x: T, y: U): string { return null; }
+        \\}
+        \\
+        \\class D<T extends U, U extends Four<string>> {
+        \\    foo(x: T, y: U): string { return null; }
+        \\}
+        \\
+        \\interface I<T extends U, U extends Five<string>> {
+        \\    foo(x: T, y: U): string;
+        \\}
+        \\
+        \\interface I2 {
+        \\    foo<T extends U, U extends Six<string, string>>(x: T, y: U): string;
+        \\}
+        \\
+        \\var a: { foo<T extends U, U extends One>(x: T, y: U): string }
+        \\var b = { foo<T extends U, U extends Two>(x: T, y: U) { return ''; } };
+        \\
+        \\function foo1(x: A);
+        \\function foo1(x: A);
+        \\function foo1(x: any) { }
+        \\
+        \\function foo5(x: A);
+        \\function foo5(x: B<Two, Two>);
+        \\function foo5(x: any) { }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
