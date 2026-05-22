@@ -24530,6 +24530,93 @@ test "conformance: classAndInterfaceMerge_d passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+
+
+test "conformance: controlFlowElementAccess2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "controlFlowElementAccess2",
+        .path = "controlFlowElementAccess2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\declare const config: {
+        \\    [key: string]: boolean | { prop: string };
+        \\};
+        \\
+        \\if (typeof config['works'] !== 'boolean') {
+        \\    config.works.prop = 'test';
+        \\    config['works'].prop = 'test';
+        \\}
+        \\if (typeof config.works !== 'boolean') {
+        \\    config['works'].prop = 'test';
+        \\    config.works.prop = 'test';
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+
+
+test "conformance: compoundAssignmentLHSIsReference passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "compoundAssignmentLHSIsReference",
+        .path = "compoundAssignmentLHSIsReference.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\var value;
+        \\
+        \\var x1: number;
+        \\x1 *= value;
+        \\x1 += value;
+        \\
+        \\function fn1(x2: number) {
+        \\    x2 *= value;
+        \\    x2 += value;
+        \\}
+        \\
+        \\var x3: { a: number };
+        \\x3.a *= value;
+        \\x3.a += value;
+        \\
+        \\x3['a'] *= value;
+        \\x3['a'] += value;
+        \\
+        \\(x1) *= value;
+        \\(x1) += value;
+        \\
+        \\function fn2(x4: number) {
+        \\    (x4) *= value;
+        \\    (x4) += value;
+        \\}
+        \\
+        \\(x3.a) *= value;
+        \\(x3.a) += value;
+        \\
+        \\(x3['a']) *= value;
+        \\(x3['a']) += value;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
