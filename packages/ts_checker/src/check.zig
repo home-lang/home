@@ -35899,6 +35899,20 @@ pub const Checker = struct {
                         target_t = annotated_t;
                     }
                 }
+                // For synth-update expressions (`x++` / `x--` desugared to
+                // `x += 1` / `x -= 1`) the arithmetic-operand check
+                // downstream uses `target_t` to validate that the operand
+                // is number/bigint/enum/any. The declared type alone
+                // doesn't reflect narrowing — `if (typeof x === "number")
+                // { x++; }` declares `x: number | string` but the narrow
+                // scope says `number`. Consult the narrow so guarded
+                // arithmetic updates type-check. Mirrors tsc.
+                if (is_synth_update and target_kind == .identifier) {
+                    const id = hir_mod.identifierOf(self.hir, a.target);
+                    if (self.lookupNarrow(id.name)) |narrowed_t| {
+                        target_t = narrowed_t;
+                    }
+                }
                 if (a.op == null and target_kind == .identifier and self.sourceHasCheckJsDirective()) {
                     if (try self.jsDocTypeForPreviousIdentifierDecl(a.target)) |declared_t| {
                         target_t = declared_t;

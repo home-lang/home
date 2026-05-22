@@ -30026,6 +30026,69 @@ test "conformance: typeParameterConstModifiersReturnsAndYields passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: typeGuardsInConditionalExpression passes clean" {
+    // Regression pin for the synth-update target narrowing fix in
+    // ts_checker. Previously TS2356 (arithmetic operand must be number)
+    // fired on `x++` in the false branch of `typeof x === "string" ? ... : x++`
+    // because the assignment-target lookup used `typeOfIdentifierDeclared`
+    // which doesn't consult the narrow scope. Closing that gap lets every
+    // narrowed-then-mutated identifier reach the arithmetic check with
+    // its narrowed type.
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeGuardsInConditionalExpression",
+        .path = "typeGuardsInConditionalExpression.ts",
+        .source =
+        \\// @target: es2015
+        \\
+        \\function foo(x: number | string) {
+        \\    return typeof x === "string"
+        \\        ? x.length
+        \\        : x++;
+        \\}
+        \\function foo2(x: number | string) {
+        \\    return typeof x === "string"
+        \\        ? ((x = "hello") && x)
+        \\        : x;
+        \\}
+        \\function foo3(x: number | string) {
+        \\    return typeof x === "string"
+        \\        ? ((x = 10) && x)
+        \\        : x;
+        \\}
+        \\function foo4(x: number | string) {
+        \\    return typeof x === "string"
+        \\        ? x
+        \\        : ((x = 10) && x);
+        \\}
+        \\function foo5(x: number | string) {
+        \\    return typeof x === "string"
+        \\        ? x
+        \\        : ((x = "hello") && x);
+        \\}
+        \\function foo6(x: number | string) {
+        \\    return typeof x === "string"
+        \\        ? ((x = 10) && x)
+        \\        : ((x = "hello") && x);
+        \\}
+        \\function foo7(x: number | string | boolean) {
+        \\    return typeof x === "string"
+        \\        ? x === "hello"
+        \\        : typeof x === "boolean"
+        \\        ? x
+        \\        : x == 10;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
