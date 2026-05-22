@@ -23205,6 +23205,88 @@ test "conformance: numericLiteralTypes2 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: literalTypes3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "literalTypes3",
+        .path = "literalTypes3.ts",
+        .source =
+        \\function f1(s: string) {
+        \\    if (s === "foo") {
+        \\        s;
+        \\    }
+        \\    if (s === "foo" || s === "bar") {
+        \\        s;
+        \\    }
+        \\}
+        \\
+        \\function f2(s: string) {
+        \\    switch (s) {
+        \\        case "foo":
+        \\        case "bar":
+        \\            s;
+        \\        case "baz":
+        \\            s;
+        \\            break;
+        \\        default:
+        \\            s;
+        \\    }
+        \\}
+        \\
+        \\function f3(s: string) {
+        \\    return s === "foo" || s === "bar" ? s : undefined;
+        \\}
+        \\
+        \\function f4(x: number) {
+        \\    if (x === 1 || x === 2) {
+        \\        return x;
+        \\    }
+        \\    throw new Error();
+        \\}
+        \\
+        \\function f5(x: number, y: 1 | 2) {
+        \\    if (x === 0 || x === y) {
+        \\        x;
+        \\    }
+        \\}
+        \\
+        \\function f6(x: number, y: 1 | 2) {
+        \\    if (y === x || 0 === x) {
+        \\        x;
+        \\    }
+        \\}
+        \\
+        \\function f7(x: number | "foo" | "bar", y: 1 | 2 | string) {
+        \\    if (x === y) {
+        \\        x;
+        \\    }
+        \\}
+        \\
+        \\function f8(x: number | "foo" | "bar") {
+        \\    switch (x) {
+        \\        case 1:
+        \\        case 2:
+        \\            x;
+        \\            break;
+        \\        case "foo":
+        \\            x;
+        \\            break;
+        \\        default:
+        \\            x;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
