@@ -26396,6 +26396,130 @@ test "conformance: objectTypesIdentityWithCallSignaturesDifferingParamCounts2 pa
 }
 
 
+test "conformance: usingDeclarationsDeclarationEmit_1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "usingDeclarationsDeclarationEmit.1",
+        .path = "usingDeclarationsDeclarationEmit.1.ts",
+        .source =
+        \\// @target: esnext
+        \\// @module: esnext
+        \\// @declaration: true
+        \\// @noTypesAndSymbols: true
+        \\
+        \\using r1 = { [Symbol.dispose]() {} };
+        \\export { r1 };
+        \\
+        \\await using r2 = { async [Symbol.asyncDispose]() {} };
+        \\export { r2 };
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: usingDeclarationsDeclarationEmit_2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "usingDeclarationsDeclarationEmit.2",
+        .path = "usingDeclarationsDeclarationEmit.2.ts",
+        .source =
+        \\// @target: esnext
+        \\// @module: esnext
+        \\// @declaration: true
+        \\// @noTypesAndSymbols: true
+        \\
+        \\using r1 = { [Symbol.dispose]() {} };
+        \\export type R1 = typeof r1;
+        \\
+        \\await using r2 = { async [Symbol.asyncDispose]() {} };
+        \\export type R2 = typeof r2;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: awaitUsingDeclarations_15 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "awaitUsingDeclarations.15",
+        .path = "awaitUsingDeclarations.15.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: esnext
+        \\// @module: esnext
+        \\// @lib: esnext
+        \\// @noTypesAndSymbols: true
+        \\// @noUnusedLocals: true
+        \\
+        \\async function f() {
+        \\    await using _ = { async [Symbol.asyncDispose]() {} };
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: usingDeclarationsNamedEvaluationDecoratorsAndClassFields passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "usingDeclarationsNamedEvaluationDecoratorsAndClassFields",
+        .path = "usingDeclarationsNamedEvaluationDecoratorsAndClassFields.ts",
+        .source =
+        \\// @target: es2018
+        \\// @module: esnext
+        \\// @lib: esnext
+        \\// @noTypesAndSymbols: true
+        \\
+        \\export {};
+        \\
+        \\declare var dec: any;
+        \\
+        \\using C1 = class {
+        \\    static [Symbol.dispose]() {}
+        \\};
+        \\
+        \\using C2 = class {
+        \\    static x = 1;
+        \\    static [Symbol.dispose]() {}
+        \\};
+        \\
+        \\using C3 = @dec class {
+        \\    static [Symbol.dispose]() {}
+        \\};
+        \\
+        \\using C4 = @dec class {
+        \\    static x = 1;
+        \\    static [Symbol.dispose]() {}
+        \\};
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
