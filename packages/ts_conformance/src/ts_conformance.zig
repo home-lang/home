@@ -27238,6 +27238,474 @@ test "conformance: genericCallWithGenericSignatureArguments passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: typeParametersAreIdenticalToThemselves passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeParametersAreIdenticalToThemselves",
+        .path = "typeParametersAreIdenticalToThemselves.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\function foo1<T>(x: T);
+        \\function foo1<T>(x: T);
+        \\function foo1<T>(x: T) { }
+        \\
+        \\function foo2<T, U>(x: T);
+        \\function foo2<T, U>(x: T);
+        \\function foo2<T, U>(x: T) { }
+        \\
+        \\function foo3<T, U>(x: T, y: U) {
+        \\    function inner(x: T);
+        \\    function inner(x: T);
+        \\    function inner(x: T) { }
+        \\
+        \\    function inner2(x: T);
+        \\    function inner2<T>(x: T);
+        \\    function inner2(x: any) { }
+        \\}
+        \\
+        \\class C<T> {
+        \\    foo1(x: T);
+        \\    foo1(x: T);
+        \\    foo1(x: T) { }
+        \\
+        \\    foo2<U>(a: T, x: U);
+        \\    foo2<U>(a: T, x: U);
+        \\    foo2<U>(a: T, x: U) { }
+        \\
+        \\    foo3<T>(x: T);
+        \\    foo3<T>(x: T);
+        \\    foo3<T>(x: T) { }
+        \\
+        \\    foo4<T extends Date>(x: T);
+        \\    foo4<T extends Date>(x: T);
+        \\    foo4<T extends Date>(x: T) { }
+        \\}
+        \\
+        \\class C2<T extends Date> {
+        \\    foo1(x: T);
+        \\    foo1(x: T);
+        \\    foo1(x: T) { }
+        \\
+        \\    foo2<U>(a: T, x: U);
+        \\    foo2<U>(a: T, x: U);
+        \\    foo2<U>(a: T, x: U) { }
+        \\
+        \\    foo3<T>(x: T);
+        \\    foo3<T>(x: T);
+        \\    foo3<T>(x: T) { }
+        \\}
+        \\
+        \\interface I<T> {
+        \\    foo1(x: T);
+        \\    foo1(x: T);
+        \\
+        \\    foo2<U>(a: T, x: U);
+        \\    foo2<U>(a: T, x: U);
+        \\
+        \\    foo3<T>(x: T);
+        \\    foo3<T>(x: T);
+        \\
+        \\    foo4<T extends Date>(x: T);
+        \\    foo4<T extends Date>(x: T);
+        \\}
+        \\
+        \\interface I2<T extends Date> {
+        \\    foo1(x: T);
+        \\    foo1(x: T);
+        \\
+        \\    foo2<U>(a: T, x: U);
+        \\    foo2<U>(a: T, x: U);
+        \\
+        \\    foo3<T>(x: T);
+        \\    foo3<T>(x: T);
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectTypesIdentityWithStringIndexers passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectTypesIdentityWithStringIndexers",
+        .path = "objectTypesIdentityWithStringIndexers.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\class A {
+        \\    [x: string]: string;
+        \\}
+        \\
+        \\class B {
+        \\    [x: string]: string;
+        \\}
+        \\
+        \\class C<T> {
+        \\    [x: string]: T;
+        \\}
+        \\
+        \\interface I {
+        \\    [x: string]: string;
+        \\}
+        \\
+        \\class PA extends A {
+        \\}
+        \\
+        \\class PB extends B {
+        \\}
+        \\
+        \\var a: {
+        \\    [x: string]: string;
+        \\}
+        \\var b: { [x: string]: string; } = { foo: '' };
+        \\
+        \\function foo1(x: A);
+        \\function foo1(x: A);
+        \\function foo1(x: any) { }
+        \\
+        \\function foo1b(x: B);
+        \\function foo1b(x: B);
+        \\function foo1b(x: any) { }
+        \\
+        \\function foo1c(x: C<string>);
+        \\function foo1c(x: C<string>);
+        \\function foo1c(x: any) { }
+        \\
+        \\function foo2(x: I);
+        \\function foo2(x: I);
+        \\function foo2(x: any) { }
+        \\
+        \\function foo3(x: typeof a);
+        \\function foo3(x: typeof a);
+        \\function foo3(x: any) { }
+        \\
+        \\function foo4(x: typeof b);
+        \\function foo4(x: typeof b);
+        \\function foo4(x: any) { }
+        \\
+        \\function foo5(x: A);
+        \\function foo5(x: B);
+        \\function foo5(x: any) { }
+        \\
+        \\function foo5b(x: A);
+        \\function foo5b(x: C<string>);
+        \\function foo5b(x: any) { }
+        \\
+        \\function foo5c(x: A);
+        \\function foo5c(x: PA);
+        \\function foo5c(x: any) { }
+        \\
+        \\function foo5d(x: A);
+        \\function foo5d(x: PB);
+        \\function foo5d(x: any) { }
+        \\
+        \\function foo6(x: A);
+        \\function foo6(x: I);
+        \\function foo6(x: any) { }
+        \\
+        \\function foo7(x: A);
+        \\function foo7(x: typeof a);
+        \\function foo7(x: any) { }
+        \\
+        \\function foo8(x: B);
+        \\function foo8(x: I);
+        \\function foo8(x: any) { }
+        \\
+        \\function foo9(x: B);
+        \\function foo9(x: C<string>);
+        \\function foo9(x: any) { }
+        \\
+        \\function foo10(x: B);
+        \\function foo10(x: typeof a);
+        \\function foo10(x: any) { }
+        \\
+        \\function foo11(x: B);
+        \\function foo11(x: typeof b);
+        \\function foo11(x: any) { }
+        \\
+        \\function foo11b(x: B);
+        \\function foo11b(x: PA);
+        \\function foo11b(x: any) { }
+        \\
+        \\function foo11c(x: B);
+        \\function foo11c(x: PB);
+        \\function foo11c(x: any) { }
+        \\
+        \\function foo12(x: I);
+        \\function foo12(x: C<string>);
+        \\function foo12(x: any) { }
+        \\
+        \\function foo13(x: I);
+        \\function foo13(x: typeof a);
+        \\function foo13(x: any) { }
+        \\
+        \\function foo14(x: I);
+        \\function foo14(x: typeof b);
+        \\function foo14(x: any) { }
+        \\
+        \\function foo15(x: I);
+        \\function foo15(x: PA);
+        \\function foo15(x: any) { }
+        \\
+        \\function foo16(x: I);
+        \\function foo16(x: PB);
+        \\function foo16(x: any) { }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectTypesIdentityWithCallSignatures2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectTypesIdentityWithCallSignatures2",
+        .path = "objectTypesIdentityWithCallSignatures2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\class A {
+        \\    foo(x: string): string { return null; }
+        \\}
+        \\
+        \\class B {
+        \\    foo(x: number): string { return null; }
+        \\}
+        \\
+        \\class C<T> {
+        \\    foo(x: T): T { return null; }
+        \\}
+        \\
+        \\interface I {
+        \\    foo(x: boolean): string;
+        \\}
+        \\
+        \\interface I2<T> {
+        \\    foo(x: T): T;
+        \\}
+        \\
+        \\var a: { foo(x: Date): string }
+        \\var b = { foo(x: RegExp) { return ''; } };
+        \\
+        \\function foo1(x: A);
+        \\function foo1(x: A);
+        \\function foo1(x: any) { }
+        \\
+        \\function foo1b(x: B);
+        \\function foo1b(x: B);
+        \\function foo1b(x: any) { }
+        \\
+        \\function foo1c(x: C<string>);
+        \\function foo1c(x: C<string>);
+        \\function foo1c(x: any) { }
+        \\
+        \\function foo2(x: I);
+        \\function foo2(x: I);
+        \\function foo2(x: any) { }
+        \\
+        \\function foo3(x: typeof a);
+        \\function foo3(x: typeof a);
+        \\function foo3(x: any) { }
+        \\
+        \\function foo4(x: typeof b);
+        \\function foo4(x: typeof b);
+        \\function foo4(x: any) { }
+        \\
+        \\function foo5(x: A);
+        \\function foo5(x: B);
+        \\function foo5(x: any) { }
+        \\
+        \\function foo5b(x: A);
+        \\function foo5b(x: C<string>);
+        \\function foo5b(x: any) { }
+        \\
+        \\function foo6(x: A);
+        \\function foo6(x: I);
+        \\function foo6(x: any) { }
+        \\
+        \\function foo7(x: A);
+        \\function foo7(x: typeof a);
+        \\function foo7(x: any) { }
+        \\
+        \\function foo8(x: B);
+        \\function foo8(x: I);
+        \\function foo8(x: any) { }
+        \\
+        \\function foo9(x: B);
+        \\function foo9(x: C<string>);
+        \\function foo9(x: any) { }
+        \\
+        \\function foo10(x: B);
+        \\function foo10(x: typeof a);
+        \\function foo10(x: any) { }
+        \\
+        \\function foo11(x: B);
+        \\function foo11(x: typeof b);
+        \\function foo11(x: any) { }
+        \\
+        \\function foo12(x: I);
+        \\function foo12(x: C<string>);
+        \\function foo12(x: any) { }
+        \\
+        \\function foo12b(x: I2<string>);
+        \\function foo12b(x: C<string>);
+        \\function foo12b(x: any) { }
+        \\
+        \\function foo13(x: I);
+        \\function foo13(x: typeof a);
+        \\function foo13(x: any) { }
+        \\
+        \\function foo14(x: I);
+        \\function foo14(x: typeof b);
+        \\function foo14(x: any) { }
+        \\
+        \\function foo15(x: I2<string>);
+        \\function foo15(x: C<number>);
+        \\function foo15(x: any) { }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectTypesIdentityWithGenericCallSignaturesDifferingTypeParameterNames passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectTypesIdentityWithGenericCallSignaturesDifferingTypeParameterNames",
+        .path = "objectTypesIdentityWithGenericCallSignaturesDifferingTypeParameterNames.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\class A {
+        \\    foo<T>(x: T): T { return null; }
+        \\}
+        \\
+        \\class B<U> {
+        \\    foo(x: U): U { return null; }
+        \\}
+        \\
+        \\class C<V> {
+        \\    foo(x: V): V { return null; }
+        \\}
+        \\
+        \\interface I<X> {
+        \\    foo(x: X): X;
+        \\}
+        \\
+        \\interface I2 {
+        \\    foo<Y>(x: Y): Y;
+        \\}
+        \\
+        \\var a: { foo<Z>(x: Z): Z }
+        \\var b = { foo<A>(x: A) { return x; } };
+        \\
+        \\function foo1(x: A);
+        \\function foo1(x: A);
+        \\function foo1(x: any) { }
+        \\
+        \\function foo1b(x: B<string>);
+        \\function foo1b(x: B<string>);
+        \\function foo1b(x: any) { }
+        \\
+        \\function foo1c(x: C<string>);
+        \\function foo1c(x: C<string>);
+        \\function foo1c(x: any) { }
+        \\
+        \\function foo2(x: I<string>);
+        \\function foo2(x: I<string>);
+        \\function foo2(x: any) { }
+        \\
+        \\function foo3(x: typeof a);
+        \\function foo3(x: typeof a);
+        \\function foo3(x: any) { }
+        \\
+        \\function foo4(x: typeof b);
+        \\function foo4(x: typeof b);
+        \\function foo4(x: any) { }
+        \\
+        \\function foo5(x: A);
+        \\function foo5(x: B<string>);
+        \\function foo5(x: any) { }
+        \\
+        \\function foo5b(x: A);
+        \\function foo5b(x: C<string>);
+        \\function foo5b(x: any) { }
+        \\
+        \\function foo6(x: A);
+        \\function foo6(x: I<string>);
+        \\function foo6(x: any) { }
+        \\
+        \\function foo7(x: A);
+        \\function foo7(x: typeof a);
+        \\function foo7(x: any) { }
+        \\
+        \\function foo8(x: B<string>);
+        \\function foo8(x: I<string>);
+        \\function foo8(x: any) { }
+        \\
+        \\function foo9(x: B<string>);
+        \\function foo9(x: C<string>);
+        \\function foo9(x: any) { }
+        \\
+        \\function foo10(x: B<string>);
+        \\function foo10(x: typeof a);
+        \\function foo10(x: any) { }
+        \\
+        \\function foo11(x: B<string>);
+        \\function foo11(x: typeof b);
+        \\function foo11(x: any) { }
+        \\
+        \\function foo12(x: I<string>);
+        \\function foo12(x: C<string>);
+        \\function foo12(x: any) { }
+        \\
+        \\function foo12b(x: I2);
+        \\function foo12b(x: C<string>);
+        \\function foo12b(x: any) { }
+        \\
+        \\function foo13(x: I<string>);
+        \\function foo13(x: typeof a);
+        \\function foo13(x: any) { }
+        \\
+        \\function foo14(x: I<string>);
+        \\function foo14(x: typeof b);
+        \\function foo14(x: any) { }
+        \\
+        \\function foo15(x: I2);
+        \\function foo15(x: C<number>);
+        \\function foo15(x: any) { }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
