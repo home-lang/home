@@ -29616,6 +29616,167 @@ test "conformance: objectTypesIdentityWithGenericConstructSignaturesDifferingTyp
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: contextualTypeWithUnionTypeIndexSignatures passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "contextualTypeWithUnionTypeIndexSignatures",
+        .path = "contextualTypeWithUnionTypeIndexSignatures.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\interface SomeType {
+        \\    (a: number): number;
+        \\}
+        \\interface SomeType2 {
+        \\    (a: number): string;
+        \\}
+        \\
+        \\interface IWithNoStringIndexSignature {
+        \\    foo: string;
+        \\}
+        \\interface IWithNoNumberIndexSignature {
+        \\    0: string;
+        \\}
+        \\interface IWithStringIndexSignature1 {
+        \\    [a: string]: SomeType;
+        \\}
+        \\interface IWithStringIndexSignature2 {
+        \\    [a: string]: SomeType2;
+        \\}
+        \\interface IWithNumberIndexSignature1 {
+        \\    [a: number]: SomeType;
+        \\}
+        \\interface IWithNumberIndexSignature2 {
+        \\    [a: number]: SomeType2;
+        \\}
+        \\
+        \\var x: IWithNoStringIndexSignature | IWithStringIndexSignature1 = { z: a => a };
+        \\var x: IWithNoStringIndexSignature | IWithStringIndexSignature1 = { foo: a => a };
+        \\var x: IWithNoStringIndexSignature | IWithStringIndexSignature1 = { foo: "hello" };
+        \\var x2: IWithStringIndexSignature1 | IWithStringIndexSignature2 = { z: a => a.toString() };
+        \\var x2: IWithStringIndexSignature1 | IWithStringIndexSignature2 = { z: a => a };
+        \\
+        \\var x3: IWithNoNumberIndexSignature | IWithNumberIndexSignature1 = { 1: a => a };
+        \\var x3: IWithNoNumberIndexSignature | IWithNumberIndexSignature1 = { 0: a => a };
+        \\var x3: IWithNoNumberIndexSignature | IWithNumberIndexSignature1 = { 0: "hello" };
+        \\var x4: IWithNumberIndexSignature1 | IWithNumberIndexSignature2 = { 1: a => a.toString() };
+        \\var x4: IWithNumberIndexSignature1 | IWithNumberIndexSignature2 = { 1: a => a };
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: subtypingWithCallSignatures4 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "subtypingWithCallSignatures4",
+        .path = "subtypingWithCallSignatures4.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\class Base { foo: string; }
+        \\class Derived extends Base { bar: string; }
+        \\class Derived2 extends Derived { baz: string; }
+        \\class OtherDerived extends Base { bing: string; }
+        \\
+        \\declare function foo1(a: <T>(x: T) => T[]);
+        \\declare function foo1(a: any): any;
+        \\
+        \\declare function foo2(a2: <T>(x: T) => string[]);
+        \\declare function foo2(a: any): any;
+        \\
+        \\declare function foo4(a4: <T, U>(x: T, y: U) => string);
+        \\declare function foo4(a: any): any;
+        \\
+        \\declare function foo5(a5: <T, U>(x: (arg: T) => U) => T);
+        \\declare function foo5(a: any): any;
+        \\
+        \\var r1arg = <T>(x: T) => <T[]>null;
+        \\var r1arg2 = <T>(x: T) => <T[]>null;
+        \\var r1 = foo1(r1arg);
+        \\var r1a = [r1arg, r1arg2];
+        \\var r1b = [r1arg2, r1arg];
+        \\
+        \\var r2arg = <T>(x: T) => [''];
+        \\var r2arg2 = <T>(x: T) => [''];
+        \\var r2 = foo2(r2arg);
+        \\
+        \\var r4arg = <T, U>(x: T, y: U) => '';
+        \\var r4 = foo4(r4arg);
+        \\
+        \\var r5arg = <T, U>(x: (arg: T) => U) => <T>null;
+        \\var r5 = foo5(r5arg);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: subtypingWithConstructSignatures4 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "subtypingWithConstructSignatures4",
+        .path = "subtypingWithConstructSignatures4.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\class Base { foo: string; }
+        \\class Derived extends Base { bar: string; }
+        \\class Derived2 extends Derived { baz: string; }
+        \\class OtherDerived extends Base { bing: string; }
+        \\
+        \\declare function foo1(a: new <T>(x: T) => T[]);
+        \\declare function foo1(a: any): any;
+        \\
+        \\declare function foo2(a2: new <T>(x: T) => string[]);
+        \\declare function foo2(a: any): any;
+        \\
+        \\declare function foo4(a4: new <T, U>(x: T, y: U) => string);
+        \\declare function foo4(a: any): any;
+        \\
+        \\declare function foo5(a5: new <T, U>(x: new (arg: T) => U) => T);
+        \\declare function foo5(a: any): any;
+        \\
+        \\var r1arg: new <T>(x: T) => T[];
+        \\var r1arg2: new <T>(x: T) => T[];
+        \\var r1 = foo1(r1arg);
+        \\var r1a = [r1arg, r1arg2];
+        \\var r1b = [r1arg2, r1arg];
+        \\
+        \\var r2arg: new <T>(x: T) => string[];
+        \\var r2arg2: new <T>(x: T) => string[];
+        \\var r2 = foo2(r2arg);
+        \\
+        \\var r4arg: new <T, U>(x: T, y: U) => string;
+        \\var r4 = foo4(r4arg);
+        \\
+        \\var r5arg: new <T, U>(x: new (arg: T) => U) => T;
+        \\var r5 = foo5(r5arg);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
