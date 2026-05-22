@@ -22701,6 +22701,60 @@ test "conformance: esDecorators_classExpression_namedEvaluation_10 passes clean"
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: esDecorators_classDeclaration_commonjs passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "esDecorators-classDeclaration-commonjs",
+        .path = "esDecorators-classDeclaration-commonjs.ts",
+        .source =
+        \\declare var deco: any;
+        \\
+        \\@deco
+        \\export class Example {
+        \\    static foo() {}
+        \\}
+        \\
+        \\Example.foo();
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: esDecorators_classDeclaration_commonjs_classNamespaceMerge passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "esDecorators-classDeclaration-commonjs-classNamespaceMerge",
+        .path = "esDecorators-classDeclaration-commonjs-classNamespaceMerge.ts",
+        .source =
+        \\declare var deco: any;
+        \\
+        \\@deco
+        \\export class Example {
+        \\    static foo() {}
+        \\}
+        \\
+        \\export namespace Example {
+        \\    export const x = 1;
+        \\}
+        \\
+        \\Example.foo();
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
