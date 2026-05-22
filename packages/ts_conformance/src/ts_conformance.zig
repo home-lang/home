@@ -23984,6 +23984,107 @@ test "conformance: literalTypeWidening passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: arrowFunctionExpressions passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "arrowFunctionExpressions",
+        .path = "arrowFunctionExpressions.ts",
+        .source =
+        \\var a = (p: string) => p.length;
+        \\var a = (p: string) => { return p.length; }
+        \\
+        \\var b = j => { return 0; }
+        \\var b = (j) => { return 0; }
+        \\
+        \\var c: number;
+        \\var d = n => c = n;
+        \\var d = (n) => c = n;
+        \\var d: (n: any) => any;
+        \\
+        \\var p1 = ([a]) => { };
+        \\var p2 = ([...a]) => { };
+        \\var p3 = ([, a]) => { };
+        \\var p4 = ([, ...a]) => { };
+        \\var p5 = ([a = 1]) => { };
+        \\var p6 = ({ a }) => { };
+        \\var p7 = ({ a: { b } }) => { };
+        \\var p8 = ({ a = 1 }) => { };
+        \\var p9 = ({ a: { b = 1 } = { b: 1 } }) => { };
+        \\var p10 = ([{ value, done }]) => { };
+        \\
+        \\class MyClass {
+        \\    m = (n) => n + 1;
+        \\    p = (n) => n && this;
+        \\
+        \\    fn() {
+        \\        var m = (n) => n + 1;
+        \\        var p = (n) => n && this;
+        \\    }
+        \\}
+        \\
+        \\var arrrr = () => (m: number) => () => (n: number) => m + n;
+        \\var e = arrrr()(3)()(4);
+        \\var e: number;
+        \\
+        \\function someFn() {
+        \\    var arr = (n: number) => (p: number) => p * n;
+        \\    arr(3)(4).toExponential();
+        \\}
+        \\
+        \\function someOtherFn() {
+        \\    var arr = (n: number) => '' + n;
+        \\    arr(4).charAt(0);
+        \\}
+        \\
+        \\function outerFn() {
+        \\    function innerFn() {
+        \\        var arrowFn = () => { };
+        \\        var p = arrowFn();
+        \\        var p: void;
+        \\    }
+        \\}
+        \\
+        \\var f = (n: string) => {
+        \\    function fn(x: number) {
+        \\        return () => n + x;
+        \\    }
+        \\    return fn(4);
+        \\}
+        \\var g = f('')();
+        \\var g: string;
+        \\
+        \\function someOuterFn() {
+        \\    var arr = (n: string) => {
+        \\        function innerFn() {
+        \\            return () => n.length;
+        \\        }
+        \\        return innerFn;
+        \\    }
+        \\    return arr;
+        \\}
+        \\var h = someOuterFn()('')()();
+        \\h.toExponential();
+        \\
+        \\function tryCatchFn() {
+        \\    try {
+        \\        var x = () => this;
+        \\    } catch (e) {
+        \\        var t = () => e + this;
+        \\    } finally {
+        \\        var m = () => this + '';
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
