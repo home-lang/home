@@ -22661,6 +22661,46 @@ test "conformance: esDecorators_classDeclaration_classSuper_5 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: esDecorators_classExpression_namedEvaluation_10 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "esDecorators-classExpression-namedEvaluation.10",
+        .path = "esDecorators-classExpression-namedEvaluation.10.ts",
+        .source =
+        \\declare let dec: any, f: any;
+        \\
+        \\{ class C { static x = @dec class {}; } }
+        \\{ class C { static "x" = @dec class {}; } }
+        \\{ class C { static 0 = @dec class {}; } }
+        \\{ class C { static ["x"] = @dec class {}; } }
+        \\{ class C { static [0] = @dec class {}; } }
+        \\{ class C { static [f()] = @dec class {}; } }
+        \\
+        \\{ class C { static __proto__ = @dec class {}; } }
+        \\{ class C { static "__proto__" = @dec class {}; } }
+        \\
+        \\{ class C { static x = class { @dec y: any }; } }
+        \\{ class C { static "x" = class { @dec y: any }; } }
+        \\{ class C { static 0 = class { @dec y: any }; } }
+        \\{ class C { static ["x"] = class { @dec y: any }; } }
+        \\{ class C { static [0] = class { @dec y: any }; } }
+        \\{ class C { static [f()] = @dec class {}; } }
+        \\
+        \\{ class C { static __proto__ = class { @dec y: any }; } }
+        \\{ class C { static "__proto__" = class { @dec y: any }; } }
+        \\
+        \\{ class C { @dec static x = @dec class {}; } }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
