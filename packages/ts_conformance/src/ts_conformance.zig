@@ -21522,6 +21522,148 @@ test "conformance: templateStringTermination3_ES6 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: classStaticBlock12 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "classStaticBlock12",
+        .path = "classStaticBlock12.ts",
+        .source =
+        \\class C {
+        \\  static #x = 1;
+        \\
+        \\  static {
+        \\    C.#x;
+        \\  }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: classStaticBlock17 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "classStaticBlock17",
+        .path = "classStaticBlock17.ts",
+        .source =
+        \\let friendA: { getX(o: A): number, setX(o: A, v: number): void };
+        \\
+        \\class A {
+        \\  #x: number;
+        \\
+        \\  constructor (v: number) {
+        \\    this.#x = v;
+        \\  }
+        \\
+        \\  getX () {
+        \\    return this.#x;
+        \\  }
+        \\
+        \\  static {
+        \\    friendA = {
+        \\      getX(obj) { return obj.#x },
+        \\      setX(obj, value) { obj.#x = value }
+        \\    };
+        \\  }
+        \\};
+        \\
+        \\class B {
+        \\  constructor(a: A) {
+        \\    const x = friendA.getX(a);
+        \\    friendA.setX(a, x + 1);
+        \\  }
+        \\};
+        \\
+        \\const a = new A(41);
+        \\const b = new B(a);
+        \\a.getX();
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emitStatementsBeforeSuperCall passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emitStatementsBeforeSuperCall",
+        .path = "emitStatementsBeforeSuperCall.ts",
+        .source =
+        \\class Base {
+        \\}
+        \\class Sub extends Base {
+        \\    constructor(public p: number) {
+        \\        console.log('hi');
+        \\        super();
+        \\    }
+        \\    field = 0;
+        \\}
+        \\
+        \\class Test extends Base {
+        \\    prop: number;
+        \\    constructor(public p: number) {
+        \\        1;
+        \\        super();
+        \\        this.prop = 1;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: emitStatementsBeforeSuperCallWithDefineFields passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emitStatementsBeforeSuperCallWithDefineFields",
+        .path = "emitStatementsBeforeSuperCallWithDefineFields.ts",
+        .source =
+        \\class Base {
+        \\}
+        \\class Sub extends Base {
+        \\    constructor(public p: number) {
+        \\        console.log('hi');
+        \\        super();
+        \\    }
+        \\    field = 0;
+        \\}
+        \\
+        \\class Test extends Base {
+        \\    prop: number;
+        \\    constructor(public p: number) {
+        \\        1;
+        \\        super();
+        \\        this.prop = 1;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
