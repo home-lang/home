@@ -26754,6 +26754,219 @@ test "conformance: assignmentCompatWithObjectMembers3 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: typesWithSpecializedCallSignatures passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typesWithSpecializedCallSignatures",
+        .path = "typesWithSpecializedCallSignatures.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\class Base { foo: string }
+        \\class Derived1 extends Base { bar: string }
+        \\class Derived2 extends Base { baz: string }
+        \\
+        \\class C {
+        \\    foo(x: 'hi'): Derived1;
+        \\    foo(x: 'bye'): Derived2;
+        \\    foo(x: string): Base;
+        \\    foo(x) {
+        \\        return x;
+        \\    }
+        \\}
+        \\var c = new C();
+        \\
+        \\interface I {
+        \\    foo(x: 'hi'): Derived1;
+        \\    foo(x: 'bye'): Derived2;
+        \\    foo(x: string): Base;
+        \\}
+        \\var i: I;
+        \\
+        \\var a: {
+        \\    foo(x: 'hi'): Derived1;
+        \\    foo(x: 'bye'): Derived2;
+        \\    foo(x: string): Base;
+        \\};
+        \\
+        \\c = i;
+        \\c = a;
+        \\
+        \\i = c;
+        \\i = a;
+        \\
+        \\a = c;
+        \\a = i;
+        \\
+        \\var r1: Derived1 = c.foo('hi');
+        \\var r2: Derived2 = c.foo('bye');
+        \\var r3: Base = c.foo('hm');
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: typesWithSpecializedConstructSignatures passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typesWithSpecializedConstructSignatures",
+        .path = "typesWithSpecializedConstructSignatures.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\class Base { foo: string }
+        \\class Derived1 extends Base { bar: string }
+        \\class Derived2 extends Base { baz: string }
+        \\
+        \\class C {
+        \\    constructor(x: 'hi');
+        \\    constructor(x: 'bye');
+        \\    constructor(x: string);
+        \\    constructor(x) {
+        \\        return x;
+        \\    }
+        \\}
+        \\var c = new C('a');
+        \\
+        \\interface I {
+        \\    new(x: 'hi'): Derived1;
+        \\    new(x: 'bye'): Derived2;
+        \\    new(x: string): Base;
+        \\}
+        \\var i: I;
+        \\
+        \\var a: {
+        \\    new(x: 'hi'): Derived1;
+        \\    new(x: 'bye'): Derived2;
+        \\    new(x: string): Base;
+        \\};
+        \\
+        \\c = i;
+        \\c = a;
+        \\
+        \\i = a;
+        \\
+        \\a = i;
+        \\
+        \\var r1 = new C('hi');
+        \\var r2: Derived2 = new i('bye');
+        \\var r3: Base = new a('hm');
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectTypeWithCallSignatureHidingMembersOfExtendedFunction passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectTypeWithCallSignatureHidingMembersOfExtendedFunction",
+        .path = "objectTypeWithCallSignatureHidingMembersOfExtendedFunction.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\interface Function {
+        \\    data: number;
+        \\    [x: string]: Object;
+        \\}
+        \\
+        \\interface I {
+        \\    (): void;
+        \\    apply(a: any, b?: any): void;
+        \\    call(thisArg: number, ...argArray: number[]): any;
+        \\}
+        \\
+        \\var i: I;
+        \\var r1: (a: any, b?: any) => void = i.apply;
+        \\var r1b: (thisArg: number, ...argArray: number[]) => void = i.call;
+        \\var r1c = i.arguments;
+        \\var r1d = i.data;
+        \\var r1e = i['hm'];
+        \\
+        \\var x: {
+        \\    (): void;
+        \\    apply(a: any, b?: any): void;
+        \\    call(thisArg: number, ...argArray: number[]): any;
+        \\}
+        \\
+        \\var r2: (a: any, b?: any) => void = x.apply;
+        \\var r2b: (thisArg: number, ...argArray: number[]) => void = x.call;
+        \\var r2c = x.arguments;
+        \\var r2d = x.data;
+        \\var r2e = x['hm'];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectTypeWithConstructSignatureHidingMembersOfExtendedFunction passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectTypeWithConstructSignatureHidingMembersOfExtendedFunction",
+        .path = "objectTypeWithConstructSignatureHidingMembersOfExtendedFunction.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\interface Function {
+        \\    data: number;
+        \\    [x: string]: Object;
+        \\}
+        \\
+        \\interface I {
+        \\    new(): number;
+        \\    apply(a: any, b?: any): void;
+        \\    call(thisArg: number, ...argArray: number[]): any;
+        \\}
+        \\
+        \\var i: I;
+        \\var r1: (a: any, b?: any) => void = i.apply;
+        \\var r1b: (thisArg: number, ...argArray: number[]) => void = i.call;
+        \\var r1c = i.arguments;
+        \\var r1d = i.data;
+        \\var r1e = i['hm'];
+        \\
+        \\var x: {
+        \\    new(): number;
+        \\    apply(a: any, b?: any): void;
+        \\    call(thisArg: number, ...argArray: number[]): any;
+        \\}
+        \\
+        \\var r2: (a: any, b?: any) => void = x.apply;
+        \\var r2b: (thisArg: number, ...argArray: number[]) => void = x.call;
+        \\var r2c = x.arguments;
+        \\var r2d = x.data;
+        \\var r2e = x['hm'];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
