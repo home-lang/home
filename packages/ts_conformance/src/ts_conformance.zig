@@ -22061,6 +22061,85 @@ test "conformance: esDecorators_classExpression_namedEvaluation_6 passes clean" 
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: esDecorators_classDeclaration_classSuper_2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "esDecorators-classDeclaration-classSuper.2",
+        .path = "esDecorators-classDeclaration-classSuper.2.ts",
+        .source =
+        \\declare var dec: any;
+        \\
+        \\@dec
+        \\class C1 extends class { } {
+        \\    static {
+        \\        super.name;
+        \\    }
+        \\}
+        \\
+        \\@dec
+        \\class C2 extends (function() {} as any) {
+        \\    static {
+        \\        super.name;
+        \\    }
+        \\}
+        \\
+        \\@dec
+        \\class C3 extends ((() => {}) as any) {
+        \\    static {
+        \\        super.name;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: esDecorators_classDeclaration_classSuper_6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "esDecorators-classDeclaration-classSuper.6",
+        .path = "esDecorators-classDeclaration-classSuper.6.ts",
+        .source =
+        \\declare var dec: any;
+        \\
+        \\declare class Base {
+        \\    static method(...args: any[]): number;
+        \\    method(...args: any[]): number;
+        \\}
+        \\
+        \\@dec
+        \\class C extends Base {
+        \\    static m() { super.method(); }
+        \\    static get x() { return super.method(); }
+        \\    static set x(v: number) { super.method(); }
+        \\
+        \\    constructor() {
+        \\        super();
+        \\        super.method();
+        \\    }
+        \\
+        \\    a = super.method();
+        \\    m() { super.method(); }
+        \\    get x() { return super.method(); }
+        \\    set x(v: number) { super.method(); }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
