@@ -21248,6 +21248,204 @@ test "conformance: newTarget_es6 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: templateStringTermination4_ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringTermination4_ES6",
+        .path = "templateStringTermination4_ES6.ts",
+        .source =
+        \\`\\\\`
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringWithEmbeddedTypeOfOperatorES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringWithEmbeddedTypeOfOperatorES6",
+        .path = "templateStringWithEmbeddedTypeOfOperatorES6.ts",
+        .source =
+        \\var x = `abc${ typeof "hi" }def`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringWithPropertyAccessES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringWithPropertyAccessES6",
+        .path = "templateStringWithPropertyAccessES6.ts",
+        .source =
+        \\`abc${0}abc`.indexOf(`abc`);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringInTypeAssertionES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringInTypeAssertionES6",
+        .path = "templateStringInTypeAssertionES6.ts",
+        .source =
+        \\var x = <any>`abc${ 123 }def`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringInTypeOf passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringInTypeOf",
+        .path = "templateStringInTypeOf.ts",
+        .source =
+        \\var x = typeof `abc${ 123 }def`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringWithBackslashEscapes01_ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringWithBackslashEscapes01_ES6",
+        .path = "templateStringWithBackslashEscapes01_ES6.ts",
+        .source =
+        \\var a = `hello\world`;
+        \\var b = `hello\\world`;
+        \\var c = `hello\\\world`;
+        \\var d = `hello\\\\world`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringWithEmbeddedNewOperatorES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringWithEmbeddedNewOperatorES6",
+        .path = "templateStringWithEmbeddedNewOperatorES6.ts",
+        .source =
+        \\var x = `abc${ new String("Hi") }def`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringWithEmbeddedComments passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringWithEmbeddedComments",
+        .path = "templateStringWithEmbeddedComments.ts",
+        .source =
+        \\`head${ // single line comment
+        \\10
+        \\}
+        \\middle${
+        \\/* Multi-
+        \\ * line
+        \\ * comment
+        \\ */
+        \\ 20
+        \\ // closing comment
+        \\}
+        \\tail`;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: taggedTemplateStringsPlainCharactersThatArePartsOfEscapes02 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "taggedTemplateStringsPlainCharactersThatArePartsOfEscapes02",
+        .path = "taggedTemplateStringsPlainCharactersThatArePartsOfEscapes02.ts",
+        .source =
+        \\`0${ " " }1${ " " }2${ " " }3${ " " }4${ " " }5${ " " }6${ " " }7${ " " }8${ " " }9${ " " }10${ " " }11${ " " }12${ " " }13${ " " }14${ " " }15${ " " }16${ " " }17${ " " }18${ " " }19${ " " }20${ " " }2028${ " " }2029${ " " }0085${ " " }t${ " " }v${ " " }f${ " " }b${ " " }r${ " " }n`
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: taggedTemplateStringsPlainCharactersThatArePartsOfEscapes02_ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "taggedTemplateStringsPlainCharactersThatArePartsOfEscapes02_ES6",
+        .path = "taggedTemplateStringsPlainCharactersThatArePartsOfEscapes02_ES6.ts",
+        .source =
+        \\function f(...x: any[]) {
+        \\
+        \\}
+        \\
+        \\f `0${ " " }1${ " " }2${ " " }3${ " " }4${ " " }5${ " " }6${ " " }7${ " " }8${ " " }9${ " " }10${ " " }11${ " " }12${ " " }13${ " " }14${ " " }15${ " " }16${ " " }17${ " " }18${ " " }19${ " " }20${ " " }2028${ " " }2029${ " " }0085${ " " }t${ " " }v${ " " }f${ " " }b${ " " }r${ " " }n`
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
