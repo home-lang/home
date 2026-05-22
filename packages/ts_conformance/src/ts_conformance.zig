@@ -21131,6 +21131,123 @@ test "conformance: intlNumberFormatES2020 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: templateStringTermination1_ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringTermination1_ES6",
+        .path = "templateStringTermination1_ES6.ts",
+        .source =
+        \\``
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: templateStringPlainCharactersThatArePartsOfEscapes02 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "templateStringPlainCharactersThatArePartsOfEscapes02",
+        .path = "templateStringPlainCharactersThatArePartsOfEscapes02.ts",
+        .source =
+        \\`0${ " " }1${ " " }2${ " " }3${ " " }4${ " " }5${ " " }6${ " " }7${ " " }8${ " " }9${ " " }10${ " " }11${ " " }12${ " " }13${ " " }14${ " " }15${ " " }16${ " " }17${ " " }18${ " " }19${ " " }20${ " " }2028${ " " }2029${ " " }0085${ " " }t${ " " }v${ " " }f${ " " }b${ " " }r${ " " }n`
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: taggedTemplateStringsWithOverloadResolution2_ES6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "taggedTemplateStringsWithOverloadResolution2_ES6",
+        .path = "taggedTemplateStringsWithOverloadResolution2_ES6.ts",
+        .source =
+        \\function foo1(strs: TemplateStringsArray, x: number): string;
+        \\function foo1(strs: string[], x: number): number;
+        \\function foo1(...stuff: any[]): any {
+        \\    return undefined;
+        \\}
+        \\
+        \\var a = foo1 `${1}`;
+        \\var b = foo1([], 1);
+        \\
+        \\function foo2(strs: string[], x: number): number;
+        \\function foo2(strs: TemplateStringsArray, x: number): string;
+        \\function foo2(...stuff: any[]): any {
+        \\    return undefined;
+        \\}
+        \\
+        \\var c = foo2 `${1}`;
+        \\var d = foo2([], 1);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: newTarget_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "newTarget.es6",
+        .path = "newTarget.es6.ts",
+        .source =
+        \\class A {
+        \\    constructor() {
+        \\        const a = new.target;
+        \\        const b = () => new.target;
+        \\    }
+        \\    static c = function () { return new.target; }
+        \\    d = function () { return new.target; }
+        \\}
+        \\
+        \\class B extends A {
+        \\    constructor() {
+        \\        super();
+        \\        const e = new.target;
+        \\        const f = () => new.target;
+        \\    }
+        \\}
+        \\
+        \\function f1() {
+        \\    const g = new.target;
+        \\    const h = () => new.target;
+        \\}
+        \\
+        \\const f2 = function () {
+        \\    const i = new.target;
+        \\    const j = () => new.target;
+        \\}
+        \\
+        \\const O = {
+        \\    k: function () { return new.target; }
+        \\};
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
