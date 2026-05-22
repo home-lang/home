@@ -26260,6 +26260,142 @@ test "conformance: ExportVariableWithInaccessibleTypeInTypeAnnotation passes cle
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: objectTypesIdentityWithOptionality passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectTypesIdentityWithOptionality",
+        .path = "objectTypesIdentityWithOptionality.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\class A {
+        \\    foo: string;
+        \\}
+        \\
+        \\class B {
+        \\    foo: string;
+        \\}
+        \\
+        \\class C<T> {
+        \\    foo: T;
+        \\}
+        \\
+        \\interface I {
+        \\    foo?: string;
+        \\}
+        \\
+        \\var a: { foo?: string; }
+        \\var b = { foo: '' };
+        \\
+        \\function foo2(x: I);
+        \\function foo2(x: I);
+        \\function foo2(x: any) { }
+        \\
+        \\function foo3(x: typeof a);
+        \\function foo3(x: typeof a);
+        \\function foo3(x: any) { }
+        \\
+        \\function foo6(x: A);
+        \\function foo6(x: I);
+        \\function foo6(x: any) { }
+        \\
+        \\function foo7(x: A);
+        \\function foo7(x: typeof a);
+        \\function foo7(x: any) { }
+        \\
+        \\function foo8(x: B);
+        \\function foo8(x: I);
+        \\function foo8(x: any) { }
+        \\
+        \\function foo10(x: B);
+        \\function foo10(x: typeof a);
+        \\function foo10(x: any) { }
+        \\
+        \\function foo12(x: I);
+        \\function foo12(x: C<string>);
+        \\function foo12(x: any) { }
+        \\
+        \\function foo13(x: I);
+        \\function foo13(x: typeof a);
+        \\function foo13(x: any) { }
+        \\
+        \\function foo14(x: I);
+        \\function foo14(x: typeof b);
+        \\function foo14(x: any) { }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectTypesIdentityWithCallSignaturesDifferingParamCounts2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectTypesIdentityWithCallSignaturesDifferingParamCounts2",
+        .path = "objectTypesIdentityWithCallSignaturesDifferingParamCounts2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\interface I {
+        \\    (x: string): string;
+        \\}
+        \\
+        \\interface I2<T> {
+        \\    (x: T): T;
+        \\}
+        \\
+        \\var a: { (x: string, y: string): string }
+        \\
+        \\function foo2(x: I);
+        \\function foo2(x: I);
+        \\function foo2(x: any) { }
+        \\
+        \\function foo3(x: typeof a);
+        \\function foo3(x: typeof a);
+        \\function foo3(x: any) { }
+        \\
+        \\function foo4(x: I2<string>);
+        \\function foo4(x: I2<string>);
+        \\function foo4(x: any) { }
+        \\
+        \\function foo5(x: I2<string>);
+        \\function foo5(x: I2<number>);
+        \\function foo5(x: any) { }
+        \\
+        \\function foo13(x: I);
+        \\function foo13(x: typeof a);
+        \\function foo13(x: any) { }
+        \\
+        \\function foo14(x: I);
+        \\function foo14(x: I2<string>);
+        \\function foo14(x: any) { }
+        \\
+        \\function foo14b(x: typeof a);
+        \\function foo14b(x: I2<string>);
+        \\function foo14b(x: any) { }
+        \\
+        \\function foo15(x: I);
+        \\function foo15(x: I2<number>);
+        \\function foo15(x: any) { }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
