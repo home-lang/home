@@ -25794,6 +25794,271 @@ test "conformance: recursiveTypesUsedAsFunctionParameters passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: decoratorOnClassMethodParameter1_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "decoratorOnClassMethodParameter1.es6",
+        .path = "decoratorOnClassMethodParameter1.es6.ts",
+        .source =
+        \\// @target: ES2015
+        \\// @module: ES2015
+        \\// @experimentaldecorators: true
+        \\declare function dec(target: Object, propertyKey: string | symbol, parameterIndex: number): void;
+        \\
+        \\export default class {
+        \\    method(@dec p: number) {}
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectTypesIdentity2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectTypesIdentity2",
+        .path = "objectTypesIdentity2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\class A {
+        \\    foo: number;
+        \\}
+        \\
+        \\class B {
+        \\    foo: boolean;
+        \\}
+        \\
+        \\class C<T> {
+        \\    foo: T;
+        \\}
+        \\
+        \\interface I {
+        \\    foo: Date;
+        \\}
+        \\
+        \\var a: { foo: RegExp; }
+        \\enum E { A }
+        \\var b = { foo: E.A };
+        \\
+        \\function foo5(x: A);
+        \\function foo5(x: B);
+        \\function foo5(x: any) { }
+        \\
+        \\function foo5b(x: A);
+        \\function foo5b(x: C<string>);
+        \\function foo5b(x: any) { }
+        \\
+        \\function foo6(x: A);
+        \\function foo6(x: I);
+        \\function foo6(x: any) { }
+        \\
+        \\function foo7(x: A);
+        \\function foo7(x: typeof a);
+        \\function foo7(x: any) { }
+        \\
+        \\function foo8(x: B);
+        \\function foo8(x: I);
+        \\function foo8(x: any) { }
+        \\
+        \\function foo9(x: B);
+        \\function foo9(x: C<string>);
+        \\function foo9(x: any) { }
+        \\
+        \\function foo10(x: B);
+        \\function foo10(x: typeof a);
+        \\function foo10(x: any) { }
+        \\
+        \\function foo11(x: B);
+        \\function foo11(x: typeof b);
+        \\function foo11(x: any) { }
+        \\
+        \\function foo12(x: I);
+        \\function foo12(x: C<string>);
+        \\function foo12(x: any) { }
+        \\
+        \\function foo13(x: I);
+        \\function foo13(x: typeof a);
+        \\function foo13(x: any) { }
+        \\
+        \\function foo14(x: I);
+        \\function foo14(x: typeof b);
+        \\function foo14(x: any) { }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: objectTypesIdentityWithPrivates2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectTypesIdentityWithPrivates2",
+        .path = "objectTypesIdentityWithPrivates2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\class C<T> {
+        \\    private foo: T;
+        \\}
+        \\
+        \\class D<T> extends C<T> {
+        \\}
+        \\
+        \\function foo1(x: C<string>);
+        \\function foo1(x: C<number>);
+        \\function foo1(x: any) { }
+        \\
+        \\function foo2(x: D<string>);
+        \\function foo2(x: D<number>);
+        \\function foo2(x: any) { }
+        \\
+        \\function foo3(x: C<string>);
+        \\function foo3(x: D<number>);
+        \\function foo3(x: any) { }
+        \\
+        \\function foo4(x: C<number>): number;
+        \\function foo4(x: D<number>): string;
+        \\function foo4(x: any): any { }
+        \\
+        \\var r = foo4(new C<number>());
+        \\var r = foo4(new D<number>());
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: arrayLiteralsWithRecursiveGenerics passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "arrayLiteralsWithRecursiveGenerics",
+        .path = "arrayLiteralsWithRecursiveGenerics.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\class List<T> {
+        \\    data: T;
+        \\    next: List<List<T>>;
+        \\}
+        \\
+        \\class DerivedList<U> extends List<U> {
+        \\    foo: U;
+        \\}
+        \\
+        \\class MyList<T> {
+        \\    data: T;
+        \\    next: MyList<MyList<T>>;
+        \\}
+        \\
+        \\var list: List<number>;
+        \\var list2: List<string>;
+        \\var myList: MyList<number>;
+        \\
+        \\var xs = [list, myList];
+        \\var ys = [list, list2];
+        \\var zs = [list, null];
+        \\
+        \\var myDerivedList: DerivedList<number>;
+        \\var as = [list, myDerivedList];
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+
+test "conformance: es6modulekindWithES2015Target passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "es6modulekindWithES2015Target",
+        .path = "es6modulekindWithES2015Target.ts",
+        .source =
+        \\// @target: es2015
+        \\// @sourcemap: false
+        \\// @declaration: false
+        \\// @module: es6
+        \\
+        \\export default class A
+        \\{
+        \\    constructor ()
+        \\    {
+        \\
+        \\    }
+        \\
+        \\    public B()
+        \\    {
+        \\        return 42;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: esnextmodulekind passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "esnextmodulekind",
+        .path = "esnextmodulekind.ts",
+        .source =
+        \\// @target: ES6
+        \\// @sourcemap: false
+        \\// @declaration: false
+        \\// @module: esnext
+        \\
+        \\export default class A
+        \\{
+        \\    constructor ()
+        \\    {
+        \\
+        \\    }
+        \\
+        \\    public B()
+        \\    {
+        \\        return 42;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
