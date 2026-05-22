@@ -27025,6 +27025,54 @@ test "conformance: assignmentCompatWithObjectMembersNumericNames passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: accessorsOverrideProperty8 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "accessorsOverrideProperty8",
+        .path = "accessorsOverrideProperty8.ts",
+        .source =
+        \\// @target: es2019
+        \\type Types = 'boolean' | 'unknown' | 'string';
+        \\
+        \\type Properties<T extends { [key: string]: Types }> = {
+        \\    readonly [key in keyof T]: T[key] extends 'boolean' ? boolean : T[key] extends 'string' ? string : unknown
+        \\}
+        \\
+        \\type AnyCtor<P extends object> = new (...a: any[]) => P
+        \\
+        \\declare function classWithProperties<T extends { [key: string]: Types }, P extends object>(properties: T, klass: AnyCtor<P>): {
+        \\    new(): P & Properties<T>;
+        \\    prototype: P & Properties<T>
+        \\};
+        \\
+        \\const Base = classWithProperties({
+        \\    get x() { return 'boolean' as const },
+        \\    y: 'string',
+        \\}, class Base {
+        \\});
+        \\
+        \\class MyClass extends Base {
+        \\    get x() {
+        \\        return false;
+        \\    }
+        \\    get y() {
+        \\        return 'hi'
+        \\    }
+        \\}
+        \\
+        \\const mine = new MyClass();
+        \\const value = mine.x;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
