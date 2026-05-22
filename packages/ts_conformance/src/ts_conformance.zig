@@ -24135,6 +24135,56 @@ test "conformance: types_forAwait_es2018_1 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: mappedTypeConstraints passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "mappedTypeConstraints",
+        .path = "mappedTypeConstraints.ts",
+        .source =
+        \\function f0<T extends { a: string, b: string }>(obj: Pick<T, Extract<keyof T, 'b'>>) {
+        \\    obj.b;
+        \\}
+        \\
+        \\function f1<T extends { a: string, b: string }>(obj: Pick<T, Exclude<keyof T, 'a'>>) {
+        \\    obj.b;
+        \\}
+        \\
+        \\function f2<T extends { a: string, b: string }, U extends { b: string, c: string }>(obj: Pick<T | U, keyof (T | U)>) {
+        \\    obj.b;
+        \\}
+        \\
+        \\function f3<T extends { a: string, b: string }, U extends { b: string, c: string }>(obj: Pick<T & U, keyof (T & U)>) {
+        \\    obj.a;
+        \\    obj.b;
+        \\    obj.c;
+        \\}
+        \\
+        \\function f4<T extends { a: string, b: string }>(obj: Record<Exclude<keyof T, 'b'> | 'c', string>) {
+        \\    obj.a;
+        \\    obj.c;
+        \\}
+        \\
+        \\type TargetProps = {
+        \\    foo: string,
+        \\    bar: string
+        \\};
+        \\
+        \\const modifier = <T extends TargetProps>(targetProps: T) => {
+        \\    let {bar, ...rest} = targetProps;
+        \\    rest.foo;
+        \\};
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
