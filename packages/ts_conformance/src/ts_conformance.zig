@@ -24900,6 +24900,246 @@ test "conformance: mergeClassInterfaceAndModule passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: privateNameMethodCallExpression passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "privateNameMethodCallExpression",
+        .path = "privateNameMethodCallExpression.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es2015
+        \\
+        \\class AA {
+        \\    #method() { this.x = 10; };
+        \\    #method2(a, ...b) {};
+        \\    x = 1;
+        \\    test() {
+        \\        this.#method();
+        \\        const func = this.#method;
+        \\        func();
+        \\        new this.#method();
+        \\
+        \\        const arr = [ 1, 2 ];
+        \\        this.#method2(0, ...arr, 3);
+        \\
+        \\        const b = new this.#method2(0, ...arr, 3);
+        \\        const str = this.#method2`head${1}middle${2}tail`;
+        \\        this.getInstance().#method2`test${1}and${2}`;
+        \\
+        \\        this.getInstance().#method2(0, ...arr, 3);
+        \\        const b2 = new (this.getInstance().#method2)(0, ...arr, 3);
+        \\        const str2 = this.getInstance().#method2`head${1}middle${2}tail`;
+        \\    }
+        \\    getInstance() { return new AA(); }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: privateNameStaticAccessorsCallExpression passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "privateNameStaticAccessorsCallExpression",
+        .path = "privateNameStaticAccessorsCallExpression.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es2015
+        \\
+        \\class A {
+        \\    static get #fieldFunc() {  return function() { A.#x = 10; } }
+        \\    static get #fieldFunc2() { return  function(a, ...b) {}; }
+        \\    static #x = 1;
+        \\    static test() {
+        \\        this.#fieldFunc();
+        \\        const func = this.#fieldFunc;
+        \\        func();
+        \\        new this.#fieldFunc();
+        \\
+        \\        const arr = [ 1, 2 ];
+        \\        this.#fieldFunc2(0, ...arr, 3);
+        \\        const b = new this.#fieldFunc2(0, ...arr, 3);
+        \\        const str = this.#fieldFunc2`head${1}middle${2}tail`;
+        \\        this.getClass().#fieldFunc2`test${1}and${2}`;
+        \\    }
+        \\    static getClass() { return A; }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: privateNameStaticMethodCallExpression passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "privateNameStaticMethodCallExpression",
+        .path = "privateNameStaticMethodCallExpression.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es2015
+        \\
+        \\class AA {
+        \\    static #method() { this.x = 10; };
+        \\    static #method2(a, ...b) {};
+        \\    static x = 1;
+        \\    test() {
+        \\        AA.#method();
+        \\        const func = AA.#method;
+        \\        func();
+        \\        new AA.#method();
+        \\
+        \\        const arr = [ 1, 2 ];
+        \\        AA.#method2(0, ...arr, 3);
+        \\
+        \\        const b = new AA.#method2(0, ...arr, 3);
+        \\        const str = AA.#method2`head${1}middle${2}tail`;
+        \\        AA.getClass().#method2`test${1}and${2}`;
+        \\
+        \\        AA.getClass().#method2(0, ...arr, 3);
+        \\        const b2 = new (AA.getClass().#method2)(0, ...arr, 3);
+        \\        const str2 = AA.getClass().#method2`head${1}middle${2}tail`;
+        \\    }
+        \\    static getClass() { return AA; }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: privateNameAccessorsCallExpression passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "privateNameAccessorsCallExpression",
+        .path = "privateNameAccessorsCallExpression.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es2015
+        \\
+        \\class A {
+        \\    get #fieldFunc() {  return function() { this.x = 10; } }
+        \\    get #fieldFunc2() { return  function(a, ...b) {}; }
+        \\    x = 1;
+        \\    test() {
+        \\        this.#fieldFunc();
+        \\        const func = this.#fieldFunc;
+        \\        func();
+        \\        new this.#fieldFunc();
+        \\
+        \\        const arr = [ 1, 2 ];
+        \\        this.#fieldFunc2(0, ...arr, 3);
+        \\        const b = new this.#fieldFunc2(0, ...arr, 3);
+        \\        const str = this.#fieldFunc2`head${1}middle${2}tail`;
+        \\        this.getInstance().#fieldFunc2`test${1}and${2}`;
+        \\    }
+        \\    getInstance() { return new A(); }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: privateNameFieldCallExpression passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "privateNameFieldCallExpression",
+        .path = "privateNameFieldCallExpression.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es2015
+        \\
+        \\class A {
+        \\    #fieldFunc = function() { this.x = 10; };
+        \\    #fieldFunc2 = function(a, ...b) {};
+        \\    x = 1;
+        \\    test() {
+        \\        this.#fieldFunc();
+        \\        this.#fieldFunc?.();
+        \\        const func = this.#fieldFunc;
+        \\        func();
+        \\        new this.#fieldFunc();
+        \\
+        \\        const arr = [ 1, 2 ];
+        \\        this.#fieldFunc2(0, ...arr, 3);
+        \\        const b = new this.#fieldFunc2(0, ...arr, 3);
+        \\        const str = this.#fieldFunc2`head${1}middle${2}tail`;
+        \\        this.getInstance().#fieldFunc2`test${1}and${2}`;
+        \\    }
+        \\    getInstance() { return new A(); }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: privateNameStaticFieldCallExpression passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "privateNameStaticFieldCallExpression",
+        .path = "privateNameStaticFieldCallExpression.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: es2015
+        \\
+        \\class A {
+        \\    static #fieldFunc = function () { this.x = 10; };
+        \\    static #fieldFunc2 = function (a, ...b) {};
+        \\    x = 1;
+        \\    test() {
+        \\        A.#fieldFunc();
+        \\        A.#fieldFunc?.();
+        \\        const func = A.#fieldFunc;
+        \\        func();
+        \\        new A.#fieldFunc();
+        \\
+        \\        const arr = [ 1, 2 ];
+        \\        A.#fieldFunc2(0, ...arr, 3);
+        \\        const b = new A.#fieldFunc2(0, ...arr, 3);
+        \\        const str = A.#fieldFunc2`head${1}middle${2}tail`;
+        \\        this.getClass().#fieldFunc2`test${1}and${2}`;
+        \\    }
+        \\    getClass() { return A; }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
