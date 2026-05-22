@@ -24386,6 +24386,109 @@ test "conformance: nominalSubtypeCheckOfTypeParameter passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: anyAssignabilityInInheritance passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "anyAssignabilityInInheritance",
+        .path = "anyAssignabilityInInheritance.ts",
+        .source =
+        \\interface I {
+        \\    [x: string]: any;
+        \\    foo: any;
+        \\}
+        \\
+        \\var a: any;
+        \\
+        \\declare function foo2(x: number): number;
+        \\declare function foo2(x: any): any;
+        \\var r3 = foo2(a);
+        \\
+        \\declare function foo3(x: string): string;
+        \\declare function foo3(x: any): any;
+        \\var r3 = foo3(a);
+        \\
+        \\declare function foo4(x: boolean): boolean;
+        \\declare function foo4(x: any): any;
+        \\var r3 = foo3(a);
+        \\
+        \\declare function foo5(x: Date): Date;
+        \\declare function foo5(x: any): any;
+        \\var r3 = foo3(a);
+        \\
+        \\declare function foo6(x: RegExp): RegExp;
+        \\declare function foo6(x: any): any;
+        \\var r3 = foo3(a);
+        \\
+        \\declare function foo7(x: { bar: number }): { bar: number };
+        \\declare function foo7(x: any): any;
+        \\var r3 = foo3(a);
+        \\
+        \\declare function foo8(x: number[]): number[];
+        \\declare function foo8(x: any): any;
+        \\var r3 = foo3(a);
+        \\
+        \\interface I8 { foo: string }
+        \\declare function foo9(x: I8): I8;
+        \\declare function foo9(x: any): any;
+        \\var r3 = foo3(a);
+        \\
+        \\class A { foo: number; }
+        \\declare function foo10(x: A): A;
+        \\declare function foo10(x: any): any;
+        \\var r3 = foo3(a);
+        \\
+        \\class A2<T> { foo: T; }
+        \\declare function foo11(x: A2<string>): A2<string>;
+        \\declare function foo11(x: any): any;
+        \\var r3 = foo3(a);
+        \\
+        \\declare function foo12(x: (x) => number): (x) => number;
+        \\declare function foo12(x: any): any;
+        \\var r3 = foo3(a);
+        \\
+        \\declare function foo13(x: <T>(x: T) => T): <T>(x: T) => T;
+        \\declare function foo13(x: any): any;
+        \\var r3 = foo3(a);
+        \\
+        \\enum E { A }
+        \\declare function foo14(x: E): E;
+        \\declare function foo14(x: any): any;
+        \\var r3 = foo3(a);
+        \\
+        \\function f() { }
+        \\namespace f {
+        \\    export var bar = 1;
+        \\}
+        \\declare function foo15(x: typeof f): typeof f;
+        \\declare function foo15(x: any): any;
+        \\var r3 = foo3(a);
+        \\
+        \\class CC { baz: string }
+        \\namespace CC {
+        \\    export var bar = 1;
+        \\}
+        \\declare function foo16(x: CC): CC;
+        \\declare function foo16(x: any): any;
+        \\var r3 = foo3(a);
+        \\
+        \\declare function foo17(x: Object): Object;
+        \\declare function foo17(x: any): any;
+        \\var r3 = foo3(a);
+        \\
+        \\declare function foo18(x: {}): {};
+        \\declare function foo18(x: any): any;
+        \\var r3 = foo3(a);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
