@@ -21804,6 +21804,140 @@ test "conformance: esDecorators_decoratorExpression_3 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: esDecorators_decoratorExpression_1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "esDecorators-decoratorExpression.1",
+        .path = "esDecorators-decoratorExpression.1.ts",
+        .source =
+        \\declare let x: any;
+        \\
+        \\{ @x().y class C {} }
+        \\
+        \\{ @new x class C {} }
+        \\
+        \\{ @x().y() class C {} }
+        \\
+        \\{ @x?.y class C {} }
+        \\
+        \\{ @x?.y() class C {} }
+        \\
+        \\{ @x?.["y"] class C {} }
+        \\
+        \\{ @x?.() class C {} }
+        \\
+        \\{ @x`` class C {} }
+        \\
+        \\{ @x``() class C {} }
+        \\
+        \\{ @x.y`` class C {} }
+        \\
+        \\{ @x.y``() class C {} }
+        \\
+        \\{ class C { @x().y m() {} } }
+        \\
+        \\{ class C { @new x m() {} } }
+        \\
+        \\{ class C { @x().y() m() {} } }
+        \\
+        \\{ class C { @x?.y m() {} } }
+        \\
+        \\{ class C { @x?.y() m() {} } }
+        \\
+        \\{ class C { @x?.["y"] m() {} } }
+        \\
+        \\{ class C { @x?.() m() {} } }
+        \\
+        \\{ class C { @x`` m() {} } }
+        \\
+        \\{ class C { @x``() m() {} } }
+        \\
+        \\{ class C { @x.y`` m() {} } }
+        \\
+        \\{ class C { @x.y``() m() {} } }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: esDecorators_decoratorExpression_2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "esDecorators-decoratorExpression.2",
+        .path = "esDecorators-decoratorExpression.2.ts",
+        .source =
+        \\declare let x: any;
+        \\declare let g: <T>(...args: any) => any;
+        \\declare let h: () => <T>(...args: any) => any;
+        \\
+        \\{ @x! class C {} }
+        \\
+        \\{ @x.y! class C {} }
+        \\
+        \\{ @x!.y class C {} }
+        \\
+        \\{ @g<number>() class C {} }
+        \\
+        \\{ @(g<number>) class C {} }
+        \\
+        \\{ @(h()<number>) class C {} }
+        \\
+        \\{ @(x().y) class C {} }
+        \\
+        \\{ @(x().y()) class C {} }
+        \\
+        \\{ @(x``) class C {} }
+        \\
+        \\{ @(x.y``) class C {} }
+        \\
+        \\{ @(x?.y!) class C {} }
+        \\
+        \\{ @(x["y"]) class C {} }
+        \\
+        \\{ @(x?.["y"]) class C {} }
+        \\
+        \\{ class C { @x! m() {} } }
+        \\
+        \\{ class C { @x.y! m() {} } }
+        \\
+        \\{ class C { @x!.y m() {} } }
+        \\
+        \\{ class C { @g<number>() m() {} } }
+        \\
+        \\{ class C { @(g<number>) m() {} } }
+        \\
+        \\{ class C { @(h()<number>) m() {} } }
+        \\
+        \\{ class C { @(x().y) m() {} } }
+        \\
+        \\{ class C { @(x().y()) m() {} } }
+        \\
+        \\{ class C { @(x``) m() {} } }
+        \\
+        \\{ class C { @(x.y``) m() {} } }
+        \\
+        \\{ class C { @(x?.y!) m() {} } }
+        \\
+        \\{ class C { @(x["y"]) m() {} } }
+        \\
+        \\{ class C { @(x?.["y"]) m() {} } }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
