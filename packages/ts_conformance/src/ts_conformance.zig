@@ -21664,6 +21664,76 @@ test "conformance: emitStatementsBeforeSuperCallWithDefineFields passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: symbolProperty58 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "symbolProperty58",
+        .path = "symbolProperty58.ts",
+        .source =
+        \\interface SymbolConstructor {
+        \\    foo: string;
+        \\}
+        \\
+        \\var obj = {
+        \\    [Symbol.foo]: 0
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: symbolProperty61 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "symbolProperty61",
+        .path = "symbolProperty61.ts",
+        .source =
+        \\declare global {
+        \\  interface SymbolConstructor {
+        \\    readonly obs: symbol
+        \\  }
+        \\}
+        \\
+        \\const observable: typeof Symbol.obs = Symbol.obs
+        \\
+        \\export class MyObservable<T> {
+        \\    constructor(private _val: T) {}
+        \\
+        \\    subscribe(next: (val: T) => void) {
+        \\        next(this._val)
+        \\    }
+        \\
+        \\    [observable]() {
+        \\        return this
+        \\    }
+        \\}
+        \\
+        \\type InteropObservable<T> = {
+        \\    [Symbol.obs]: () => { subscribe(next: (val: T) => void): void }
+        \\}
+        \\
+        \\function from<T>(obs: InteropObservable<T>) {
+        \\    return obs[Symbol.obs]()
+        \\}
+        \\
+        \\from(new MyObservable(42))
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
