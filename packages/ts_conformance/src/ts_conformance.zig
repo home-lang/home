@@ -24354,6 +24354,38 @@ test "conformance: functionWithMultipleReturnStatements2 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: nominalSubtypeCheckOfTypeParameter passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nominalSubtypeCheckOfTypeParameter",
+        .path = "nominalSubtypeCheckOfTypeParameter.ts",
+        .source =
+        \\interface BinaryTuple<T, S> {
+        \\    first: T
+        \\    second: S
+        \\}
+        \\
+        \\interface Sequence<T> {
+        \\    hasNext(): boolean
+        \\    pop(): T
+        \\    zip<S>(seq: Sequence<S>): Sequence<BinaryTuple<T, S>>
+        \\}
+        \\
+        \\interface List<T> extends Sequence<T> {
+        \\    getLength(): number
+        \\    zip<S>(seq: Sequence<S>): List<BinaryTuple<T, S>>
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
