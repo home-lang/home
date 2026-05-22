@@ -24489,6 +24489,47 @@ test "conformance: anyAssignabilityInInheritance passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: classAndInterfaceMerge_d passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "classAndInterfaceMerge.d",
+        .path = "classAndInterfaceMerge.d.ts",
+        .source =
+        \\interface C { }
+        \\
+        \\declare class C { }
+        \\
+        \\interface C { }
+        \\
+        \\interface C { }
+        \\
+        \\declare namespace M {
+        \\
+        \\    interface C1 { }
+        \\
+        \\    class C1 { }
+        \\
+        \\    interface C1 { }
+        \\
+        \\    interface C1 { }
+        \\
+        \\    export class C2 { }
+        \\}
+        \\
+        \\declare namespace M {
+        \\    export interface C2 { }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
