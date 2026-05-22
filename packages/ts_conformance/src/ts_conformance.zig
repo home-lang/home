@@ -26059,6 +26059,207 @@ test "conformance: esnextmodulekind passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: objectTypesIdentityWithGenericCallSignaturesDifferingTypeParameterCounts2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "objectTypesIdentityWithGenericCallSignaturesDifferingTypeParameterCounts2",
+        .path = "objectTypesIdentityWithGenericCallSignaturesDifferingTypeParameterCounts2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\interface I<X, Y, Z, A> {
+        \\    (x: X): X;
+        \\}
+        \\
+        \\interface I2 {
+        \\    <Y, Z, A, B>(x: Y): Y;
+        \\}
+        \\
+        \\var a: { <Z, A, B, C, D>(x: Z): Z }
+        \\
+        \\function foo1(x: I<string, boolean, number, string>);
+        \\function foo1(x: I<string, boolean, number, string>);
+        \\function foo1(x: any) { }
+        \\
+        \\function foo2(x: I2);
+        \\function foo2(x: I2);
+        \\function foo2(x: any) { }
+        \\
+        \\function foo3(x: typeof a);
+        \\function foo3(x: typeof a);
+        \\function foo3(x: any) { }
+        \\
+        \\function foo13(x: I<boolean, string, number, Date>);
+        \\function foo13(x: typeof a);
+        \\function foo13(x: any) { }
+        \\
+        \\function foo14(x: I<boolean, string, number, Date>);
+        \\function foo14(x: I2);
+        \\function foo14(x: any) { }
+        \\
+        \\function foo14b(x: typeof a);
+        \\function foo14b(x: I2);
+        \\function foo14b(x: any) { }
+        \\
+        \\function foo15(x: I<boolean, string, number, Date>);
+        \\function foo15(x: I2);
+        \\function foo15(x: any) { }
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: typeParameterAsTypeParameterConstraintTransitively2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeParameterAsTypeParameterConstraintTransitively2",
+        .path = "typeParameterAsTypeParameterConstraintTransitively2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\interface A { foo: number }
+        \\interface B extends A { bar: string; }
+        \\interface C extends B { baz: boolean; }
+        \\var a: A;
+        \\var b: B;
+        \\var c: C;
+        \\
+        \\function foo<T, U, V>(x: T, y: U, z: V): V { return z; }
+        \\
+        \\foo(1, 2, '');
+        \\foo({ x: 1 }, { x: 1, y: '' }, { x: 2, y: 2, z: true });
+        \\foo(a, b, a);
+        \\foo(a, { foo: 1, bar: '', hm: true }, b);
+        \\foo((x: number, y: string) => { }, (x, y: boolean) => { }, () => { });
+        \\
+        \\function foo2<T extends A, U extends A, V extends A>(x: T, y: U, z: V): V { return z; }
+        \\foo(b, a, c);
+        \\foo(c, c, a);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: reExportAliasMakesInstantiated passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "reExportAliasMakesInstantiated",
+        .path = "reExportAliasMakesInstantiated.ts",
+        .source =
+        \\// @module: commonjs
+        \\// @target: es2015
+        \\declare namespace pack1 {
+        \\  const test1: string;
+        \\  export { test1 };
+        \\}
+        \\declare namespace pack2 {
+        \\  import test1 = pack1.test1;
+        \\  export { test1 };
+        \\}
+        \\export import test1 = pack2.test1;
+        \\
+        \\declare namespace mod1 {
+        \\  type test1 = string;
+        \\  export { test1 };
+        \\}
+        \\declare namespace mod2 {
+        \\  import test1 = mod1.test1;
+        \\  export { test1 };
+        \\}
+        \\const test2 = mod2;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: esnextmodulekindWithES2015Target passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "esnextmodulekindWithES2015Target",
+        .path = "esnextmodulekindWithES2015Target.ts",
+        .source =
+        \\// @target: es2015
+        \\// @sourcemap: false
+        \\// @declaration: false
+        \\// @module: es6
+        \\
+        \\export default class A
+        \\{
+        \\    constructor ()
+        \\    {
+        \\
+        \\    }
+        \\
+        \\    public B()
+        \\    {
+        \\        return 42;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+
+test "conformance: ExportVariableWithInaccessibleTypeInTypeAnnotation passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "ExportVariableWithInaccessibleTypeInTypeAnnotation",
+        .path = "ExportVariableWithInaccessibleTypeInTypeAnnotation.ts",
+        .source =
+        \\// @target: es2015
+        \\namespace A {
+        \\
+        \\    export interface Point {
+        \\        x: number;
+        \\        y: number;
+        \\    }
+        \\
+        \\    export var Origin: Point = { x: 0, y: 0 };
+        \\
+        \\    interface Point3d extends Point {
+        \\        z: number;
+        \\    }
+        \\
+        \\    export var Origin3d: Point3d = { x: 0, y: 0, z: 0 };
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
