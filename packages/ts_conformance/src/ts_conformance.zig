@@ -24185,6 +24185,175 @@ test "conformance: mappedTypeConstraints passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: functionWithMultipleReturnStatements passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "functionWithMultipleReturnStatements",
+        .path = "functionWithMultipleReturnStatements.ts",
+        .source =
+        \\function f1() {
+        \\    if (true) {
+        \\        return 1;
+        \\    } else {
+        \\        return '';
+        \\    }
+        \\}
+        \\
+        \\function f2() {
+        \\    if (true) {
+        \\        return 1;
+        \\    } else if (false) {
+        \\        return 2;
+        \\    } else {
+        \\        return '';
+        \\    }
+        \\}
+        \\
+        \\function f3() {
+        \\    try {
+        \\        return 1;
+        \\    }
+        \\    catch (e) {
+        \\        return '';
+        \\    }
+        \\}
+        \\
+        \\function f4() {
+        \\    try {
+        \\        return 1;
+        \\    }
+        \\    catch (e) {
+        \\
+        \\    }
+        \\    finally {
+        \\        return '';
+        \\    }
+        \\}
+        \\
+        \\function f5() {
+        \\    return 1;
+        \\    return '';
+        \\}
+        \\
+        \\function f6<T, U>(x: T, y:U) {
+        \\    if (true) {
+        \\        return x;
+        \\    } else {
+        \\        return y;
+        \\    }
+        \\}
+        \\
+        \\function f8<T extends U, U extends V, V>(x: T, y: U) {
+        \\    if (true) {
+        \\        return x;
+        \\    } else {
+        \\        return y;
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: functionWithMultipleReturnStatements2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "functionWithMultipleReturnStatements2",
+        .path = "functionWithMultipleReturnStatements2.ts",
+        .source =
+        \\function f1() {
+        \\    if (true) {
+        \\        return 1;
+        \\    } else {
+        \\        return null;
+        \\    }
+        \\}
+        \\
+        \\function f2() {
+        \\    if (true) {
+        \\        return 1;
+        \\    } else if (false) {
+        \\        return null;
+        \\    } else {
+        \\        return 2;
+        \\    }
+        \\}
+        \\
+        \\function f4() {
+        \\    try {
+        \\        return 1;
+        \\    }
+        \\    catch (e) {
+        \\        return undefined;
+        \\    }
+        \\    finally {
+        \\        return 1;
+        \\    }
+        \\}
+        \\
+        \\function f5() {
+        \\    return 1;
+        \\    return new Object();
+        \\}
+        \\
+        \\function f6<T>(x: T) {
+        \\    if (true) {
+        \\        return x;
+        \\    } else {
+        \\        return null;
+        \\    }
+        \\}
+        \\
+        \\var a: { x: number; y?: number };
+        \\var b: { x: number; z?: number };
+        \\function f9() {
+        \\    if (true) {
+        \\        return a;
+        \\    } else {
+        \\        return b;
+        \\    }
+        \\}
+        \\
+        \\function f10() {
+        \\    if (true) {
+        \\        return b;
+        \\    } else {
+        \\        return a;
+        \\    }
+        \\}
+        \\
+        \\function f11() {
+        \\    if (true) {
+        \\        return (x: number) => { }
+        \\    } else {
+        \\        return (x: Object) => { }
+        \\    }
+        \\}
+        \\
+        \\function f12() {
+        \\    if (true) {
+        \\        return (x: Object) => { }
+        \\    } else {
+        \\        return (x: number) => { }
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
