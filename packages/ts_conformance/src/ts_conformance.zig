@@ -23475,6 +23475,78 @@ test "conformance: stringLiteralTypesAsTags03 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: scannerStringLiteralWithContainingNullCharacter1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "scannerStringLiteralWithContainingNullCharacter1",
+        .path = "scannerStringLiteralWithContainingNullCharacter1.ts",
+        .source =
+        \\"   ";
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: scannerES3NumericLiteral1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "scannerES3NumericLiteral1",
+        .path = "scannerES3NumericLiteral1.ts",
+        .source =
+        \\0
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: scannerES3NumericLiteral5 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "scannerES3NumericLiteral5",
+        .path = "scannerES3NumericLiteral5.ts",
+        .source =
+        \\1e0
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: scannerES3NumericLiteral7 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "scannerES3NumericLiteral7",
+        .path = "scannerES3NumericLiteral7.ts",
+        .source =
+        \\1e+0
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
