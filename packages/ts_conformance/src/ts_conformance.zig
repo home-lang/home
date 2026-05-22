@@ -25476,6 +25476,324 @@ test "conformance: legacyDecorators_contextualTypes passes clean" {
 }
 
 
+test "conformance: decoratorOnClassAccessor1_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "decoratorOnClassAccessor1.es6",
+        .path = "decoratorOnClassAccessor1.es6.ts",
+        .source =
+        \\// @target: ES2015
+        \\// @module: ES2015
+        \\// @experimentaldecorators: true
+        \\declare function dec<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
+        \\
+        \\export default class {
+        \\    @dec get accessor() { return 1; }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: decoratorOnClassMethod1_es6 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "decoratorOnClassMethod1.es6",
+        .path = "decoratorOnClassMethod1.es6.ts",
+        .source =
+        \\// @target: ES2015
+        \\// @module: ES2015
+        \\// @experimentaldecorators: true
+        \\declare function dec<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
+        \\
+        \\export default class {
+        \\    @dec method() {}
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+
+test "conformance: propertyAccessOnTypeParameterWithConstraints2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "propertyAccessOnTypeParameterWithConstraints2",
+        .path = "propertyAccessOnTypeParameterWithConstraints2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\class A {
+        \\    foo(): string { return ''; }
+        \\}
+        \\
+        \\class B extends A {
+        \\    bar(): string {
+        \\        return '';
+        \\    }
+        \\}
+        \\
+        \\class C<U extends A, T extends A> {
+        \\    f() {
+        \\        var x: U;
+        \\        var a = x['foo']();
+        \\        return a + x.foo();
+        \\    }
+        \\
+        \\    g(x: U) {
+        \\        var a = x['foo']();
+        \\        return a + x.foo();
+        \\    }
+        \\}
+        \\
+        \\var r1 = (new C<B, A>()).f();
+        \\var r1b = (new C<B, A>()).g(new B());
+        \\
+        \\interface I<U extends A, T extends A> {
+        \\    foo: U;
+        \\}
+        \\var i: I<B, A>;
+        \\var r2 = i.foo.foo();
+        \\var r2b = i.foo['foo']();
+        \\
+        \\var a: {
+        \\    <U extends A, T extends A>(): U;
+        \\    <U extends A, T extends A>(x: U): U;
+        \\    <U extends A, T extends A>(x: U, y: T): U;
+        \\}
+        \\var r3 = a<A, A>().foo();
+        \\var r3b = a()['foo']();
+        \\var aB = new B();
+        \\var r3c = a(aB, aB).foo();
+        \\var r3d = a(aB, aB)['foo']();
+        \\
+        \\var b = {
+        \\    foo: <U extends A, T extends A>(x: U, y: T) => {
+        \\        var a = x['foo']();
+        \\        return a + x.foo();
+        \\    }
+        \\}
+        \\
+        \\var r4 = b.foo(aB, aB);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: propertyAccessOnTypeParameterWithConstraints3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "propertyAccessOnTypeParameterWithConstraints3",
+        .path = "propertyAccessOnTypeParameterWithConstraints3.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\class A {
+        \\    foo(): string { return ''; }
+        \\}
+        \\
+        \\class B extends A {
+        \\    bar(): string {
+        \\        return '';
+        \\    }
+        \\}
+        \\
+        \\class C<U extends A, T extends U> {
+        \\    f() {
+        \\        var x: T;
+        \\        var a = x['foo']();
+        \\        return a + x.foo();
+        \\    }
+        \\
+        \\    g(x: U) {
+        \\        var a = x['foo']();
+        \\        return a + x.foo();
+        \\    }
+        \\}
+        \\
+        \\var r1a = (new C<A, B>()).f();
+        \\var r1b = (new C<A, B>()).g(new B());
+        \\
+        \\interface I<U extends A, T extends U> {
+        \\    foo: T;
+        \\}
+        \\var i: I<A, B>;
+        \\var r2 = i.foo.foo();
+        \\var r2b = i.foo['foo']();
+        \\
+        \\var a: {
+        \\    <U extends A, T extends U>(): T;
+        \\    <U extends T, T extends A>(x: U): U;
+        \\}
+        \\var r3 = a().foo();
+        \\var r3b = a()['foo']();
+        \\var r3c = a(new B()).foo();
+        \\var r3d = a(new B())['foo']();
+        \\
+        \\var b = {
+        \\    foo: <U extends A, T extends U>(x: T) => {
+        \\        var a = x['foo']();
+        \\        return a + x.foo();
+        \\    }
+        \\}
+        \\
+        \\var r4 = b.foo(new B());
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: typeParameterConstModifiersReverseMappedTypes passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeParameterConstModifiersReverseMappedTypes",
+        .path = "typeParameterConstModifiersReverseMappedTypes.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\// @noEmit: true
+        \\
+        \\declare function test1<const T>(obj: {
+        \\  [K in keyof T]: T[K];
+        \\}): [T, typeof obj];
+        \\
+        \\const result1 = test1({
+        \\  prop: "foo",
+        \\  nested: {
+        \\    nestedProp: "bar",
+        \\  },
+        \\});
+        \\
+        \\declare function test2<const T>(obj: {
+        \\  readonly [K in keyof T]: T[K];
+        \\}): [T, typeof obj];
+        \\
+        \\const result2 = test2({
+        \\  prop: "foo",
+        \\  nested: {
+        \\    nestedProp: "bar",
+        \\  },
+        \\});
+        \\
+        \\declare function test3<const T>(obj: {
+        \\  -readonly [K in keyof T]: T[K];
+        \\}): [T, typeof obj];
+        \\
+        \\const result3 = test3({
+        \\  prop: "foo",
+        \\  nested: {
+        \\    nestedProp: "bar",
+        \\  },
+        \\});
+        \\
+        \\declare function test4<const T extends readonly unknown[]>(arr: {
+        \\  [K in keyof T]: T[K];
+        \\}): T;
+        \\
+        \\const result4 = test4(["1", 2]);
+        \\
+        \\declare function test5<const T extends readonly unknown[]>(
+        \\  ...args: {
+        \\    [K in keyof T]: T[K];
+        \\  }
+        \\): T;
+        \\
+        \\const result5 = test5({ a: "foo" });
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: recursiveTypesUsedAsFunctionParameters passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "recursiveTypesUsedAsFunctionParameters",
+        .path = "recursiveTypesUsedAsFunctionParameters.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\class List<T> {
+        \\    data: T;
+        \\    next: List<List<T>>;
+        \\}
+        \\
+        \\class MyList<T> {
+        \\    data: T;
+        \\    next: MyList<MyList<T>>;
+        \\}
+        \\
+        \\function foo<T>(x: List<T>);
+        \\function foo<U>(x: List<U>);
+        \\function foo<T>(x: List<T>) {
+        \\}
+        \\
+        \\function foo2<T>(x: List<T>);
+        \\function foo2<U>(x: MyList<U>);
+        \\function foo2<T>(x: any) {
+        \\}
+        \\
+        \\function other<T extends List<U>, U>() {
+        \\    function foo3<V>(x: T);
+        \\    function foo3<V>(x: MyList<V>) { }
+        \\
+        \\    function foo4<V>(x: T);
+        \\    function foo4<V>(x: List<V>) { }
+        \\
+        \\    function foo5<V>(x: T): string;
+        \\    function foo5<V>(x: List<V>): number;
+        \\    function foo5<V>(x: MyList<V>): boolean;
+        \\    function foo5<V>(x: any): any { return null; }
+        \\
+        \\    var list: List<string>;
+        \\    var myList: MyList<string>;
+        \\
+        \\    var r = foo5(list);
+        \\    var r2 = foo5(myList);
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
