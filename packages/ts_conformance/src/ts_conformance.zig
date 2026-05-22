@@ -27073,6 +27073,171 @@ test "conformance: accessorsOverrideProperty8 passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: genericCallTypeArgumentInference passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "genericCallTypeArgumentInference",
+        .path = "genericCallTypeArgumentInference.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\function foo<T>(t: T) {
+        \\    return t;
+        \\}
+        \\
+        \\var r = foo('');
+        \\
+        \\function foo2<T, U>(t: T, u: U) {
+        \\    return u;
+        \\}
+        \\
+        \\function foo2b<T, U>(u: U) {
+        \\    var x: T;
+        \\    return x;
+        \\}
+        \\
+        \\var r2 = foo2('', 1);
+        \\var r3 = foo2b(1);
+        \\
+        \\class C<T, U> {
+        \\    constructor(public t: T, public u: U) {
+        \\    }
+        \\
+        \\    foo(t: T, u: U) {
+        \\        return t;
+        \\    }
+        \\
+        \\    foo2(t: T, u: U) {
+        \\        return u;
+        \\    }
+        \\
+        \\    foo3<T>(t: T, u: U) {
+        \\        return t;
+        \\    }
+        \\
+        \\    foo4<U>(t: T, u: U) {
+        \\        return t;
+        \\    }
+        \\
+        \\    foo5<T,U>(t: T, u: U) {
+        \\        return t;
+        \\    }
+        \\
+        \\    foo6<T, U>() {
+        \\        var x: T;
+        \\        return x;
+        \\    }
+        \\
+        \\    foo7<T, U>(u: U) {
+        \\        var x: T;
+        \\        return x;
+        \\    }
+        \\
+        \\    foo8<T, U>() {
+        \\        var x: T;
+        \\        return x;
+        \\    }
+        \\}
+        \\
+        \\var c = new C('', 1);
+        \\var r4 = c.foo('', 1);
+        \\var r5 = c.foo2('', 1);
+        \\var r6 = c.foo3(true, 1);
+        \\var r7 = c.foo4('', true);
+        \\var r8 = c.foo5(true, 1);
+        \\var r9 = c.foo6();
+        \\var r10 = c.foo7('');
+        \\var r11 = c.foo8();
+        \\
+        \\interface I<T, U> {
+        \\    new (t: T, u: U);
+        \\    foo(t: T, u: U): T;
+        \\    foo2(t: T, u: U): U;
+        \\    foo3<T>(t: T, u: U): T;
+        \\    foo4<U>(t: T, u: U): T;
+        \\    foo5<T, U>(t: T, u: U): T;
+        \\    foo6<T, U>(): T;
+        \\    foo7<T, U>(u: U): T;
+        \\    foo8<T, U>(): T;
+        \\}
+        \\
+        \\var i: I<string, number>;
+        \\var r4 = i.foo('', 1);
+        \\var r5 = i.foo2('', 1);
+        \\var r6 = i.foo3(true, 1);
+        \\var r7 = i.foo4('', true);
+        \\var r8 = i.foo5(true, 1);
+        \\var r9 = i.foo6();
+        \\var r10 = i.foo7('');
+        \\var r11 = i.foo8();
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+
+test "conformance: genericCallWithGenericSignatureArguments passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "genericCallWithGenericSignatureArguments",
+        .path = "genericCallWithGenericSignatureArguments.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\function foo<T>(a: (x: T) => T, b: (x: T) => T) {
+        \\    var r: (x: T) => T;
+        \\    return r;
+        \\}
+        \\
+        \\var r1b = foo((x) => 1, (x) => '');
+        \\var r2 = foo((x: Object) => null, (x: string) => '');
+        \\var r3 = foo((x: number) => 1, (x: Object) => null);
+        \\var r3ii = foo((x: number) => 1, (x: number) => 1);
+        \\
+        \\var a: { x: number; y?: number; };
+        \\var b: { x: number; z?: number; };
+        \\
+        \\var r4 = foo((x: typeof a) => a, (x: typeof b) => b);
+        \\var r5 = foo((x: typeof b) => b, (x: typeof a) => a);
+        \\
+        \\function other<T>(x: T) {
+        \\    var r6 = foo((a: T) => a, (b: T) => b);
+        \\    var r6b = foo((a) => a, (b) => b);
+        \\}
+        \\
+        \\function other2<T extends Date>(x: T) {
+        \\    var r7 = foo((a: T) => a, (b: T) => b);
+        \\    var r7b = foo((a) => a, (b) => b);
+        \\    var r8 = r7(null);
+        \\}
+        \\
+        \\function foo2<T extends Date>(a: (x: T) => T, b: (x: T) => T) {
+        \\    var r: (x: T) => T;
+        \\    return r;
+        \\}
+        \\
+        \\function other3<T extends RegExp>(x: T) {
+        \\    var r8 = foo2((a: Date) => a, (b: Date) => b);
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
