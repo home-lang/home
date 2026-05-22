@@ -29945,6 +29945,87 @@ test "conformance: objectTypesIdentityWithGenericCallSignaturesDifferingByConstr
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+
+test "conformance: typeParameterConstModifiersReturnsAndYields passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "typeParameterConstModifiersReturnsAndYields",
+        .path = "typeParameterConstModifiersReturnsAndYields.ts",
+        .source =
+        \\// @strict: true
+        \\// @target: esnext
+        \\// @noEmit: true
+        \\
+        \\enum E { Val, Val2 }
+        \\
+        \\declare function test1<const T>(create: () => T): T;
+        \\
+        \\const result1 = test1(() => ['a']);
+        \\const result2 = test1(() => `a${Math.random()}`);
+        \\const result3 = test1(() => 'a');
+        \\const result4 = test1(() => true);
+        \\const result5 = test1(() => 101n);
+        \\const result6 = test1(() => false);
+        \\const result7 = test1(() => 11111);
+        \\const result8 = test1(() => E.Val);
+        \\
+        \\const result9 = test1(() => { return ['a']; });
+        \\const result10 = test1(() => { return `a${Math.random()}`; });
+        \\const result11 = test1(() => { return 'a'; });
+        \\const result12 = test1(() => { return true; });
+        \\const result13 = test1(() => { return 101n; });
+        \\const result14 = test1(() => { return false; });
+        \\const result15 = test1(() => { return 11111; });
+        \\const result16 = test1(() => { return E.Val; });
+        \\
+        \\const result17 = test1(async () => 'foo');
+        \\const result18 = test1(async () => { return 'foo'; });
+        \\
+        \\declare function test2<const T>(create: () => Promise<T>): T;
+        \\
+        \\const result19 = test2(async () => 'foo');
+        \\const result20 = test2(async () => { return 'foo'; });
+        \\
+        \\declare function test3<const T, const R>(arg: () => Generator<T, R>): [T, R]
+        \\
+        \\const result21 = test3(function*() {
+        \\    yield 10;
+        \\    return '1';
+        \\});
+        \\
+        \\declare function test4<const T, const R>(arg: () => AsyncGenerator<T, R>): [T, R]
+        \\
+        \\const result22 = test4(async function*() {
+        \\    yield 10;
+        \\    return '1';
+        \\});
+        \\
+        \\declare function overloaded1<const T>(cb: () => T): T;
+        \\declare function overloaded1<const T, const U>(cb: () => T, cb2: () => U): [T, U];
+        \\const overloadA = overloaded1(() => 42);
+        \\const overloadB = overloaded1(() => "hi", () => true);
+        \\
+        \\declare function overloaded2<T>(cb: () => T): T;
+        \\declare function overloaded2<T, const U>(cb: () => T, cb2: () => U): [T, U];
+        \\const overloadC = overloaded2(() => 42);
+        \\const overloadD = overloaded2(() => "hi", () => true);
+        \\
+        \\declare function overloaded3<const T>(cb: () => T): T;
+        \\declare function overloaded3<const T, U>(cb: () => T, cb2: () => U): [T, U];
+        \\const overloadE = overloaded3(() => 42);
+        \\const overloadF = overloaded3(() => "hi", () => true);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true, .strict_property_initialization = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
