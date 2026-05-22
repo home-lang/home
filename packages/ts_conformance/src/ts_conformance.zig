@@ -26638,6 +26638,122 @@ test "conformance: destructuringObjectBindingPatternAndAssignment1ES6 passes cle
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: assignmentCompatWithObjectMembers2 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "assignmentCompatWithObjectMembers2",
+        .path = "assignmentCompatWithObjectMembers2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\class S { foo: string; }
+        \\class T { foo: string; }
+        \\var s: S;
+        \\var t: T;
+        \\
+        \\interface S2 { foo: string; bar?: string }
+        \\interface T2 { foo: string; baz?: string }
+        \\var s2: S2;
+        \\var t2: T2;
+        \\
+        \\var a: { foo: string; bar?: string }
+        \\var b: { foo: string; baz?: string }
+        \\
+        \\var a2 = { foo: '' };
+        \\var b2 = { foo: '' };
+        \\
+        \\s = t;
+        \\t = s;
+        \\s = s2;
+        \\s = a2;
+        \\
+        \\s2 = t2;
+        \\t2 = s2;
+        \\s2 = t;
+        \\s2 = b;
+        \\s2 = a2;
+        \\
+        \\a = b;
+        \\b = a;
+        \\a = s;
+        \\a = s2;
+        \\a = a2;
+        \\
+        \\a2 = b2;
+        \\b2 = a2;
+        \\a2 = b;
+        \\a2 = t2;
+        \\a2 = t;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: assignmentCompatWithObjectMembers3 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "assignmentCompatWithObjectMembers3",
+        .path = "assignmentCompatWithObjectMembers3.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: false
+        \\
+        \\class S implements S2 { foo: string; }
+        \\class T implements T2 { foo: string; }
+        \\var s: S;
+        \\var t: T;
+        \\
+        \\interface S2 { foo: string; bar?: string }
+        \\interface T2 { foo: string; baz?: string }
+        \\var s2: S2;
+        \\var t2: T2;
+        \\
+        \\var a: { foo: string; bar?: string }
+        \\var b: { foo: string; baz?: string }
+        \\
+        \\var a2: S2 = { foo: '' };
+        \\var b2: T2 = { foo: '' };
+        \\
+        \\s = t;
+        \\t = s;
+        \\s = s2;
+        \\s = a2;
+        \\
+        \\s2 = t2;
+        \\t2 = s2;
+        \\s2 = t;
+        \\s2 = b;
+        \\s2 = a2;
+        \\
+        \\a = b;
+        \\b = a;
+        \\a = s;
+        \\a = s2;
+        \\a = a2;
+        \\
+        \\a2 = b2;
+        \\b2 = a2;
+        \\a2 = b;
+        \\a2 = t2;
+        \\a2 = t;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
