@@ -24085,6 +24085,56 @@ test "conformance: arrowFunctionExpressions passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: types_forAwait_es2018_1 passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "types.forAwait.es2018.1",
+        .path = "types.forAwait.es2018.1.ts",
+        .source =
+        \\declare const asyncIterable: AsyncIterable<number>;
+        \\declare const iterable: Iterable<number>;
+        \\declare const iterableOfPromise: Iterable<Promise<number>>;
+        \\async function f1() {
+        \\    let y: number;
+        \\    for await (const x of asyncIterable) {
+        \\    }
+        \\    for await (const x of iterable) {
+        \\    }
+        \\    for await (const x of iterableOfPromise) {
+        \\    }
+        \\    for await (y of asyncIterable) {
+        \\    }
+        \\    for await (y of iterable) {
+        \\    }
+        \\    for await (y of iterableOfPromise) {
+        \\    }
+        \\}
+        \\async function * f2() {
+        \\    let y: number;
+        \\    for await (const x of asyncIterable) {
+        \\    }
+        \\    for await (const x of iterable) {
+        \\    }
+        \\    for await (const x of iterableOfPromise) {
+        \\    }
+        \\    for await (y of asyncIterable) {
+        \\    }
+        \\    for await (y of iterable) {
+        \\    }
+        \\    for await (y of iterableOfPromise) {
+        \\    }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: computedPropertyNames11_ES6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "computedPropertyNames11_ES6",
