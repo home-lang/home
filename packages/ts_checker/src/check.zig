@@ -43241,6 +43241,117 @@ pub const Checker = struct {
         };
     }
 
+    /// Try to resolve `id` against a single sibling statement `s`
+    /// (a `let`/`const`/`var`, `function`, `class`, or `import`
+    /// declaration). Returns the bound type when `s` declares the
+    /// name, or null otherwise. Shared by the block-scope and the
+    /// switch-body scope walks in `typeOfIdentifier` — declarations
+    /// written directly inside a `case`/`default` clause share the
+    /// enclosing switch's block scope per the ECMAScript spec, so
+    /// they resolve exactly like sibling block statements.
+    fn resolveValueDeclInStmt(
+        self: *Checker,
+        s: NodeId,
+        node: NodeId,
+        id: hir_mod.IdentifierPayload,
+    ) CheckError!?TypeId {
+        const sk = self.hir.kindOf(s);
+        if (sk == .var_decl or sk == .let_decl or sk == .const_decl) {
+            const v = hir_mod.varDeclOf(self.hir, s);
+            if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
+                const vid = hir_mod.identifierOf(self.hir, v.name);
+                if (vid.name == id.name) {
+                    if (self.declared_identifier_lookup and v.type_annotation != hir_mod.none_node_id) {
+                        const declared_t = self.lowerValueTypeAnnotation(id.name, v.type_annotation) catch types.Primitive.any;
+                        self.hir.setType(s, declared_t);
+                        self.hir.setType(v.name, declared_t);
+                        return declared_t;
+                    }
+                    const t = self.hir.typeOf(s);
+                    if (t != types.Primitive.none) return t;
+                    if (v.type_annotation != hir_mod.none_node_id) {
+                        const declared_t = self.lowerValueTypeAnnotation(id.name, v.type_annotation) catch types.Primitive.any;
+                        self.hir.setType(s, declared_t);
+                        self.hir.setType(v.name, declared_t);
+                        return declared_t;
+                    }
+                }
+            } else if (v.name != hir_mod.none_node_id) {
+                const vk = self.hir.kindOf(v.name);
+                if (vk == .object_pattern or vk == .array_pattern or vk == .object_literal or vk == .array_literal) {
+                    const container_t = if (self.hir.typeOf(s) != types.Primitive.none)
+                        self.hir.typeOf(s)
+                    else
+                        types.Primitive.any;
+                    if (v.init != hir_mod.none_node_id) {
+                        if (self.typeOfPatternBindingFromSource(v.name, v.init, container_t, id.name) catch null) |bt| {
+                            return bt;
+                        }
+                    }
+                    if (self.typeOfPatternBinding(v.name, container_t, id.name)) |bt| {
+                        return bt;
+                    }
+                }
+            }
+        } else if (sk == .fn_decl or sk == .fn_expr) {
+            const fp = hir_mod.fnDeclOf(self.hir, s);
+            if (fp.name != hir_mod.none_node_id and self.hir.kindOf(fp.name) == .identifier) {
+                const fid = hir_mod.identifierOf(self.hir, fp.name);
+                if (fid.name == id.name) {
+                    if (self.overloadedFunctionValueType(id.name) catch null) |overload_t| return overload_t;
+                    const t = self.hir.typeOf(s);
+                    if (t != types.Primitive.none) return t;
+                }
+            }
+        } else if (sk == .class_decl or sk == .class_expr) {
+            const cp = hir_mod.classOf(self.hir, s);
+            if (cp.name != hir_mod.none_node_id and self.hir.kindOf(cp.name) == .identifier) {
+                const cid = hir_mod.identifierOf(self.hir, cp.name);
+                if (cid.name == id.name) {
+                    if (self.class_static_types.get(id.name)) |static_t| return static_t;
+                    const t = self.hir.typeOf(s);
+                    if (t != types.Primitive.none) return t;
+                }
+            }
+        } else if (sk == .import_decl) {
+            if (self.importDeclBindsLocal(s, id.name)) {
+                if (self.moduleNamespaceTypeForLocalImport(id.name, node) catch null) |ns_t| return ns_t;
+                if (self.virtualImportTypeForLocal(id.name, node) catch null) |import_t| return import_t;
+                return types.Primitive.any;
+            }
+        }
+        return null;
+    }
+
+    /// True when statement `s` is a `let`/`const`/`var`, `function`,
+    /// or `class` declaration introducing the value name `name`.
+    /// Used to suppress TS2304 for switch-case-scoped bindings that
+    /// are declared but not yet resolvable to a concrete type.
+    fn stmtDeclaresValueName(self: *Checker, s: NodeId, name: hir_mod.StringId) bool {
+        switch (self.hir.kindOf(s)) {
+            .var_decl, .let_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, s);
+                if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
+                    return hir_mod.identifierOf(self.hir, v.name).name == name;
+                }
+            },
+            .fn_decl, .fn_expr => {
+                const f = hir_mod.fnDeclOf(self.hir, s);
+                if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
+                    return hir_mod.identifierOf(self.hir, f.name).name == name;
+                }
+            },
+            .class_decl, .class_expr => {
+                const c = hir_mod.classOf(self.hir, s);
+                if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
+                    return hir_mod.identifierOf(self.hir, c.name).name == name;
+                }
+            },
+            else => {},
+        }
+        return false;
+    }
+
     /// Resolve an identifier reference's type. Walks up the HIR
     /// parent chain looking for an enclosing function whose
     /// parameter list declares this name; then falls back to the
@@ -43458,72 +43569,33 @@ pub const Checker = struct {
                 // before this node.
                 const stmts = hir_mod.blockStmts(self.hir, cur);
                 for (stmts) |s| {
-                    const sk = self.hir.kindOf(s);
-                    if (sk == .var_decl or sk == .let_decl or sk == .const_decl) {
-                        const v = hir_mod.varDeclOf(self.hir, s);
-                        if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
-                            const vid = hir_mod.identifierOf(self.hir, v.name);
-                            if (vid.name == id.name) {
-                                if (self.declared_identifier_lookup and v.type_annotation != hir_mod.none_node_id) {
-                                    const declared_t = self.lowerValueTypeAnnotation(id.name, v.type_annotation) catch types.Primitive.any;
-                                    self.hir.setType(s, declared_t);
-                                    self.hir.setType(v.name, declared_t);
-                                    return declared_t;
-                                }
-                                const t = self.hir.typeOf(s);
-                                if (t != types.Primitive.none) return t;
-                                if (v.type_annotation != hir_mod.none_node_id) {
-                                    const declared_t = self.lowerValueTypeAnnotation(id.name, v.type_annotation) catch types.Primitive.any;
-                                    self.hir.setType(s, declared_t);
-                                    self.hir.setType(v.name, declared_t);
-                                    return declared_t;
-                                }
-                            }
-                        } else if (v.name != hir_mod.none_node_id) {
-                            const vk = self.hir.kindOf(v.name);
-                            if (vk == .object_pattern or vk == .array_pattern or vk == .object_literal or vk == .array_literal) {
-                                const container_t = if (self.hir.typeOf(s) != types.Primitive.none)
-                                    self.hir.typeOf(s)
-                                else
-                                    types.Primitive.any;
-                                if (v.init != hir_mod.none_node_id) {
-                                    if (self.typeOfPatternBindingFromSource(v.name, v.init, container_t, id.name) catch null) |bt| {
-                                        return bt;
-                                    }
-                                }
-                                if (self.typeOfPatternBinding(v.name, container_t, id.name)) |bt| {
-                                    return bt;
-                                }
-                            }
-                        }
-                    } else if (sk == .fn_decl or sk == .fn_expr) {
-                        const fp = hir_mod.fnDeclOf(self.hir, s);
-                        if (fp.name != hir_mod.none_node_id and self.hir.kindOf(fp.name) == .identifier) {
-                            const fid = hir_mod.identifierOf(self.hir, fp.name);
-                            if (fid.name == id.name) {
-                                if (self.overloadedFunctionValueType(id.name) catch null) |overload_t| return overload_t;
-                                const t = self.hir.typeOf(s);
-                                if (t != types.Primitive.none) return t;
-                            }
-                        }
-                    } else if (sk == .class_decl or sk == .class_expr) {
-                        const cp = hir_mod.classOf(self.hir, s);
-                        if (cp.name != hir_mod.none_node_id and self.hir.kindOf(cp.name) == .identifier) {
-                            const cid = hir_mod.identifierOf(self.hir, cp.name);
-                            if (cid.name == id.name) {
-                                if (self.class_static_types.get(id.name)) |static_t| return static_t;
-                                const t = self.hir.typeOf(s);
-                                if (t != types.Primitive.none) return t;
-                            }
-                        }
-                    } else if (sk == .import_decl) {
-                        if (self.importDeclBindsLocal(s, id.name)) {
-                            if (self.moduleNamespaceTypeForLocalImport(id.name, node) catch null) |ns_t| return ns_t;
-                            if (self.virtualImportTypeForLocal(id.name, node) catch null) |import_t| return import_t;
-                            return types.Primitive.any;
+                    if (self.resolveValueDeclInStmt(s, node, id) catch null) |t| return t;
+                }
+            }
+            if (k == .switch_stmt) {
+                // Declarations written directly inside a `case`/
+                // `default` clause (no surrounding `{}`) share the
+                // switch's single block scope per the ECMAScript
+                // spec, so a `case X: let y = …;` binding is visible
+                // to every reference in the same (and later) clauses.
+                // Without this, such references surfaced spurious
+                // TS2304 — the parent walk only scanned `block_stmt`
+                // siblings, never the case-clause statement lists.
+                var declared_untyped = false;
+                for (hir_mod.switchCases(self.hir, cur)) |case_node| {
+                    for (hir_mod.switchCaseStmts(self.hir, case_node)) |s| {
+                        if (self.resolveValueDeclInStmt(s, node, id) catch null) |t| return t;
+                        // Track a name that IS declared here but has
+                        // no resolved type yet (e.g. an untyped `let`
+                        // whose initializer type is still pending).
+                        // tsc never reports TS2304 for a declared
+                        // binding, so fall back to `any` below.
+                        if (!declared_untyped and self.stmtDeclaresValueName(s, id.name)) {
+                            declared_untyped = true;
                         }
                     }
                 }
+                if (declared_untyped) return types.Primitive.any;
             }
             if (k == .namespace_decl) {
                 saw_namespace_scope = true;

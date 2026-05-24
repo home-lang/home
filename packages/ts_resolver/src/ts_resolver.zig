@@ -226,6 +226,12 @@ pub const Resolver = struct {
     }
 
     fn joinPath(self: *Resolver, a: []const u8, b: []const u8) ResolveError![]const u8 {
+        // An absolute `b` (e.g. a `package.json` `"types"` field of
+        // `/.ts/typescript.d.ts`) discards `a` entirely — matching
+        // tsc's `combinePaths`, where a rooted trailing path resets
+        // the result. Without this an absolute `types`/`typings`
+        // value gets spuriously concatenated onto the package dir.
+        if (isAbsolute(b)) return self.ar().dupe(u8, b) catch error.OutOfMemory;
         // Resolve `..` segments in b relative to a.
         var bb = b;
         const aa_owned = self.ar().dupe(u8, a) catch return error.OutOfMemory;
@@ -1983,4 +1989,23 @@ test "Resolver: relative import lands in node_modules pkg via index.js" {
     const res = try r.resolve("./node_modules/foo", "/a.ts");
     try T.expectEqualStrings("/node_modules/foo/index.js", res.path);
     try T.expect(!res.is_declaration);
+}
+
+test "Resolver: package types — ABSOLUTE value discards package dir" {
+    // Mirrors the `APISample_*` harness shape: `package.json` `types`
+    // points at an absolute `/.ts/...` declaration file mounted
+    // outside the package directory.
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/typescript/package.json",
+        \\{ "name": "typescript", "types": "/.ts/typescript.d.ts" }
+    );
+    try vfs.addFile("/.ts/typescript.d.ts", "");
+    try vfs.addFile("/a.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const res = try r.resolve("typescript", "/a.ts");
+    try T.expectEqualStrings("/.ts/typescript.d.ts", res.path);
+    try T.expect(res.is_declaration);
 }

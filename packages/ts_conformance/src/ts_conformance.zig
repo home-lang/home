@@ -525,7 +525,19 @@ fn shouldRouteThroughProgram(c: Case) bool {
     // splits each file into its own compilation, which loses the
     // shared-source ambient resolution and surfaces brand-new
     // "Cannot find module" diagnostics they should not have.
-    if (c.expected_errors.len == 0) return false;
+    if (c.expected_errors.len == 0) {
+        // Exception: a clean fixture whose `node_modules/<pkg>/
+        // package.json` points `types`/`typings` at an ABSOLUTE path
+        // (the harness-mounted-lib shape, e.g.
+        // `"types": "/.ts/typescript.d.ts"`) cannot resolve that bare
+        // import on the legacy concatenated path — the non-code
+        // package.json section is stripped before the checker sees it,
+        // so the import surfaces a spurious TS2307. The program path
+        // rebuilds the full VFS (including the synthesized declaration
+        // stub) and resolves it correctly. Mirrors `APISample_*`.
+        if (rawSourceHasAbsoluteTypesPackageJson(c.raw_source)) return true;
+        return false;
+    }
     if (!rawSourceHasNonCodeMarker(c.raw_source) and rawSourceHasJsLikeCodeMarker(c.raw_source)) return false;
     // Pure-code multi-file fixtures (only `.ts` / `.tsx` / `.d.ts`,
     // no non-code package.json / tsconfig / node_modules markers) work
@@ -547,6 +559,54 @@ fn shouldRouteThroughProgram(c: Case) bool {
 
 fn parserSuiteNeedsVirtualFileBoundaries(c: Case) bool {
     return std.mem.startsWith(u8, c.name, "parser.") and rawSourceHasMultipleCodeMarkers(c.raw_source);
+}
+
+/// True when the raw fixture declares a `node_modules/<pkg>/
+/// package.json` whose `types`/`typings` field names an ABSOLUTE path
+/// (begins with `/`). Such a target lives outside any virtual section
+/// the legacy concatenated path can see — the upstream harness mounts
+/// it at an absolute virtual root — so resolving the import requires
+/// the program-graph VFS path. Scans line-by-line within each
+/// node_modules package.json section.
+fn rawSourceHasAbsoluteTypesPackageJson(raw: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    var in_pkg_section = false;
+    while (lines.next()) |line_with_cr| {
+        const line = std.mem.trim(u8, line_with_cr, " \t\r");
+        if (virtualFilename(line)) |path| {
+            in_pkg_section = isNodeModulesVirtualPath(path) and
+                std.mem.endsWith(u8, path, "package.json");
+            continue;
+        }
+        if (!in_pkg_section) continue;
+        const fields = [_][]const u8{ "types", "typings" };
+        for (fields) |key| {
+            if (jsonStringFieldOnLine(line, key)) |val| {
+                if (val.len > 0 and val[0] == '/') return true;
+            }
+        }
+    }
+    return false;
+}
+
+/// Extract a JSON `"<key>": "<value>"` string value from one line.
+/// Returns the verbatim value, or null when the shape isn't present.
+fn jsonStringFieldOnLine(line: []const u8, key: []const u8) ?[]const u8 {
+    const kq = std.mem.indexOf(u8, line, key) orelse return null;
+    if (kq == 0 or line[kq - 1] != '"') return null;
+    const after_key = kq + key.len;
+    if (after_key >= line.len or line[after_key] != '"') return null;
+    var i = after_key + 1;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
+    if (i >= line.len or line[i] != ':') return null;
+    i += 1;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
+    if (i >= line.len or line[i] != '"') return null;
+    i += 1;
+    const val_start = i;
+    while (i < line.len and line[i] != '"') i += 1;
+    if (i >= line.len) return null;
+    return line[val_start..i];
 }
 
 fn rawSourceHasNonCodeMarker(raw: []const u8) bool {
@@ -736,6 +796,69 @@ fn strategyFromLabel(label: []const u8) ?ts_resolver.Strategy {
 /// Routed compile path. Returns `null` to fall back to the legacy
 /// path when something prevents the program-graph route (no virtual
 /// files extracted, etc.).
+/// Scan node_modules `package.json` virtual files for a `types` /
+/// `typings` field that names an ABSOLUTE path (e.g.
+/// `"/.ts/typescript.d.ts"`). When the named declaration file isn't
+/// already a virtual file, synthesize an empty `.d.ts` stub at that
+/// path so the resolver resolves the package to a typed (`any`-shaped)
+/// module instead of failing with TS2307 — matching the upstream test
+/// harness, which mounts the real declaration files at `/.ts/...`.
+fn synthesizeAbsoluteTypesStubs(
+    gpa: std.mem.Allocator,
+    files: []const VirtualFile,
+    vfs: *ts_resolver.VirtualFs,
+) !void {
+    for (files) |f| {
+        if (!std.mem.endsWith(u8, f.path, "package.json")) continue;
+        if (!isNodeModulesVirtualPath(f.path)) continue;
+        var parsed = std.json.parseFromSlice(std.json.Value, gpa, f.source, .{}) catch continue;
+        defer parsed.deinit();
+        if (parsed.value != .object) continue;
+        const obj = parsed.value.object;
+        const fields = [_][]const u8{ "types", "typings" };
+        for (fields) |key| {
+            const v = obj.get(key) orelse continue;
+            if (v != .string) continue;
+            const target = v.string;
+            // Only absolute targets bypass the package directory; a
+            // relative `types` resolves inside node_modules where the
+            // real fixture file already lives.
+            if (target.len == 0 or target[0] != '/') continue;
+            // Skip if the target (or a `.d.ts`/`.ts` extension
+            // permutation of an extensionless target) is already a
+            // virtual file the fixture supplied.
+            if (absoluteTypesTargetPresent(files, target)) continue;
+            const stub_path = if (declarationExtensionPresent(target))
+                try gpa.dupe(u8, target)
+            else
+                try std.fmt.allocPrint(gpa, "{s}.d.ts", .{target});
+            defer gpa.free(stub_path);
+            try vfs.addFile(stub_path, "");
+        }
+    }
+}
+
+fn declarationExtensionPresent(path: []const u8) bool {
+    return std.mem.endsWith(u8, path, ".d.ts") or
+        std.mem.endsWith(u8, path, ".ts") or
+        std.mem.endsWith(u8, path, ".d.mts") or
+        std.mem.endsWith(u8, path, ".d.cts");
+}
+
+fn absoluteTypesTargetPresent(files: []const VirtualFile, target: []const u8) bool {
+    for (files) |f| {
+        const canon = if (std.mem.startsWith(u8, f.path, "/")) f.path else null;
+        const p = canon orelse continue;
+        if (std.mem.eql(u8, p, target)) return true;
+        // Extensionless target: match a `.d.ts`/`.ts` sibling.
+        if (!declarationExtensionPresent(target)) {
+            if (std.mem.startsWith(u8, p, target) and
+                p.len > target.len and p[target.len] == '.') return true;
+        }
+    }
+    return false;
+}
+
 fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     var virtual_files = try splitVirtualFiles(gpa, c.raw_source);
     defer virtual_files.deinit(gpa);
@@ -753,6 +876,18 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         defer gpa.free(canon);
         try vfs.addFile(canon, f.source);
     }
+
+    // The upstream test harness mounts the real TypeScript declaration
+    // files at the absolute `/.ts/...` virtual root, so a
+    // `node_modules/<pkg>/package.json` whose `"types"`/`"typings"`
+    // field points at an absolute path (e.g.
+    // `"/.ts/typescript.d.ts"`) resolves to a typed module. Home's
+    // harness has no such mount, so synthesize an empty declaration
+    // stub at any absolute `types`/`typings` target that isn't already
+    // present. The module then types as `any` (no shape), which is all
+    // these fixtures need — they only require the import to resolve so
+    // no spurious TS2307 leaks. Mirrors `APISample_*`.
+    try synthesizeAbsoluteTypesStubs(gpa, virtual_files.items, &vfs);
 
     var resolver = ts_resolver.Resolver.init(gpa, vfs.fs(), .{
         .strategy = resolverStrategyFromCase(c),
@@ -24530,8 +24665,6 @@ test "conformance: classAndInterfaceMerge_d passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
-
-
 test "conformance: controlFlowElementAccess2 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "controlFlowElementAccess2",
@@ -24563,8 +24696,6 @@ test "conformance: controlFlowElementAccess2 passes clean" {
     }
     try T.expectEqual(Outcome.passed, result.outcome);
 }
-
-
 
 test "conformance: compoundAssignmentLHSIsReference passes clean" {
     const result = try runOneEntry(T.allocator, .{
@@ -24615,9 +24746,6 @@ test "conformance: compoundAssignmentLHSIsReference passes clean" {
     }
     try T.expectEqual(Outcome.passed, result.outcome);
 }
-
-
-
 
 test "conformance: exportImportAlias passes clean" {
     const result = try runOneEntry(T.allocator, .{
@@ -24702,7 +24830,6 @@ test "conformance: exportImportAlias passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
-
 test "conformance: ExportInterfaceWithAccessibleTypesInTypeParameterConstraints passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "ExportInterfaceWithAccessibleTypesInTypeParameterConstraintsClassHeritageListMemberTypeAnnotations",
@@ -24742,8 +24869,6 @@ test "conformance: ExportInterfaceWithAccessibleTypesInTypeParameterConstraints 
     }
     try T.expectEqual(Outcome.passed, result.outcome);
 }
-
-
 
 test "conformance: ExportInterfaceWithInaccessibleTypeInTypeParameterConstraint passes clean" {
     const result = try runOneEntry(T.allocator, .{
@@ -25475,7 +25600,6 @@ test "conformance: legacyDecorators_contextualTypes passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
-
 test "conformance: decoratorOnClassAccessor1_es6 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "decoratorOnClassAccessor1.es6",
@@ -25525,7 +25649,6 @@ test "conformance: decoratorOnClassMethod1_es6 passes clean" {
     }
     try T.expectEqual(Outcome.passed, result.outcome);
 }
-
 
 test "conformance: propertyAccessOnTypeParameterWithConstraints2 passes clean" {
     const result = try runOneEntry(T.allocator, .{
@@ -25990,7 +26113,6 @@ test "conformance: arrayLiteralsWithRecursiveGenerics passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
-
 test "conformance: es6modulekindWithES2015Target passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "es6modulekindWithES2015Target",
@@ -26226,7 +26348,6 @@ test "conformance: esnextmodulekindWithES2015Target passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
-
 test "conformance: ExportVariableWithInaccessibleTypeInTypeAnnotation passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "ExportVariableWithInaccessibleTypeInTypeAnnotation",
@@ -26394,7 +26515,6 @@ test "conformance: objectTypesIdentityWithCallSignaturesDifferingParamCounts2 pa
     }
     try T.expectEqual(Outcome.passed, result.outcome);
 }
-
 
 test "conformance: usingDeclarationsDeclarationEmit_1 passes clean" {
     const result = try runOneEntry(T.allocator, .{
@@ -27181,7 +27301,6 @@ test "conformance: genericCallTypeArgumentInference passes clean" {
     }
     try T.expectEqual(Outcome.passed, result.outcome);
 }
-
 
 test "conformance: genericCallWithGenericSignatureArguments passes clean" {
     const result = try runOneEntry(T.allocator, .{
@@ -29944,7 +30063,6 @@ test "conformance: objectTypesIdentityWithGenericCallSignaturesDifferingByConstr
     }
     try T.expectEqual(Outcome.passed, result.outcome);
 }
-
 
 test "conformance: typeParameterConstModifiersReturnsAndYields passes clean" {
     const result = try runOneEntry(T.allocator, .{
