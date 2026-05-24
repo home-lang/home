@@ -6560,6 +6560,121 @@ pub const Checker = struct {
         });
     }
 
+    /// Expando-function type augmentation (tsc `getExpandoSymbol` /
+    /// `getTypeOfFuncClassEnumModule` assignment-declaration handling).
+    ///
+    /// When a function value (`const f = () => …`, `function f() {}`) is
+    /// bound to a name and later receives `f.prop = value` assignments in
+    /// the SAME containing scope, tsc treats the binding's type as the
+    /// callable intersected with an object of the assigned properties —
+    /// e.g. `(() => number) & { first: string; last: string }`. That
+    /// augmented type is what makes the function value assignable to an
+    /// object interface. The base path already typed the binding as the
+    /// bare signature; this helper layers the expando members on top when
+    /// such property assignments exist directly in `scope_stmts`.
+    ///
+    /// Conservative by design: returns `null` (no augmentation) unless the
+    /// scope contains at least one `name.prop = value` assignment, so the
+    /// common non-expando case keeps the bare function type.
+    fn expandoAugmentedFunctionType(
+        self: *Checker,
+        name: hir_mod.StringId,
+        base_t: TypeId,
+        scope_stmts: []const NodeId,
+    ) CheckError!?TypeId {
+        // Only function-like values gain expando members. A bare signature
+        // qualifies; primitives, plain objects and unions do not.
+        if (base_t < types.Primitive.first_dynamic or base_t >= self.interner.pool.typeCount()) return null;
+        if (!self.interner.pool.flagsOf(base_t).is_signature) return null;
+
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        var seen: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer seen.deinit(self.gpa);
+
+        for (scope_stmts) |stmt| {
+            // Property assignments appear as bare `assignment` statements
+            // directly in the block's statement list.
+            if (stmt == hir_mod.none_node_id or self.hir.kindOf(stmt) != .assignment) continue;
+            const a = hir_mod.assignmentOf(self.hir, stmt);
+            // Only plain `=` writes contribute expando members.
+            if (a.op != null) continue;
+            if (a.target == hir_mod.none_node_id or self.hir.kindOf(a.target) != .member_access) continue;
+            const m = hir_mod.memberOf(self.hir, a.target);
+            if (m.optional) continue;
+            if (m.object == hir_mod.none_node_id or self.hir.kindOf(m.object) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, m.object).name != name) continue;
+
+            // Property type comes from the assigned value. Prefer the
+            // already-computed type on the value node (assignments are
+            // checked in source order before later references); fall back
+            // to `any` when it has not been typed yet. Widen literals so
+            // `f.first = 'x'` contributes `string`, matching tsc's expando
+            // member widening.
+            if (a.value == hir_mod.none_node_id) continue;
+            const value_t = self.hir.typeOf(a.value);
+            const prop_t = if (value_t == types.Primitive.none)
+                types.Primitive.any
+            else
+                self.widenLiteralType(value_t);
+
+            if (seen.contains(m.name)) {
+                // Later assignment in the same scope wins (last write).
+                for (members.items) |*existing| {
+                    if (existing.name == m.name) existing.type = prop_t;
+                }
+                continue;
+            }
+            try seen.put(self.gpa, m.name, {});
+            try members.append(self.gpa, .{
+                .name = m.name,
+                .type = prop_t,
+                .is_optional = false,
+                .is_readonly = false,
+                .is_method = false,
+            });
+        }
+
+        if (members.items.len == 0) return null;
+        const props_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+        const parts = [_]TypeId{ base_t, props_t };
+        return self.interner.internIntersection(&parts) catch return error.OutOfMemory;
+    }
+
+    /// Apply expando-function augmentation (see `expandoAugmentedFunctionType`)
+    /// to a reference's flow/narrowed type. Walks the scope chain from the
+    /// reference to the block / namespace where `name` is declared as a
+    /// function-valued binding, then layers the in-scope `name.prop = …`
+    /// members on top of `base_t`. Returns `null` when `name` is not a
+    /// function-valued binding here or when no expando assignments exist.
+    fn expandoAugmentedNarrowType(
+        self: *Checker,
+        name: hir_mod.StringId,
+        ref_node: NodeId,
+        base_t: TypeId,
+    ) CheckError!?TypeId {
+        if (base_t < types.Primitive.first_dynamic or base_t >= self.interner.pool.typeCount()) return null;
+        if (!self.interner.pool.flagsOf(base_t).is_signature) return null;
+        var cur = ref_node;
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const stmts: []const NodeId = switch (self.hir.kindOf(cur)) {
+                .block_stmt => hir_mod.blockStmts(self.hir, cur),
+                .namespace_decl => hir_mod.namespaceBody(self.hir, cur),
+                else => continue,
+            };
+            var declares = false;
+            for (stmts) |stmt| {
+                if (self.statementDeclaresFunctionValueName(stmt, name)) {
+                    declares = true;
+                    break;
+                }
+            }
+            if (!declares) continue;
+            return try self.expandoAugmentedFunctionType(name, base_t, stmts);
+        }
+        return null;
+    }
+
     fn scanForUsedBeforeAssign(
         self: *Checker,
         node: NodeId,
@@ -43401,7 +43516,19 @@ pub const Checker = struct {
 
         // Narrowed binding from an enclosing type-guard takes
         // precedence over the static type.
-        if (self.lookupNarrow(id.name)) |t| return t;
+        if (self.lookupNarrow(id.name)) |t| {
+            // Expando-function augmentation also applies to the narrowed
+            // flow type: a function-valued binding that receives
+            // `name.prop = …` assignments carries those properties on
+            // every reference, not just on the bare declared type. Without
+            // this the narrow (the plain signature) would shadow the
+            // augmented type for later reads. Skip the LHS object of an
+            // expando assignment so we don't recurse needlessly.
+            if (!self.isDeclNameSlot(node)) {
+                if (self.expandoAugmentedNarrowType(id.name, node, t) catch null) |aug_t| return aug_t;
+            }
+            return t;
+        }
         if (self.resolving_value_types.contains(id.name)) return types.Primitive.any;
 
         if (std.mem.eql(u8, name_str, "this")) {
