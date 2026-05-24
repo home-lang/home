@@ -28526,6 +28526,13 @@ pub const Checker = struct {
                         }
                     }
                     if (try self.importEqualsExportAssignmentGenericInstanceType(type_node, r.name)) |t| return t;
+                    // Built-in homomorphic utilities (`Partial`/`Required`/
+                    // `Readonly`/`Pick`/`Omit`) over a concrete object
+                    // type. Home has no real lib.d.ts, so these have no
+                    // `generic_aliases` entry; resolve them structurally
+                    // here so annotations don't collapse to `any` (which
+                    // spuriously fires TS2403 on sibling declarations).
+                    if (try self.lowerBuiltinHomomorphicUtility(type_node)) |t| return t;
                     if (self.generic_aliases.get(r.name)) |info| {
                         if (self.genericAliasHasMissingRequiredArgs(info, r.args_len)) {
                             try self.reportGenericTypeRequiresArgs(type_node, r.name, info);
@@ -34395,6 +34402,110 @@ pub const Checker = struct {
         }
 
         return null;
+    }
+
+    /// Materialize the built-in homomorphic utility types
+    /// (`Partial`/`Required`/`Readonly`/`Pick`/`Omit`) when they are
+    /// applied to a concrete object type and no source-level (or
+    /// lib.d.ts) generic alias of the same name is in scope.
+    ///
+    /// Home ships only a minimal `lib.d.ts` substitute, so these
+    /// utility names are recognized as "valid generic references"
+    /// (`typeRefNameAcceptsTypeArgsAt`) but never resolve to a real
+    /// mapped-type body — the type-ref lowerer previously fell through
+    /// to `any`. Lowering a `var` annotation like `Readonly<Shape>` to
+    /// `any` makes a sibling declaration appear to have a conflicting
+    /// type, spuriously firing TS2403 (see `mappedTypeModifiers.ts`,
+    /// `mappedTypes2.ts`, whose baselines are empty).
+    ///
+    /// Returns `null` (fall through) when the operand is not a concrete
+    /// object type (e.g. a bare type parameter `Partial<T>` inside a
+    /// generic fn), preserving the prior generic-passthrough behavior.
+    fn lowerBuiltinHomomorphicUtility(self: *Checker, type_node: NodeId) CheckError!?TypeId {
+        const r = hir_mod.typeRefOf(self.hir, type_node);
+        if (r.qualifier_len != 0) return null;
+        // A user-declared (or otherwise in-scope) alias of the same
+        // name takes precedence — its mapped body drives lowering via
+        // the `generic_aliases` path.
+        if (self.generic_aliases.contains(r.name)) return null;
+        const name = self.string_interner.get(r.name);
+        const args = hir_mod.typeRefArgs(self.hir, type_node);
+
+        const Kind = enum { partial, required, readonly, pick, omit };
+        const kind: Kind = if (std.mem.eql(u8, name, "Partial"))
+            .partial
+        else if (std.mem.eql(u8, name, "Required"))
+            .required
+        else if (std.mem.eql(u8, name, "Readonly"))
+            .readonly
+        else if (std.mem.eql(u8, name, "Pick"))
+            .pick
+        else if (std.mem.eql(u8, name, "Omit"))
+            .omit
+        else
+            return null;
+
+        const wants_keys = kind == .pick or kind == .omit;
+        const min_args: usize = if (wants_keys) 2 else 1;
+        if (args.len < min_args) return null;
+
+        const source_t = try self.lowererLowerWithTypeParams(args[0]);
+        if (source_t >= self.interner.pool.typeCount()) return null;
+        if (!self.interner.pool.flagsOf(source_t).is_object_type) return null;
+
+        // Pick/Omit need the literal key set from the second arg.
+        var key_set: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer key_set.deinit(self.gpa);
+        if (wants_keys) {
+            const key_t = try self.lowererLowerWithTypeParams(args[1]);
+            var keys: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+            defer keys.deinit(self.gpa);
+            // Bail to the generic-passthrough path if the key operand
+            // isn't a finite set of string-literal keys (e.g. `keyof T`
+            // where T is a type parameter); only concrete keys let us
+            // materialize a faithful object shape.
+            if (!self.collectStringLiteralKeys(key_t, &keys)) return null;
+            for (keys.items) |k| try key_set.put(self.gpa, k, {});
+        }
+
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        for (self.interner.objectMembers(source_t)) |m| {
+            switch (kind) {
+                .pick => if (!key_set.contains(m.name)) continue,
+                .omit => if (key_set.contains(m.name)) continue,
+                else => {},
+            }
+            try members.append(self.gpa, .{
+                .name = m.name,
+                .type = m.type,
+                .is_optional = switch (kind) {
+                    .partial => true,
+                    .required => false,
+                    else => m.is_optional,
+                },
+                .is_readonly = switch (kind) {
+                    .readonly => true,
+                    else => m.is_readonly,
+                },
+                .is_method = m.is_method,
+            });
+        }
+
+        // Pick/Omit drop the source index signatures (the result is a
+        // closed object over the selected keys); the modifier utilities
+        // preserve them.
+        const string_idx = if (wants_keys) types.Primitive.none else self.interner.objectStringIndex(source_t);
+        const number_idx = if (wants_keys) types.Primitive.none else self.interner.objectNumberIndex(source_t);
+        const symbol_idx = if (wants_keys) types.Primitive.none else self.interner.objectSymbolIndex(source_t);
+
+        const result = self.interner.internObjectTypeWithIndexAndSymbol(
+            members.items,
+            string_idx,
+            number_idx,
+            symbol_idx,
+        ) catch return error.OutOfMemory;
+        return result;
     }
 
     fn registerAliasDisplayText(self: *Checker, t: TypeId, text: []const u8) !void {
@@ -72408,6 +72519,51 @@ test "checker: recursive homomorphic mapped aliases preserve primitive leaves" {
         \\type DeepReadonlyFoo = { readonly x: number; readonly y: { readonly a: string; readonly b: number }; readonly z: boolean };
         \\var x1: DeepReadonly<Foo>;
         \\var x1: DeepReadonlyFoo;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.subsequent_var_type_mismatch);
+    }
+}
+
+test "checker: mappedTypeModifiers inline mapped annotation no spurious TS2403" {
+    // Mirrors mappedTypeModifiers.ts (baseline: zero diagnostics). A
+    // `var` annotated with `Pick<T, keyof T>` (a built-in homomorphic
+    // utility, which Home has no lib.d.ts alias for) must lower to the
+    // resolved object type — not `any` — so a sibling declaration with
+    // the equivalent object type does not trip TS2403.
+    const s = try newSetup(
+        \\type T = { a: number, b: string };
+        \\var v01: T;
+        \\var v01: { [P in keyof T]: T[P] };
+        \\var v01: Pick<T, keyof T>;
+        \\var v01: Pick<Pick<T, keyof T>, keyof T>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.subsequent_var_type_mismatch);
+    }
+}
+
+test "checker: mappedTypes2 Readonly/Partial builtin annotation no spurious TS2403" {
+    // Mirrors mappedTypes2.ts f1/f2 (baseline: zero diagnostics). The
+    // built-in `Readonly<Shape>` / `Partial<Shape>` utilities must
+    // resolve structurally so they agree with sibling interface- and
+    // object-literal-annotated declarations of the same `var`.
+    const s = try newSetup(
+        \\interface Shape { name: string; width: number; }
+        \\interface ReadonlyShape { readonly name: string; readonly width: number; }
+        \\interface PartialShape { name?: string; width?: number; }
+        \\function f1(shape: Shape) {
+        \\    var frozen: ReadonlyShape;
+        \\    var frozen: Readonly<Shape>;
+        \\}
+        \\function f2(shape: Shape) {
+        \\    var partial: PartialShape;
+        \\    var partial: Partial<Shape>;
+        \\}
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
