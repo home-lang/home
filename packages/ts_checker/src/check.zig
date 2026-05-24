@@ -61806,6 +61806,53 @@ test "checker: let declared in a bare case clause is bound in scope" {
     }
 }
 
+test "checker: ESM import in a .cts file under module:preserve reports TS1293" {
+    const b = try newBoundSetup(
+        \\// @module: preserve
+        \\// @filename: a.cts
+        \\import { x } from "./b";
+        \\x;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.esm_in_commonjs_preserve) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: import-equals in a .cjs file reports TS8002" {
+    const b = try newBoundSetup(
+        \\// @module: preserve
+        \\// @filename: main.cjs
+        \\import x = require("./a");
+        \\x;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.import_equals_ts_only) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: import-equals in a .ts file under module:preserve is allowed (no TS1202)" {
+    const b = try newBoundSetup(
+        \\// @module: preserve
+        \\// @filename: main.ts
+        \\import x = require("./a");
+        \\x;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.import_assignment_es_module);
+        try T.expect(d.code != TsCodes.import_equals_ts_only);
+    }
+}
+
 test "checker: Math.PI does not emit TS2304" {
     const b = try newBoundSetup("Math.PI;");
     defer destroyBoundSetup(b);
