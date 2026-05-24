@@ -61411,6 +61411,48 @@ test "checker: re-exporting a same-file local declaration does not emit TS2661" 
     }
 }
 
+test "checker: block-scoped expando function gains assigned properties" {
+    // `dice` is a function whose later `dice.first`/`dice.last`
+    // assignments make it `(() => number) & { first; last }`, so it is
+    // assignable to `Person` — no TS2322.
+    const s = try newSetup(
+        \\interface Person { first: string; last: string; }
+        \\{
+        \\  const dice = () => 1;
+        \\  dice.first = 'Rando';
+        \\  dice.last = 'Calrissian';
+        \\  const diceP: Person = dice;
+        \\  diceP;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: block-scoped function without expando props stays a plain function" {
+    // Without property assignments, the binding is just `() => number`
+    // and is NOT assignable to `Person` — TS2322 still fires.
+    const s = try newSetup(
+        \\interface Person { first: string; last: string; }
+        \\{
+        \\  const dice = () => 1;
+        \\  const diceP: Person = dice;
+        \\  diceP;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: let declared in a bare case clause is bound in scope" {
     // A `let` declared directly inside a `case` clause (no braces) shares
     // the switch block scope; referencing it must not emit TS2304.
