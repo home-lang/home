@@ -61284,6 +61284,28 @@ test "checker: re-exporting a same-file local declaration does not emit TS2661" 
     }
 }
 
+test "checker: let declared in a bare case clause is bound in scope" {
+    // A `let` declared directly inside a `case` clause (no braces) shares
+    // the switch block scope; referencing it must not emit TS2304.
+    const s = try newSetup(
+        \\function f(x: number): number {
+        \\  switch (x) {
+        \\    case 1:
+        \\      let y = x + 1;
+        \\      return y;
+        \\  }
+        \\  return 0;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name) {
+            try T.expect(std.mem.indexOf(u8, d.message, "'y'") == null);
+        }
+    }
+}
+
 test "checker: Math.PI does not emit TS2304" {
     const b = try newBoundSetup("Math.PI;");
     defer destroyBoundSetup(b);
