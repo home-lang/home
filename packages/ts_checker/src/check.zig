@@ -378,6 +378,19 @@ pub const TsCodes = struct {
     /// `.js`/`.jsx`/`.mjs`/`.cjs` virtual sections, even without
     /// `@checkJs`, because the type parameter list is TS-only syntax.
     pub const ts_only_type_parameter_in_js: u32 = 8004;
+    /// TS8002 -- import-equals in a JavaScript virtual section (e.g. a
+    /// .cjs file under module: preserve).
+    pub const import_equals_ts_only: u32 = 8002;
+    /// TS1286 -- "ECMAScript imports and exports cannot be written in a
+    /// CommonJS file under 'verbatimModuleSyntax'." Emitted for ESM
+    /// import/export syntax in a .cts/.cjs file when verbatimModuleSyntax
+    /// is enabled.
+    pub const esm_in_commonjs_verbatim: u32 = 1286;
+    /// TS1293 -- "ECMAScript module syntax is not allowed in a CommonJS
+    /// module when 'module' is set to 'preserve'." Emitted for ESM
+    /// import/export syntax in an unambiguously-CommonJS file (.cts/.cjs)
+    /// under module: preserve.
+    pub const esm_in_commonjs_preserve: u32 = 1293;
     pub const ts_only_decl_in_js: u32 = 8006;
     /// TS8009 — "The '?' modifier can only be used in TypeScript
     /// files." Emitted when a parameter is declared with a `?`
@@ -2081,6 +2094,7 @@ pub const Checker = struct {
                 // "m"`) have no inner decl and are handled later by
                 // cross-file resolution.
                 const ex = hir_mod.exportOf(self.hir, node);
+                try self.checkEsmExportDefaultInCommonJs(node, ex);
                 if (self.string_interner.get(ex.module).len != 0 and self.nodeSourceContainsImportAttributes(node)) {
                     try self.report(node, TsCodes.type_not_assignable, "Import attributes are not valid on this export declaration.");
                 }
@@ -10455,6 +10469,28 @@ pub const Checker = struct {
         return promise_t;
     }
 
+    /// True when `obj` is an identifier bound by an `import x = require(...)`
+    /// declaration in the same virtual section. Used to scope the
+    /// signature-receiver TS2339 to import-equals bindings (whose target
+    /// module value has a fixed shape), leaving expando functions alone.
+    fn memberAccessReceiverIsRequireAssignmentBinding(self: *Checker, obj: NodeId) bool {
+        if (self.hir.kindOf(obj) != .identifier) return false;
+        const name = hir_mod.identifierOf(self.hir, obj).name;
+        const root = self.rootBlockFor(obj);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const has_sections = self.sourceHasVirtualFilenameSections();
+        const obj_section = if (has_sections) self.virtualSectionStartForNode(obj) else 0;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.kindOf(stmt) != .import_decl) continue;
+            if (has_sections and self.virtualSectionStartForNode(stmt) != obj_section) continue;
+            if (!self.importDeclIsRequireAssignment(stmt)) continue;
+            const imp = hir_mod.importOf(self.hir, stmt);
+            if (imp.default_binding == hir_mod.none_node_id or self.hir.kindOf(imp.default_binding) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, imp.default_binding).name == name) return true;
+        }
+        return false;
+    }
+
     fn moduleNamespaceTypeForImportBinding(self: *Checker, decl: NodeId) CheckError!?TypeId {
         if (self.hir.kindOf(decl) != .identifier) return null;
         const parent = self.hir.parentOf(decl);
@@ -10463,6 +10499,15 @@ pub const Checker = struct {
         const spec = self.string_interner.get(imp.module);
         if (imp.namespace_binding != decl and
             !(imp.default_binding == decl and std.mem.startsWith(u8, spec, ".") and self.importDeclIsRequireAssignment(parent))) return null;
+        // For `import x = require("./m")` where `./m` uses `export =`,
+        // type `x` as the export-assignment target (the expression value
+        // such as `() => void`, else the named decl's static type) rather
+        // than the synthesized module namespace. Mirrors tsc's typing of
+        // `d2.default()` / `d2()` in `modulePreserve4`.
+        if (self.importDeclIsRequireAssignment(parent)) {
+            if (try self.virtualExportAssignmentExpressionType(parent, imp.module)) |expr_t| return expr_t;
+            if (try self.virtualExportAssignmentTargetStaticType(parent, imp.module)) |static_t| return static_t;
+        }
         return try self.moduleNamespaceTypeForSpecifier(imp.module, parent);
     }
 
@@ -10482,11 +10527,44 @@ pub const Checker = struct {
             const id = hir_mod.identifierOf(self.hir, binding);
             if (id.name != name) continue;
             if (self.importDeclIsRequireAssignment(stmt)) {
+                if (try self.virtualExportAssignmentExpressionType(stmt, imp.module)) |expr_t| return expr_t;
                 if (try self.virtualExportAssignmentTargetStaticType(stmt, imp.module)) |static_t| return static_t;
             }
             return try self.moduleNamespaceTypeForSpecifier(imp.module, stmt);
         }
         return null;
+    }
+
+    /// For a top-level CommonJS `exports.X = value` or
+    /// `module.exports.X = value` assignment, return the synthesized
+    /// namespace member `X` typed as the assigned value's type. Returns
+    /// null for any other assignment. Mirrors tsc's CommonJS module-shape
+    /// inference (`modulePreserve4`'s `/g.js`).
+    fn commonJsExportsAssignmentMember(self: *Checker, node: NodeId) CheckError!?types.ObjectMember {
+        const asg = hir_mod.assignmentOf(self.hir, node);
+        if (asg.op != null) return null;
+        if (self.hir.kindOf(asg.target) != .member_access) return null;
+        const m = hir_mod.memberOf(self.hir, asg.target);
+        // The accessed object must be `exports` or `module.exports`.
+        const obj_ok = switch (self.hir.kindOf(m.object)) {
+            .identifier => std.mem.eql(u8, self.string_interner.get(hir_mod.identifierOf(self.hir, m.object).name), "exports"),
+            .member_access => blk: {
+                const inner = hir_mod.memberOf(self.hir, m.object);
+                if (!std.mem.eql(u8, self.string_interner.get(inner.name), "exports")) break :blk false;
+                break :blk self.hir.kindOf(inner.object) == .identifier and
+                    std.mem.eql(u8, self.string_interner.get(hir_mod.identifierOf(self.hir, inner.object).name), "module");
+            },
+            else => false,
+        };
+        if (!obj_ok) return null;
+        const value_t = try self.checkExpression(asg.value);
+        return types.ObjectMember{
+            .name = m.name,
+            .type = if (value_t != types.Primitive.none) value_t else types.Primitive.any,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = false,
+        };
     }
 
     fn moduleNamespaceTypeForSpecifier(self: *Checker, specifier: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
@@ -10502,6 +10580,17 @@ pub const Checker = struct {
         for (hir_mod.blockStmts(self.hir, root)) |raw| {
             if (!self.virtualSectionMatchesResolvedModule(raw, resolved, spec)) continue;
             found_module = true;
+            // CommonJS `exports.X = value` / `module.exports.X = value`
+            // contributes member `X` to the module's namespace shape.
+            // tsc surfaces these as named members so a default import or
+            // `import x = require(...)` binding can access `x.X`. Mirrors
+            // `modulePreserve4`'s `/g.js` (`exports.default = 0`).
+            if (self.hir.kindOf(raw) == .assignment) {
+                if (try self.commonJsExportsAssignmentMember(raw)) |member| {
+                    try members.append(self.gpa, member);
+                }
+                continue;
+            }
             if (self.hir.kindOf(raw) != .export_decl) continue;
             const ex = hir_mod.exportOf(self.hir, raw);
             if (ex.is_default) {
@@ -21373,6 +21462,74 @@ pub const Checker = struct {
         };
     }
 
+    /// True when the virtual section that owns `node` is an
+    /// unambiguously-CommonJS file by extension (`.cjs`/`.cts`). Under
+    /// `module: preserve` these files emit CommonJS output regardless of
+    /// the syntax they contain, so ESM import/export syntax in them is a
+    /// diagnostic (TS1293, or TS1286 under `verbatimModuleSyntax`).
+    fn sectionFileIsCommonJsFormat(self: *Checker, node: NodeId) bool {
+        const filename = self.virtualSectionFilenameForNode(node) orelse self.importer_path;
+        return std.mem.endsWith(u8, filename, ".cjs") or std.mem.endsWith(u8, filename, ".cts");
+    }
+
+    /// TS1293/TS1286 — ESM `import` syntax (default, namespace, or named
+    /// bindings) inside a CommonJS-format file. `import x = require(...)`
+    /// is exempt (it is CommonJS-compatible and handled separately as
+    /// TS1202/TS8002). tsc anchors the diagnostic on the import binding:
+    /// the default/namespace binding identifier, or the first named
+    /// import specifier. Under `verbatimModuleSyntax` the message is
+    /// TS1286; under `module: preserve` (non-JS file) it is TS1293; in a
+    /// JavaScript (`.cjs`) file only TS1293 applies (the verbatim form is
+    /// JS-file-gated out by tsc). Mirrors `modulePreserve4`.
+    fn checkEsmSyntaxInCommonJsImport(self: *Checker, node: NodeId, imp: hir_mod.ImportPayload) CheckError!void {
+        if (imp.is_type_only) return;
+        // `import x = require(...)` / `import x = ns.member` are not ESM
+        // syntax — skip them.
+        if (self.importDeclIsRequireAssignment(node) or imp.import_equals != hir_mod.none_node_id) return;
+        if (!self.sectionFileIsCommonJsFormat(node)) return;
+
+        const is_verbatim = self.sourceDirectiveValueMentions("verbatimModuleSyntax", "true");
+        const is_preserve = self.sourceDirectiveValueMentions("module", "preserve");
+        const is_js = self.virtualSectionIsJsLike(node);
+        // Verbatim form is suppressed in JS files by tsc; preserve form
+        // requires `module: preserve`.
+        const want_verbatim = is_verbatim and !is_js;
+        if (!want_verbatim and !is_preserve) return;
+
+        // Anchor: default binding, else namespace binding, else first
+        // named import specifier.
+        var anchor: NodeId = hir_mod.none_node_id;
+        if (imp.default_binding != hir_mod.none_node_id) {
+            anchor = imp.default_binding;
+        } else if (imp.namespace_binding != hir_mod.none_node_id) {
+            anchor = imp.namespace_binding;
+        } else {
+            const named = hir_mod.importNamed(self.hir, node);
+            if (named.len > 0) anchor = named[0];
+        }
+        if (anchor == hir_mod.none_node_id) return;
+
+        if (want_verbatim) {
+            try self.report(anchor, TsCodes.esm_in_commonjs_verbatim, "ECMAScript imports and exports cannot be written in a CommonJS file under 'verbatimModuleSyntax'.");
+        } else {
+            try self.report(anchor, TsCodes.esm_in_commonjs_preserve, "ECMAScript module syntax is not allowed in a CommonJS module when 'module' is set to 'preserve'.");
+        }
+    }
+
+    /// TS1286 — `export default <expr>` inside a CommonJS-format file
+    /// (`.cts`/`.cjs`) under `verbatimModuleSyntax`. tsc anchors the
+    /// diagnostic on the whole `export default …` statement. `export =`
+    /// is a separate (CommonJS-compatible) form and is exempt. Mirrors
+    /// `modulePreserve4`'s `f.cts`.
+    fn checkEsmExportDefaultInCommonJs(self: *Checker, node: NodeId, ex: hir_mod.ExportPayload) CheckError!void {
+        if (!ex.is_default) return;
+        if (!self.sectionFileIsCommonJsFormat(node)) return;
+        // The verbatim message is gated to non-JS files by tsc.
+        if (self.virtualSectionIsJsLike(node)) return;
+        if (!self.sourceDirectiveValueMentions("verbatimModuleSyntax", "true")) return;
+        try self.report(node, TsCodes.esm_in_commonjs_verbatim, "ECMAScript imports and exports cannot be written in a CommonJS file under 'verbatimModuleSyntax'.");
+    }
+
     /// Per-statement check for `import … from "spec"`. The binder
     /// already declared the local bindings; this pass enforces the
     /// `resolveJsonModule` rule: when the option is OFF, an import
@@ -21387,6 +21544,7 @@ pub const Checker = struct {
             return;
         }
         try self.checkTypeOnlyImportInJs(node, imp);
+        try self.checkEsmSyntaxInCommonJsImport(node, imp);
         // TS1202 fires for any ECMAScript-module `// @module` target —
         // not just `esnext`. Upstream tsc treats `es2015`, `es2020`,
         // `es2022`, `es6`, and the `preserve` mode the same way: the
@@ -21397,10 +21555,16 @@ pub const Checker = struct {
             self.sourceDirectiveValueMentions("module", "es2015") or
             self.sourceDirectiveValueMentions("module", "es2020") or
             self.sourceDirectiveValueMentions("module", "es2022") or
-            self.sourceDirectiveValueMentions("module", "es6") or
-            self.sourceDirectiveValueMentions("module", "preserve");
+            self.sourceDirectiveValueMentions("module", "es6");
         if (self.importDeclIsRequireAssignment(node) and module_is_esm and !imp.is_type_only) {
             try self.report(node, TsCodes.import_assignment_es_module, "Import assignment cannot be used when targeting ECMAScript modules. Consider using 'import * as ns from \"mod\"', 'import {a} from \"mod\"', 'import d from \"mod\"', or another module format instead.");
+        }
+        // TS8002: import-equals in a JavaScript file (here a .cjs section
+        // under module: preserve) is reported as "'import ... =' can only
+        // be used in TypeScript files." tsc anchors this on the whole
+        // import-assignment statement.
+        if (self.importDeclIsRequireAssignment(node) and self.virtualSectionIsJsLike(node) and !imp.is_type_only) {
+            try self.report(node, TsCodes.import_equals_ts_only, "'import ... =' can only be used in TypeScript files.");
         }
         if (self.importDeclIsRequireAssignment(node) and self.sourceDirectiveValueMentions("rewriteRelativeImportExtensions", "true") and
             std.mem.startsWith(u8, spec, ".") and try self.virtualRelativeImportResolvesToIndexUnderExtensionPath(node, spec))
@@ -21433,6 +21597,7 @@ pub const Checker = struct {
         }
         if (std.mem.startsWith(u8, spec, ".")) {
             try self.checkNamedImportSpecifiers(node, imp, spec);
+            try self.checkEsmDefaultImportHasDefaultExport(node, imp, spec);
             if (try self.checkNodeEsmRelativeImportExtensionDiagnostic(node, spec)) return;
             if (!imp.is_type_only and self.sourceHasVirtualFilenameSections() and isDeclarationFileSpecifier(spec)) {
                 try self.reportVirtualCannotFindRelativeModule(node, spec);
@@ -21685,7 +21850,11 @@ pub const Checker = struct {
     }
 
     fn virtualRelativeImportIsProjectJsSource(self: *Checker, node: NodeId, spec: []const u8) bool {
-        if (!self.sourceHasAllowJsDirective() or !self.sourceHasVirtualFilenameSections()) return false;
+        // @checkJs: true implies @allowJs: true in tsc, so a sibling
+        // .js/.cjs module is a first-class project source under either
+        // directive and must NOT surface TS7016. Mirrors modulePreserve4
+        // (@checkJs: true, importing ./a and ./g).
+        if ((!self.sourceHasAllowJsDirective() and !self.sourceHasCheckJsDirective()) or !self.sourceHasVirtualFilenameSections()) return false;
         const resolved = self.resolveVirtualRelativePath(self.virtualSectionFilenameForNode(node) orelse return false, spec) catch return false;
         defer self.gpa.free(resolved);
         const exts = [_][]const u8{ ".js", ".jsx", ".mjs", ".cjs" };
@@ -23155,6 +23324,78 @@ pub const Checker = struct {
         return null;
     }
 
+    /// TS1192 — `import x from "./m"` where `./m` is an ESM-format module
+    /// (`.mts`/`.mjs` by extension) that has no `export default`. tsc
+    /// anchors the diagnostic on the default-import binding and renders
+    /// the module name as the resolved path with its extension stripped
+    /// (e.g. `Module '"/e"' has no default export.`). CommonJS/preserve
+    /// modules synthesise a default from their `export =`/module value
+    /// and are therefore exempt. Mirrors `modulePreserve4`'s `./e.mjs`.
+    fn checkEsmDefaultImportHasDefaultExport(self: *Checker, node: NodeId, imp: hir_mod.ImportPayload, spec: []const u8) CheckError!void {
+        if (imp.is_type_only) return;
+        if (imp.default_binding == hir_mod.none_node_id) return;
+        if (self.importDeclIsRequireAssignment(node)) return;
+        if (!self.sourceHasVirtualFilenameSections()) return;
+        // A CommonJS-format importing file (`.cjs`/`.cts`) synthesises a
+        // default via CommonJS interop, so the missing-default diagnostic
+        // does not apply there (it already reports TS1293/TS8002 for the
+        // ESM syntax). Mirrors `modulePreserve4`'s `main3.cjs`.
+        if (self.sectionFileIsCommonJsFormat(node)) return;
+        const from = self.virtualSectionFilenameForNode(node) orelse return;
+        // tsc resolves a `.mjs`/`.cjs`/`.js` import specifier to its TS
+        // source counterpart (`.mts`/`.cts`/`.ts`). Strip the output
+        // extension so the resolved base (e.g. `/e`) matches the source
+        // section (`/e.mts`) through `virtualSectionMatchesResolvedModule`.
+        var match_spec = spec;
+        inline for (.{ ".mjs", ".cjs", ".jsx", ".js" }) |ext| {
+            if (std.mem.endsWith(u8, match_spec, ext)) {
+                match_spec = match_spec[0 .. match_spec.len - ext.len];
+                break;
+            }
+        }
+        const resolved = try self.resolveVirtualRelativePath(from, match_spec);
+        defer self.gpa.free(resolved);
+        const root = self.rootBlockFor(node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
+
+        var found_module = false;
+        var target_is_esm = false;
+        var has_default = false;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            if (!self.virtualSectionMatchesResolvedModule(raw, resolved, match_spec)) continue;
+            found_module = true;
+            const target_file = self.virtualSectionFilenameForNode(raw) orelse continue;
+            // Only ESM-format modules surface TS1192 for a missing
+            // default. Under `module: preserve` only `.mts`/`.mjs` files
+            // are unambiguously ESM.
+            if (std.mem.endsWith(u8, target_file, ".mts") or std.mem.endsWith(u8, target_file, ".mjs")) target_is_esm = true;
+            if (self.hir.kindOf(raw) != .export_decl) continue;
+            const ex = hir_mod.exportOf(self.hir, raw);
+            if (ex.is_default) has_default = true;
+        }
+        if (!found_module or !target_is_esm or has_default) return;
+
+        // Render the module name as the resolved path (extension
+        // stripped) with a leading slash, matching tsc (`"/e"`).
+        var base = virtualPathTrimPrefix(resolved);
+        inline for (.{ ".mts", ".mjs", ".cts", ".cjs", ".tsx", ".ts", ".jsx", ".js" }) |ext| {
+            if (std.mem.endsWith(u8, base, ext)) {
+                base = base[0 .. base.len - ext.len];
+                break;
+            }
+        }
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Module '\"/{s}\"' has no default export.",
+            .{base},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = imp.default_binding,
+            .code = TsCodes.no_default_export,
+            .message = msg,
+        });
+    }
+
     fn virtualRelativeModuleHasNamedExport(self: *Checker, node: NodeId, spec: []const u8, name: hir_mod.StringId) CheckError!bool {
         const from = self.virtualSectionFilenameForNode(node) orelse return true;
         const resolved = try self.resolveVirtualRelativePath(from, spec);
@@ -23363,6 +23604,64 @@ pub const Checker = struct {
         if (self.class_instance_types.get(target_name)) |t| return t;
         const t = self.hir.typeOf(target);
         return if (t != types.Primitive.none) t else types.Primitive.any;
+    }
+
+    /// True when `node` is the raw `export = <value>` form, detected from
+    /// the statement's leading source tokens (`export` then a single `=`
+    /// that is not `==`/`=>`). This catches `export = function(){}` /
+    /// `export = class {}` whose value the parser records as an anonymous
+    /// declaration node, which `isExportAssignmentDecl` deliberately
+    /// excludes.
+    fn exportDeclIsExportEquals(self: *Checker, node: NodeId) bool {
+        if (self.hir.kindOf(node) != .export_decl) return false;
+        const ex = hir_mod.exportOf(self.hir, node);
+        if (ex.is_default or ex.is_type_only or ex.is_namespace or ex.named_len != 0) return false;
+        if (ex.decl == hir_mod.none_node_id) return false;
+        if (self.string_interner.get(ex.module).len != 0) return false;
+        const src = self.source orelse return false;
+        const sp = self.hir.spanOf(node);
+        if (sp.start >= sp.end or sp.end > src.len) return false;
+        const text = src[sp.start..sp.end];
+        const kw = std.mem.indexOf(u8, text, "export") orelse return false;
+        var i: usize = kw + "export".len;
+        // Skip whitespace after `export`.
+        while (i < text.len and (text[i] == ' ' or text[i] == '\t' or text[i] == '\r' or text[i] == '\n')) i += 1;
+        if (i >= text.len or text[i] != '=') return false;
+        // Reject `==` and `=>` (neither is the export-assignment token).
+        if (i + 1 < text.len and (text[i + 1] == '=' or text[i + 1] == '>')) return false;
+        return true;
+    }
+
+    /// Type of the expression in an `export = <expr>` statement in the
+    /// module `specifier` resolves to, when that expression is a direct
+    /// value (function/object/array/literal) rather than a reference to
+    /// a separately-named declaration. Returns null for the
+    /// `export = SomeName` form (handled by the named-decl static-type
+    /// path) and for modules that don't use `export =`. Mirrors tsc's
+    /// `import x = require("./d")` typing for `export = function(){}`.
+    fn virtualExportAssignmentExpressionType(self: *Checker, anchor: NodeId, specifier: hir_mod.StringId) CheckError!?TypeId {
+        const spec = self.string_interner.get(specifier);
+        const resolved = (try self.resolveVirtualModuleSpecifierPath(anchor, spec)) orelse return null;
+        defer self.gpa.free(resolved);
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (!self.virtualSectionMatchesResolvedModule(stmt, resolved, spec)) continue;
+            if (self.hir.kindOf(stmt) != .export_decl) continue;
+            // Recognise the raw `export = <value>` form. The parser may
+            // store the assigned value as an anonymous `fn_decl`/`class_decl`
+            // (e.g. `export = function(){}`) which `isExportAssignmentDecl`
+            // rejects, so detect the form from source instead.
+            if (!self.exportDeclIsExportEquals(stmt)) continue;
+            const ex = hir_mod.exportOf(self.hir, stmt);
+            if (ex.decl == hir_mod.none_node_id) continue;
+            // `export = SomeName` (identifier) re-exports a named decl —
+            // defer to the named-decl static-type path so class/namespace
+            // static shapes are honoured.
+            if (self.hir.kindOf(ex.decl) == .identifier) return null;
+            return try self.checkExpression(ex.decl);
+        }
+        return null;
     }
 
     fn virtualExportAssignmentTargetStaticType(self: *Checker, anchor: NodeId, specifier: hir_mod.StringId) CheckError!?TypeId {
@@ -33033,6 +33332,10 @@ pub const Checker = struct {
         if (!self.virtualSectionIsJsLike(node)) return false;
         const filename = self.virtualSectionFilenameForNode(node) orelse self.importer_path;
         if (self.pathIsAlwaysEsmJsLike(filename)) return false;
+        // A .cjs section is always CommonJS by extension -- keep the
+        // implicit require/module globals even when it (erroneously)
+        // carries top-level ESM syntax. Mirrors modulePreserve4 main3.cjs.
+        if (std.mem.endsWith(u8, filename, ".cjs")) return true;
         return !self.jsLikeSectionIsExternalModule(node);
     }
 
@@ -37034,6 +37337,21 @@ pub const Checker = struct {
                     }
                     const import_t = if (args.len > 0 and self.hir.kindOf(args[0]) == .literal_string) blk_import: {
                         const lit = hir_mod.literalStringOf(self.hir, args[0]);
+                        // A dynamic `import("./m")` of a CommonJS-style
+                        // `export = <value>` module yields the ESM-interop
+                        // namespace `{ default: <value> }` (esModuleInterop).
+                        // Mirrors `modulePreserve4`'s `await import("./d")`.
+                        if (try self.virtualExportAssignmentExpressionType(node, lit.value)) |ee_t| {
+                            const default_name = self.string_interner.intern("default") catch return error.OutOfMemory;
+                            const members = [_]types.ObjectMember{.{
+                                .name = default_name,
+                                .type = ee_t,
+                                .is_optional = false,
+                                .is_readonly = true,
+                                .is_method = false,
+                            }};
+                            break :blk_import self.interner.internObjectType(&members) catch return error.OutOfMemory;
+                        }
                         break :blk_import (try self.moduleNamespaceTypeForSpecifier(lit.value, node)) orelse types.Primitive.any;
                     } else types.Primitive.any;
                     break :blk try self.buildStructuralPromise(import_t);
@@ -37694,6 +38012,19 @@ pub const Checker = struct {
                     // a `void` receiver is a TS2339 (`Property X does
                     // not exist on type 'void'`). Mirrors upstream
                     // tsc, which prints the receiver type literally.
+                    try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
+                } else if (self.interner.pool.flagsOf(access_obj_t).is_signature and
+                    self.memberAccessReceiverIsRequireAssignmentBinding(m.object))
+                {
+                    // A function-typed `import x = require("./m")` binding
+                    // (where `./m` is `export = function(){}`) exposes only
+                    // `Function.prototype` members, already resolved above.
+                    // Any other property is a TS2339 against the signature
+                    // type (`Property 'default' does not exist on type
+                    // '() => void'`). Gated to require-assignment receivers
+                    // so expando-function member access (`foo.x` after
+                    // `foo.x = 1`) is left untouched. Mirrors
+                    // `modulePreserve4`'s `d2.default()`.
                     try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
                 }
                 break :blk types.Primitive.any;
