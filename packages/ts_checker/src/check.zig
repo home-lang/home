@@ -5717,7 +5717,25 @@ pub const Checker = struct {
         if (!f.flags.is_method and !f.flags.is_constructor and f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
             const fn_id = hir_mod.identifierOf(self.hir, f.name);
             const fn_t = self.hir.typeOf(node);
-            if (fn_t != types.Primitive.none and !self.type_names.contains(fn_id.name)) {
+            // tsc lexical scoping: a parameter binding lives in an inner
+            // scope than the function's own name. When a parameter shadows
+            // the function name (e.g. `function f(f: (x) => U)`), references
+            // to that name inside the body must resolve to the PARAMETER,
+            // not the enclosing function. Since the self-name is recorded
+            // into the same narrow scope and `lookupNarrow` short-circuits
+            // identifier resolution before the lexical parameter walk, skip
+            // the self-name binding entirely when a parameter shadows it.
+            var shadowed_by_param = false;
+            for (hir_mod.fnParams(self.hir, node)) |p| {
+                if (self.hir.kindOf(p) != .parameter) continue;
+                const pp = hir_mod.parameterOf(self.hir, p);
+                if (pp.name == hir_mod.none_node_id or self.hir.kindOf(pp.name) != .identifier) continue;
+                if (hir_mod.identifierOf(self.hir, pp.name).name == fn_id.name) {
+                    shadowed_by_param = true;
+                    break;
+                }
+            }
+            if (!shadowed_by_param and fn_t != types.Primitive.none and !self.type_names.contains(fn_id.name)) {
                 try self.recordNarrow(fn_id.name, fn_t);
             }
         }
@@ -50831,17 +50849,46 @@ pub const Checker = struct {
             return;
         }
         if (p_flags.is_type_parameter) {
-            if (!subs.contains(param_t)) {
-                const tp = pool.type_parameter_payloads.items[p_payload];
-                var inferred = if (tp.is_const) arg_t else self.widenForInference(arg_t);
-                inferred = self.substituteType(inferred, subs) catch inferred;
-                if (self.scalarTypeParameterConstraint(param_t)) |raw_constraint_t| {
-                    const constraint_t = self.substituteType(raw_constraint_t, subs) catch raw_constraint_t;
-                    const candidate_t = if (tp.is_const) inferred else arg_t;
-                    if (!(self.engine.isAssignableTo(candidate_t, constraint_t) catch false)) return;
-                }
-                try subs.put(self.gpa, param_t, inferred);
+            const tp = pool.type_parameter_payloads.items[p_payload];
+            var inferred = if (tp.is_const) arg_t else self.widenForInference(arg_t);
+            inferred = self.substituteType(inferred, subs) catch inferred;
+            if (self.scalarTypeParameterConstraint(param_t)) |raw_constraint_t| {
+                const constraint_t = self.substituteType(raw_constraint_t, subs) catch raw_constraint_t;
+                const candidate_t = if (tp.is_const) inferred else arg_t;
+                if (!(self.engine.isAssignableTo(candidate_t, constraint_t) catch false)) return;
             }
+            if (subs.get(param_t)) |existing| {
+                // Multiple inference candidates for the same type
+                // parameter. tsc collects all candidates and picks the
+                // best common supertype rather than first-wins, so a
+                // later argument that is a supertype of the first widens
+                // the binding. This makes `f(b, …, a)` (b: B, a: A, with
+                // B extends A) infer `T = A` instead of `T = B`.
+                if (existing == inferred) return;
+                // Array/tuple candidates are excluded from the supertype
+                // merge: their inference is driven by dedicated paths
+                // (e.g. `inferRestTupleFromSignatureParams` for variadic
+                // `(...args: T) => R`), where a tuple binding must not be
+                // clobbered by a structurally-wider array candidate from a
+                // sibling argument. Keep first-wins for those.
+                const existing_is_arraylike = existing < pool.typeCount() and
+                    (pool.flagsOf(existing).is_tuple or self.interner.objectNumberIndex(existing) != types.Primitive.none);
+                const inferred_is_arraylike = inferred < pool.typeCount() and
+                    (pool.flagsOf(inferred).is_tuple or self.interner.objectNumberIndex(inferred) != types.Primitive.none);
+                if (existing_is_arraylike or inferred_is_arraylike) return;
+                // Only upgrade to a *strict* proper supertype: the
+                // existing candidate is assignable to the new one but not
+                // vice-versa. Mutually-assignable (equivalent) candidates
+                // keep the existing binding to stay conservative on this
+                // hot path.
+                if ((self.engine.isAssignableTo(existing, inferred) catch false) and
+                    !(self.engine.isAssignableTo(inferred, existing) catch false))
+                {
+                    try subs.put(self.gpa, param_t, inferred);
+                }
+                return;
+            }
+            try subs.put(self.gpa, param_t, inferred);
             return;
         }
         const a_flags = pool.flagsOf(arg_t);
