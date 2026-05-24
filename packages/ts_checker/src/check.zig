@@ -61178,6 +61178,40 @@ test "checker: named export alias checks source local name" {
     }
 }
 
+test "checker: re-exporting a cross-file global declaration emits TS2661" {
+    // `I1` is a global ambient declaration in a sibling script file; the
+    // module file `file2.ts` may not re-export it by name.
+    const b = try newBoundSetup(
+        \\// @filename: file1.d.ts
+        \\declare interface I1 { x: number }
+        \\// @filename: file2.ts
+        \\export { I1, I1 as II1 };
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var count: usize = 0;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.export_non_local_declaration and
+            std.mem.indexOf(u8, d.message, "'I1'") != null) count += 1;
+    }
+    try T.expect(count >= 2);
+}
+
+test "checker: re-exporting a same-file local declaration does not emit TS2661" {
+    // Guards against over-tightening: a declaration in the SAME virtual
+    // section is local and may be re-exported.
+    const b = try newBoundSetup(
+        \\// @filename: file2.ts
+        \\interface Local { x: number }
+        \\export { Local };
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.export_non_local_declaration);
+    }
+}
+
 test "checker: Math.PI does not emit TS2304" {
     const b = try newBoundSetup("Math.PI;");
     defer destroyBoundSetup(b);
@@ -67637,6 +67671,151 @@ test "checker: noUnusedParameters honors leading-underscore convention" {
     s.checker.setStrictFlags(.{ .no_unused_parameters = true });
     try s.checker.checkSourceFile(s.root);
     try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: noUnusedParameters emits TS6133 for unused function type parameter" {
+    const s = try newSetup("function f<X, Y, Z>(a: X, b: Y): void { a; b; }");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_unused_parameters = true });
+    try s.checker.checkSourceFile(s.root);
+    var has_z = false;
+    var only_z = true;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.declared_but_not_read) continue;
+        const msg = d.message;
+        if (std.mem.indexOf(u8, msg, "'Z'") != null) has_z = true;
+        // X/Y are referenced via the parameter annotations; a/b via the body.
+        if (std.mem.indexOf(u8, msg, "'X'") != null) only_z = false;
+        if (std.mem.indexOf(u8, msg, "'Y'") != null) only_z = false;
+        if (std.mem.indexOf(u8, msg, "'a'") != null) only_z = false;
+        if (std.mem.indexOf(u8, msg, "'b'") != null) only_z = false;
+    }
+    try T.expect(has_z);
+    try T.expect(only_z);
+}
+
+test "checker: noUnusedParameters emits TS6133 for unused method type parameter" {
+    const s = try newSetup("class A { f1<X, Y, Z>(a: X, b: Y): void { a; b; } }");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_unused_parameters = true });
+    try s.checker.checkSourceFile(s.root);
+    var has_z = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.declared_but_not_read and
+            std.mem.indexOf(u8, d.message, "'Z'") != null) has_z = true;
+    }
+    try T.expect(has_z);
+}
+
+test "checker: unused type parameters that are all unused emit single TS6205" {
+    const s = try newSetup("function f<X, Y>(): void { }");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_unused_parameters = true });
+    try s.checker.checkSourceFile(s.root);
+    var count_6205: usize = 0;
+    var count_6133: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.all_type_parameters_unused) {
+            count_6205 += 1;
+            try T.expect(std.mem.indexOf(u8, d.message, "All type parameters are unused.") != null);
+        }
+        if (d.code == TsCodes.declared_but_not_read) count_6133 += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count_6205);
+    // The all-unused path replaces the per-parameter reports.
+    try T.expectEqual(@as(usize, 0), count_6133);
+}
+
+test "checker: used type parameter is not reported unused" {
+    const s = try newSetup("function f<T>(x: T): T { return x; }");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_unused_parameters = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.declared_but_not_read);
+        try T.expect(d.code != TsCodes.all_type_parameters_unused);
+    }
+}
+
+test "checker: leading-underscore type parameter is exempt from unused report" {
+    const s = try newSetup("function f<X, _Y>(a: X): void { a; }");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_unused_parameters = true });
+    try s.checker.checkSourceFile(s.root);
+    // X is used, _Y is underscore-exempt -> no unused diagnostics at all.
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.declared_but_not_read);
+        try T.expect(d.code != TsCodes.all_type_parameters_unused);
+    }
+}
+
+test "checker: unused type parameters not reported when flag is off" {
+    const s = try newSetup("function f<X, Y>(): void { }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.declared_but_not_read);
+        try T.expect(d.code != TsCodes.all_type_parameters_unused);
+    }
+}
+
+test "checker: calling a never-rest function reports TS2345" {
+    const s = try newSetup(
+        \\declare let foo: (...args: never) => void;
+        \\foo();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch and
+            std.mem.indexOf(u8, d.message, "is not assignable to parameter of type 'never'") != null)
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
+}
+
+test "checker: calling a normal array-rest function with zero args is fine" {
+    const s = try newSetup(
+        \\declare let bar: (...args: number[]) => void;
+        \\bar();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: parameter shadows enclosing function name in call resolution" {
+    // The inner `g(x)` must resolve to the PARAMETER `g` (arity 1), not
+    // the enclosing function `g<T, U>` (arity 3) — so no TS2554.
+    const s = try newSetup("function g<T, U>(y: T, g: (x: T) => U, x: T): [T, U] { return [y, g(x)]; }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.expected_n_arguments);
+    }
+}
+
+test "checker: type parameter fixed to common supertype across arguments" {
+    // `T` is inferred from `b: B` and `a: A` (B extends A) -> common
+    // supertype A, so the third argument `a: A` is assignable -> no TS2345.
+    const s = try newSetup(
+        \\function f<T, U>(y: T, cb: (x: T) => U, x: T): [T, U] { return [y, cb(x)]; }
+        \\interface A { a: A; }
+        \\interface B extends A { b: number; }
+        \\declare var a: A;
+        \\declare var b: B;
+        \\var d = f(b, x => x.a, a);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
 }
 
 test "checker: noUnusedParameters skips when flag is off" {
