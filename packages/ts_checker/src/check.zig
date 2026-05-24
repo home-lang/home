@@ -4750,10 +4750,20 @@ pub const Checker = struct {
                 continue;
             }
             const local_name = spec.imported;
-            const has_type = module.root.types.get(local_name) != null or module.root.namespaces.get(local_name) != null;
-            const has_value = module.root.values.get(local_name) != null or module.root.namespaces.get(local_name) != null;
-            const has_hoisted_var = !spec.is_type_only and self.rootHasVarDeclarationNamed(node, local_name);
-            const is_local = if (spec.is_type_only) has_type else (has_value or has_type or has_hoisted_var);
+            // In multi-file fixtures `module.root` merges every
+            // `@filename:` section's symbols, so an ambient declaration
+            // from a sibling global script file would falsely satisfy the
+            // locality check. Scope the scan to the export's own section,
+            // mirroring tsc's "declaration is not in a global source
+            // file" rule (`checkExportSpecifier`).
+            const is_local = if (self.sourceHasVirtualFilenameSections())
+                self.exportNameHasSectionLocalBinding(node, local_name, spec.is_type_only)
+            else blk: {
+                const has_type = module.root.types.get(local_name) != null or module.root.namespaces.get(local_name) != null;
+                const has_value = module.root.values.get(local_name) != null or module.root.namespaces.get(local_name) != null;
+                const has_hoisted_var = !spec.is_type_only and self.rootHasVarDeclarationNamed(node, local_name);
+                break :blk if (spec.is_type_only) has_type else (has_value or has_type or has_hoisted_var);
+            };
             if (!is_local) {
                 const name = self.string_interner.get(local_name);
                 const msg = try std.fmt.allocPrint(
@@ -4824,6 +4834,83 @@ pub const Checker = struct {
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
         for (hir_mod.blockStmts(self.hir, root)) |stmt| {
             if (self.bodyHasVarDeclarationNamed(stmt, name)) return true;
+        }
+        return false;
+    }
+
+    /// True when `name` has a top-level declaration or import binding in
+    /// the SAME virtual `@filename:` section as `export_node`.
+    ///
+    /// Multi-file conformance fixtures are compiled through a single
+    /// concatenated source, so `module.root` merges the symbol tables of
+    /// every `@filename:` section. A global ambient declaration in a
+    /// sibling script file (e.g. `declare interface I1` in `file1.d.ts`)
+    /// therefore leaks into the merged scope and would wrongly satisfy
+    /// the locality check for `export { I1 }` in a different module file.
+    ///
+    /// tsc's rule (`checkExportSpecifier`, checker.go): a bare
+    /// `export { name }` is legal only when the resolved symbol's first
+    /// declaration container is NOT a global source file. Mirror that by
+    /// scoping the locality scan to the export's own section — a name is
+    /// "local" only if it is declared or imported within that section.
+    fn exportNameHasSectionLocalBinding(self: *Checker, export_node: NodeId, name: hir_mod.StringId, type_only: bool) bool {
+        const root = self.rootBlockFor(export_node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const section = self.virtualSectionStartForNode(export_node);
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.virtualSectionStartForNode(stmt) != section) continue;
+            if (self.statementBindsNameLocally(stmt, name, type_only)) return true;
+        }
+        return false;
+    }
+
+    /// True when a single top-level statement introduces a binding for
+    /// `name` (a declaration or an import). `type_only` exports only
+    /// accept type-space declarations/imports.
+    fn statementBindsNameLocally(self: *Checker, stmt: NodeId, name: hir_mod.StringId, type_only: bool) bool {
+        const decl = self.unwrapExportDecl(stmt);
+        switch (self.hir.kindOf(decl)) {
+            .interface_decl, .type_alias_decl => {
+                if (self.declarationName(decl)) |n| if (n == name) return true;
+            },
+            .var_decl, .let_decl, .const_decl, .fn_decl, .enum_decl => {
+                if (type_only) return false;
+                if (self.declarationName(decl)) |n| if (n == name) return true;
+            },
+            // Classes and namespaces inhabit both value and type space.
+            .class_decl, .namespace_decl, .module_decl => {
+                if (self.declarationName(decl)) |n| if (n == name) return true;
+            },
+            .import_decl => return self.importDeclBindsName(decl, name, type_only),
+            else => {},
+        }
+        // Hoisted `var`/`function` declarations nested in the statement
+        // (matches `rootHasVarDeclarationNamed` semantics).
+        if (!type_only and self.bodyHasVarDeclarationNamed(decl, name)) return true;
+        return false;
+    }
+
+    /// True when an `import` statement binds `name` locally (default,
+    /// namespace, `import x = ...`, or a named specifier's local alias).
+    fn importDeclBindsName(self: *Checker, import_node: NodeId, name: hir_mod.StringId, type_only: bool) bool {
+        _ = type_only;
+        const imp = hir_mod.importOf(self.hir, import_node);
+        // An imported binding is a local alias symbol regardless of the
+        // export's type-only-ness — tsc resolves it to a local alias, so
+        // it is always treated as local for the locality check.
+        const matchesBinding = struct {
+            fn f(c: *Checker, binding: NodeId, want: hir_mod.StringId) bool {
+                return binding != hir_mod.none_node_id and
+                    c.hir.kindOf(binding) == .identifier and
+                    hir_mod.identifierOf(c.hir, binding).name == want;
+            }
+        }.f;
+        if (matchesBinding(self, imp.default_binding, name)) return true;
+        if (matchesBinding(self, imp.namespace_binding, name)) return true;
+        if (matchesBinding(self, imp.import_equals, name)) return true;
+        for (hir_mod.importNamed(self.hir, import_node)) |spec_node| {
+            const spec = hir_mod.importSpecifierOf(self.hir, spec_node);
+            if (spec.local == name) return true;
         }
         return false;
     }
