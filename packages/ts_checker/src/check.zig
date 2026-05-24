@@ -515,6 +515,7 @@ pub const TsCodes = struct {
     pub const global_this_no_index_signature: u32 = 7017;
     pub const element_implicitly_any: u32 = 7053;
     pub const declared_but_not_read: u32 = 6133;
+    pub const all_type_parameters_unused: u32 = 6205;
     pub const object_literal_excess_property: u32 = 2353;
     pub const satisfies_constraint: u32 = 1360;
     pub const ts_only_satisfies_in_js: u32 = 8037;
@@ -5617,6 +5618,10 @@ pub const Checker = struct {
     fn walkFnBody(self: *Checker, node: NodeId) CheckError!void {
         const f = hir_mod.fnDeclOf(self.hir, node);
         if (f.body == hir_mod.none_node_id) return;
+        // Unused type parameters are reported only on the
+        // implementation (bodied) declaration, matching tsc's
+        // overload handling.
+        try self.checkUnusedTypeParameters(node);
         // Push a function-local narrow scope so assertion-function
         // calls and other body-level guards have somewhere to record
         // narrowed types. Popped on return.
@@ -8134,6 +8139,124 @@ pub const Checker = struct {
             );
             try self.diagnostics.append(self.gpa, .{
                 .node = p,
+                .code = TsCodes.declared_but_not_read,
+                .message = msg,
+            });
+        }
+    }
+
+    /// Root (leftmost) name of a `type_ref`. For a qualified name
+    /// like `A.B.C` the root is `A`; for a bare `T` it's `T`. Only the
+    /// root can ever resolve to a type parameter.
+    fn typeRefRootName(self: *Checker, type_ref_node: NodeId) hir_mod.StringId {
+        const quals = hir_mod.typeRefQualifier(self.hir, type_ref_node);
+        if (quals.len > 0 and self.hir.kindOf(quals[0]) == .identifier) {
+            return hir_mod.identifierOf(self.hir, quals[0]).name;
+        }
+        return hir_mod.typeRefOf(self.hir, type_ref_node).name;
+    }
+
+    /// True when `ancestor` lexically encloses `descendant`, walking
+    /// the HIR parent chain. Bounded by `nodeCount` so a malformed
+    /// (self-referential) parent link can't spin.
+    fn nodeIsAncestorOf(self: *Checker, ancestor: NodeId, descendant: NodeId) bool {
+        var cur = descendant;
+        var guard: u32 = 0;
+        const max = self.hir.nodeCount();
+        while (cur != hir_mod.none_node_id and guard <= max) : (guard += 1) {
+            if (cur == ancestor) return true;
+            const p = self.hir.parentOf(cur);
+            if (p == cur) break;
+            cur = p;
+        }
+        return false;
+    }
+
+    /// `noUnusedParameters` (TS6133 / TS6205): report function or
+    /// method type parameters that are never referenced in a type
+    /// position. Mirrors tsc's `checkUnusedTypeParameters`: when a
+    /// generic declaration has more than one type parameter and *all*
+    /// are unused, a single TS6205 ("All type parameters are unused")
+    /// spans the list; otherwise each unused parameter gets its own
+    /// TS6133. Names beginning with `_` are exempt. Type parameters are
+    /// gated by `noUnusedParameters` (not `noUnusedLocals`) to match
+    /// upstream's `UnusedKindParameter` classification.
+    fn checkUnusedTypeParameters(self: *Checker, fn_node: NodeId) CheckError!void {
+        if (!self.strict_flags.no_unused_parameters) return;
+        const tps = hir_mod.fnTypeParams(self.hir, fn_node);
+        if (tps.len == 0) return;
+
+        // Declared type-parameter names, for a cheap membership test
+        // during the reference scan.
+        var declared: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer declared.deinit(self.gpa);
+        for (tps) |tp| {
+            if (self.hir.kindOf(tp) != .type_parameter) continue;
+            try declared.put(self.gpa, hir_mod.typeParameterOf(self.hir, tp).name, {});
+        }
+        if (declared.count() == 0) return;
+
+        // A type parameter is "used" when its name appears as the root
+        // of a `type_ref` (its only possible reference form) anywhere
+        // within this declaration's subtree. Matching value identifiers
+        // are also counted — type parameters can't be value-referenced,
+        // so this only ever suppresses a report, never adds a spurious
+        // one (keeps us safe against any reference form not modeled as a
+        // `type_ref`).
+        var used: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer used.deinit(self.gpa);
+        const n = self.hir.nodeCount();
+        var id: NodeId = 1;
+        while (id < n) : (id += 1) {
+            const cand: hir_mod.StringId = switch (self.hir.kindOf(id)) {
+                .type_ref => self.typeRefRootName(id),
+                .identifier => hir_mod.identifierOf(self.hir, id).name,
+                else => continue,
+            };
+            if (!declared.contains(cand) or used.contains(cand)) continue;
+            if (!self.nodeIsAncestorOf(fn_node, id)) continue;
+            try used.put(self.gpa, cand, {});
+        }
+
+        // All-unused case: >1 type parameter, every one unreferenced and
+        // not underscore-prefixed.
+        var all_unused = tps.len > 1;
+        for (tps) |tp| {
+            const eligible = blk: {
+                if (self.hir.kindOf(tp) != .type_parameter) break :blk false;
+                const name = hir_mod.typeParameterOf(self.hir, tp).name;
+                const name_str = self.string_interner.get(name);
+                if (name_str.len > 0 and name_str[0] == '_') break :blk false;
+                break :blk !used.contains(name);
+            };
+            if (!eligible) all_unused = false;
+        }
+
+        if (all_unused) {
+            const sp = self.hir.spanOf(tps[0]).start;
+            const msg = try self.diag_arena.allocator().dupe(u8, "All type parameters are unused.");
+            try self.diagnostics.append(self.gpa, .{
+                .node = fn_node,
+                .pos = if (sp > 0) sp - 1 else sp,
+                .code = TsCodes.all_type_parameters_unused,
+                .message = msg,
+            });
+            return;
+        }
+
+        for (tps) |tp| {
+            if (self.hir.kindOf(tp) != .type_parameter) continue;
+            const name = hir_mod.typeParameterOf(self.hir, tp).name;
+            const name_str = self.string_interner.get(name);
+            if (name_str.len > 0 and name_str[0] == '_') continue;
+            if (used.contains(name)) continue;
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "'{s}' is declared but its value is never read.",
+                .{name_str},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = tp,
                 .code = TsCodes.declared_but_not_read,
                 .message = msg,
             });
@@ -51651,6 +51774,27 @@ pub const Checker = struct {
                 try self.report(spread_arg, TsCodes.spread_argument_requires_tuple_or_rest, "A spread argument must either have a tuple type or be passed to a rest parameter.");
             }
         }
+        // A rest parameter typed exactly `never` (e.g.
+        // `(...args: never) => void`, the #48840 repro) accepts no
+        // arguments: tsc synthesizes the rest-args tuple and checks it
+        // against `never`, which always fails since no tuple — not even
+        // `[]` — is assignable to `never`. Anchor TS2345 on the call.
+        if (is_variadic and !too_few and !too_many and
+            param_ts[param_ts.len - 1] == types.Primitive.never)
+        {
+            if (try self.restArgsTupleDisplay(args, arg_types, fixed_count)) |tuple_text| {
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Argument of type '{s}' is not assignable to parameter of type 'never'.",
+                    .{tuple_text},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = call_node,
+                    .code = TsCodes.argument_type_mismatch,
+                    .message = msg,
+                });
+            }
+        }
         // Fixed-position pairs.
         const npairs_fixed = @min(args.len, fixed_count);
         var i: usize = 0;
@@ -52030,6 +52174,29 @@ pub const Checker = struct {
         if (self.isTupleShapedTarget(array_t)) return false;
         const elem_t = self.interner.objectNumberIndex(array_t);
         return elem_t != types.Primitive.none and self.typeIsNullishOnly(elem_t);
+    }
+
+    /// Render the synthesized rest-arguments tuple (`[]`, `[number]`,
+    /// `[string, number]`, …) for a variadic call whose rest parameter
+    /// type rejects the spread (used by the `...args: never` TS2345
+    /// path). Returns null when an element type can't be rendered with a
+    /// simple name, so callers skip emitting a half-formed message.
+    fn restArgsTupleDisplay(self: *Checker, args: []const NodeId, arg_types: []const TypeId, fixed_count: usize) !?[]const u8 {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(self.gpa);
+        try buf.append(self.gpa, '[');
+        var first = true;
+        var idx = fixed_count;
+        while (idx < args.len) : (idx += 1) {
+            // A spread in the rest tail makes the tuple shape uncertain.
+            if (self.hir.kindOf(args[idx]) == .spread) return null;
+            const elem_name = (try self.simpleDiagnosticTypeName(arg_types[idx])) orelse return null;
+            if (!first) try buf.appendSlice(self.gpa, ", ");
+            try buf.appendSlice(self.gpa, elem_name);
+            first = false;
+        }
+        try buf.append(self.gpa, ']');
+        return try self.diag_arena.allocator().dupe(u8, buf.items);
     }
 
     /// TS2345: render upstream's `Argument of type 'A' is not
