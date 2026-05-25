@@ -35911,6 +35911,10 @@ pub const Checker = struct {
 
     fn lookupObjectMember(self: *Checker, obj_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
         const flags = self.interner.pool.flagsOf(obj_t);
+        // A property access on `any` yields `any` for any name. Mirrors
+        // tsc's `getPropertyOfType` short-circuit on the `any`/error type
+        // so callers don't fall through to the TS2339 path.
+        if (flags.is_any) return types.Primitive.any;
         if (flags.is_type_parameter) {
             const constraint = self.typeParameterConstraint(obj_t) orelse return null;
             if (constraint == obj_t) return null;
@@ -35932,6 +35936,14 @@ pub const Checker = struct {
         }
         if (flags.is_intersection) {
             const members = self.interner.intersectionMembers(obj_t);
+            // If any constituent is `any`, the whole intersection behaves
+            // like `any` for property access — `getPropertyOfType` yields
+            // `any` and never reports a missing property. Short-circuit so
+            // `any & { … }` (e.g. thisTypeInObjectLiterals2.ts(173)) never
+            // falls through to TS2339.
+            for (members) |member_t| {
+                if (self.interner.pool.flagsOf(member_t).is_any) return types.Primitive.any;
+            }
             var resolved: std.ArrayListUnmanaged(TypeId) = .empty;
             defer resolved.deinit(self.gpa);
             for (members) |member_t| {
@@ -63407,6 +63419,42 @@ test "checker: import type binding cannot be used as a value" {
     var found = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.type_only_import_used_as_value) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: property access on intersection containing any yields any (no TS2339)" {
+    // Mirrors thisTypeInObjectLiterals2.ts(173): `defineProp` returns
+    // `T & Record<K, U>` where `T` resolves to `any`, so the receiver is
+    // an intersection that includes `any`. In tsc, `getPropertyOfType`
+    // on a type containing `any` yields `any` and never reports TS2339,
+    // even when the named property is absent from the object part.
+    const s = try newSetup(
+        \\declare let p: any & { x: number; y: number };
+        \\p.foo = p.foo + 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: property access on concrete intersection without any still reports TS2339" {
+    // Negative guard: a real missing property on a concrete intersection
+    // (no `any` constituent) must still surface TS2339, so the any-aware
+    // short-circuit doesn't over-suppress legitimate errors.
+    const s = try newSetup(
+        \\declare let p: { x: number } & { y: number };
+        \\p.foo;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_does_not_exist) found = true;
     }
     try T.expect(found);
 }
