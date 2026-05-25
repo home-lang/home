@@ -16,9 +16,24 @@ const string_interner = @import("string_interner");
 const types = @import("types.zig");
 const interner_mod = @import("interner.zig");
 
-pub const RenderError = error{OutOfMemory};
+pub const RenderError = error{ OutOfMemory, CyclicStructure };
 
 const max_depth: u32 = 8;
+
+const RenderContext = struct {
+    stack: std.ArrayListUnmanaged(types.TypeId) = .empty,
+
+    fn deinit(self: *RenderContext, gpa: std.mem.Allocator) void {
+        self.stack.deinit(gpa);
+    }
+
+    fn contains(self: *const RenderContext, id: types.TypeId) bool {
+        for (self.stack.items) |seen| {
+            if (seen == id) return true;
+        }
+        return false;
+    }
+};
 
 /// Render `id` into a freshly allocated string the caller owns.
 pub fn renderType(
@@ -29,7 +44,9 @@ pub fn renderType(
 ) RenderError![]u8 {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     errdefer buf.deinit(gpa);
-    try renderTypeInto(&buf, gpa, ti, sint, id, 0);
+    var ctx: RenderContext = .{};
+    defer ctx.deinit(gpa);
+    try renderTypeIntoCtx(&buf, gpa, ti, sint, id, 0, &ctx);
     return buf.toOwnedSlice(gpa);
 }
 
@@ -74,11 +91,33 @@ pub fn renderTypeInto(
     id: types.TypeId,
     depth: u32,
 ) RenderError!void {
+    var ctx: RenderContext = .{};
+    defer ctx.deinit(gpa);
+    try renderTypeIntoCtx(buf, gpa, ti, sint, id, depth, &ctx);
+}
+
+fn renderTypeIntoCtx(
+    buf: *std.ArrayListUnmanaged(u8),
+    gpa: std.mem.Allocator,
+    ti: *const interner_mod.Interner,
+    sint: *const string_interner.Interner,
+    id: types.TypeId,
+    depth: u32,
+    ctx: *RenderContext,
+) RenderError!void {
     if (depth > max_depth) {
         try buf.appendSlice(gpa, "…");
         return;
     }
     const flags = ti.pool.flagsOf(id);
+    const tracks_children = flags.is_object_type or flags.is_signature or flags.is_union or flags.is_intersection;
+    if (tracks_children) {
+        if (ctx.contains(id)) return error.CyclicStructure;
+        try ctx.stack.append(gpa, id);
+    }
+    defer {
+        if (tracks_children) _ = ctx.stack.pop();
+    }
     // Union flags OR-merge their constituents, so guard the
     // primitive shortcuts against `is_union` — otherwise a union
     // like `string | null` would render as `null` here. The union
@@ -131,17 +170,17 @@ pub fn renderTypeInto(
                 const sig_params = ti.signatureParams(m.type);
                 for (sig_params, 0..) |p, pi| {
                     if (pi > 0) try buf.appendSlice(gpa, ", ");
-                    try renderTypeInto(buf, gpa, ti, sint, p, depth + 1);
+                    try renderTypeIntoCtx(buf, gpa, ti, sint, p, depth + 1, ctx);
                 }
                 try buf.appendSlice(gpa, "): ");
                 if (ti.signatureReturn(m.type)) |ret| {
-                    try renderTypeInto(buf, gpa, ti, sint, ret, depth + 1);
+                    try renderTypeIntoCtx(buf, gpa, ti, sint, ret, depth + 1, ctx);
                 } else {
                     try buf.appendSlice(gpa, "void");
                 }
             } else {
                 try buf.appendSlice(gpa, ": ");
-                try renderTypeInto(buf, gpa, ti, sint, m.type, depth + 1);
+                try renderTypeIntoCtx(buf, gpa, ti, sint, m.type, depth + 1, ctx);
             }
         }
         try buf.appendSlice(gpa, " }");
@@ -152,11 +191,11 @@ pub fn renderTypeInto(
         const params = ti.signatureParams(id);
         for (params, 0..) |p, i| {
             if (i > 0) try buf.appendSlice(gpa, ", ");
-            try renderTypeInto(buf, gpa, ti, sint, p, depth + 1);
+            try renderTypeIntoCtx(buf, gpa, ti, sint, p, depth + 1, ctx);
         }
         try buf.appendSlice(gpa, ") => ");
         if (ti.signatureReturn(id)) |ret| {
-            try renderTypeInto(buf, gpa, ti, sint, ret, depth + 1);
+            try renderTypeIntoCtx(buf, gpa, ti, sint, ret, depth + 1, ctx);
         } else {
             try buf.appendSlice(gpa, "void");
         }
@@ -183,7 +222,7 @@ pub fn renderTypeInto(
                 continue;
             }
             if (!first) try buf.appendSlice(gpa, " | ");
-            try renderTypeInto(buf, gpa, ti, sint, m, depth + 1);
+            try renderTypeIntoCtx(buf, gpa, ti, sint, m, depth + 1, ctx);
             first = false;
         }
         if (has_null) {
@@ -201,7 +240,7 @@ pub fn renderTypeInto(
         const members = ti.intersectionMembers(id);
         for (members, 0..) |m, i| {
             if (i > 0) try buf.appendSlice(gpa, " & ");
-            try renderTypeInto(buf, gpa, ti, sint, m, depth + 1);
+            try renderTypeIntoCtx(buf, gpa, ti, sint, m, depth + 1, ctx);
         }
         return;
     }
@@ -293,6 +332,20 @@ test "renderType: object with property-form function member stays arrow" {
     const out = try renderType(T.allocator, &ti, &sint, obj);
     defer T.allocator.free(out);
     try T.expectEqualStrings("{ f: () => void }", out);
+}
+
+test "renderType: cyclic anonymous object reports TS5088-class failure" {
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const next_name = try sint.intern("next");
+    const obj = try ti.internObjectType(&.{
+        .{ .name = next_name, .type = types.Primitive.none, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const payload = ti.pool.object_type_payloads.items[ti.pool.payloadOf(obj)];
+    ti.pool.object_member_pool.items[payload.members_start].type = obj;
+    try T.expectError(error.CyclicStructure, renderType(T.allocator, &ti, &sint, obj));
 }
 
 test "renderType: string literal with control chars escapes like tsc" {

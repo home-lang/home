@@ -37,6 +37,12 @@ pub const Options = struct {
     newline: []const u8 = "\n",
 };
 
+pub const Diagnostic = struct {
+    node: NodeId,
+    code: u32,
+    message: []const u8,
+};
+
 pub const EmitError = error{
     OutOfMemory,
     UnsupportedNode,
@@ -53,6 +59,7 @@ pub const Emitter = struct {
     /// types, matching the old behavior.
     type_interner: ?*const ts_checker.Interner = null,
     out: std.ArrayListUnmanaged(u8),
+    diagnostics: std.ArrayListUnmanaged(Diagnostic),
     options: Options,
     depth: u32,
 
@@ -68,6 +75,7 @@ pub const Emitter = struct {
             .interner = interner,
             .type_interner = null,
             .out = .empty,
+            .diagnostics = .empty,
             .options = options,
             .depth = 0,
         };
@@ -88,12 +96,15 @@ pub const Emitter = struct {
             .interner = interner,
             .type_interner = type_interner,
             .out = .empty,
+            .diagnostics = .empty,
             .options = options,
             .depth = 0,
         };
     }
 
     pub fn deinit(self: *Emitter) void {
+        for (self.diagnostics.items) |d| self.gpa.free(d.message);
+        self.diagnostics.deinit(self.gpa);
         self.out.deinit(self.gpa);
     }
 
@@ -170,7 +181,7 @@ pub const Emitter = struct {
         if (f.return_type != hir_mod.none_node_id) {
             try self.write(": ");
             try self.emitTypeNode(f.return_type);
-        } else if (self.renderInferredReturn(node)) |rendered| {
+        } else if (try self.renderInferredReturn(node, f.name)) |rendered| {
             defer self.gpa.free(rendered);
             try self.write(": ");
             try self.write(rendered);
@@ -182,13 +193,37 @@ pub const Emitter = struct {
     /// has a checker-assigned signature TypeId, render its return
     /// type. Returns null when the type interner is absent or the
     /// node lacks a usable signature.
-    fn renderInferredReturn(self: *Emitter, node: NodeId) ?[]u8 {
+    fn renderInferredReturn(self: *Emitter, node: NodeId, name_node: NodeId) !?[]u8 {
         const ti = self.type_interner orelse return null;
         const t = self.hir.typeOf(node);
         if (t == 0) return null;
         if (!ti.pool.flagsOf(t).is_signature) return null;
         const ret = ti.signatureReturn(t) orelse return null;
-        return ts_checker.renderType(self.gpa, ti, self.interner, ret) catch null;
+        return ts_checker.renderType(self.gpa, ti, self.interner, ret) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.CyclicStructure => {
+                try self.reportCyclicStructure(node, name_node);
+                return null;
+            },
+        };
+    }
+
+    fn reportCyclicStructure(self: *Emitter, node: NodeId, name_node: NodeId) !void {
+        const name = if (name_node != hir_mod.none_node_id and self.hir.kindOf(name_node) == .identifier)
+            self.interner.get(hir_mod.identifierOf(self.hir, name_node).name)
+        else
+            "(Missing)";
+        const message = try std.fmt.allocPrint(
+            self.gpa,
+            "The inferred type of '{s}' references a type with a cyclic structure which cannot be trivially serialized. A type annotation is necessary.",
+            .{name},
+        );
+        errdefer self.gpa.free(message);
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = 5088,
+            .message = message,
+        });
     }
 
     fn emitParameter(self: *Emitter, node: NodeId) !void {
@@ -730,6 +765,39 @@ test "d.ts: inferred return type renders when annotation is missing" {
     const out = try emitTestTyped("function add(a: number, b: number) { return a + b; }");
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "declare function add(a: number, b: number): number;") != null);
+}
+
+test "d.ts: inferred cyclic return reports TS5088 instead of eliding" {
+    const s = try newSetup("function foo() { return 1; }");
+    defer destroySetup(s);
+    var ti = try ts_checker.Interner.init(T.allocator);
+    defer ti.deinit();
+    var engine = try ts_checker.Engine.init(T.allocator, &ti);
+    defer engine.deinit();
+    var checker = ts_checker.Checker.init(T.allocator, &s.hir, &ti, &s.sint, &engine);
+    defer checker.deinit();
+    try checker.checkSourceFile(s.root);
+
+    const fn_node = hir_mod.blockStmts(&s.hir, s.root)[0];
+    const next_name = try s.sint.intern("next");
+    const obj = try ti.internObjectType(&.{
+        .{ .name = next_name, .type = ts_checker.types.Primitive.none, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const payload = ti.pool.object_type_payloads.items[ti.pool.payloadOf(obj)];
+    ti.pool.object_member_pool.items[payload.members_start].type = obj;
+    const sig = s.hir.typeOf(fn_node);
+    const params = ti.signatureParams(sig);
+    const cyclic_sig = try ti.internSignature(params, obj, false);
+    s.hir.setType(fn_node, cyclic_sig);
+    const f = hir_mod.fnDeclOf(&s.hir, fn_node);
+    s.hir.setType(f.name, cyclic_sig);
+
+    var em = Emitter.initWithTypes(T.allocator, &s.hir, &s.sint, &ti, .{});
+    defer em.deinit();
+    try em.emitSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), em.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 5088), em.diagnostics.items[0].code);
+    try T.expect(std.mem.indexOf(u8, em.diagnostics.items[0].message, "The inferred type of 'foo'") != null);
 }
 
 test "d.ts: inferred void return for body without returns" {

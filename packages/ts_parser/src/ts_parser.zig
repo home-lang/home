@@ -125,6 +125,7 @@ pub const Parser = struct {
     block_depth: u32,
     nested_statement_depth: u32,
     unbraced_statement_block_depth: ?u32,
+    unsupported_with_body_depth: u32,
     function_depth: u32,
     async_function_depth: u32,
     /// Stack-style counter — incremented while parsing a parameter
@@ -254,6 +255,7 @@ pub const Parser = struct {
             .block_depth = 0,
             .nested_statement_depth = 0,
             .unbraced_statement_block_depth = null,
+            .unsupported_with_body_depth = 0,
             .function_depth = 0,
             .async_function_depth = 0,
             .param_initializer_depth = 0,
@@ -2822,12 +2824,14 @@ pub const Parser = struct {
             // `arrowFunctionContexts(alwaysstrict=false).errors.txt`
             // emits TS2410 only.
             try self.reportCodeAt(start.span.start, start.line, 1101, "'with' statements are not allowed in strict mode.");
-        } else {
+        } else if (self.unsupported_with_body_depth == 0) {
             try self.reportCodeAt(start.span.start, start.line, 2410, "The 'with' statement is not supported. All symbols in a 'with' block will have type 'any'.");
         }
         _ = try self.expect(.open_paren, "'(' after 'with'");
         const object_expr = try self.parseExpression();
         _ = try self.expect(.close_paren, "')' after with expression");
+        self.unsupported_with_body_depth += 1;
+        defer self.unsupported_with_body_depth -= 1;
         const body = try self.parseNestedStatement();
         return try self.builder.addBlock(.{ .start = start.span.start, .end = self.hir.spanOf(body).end }, &.{ object_expr, body });
     }
@@ -17948,6 +17952,22 @@ test "parser: with statement in strict mode suppresses unsupported diagnostic" {
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 2410);
     }
+}
+
+test "parser: nested non-strict with body suppresses redundant unsupported diagnostic" {
+    var s = try newTestSetup(
+        \\with (x) {
+        \\  with (y) {}
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var unsupported_count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 2410) unsupported_count += 1;
+    }
+    try T.expectEqual(@as(usize, 1), unsupported_count);
 }
 
 test "parser: with statement in declaration file reports ambient and unsupported diagnostics" {
