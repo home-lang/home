@@ -1463,6 +1463,10 @@ fn checkerDiagnosticSurfacesInUncheckedJs(code: u32, message: []const u8, source
     // `class C<T> {}`) are TS-only syntax in JS files. Like TS8037,
     // this surfaces under bare `--allowJs` without `--checkJs`.
     if (code == ts_checker.check.TsCodes.ts_only_type_parameter_in_js) return true;
+    // TS8017 — bodyless function, constructor, and method signatures
+    // are parsed in JS files but rejected as TS-only syntax by
+    // `getJSSyntacticDiagnosticsForFile`, independent of `checkJs`.
+    if (code == ts_checker.check.TsCodes.ts_only_signature_decl_in_js) return true;
     // TS2839 — strict equality between fresh object/array/function
     // references is reported even in unchecked `--allowJs` files.
     // Mirrors `plainJSTypeErrors`, where `{} === {}` errors while
@@ -1790,6 +1794,26 @@ test "driver: unchecked allowJs still surfaces generic declaration JS grammar di
         if (d.code == ts_checker.check.TsCodes.ts_only_type_parameter_in_js) found = true;
     }
     try T.expect(found);
+}
+
+test "driver: unchecked allowJs still surfaces signature declaration JS grammar diagnostic" {
+    var c = try compileSource(T.allocator,
+        \\function foo();
+        \\class A {
+        \\  constructor();
+        \\  bar();
+        \\}
+    , .{ .no_emit = true, .suppress_js_check_diagnostics = true, .importer_path = "/src/a.js" });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var count_8017: u32 = 0;
+    for (c.diagnostics.items) |d| {
+        if (d.code == ts_checker.check.TsCodes.ts_only_signature_decl_in_js) count_8017 += 1;
+    }
+    try T.expectEqual(@as(u32, 3), count_8017);
 }
 
 test "driver: allowJs node_modules js does not suppress project ts diagnostics" {
