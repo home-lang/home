@@ -121,7 +121,7 @@ for (const file of sourceFiles) {
     if (code) addRef(code, file, line, kindAtLine(line));
   }
 
-  for (const m of text.matchAll(/(?:\.code\s*=\s*|reportCodeAt\([^,\n]+,[^,\n]+,\s*|reportAt\([^,\n]+,[^,\n]+,\s*)(\d{4,5})\b/g)) {
+  for (const m of text.matchAll(/(?:\.code\s*=\s*|reportCodeAt\([^,\n]+,[^,\n]+,\s*|reportCodeAtWithSpan\([^,\n]+,[^,\n]+,[^,\n]+,\s*|reportCodeWithSpanAt\([^,\n]+,[^,\n]+,\s*|reportAt\([^,\n]+,[^,\n]+,\s*)(\d{4,5})\b/g)) {
     const line = lineOf(text, m.index);
     addRef(Number(m[1]), file, line, kindAtLine(line));
   }
@@ -136,7 +136,7 @@ for (const file of sourceFiles) {
   // Emissions live only in Zig source; restricting this liberal numeric
   // pass to `.zig` avoids crediting example codes in scripts/docs/comments
   // (e.g. this generator's own description text).
-  const emitLineRe = /\b(?:reportCodeAt|reportAt|reportCode|reportCodeOnce)\s*\(|\.code\s*=/;
+  const emitLineRe = /\b(?:reportCodeAt|reportCodeAtWithSpan|reportCodeWithSpanAt|reportAt|reportCode|reportCodeOnce)\s*\(|\.code\s*=/;
   const lineList = file.endsWith(".zig") ? text.split("\n") : [];
   for (let i = 0; i < lineList.length; i++) {
     if (!emitLineRe.test(lineList[i])) continue;

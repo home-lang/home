@@ -12047,6 +12047,17 @@ pub const Parser = struct {
                 if (self.peek().kind == .no_substitution_template or self.peek().kind == .template_head) {
                     callee = try self.parseTaggedTemplateWithTypeArgs(callee, &.{});
                 }
+                if (self.peek().kind == .question_dot) {
+                    const qdot = self.peek();
+                    const callee_span = self.hir.spanOf(callee);
+                    const callee_text = self.source[callee_span.start..callee_span.end];
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Invalid optional chain from new expression. Did you mean to call '{s}()'?",
+                        .{callee_text},
+                    );
+                    try self.reportCodeAtWithSpan(qdot.span.start, qdot.line, qdot.span.end - qdot.span.start, 1209, msg);
+                }
                 var type_args: []NodeId = &.{};
                 if (self.peek().kind == .less_than) {
                     const saved_cursor = self.cursor;
@@ -14161,6 +14172,26 @@ test "parser: optional chain rejects tagged templates" {
         if (d.code == 1358) count += 1;
     }
     try T.expectEqual(@as(usize, 3), count);
+}
+
+test "parser: new expression rejects optional chain on constructed expression" {
+    var s = try newTestSetup(
+        \\class A { b() {} }
+        \\new A?.b();
+        \\new A()?.b();
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1209) {
+            count += 1;
+            try T.expectEqual(@as(u32, 24), d.pos);
+            try T.expectEqual(@as(u32, 2), d.span_len);
+            try T.expectEqualStrings("Invalid optional chain from new expression. Did you mean to call 'A()'?", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 1), count);
 }
 
 test "parser: element access" {
