@@ -229,6 +229,7 @@ pub const CompilerOptions = struct {
     declaration_map: ?bool = null,
     emit_declaration_only: ?bool = null,
     map_root: ?[]const u8 = null,
+    source_root: ?[]const u8 = null,
     composite: ?bool = null,
     incremental: ?bool = null,
     ts_buildinfo_file: ?[]const u8 = null,
@@ -364,6 +365,14 @@ pub const TsConfig = struct {
         }
         if (co.inline_source_map == true and co.source_map == true) {
             try appendTs5053(gpa, &diags, "sourceMap", "sourceMap", "inlineSourceMap");
+        }
+        if (co.source_map != true and co.inline_source_map != true) {
+            if (co.inline_sources == true) {
+                try appendTs5051(gpa, &diags, "inlineSources", "inlineSources");
+            }
+            if (co.source_root != null) {
+                try appendTs5051(gpa, &diags, "sourceRoot", "sourceRoot");
+            }
         }
         if (co.isolated_declarations == true and co.allow_js == true) {
             try appendTs5053(gpa, &diags, "allowJs", "allowJs", "isolatedDeclarations");
@@ -506,6 +515,21 @@ fn appendTs5053(
     const msg = try std.fmt.allocPrint(gpa, "Option '{s}' cannot be specified with option '{s}'.", .{ option, conflicting });
     try diags.append(gpa, .{
         .code = 5053,
+        .message = msg,
+        .owns_message = true,
+        .field = field,
+    });
+}
+
+fn appendTs5051(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    field: []const u8,
+    option: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(gpa, "Option '{s} can only be used when either option '--inlineSourceMap' or option '--sourceMap' is provided.", .{option});
+    try diags.append(gpa, .{
+        .code = 5051,
         .message = msg,
         .owns_message = true,
         .field = field,
@@ -879,6 +903,7 @@ fn fillCompilerOptions(arena: std.mem.Allocator, co: *CompilerOptions, obj: json
             .{ .name = "declarationDir", .field = "declaration_dir" },
             .{ .name = "tsBuildInfoFile", .field = "ts_buildinfo_file" },
             .{ .name = "mapRoot", .field = "map_root" },
+            .{ .name = "sourceRoot", .field = "source_root" },
             .{ .name = "jsxFactory", .field = "jsx_factory" },
             .{ .name = "jsxFragmentFactory", .field = "jsx_fragment_factory" },
             .{ .name = "jsxImportSource", .field = "jsx_import_source" },
@@ -1570,6 +1595,59 @@ test "tsconfig.validate: mutually exclusive options report TS5053" {
     try t.expectEqualStrings("Option 'allowJs' cannot be specified with option 'isolatedDeclarations'.", diags[1].message);
     try t.expectEqual(@as(u32, 5069), diags[2].code);
     try t.expectEqualStrings("Option 'isolatedDeclarations' cannot be specified without specifying option 'declaration' or option 'composite'.", diags[2].message);
+}
+
+test "tsconfig.validate: source map companion options report TS5051" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "inlineSources": true,
+        \\    "sourceRoot": "local"
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 2), diags.len);
+    try t.expectEqual(@as(u32, 5051), diags[0].code);
+    try t.expectEqualStrings("Option 'inlineSources can only be used when either option '--inlineSourceMap' or option '--sourceMap' is provided.", diags[0].message);
+    try t.expectEqualStrings("inlineSources", diags[0].field);
+    try t.expectEqual(@as(u32, 5051), diags[1].code);
+    try t.expectEqualStrings("Option 'sourceRoot can only be used when either option '--inlineSourceMap' or option '--sourceMap' is provided.", diags[1].message);
+    try t.expectEqualStrings("sourceRoot", diags[1].field);
+}
+
+test "tsconfig.validate: source map companion options accept sourceMap or inlineSourceMap" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+
+    const with_source_map = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "sourceMap": true,
+        \\    "inlineSources": true,
+        \\    "sourceRoot": "local"
+        \\  }
+        \\}
+    );
+    const source_map_diags = try with_source_map.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, source_map_diags);
+    try t.expectEqual(@as(usize, 0), source_map_diags.len);
+
+    const with_inline_source_map = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "inlineSourceMap": true,
+        \\    "inlineSources": true,
+        \\    "sourceRoot": "local"
+        \\  }
+        \\}
+    );
+    const inline_source_map_diags = try with_inline_source_map.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, inline_source_map_diags);
+    try t.expectEqual(@as(usize, 0), inline_source_map_diags.len);
 }
 
 test "tsconfig.validate: declaration-dependent options report TS5069" {
