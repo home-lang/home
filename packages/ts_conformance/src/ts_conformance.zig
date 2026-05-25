@@ -2858,6 +2858,7 @@ const StrictDirectiveState = struct {
     exact_optional_property_types: ?bool = null,
     no_property_access_from_index_signature: ?bool = null,
     no_implicit_override: ?bool = null,
+    no_implicit_returns: ?bool = null,
     use_unknown_in_catch_variables: ?bool = null,
 };
 
@@ -3284,6 +3285,7 @@ fn strictFlagsFromState(state: StrictDirectiveState, strict_on: bool) ts_driver.
         .exact_optional_property_types = state.exact_optional_property_types orelse false,
         .no_property_access_from_index_signature = state.no_property_access_from_index_signature orelse false,
         .no_implicit_override = state.no_implicit_override orelse false,
+        .no_implicit_returns = state.no_implicit_returns orelse false,
         .use_unknown_in_catch_variables = state.use_unknown_in_catch_variables orelse strict_on,
     };
 }
@@ -3326,6 +3328,8 @@ fn setStrictDirective(state: *StrictDirectiveState, name: []const u8, value: boo
         state.no_property_access_from_index_signature = value;
     } else if (std.mem.eql(u8, name, "noImplicitOverride")) {
         state.no_implicit_override = value;
+    } else if (std.mem.eql(u8, name, "noImplicitReturns")) {
+        state.no_implicit_returns = value;
     } else if (std.mem.eql(u8, name, "useUnknownInCatchVariables")) {
         state.use_unknown_in_catch_variables = value;
     } else {
@@ -37224,6 +37228,73 @@ test "conformance: generatorNoImplicitReturns passes clean" {
         ,
         .expects_error = false,
         .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: reachabilityChecks7 emits TS7030 + TS2355" {
+    // End-to-end check that the `// @noImplicitReturns: true` directive
+    // wires through to the checker and that the async control-flow
+    // diagnostics fire at the upstream baseline anchors:
+    //   reachabilityChecks7.ts(13,16): error TS7030 (function name `f3`)
+    //   reachabilityChecks7.ts(17,22): error TS2355 (return type of `f4`)
+    const result = try runOneEntry(T.allocator, .{
+        .name = "reachabilityChecks7",
+        .path = "reachabilityChecks7.ts",
+        .source =
+        \\// @strict: false
+        \\// @target: ES6
+        \\// @noImplicitReturns: true
+        \\
+        \\// async function without return type annotation - error
+        \\async function f1() {
+        \\}
+        \\
+        \\let x = async function() {
+        \\}
+        \\
+        \\// async function with which promised type is void - return can be omitted
+        \\async function f2(): Promise<void> {
+        \\
+        \\}
+        \\
+        \\async function f3(x) {
+        \\    if (x) return 10;
+        \\}
+        \\
+        \\async function f4(): Promise<number> {
+        \\
+        \\}
+        \\
+        \\function voidFunc(): void {
+        \\}
+        \\
+        \\function calltoVoidFunc(x) {
+        \\    if (x) return voidFunc();
+        \\}
+        \\
+        \\declare function use(s: string): void;
+        \\let x1 = () => { use("Test"); }
+        ,
+        .expects_error = true,
+        // `// @noImplicitReturns: true` is translated to the checker
+        // flag by the corpus Suite (`strictFlagsFromState`); `runOneEntry`
+        // doesn't re-parse directives, so we set the flag explicitly to
+        // exercise the checker + driver + harness end-to-end.
+        .strict_flags = .{ .no_implicit_returns = true },
+        // Line numbers match the upstream baseline after the harness
+        // strips the leading `// @…` directive block (f3 → 13, f4 → 17);
+        // columns are the baseline anchors (function name `f3` at col 16;
+        // `Promise<number>` return type at col 22).
+        .expected_errors =
+        \\reachabilityChecks7.ts(13,16): error TS7030: Not all code paths return a value.
+        \\reachabilityChecks7.ts(17,22): error TS2355: A function whose declared type is neither 'undefined', 'void', nor 'any' must return a value.
+        ,
         .use_exact_errors = true,
     });
     defer {

@@ -887,6 +887,8 @@ pub fn compileSource(
             .isolated_modules = co.isolated_modules orelse false,
             .resolve_json_module = co.resolve_json_module orelse false,
             .no_implicit_override = co.no_implicit_override orelse false,
+            // `noImplicitReturns` is independent of `strict` in tsc.
+            .no_implicit_returns = co.no_implicit_returns orelse false,
             .always_strict = options.always_strict or (co.always_strict orelse false),
         });
     } else {
