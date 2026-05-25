@@ -9721,10 +9721,24 @@ pub const Parser = struct {
             // with TS2368 ("Type parameter name cannot be '{0}'."). Accept
             // the keyword token here as the name so the checker can run
             // that semantic check; otherwise require a real identifier.
-            const name_tok = if (isPredefinedTypeKeyword(self.peek().kind))
-                self.advance()
-            else
-                try self.expect(.identifier, "type parameter name");
+            //
+            // When neither path matches, tsc emits the type-parameter-
+            // specific TS1139 ("Type parameter declaration expected.")
+            // rather than the generic TS1109/TS1003. Anchor the
+            // diagnostic at the current token so the column matches
+            // upstream (e.g. `dontShowCompilerGeneratedMembers.ts(3,6)`).
+            const name_tok = blk_name: {
+                if (isPredefinedTypeKeyword(self.peek().kind)) break :blk_name self.advance();
+                if (self.peek().kind == .identifier) break :blk_name self.advance();
+                const at = self.peek();
+                try self.reportCodeAt(
+                    at.span.start,
+                    at.line,
+                    1139,
+                    "Type parameter declaration expected.",
+                );
+                return error.UnexpectedToken;
+            };
             const name_id = try self.internToken(name_tok);
             var constraint: NodeId = hir_mod.none_node_id;
             if (self.match(.kw_extends)) constraint = try self.parseTypeAnnotation();
@@ -21702,4 +21716,41 @@ test "parser: doubled export on a declaration stays TS1030" {
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(u32, 1), countDiag(s, 1030));
     try T.expectEqual(@as(u32, 0), countDiag(s, 1193));
+}
+
+test "parser: TS1139 fires when type-parameter slot has no identifier" {
+    // Mirrors upstream `dontShowCompilerGeneratedMembers.ts(3,6)`:
+    //
+    //     var f: {
+    //         x: number;
+    //         <-
+    //     };
+    //
+    // The `<` opens a call/construct signature's type-parameter list but
+    // the next token (`-`) isn't an identifier. tsc emits TS1139
+    // "Type parameter declaration expected." rather than the generic
+    // TS1109. Pre-fix Home parser fell into the generic `expect(.identifier)`
+    // path and surfaced TS1109. The fix routes the missing-name case
+    // through `reportCodeAt` with the upstream code+message.
+    var s = try newTestSetup("var f: { x: number; <- };");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findDiag(s, 1139) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Type parameter declaration expected.", d.message);
+}
+
+test "parser: TS1139 stays clean for a real type-parameter name" {
+    // Sanity guard against the TS1139 fix over-firing. `<T>(x: T) => T`
+    // and a generic function declaration must not pick up the new path.
+    const cases = [_][]const u8{
+        "var f: <T>(x: T) => T;",
+        "function id<T>(x: T): T { return x; }",
+        "interface I<T> { x: T; }",
+    };
+    inline for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(u32, 0), countDiag(s, 1139));
+    }
 }
