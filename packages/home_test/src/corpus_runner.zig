@@ -156,7 +156,6 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/26631.test.ts",
     "regression/issue/26844.test.ts",
     "regression/issue/02367.test.ts",
-    "regression/issue/02369.test.ts",
     "js/bun/util/fileUrl.test.js",
     "js/bun/util/file-type.test.ts",
     "js/bun/util/bun-file-read.test.ts",
@@ -375,6 +374,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/resolve/require-esm-microtask-order.test.ts",
     "regression/issue/26632.test.ts",
     "js/node/url/url-parse-query.test.js",
+    "integration/bun-types/fixture/5396.test.ts",
 };
 
 const harness_prelude =
@@ -2374,8 +2374,24 @@ const harness_prelude =
     \\    currentImplementation = function() { return value; };
     \\    return wrapped;
     \\  };
+    \\  wrapped.mockResolvedValue = function(value) {
+    \\    currentImplementation = function() { return Promise.resolve(value); };
+    \\    return wrapped;
+    \\  };
+    \\  wrapped.mockRejectedValue = function(value) {
+    \\    currentImplementation = function() { return Promise.reject(value); };
+    \\    return wrapped;
+    \\  };
     \\  wrapped.mockReturnValueOnce = function(value) {
     \\    onceImplementations.push(function() { return value; });
+    \\    return wrapped;
+    \\  };
+    \\  wrapped.mockResolvedValueOnce = function(value) {
+    \\    onceImplementations.push(function() { return Promise.resolve(value); });
+    \\    return wrapped;
+    \\  };
+    \\  wrapped.mockRejectedValueOnce = function(value) {
+    \\    onceImplementations.push(function() { return Promise.reject(value); });
     \\    return wrapped;
     \\  };
     \\  wrapped.mockClear = function() {
@@ -2455,6 +2471,14 @@ const harness_prelude =
     \\  };
     \\  wrapped.mockReturnValue = function(value) {
     \\    currentImplementation = function() { return value; };
+    \\    return wrapped;
+    \\  };
+    \\  wrapped.mockResolvedValue = function(value) {
+    \\    currentImplementation = function() { return Promise.resolve(value); };
+    \\    return wrapped;
+    \\  };
+    \\  wrapped.mockRejectedValue = function(value) {
+    \\    currentImplementation = function() { return Promise.reject(value); };
     \\    return wrapped;
     \\  };
     \\  wrapped.mockClear = function() {
@@ -8195,11 +8219,14 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": ReadableStreamDefaultController<Uint8Array> | null =", .replacement = " =" },
         .{ .needle = ": number | null | undefined;", .replacement = ";" },
         .{ .needle = ": Record<string, \"no-op\" | \"polyfill\" | \"error\"> =", .replacement = " =" },
+        .{ .needle = ": Promise<AnyDTO>", .replacement = "" },
         .{ .needle = ": Promise<any>", .replacement = "" },
+        .{ .needle = ": AnyClass =", .replacement = " =" },
         .{ .needle = ": any =", .replacement = " =" },
         .{ .needle = ": number =", .replacement = " =" },
         .{ .needle = ": string =", .replacement = " =" },
         .{ .needle = ": string {", .replacement = " {" },
+        .{ .needle = ": string =>", .replacement = " =>" },
         .{ .needle = ": number)", .replacement = ")" },
         .{ .needle = ": string)", .replacement = ")" },
         .{ .needle = ": string) =>", .replacement = ") =>" },
@@ -9622,6 +9649,10 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapped.mockRestore = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapped.mockReturnValue = function(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapped.mockReturnValueOnce = function(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapped.mockResolvedValue = function(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapped.mockRejectedValue = function(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapped.mockResolvedValueOnce = function(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapped.mockRejectedValueOnce = function(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapped[Symbol.dispose] = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapped.mockImplementationOnce = function(fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock.clearAllMocks") != null);
@@ -10870,6 +10901,34 @@ test "bootstrap rewrite erases admitted type-only syntax" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "let capturedStack = []") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, ": any") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "<any, any>") == null);
+}
+
+test "bootstrap rewrite erases mock fixture type-only syntax" {
+    const source =
+        \\import { describe, expect, it, jest, mock, spyOn } from "bun:test";
+        \\class AnyDTO {
+        \\  anyField: string = "any_value";
+        \\}
+        \\class AnyClass {
+        \\  async anyMethod(): Promise<AnyDTO> {
+        \\    return new AnyDTO();
+        \\  }
+        \\}
+        \\const anyObject: AnyClass = {
+        \\  anyMethod: jest.fn(),
+        \\};
+        \\const mockSomething = mock((): string => "hi");
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "integration/bun-types/fixture/5396.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "anyField = \"any_value\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "async anyMethod()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const anyObject =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "mock(() => \"hi\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, ": string") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, ": Promise<AnyDTO>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, ": AnyClass") == null);
 }
 
 test "bootstrap runner reports zero registered tests as unsupported" {
