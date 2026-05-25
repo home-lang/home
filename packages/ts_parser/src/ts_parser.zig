@@ -10938,10 +10938,9 @@ pub const Parser = struct {
     }
 
     /// After resolving the regex literal end, walk the trailing flag
-    /// characters and emit TS1499 ("Unknown regular expression flag.")
-    /// at each character that is not one of the ES2024 set
-    /// (g/i/m/s/u/y/d/v). Mirrors tsc's `scanRegExpLiteral` post-flag
-    /// validation; fixtures: `parserRegularExpressionDivideAmbiguity3`.
+    /// characters and emit the same scanner diagnostics as tsc/tsgo:
+    /// TS1499 for unknown flags, TS1500 for duplicate known flags, and
+    /// TS1502 when `u` and `v` would both be active.
     fn reportInvalidRegexFlags(self: *Parser, start: u32, line: u32, end: u32) ParseError!void {
         const start_i: usize = @intCast(start);
         const end_i: usize = @intCast(end);
@@ -10976,12 +10975,28 @@ pub const Parser = struct {
         }
         const flag_start = (close_at orelse return) + 1;
         var fi: usize = flag_start;
+        var seen_flags: u8 = 0;
         while (fi < end_i and fi < self.source.len) : (fi += 1) {
             const fc = self.source[fi];
-            const is_valid = fc == 'g' or fc == 'i' or fc == 'm' or
-                fc == 's' or fc == 'u' or fc == 'y' or fc == 'd' or fc == 'v';
-            if (!is_valid) {
-                try self.reportCodeAt(@intCast(fi), line, 1499, "Unknown regular expression flag.");
+            const flag_bit: u8 = switch (fc) {
+                'd' => 1 << 0,
+                'g' => 1 << 1,
+                'i' => 1 << 2,
+                'm' => 1 << 3,
+                's' => 1 << 4,
+                'u' => 1 << 5,
+                'v' => 1 << 6,
+                'y' => 1 << 7,
+                else => 0,
+            };
+            if (flag_bit == 0) {
+                try self.reportCodeAtWithSpan(@intCast(fi), line, 1, 1499, "Unknown regular expression flag.");
+            } else if ((seen_flags & flag_bit) != 0) {
+                try self.reportCodeAtWithSpan(@intCast(fi), line, 1, 1500, "Duplicate regular expression flag.");
+            } else if (((seen_flags | flag_bit) & ((1 << 5) | (1 << 6))) == ((1 << 5) | (1 << 6))) {
+                try self.reportCodeAtWithSpan(@intCast(fi), line, 1, 1502, "The Unicode (u) flag and the Unicode Sets (v) flag cannot be set simultaneously.");
+            } else {
+                seen_flags |= flag_bit;
             }
         }
     }
@@ -19068,6 +19083,22 @@ test "parser: regex literal reports unbalanced group" {
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: regex literal reports duplicate and incompatible unicode flags" {
+    var s = try newTestSetup("let x = /foo/gguv;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1500), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 14), s.parser.diagnostics.items[0].pos);
+    try T.expectEqual(@as(u32, 1), s.parser.diagnostics.items[0].span_len);
+    try T.expectEqualStrings("Duplicate regular expression flag.", s.parser.diagnostics.items[0].message);
+    try T.expectEqual(@as(u32, 1502), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 16), s.parser.diagnostics.items[1].pos);
+    try T.expectEqual(@as(u32, 1), s.parser.diagnostics.items[1].span_len);
+    try T.expectEqualStrings("The Unicode (u) flag and the Unicode Sets (v) flag cannot be set simultaneously.", s.parser.diagnostics.items[1].message);
 }
 
 test "parser: unterminated regex literal recovers as call argument" {
