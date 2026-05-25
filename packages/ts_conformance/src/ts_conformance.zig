@@ -30230,6 +30230,49 @@ test "conformance: errorInUnnamedClassExpression matches TS1253 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: inferTypeOutsideExtends matches TS1338 baseline" {
+    // Regression pin for TS1338. Upstream mirrors `inferTypes1.ts(82,12)`:
+    // `infer N` declarations are only legal in the extends clause of a
+    // conditional type. The shipped fix is a post-parse HIR walk that
+    // checks each infer_type's position via the parent chain.
+    const result = try runOneEntry(T.allocator, .{
+        .name = "inferTypeOutsideExtends",
+        .path = "inferTypeOutsideExtends.ts",
+        .source =
+        \\type T60 = infer U;
+        ,
+        .expects_error = true,
+        .expected_errors = "TS1338",
+        .use_exact_errors = false,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: inferTypeInsideExtends stays clean" {
+    // Companion: `infer U` nested in a type-argument slot inside
+    // extends_t (`Array<infer U>`) must NOT trigger TS1338 — this is
+    // the canonical inference shorthand.
+    const result = try runOneEntry(T.allocator, .{
+        .name = "inferTypeInsideExtends",
+        .path = "inferTypeInsideExtends.ts",
+        .source =
+        \\type Unwrap<T> = T extends Array<infer U> ? U : T;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: exportClassWithoutName matches TS1211 baseline" {
     // Regression pin for TS1211. Upstream:
     //   exportClassWithoutName.ts(1,1): error TS1211: A class declaration \

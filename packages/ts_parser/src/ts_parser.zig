@@ -210,6 +210,12 @@ pub const Parser = struct {
     /// TS1169 vs. TS1170 when a computed key isn't a literal-resolved
     /// name. Mirrors `computedPropertyNamesDeclarationEmit3/4_ES{5,6}`.
     parsing_interface_body: bool = false,
+    /// Side-table of `infer_type` node IDs that were synthesised by the
+    /// parser as the check slot of an `infer X extends C ? T : F`
+    /// shorthand. These bare infer nodes look like they're in the
+    /// check slot of a conditional (which would fail the TS1338 rule)
+    /// but are legitimate TS syntax — the post-parse walker skips them.
+    synthetic_infer_check_nodes: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
     /// Stack-style counter for tuple type elements. A trailing `?`
     /// before `,`/`]` is valid tuple optionality here, not JSDoc
     /// postfix nullable syntax.
@@ -335,6 +341,7 @@ pub const Parser = struct {
         self.label_stack.deinit(self.gpa);
         self.seen_labels.deinit(self.gpa);
         self.pending_ts2463_indices.deinit(self.gpa);
+        self.synthetic_infer_check_nodes.deinit(self.gpa);
         self.diag_arena.deinit();
     }
 
@@ -766,7 +773,68 @@ pub const Parser = struct {
         }
         const end = self.peek(); // eof; span end is its start
         const file_span: Span = .{ .start = start.span.start, .end = end.span.start };
-        return try self.builder.addBlock(file_span, stmts.items);
+        const root = try self.builder.addBlock(file_span, stmts.items);
+        // Post-parse validation: TS1338 — `infer N` is only legal in
+        // the extends clause of a conditional type. Walks every
+        // infer_type node and verifies its position via the parent
+        // chain. See `validateInferTypePositions` for the algorithm.
+        try self.validateInferTypePositions();
+        return root;
+    }
+
+    /// Post-parse walk that emits TS1338 for every `infer N` node not
+    /// sitting in the extends clause of a conditional type.
+    ///
+    /// Algorithm: for each `infer_type` node, walk up parents. The
+    /// FIRST `conditional_type` ancestor decides validity — the infer
+    /// is valid iff we came up from that conditional's `extends` slot
+    /// (directly or transitively via nested types like
+    /// `Array<infer U>`). check / true_branch / false_branch slots
+    /// are invalid. If we walk past the root without hitting any
+    /// conditional, the infer is invalid (e.g. `type T = infer U`).
+    ///
+    /// Mirrors upstream `inferTypes1.ts(82,12)` and (83,16/43/53).
+    fn validateInferTypePositions(self: *Parser) ParseError!void {
+        const count = self.hir.nodeCount();
+        var id: NodeId = 0;
+        while (id < count) : (id += 1) {
+            if (self.hir.kindOf(id) != .infer_type) continue;
+            // Skip the synthesised bare infer-check produced by the
+            // `infer X extends C ? T : F` shorthand (see
+            // `parseConditionalType`). Its `infer X extends C` parent
+            // form is legal syntax even though the bare node sits in a
+            // check slot.
+            if (self.synthetic_infer_check_nodes.contains(id)) continue;
+            if (self.inferIsInExtendsPosition(id)) continue;
+            // Anchor at the infer-type node's full span (matches
+            // upstream which underlines `infer U` etc.).
+            const node_span = self.hir.spanOf(id);
+            try self.reportCodeAtWithSpan(
+                node_span.start,
+                self.lineAt(node_span.start),
+                node_span.end - node_span.start,
+                1338,
+                "'infer' declarations are only permitted in the 'extends' clause of a conditional type.",
+            );
+        }
+    }
+
+    fn inferIsInExtendsPosition(self: *Parser, infer_id: NodeId) bool {
+        var cur: NodeId = infer_id;
+        while (true) {
+            const parent = self.hir.parentOf(cur);
+            if (parent == hir_mod.none_node_id) return false;
+            if (self.hir.kindOf(parent) == .conditional_type) {
+                const payload = hir_mod.conditionalTypeOf(self.hir, parent);
+                if (cur == payload.extends) return true;
+                if (cur == payload.check or
+                    cur == payload.true_branch or
+                    cur == payload.false_branch) return false;
+                // Defensive: payload-shape mismatch (shouldn't happen);
+                // keep walking so we don't false-positive.
+            }
+            cur = parent;
+        }
     }
 
     fn reportJSDocTypeArgumentSyntaxDiagnostics(self: *Parser) ParseError!void {
@@ -7828,6 +7896,14 @@ pub const Parser = struct {
             if (inf.constraint != hir_mod.none_node_id) {
                 _ = self.advance();
                 const bare = try self.builder.addInferType(self.hir.spanOf(check), inf.name, hir_mod.none_node_id);
+                // Mark BOTH the synthesised bare infer AND the original
+                // `infer X extends C` node (which is now orphaned —
+                // its constraint became the conditional's extends_t
+                // and the bare took its place as check) so the
+                // post-parse TS1338 walker doesn't flag either. The
+                // shorthand is legal syntax.
+                try self.synthetic_infer_check_nodes.put(self.gpa, bare, {});
+                try self.synthetic_infer_check_nodes.put(self.gpa, check, {});
                 const true_branch = try self.parseTypeAnnotation();
                 _ = try self.expect(.colon, "':' in conditional type");
                 const false_branch = try self.parseTypeAnnotation();
