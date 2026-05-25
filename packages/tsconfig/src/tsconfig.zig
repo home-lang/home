@@ -408,6 +408,10 @@ pub const TsConfig = struct {
                 try appendTs5089(gpa, &diags, "reactNamespace", "reactNamespace", jsx_value);
             }
         }
+        if (co.preserve_const_enums == false and (co.isolated_modules == true or co.verbatim_module_syntax == true)) {
+            const enabled = if (co.verbatim_module_syntax == true) "verbatimModuleSyntax" else "isolatedModules";
+            try appendTs5091(gpa, &diags, "preserveConstEnums", enabled);
+        }
 
         const emit_declarations = co.declaration == true or co.composite == true;
         if (co.isolated_declarations == true and !emit_declarations) {
@@ -563,6 +567,21 @@ fn appendTs5089(
     const msg = try std.fmt.allocPrint(gpa, "Option '{s}' cannot be specified when option 'jsx' is '{s}'.", .{ option, jsx_value });
     try diags.append(gpa, .{
         .code = 5089,
+        .message = msg,
+        .owns_message = true,
+        .field = field,
+    });
+}
+
+fn appendTs5091(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    field: []const u8,
+    enabled_option: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(gpa, "Option 'preserveConstEnums' cannot be disabled when '{s}' is enabled.", .{enabled_option});
+    try diags.append(gpa, .{
+        .code = 5091,
         .message = msg,
         .owns_message = true,
         .field = field,
@@ -1648,6 +1667,63 @@ test "tsconfig.validate: source map companion options accept sourceMap or inline
     const inline_source_map_diags = try with_inline_source_map.validate(t.allocator);
     defer freeValidationDiagnostics(t.allocator, inline_source_map_diags);
     try t.expectEqual(@as(usize, 0), inline_source_map_diags.len);
+}
+
+test "tsconfig.validate: preserveConstEnums reports TS5091 under isolated emit modes" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "isolatedModules": true,
+        \\    "verbatimModuleSyntax": true,
+        \\    "preserveConstEnums": false
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), diags.len);
+    try t.expectEqual(@as(u32, 5091), diags[0].code);
+    try t.expectEqualStrings("preserveConstEnums", diags[0].field);
+    try t.expectEqualStrings("Option 'preserveConstEnums' cannot be disabled when 'verbatimModuleSyntax' is enabled.", diags[0].message);
+}
+
+test "tsconfig.validate: preserveConstEnums false reports isolatedModules when verbatim is off" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "isolatedModules": true,
+        \\    "preserveConstEnums": false
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), diags.len);
+    try t.expectEqual(@as(u32, 5091), diags[0].code);
+    try t.expectEqualStrings("Option 'preserveConstEnums' cannot be disabled when 'isolatedModules' is enabled.", diags[0].message);
+}
+
+test "tsconfig.validate: preserveConstEnums accepts isolated modes when true or unset" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+
+    const explicit_true = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "isolatedModules": true, "preserveConstEnums": true } }
+    );
+    const explicit_true_diags = try explicit_true.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, explicit_true_diags);
+    try t.expectEqual(@as(usize, 0), explicit_true_diags.len);
+
+    const unset = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "verbatimModuleSyntax": true } }
+    );
+    const unset_diags = try unset.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, unset_diags);
+    try t.expectEqual(@as(usize, 0), unset_diags.len);
 }
 
 test "tsconfig.validate: declaration-dependent options report TS5069" {
