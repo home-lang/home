@@ -4070,7 +4070,7 @@ pub const Parser = struct {
         var class_type_params: []NodeId = &.{};
         var owns_type_params = false;
         if (self.peek().kind == .less_than) {
-            class_type_params = try self.parseTypeParameterDeclaration();
+            class_type_params = try self.parseTypeParameterDeclarationIn(.class_like);
             owns_type_params = true;
         }
         defer if (owns_type_params) self.gpa.free(class_type_params);
@@ -5646,7 +5646,7 @@ pub const Parser = struct {
         var type_params: []NodeId = &.{};
         var owns_tps = false;
         if (self.peek().kind == .less_than) {
-            type_params = try self.parseTypeParameterDeclaration();
+            type_params = try self.parseTypeParameterDeclarationIn(.variance_only);
             owns_tps = true;
         }
         defer if (owns_tps) self.gpa.free(type_params);
@@ -5747,7 +5747,7 @@ pub const Parser = struct {
         var type_params: []NodeId = &.{};
         var owns_tps = false;
         if (self.peek().kind == .less_than) {
-            type_params = try self.parseTypeParameterDeclaration();
+            type_params = try self.parseTypeParameterDeclarationIn(.variance_only);
             owns_tps = true;
         }
         defer if (owns_tps) self.gpa.free(type_params);
@@ -9549,7 +9549,17 @@ pub const Parser = struct {
         };
     }
 
+    const TypeParameterContext = enum {
+        function_like,
+        variance_only,
+        class_like,
+    };
+
     fn parseTypeParameterDeclaration(self: *Parser) ParseError![]NodeId {
+        return try self.parseTypeParameterDeclarationIn(.function_like);
+    }
+
+    fn parseTypeParameterDeclarationIn(self: *Parser, context: TypeParameterContext) ParseError![]NodeId {
         const open_tok = try self.expect(.less_than, "'<' to open type parameters");
         var tps: std.ArrayListUnmanaged(NodeId) = .empty;
         errdefer tps.deinit(self.gpa);
@@ -9564,30 +9574,25 @@ pub const Parser = struct {
         }
         while (self.peek().kind != .greater_than and self.peek().kind != .eof) {
             const tp_start = self.peek();
-            // TS 5.0 `const` type-parameter modifier (`<const T>`). When
-            // present, argument inference for T should be performed
-            // `as const` (readonly + literal types preserved).
             var is_const: bool = false;
-            if (self.peek().kind == .kw_const and self.peekAt(1).kind == .identifier) {
-                _ = self.advance();
-                is_const = true;
-            }
-            // Variance modifiers `in`/`out` (TS 4.7). Either or both may
-            // appear before the type-parameter name. The lookahead allows
-            // `in T`, `out T`, and `in out T` — for the combined form, the
-            // peek-2 lookahead bypasses the trailing `kw_out` so the next
-            // pass sees the kw_out → identifier path.
             var variance: u8 = 0;
-            if (self.peek().kind == .kw_in) {
-                const after = self.peekAt(1).kind;
-                if (after == .identifier or after == .kw_out) {
-                    _ = self.advance();
-                    variance |= 1;
+            while (self.typeParameterModifierHasNameAfter()) {
+                const mod = self.advance();
+                switch (mod.kind) {
+                    .kw_const => {
+                        if (!typeParameterContextAllowsConst(context)) {
+                            try self.reportTypeParameterConstModifierDiagnostic(mod);
+                        }
+                        is_const = true;
+                    },
+                    .kw_in, .kw_out => {
+                        if (!typeParameterContextAllowsVariance(context)) {
+                            try self.reportTypeParameterVarianceModifierDiagnostic(mod);
+                        }
+                        variance |= if (mod.kind == .kw_in) @as(u8, 1) else @as(u8, 2);
+                    },
+                    else => try self.reportInvalidTypeParameterModifierDiagnostic(mod),
                 }
-            }
-            if (self.peek().kind == .kw_out and self.peekAt(1).kind == .identifier) {
-                _ = self.advance();
-                variance |= 2;
             }
             // Predefined type keywords (`any`, `string`, `number`, …)
             // are contextual: tsc accepts them syntactically as a
@@ -9617,6 +9622,44 @@ pub const Parser = struct {
         }
         _ = try self.consumeTypeGreater("'>' to close type parameters");
         return try tps.toOwnedSlice(self.gpa);
+    }
+
+    fn typeParameterContextAllowsVariance(context: TypeParameterContext) bool {
+        return context == .class_like or context == .variance_only;
+    }
+
+    fn typeParameterContextAllowsConst(context: TypeParameterContext) bool {
+        return context == .class_like or context == .function_like;
+    }
+
+    fn typeParameterModifierHasNameAfter(self: *Parser) bool {
+        const k = self.peek().kind;
+        if (!(k == .kw_const or k.isModifierKeyword())) return false;
+        const next = self.peekAt(1);
+        if (typeParameterNameCanStart(next.kind)) return true;
+        return k == .kw_in and next.kind == .kw_out and typeParameterNameCanStart(self.peekAt(2).kind);
+    }
+
+    fn typeParameterNameCanStart(kind: TokenKind) bool {
+        return kind == .identifier or isPredefinedTypeKeyword(kind);
+    }
+
+    fn reportInvalidTypeParameterModifierDiagnostic(self: *Parser, mod: Token) ParseError!void {
+        const mod_name = self.source[mod.span.start..mod.span.end];
+        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier cannot appear on a type parameter", .{mod_name});
+        try self.reportCodeAt(mod.span.start, mod.line, 1273, msg);
+    }
+
+    fn reportTypeParameterVarianceModifierDiagnostic(self: *Parser, mod: Token) ParseError!void {
+        const mod_name = self.source[mod.span.start..mod.span.end];
+        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier can only appear on a type parameter of a class, interface or type alias", .{mod_name});
+        try self.reportCodeAt(mod.span.start, mod.line, 1274, msg);
+    }
+
+    fn reportTypeParameterConstModifierDiagnostic(self: *Parser, mod: Token) ParseError!void {
+        const mod_name = self.source[mod.span.start..mod.span.end];
+        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier can only appear on a type parameter of a function, method or class", .{mod_name});
+        try self.reportCodeAt(mod.span.start, mod.line, 1277, msg);
     }
 
     /// Parse `<A, B<C>>` in type-argument position. Returns owned
@@ -17552,6 +17595,53 @@ test "parser: type alias with generics" {
     const t = hir_mod.typeAliasOf(&s.hir, top);
     try T.expectEqual(@as(usize, 2), t.type_params_len);
     try T.expectEqual(hir_mod.NodeKind.tuple_type, s.hir.kindOf(t.aliased));
+}
+
+test "parser: invalid type-parameter modifiers report TS1273 TS1274 TS1277" {
+    var s = try newTestSetup(
+        \\type Bad<public T> = T;
+        \\function f<in T, out U>() {}
+        \\interface I<const T> {}
+        \\type Alias<const T> = T;
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var saw_1273: u32 = 0;
+    var saw_1274: u32 = 0;
+    var saw_1277: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1273) {
+            saw_1273 += 1;
+            try T.expectEqualStrings("'public' modifier cannot appear on a type parameter", d.message);
+        } else if (d.code == 1274) {
+            saw_1274 += 1;
+            try T.expect(std.mem.eql(u8, d.message, "'in' modifier can only appear on a type parameter of a class, interface or type alias") or
+                std.mem.eql(u8, d.message, "'out' modifier can only appear on a type parameter of a class, interface or type alias"));
+        } else if (d.code == 1277) {
+            saw_1277 += 1;
+            try T.expectEqualStrings("'const' modifier can only appear on a type parameter of a function, method or class", d.message);
+        }
+    }
+    try T.expectEqual(@as(u32, 1), saw_1273);
+    try T.expectEqual(@as(u32, 2), saw_1274);
+    try T.expectEqual(@as(u32, 2), saw_1277);
+}
+
+test "parser: allowed type-parameter modifiers stay clean" {
+    var s = try newTestSetup(
+        \\class Box<in out T> {}
+        \\class LiteralBox<const T> {}
+        \\interface Producer<out T> {}
+        \\type Consumer<in T> = T;
+        \\function tuple<const T>() {}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1273);
+        try T.expect(d.code != 1274);
+        try T.expect(d.code != 1277);
+    }
 }
 
 test "parser: decorator before class declaration" {
