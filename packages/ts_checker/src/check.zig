@@ -29111,12 +29111,37 @@ pub const Checker = struct {
     }
 
     fn reportUnresolvedSimpleTypeofTypeArguments(self: *Checker, operand: NodeId) CheckError!void {
+        return self.reportUnresolvedSimpleTypeofTypeArgumentsBounded(operand, null);
+    }
+
+    /// Text-scan an operand's source span for a `<...>` type-argument
+    /// list and emit TS2304 for unresolved bare names inside it.
+    /// `lt_search_end`, when non-null, caps where the opening `<` may
+    /// appear (an absolute source position): callers pass the start of
+    /// the first call argument so a `<...>` belonging to a generic
+    /// function/arrow *argument* (e.g. `foo(function <U>(x: U) {...})`)
+    /// is not mistaken for the callee's own type arguments.
+    fn reportUnresolvedSimpleTypeofTypeArgumentsBounded(
+        self: *Checker,
+        operand: NodeId,
+        lt_search_end: ?u32,
+    ) CheckError!void {
         const src = self.source orelse return;
         const sp = self.hir.spanOf(operand);
         if (sp.end <= sp.start or sp.end > src.len) return;
         const text = src[sp.start..sp.end];
         const lt = std.mem.indexOfScalar(u8, text, '<') orelse return;
-        const gt = std.mem.lastIndexOfScalar(u8, text, '>') orelse return;
+        // The type-argument list must live entirely before the argument
+        // list; any `<`/`>` at or past the first argument belongs to an
+        // argument expression (e.g. a generic function/arrow argument) and
+        // must not be scanned. Cap both bounds to that region.
+        const scan_end: usize = if (lt_search_end) |limit| blk: {
+            if (limit <= sp.start) return;
+            const rel = limit - sp.start;
+            if (lt >= rel) return;
+            break :blk rel;
+        } else text.len;
+        const gt = std.mem.lastIndexOfScalar(u8, text[0..scan_end], '>') orelse return;
         if (gt <= lt + 1) return;
         const args = text[lt + 1 .. gt];
         if (!simpleBareTypeArgumentList(args)) return;
@@ -37397,7 +37422,22 @@ pub const Checker = struct {
                 if (type_arg_nodes.len > 0) {
                     try self.reportUnresolvedCallTypeArgumentNodes(type_arg_nodes);
                 } else {
-                    try self.reportUnresolvedSimpleTypeofTypeArguments(node);
+                    // The simple-text scanner treats a `<...>` substring in
+                    // the call's source as the callee's type-argument list.
+                    // For `foo(function <U>(x: U) {...})` / `foo(<U>(x: U) =>
+                    // x)` the only `<...>` belongs to a *generic
+                    // function/arrow argument*, not to `foo`. Those type
+                    // parameters are scoped to the argument expression (and
+                    // were already validated when it was checked), so bound
+                    // the scan to the text *before the argument list opens*.
+                    // A real callee type-argument list always sits between
+                    // the callee and the `(`. Mirrors tsc, which emits no
+                    // TS2304 for `U` in functionConstraintSatisfaction{,3}.
+                    const arg_region_start: ?u32 = if (args.len > 0)
+                        self.hir.spanOf(args[0]).start
+                    else
+                        null;
+                    try self.reportUnresolvedSimpleTypeofTypeArgumentsBounded(node, arg_region_start);
                 }
                 if (self.isInstantiationExpressionCall(node)) {
                     break :blk callee_t;
@@ -61204,6 +61244,39 @@ test "checker: unresolved identifier emits TS2304" {
         if (d.code == TsCodes.cannot_find_name) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: generic function expression type parameter is in scope for its own params" {
+    // Mirrors functionConstraintSatisfaction.ts (line 44) and
+    // functionConstraintSatisfaction3.ts (line 40): a generic function
+    // *expression* `function <U>(x: U) { ... }` passed as a call argument.
+    // The type parameter `U` declared on the function expression must be in
+    // scope when resolving its own parameter annotation `x: U`. tsc emits no
+    // diagnostics for these fixtures, so we must not spuriously raise TS2304.
+    const cases = [_][]const u8{
+        // functionConstraintSatisfaction.ts line 44 (generic callee).
+        "function foo<T extends Function>(x: T): T { return x; }\nvar r10 = foo(function <U>(x: U) { return x; });",
+        // functionConstraintSatisfaction3.ts line 40 (function-type constraint).
+        "function foo<T extends (x: string) => string>(x: T): T { return x; }\nvar r9 = foo(function <U>(x: U) { return x; });",
+        // Generic arrow argument variant.
+        "function foo<T extends Function>(x: T): T { return x; }\nvar r = foo(<U>(x: U) => x);",
+        // Non-generic callee with a generic function-expression argument.
+        "function bar(x: any) {}\nvar r = bar(function <U>(x: U) { return x; });",
+        // Standalone forms (must keep working).
+        "var f = function <U>(x: U) { return x; };",
+        "var g = <U>(x: U) => x;",
+    };
+    for (cases) |src| {
+        const b = try newBoundSetup(src);
+        defer destroyBoundSetup(b);
+        try b.base.checker.checkSourceFile(b.base.root);
+        for (b.base.checker.diagnostics.items) |d| {
+            if (d.code == TsCodes.cannot_find_name and std.mem.indexOf(u8, d.message, "'U'") != null) {
+                std.debug.print("unexpected TS2304 for 'U' in: {s}\n", .{src});
+                try T.expect(false);
+            }
+        }
+    }
 }
 
 test "checker: for-await context diagnostics match async/top-level split" {
