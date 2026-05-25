@@ -952,6 +952,13 @@ The copied `bundler/bundler_bun.test.ts` fixture now passes as `6` tests
 by lowering its `bun:sqlite` `Database` import to the Home bootstrap
 sqlite shim and running the upstream `itBundled` cases through the
 existing bundler harness surface.
+The copied `cli/run/shell-keepalive.test.ts`,
+`cli/run/commonjs-no-export.test.ts`,
+`cli/run/jsx-symbol-collision.test.ts`, and
+`js/bun/spawn/spawn-empty-arrayBufferOrBlob.test.ts` fixtures now pass
+as `7` tests through the existing `bunExe()` child-process bridge,
+`expect(...).toRun()`, piped stdout/stderr text helpers, and empty
+`ArrayBuffer` / `Uint8Array` / `Blob` stdin handling.
 The copied `js/bun/test/test-timers.test.ts` fixture now passes as `1`
 test through the Jest fake-timer bootstrap model. It covers Bun's stable
 `Date` identity, mocked `Date.now()` / `new Date()`,
