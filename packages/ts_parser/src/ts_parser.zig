@@ -8077,14 +8077,17 @@ pub const Parser = struct {
 
     fn parseUnionType(self: *Parser) ParseError!NodeId {
         // Leading `|` is allowed: `type T = | A | B`.
-        _ = self.match(.pipe);
-        const first = try self.parseIntersectionType();
+        const had_leading_pipe = self.match(.pipe);
+        const first = if (had_leading_pipe)
+            try self.parseFunctionOrConstructorTypeToError(.union_type)
+        else
+            try self.parseIntersectionType();
         if (self.peek().kind != .pipe) return first;
         var members: std.ArrayListUnmanaged(NodeId) = .empty;
         defer members.deinit(self.gpa);
         try members.append(self.gpa, first);
         while (self.match(.pipe)) {
-            const m = try self.parseIntersectionType();
+            const m = try self.parseFunctionOrConstructorTypeToError(.union_type);
             try members.append(self.gpa, m);
         }
         const sp: Span = .{
@@ -8095,14 +8098,17 @@ pub const Parser = struct {
     }
 
     fn parseIntersectionType(self: *Parser) ParseError!NodeId {
-        _ = self.match(.ampersand);
-        const first = try self.parseTypeOperator();
+        const had_leading_ampersand = self.match(.ampersand);
+        const first = if (had_leading_ampersand)
+            try self.parseFunctionOrConstructorTypeToError(.intersection_type)
+        else
+            try self.parseTypeOperator();
         if (self.peek().kind != .ampersand) return first;
         var members: std.ArrayListUnmanaged(NodeId) = .empty;
         defer members.deinit(self.gpa);
         try members.append(self.gpa, first);
         while (self.match(.ampersand)) {
-            const m = try self.parseTypeOperator();
+            const m = try self.parseFunctionOrConstructorTypeToError(.intersection_type);
             try members.append(self.gpa, m);
         }
         const sp: Span = .{
@@ -8110,6 +8116,82 @@ pub const Parser = struct {
             .end = self.hir.spanOf(members.items[members.items.len - 1]).end,
         };
         return try self.builder.addIntersectionType(sp, members.items);
+    }
+
+    const FunctionOrConstructorTypeDiagnosticContext = enum { union_type, intersection_type };
+
+    fn parseFunctionOrConstructorTypeToError(self: *Parser, context: FunctionOrConstructorTypeDiagnosticContext) ParseError!NodeId {
+        if (!self.isStartOfFunctionOrConstructorType()) {
+            return switch (context) {
+                .union_type => try self.parseIntersectionType(),
+                .intersection_type => try self.parseTypeOperator(),
+            };
+        }
+        const is_constructor = self.isStartOfConstructorType();
+        const node = try self.parseTypeOperator();
+        const type_span = self.hir.spanOf(node);
+        const code: u32 = switch (context) {
+            .union_type => if (is_constructor) 1386 else 1385,
+            .intersection_type => if (is_constructor) 1388 else 1387,
+        };
+        const message = switch (context) {
+            .union_type => if (is_constructor)
+                "Constructor type notation must be parenthesized when used in a union type."
+            else
+                "Function type notation must be parenthesized when used in a union type.",
+            .intersection_type => if (is_constructor)
+                "Constructor type notation must be parenthesized when used in an intersection type."
+            else
+                "Function type notation must be parenthesized when used in an intersection type.",
+        };
+        try self.reportCodeAt(type_span.start, self.lineAt(type_span.start), code, message);
+        return node;
+    }
+
+    fn isStartOfFunctionOrConstructorType(self: *const Parser) bool {
+        return self.isStartOfConstructorType() or self.isStartOfFunctionType();
+    }
+
+    fn isStartOfConstructorType(self: *const Parser) bool {
+        return self.peek().kind == .kw_new or
+            (self.peek().kind == .kw_abstract and self.peekAt(1).kind == .kw_new);
+    }
+
+    fn isStartOfFunctionType(self: *const Parser) bool {
+        return switch (self.peek().kind) {
+            .less_than => true,
+            .open_paren => self.parenStartsDirectFunctionType(),
+            else => false,
+        };
+    }
+
+    fn parenStartsDirectFunctionType(self: *const Parser) bool {
+        var depth: i32 = 0;
+        var i = self.cursor;
+        while (i < self.tokens.len) : (i += 1) {
+            const tk = self.tokens[i].kind;
+            switch (tk) {
+                .open_paren, .open_bracket, .open_brace, .less_than => depth += 1,
+                .close_paren, .close_bracket, .close_brace, .greater_than, .greater_greater, .greater_greater_greater => {
+                    const count: u8 = switch (tk) {
+                        .greater_greater => 2,
+                        .greater_greater_greater => 3,
+                        else => 1,
+                    };
+                    var n: u8 = 0;
+                    while (n < count) : (n += 1) {
+                        depth -= 1;
+                        if (depth == 0) {
+                            return i + 1 < self.tokens.len and self.tokens[i + 1].kind == .arrow;
+                        }
+                    }
+                    if (depth < 0) return false;
+                },
+                .eof => return false,
+                else => {},
+            }
+        }
+        return false;
     }
 
     /// `keyof T`, `typeof e`, `infer X`, `readonly T[]` (modifier
@@ -21718,6 +21800,72 @@ test "parser: 'export function await' at module top-level reports TS1262 on awai
         if (d.code == 1262 and d.pos == expected_pos) saw_ts1262 = true;
     }
     try T.expect(saw_ts1262);
+}
+
+test "parser: function and constructor types in union or intersection require parentheses" {
+    const cases = [_]struct {
+        src: []const u8,
+        code: u32,
+        anchor: []const u8,
+        message: []const u8,
+    }{
+        .{
+            .src = "type T = string | () => void;",
+            .code = 1385,
+            .anchor = "()",
+            .message = "Function type notation must be parenthesized when used in a union type.",
+        },
+        .{
+            .src = "type T = | <T>() => T;",
+            .code = 1385,
+            .anchor = "<T>",
+            .message = "Function type notation must be parenthesized when used in a union type.",
+        },
+        .{
+            .src = "type T = A | new () => C;",
+            .code = 1386,
+            .anchor = "new",
+            .message = "Constructor type notation must be parenthesized when used in a union type.",
+        },
+        .{
+            .src = "type T = A & () => void;",
+            .code = 1387,
+            .anchor = "()",
+            .message = "Function type notation must be parenthesized when used in an intersection type.",
+        },
+        .{
+            .src = "type T = & new () => C;",
+            .code = 1388,
+            .anchor = "new",
+            .message = "Constructor type notation must be parenthesized when used in an intersection type.",
+        },
+    };
+    for (cases) |case| {
+        var s = try newTestSetup(case.src);
+        defer destroyTestSetup(s);
+        _ = s.parser.parseSourceFile() catch {};
+        const d = findDiag(s, case.code) orelse return error.TestExpectedEqual;
+        try T.expectEqualStrings(case.message, d.message);
+        try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, case.src, case.anchor).?)), d.pos);
+    }
+}
+
+test "parser: parenthesized function and constructor types do not report TS1385-TS1388" {
+    const cases = [_][]const u8{
+        "type T = string | (() => void);",
+        "type T = A | (new () => C);",
+        "type T = A & (() => void);",
+        "type T = A & (new () => C);",
+    };
+    for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(u32, 0), countDiag(s, 1385));
+        try T.expectEqual(@as(u32, 0), countDiag(s, 1386));
+        try T.expectEqual(@as(u32, 0), countDiag(s, 1387));
+        try T.expectEqual(@as(u32, 0), countDiag(s, 1388));
+    }
 }
 
 test "parser: bare 'module \"Foo\" {}' reports TS1035 on the quoted name" {
