@@ -4308,11 +4308,27 @@ pub const Parser = struct {
                 try members.append(self.gpa, block);
                 continue;
             }
-            // TS1244: `abstract` modifier on a member can only appear
-            // inside an abstract class. Emit at the `abstract` token.
+            // TS1244 / TS1253: `abstract` modifier on a member can
+            // only appear inside an abstract class. Distinguish:
+            // - method shape (`abstract foo()` / `abstract foo<T>()`)
+            //   → TS1244 ("Abstract methods can only appear within
+            //   an abstract class.")
+            // - property shape (`abstract bar;` / `abstract bar: T;` /
+            //   `abstract bar?:` / `abstract bar = …`) → TS1253
+            //   ("Abstract properties can only appear within an
+            //   abstract class.")
+            // Mirrors upstream `errorInUnnamedClassExpression.ts(7,5)`.
             if (mods.is_abstract and !self.class_is_abstract) {
                 if (mods.abstract_token) |at| {
-                    try self.reportCodeAt(at.span.start, at.line, 1244, "Abstract methods can only appear within an abstract class.");
+                    // After the modifiers list, peek() is the member
+                    // name slot, peekAt(1) is the disambiguator.
+                    const after_name = self.peekAt(1).kind;
+                    const is_method_shape = after_name == .open_paren or after_name == .less_than;
+                    if (is_method_shape) {
+                        try self.reportCodeAt(at.span.start, at.line, 1244, "Abstract methods can only appear within an abstract class.");
+                    } else {
+                        try self.reportCodeAt(at.span.start, at.line, 1253, "Abstract properties can only appear within an abstract class.");
+                    }
                 }
             }
             // TS1243: `private` modifier cannot be used with `abstract`

@@ -30202,6 +30202,34 @@ test "conformance: importDeclarationInModuleDeclaration1 matches TS1147 baseline
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: errorInUnnamedClassExpression matches TS1253 baseline" {
+    // Regression pin for TS1253. Upstream:
+    //   errorInUnnamedClassExpression.ts(7,5): error TS1253: Abstract \
+    //     properties can only appear within an abstract class.
+    // Pre-fix the parser emitted TS1244 for both abstract methods AND
+    // abstract properties. tsc distinguishes the two: TS1244 only for
+    // methods, TS1253 for property-shape members. The fix peeks ahead
+    // at the disambiguator after the member name: `(` / `<` indicates
+    // method, anything else (`;`, `:`, `?`, `=`) indicates property.
+    const result = try runOneEntry(T.allocator, .{
+        .name = "errorInUnnamedClassExpressionPropertyOnly",
+        .path = "errorInUnnamedClassExpressionPropertyOnly.ts",
+        .source =
+        \\let Foo = class {
+        \\    abstract bar;
+        \\};
+        ,
+        .expects_error = true,
+        .expected_errors = "TS1253",
+        .use_exact_errors = false,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: emptyThenWarning matches TS1313 baseline" {
     // Regression pin for TS1313. Upstream:
     //   emptyThenWarning.ts(1,6): error TS1313: The body of an 'if' \
