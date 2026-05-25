@@ -1252,6 +1252,31 @@ test "Resolver: paths mapping with wildcard" {
     try T.expectEqual(Resolution.Source.paths_mapping, res.source);
 }
 
+test "Resolver: REPRO paths mapping with extension-like name resolves to directory index" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    // Mirrors pathMappingBasedModuleResolution_withExtensionInName.ts:
+    // baseUrl "." (root "/"), paths { "*": ["foo/*"] }, and the module
+    // specifier "zone.js" / "zone.tsx" is a DIRECTORY name whose `.js`/
+    // `.tsx` suffix is part of the package name, not a file extension.
+    try vfs.addFile("/foo/zone.js/index.d.ts", "export const x: number;");
+    try vfs.addFile("/foo/zone.tsx/index.d.ts", "export const y: number;");
+    try vfs.addFile("/a.ts", "");
+
+    const paths = [_]Config.PathEntry{
+        .{ .pattern = "*", .targets = &.{"foo/*"} },
+    };
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .base_url = "/",
+        .paths = &paths,
+    });
+    defer r.deinit();
+    const res_js = try r.resolve("zone.js", "/a.ts");
+    try T.expectEqualStrings("/foo/zone.js/index.d.ts", res_js.path);
+    const res_tsx = try r.resolve("zone.tsx", "/a.ts");
+    try T.expectEqualStrings("/foo/zone.tsx/index.d.ts", res_tsx.path);
+}
+
 test "Resolver: node_modules walk" {
     var vfs = VirtualFs.init(T.allocator);
     defer vfs.deinit();

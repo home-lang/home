@@ -1016,6 +1016,121 @@ pub const StrictFlags = struct {
     always_strict: bool = false,
 };
 
+/// Match a tsconfig `paths` pattern (which may contain a single `*`
+/// wildcard) against the LITERAL module specifier string. Returns the
+/// substring captured by `*` (empty for an exact, wildcard-free match),
+/// or null on mismatch. Mirrors tsc's `matchPatternOrExact` /
+/// `tryParsePatterns`: matching is on the raw specifier — an embedded
+/// `.js`/`.tsx` is NOT treated as an extension to strip.
+fn matchPathsPattern(pattern: []const u8, spec: []const u8) ?[]const u8 {
+    if (std.mem.indexOfScalar(u8, pattern, '*')) |star| {
+        const prefix = pattern[0..star];
+        const suffix = pattern[star + 1 ..];
+        if (spec.len < prefix.len + suffix.len) return null;
+        if (!std.mem.startsWith(u8, spec, prefix)) return null;
+        if (!std.mem.endsWith(u8, spec, suffix)) return null;
+        return spec[prefix.len .. spec.len - suffix.len];
+    }
+    if (std.mem.eql(u8, pattern, spec)) return "";
+    return null;
+}
+
+/// Return the raw text between the matching braces of the JSON object
+/// value bound to `key` inside `src` (e.g. the `{ ... }` after
+/// `"paths"`). Brace-balanced and string-aware so quoted braces don't
+/// throw off the depth count. Returns null when the key or a `{`-shaped
+/// value is absent.
+fn jsonObjectValueOf(src: []const u8, key: []const u8) ?[]const u8 {
+    // Build the quoted key (`"paths"`) in a small fixed buffer to avoid
+    // an allocation; tsconfig option names are short.
+    var key_buf: [64]u8 = undefined;
+    if (key.len + 2 > key_buf.len) return null;
+    key_buf[0] = '"';
+    @memcpy(key_buf[1 .. 1 + key.len], key);
+    key_buf[1 + key.len] = '"';
+    const quoted_key = key_buf[0 .. key.len + 2];
+    const key_at = std.mem.indexOf(u8, src, quoted_key) orelse return null;
+    const open = std.mem.indexOfScalarPos(u8, src, key_at + quoted_key.len, '{') orelse return null;
+    var depth: usize = 0;
+    var i = open;
+    var in_string = false;
+    while (i < src.len) : (i += 1) {
+        const c = src[i];
+        if (in_string) {
+            if (c == '\\') {
+                i += 1;
+            } else if (c == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        switch (c) {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if (depth == 0) return src[open + 1 .. i];
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+/// Iterates the `"pattern": [ ... ]` entries of a tsconfig `paths`
+/// object body (the text BETWEEN its outer braces). Each `next()`
+/// yields the pattern key and the raw array body for its substitutions.
+const JsonPathsEntryIterator = struct {
+    src: []const u8,
+    pos: usize = 0,
+
+    const Entry = struct { pattern: []const u8, targets: []const u8 };
+
+    fn next(self: *JsonPathsEntryIterator) ?Entry {
+        while (self.pos < self.src.len) {
+            const key_start = std.mem.indexOfScalarPos(u8, self.src, self.pos, '"') orelse return null;
+            const key_end = jsonStringContentEnd(self.src, key_start + 1) orelse return null;
+            const pattern = self.src[key_start + 1 .. key_end];
+            const colon = std.mem.indexOfScalarPos(u8, self.src, key_end + 1, ':') orelse return null;
+            const arr_open = std.mem.indexOfScalarPos(u8, self.src, colon + 1, '[') orelse return null;
+            const arr_close = std.mem.indexOfScalarPos(u8, self.src, arr_open + 1, ']') orelse return null;
+            self.pos = arr_close + 1;
+            return .{ .pattern = pattern, .targets = self.src[arr_open + 1 .. arr_close] };
+        }
+        return null;
+    }
+};
+
+/// Iterates the quoted strings inside a JSON array body (the text
+/// BETWEEN `[` and `]`). Used to walk a `paths` entry's substitution
+/// list.
+const JsonStringArrayIterator = struct {
+    src: []const u8,
+    pos: usize = 0,
+
+    fn next(self: *JsonStringArrayIterator) ?[]const u8 {
+        const start = std.mem.indexOfScalarPos(u8, self.src, self.pos, '"') orelse return null;
+        const end = jsonStringContentEnd(self.src, start + 1) orelse return null;
+        self.pos = end + 1;
+        return self.src[start + 1 .. end];
+    }
+};
+
+/// Index of the closing `"` of a JSON string whose content begins at
+/// `content_start` (i.e. just past the opening quote), honoring `\`
+/// escapes. Returns null when unterminated.
+fn jsonStringContentEnd(src: []const u8, content_start: usize) ?usize {
+    var i = content_start;
+    while (i < src.len) : (i += 1) {
+        if (src[i] == '\\') {
+            i += 1;
+            continue;
+        }
+        if (src[i] == '"') return i;
+    }
+    return null;
+}
+
 pub const Checker = struct {
     gpa: std.mem.Allocator,
     hir: *Hir,
@@ -23017,7 +23132,102 @@ pub const Checker = struct {
         if (subpath.len == 0 and try self.virtualPackageHasAnyImplementation("node_modules", package_name)) return .implementation;
         if (try self.virtualPackageHasImplementation("", package_name, subpath)) return .implementation;
         if (subpath.len == 0 and try self.virtualPackageHasAnyImplementation("", package_name)) return .implementation;
+
+        // tsconfig `paths` mapping fallback. tsc resolves a non-relative
+        // specifier against the `paths` patterns by matching the LITERAL
+        // specifier string (with `*` wildcards) — an embedded `.js` /
+        // `.tsx` in the specifier is part of the package name, NOT a file
+        // extension to strip (see `tryParsePatterns` / `matchPatternOrExact`
+        // upstream, and `pathMappingBasedModuleResolution_withExtensionInName`).
+        // We only consult `paths` after the normal package scan came up
+        // empty, mirroring tsc's ordering and keeping the fast path
+        // untouched for fixtures without a `paths` mapping.
+        return try self.resolveVirtualBareModuleViaPaths(spec);
+    }
+
+    /// Apply the virtual-section `tsconfig.json` `paths` mapping to a
+    /// non-relative `spec` and re-resolve the substituted target through
+    /// the package-scan helpers. Returns `.none` when there is no
+    /// tsconfig `paths` block, no matching pattern, or no mapped target
+    /// resolves. The substituted target is resolved with the SAME
+    /// declaration/implementation virtual probes (which never strip an
+    /// embedded extension), so `zone.js` mapped to `foo/zone.js` finds
+    /// `foo/zone.js/index.d.ts`.
+    fn resolveVirtualBareModuleViaPaths(self: *Checker, spec: []const u8) CheckError!VirtualModuleResolution {
+        const tsconfig = self.virtualTsconfigSectionText() orelse return .none;
+        const paths_obj = jsonObjectValueOf(tsconfig, "paths") orelse return .none;
+
+        var it = JsonPathsEntryIterator{ .src = paths_obj };
+        while (it.next()) |entry| {
+            const captured = matchPathsPattern(entry.pattern, spec) orelse continue;
+            var targets = JsonStringArrayIterator{ .src = entry.targets };
+            while (targets.next()) |target| {
+                // Substitute the captured `*` text into the target's `*`
+                // (literal targets pass through unchanged), then strip a
+                // single leading `./` so the result is root-relative —
+                // `baseUrl: "."` anchors mappings at the project root,
+                // which is the virtual-section root the package scan uses.
+                const mapped = self.substitutePathsTarget(target, captured) catch return error.OutOfMemory;
+                defer self.gpa.free(mapped);
+                if (mapped.len == 0 or std.mem.startsWith(u8, mapped, ".")) continue;
+                const ms = packageNameEnd(mapped);
+                const mapped_pkg = mapped[0..ms];
+                const mapped_sub = if (ms < mapped.len) mapped[ms + 1 ..] else "";
+                // Declaration first (typed), then implementation, mirroring
+                // the package scan above. Only the non-`node_modules` root
+                // applies — `paths` targets are project-relative.
+                if (try self.virtualPackageHasDeclaration("", mapped_pkg, mapped_sub)) return .declaration;
+                if (try self.virtualPackageHasImplementation("", mapped_pkg, mapped_sub)) return .implementation;
+            }
+        }
         return .none;
+    }
+
+    /// Substitute the captured wildcard text into `target`. Replaces the
+    /// first `*` (tsc allows one wildcard per target) and strips one
+    /// leading `./`. Caller owns the returned bytes.
+    fn substitutePathsTarget(self: *Checker, target: []const u8, captured: []const u8) ![]u8 {
+        const body = if (std.mem.startsWith(u8, target, "./")) target[2..] else target;
+        if (std.mem.indexOfScalar(u8, body, '*')) |at| {
+            return std.fmt.allocPrint(self.gpa, "{s}{s}{s}", .{ body[0..at], captured, body[at + 1 ..] });
+        }
+        return self.gpa.dupe(u8, body);
+    }
+
+    /// Extract the raw text of the `@filename: tsconfig.json` virtual
+    /// section from `self.source`, un-commenting the lines the
+    /// conformance harness prefixes with `// `. Returns a slice into a
+    /// scratch buffer owned by the checker arena; `null` when no
+    /// tsconfig section is present. Lightweight on purpose — only the
+    /// `paths` block is consumed downstream.
+    fn virtualTsconfigSectionText(self: *Checker) ?[]const u8 {
+        const src = self.source orelse return null;
+        var lines = std.mem.splitScalar(u8, src, '\n');
+        var in_section = false;
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        while (lines.next()) |raw| {
+            const line = std.mem.trim(u8, raw, " \t\r");
+            if (std.mem.indexOf(u8, line, "@filename:") != null or
+                std.mem.indexOf(u8, line, "@Filename:") != null)
+            {
+                if (in_section) break; // next section terminates the block
+                const marker = std.mem.indexOf(u8, line, "@filename:") orelse
+                    std.mem.indexOf(u8, line, "@Filename:").?;
+                var path = std.mem.trim(u8, line[marker + "@filename:".len ..], " \t\r");
+                while (std.mem.startsWith(u8, path, "/")) path = path[1..];
+                while (std.mem.startsWith(u8, path, "./")) path = path[2..];
+                in_section = std.ascii.eqlIgnoreCase(path, "tsconfig.json");
+                continue;
+            }
+            if (!in_section) continue;
+            // Un-comment the harness-prefixed payload line.
+            var payload = line;
+            if (std.mem.startsWith(u8, payload, "//")) payload = std.mem.trimStart(u8, payload[2..], " \t");
+            buf.appendSlice(self.diag_arena.allocator(), payload) catch return null;
+            buf.append(self.diag_arena.allocator(), '\n') catch return null;
+        }
+        if (buf.items.len == 0) return null;
+        return buf.items;
     }
 
     fn resolveVirtualRelativePath(self: *Checker, from: []const u8, spec: []const u8) CheckError![]u8 {
@@ -72442,6 +72652,74 @@ test "checker: virtual node_modules declaration satisfies bare import" {
         \\// @filename: /main.ts
         \\import { x } from "foo";
         \\x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_module);
+    }
+}
+
+test "checker: paths mapping with extension-like package name resolves (no TS2307)" {
+    // Mirrors pathMappingBasedModuleResolution_withExtensionInName.ts:
+    // a `paths` mapping `"*": ["foo/*"]` routes the bare specifier
+    // `zone.js` / `zone.tsx` — whose `.js`/`.tsx` suffix is part of the
+    // PACKAGE NAME, not a file extension — to a real directory under
+    // `foo/` with an `index.d.ts`. The legacy virtual-section scan must
+    // honor the `paths` mapping and must NOT treat the embedded `.js`/
+    // `.tsx` as an extension to strip, so no spurious TS2307 fires.
+    // The `tsconfig.json` section is comment-prefixed exactly as the
+    // conformance harness's `stripNonCodeVirtualSections` rewrites it
+    // before the legacy single-source checker sees it.
+    const s = try newSetup(
+        \\// @filename: /tsconfig.json
+        \\// { "compilerOptions": { "baseUrl": ".", "paths": { "*": ["foo/*"] } } }
+        \\// @filename: /foo/zone.js/index.d.ts
+        \\export const x: number;
+        \\// @filename: /foo/zone.tsx/index.d.ts
+        \\export const y: number;
+        \\// @filename: /a.ts
+        \\import { x } from "zone.js";
+        \\import { y } from "zone.tsx";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_module);
+    }
+}
+
+test "checker: paths mapping still reports TS2307 for a genuinely missing module" {
+    // Negative guard: a `paths` mapping that points at a non-existent
+    // target must still surface TS2307 — the fix must not blanket-
+    // suppress the diagnostic for any paths-mapped specifier.
+    const s = try newSetup(
+        \\// @filename: /tsconfig.json
+        \\// { "compilerOptions": { "baseUrl": ".", "paths": { "*": ["foo/*"] } } }
+        \\// @filename: /foo/zone.js/index.d.ts
+        \\export const x: number;
+        \\// @filename: /a.ts
+        \\import { z } from "nope.js";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_module) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: paths mapping resolves an ordinary aliased package (no TS2307)" {
+    // Negative guard #2: a conventional `@/*` → `src/*` alias (no
+    // embedded extension) must keep resolving after the fix.
+    const s = try newSetup(
+        \\// @filename: /tsconfig.json
+        \\// { "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["src/*"] } } }
+        \\// @filename: /src/lib/index.d.ts
+        \\export const v: number;
+        \\// @filename: /a.ts
+        \\import { v } from "@/lib";
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
