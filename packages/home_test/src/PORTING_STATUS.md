@@ -964,6 +964,14 @@ The copied `bake/deinitialization.test.ts`,
 `bake/dev/stress.test.ts` fixtures now pass as `3` parent tests through
 the existing Bake harness shim, child `bunExe()` execution, `Bun.write`,
 `Bun.sleep`, and `import.meta` child-process coverage.
+The copied `bake/dev-and-prod.test.ts`, `bake/dev/bundle.test.ts`,
+`bake/dev/css.test.ts`, `bake/dev/ecosystem.test.ts`,
+`bake/dev/esm.test.ts`, `bake/dev/hot.test.ts`,
+`bake/dev/html.test.ts`, `bake/dev/import-meta-inline.test.ts`,
+`bake/dev/incremental-graph-edge-deletion.test.ts`,
+`bake/dev/plugins.test.ts`, `bake/dev/production.test.ts`, and
+`bake/dev/react-response.test.ts` fixtures now pass as `102` tests plus
+`2` upstream todos through the existing Bake dev harness model.
 The copied `bundler/bundler_comments.test.ts` fixture now passes as
 `42` tests by lowering `node:module.SourceMap` into the Home bootstrap
 module table and erasing Bun's copied TypeScript postfix non-null
