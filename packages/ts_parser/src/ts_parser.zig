@@ -406,8 +406,21 @@ pub const Parser = struct {
             return tok;
         }
         const tok = self.tokens[self.cursor];
+        if (tok.kind.isKeyword() and tok.flags.has_escape) {
+            self.reportEscapedKeywordNoFail(tok);
+        }
         if (tok.kind != .eof) self.cursor += 1;
         return tok;
+    }
+
+    fn reportEscapedKeywordNoFail(self: *Parser, tok: Token) void {
+        self.diagnostics.append(self.gpa, .{
+            .pos = tok.span.start,
+            .line = tok.line,
+            .span_len = tok.span.end - tok.span.start,
+            .code = 1260,
+            .message = "Keywords cannot contain escape characters.",
+        }) catch {};
     }
 
     fn pendingTypeGreaterToken(self: *const Parser, offset: u32) Token {
@@ -6660,12 +6673,17 @@ pub const Parser = struct {
 
         // export default <expr>;
         if (self.match(.kw_default)) {
-            // `export default` acts as a modifier on the following
-            // declaration/value. Nested in a block, upstream tsc reports
-            // TS1184 on the declaration forms and TS1258 on the value
-            // form; Home reports TS1184 uniformly (TS1258 is unimplemented).
-            try self.reportModifierInBlock(start);
-            if (self.namespace_depth > 0 and self.ambient_depth == 0) {
+            const default_starts_declaration = switch (self.peek().kind) {
+                .kw_class, .kw_function, .kw_interface => true,
+                .kw_async => self.peekAt(1).kind == .kw_function,
+                else => false,
+            };
+            if (default_starts_declaration) {
+                try self.reportModifierInBlock(start);
+            } else if (self.moduleElementContextIsIllegal()) {
+                try self.reportCodeAt(start.span.start, start.line, 1258, "A default export must be at the top level of a file or module declaration.");
+            }
+            if (!self.moduleElementContextIsIllegal() and self.namespace_depth > 0 and self.ambient_depth == 0) {
                 try self.reportCodeAt(start.span.start, start.line, 1319, "A default export can only be used in an ECMAScript-style module.");
             }
             // `export default` may be followed by a class/function
@@ -8583,7 +8601,7 @@ pub const Parser = struct {
         var elems: std.ArrayListUnmanaged(NodeId) = .empty;
         defer elems.deinit(self.gpa);
         var saw_optional = false;
-        var saw_rest = false;
+        var saw_definite_rest = false;
         var reported_tuple_order_error = false;
         while (self.peek().kind != .close_bracket and self.peek().kind != .eof) {
             // Accept (and ignore for now) leading labelled tuple
@@ -8647,13 +8665,14 @@ pub const Parser = struct {
             } else if ((saw_label_before_type or saw_label_after_rest) and trailing_optional) {
                 try self.reportCodeAt(elem_start, elem_line, 5086, "A labeled tuple element is declared as optional with a question mark after the name and before the colon, rather than after the type.");
             }
+            const is_definite_rest = has_rest and self.hir.kindOf(e) == .array_type;
             if (!reported_tuple_order_error and has_rest) {
-                if (saw_rest) {
+                if (saw_definite_rest) {
                     reported_tuple_order_error = true;
                     try self.reportCodeAt(rest_tok.span.start, rest_tok.line, 1265, "A rest element cannot follow another rest element.");
                 }
-                saw_rest = true;
-            } else if (!reported_tuple_order_error and this_optional and saw_rest) {
+                if (is_definite_rest) saw_definite_rest = true;
+            } else if (!reported_tuple_order_error and this_optional and saw_definite_rest) {
                 reported_tuple_order_error = true;
                 try self.reportCodeAt(elem_start, elem_line, 1266, "An optional element cannot follow a rest element.");
             }
@@ -15759,6 +15778,16 @@ test "parser: tuple rest element cannot follow rest element emits TS1265" {
     try T.expect(found);
 }
 
+test "parser: generic variadic tuple rest can precede inferred rest" {
+    var s = try newTestSetup("type T<Args extends unknown[]> = [head: string] extends [...Args, ...infer Rest] ? Rest : never;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |diag| {
+        try T.expect(diag.code != 1265);
+        try T.expect(diag.code != 1266);
+    }
+}
+
 test "parser: tuple optional element cannot follow rest element emits TS1266" {
     var s = try newTestSetup("type T = [number, ...string[], boolean?];");
     defer destroyTestSetup(s);
@@ -16439,6 +16468,34 @@ test "parser: namespace export assignment forms report diagnostics" {
     try T.expectEqual(@as(u32, 1063), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 1319), s.parser.diagnostics.items[1].code);
     try T.expectEqualStrings("A default export can only be used in an ECMAScript-style module.", s.parser.diagnostics.items[1].message);
+}
+
+test "parser: nested default export expression reports TS1258" {
+    var s = try newTestSetup(
+        \\if (cond) {
+        \\  export default value;
+        \\}
+        \\if (cond) {
+        \\  export default class C {}
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1258), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("A default export must be at the top level of a file or module declaration.", s.parser.diagnostics.items[0].message);
+    try T.expectEqual(@as(u32, 1184), s.parser.diagnostics.items[1].code);
+}
+
+test "parser: escaped keywords report TS1260" {
+    var s = try newTestSetup("cl\\u0061ss C {}");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1260), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Keywords cannot contain escape characters.", s.parser.diagnostics.items[0].message);
 }
 
 test "parser: ambient external module permits export assignment" {

@@ -144,6 +144,14 @@ for (const file of sourceFiles) {
       const code = Number(m[1]);
       if (byCode.has(code)) addRef(code, file, i + 1, kindAtLine(i + 1));
     }
+    const window = lineList.slice(i, Math.min(i + 8, lineList.length)).join("\n");
+    for (const m of window.matchAll(/\b(\d{4,5})\b/g)) {
+      const code = Number(m[1]);
+      if (!byCode.has(code)) continue;
+      const before = window.slice(0, m.index);
+      const offset = (before.match(/\n/g) || []).length;
+      addRef(code, file, i + offset + 1, kindAtLine(i + offset + 1));
+    }
   }
 }
 

@@ -512,13 +512,7 @@ pub const Scanner = struct {
         const slice = self.source[start..self.pos];
         var f = flags;
         f.has_escape = flags.has_escape or has_escape;
-        // Keyword classification only fires on the raw byte slice;
-        // tokens that contain `\uXXXX` escapes stay as identifiers even
-        // when their decoded form would be a reserved word. The parser
-        // handles the TS1260 "Keywords cannot contain escape characters"
-        // diagnostic when an escape-bearing identifier reaches a
-        // reserved-word position.
-        const k = if (keywords.lookup(slice)) |kw| blk: {
+        const k = if (keywords.lookup(slice) orelse escapedKeywordKind(slice, f.has_escape)) |kw| blk: {
             f.contextual = TokenKind.isContextualKeyword(kw);
             break :blk kw;
         } else TokenKind.identifier;
@@ -528,6 +522,57 @@ pub const Scanner = struct {
             .flags = f,
             .line = line,
         };
+    }
+
+    fn escapedKeywordKind(slice: []const u8, has_escape: bool) ?TokenKind {
+        if (!has_escape) return null;
+        var decoded: [16]u8 = undefined;
+        var out: usize = 0;
+        var i: usize = 0;
+        while (i < slice.len) {
+            var cp: u32 = slice[i];
+            if (slice[i] == '\\' and i + 1 < slice.len and slice[i + 1] == 'u') {
+                const parsed = parseIdentifierEscape(slice, i) orelse return null;
+                cp = parsed.cp;
+                i = parsed.next;
+            } else {
+                i += 1;
+            }
+            if (cp > 0x7f or out >= decoded.len) return null;
+            decoded[out] = @intCast(cp);
+            out += 1;
+        }
+        return keywords.lookup(decoded[0..out]);
+    }
+
+    const ParsedIdentifierEscape = struct {
+        cp: u32,
+        next: usize,
+    };
+
+    fn parseIdentifierEscape(slice: []const u8, start: usize) ?ParsedIdentifierEscape {
+        if (start + 2 >= slice.len) return null;
+        if (slice[start] != '\\' or slice[start + 1] != 'u') return null;
+        if (slice[start + 2] == '{') {
+            var value: u32 = 0;
+            var i = start + 3;
+            if (i >= slice.len) return null;
+            while (i < slice.len and slice[i] != '}') : (i += 1) {
+                if (!isHexDigit(slice[i])) return null;
+                value = value * 16 + hexValue(slice[i]);
+                if (value > 0x10FFFF) return null;
+            }
+            if (i >= slice.len or slice[i] != '}') return null;
+            return .{ .cp = value, .next = i + 1 };
+        }
+        if (start + 6 > slice.len) return null;
+        var value: u32 = 0;
+        var i = start + 2;
+        while (i < start + 6) : (i += 1) {
+            if (!isHexDigit(slice[i])) return null;
+            value = value * 16 + hexValue(slice[i]);
+        }
+        return .{ .cp = value, .next = start + 6 };
     }
 
     fn scanPrivateIdentifier(self: *Scanner, start: u32, line: u32, flags: TokenFlags) Token {
@@ -1503,6 +1548,19 @@ test "Scanner: keywords" {
     try t.expectEqual(TokenKind.kw_satisfies, toks.items[3].kind);
     try t.expectEqual(TokenKind.kw_async, toks.items[4].kind);
     try t.expectEqual(TokenKind.kw_await, toks.items[5].kind);
+}
+
+test "Scanner: escaped keywords classify as keywords and preserve escape flag" {
+    var s = Scanner.init(t.allocator, "cl\\u0061ss \\u0061sync");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+
+    try t.expectEqual(TokenKind.kw_class, toks.items[0].kind);
+    try t.expect(toks.items[0].flags.has_escape);
+    try t.expectEqual(TokenKind.kw_async, toks.items[1].kind);
+    try t.expect(toks.items[1].flags.has_escape);
+    try t.expect(toks.items[1].flags.contextual);
 }
 
 test "Scanner: numeric literals" {

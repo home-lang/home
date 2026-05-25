@@ -3621,7 +3621,7 @@ pub const builtin_corpus = [_]CorpusEntry{
     .{ .name = "17-typeof-narrowing", .source = "function f(x: any) { if (typeof x === \"string\") { let s = x; } }" },
     .{ .name = "18-class-extends", .source = "class A {} class B extends A {}" },
     .{ .name = "19-arrow-with-types", .source = "let f: (n: number) => string = (n) => \"x\";" },
-    .{ .name = "20-tsx", .source = "const Foo = (props: { bar: number }) => null; let v = <Foo bar={1} />;", .is_tsx = true },
+    .{ .name = "20-tsx", .source = "// @jsx: preserve\nconst Foo = (props: { bar: number }) => null; let v = <Foo bar={1} />;", .is_tsx = true },
     .{ .name = "21-decorator", .source = "declare var dec: any;\n@dec class Foo {}" },
     .{ .name = "22-export", .source = "export function f(): number { return 1; }" },
     .{ .name = "23-import-default", .source = "import React from \"react\"; React;" },
