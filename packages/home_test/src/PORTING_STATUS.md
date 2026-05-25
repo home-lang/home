@@ -913,6 +913,10 @@ through the `bun:internal-for-testing.highlightJavaScript` bootstrap
 model. It covers the template-literal interpolation path from Bun's
 quick JavaScript syntax highlighter; the pure Zig `fmtJavaScript` /
 `fmt_jsc` binding port remains the native follow-up.
+The copied `js/bun/util/highlighter.test.ts` fixture now passes as `1`
+test through the same `highlightJavaScript` bootstrap model. It covers
+the Bun utility-facing import path and bounds the formatter output for
+nested template-literal interpolation inputs.
 The copied `cli/test/pass-with-no-tests.test.ts` fixture now passes as
 `5` tests through the subprocess bootstrap model. It covers lexical
 `bun:test` import detection around embedded fixture source strings plus

@@ -167,6 +167,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/process-binding.test.ts",
     "js/bun/test/test-timers.test.ts",
     "internal/highlighter.test.ts",
+    "js/bun/util/highlighter.test.ts",
     "internal/int_from_float.test.ts",
     "cli/test/pass-with-no-tests.test.ts",
     "js/bun/http/bun-serve-body-json-async.test.ts",
