@@ -36107,6 +36107,148 @@ pub const Checker = struct {
         return self.interner.objectMember(obj_t, name);
     }
 
+    /// The parameter type a member call signature presents at call
+    /// position `i`, mirroring tsc's `getTypeAtPosition`: fixed params
+    /// yield their declared type; positions covered by a trailing rest
+    /// param yield the rest element type; positions past the end yield
+    /// `any` (out-of-range, which absorbs any subtype comparison).
+    fn memberSignatureTypeAtPosition(self: *Checker, sig: TypeId, i: usize) TypeId {
+        const params = self.interner.signatureParams(sig);
+        const has_rest = self.rest_signatures.contains(sig) and params.len > 0;
+        const fixed: usize = if (has_rest) params.len - 1 else params.len;
+        if (i < fixed) return params[i];
+        if (has_rest) {
+            const rest_t = params[params.len - 1];
+            const elem = self.interner.objectNumberIndex(rest_t);
+            return if (elem != types.Primitive.none) elem else rest_t;
+        }
+        return types.Primitive.any;
+    }
+
+    /// Whether call signature `s` absorbs member call signature `m`,
+    /// modeling tsc's `getUnionSignatures` first-pass subsumption
+    /// (`isMatchingSignature` partial match + `compareSignaturesIdentical`
+    /// with `ignoreReturnTypes`). `s` absorbs `m` when `m` requires no
+    /// more arguments than `s` (so a call valid for `s` is valid for `m`)
+    /// and, for each of `s`'s parameter positions, `s`'s parameter type
+    /// is a subtype of `m`'s — i.e. `s` is at least as permissive.
+    fn unionCallSignatureAbsorbs(self: *Checker, s: TypeId, m: TypeId, s_param_count: usize) bool {
+        const s_min = self.signatureMinRequiredArgs(s, self.interner.signatureParams(s));
+        const m_min = self.signatureMinRequiredArgs(m, self.interner.signatureParams(m));
+        if (m_min > s_min) return false;
+        var i: usize = 0;
+        while (i < s_param_count) : (i += 1) {
+            const s_param = self.memberSignatureTypeAtPosition(s, i);
+            const m_param = self.memberSignatureTypeAtPosition(m, i);
+            if (s_param == types.Primitive.any or m_param == types.Primitive.any) continue;
+            if (!(self.engine.isSubtypeOf(s_param, m_param) catch true)) return false;
+        }
+        return true;
+    }
+
+    /// Faithful, conservative arity check for a call on a union of call
+    /// signatures (`F1 | F2 | ...`). tsc resolves such a union to a set
+    /// of combined call signatures via `getUnionSignatures` and reports
+    /// TS2554 when no resolved signature accepts the argument count.
+    ///
+    /// We reproduce the common first-pass case: the resolved signatures
+    /// are the union members that *subsume* every other member. When all
+    /// such subsumers are rest-free the union's accepted arity is bounded,
+    /// so a too-few/too-many argument count is a genuine TS2554 (matches
+    /// `unionTypeCallSignatures4.ts`, where `F5 = (a, b)` subsumes the
+    /// union and pins the arity to exactly 2). When no rest-free subsumer
+    /// exists (e.g. `F3 | F4`, whose combined signature keeps a rest
+    /// parameter) the arity is unbounded — we emit nothing and leave the
+    /// caller's permissive `any` result intact, so valid union calls stay
+    /// clean. Returns `true` when a diagnostic was emitted.
+    fn checkUnionCallableArity(
+        self: *Checker,
+        node: NodeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        callee_t: TypeId,
+    ) CheckError!bool {
+        if (callee_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(callee_t).is_union) return false;
+        const members = self.interner.unionMembers(callee_t);
+        if (members.len < 2) return false;
+        // Spread arguments expand to a variable count; arity reasoning for
+        // them needs the full combined-signature machinery — bail.
+        for (args) |a| if (self.hir.kindOf(a) == .spread) return false;
+        // Collect each member's single bare call signature. Anything more
+        // exotic (objects with call members, construct signatures, member
+        // overload bundles) is left to the existing permissive path.
+        var sigs = std.ArrayListUnmanaged(TypeId).empty;
+        defer sigs.deinit(self.gpa);
+        for (members) |m| {
+            if (!self.interner.isSignature(m)) return false;
+            if (self.signatureIsConstruct(m)) return false;
+            try sigs.append(self.gpa, m);
+        }
+        // First-pass subsumers: members that absorb every member. These
+        // are the union's resolved call signatures. If none exists the
+        // resolution would fall to tsc's signature-combining fold, which
+        // we do not model here — bail to stay safe.
+        var min_count: usize = std.math.maxInt(usize);
+        var max_count: usize = 0;
+        var have_subsumer = false;
+        for (sigs.items) |s| {
+            const s_params = self.interner.signatureParams(s);
+            // A rest-bearing subsumer yields an unbounded combined arity;
+            // we cannot soundly fire too-many in that case, so abandon the
+            // check entirely (preserving the permissive result).
+            if (self.rest_signatures.contains(s)) {
+                if (self.signatureAbsorbsAllMembers(s, sigs.items, s_params.len)) return false;
+                continue;
+            }
+            if (!self.signatureAbsorbsAllMembers(s, sigs.items, s_params.len)) continue;
+            have_subsumer = true;
+            const s_min = self.signatureMinRequiredArgs(s, s_params);
+            min_count = @min(min_count, s_min);
+            max_count = @max(max_count, s_params.len);
+        }
+        if (!have_subsumer) return false;
+        // Count the supplied arguments (no spreads at this point).
+        const arg_count = args.len;
+        if (arg_count >= min_count and arg_count <= max_count) return false;
+        // Render the TS2554 message exactly as tsc's getArgumentArityError
+        // does for a bounded (rest-free) candidate set: a single count
+        // when min == max, an "N-M" range otherwise.
+        const msg = if (min_count < max_count)
+            try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Expected {d}-{d} arguments, but got {d}.",
+                .{ min_count, max_count, arg_count },
+            )
+        else
+            try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Expected {d} arguments, but got {d}.",
+                .{ min_count, arg_count },
+            );
+        // Anchor a too-many error on the first excess argument (matches
+        // tsc); a too-few error is anchored on the call expression.
+        var anchor_pos: ?u32 = null;
+        if (arg_count > max_count) {
+            anchor_pos = self.firstExcessArgStartPos(args, arg_types, max_count);
+        }
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = anchor_pos,
+            .code = TsCodes.expected_n_arguments,
+            .message = msg,
+        });
+        return true;
+    }
+
+    fn signatureAbsorbsAllMembers(self: *Checker, s: TypeId, members: []const TypeId, s_param_count: usize) bool {
+        for (members) |m| {
+            if (m == s) continue;
+            if (!self.unionCallSignatureAbsorbs(s, m, s_param_count)) return false;
+        }
+        return true;
+    }
+
     fn objectHasCallOrConstructSignature(self: *Checker, obj_t: TypeId) bool {
         if (obj_t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(obj_t);
@@ -37937,6 +38079,14 @@ pub const Checker = struct {
                     // expects no TS2349 on `fUnion("")` despite each
                     // overload taking a different parameter shape.
                     if (self.typeUnionAllCallable(callee_t)) {
+                        // tsc resolves the union to a combined set of call
+                        // signatures and still reports TS2554 when the
+                        // argument count is invalid for every resolved
+                        // signature (e.g. `unionTypeCallSignatures4.ts`).
+                        // The arity check is conservative: it only fires
+                        // for bounded (rest-free) resolved arities, leaving
+                        // valid union calls untouched.
+                        _ = try self.checkUnionCallableArity(node, args, arg_types.items, callee_t);
                         break :blk try self.optionalChainResult(types.Primitive.any, call_is_optional_chain);
                     }
                     if (self.callableObjectHasOnlyConstructSignatures(callee_t)) {
@@ -66301,6 +66451,73 @@ test "checker: argument count mismatch emits TS2554" {
         if (d.code == TsCodes.expected_n_arguments) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: union of call signatures arity error emits TS2554 (unionTypeCallSignatures4)" {
+    // Mirrors conformance fixture unionTypeCallSignatures4.ts. Calling a
+    // value whose type is a union of call signatures must be valid against
+    // the COMBINED signature: an argument count valid for all branches.
+    // `F1 | F2 | F3 | F4 | F5` combines to a signature with min/max arg
+    // count 2 (driven by F5 = `(a, b)` whose min is 2 and which lacks a
+    // rest parameter, bounding the max at 2). So `f12345("a")` is too few
+    // and `f12345("a","b","c")` is too many — both TS2554.
+    const s = try newSetup(
+        \\type F1 = (a: string, b?: string) => void;
+        \\type F2 = (a: string, b?: string, c?: string) => void;
+        \\type F3 = (a: string, ...rest: string[]) => void;
+        \\type F4 = (a: string, b?: string, ...rest: string[]) => void;
+        \\type F5 = (a: string, b: string) => void;
+        \\declare var f12345: F1 | F2 | F3 | F4 | F5;
+        \\f12345("a");
+        \\f12345("a", "b");
+        \\f12345("a", "b", "c");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var arity_errors: usize = 0;
+    var saw_got_1 = false;
+    var saw_got_3 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.expected_n_arguments) {
+            arity_errors += 1;
+            if (std.mem.eql(u8, d.message, "Expected 2 arguments, but got 1.")) saw_got_1 = true;
+            if (std.mem.eql(u8, d.message, "Expected 2 arguments, but got 3.")) saw_got_3 = true;
+        }
+    }
+    // Exactly the two baseline TS2554 diagnostics, no more.
+    try T.expectEqual(@as(usize, 2), arity_errors);
+    try T.expect(saw_got_1);
+    try T.expect(saw_got_3);
+}
+
+test "checker: valid union-callable calls stay clean (no spurious TS2554)" {
+    // Negative guard mirroring the non-error lines of
+    // unionTypeCallSignatures4.ts. None of these calls must emit an arity
+    // diagnostic: each is valid against the combined union signature.
+    const s = try newSetup(
+        \\type F1 = (a: string, b?: string) => void;
+        \\type F2 = (a: string, b?: string, c?: string) => void;
+        \\type F3 = (a: string, ...rest: string[]) => void;
+        \\type F4 = (a: string, b?: string, ...rest: string[]) => void;
+        \\declare var f12: F1 | F2;
+        \\f12("a");
+        \\f12("a", "b");
+        \\f12("a", "b", "c");
+        \\declare var f34: F3 | F4;
+        \\f34("a");
+        \\f34("a", "b");
+        \\f34("a", "b", "c");
+        \\declare var f1234: F1 | F2 | F3 | F4;
+        \\f1234("a");
+        \\f1234("a", "b");
+        \\f1234("a", "b", "c");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.expected_n_arguments);
+        try T.expect(d.code != TsCodes.expected_at_least_n_arguments);
+    }
 }
 
 test "checker: argument type mismatch emits TS2345" {
