@@ -207,7 +207,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes four hundred two allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes four hundred five allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator. On macOS this
 JSC path is now part of the default `./pantry/.bin/zig build test` graph
 (`-Denable_jsc=false` remains available for constrained hosts): the
@@ -223,7 +223,7 @@ drop/env/footer, HTML server, minify-symbol, npm, Promise.all dead-code,
 regression, process `execArgv`, plugin exception, and transpiler
 decorator / use-strict / template-literal
 smokes, the bundler minify corpus smoke, broader bundler edgecase /
-naming / string coverage, CSS modules plus WPT relative-color coverage,
+naming / string coverage, CSS modules plus WPT background/color/relative-color coverage,
 esbuild css / dce / default / importstar / loader / lower /
 packagejson / splitting / ts / tsconfig coverage, two `Bun.build` API
 smokes, one bun-types `test.each` type-shape smoke, seven test-runner
@@ -359,7 +359,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `402` files, `3,062` passed, `0` failed,
+Latest measured subset run: `405` files, `3,194` passed, `0` failed,
 `184` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now

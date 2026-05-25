@@ -17,7 +17,7 @@ macOS, Linux, and the WASM target.
   bootstrap path exists for the current allowlist:
   `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
-  Latest measured subset run: `402` files, `3,062` passed, `0` failed,
+  Latest measured subset run: `405` files, `3,194` passed, `0` failed,
   `184` todo. That subset currently executes the todo-registration smoke, three Node
   `assert` CommonJS smokes, the full Node `path` corpus slice, six Node `url` smokes, Deno
   event/fetch/crypto platform smokes, the Web
@@ -121,7 +121,7 @@ macOS, Linux, and the WASM target.
   parser-crash regression coverage for class-field ZWJ/ZWNJ and invalid
   identifier diagnostics, current compile-mode
   Bun.build smokes, the bundler minify corpus smoke, broader bundler edgecase /
-  naming / string coverage, CSS modules plus WPT relative-color coverage, and
+  naming / string coverage, CSS modules plus WPT background/color/relative-color coverage, and
   esbuild css / dce / default / importstar / loader / lower / packagejson /
   splitting / ts / tsconfig coverage, and FormData set/append/get/delete plus
   File-backed multipart serialization. It is only a smoke path for JSC + `home_test`; it is not the
