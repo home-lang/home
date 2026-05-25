@@ -9417,6 +9417,28 @@ pub const Parser = struct {
 
     /// Parse `<T, U extends V = D>`. Returns owned slice of
     /// `type_parameter` HIR nodes.
+    /// The TS predefined type keywords. These are contextual — they
+    /// may appear in identifier-name positions (e.g. as a type-parameter
+    /// name) where the checker then rejects them (TS2368). Mirrors tsc's
+    /// `checkTypeNameIsReserved` reserved set.
+    fn isPredefinedTypeKeyword(kind: ts_lexer.TokenKind) bool {
+        return switch (kind) {
+            .kw_any,
+            .kw_unknown,
+            .kw_never,
+            .kw_number,
+            .kw_bigint,
+            .kw_boolean,
+            .kw_string,
+            .kw_symbol,
+            .kw_void,
+            .kw_object,
+            .kw_undefined,
+            => true,
+            else => false,
+        };
+    }
+
     fn parseTypeParameterDeclaration(self: *Parser) ParseError![]NodeId {
         const open_tok = try self.expect(.less_than, "'<' to open type parameters");
         var tps: std.ArrayListUnmanaged(NodeId) = .empty;
@@ -9457,7 +9479,16 @@ pub const Parser = struct {
                 _ = self.advance();
                 variance |= 2;
             }
-            const name_tok = try self.expect(.identifier, "type parameter name");
+            // Predefined type keywords (`any`, `string`, `number`, …)
+            // are contextual: tsc accepts them syntactically as a
+            // type-parameter name and lets the checker reject the result
+            // with TS2368 ("Type parameter name cannot be '{0}'."). Accept
+            // the keyword token here as the name so the checker can run
+            // that semantic check; otherwise require a real identifier.
+            const name_tok = if (isPredefinedTypeKeyword(self.peek().kind))
+                self.advance()
+            else
+                try self.expect(.identifier, "type parameter name");
             const name_id = try self.internToken(name_tok);
             var constraint: NodeId = hir_mod.none_node_id;
             if (self.match(.kw_extends)) constraint = try self.parseTypeAnnotation();
