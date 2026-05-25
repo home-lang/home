@@ -972,6 +972,15 @@ The copied `bake/dev-and-prod.test.ts`, `bake/dev/bundle.test.ts`,
 `bake/dev/plugins.test.ts`, `bake/dev/production.test.ts`, and
 `bake/dev/react-response.test.ts` fixtures now pass as `102` tests plus
 `2` upstream todos through the existing Bake dev harness model.
+The copied `bake/dev/react-spa.test.ts`,
+`bake/dev/request-cookies.test.ts`,
+`bake/dev/response-to-bake-response.test.ts`,
+`bake/dev/server-sourcemap.test.ts`, `bake/dev/sourcemap.test.ts`,
+`bake/dev/ssg-pages-router.test.ts`, `bake/dev/vfile.test.ts`,
+`bake/framework-router.test.ts`, and
+`bake/serve-plugins-dev-server.test.ts` fixtures now pass as `65`
+additional tests, completing the currently copied Bake corpus files in
+the minimal native subset.
 The copied `bundler/bundler_comments.test.ts` fixture now passes as
 `42` tests by lowering `node:module.SourceMap` into the Home bootstrap
 module table and erasing Bun's copied TypeScript postfix non-null
