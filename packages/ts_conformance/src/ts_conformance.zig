@@ -30230,6 +30230,35 @@ test "conformance: errorInUnnamedClassExpression matches TS1253 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: exportClassWithoutName matches TS1211 baseline" {
+    // Regression pin for TS1211. Upstream:
+    //   exportClassWithoutName.ts(1,1): error TS1211: A class declaration \
+    //     without the 'default' modifier must have a name.
+    // Anchored at the `export` keyword with the keyword's span (6
+    // chars). Pre-fix Home parser silently accepted nameless
+    // `export class { }`. The fix sits in parseExportDeclaration's
+    // regular `export <decl>` path: after parseStatement returns,
+    // peek the produced decl — if it's a class with no name, emit
+    // TS1211 at the saved `export` token. `export default class { }`
+    // is exempt (different parseExportDeclaration arm).
+    const result = try runOneEntry(T.allocator, .{
+        .name = "exportClassWithoutName",
+        .path = "exportClassWithoutName.ts",
+        .source =
+        \\export class {
+        \\}
+        ,
+        .expects_error = true,
+        .expected_errors = "exportClassWithoutName.ts(1,1): error TS1211: A class declaration without the 'default' modifier must have a name.",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: emptyThenWarning matches TS1313 baseline" {
     // Regression pin for TS1313. Upstream:
     //   emptyThenWarning.ts(1,6): error TS1313: The body of an 'if' \

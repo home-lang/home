@@ -6930,6 +6930,27 @@ pub const Parser = struct {
         self.in_export_declaration = true;
         defer self.in_export_declaration = old_in_export_declaration;
         const decl = try self.parseStatement();
+        // TS1211: `export class { … }` without a name AND without the
+        // `default` modifier. Class expressions are exempt (statement
+        // dispatch only reaches here for declaration position). Anchor
+        // at the `export` keyword with the keyword's span (6 chars).
+        // Mirrors `exportClassWithoutName.ts(1,1)`. We can extract the
+        // class node from a wrapping export-declaration that produced
+        // `addExport`, but here the parsed `decl` IS the class itself
+        // (parseStatement returns the class declaration directly when
+        // we passed through the regular `export <decl>` path).
+        if (self.hir.kindOf(decl) == .class_decl) {
+            const class_payload = hir_mod.classOf(self.hir, decl);
+            if (class_payload.name == hir_mod.none_node_id) {
+                try self.reportCodeAtWithSpan(
+                    start.span.start,
+                    start.line,
+                    start.span.end - start.span.start,
+                    1211,
+                    "A class declaration without the 'default' modifier must have a name.",
+                );
+            }
+        }
         const end_pos = self.hir.spanOf(decl).end;
         return try self.builder.addExport(
             .{ .start = start.span.start, .end = end_pos },
