@@ -15998,10 +15998,17 @@ pub const Checker = struct {
         // one or more `constructor(): T;` overload signatures but no
         // implementation `constructor(...) { … }`. Skip in ambient
         // (`declare class`) and `.d.ts` contexts where bodyless
-        // signatures are valid declarations.
+        // signatures are valid declarations. `classHasLeadingDeclare`
+        // only inspects the class's own modifiers, so we also skip when
+        // the class is nested inside a `declare namespace`/`declare
+        // module` — there the whole block is ambient and a bodyless
+        // constructor needs no implementation (see
+        // `parameterPropertyInConstructor1.ts`, which expects only the
+        // TS2369 parameter-property error, not TS2390).
         if (ctor_bodyless_count > 0 and ctor_impl_count == 0 and
             ctor_first_bodyless != hir_mod.none_node_id and
             !self.classHasLeadingDeclare(node) and
+            !self.classNodeIsInsideAmbientDeclaredModule(node) and
             !self.virtualSectionIsDeclarationFile(node))
         {
             try self.report(ctor_first_bodyless, TsCodes.constructor_implementation_missing, "Constructor implementation is missing.");
@@ -83698,6 +83705,53 @@ test "checker: TS2369 does NOT fire on regular constructor parameter" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.param_property_outside_ctor);
     }
+}
+
+test "checker: bodyless constructor in declare namespace skips TS2390 (parameterPropertyInConstructor1)" {
+    // Mirrors compiler fixture `parameterPropertyInConstructor1.ts`. The
+    // class sits inside a `declare namespace`, so a bodyless
+    // `constructor(...)` is a valid ambient declaration — tsc only
+    // reports TS2369 (parameter property outside a constructor
+    // implementation), NOT TS2390 (Constructor implementation is
+    // missing). `classHasLeadingDeclare` only inspects the class's own
+    // modifiers, so the ambient context must be detected via the
+    // enclosing `declare namespace`.
+    const s = try newSetup(
+        \\declare namespace mod {
+        \\  class Customers {
+        \\    constructor(public names: string);
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var has_2369 = false;
+    var has_2390 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.param_property_outside_ctor) has_2369 = true;
+        if (d.code == TsCodes.constructor_implementation_missing) has_2390 = true;
+    }
+    try T.expect(has_2369);
+    try T.expect(!has_2390);
+}
+
+test "checker: real missing constructor implementation still emits TS2390" {
+    // Negative guard for the ambient-namespace exemption above: a
+    // non-ambient class with constructor overload signatures and no
+    // implementation must still report TS2390.
+    const s = try newSetup(
+        \\class C {
+        \\  constructor(x: number);
+        \\  constructor(x: string);
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var has_2390 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.constructor_implementation_missing) has_2390 = true;
+    }
+    try T.expect(has_2390);
 }
 
 // Regression tests for §6.A 1000-2000 exact-mode ratchet.
