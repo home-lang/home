@@ -929,6 +929,17 @@ The copied `bundler/transpiler/export-default.test.js` fixture now
 passes as `1` test by lowering its default import to the copied
 `export-default-with-static-initializer` class body, preserving the
 static initializer that sets `boop`.
+The copied `regression/issue/27428.test.ts`,
+`regression/issue/440.test.ts`,
+`js/bun/namespace-prototype-pollution.test.ts`,
+`js/bun/resolve/concurrent-dynamic-import.test.ts`,
+`regression/issue/server-stop-with-pending-requests.test.ts`,
+`js/bun/bundler/yaml-bundler.test.js`,
+`regression/issue/27389.test.ts`, `regression/issue/29264.test.ts`,
+`js/bun/resolve/require-esm-microtask-order.test.ts`, and
+`regression/issue/26632.test.ts` fixtures now pass as `15` tests through
+the existing child-process, HTTP/server, resolver, bundler, and
+`Bun.file` bootstrap surfaces.
 The copied `js/bun/test/test-timers.test.ts` fixture now passes as `1`
 test through the Jest fake-timer bootstrap model. It covers Bun's stable
 `Date` identity, mocked `Date.now()` / `new Date()`,

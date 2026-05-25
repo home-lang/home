@@ -364,6 +364,16 @@ pub const minimal_js_files = [_][]const u8{
     "bundler/bun-build-compile.test.ts",
     "bundler/compile-sourcemap-internal.test.ts",
     "bundler/compile-windows-metadata.test.ts",
+    "regression/issue/27428.test.ts",
+    "regression/issue/440.test.ts",
+    "js/bun/namespace-prototype-pollution.test.ts",
+    "js/bun/resolve/concurrent-dynamic-import.test.ts",
+    "regression/issue/server-stop-with-pending-requests.test.ts",
+    "js/bun/bundler/yaml-bundler.test.js",
+    "regression/issue/27389.test.ts",
+    "regression/issue/29264.test.ts",
+    "js/bun/resolve/require-esm-microtask-order.test.ts",
+    "regression/issue/26632.test.ts",
 };
 
 const harness_prelude =
