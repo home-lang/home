@@ -4031,6 +4031,42 @@ pub const Parser = struct {
                     if (self.peek().kind == close_kind) break;
                     continue;
                 }
+                // TS1180/TS1181 — at the start of each element, if the
+                // current token can't begin a binding element, fire
+                // upstream's `parsingContextErrors` shape:
+                //   `{ +x }` → TS1180 "Property destructuring pattern expected."
+                //   `[0]`     → TS1181 "Array element destructuring pattern expected."
+                //   `[while]` → TS1181 ditto (reserved keyword in array slot).
+                // Reserved keywords in *object* binding continue through
+                // the existing shorthand-rename path which emits TS1005
+                // (`':' expected.`) — matches `destructuringParameterDeclaration6`
+                // baseline lines 7/8 where `{while}` / `{public}` fire
+                // TS1005 instead of TS1180.
+                {
+                    const next = self.peek();
+                    const start_ok = switch (next.kind) {
+                        .identifier, .private_identifier => true,
+                        .open_brace, .open_bracket => true,
+                        .dot_dot_dot => true,
+                        .string_literal, .number_literal => is_object,
+                        else => blk: {
+                            if (next.kind.isKeyword()) {
+                                if (next.kind.isContextualKeyword()) break :blk true;
+                                break :blk is_object;
+                            }
+                            break :blk false;
+                        },
+                    };
+                    if (!start_ok) {
+                        const code: u32 = if (is_object) 1180 else 1181;
+                        const msg = if (is_object)
+                            "Property destructuring pattern expected."
+                        else
+                            "Array element destructuring pattern expected.";
+                        try self.reportCodeAt(next.span.start, next.line, code, msg);
+                        return error.UnexpectedToken;
+                    }
+                }
                 const elem_start = self.peek();
                 var flags: hir_mod.ParamFlags = .{};
                 if (self.match(.dot_dot_dot)) flags.is_rest = true;
@@ -22047,5 +22083,83 @@ test "parser: TS1131 stays clean when contextual keyword is the property name" {
         defer destroyTestSetup(s);
         _ = try s.parser.parseSourceFile();
         try T.expectEqual(@as(u32, 0), countDiag(s, 1131));
+    }
+}
+
+test "parser: TS1181 fires when a reserved word starts an array binding element" {
+    // Mirrors upstream `destructuringParameterDeclaration6.ts(9,14)`:
+    //   function a4([while, for, public]){ }
+    //                ~~~~~  TS1181 Array element destructuring pattern expected.
+    // Pre-fix Home accepted `while` as a binding identifier and
+    // surfaced TS1359 ("'while' is a reserved word") instead of the
+    // upstream parser-level TS1181. The new gate bails after emitting
+    // TS1181, matching `parseList`'s `parsingContextErrors` recovery;
+    // swallow the `UnexpectedToken` so the test can read diagnostics.
+    var s = try newTestSetup("function a4([while, for, public]) { }");
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch |err| switch (err) {
+        error.UnexpectedToken => hir_mod.none_node_id,
+        else => return err,
+    };
+    const d = findDiag(s, 1181) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Array element destructuring pattern expected.", d.message);
+}
+
+test "parser: TS1181 fires when a number literal starts an array binding element" {
+    // Smaller fixture modeled on upstream `VariableDeclaration13_es6.ts`:
+    //   let[0] = 100;
+    // The `let [` ambiguity routes through `let` lexical-declaration
+    // parsing with an array binding pattern; the `0` element is then
+    // rejected as not a valid binding identifier or nested pattern.
+    var s = try newTestSetup("let [0] = [];");
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch |err| switch (err) {
+        error.UnexpectedToken => hir_mod.none_node_id,
+        else => return err,
+    };
+    const d = findDiag(s, 1181) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Array element destructuring pattern expected.", d.message);
+}
+
+test "parser: TS1180 fires when an operator starts an object binding element" {
+    // Object-binding equivalent: a token that cannot be a property
+    // key at all (here, `+`) trips upstream's `parsingContextErrors`
+    // dispatch for `ObjectBindingElements`. Reserved-word property
+    // names like `{ while }` continue to flow through the shorthand-
+    // rename path (TS1005) so this fix doesn't regress them.
+    var s = try newTestSetup("const { +x } = obj;");
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch |err| switch (err) {
+        error.UnexpectedToken => hir_mod.none_node_id,
+        else => return err,
+    };
+    const d = findDiag(s, 1180) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Property destructuring pattern expected.", d.message);
+}
+
+test "parser: TS1180/TS1181 stay clean on legitimate destructuring" {
+    // Guard rail: valid binding shapes — bare identifier, nested
+    // pattern, rest, contextual-keyword (`async` outside an async
+    // context), string/number rename keys in object binding — must
+    // not regress to TS1180/TS1181 with the new gate in place.
+    const cases = [_][]const u8{
+        "const [a, b] = arr;",
+        "const [a, ...rest] = arr;",
+        "const [a, [b, c]] = arr;",
+        "const { a, b } = obj;",
+        "const { a: x, b: y } = obj;",
+        "const { 'foo': x } = obj;",
+        "const { 0: zero } = obj;",
+        "const { ...rest } = obj;",
+        "const [async] = arr;",
+        "const { while: w } = obj;",
+        "const [{ a }, [b]] = arr;",
+    };
+    inline for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(u32, 0), countDiag(s, 1180));
+        try T.expectEqual(@as(u32, 0), countDiag(s, 1181));
     }
 }
