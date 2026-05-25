@@ -30171,6 +30171,37 @@ test "conformance: typeParameterConstModifiersReturnsAndYields passes clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: importDeclarationInModuleDeclaration1 matches TS1147 baseline" {
+    // Regression pin for the TS1147 emission landed in ts_parser
+    // alongside the TS2307 suppression in ts_checker. Upstream baseline:
+    // `importDeclarationInModuleDeclaration1.ts(2,25): error TS1147:
+    // Import declarations in a namespace cannot reference a module.`
+    // Pre-fix the checker emitted TS2307 (cannot find module) instead.
+    // The fix recognizes the syntactic pattern in the parser (require-
+    // form `import name = require("…")` inside an internal namespace,
+    // i.e. not a string-named ambient module) and suppresses the
+    // cascading module-resolution diagnostic so exact-baseline parity
+    // holds on this fixture.
+    const result = try runOneEntry(T.allocator, .{
+        .name = "importDeclarationInModuleDeclaration1",
+        .path = "importDeclarationInModuleDeclaration1.ts",
+        .source =
+        \\// @target: es2015
+        \\namespace m2 {
+        \\    import m3 = require("use_glo_M1_public");
+        \\}
+        ,
+        .expects_error = true,
+        .expected_errors = "importDeclarationInModuleDeclaration1.ts(2,25): error TS1147: Import declarations in a namespace cannot reference a module.",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: typeGuardsInConditionalExpression passes clean" {
     // Regression pin for the synth-update target narrowing fix in
     // ts_checker. Previously TS2356 (arithmetic operand must be number)

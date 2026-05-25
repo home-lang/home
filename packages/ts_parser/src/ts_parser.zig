@@ -6134,6 +6134,22 @@ pub const Parser = struct {
                 _ = self.advance(); // (
                 const mod_tok = self.advance();
                 module_id = try self.internStringLiteral(mod_tok);
+                // TS1147: `import name = require("…")` inside an internal
+                // namespace is illegal. tsc fires at the module-specifier
+                // string-literal token. Ambient string-named modules
+                // (`declare module "foo" { … }`) are exempt — those are
+                // external module declarations where require-imports are
+                // legitimate. Mirrors upstream
+                // `importDeclarationInModuleDeclaration1.errors.txt`.
+                if (self.namespace_depth > 0 and !self.in_string_named_module) {
+                    try self.reportCodeAtWithSpan(
+                        mod_tok.span.start,
+                        mod_tok.line,
+                        mod_tok.span.end - mod_tok.span.start,
+                        1147,
+                        "Import declarations in a namespace cannot reference a module.",
+                    );
+                }
                 _ = try self.expect(.close_paren, "')' after require module specifier");
                 try self.consumeStatementTerminator();
             } else if (self.peek().kind == .kw_require and self.peekAt(1).kind == .open_paren) {
