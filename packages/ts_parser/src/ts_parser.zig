@@ -4517,7 +4517,8 @@ pub const Parser = struct {
                     }
                     try self.reportPrivateIdentifierModifierDiagnostics(mods, false);
                 }
-                const is_optional_member = self.match(.question);
+                const optional_member_token: ?Token = if (self.peek().kind == .question) self.advance() else null;
+                const is_optional_member = optional_member_token != null;
                 // §6.A parserConstructorDeclaration8: `public constructor;`
                 // — when the member name is the literal `constructor` and
                 // the next token isn't `(` or `<`, tsc still treats this
@@ -4795,6 +4796,9 @@ pub const Parser = struct {
                     default_value = try self.parseAssignmentExpression();
                 }
                 try self.reportInvalidDefiniteAssignmentAssertion(definite_assignment_token, type_anno, default_value);
+                if (mods.is_accessor) {
+                    try self.reportOptionalAutoAccessor(optional_member_token);
+                }
                 try self.consumeClassPropertyTerminator();
                 if (name_tok.kind == .private_identifier) {
                     try self.reportPrivateIdentifierTargetDiagnostic(name_tok);
@@ -5224,6 +5228,11 @@ pub const Parser = struct {
         }
     }
 
+    fn reportOptionalAutoAccessor(self: *Parser, question_token: ?Token) ParseError!void {
+        const bad = question_token orelse return;
+        try self.reportCodeAt(bad.span.start, bad.line, 1276, "An 'accessor' property cannot be declared optional.");
+    }
+
     fn reportPrivateIdentifierModifierDiagnostics(self: *Parser, mods: ClassModifiers, is_property: bool) ParseError!void {
         if (mods.accessibility_token) |bad| {
             if (!self.hasDiagnosticAt(18010, bad.span.start)) {
@@ -5503,7 +5512,7 @@ pub const Parser = struct {
             );
             is_method = true;
         } else {
-            _ = self.match(.question);
+            const optional_member_token: ?Token = if (self.peek().kind == .question) self.advance() else null;
             const definite_assignment_token: ?Token = if (self.peek().kind == .bang) self.advance() else null;
             if (self.match(.colon)) {
                 type_anno = try self.parseTypeAnnotation();
@@ -5512,6 +5521,9 @@ pub const Parser = struct {
             }
             if (self.match(.equal)) value = try self.parseAssignmentExpression();
             try self.reportInvalidDefiniteAssignmentAssertion(definite_assignment_token, type_anno, value);
+            if (mods.is_accessor) {
+                try self.reportOptionalAutoAccessor(optional_member_token);
+            }
             self.consumeClassPropertyTerminator() catch |err| switch (err) {
                 error.UnexpectedToken => self.skipMalformedClassFieldTail(),
                 else => return err,
@@ -17678,6 +17690,21 @@ test "parser: accessor modifier preserves field name and initializer" {
     // Initializer is the literal `0`.
     try T.expect(prop.value != hir_mod.none_node_id);
     try T.expectEqual(hir_mod.NodeKind.literal_number, s.hir.kindOf(prop.value));
+}
+
+test "parser: optional auto-accessor reports TS1276" {
+    var s = try newTestSetup("class Foo { accessor x?: number; accessor [\"y\"]?: string; }");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var count: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1276) {
+            count += 1;
+            try T.expectEqualStrings("An 'accessor' property cannot be declared optional.", d.message);
+            try T.expect(s.parser.source[d.pos] == '?');
+        }
+    }
+    try T.expectEqual(@as(u32, 2), count);
 }
 
 // ====================================================================
