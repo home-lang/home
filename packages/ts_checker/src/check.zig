@@ -2874,7 +2874,17 @@ pub const Checker = struct {
                 .import_decl => try self.checkImportDecl(s),
                 .export_decl => {
                     const ex = hir_mod.exportOf(self.hir, s);
-                    if (ex.decl == hir_mod.none_node_id) continue;
+                    if (ex.decl == hir_mod.none_node_id) {
+                        // Named-only re-export (`export { X }`) inside a
+                        // module/namespace body. The top-level statement
+                        // walk in `checkSourceFile` never visits nested
+                        // statements, so run the export-locality check here.
+                        // `X` must resolve to a declaration local to THIS
+                        // module body; an outer (enclosing-scope) name fires
+                        // TS2661 (`exportSpecifierReferencingOuterDeclaration1`).
+                        try self.checkNamedExportLocals(s, ex);
+                        continue;
+                    }
                     const decl_kind = self.hir.kindOf(ex.decl);
                     if (self.isExportAssignmentDecl(s)) {
                         if (!self.namespaceNameComesFromStringLiteral(node)) {
@@ -4848,7 +4858,20 @@ pub const Checker = struct {
             // locality check. Scope the scan to the export's own section,
             // mirroring tsc's "declaration is not in a global source
             // file" rule (`checkExportSpecifier`).
-            const is_local = if (self.sourceHasVirtualFilenameSections())
+            // An `export { name }` nested inside a `declare module "m"` /
+            // `namespace N` body may only re-export a declaration local to
+            // THAT container. A name that resolves to an outer (enclosing)
+            // declaration — e.g. a top-level namespace seen from inside the
+            // module body — is not a module-local and fires TS2661. tsc's
+            // `checkExportSpecifier` rejects it for the same reason. The
+            // merged `module.root.*` symbol tables don't model this nesting,
+            // so scope the locality scan to the enclosing module body when
+            // the export lives inside one. Mirrors
+            // `exportSpecifierReferencingOuterDeclaration1.ts`.
+            const enclosing_module = self.enclosingModuleBodyFor(node);
+            const is_local = if (enclosing_module != hir_mod.none_node_id)
+                self.exportNameHasModuleLocalBinding(enclosing_module, local_name, spec.is_type_only)
+            else if (self.sourceHasVirtualFilenameSections())
                 self.exportNameHasSectionLocalBinding(node, local_name, spec.is_type_only)
             else blk: {
                 const has_type = module.root.types.get(local_name) != null or module.root.namespaces.get(local_name) != null;
@@ -4951,6 +4974,29 @@ pub const Checker = struct {
         const section = self.virtualSectionStartForNode(export_node);
         for (hir_mod.blockStmts(self.hir, root)) |stmt| {
             if (self.virtualSectionStartForNode(stmt) != section) continue;
+            if (self.statementBindsNameLocally(stmt, name, type_only)) return true;
+        }
+        return false;
+    }
+
+    /// The nearest enclosing `declare module "m"` / `namespace N` body that
+    /// directly contains `export_node`, or `none_node_id` when the export is
+    /// at the top level of the source file. Module and namespace bodies share
+    /// the `.namespace_decl` HIR shape, so a single walk covers both.
+    fn enclosingModuleBodyFor(self: *Checker, export_node: NodeId) NodeId {
+        var parent = self.hir.parentOf(export_node);
+        while (parent != hir_mod.none_node_id) : (parent = self.hir.parentOf(parent)) {
+            if (self.hir.kindOf(parent) == .namespace_decl) return parent;
+        }
+        return hir_mod.none_node_id;
+    }
+
+    /// True when `name` is declared or imported directly within the body of
+    /// `module_node` (a `.namespace_decl`). Names visible only from an
+    /// enclosing/outer scope are intentionally NOT local — that is the case
+    /// TS2661 reports. `type_only` exports accept only type-space bindings.
+    fn exportNameHasModuleLocalBinding(self: *Checker, module_node: NodeId, name: hir_mod.StringId, type_only: bool) bool {
+        for (hir_mod.namespaceBody(self.hir, module_node)) |stmt| {
             if (self.statementBindsNameLocally(stmt, name, type_only)) return true;
         }
         return false;
@@ -62619,6 +62665,71 @@ test "checker: re-exporting a cross-file global declaration emits TS2661" {
             std.mem.indexOf(u8, d.message, "'I1'") != null) count += 1;
     }
     try T.expect(count >= 2);
+}
+
+test "checker: export specifier referencing an outer declaration emits TS2661" {
+    // `X` is a top-level namespace, but `export { X }` lives inside the
+    // `declare module "m"` body. The name resolves to the OUTER namespace,
+    // not a local of module "m", so tsc reports TS2661 (mirrors
+    // `exportSpecifierReferencingOuterDeclaration1.ts`).
+    const b = try newBoundSetup(
+        \\declare namespace X { export interface bar { } }
+        \\declare module "m" {
+        \\    export { X };
+        \\    export function foo(): X.bar;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var count: usize = 0;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.export_non_local_declaration and
+            std.mem.indexOf(u8, d.message, "'X'") != null) count += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count);
+}
+
+test "checker: export specifier referencing a module-local declaration stays clean" {
+    // Guards against over-firing: `X` is declared INSIDE the module body,
+    // so `export { X }` is a legal re-export of a module-local.
+    const b = try newBoundSetup(
+        \\declare module "m" {
+        \\    interface X { }
+        \\    export { X };
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.export_non_local_declaration);
+    }
+}
+
+test "checker: top-level class re-export stays clean" {
+    // Negative guard: a genuine top-level local re-export must not fire.
+    const b = try newBoundSetup(
+        \\class C {}
+        \\export { C };
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.export_non_local_declaration);
+    }
+}
+
+test "checker: imported-then-reexported binding stays clean" {
+    // Negative guard: an imported alias is a local binding and may be
+    // re-exported by name.
+    const b = try newBoundSetup(
+        \\import { foo } from "other";
+        \\export { foo };
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.export_non_local_declaration);
+    }
 }
 
 test "checker: re-exporting a same-file local declaration does not emit TS2661" {
