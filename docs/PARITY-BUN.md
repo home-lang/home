@@ -207,7 +207,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes three hundred eighty-two allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes four hundred two allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator. On macOS this
 JSC path is now part of the default `./pantry/.bin/zig build test` graph
 (`-Denable_jsc=false` remains available for constrained hosts): the
@@ -222,14 +222,18 @@ CJS-to-ESM, compile-autoload, compile-splitting, decorator metadata,
 drop/env/footer, HTML server, minify-symbol, npm, Promise.all dead-code,
 regression, process `execArgv`, plugin exception, and transpiler
 decorator / use-strict / template-literal
-smokes, the bundler minify corpus smoke, two `Bun.build` API
+smokes, the bundler minify corpus smoke, broader bundler edgecase /
+naming / string coverage, CSS modules plus WPT relative-color coverage,
+esbuild css / dce / default / importstar / loader / lower /
+packagejson / splitting / ts / tsconfig coverage, two `Bun.build` API
 smokes, one bun-types `test.each` type-shape smoke, seven test-runner
 expectation smokes plus `expect().toBeEmpty`, one nested-describe smoke, two `expectTypeOf` type-only smokes, a narrow `Bun.TOML.parse` throw smoke, a TOML build invalid-source diagnostic `lineText` crash-regression smoke, CSS `intFromFloat` serialization snapshots, `Bun.stripANSI` and
 `Bun.wrapAnsi`, `Bun.semver.satisfies`, and `bun:internal-for-testing` regexp / PowerShell escaping smokes, retry/repeats runner behavior, `test.concurrent.each`, `expect().pass`, a narrow `mock.clearAllMocks` / `toHaveBeenCalledTimes` smoke, a narrow `jest.fn` / `HTMLRewriter` element-callback smoke, a narrow TypeScript constructor-modifier rewrite smoke, narrow `assert` / `assert/strict`, `node:path` including `matchesGlob` and long-CWD POSIX subprocess coverage, `node:url`, relative CJS fixture smokes, Node worker/fs/dns/readline one-shot smokes, and a WebSocket close-reentrancy smoke, a narrow inline-snapshot Unicode object formatting smoke, a `node:vm.runInNewContext` / `process.on` throw propagation smoke, Deno harness `test(options, fn)` / permission skip / `test.ignore` / `test.todo` call-shape parity, Deno `Event` / `CustomEvent` / `AbortController`, and a Deno `URLSearchParams` bootstrap smoke, plus narrow bootstrap coverage for Node `DOMException`, Web
 `Response.json` / `Response.redirect`, Web `Request` cache/mode/clone,
 repeated `Request.json()` string-body parsing,
 fetch body async-iterator and abort smokes, AbortController GC reason,
-MessagePort context cleanup,
+MessagePort context cleanup, FormData set/append/get/delete and File-backed
+multipart serialization,
 and Deno Request string-body `text()` / clone call shapes,
 narrow Deno URL authority/hash/origin parsing, a Deno `performance`
 fixture covering timer-delayed measures, marks, observers, constructors,
@@ -355,8 +359,8 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `382` files, `2,231` passed, `0` failed,
-`76` todo.
+Latest measured subset run: `402` files, `3,062` passed, `0` failed,
+`184` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
 uses the same Home-native JSC bootstrap instead of the retired

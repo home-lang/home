@@ -357,19 +357,38 @@ pub const minimal_js_files = [_][]const u8{
     "bundler/bundler_defer.test.ts",
     "bundler/bundler_drop.test.ts",
     "bundler/bundler_env.test.ts",
+    "bundler/bundler_edgecase.test.ts",
     "bundler/bundler_files.test.ts",
     "bundler/bundler_footer.test.ts",
     "bundler/bundler_html_server.test.ts",
     "bundler/bundler_minify.test.ts",
     "bundler/bundler_minify_symbol_for.test.ts",
+    "bundler/bundler_naming.test.ts",
     "bundler/bundler_npm.test.ts",
     "bundler/bundler_plugin.test.ts",
     "bundler/bundler_plugin_chain.test.ts",
     "bundler/bundler_promiseall_deadcode.test.ts",
     "bundler/bundler_regressions.test.ts",
     "bundler/bundler_splitting.test.ts",
+    "bundler/bundler_string.test.ts",
     "bundler/compile-argv.test.ts",
     "bundler/compile-process-execargv.test.ts",
+    "bundler/css/css-modules.test.ts",
+    "bundler/css/is-selector-21169.test.ts",
+    "bundler/css/mask-geometry-box.test.ts",
+    "bundler/css/view-transition-23600.test.ts",
+    "bundler/css/wpt/relative_color_out_of_gamut.test.ts",
+    "bundler/esbuild/css.test.ts",
+    "bundler/esbuild/dce.test.ts",
+    "bundler/esbuild/default.test.ts",
+    "bundler/esbuild/importstar_ts.test.ts",
+    "bundler/esbuild/importstar.test.ts",
+    "bundler/esbuild/loader.test.ts",
+    "bundler/esbuild/lower.test.ts",
+    "bundler/esbuild/packagejson.test.ts",
+    "bundler/esbuild/splitting.test.ts",
+    "bundler/esbuild/ts.test.ts",
+    "bundler/esbuild/tsconfig.test.ts",
     "bundler/plugin-sync-exception-fallback.test.ts",
     "bundler/transpiler/es-decorators.test.ts",
     "bundler/transpiler/preserve-use-strict-cjs.test.ts",
@@ -392,6 +411,7 @@ pub const minimal_js_files = [_][]const u8{
     "cli/run/jsx-symbol-collision.test.ts",
     "cli/run/shell-keepalive.test.ts",
     "js/bun/spawn/spawn-empty-arrayBufferOrBlob.test.ts",
+    "js/bun/http/form-data-set-append.test.js",
     "js/bun/http/bun-serve-headers.test.ts",
     "js/bun/http/serve-response-stream-sink-leak.test.ts",
     "js/bun/http/serve-stream-reject-flush-leak.test.ts",
@@ -3665,7 +3685,7 @@ const harness_prelude =
     \\    },
     \\  });
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, gc(force) { return Bun.gc(force); }, withoutAggressiveGC(callback) { return callback(); }, normalizeBunSnapshot(value) { return String(value); }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); } };
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, gc(force) { return Bun.gc(force); }, withoutAggressiveGC(callback) { return callback(); }, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); } };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -7115,8 +7135,39 @@ const harness_prelude =
     \\    this.__home_is_formdata = true;
     \\    this.__home_entries = [];
     \\  };
-    \\  FormData.prototype.append = function(name, value) {
-    \\    this.__home_entries.push([String(name), value == null ? "" : String(value)]);
+    \\  function __home_formdata_value(value, filename) {
+    \\    if (value && Array.isArray(value.__home_blob_bytes)) {
+    \\      if (typeof File === "function" && (filename !== undefined || !(value instanceof File))) {
+    \\        return new File([value], filename === undefined ? (value.name || "blob") : String(filename), { type: value.type || "" });
+    \\      }
+    \\      return value;
+    \\    }
+    \\    return value == null ? "" : String(value);
+    \\  }
+    \\  FormData.prototype.append = function(name, value, filename) {
+    \\    this.__home_entries.push([String(name), __home_formdata_value(value, filename)]);
+    \\  };
+    \\  FormData.prototype.set = function(name, value, filename) {
+    \\    const key = String(name);
+    \\    this.__home_entries = this.__home_entries.filter(entry => entry[0] !== key);
+    \\    this.__home_entries.push([key, __home_formdata_value(value, filename)]);
+    \\  };
+    \\  FormData.prototype.get = function(name) {
+    \\    const key = String(name);
+    \\    for (const entry of this.__home_entries) if (entry[0] === key) return entry[1];
+    \\    return null;
+    \\  };
+    \\  FormData.prototype.getAll = function(name) {
+    \\    const key = String(name);
+    \\    return this.__home_entries.filter(entry => entry[0] === key).map(entry => entry[1]);
+    \\  };
+    \\  FormData.prototype.has = function(name) {
+    \\    const key = String(name);
+    \\    return this.__home_entries.some(entry => entry[0] === key);
+    \\  };
+    \\  FormData.prototype.delete = function(name) {
+    \\    const key = String(name);
+    \\    this.__home_entries = this.__home_entries.filter(entry => entry[0] !== key);
     \\  };
     \\  FormData.prototype.entries = function() {
     \\    return this.__home_entries[Symbol.iterator]();
@@ -7130,14 +7181,22 @@ const harness_prelude =
     \\function __home_formdata_escape_name(value) {
     \\  return String(value).replace(/"/g, "%22").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
     \\}
+    \\function __home_formdata_boundary() {
+    \\  const counter = (++__home_formdata_boundary_counter).toString(16).padStart(32, "0");
+    \\  return "----WebKitFormBoundary" + counter.slice(-32);
+    \\}
     \\function __home_formdata_serialize(form) {
-    \\  const boundary = "----home-formdata-" + (++__home_formdata_boundary_counter).toString(36);
+    \\  const boundary = __home_formdata_boundary();
     \\  const lines = [];
     \\  for (const entry of form.__home_entries || []) {
+    \\    const value = entry[1];
     \\    lines.push("--" + boundary);
-    \\    lines.push('Content-Disposition: form-data; name="' + __home_formdata_escape_name(entry[0]) + '"');
+    \\    let disposition = 'Content-Disposition: form-data; name="' + __home_formdata_escape_name(entry[0]) + '"';
+    \\    if (value && Array.isArray(value.__home_blob_bytes)) disposition += '; filename="' + __home_formdata_escape_name(value.name || "blob") + '"';
+    \\    lines.push(disposition);
+    \\    if (value && Array.isArray(value.__home_blob_bytes) && value.type) lines.push("Content-Type: " + value.type);
     \\    lines.push("");
-    \\    lines.push(String(entry[1]));
+    \\    lines.push(value && Array.isArray(value.__home_blob_bytes) ? __home_utf8_bytes_to_text(value.__home_blob_bytes) : String(value));
     \\  }
     \\  lines.push("--" + boundary + "--");
     \\  lines.push("");
@@ -8218,6 +8277,15 @@ const harness_prelude =
     \\  });
     \\};
     \\globalThis.Blob = Blob;
+    \\var File = function(parts, name, options) {
+    \\  Blob.call(this, parts, options);
+    \\  this.name = String(name === undefined ? "" : name);
+    \\  this.lastModified = options && options.lastModified !== undefined ? Number(options.lastModified) : Date.now();
+    \\};
+    \\File.prototype = Object.create(Blob.prototype);
+    \\File.prototype.constructor = File;
+    \\Object.defineProperty(File.prototype, Symbol.toStringTag, { value: "File" });
+    \\globalThis.File = File;
     \\if (typeof HTMLRewriter !== "function") {
     \\  var HTMLRewriter = function() {
     \\    this.__home_html_handlers = [];
@@ -11796,6 +11864,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Deep equality for this value type is not supported") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var FormData = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_formdata_serialize") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "----WebKitFormBoundary") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "var File = function(parts, name, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "UnreachableError") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Blob.prototype.arrayBuffer") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_blob_part_to_bytes(part)") != null);
@@ -12151,14 +12221,33 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "bundler/bundler_defer.test.ts",
         "bundler/bundler_drop.test.ts",
         "bundler/bundler_env.test.ts",
+        "bundler/bundler_edgecase.test.ts",
         "bundler/bundler_footer.test.ts",
         "bundler/bundler_html_server.test.ts",
         "bundler/bundler_minify_symbol_for.test.ts",
+        "bundler/bundler_naming.test.ts",
         "bundler/bundler_npm.test.ts",
         "bundler/bundler_promiseall_deadcode.test.ts",
         "bundler/bundler_regressions.test.ts",
+        "bundler/bundler_string.test.ts",
         "bundler/compile-argv.test.ts",
         "bundler/compile-process-execargv.test.ts",
+        "bundler/css/css-modules.test.ts",
+        "bundler/css/is-selector-21169.test.ts",
+        "bundler/css/mask-geometry-box.test.ts",
+        "bundler/css/view-transition-23600.test.ts",
+        "bundler/css/wpt/relative_color_out_of_gamut.test.ts",
+        "bundler/esbuild/css.test.ts",
+        "bundler/esbuild/dce.test.ts",
+        "bundler/esbuild/default.test.ts",
+        "bundler/esbuild/importstar_ts.test.ts",
+        "bundler/esbuild/importstar.test.ts",
+        "bundler/esbuild/loader.test.ts",
+        "bundler/esbuild/lower.test.ts",
+        "bundler/esbuild/packagejson.test.ts",
+        "bundler/esbuild/splitting.test.ts",
+        "bundler/esbuild/ts.test.ts",
+        "bundler/esbuild/tsconfig.test.ts",
         "bundler/plugin-sync-exception-fallback.test.ts",
         "bundler/transpiler/es-decorators.test.ts",
         "bundler/transpiler/preserve-use-strict-cjs.test.ts",
@@ -12180,6 +12269,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "cli/run/jsx-symbol-collision.test.ts",
         "cli/run/shell-keepalive.test.ts",
         "js/bun/spawn/spawn-empty-arrayBufferOrBlob.test.ts",
+        "js/bun/http/form-data-set-append.test.js",
         "bake/deinitialization.test.ts",
         "bake/dev-and-prod.test.ts",
         "bake/dev/bundle.test.ts",
