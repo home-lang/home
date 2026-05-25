@@ -303,6 +303,19 @@ pub const TsConfig = struct {
 
         const co = self.compiler_options;
 
+        // TS18051: `extends` accepts a path or path array, but each
+        // path must be non-empty. TypeScript reports one diagnostic per
+        // empty string element.
+        for (self.extends) |path| {
+            if (path.len == 0) {
+                try diags.append(gpa, .{
+                    .code = 18051,
+                    .message = "Compiler option 'extends' cannot be given an empty string.",
+                    .field = "extends",
+                });
+            }
+        }
+
         // TS5009-shaped: `outDir` and `rootDir` must not be the same
         // path string. (Strict literal equality is a v0 approximation
         // — `tsc` resolves both to absolute paths first; we'll do
@@ -1013,6 +1026,33 @@ test "tsconfig.validate: composite without declaration reports TS6304-shaped dia
     try t.expectEqual(@as(usize, 1), diags.len);
     try t.expectEqual(@as(u32, 6304), diags[0].code);
     try t.expectEqualStrings("declaration", diags[0].field);
+}
+
+test "tsconfig.validate: empty extends string reports TS18051" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "extends": "" }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer t.allocator.free(diags);
+    try t.expectEqual(@as(usize, 1), diags.len);
+    try t.expectEqual(@as(u32, 18051), diags[0].code);
+    try t.expectEqualStrings("Compiler option 'extends' cannot be given an empty string.", diags[0].message);
+    try t.expectEqualStrings("extends", diags[0].field);
+}
+
+test "tsconfig.validate: empty extends array elements each report TS18051" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "extends": ["./base.json", "", ""] }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer t.allocator.free(diags);
+    try t.expectEqual(@as(usize, 2), diags.len);
+    try t.expectEqual(@as(u32, 18051), diags[0].code);
+    try t.expectEqual(@as(u32, 18051), diags[1].code);
 }
 
 // ============================================================================

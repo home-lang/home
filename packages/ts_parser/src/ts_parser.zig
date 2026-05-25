@@ -4415,6 +4415,7 @@ pub const Parser = struct {
                 } else blk: {
                     const name_tok = self.advance();
                     if (name_tok.kind == .private_identifier) {
+                        try self.reportPrivateIdentifierTargetDiagnostic(name_tok);
                         try self.reportPrivateIdentifierModifierDiagnostics(mods, false);
                     }
                     const name_id = try self.internPropertyName(name_tok, tokenSpan(name_tok));
@@ -4505,6 +4506,7 @@ pub const Parser = struct {
                 // keyword names the class constructor. Mirrors
                 // upstream fixture `privateNameConstructorReserved`.
                 if (name_tok.kind == .private_identifier) {
+                    try self.reportPrivateIdentifierTargetDiagnostic(name_tok);
                     const name_text = self.source[name_tok.span.start..name_tok.span.end];
                     if (std.mem.eql(u8, name_text, "#constructor")) {
                         try self.reportCodeAt(name_tok.span.start, name_tok.line, 18012, "'#constructor' is a reserved word.");
@@ -4790,6 +4792,7 @@ pub const Parser = struct {
                 }
                 try self.consumeClassPropertyTerminator();
                 if (name_tok.kind == .private_identifier) {
+                    try self.reportPrivateIdentifierTargetDiagnostic(name_tok);
                     try self.reportPrivateIdentifierModifierDiagnostics(mods, true);
                 }
                 // TS1031: `export` on a class member property (e.g.
@@ -5204,6 +5207,12 @@ pub const Parser = struct {
                 try self.reportCodeAt(bad.span.start, bad.line, 18019, msg);
             }
         }
+    }
+
+    fn reportPrivateIdentifierTargetDiagnostic(self: *Parser, tok: Token) ParseError!void {
+        if (self.target_es2015_or_later) return;
+        if (self.hasDiagnosticAt(18028, tok.span.start)) return;
+        try self.reportCodeAt(tok.span.start, tok.line, 18028, "Private identifiers are only available when targeting ECMAScript 2015 and higher.");
     }
 
     fn hasDiagnosticAt(self: *const Parser, code: u32, pos: u32) bool {
@@ -10828,7 +10837,12 @@ pub const Parser = struct {
     }
 
     fn reportUnaryExponentiationLeft(self: *Parser, left: NodeId, line: u32) ParseError!void {
-        if (self.hir.kindOf(left) != .unary_op or self.nodeLooksParenthesized(left)) return;
+        if (self.nodeLooksParenthesized(left)) return;
+        if (self.hir.kindOf(left) == .type_assertion) {
+            try self.reportCodeAt(self.hir.spanOf(left).start, line, 17007, "A type assertion expression is not allowed in the left-hand side of an exponentiation expression. Consider enclosing the expression in parentheses.");
+            return;
+        }
+        if (self.hir.kindOf(left) != .unary_op) return;
         const u = hir_mod.unaryOf(self.hir, left);
         const op_text: []const u8 = switch (u.op) {
             .neg => "-",
@@ -13033,6 +13047,10 @@ pub const Parser = struct {
                 } else blk: {
                     const key_tok = self.advance();
                     var key_span = tokenSpan(key_tok);
+                    if (key_tok.kind == .private_identifier) {
+                        try self.reportCodeAt(key_tok.span.start, key_tok.line, 18016, "Private identifiers are not allowed outside class bodies.");
+                        try self.reportPrivateIdentifierTargetDiagnostic(key_tok);
+                    }
                     if (key_tok.kind == .number_literal and self.peek().kind == .dot and self.peekAt(1).kind == .open_paren) {
                         const dot_tok = self.advance();
                         key_span.end = dot_tok.span.end;
@@ -17820,6 +17838,22 @@ test "parser: unary expression before exponentiation reports TS17006" {
     try T.expectEqual(@as(usize, 2), count);
 }
 
+test "parser: type assertion before exponentiation reports TS17007" {
+    var s = try newTestSetup(
+        \\<number>temp ** 3;
+        \\<number>++temp ** 3;
+        \\(<number>temp) ** 3;
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 17007) count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count);
+}
+
 test "parser: contextual type keyword can be an expression identifier" {
     var s = try newTestSetup(
         \\function f(type, ctor, exports) {
@@ -18366,6 +18400,67 @@ test "parser: declare and abstract property modifiers cannot be used with privat
         if (d.code == 18019) count += 1;
     }
     try T.expectEqual(@as(usize, 2), count);
+}
+
+test "parser: private member names below ES2015 report TS18028" {
+    var s = try newTestSetup(
+        \\class A {
+        \\  #field = 123;
+        \\  #method() {}
+        \\  static #sField = "hello";
+        \\  static #sMethod() {}
+        \\  get #acc() { return ""; }
+        \\  set #acc(x: string) {}
+        \\  static get #sAcc() { return 0; }
+        \\  static set #sAcc(x: number) {}
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 18028) count += 1;
+    }
+    try T.expectEqual(@as(usize, 8), count);
+}
+
+test "parser: private member names at ES2015 do not report TS18028" {
+    var s = try newTestSetup(
+        \\class A {
+        \\  #field = 123;
+        \\  #method() {}
+        \\  get #acc() { return ""; }
+        \\}
+    );
+    defer destroyTestSetup(s);
+    s.parser.setTargetEs2015OrLater(true);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 18028);
+    }
+}
+
+test "parser: private object literal accessors below ES2015 report TS18028" {
+    var s = try newTestSetup(
+        \\const obj = {
+        \\  #field: 1,
+        \\  #method() {},
+        \\  get #acc() { return ""; }
+        \\};
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var ts18016_count: usize = 0;
+    var ts18028_count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 18016) ts18016_count += 1;
+        if (d.code == 18028) ts18028_count += 1;
+    }
+    try T.expectEqual(@as(usize, 3), ts18016_count);
+    try T.expectEqual(@as(usize, 1), ts18028_count);
 }
 
 test "parser: empty and trailing variable declaration lists use upstream diagnostics" {
