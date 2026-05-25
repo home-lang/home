@@ -611,38 +611,40 @@ fn hasJsxSyntax(source: []const u8) bool {
         std.mem.indexOf(u8, source, "/>") != null;
 }
 
-fn sourceMentionsValue(source: []const u8, name: []const u8) bool {
-    return std.mem.indexOf(u8, source, name) != null;
+fn hasJsxFragmentSyntax(source: []const u8) bool {
+    return std.mem.indexOf(u8, source, "<>") != null;
 }
 
-fn hasInlineJsxFactoryPragmaWithoutFragment(source: []const u8) bool {
-    var offset: usize = 0;
-    while (std.mem.indexOf(u8, source[offset..], "@jsx")) |rel| {
-        const idx = offset + rel;
-        const after_idx = idx + "@jsx".len;
-        if (after_idx >= source.len) return false;
-        const after = source[after_idx];
-        if (after == ':' or after == 'F' or after == 'f') {
-            offset = after_idx;
-            continue;
+fn jsxTransformEnabled(options: CompileOptions) bool {
+    if (options.pub_tsconfig) |cfg| {
+        if (cfg.compiler_options.jsx) |jsx| {
+            return switch (jsx) {
+                .react, .react_jsx, .react_jsxdev => true,
+                .preserve, .react_native => false,
+            };
         }
-        if (after != ' ' and after != '\t') {
-            offset = after_idx;
-            continue;
-        }
-        const section_end = if (std.mem.indexOf(u8, source[after_idx..], "@filename:")) |next_file|
-            after_idx + next_file
-        else
-            source.len;
-        const section = source[idx..section_end];
-        if (std.mem.indexOf(u8, section, "@jsxFrag") == null and
-            std.mem.indexOf(u8, section, "@jsxfrag") == null)
-        {
-            return true;
-        }
-        offset = after_idx;
     }
-    return false;
+    if (!options.jsx_option_present) return false;
+    return switch (options.emit.jsx_runtime) {
+        .classic, .automatic, .automatic_dev => true,
+        .preserve => false,
+    };
+}
+
+fn jsxFactoryCompilerOptionPresent(source: []const u8, options: CompileOptions) bool {
+    if (compilerOptionDirectiveValue(source, "jsxFactory") != null) return true;
+    if (options.pub_tsconfig) |cfg| return cfg.compiler_options.jsx_factory != null;
+    return !std.mem.eql(u8, options.emit.jsx_factory, "React.createElement");
+}
+
+fn jsxFragmentFactoryCompilerOptionPresent(source: []const u8, options: CompileOptions) bool {
+    if (compilerOptionDirectiveValue(source, "jsxFragmentFactory") != null) return true;
+    if (options.pub_tsconfig) |cfg| return cfg.compiler_options.jsx_fragment_factory != null;
+    return !std.mem.eql(u8, options.emit.jsx_fragment_factory, "React.Fragment");
+}
+
+fn sourceMentionsValue(source: []const u8, name: []const u8) bool {
+    return std.mem.indexOf(u8, source, name) != null;
 }
 
 fn appendJsxDirectiveDiagnostics(
@@ -652,6 +654,8 @@ fn appendJsxDirectiveDiagnostics(
     options: CompileOptions,
 ) CompileError!void {
     if (!options.is_tsx or !hasJsxSyntax(source)) return;
+    const has_fragment = hasJsxFragmentSyntax(source);
+    const has_jsx_frag_pragma = directiveValue(source, "jsxFrag") != null or directiveValue(source, "jsxfrag") != null;
     const jsx_mode = directiveValue(source, "jsx");
     const jsx_import_source = directiveValue(source, "jsxImportSource");
     if (jsx_import_source) |import_source| {
@@ -682,15 +686,11 @@ fn appendJsxDirectiveDiagnostics(
         if (!std.mem.eql(u8, mode, "preserve") and
             !std.mem.eql(u8, mode, "react") and
             !std.mem.startsWith(u8, mode, "react-jsx") and
-            std.mem.indexOf(u8, source, "<>") != null and
-            directiveValue(source, "jsxFrag") == null and
-            directiveValue(source, "jsxfrag") == null)
+            has_fragment and
+            !has_jsx_frag_pragma)
         {
             try appendDriverDiagnostic(gpa, c, 0, 17017, "An @jsxFrag pragma is required when using an @jsx pragma with JSX fragments.");
         }
-    }
-    if (std.mem.indexOf(u8, source, "<>") != null and hasInlineJsxFactoryPragmaWithoutFragment(source)) {
-        try appendDriverDiagnostic(gpa, c, 0, 17017, "An @jsxFrag pragma is required when using an @jsx pragma with JSX fragments.");
     }
 }
 
@@ -715,6 +715,9 @@ pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
     }
     if (cfg.compiler_options.jsx_factory) |fac| {
         opts.emit.jsx_factory = fac;
+    }
+    if (cfg.compiler_options.jsx_fragment_factory) |frag| {
+        opts.emit.jsx_fragment_factory = frag;
     }
     if (cfg.compiler_options.target) |t| {
         opts.emit.es_target = switch (t) {
@@ -1046,6 +1049,11 @@ pub fn compileSource(
     checker.setSource(source);
     checker.setIsDeclarationFile(options.is_declaration_file);
     checker.setJsxOptionPresent(jsxOptionPresent(source, options));
+    checker.setJsxFragmentFactoryContext(
+        jsxTransformEnabled(options),
+        jsxFactoryCompilerOptionPresent(source, options),
+        jsxFragmentFactoryCompilerOptionPresent(source, options),
+    );
     checker.setCheckJsEnabled(!options.suppress_js_check_diagnostics and
         (virtualFilenameIsJs(source) or pathIsJsLike(options.importer_path)));
     checker.setTargetEs5Baseline(options.report_deprecated_target_es5);
@@ -2847,6 +2855,64 @@ test "driver: jsx pragma with fragment requires jsxFrag pragma" {
         if (d.code == 17017) found = true;
     }
     try T.expect(found);
+}
+
+test "driver: jsxFactory compiler option with fragment reports TS17016" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(
+        T.allocator,
+        arena.allocator(),
+        \\{ "compilerOptions": { "jsx": "react", "jsxFactory": "h" } }
+        ,
+    );
+    var opts = optionsFromConfig(&cfg);
+    opts.no_emit = true;
+    var c = try compileSource(T.allocator,
+        \\declare var h: any;
+        \\let v = <></>;
+    , opts);
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 17016 and
+            std.mem.eql(u8, d.message, "The 'jsxFragmentFactory' compiler option must be provided to use JSX fragments with the 'jsxFactory' compiler option."))
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
+}
+
+test "driver: jsxFrag pragma suppresses TS17016 for jsxFactory compiler option" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(
+        T.allocator,
+        arena.allocator(),
+        \\{ "compilerOptions": { "jsx": "react", "jsxFactory": "h" } }
+        ,
+    );
+    var opts = optionsFromConfig(&cfg);
+    opts.no_emit = true;
+    var c = try compileSource(T.allocator,
+        \\/** @jsxFrag Fragment */
+        \\declare var h: any;
+        \\declare var Fragment: any;
+        \\let v = <></>;
+    , opts);
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 17016);
+    }
 }
 
 test "driver: invalid jsxFragmentFactory pragma reports TS18035" {
