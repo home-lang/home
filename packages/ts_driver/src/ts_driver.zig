@@ -1091,6 +1091,7 @@ pub fn compileSource(
             .strict_property_initialization = strict_property_initialization,
             .no_unchecked_indexed_access = co.no_unchecked_indexed_access orelse false,
             .isolated_modules = co.isolated_modules orelse false,
+            .isolated_declarations = co.isolated_declarations orelse false,
             .resolve_json_module = co.resolve_json_module orelse false,
             .no_implicit_override = co.no_implicit_override orelse false,
             // `noImplicitReturns` is independent of `strict` in tsc.

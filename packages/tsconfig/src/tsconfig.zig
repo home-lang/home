@@ -348,9 +348,13 @@ pub const TsConfig = struct {
         }
 
         for (self.unknown_type_acquisition_options) |option| {
-            const msg = try std.fmt.allocPrint(gpa, "Unknown type acquisition option '{s}'.", .{option});
+            const suggestion = typeAcquisitionOptionSuggestion(option);
+            const msg = if (suggestion) |suggested|
+                try std.fmt.allocPrint(gpa, "Unknown type acquisition option '{s}'. Did you mean '{s}'?", .{ option, suggested })
+            else
+                try std.fmt.allocPrint(gpa, "Unknown type acquisition option '{s}'.", .{option});
             try diags.append(gpa, .{
-                .code = 17010,
+                .code = if (suggestion != null) 17018 else 17010,
                 .message = msg,
                 .owns_message = true,
                 .field = "typeAcquisition",
@@ -1154,6 +1158,49 @@ fn collectUnknownTypeAcquisitionOptions(arena: std.mem.Allocator, obj: jsonc.Val
     return out[0..n];
 }
 
+fn typeAcquisitionOptionSuggestion(option: []const u8) ?[]const u8 {
+    const allowed = comptime [_][]const u8{
+        "enable",
+        "include",
+        "exclude",
+        "disableFilenameBasedTypeAcquisition",
+    };
+    var best: ?[]const u8 = null;
+    var best_distance: usize = std.math.maxInt(usize);
+    inline for (allowed) |candidate| {
+        const distance = levenshteinIcase(option, candidate);
+        if (distance < best_distance) {
+            best = candidate;
+            best_distance = distance;
+        }
+    }
+    const threshold = @max(@as(usize, 2), option.len / 4);
+    return if (best != null and best_distance <= threshold) best else null;
+}
+
+fn levenshteinIcase(a: []const u8, b: []const u8) usize {
+    var previous_buf: [128]usize = undefined;
+    var current_buf: [128]usize = undefined;
+    if (b.len + 1 > previous_buf.len) return std.math.maxInt(usize);
+    for (0..b.len + 1) |i| previous_buf[i] = i;
+    var i: usize = 0;
+    while (i < a.len) : (i += 1) {
+        current_buf[0] = i + 1;
+        var j: usize = 0;
+        while (j < b.len) : (j += 1) {
+            const ca = std.ascii.toLower(a[i]);
+            const cb = std.ascii.toLower(b[j]);
+            const cost: usize = if (ca == cb) 0 else 1;
+            const del = previous_buf[j + 1] + 1;
+            const ins = current_buf[j] + 1;
+            const sub = previous_buf[j] + cost;
+            current_buf[j + 1] = @min(@min(del, ins), sub);
+        }
+        @memcpy(previous_buf[0 .. b.len + 1], current_buf[0 .. b.len + 1]);
+    }
+    return previous_buf[b.len];
+}
+
 fn fillCompilerOptions(arena: std.mem.Allocator, co: *CompilerOptions, obj: jsonc.Value.Object) !void {
     var i: usize = 0;
     while (i < obj.keys.len) : (i += 1) {
@@ -1846,6 +1893,26 @@ test "tsconfig.validate: unknown typeAcquisition keys report TS17010" {
     try t.expectEqual(@as(u32, 17010), diags[0].code);
     try t.expectEqualStrings("Unknown type acquisition option 'enableAutoDiscovy'.", diags[0].message);
     try t.expectEqualStrings("typeAcquisition", diags[0].field);
+}
+
+test "tsconfig.validate: misspelled typeAcquisition keys report TS17018 suggestion" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "typeAcquisition": {
+        \\    "includes": ["jquery"],
+        \\    "disableFilenameBasedTypeAquisition": true
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 2), diags.len);
+    try t.expectEqual(@as(u32, 17018), diags[0].code);
+    try t.expectEqualStrings("Unknown type acquisition option 'includes'. Did you mean 'include'?", diags[0].message);
+    try t.expectEqual(@as(u32, 17018), diags[1].code);
+    try t.expectEqualStrings("Unknown type acquisition option 'disableFilenameBasedTypeAquisition'. Did you mean 'disableFilenameBasedTypeAcquisition'?", diags[1].message);
 }
 
 test "tsconfig.validate: known typeAcquisition keys are accepted" {
