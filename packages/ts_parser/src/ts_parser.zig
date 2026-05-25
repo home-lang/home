@@ -785,13 +785,14 @@ pub const Parser = struct {
     /// Post-parse walk that emits TS1338 for every `infer N` node not
     /// sitting in the extends clause of a conditional type.
     ///
-    /// Algorithm: for each `infer_type` node, walk up parents. The
-    /// FIRST `conditional_type` ancestor decides validity — the infer
-    /// is valid iff we came up from that conditional's `extends` slot
-    /// (directly or transitively via nested types like
-    /// `Array<infer U>`). check / true_branch / false_branch slots
-    /// are invalid. If we walk past the root without hitting any
-    /// conditional, the infer is invalid (e.g. `type T = infer U`).
+    /// Algorithm: for each `infer_type` node, walk up parents. Any
+    /// conditional-type ancestor whose `extends` slot contains this
+    /// node makes the infer legal. This intentionally keeps walking
+    /// through nested conditional check/branch slots, because upstream
+    /// accepts nested conditionals inside an outer extends type such as
+    /// `T extends ((infer U) extends number ? 1 : 0) ? ...`.
+    /// If we walk past the root without such an ancestor, the infer is
+    /// invalid (e.g. `type T = infer U`).
     ///
     /// Mirrors upstream `inferTypes1.ts(82,12)` and (83,16/43/53).
     fn validateInferTypePositions(self: *Parser) ParseError!void {
@@ -827,11 +828,6 @@ pub const Parser = struct {
             if (self.hir.kindOf(parent) == .conditional_type) {
                 const payload = hir_mod.conditionalTypeOf(self.hir, parent);
                 if (cur == payload.extends) return true;
-                if (cur == payload.check or
-                    cur == payload.true_branch or
-                    cur == payload.false_branch) return false;
-                // Defensive: payload-shape mismatch (shouldn't happen);
-                // keep walking so we don't false-positive.
             }
             cur = parent;
         }
@@ -16290,6 +16286,15 @@ test "parser: infer extends before question parses as conditional in grouped typ
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     const alias = hir_mod.typeAliasOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.conditional_type, s.hir.kindOf(alias.aliased));
+}
+
+test "parser: infer in nested conditional inside extends clause is allowed" {
+    var s = try newTestSetup("type X<T> = T extends ((infer U) extends number ? 1 : 0) ? 1 : 0;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |diag| {
+        try T.expect(diag.code != 1338);
+    }
 }
 
 test "parser: class modifier keywords may be property names" {

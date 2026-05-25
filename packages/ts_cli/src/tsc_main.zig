@@ -21,6 +21,8 @@ const tsconfig_mod = @import("tsconfig");
 const ts_watch = @import("ts_watch");
 const d_hm = @import("d_hm");
 
+const ts_empty_files_list_in_config: u32 = 18002;
+
 const RealFs = struct {
     fn read(gpa: std.mem.Allocator, path: []const u8) ![]const u8 {
         var threaded = std.Io.Threaded.init(gpa, .{});
@@ -207,8 +209,8 @@ pub fn main(init: std.process.Init) !void {
     if (input_files.items.len == 0) {
         if (loaded_cfg) |c| {
             const project_dir = std.fs.path.dirname(c.file_path) orelse ".";
-            const include_patterns: []const []const u8 = c.include orelse &[_][]const u8{"**/*"};
-            const exclude_patterns: []const []const u8 = c.exclude orelse &.{};
+            const include_patterns = effectiveIncludePatterns(c);
+            const exclude_patterns = effectiveExcludePatterns(c);
             try expandProjectGlobs(
                 gpa,
                 project_dir,
@@ -221,6 +223,39 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (input_files.items.len == 0) {
+        if (loaded_cfg) |c| {
+            if (opts.files.len == 0) {
+                if (c.files == null) {
+                    const project_dir = std.fs.path.dirname(c.file_path) orelse ".";
+                    var exclude_display_list: std.ArrayListUnmanaged([]const u8) = .empty;
+                    defer exclude_display_list.deinit(gpa);
+                    var owned_out_dir_exclude: ?[]u8 = null;
+                    defer if (owned_out_dir_exclude) |p| gpa.free(p);
+                    const exclude_display_patterns = try effectiveExcludeDiagnosticPatterns(
+                        gpa,
+                        project_dir,
+                        c,
+                        &exclude_display_list,
+                        &owned_out_dir_exclude,
+                    );
+                    const msg = try noInputsFoundInConfigDiagnostic(
+                        gpa,
+                        c.file_path,
+                        effectiveIncludePatterns(c),
+                        exclude_display_patterns,
+                    );
+                    defer gpa.free(msg);
+                    std.debug.print("{s}\n", .{msg});
+                    std.process.exit(2);
+                }
+                if (c.files) |files| {
+                    if (files.len == 0 and c.references.len == 0 and !c.has_extends) {
+                        std.debug.print("error TS{d}: The 'files' list in config file '{s}' is empty.\n", .{ ts_empty_files_list_in_config, c.file_path });
+                        std.process.exit(2);
+                    }
+                }
+            }
+        }
         std.debug.print("error: no input files; pass paths or --project=<path>\n", .{});
         std.process.exit(2);
     }
@@ -779,6 +814,87 @@ fn isTsLikeExtension(path: []const u8) bool {
     return false;
 }
 
+fn effectiveIncludePatterns(cfg: tsconfig_mod.TsConfig) []const []const u8 {
+    return cfg.include orelse &[_][]const u8{"**/*"};
+}
+
+fn effectiveExcludePatterns(cfg: tsconfig_mod.TsConfig) []const []const u8 {
+    return cfg.exclude orelse &.{};
+}
+
+fn effectiveExcludeDiagnosticPatterns(
+    gpa: std.mem.Allocator,
+    project_dir: []const u8,
+    cfg: tsconfig_mod.TsConfig,
+    out: *std.ArrayListUnmanaged([]const u8),
+    owned_out_dir: *?[]u8,
+) ![]const []const u8 {
+    if (cfg.exclude) |exclude| return exclude;
+    const out_dir = cfg.compiler_options.out_dir orelse return &.{};
+    const display = if (std.fs.path.isAbsolute(out_dir))
+        out_dir
+    else blk: {
+        const joined = try std.fs.path.join(gpa, &.{ project_dir, out_dir });
+        owned_out_dir.* = joined;
+        break :blk joined;
+    };
+    try out.append(gpa, display);
+    return out.items;
+}
+
+fn noInputsFoundInConfigDiagnostic(
+    gpa: std.mem.Allocator,
+    config_path: []const u8,
+    include_patterns: []const []const u8,
+    exclude_patterns: []const []const u8,
+) ![]u8 {
+    const code: u32 = 18003;
+    var include_json: std.ArrayListUnmanaged(u8) = .empty;
+    defer include_json.deinit(gpa);
+    var exclude_json: std.ArrayListUnmanaged(u8) = .empty;
+    defer exclude_json.deinit(gpa);
+    try appendJsonStringArray(&include_json, gpa, include_patterns);
+    try appendJsonStringArray(&exclude_json, gpa, exclude_patterns);
+    return try std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: No inputs were found in config file '{s}'. Specified 'include' paths were '{s}' and 'exclude' paths were '{s}'.",
+        .{ code, config_path, include_json.items, exclude_json.items },
+    );
+}
+
+fn appendJsonStringArray(
+    out: *std.ArrayListUnmanaged(u8),
+    gpa: std.mem.Allocator,
+    values: []const []const u8,
+) !void {
+    try out.append(gpa, '[');
+    for (values, 0..) |value, i| {
+        if (i > 0) try out.append(gpa, ',');
+        try out.append(gpa, '"');
+        for (value) |ch| {
+            switch (ch) {
+                '"' => try out.appendSlice(gpa, "\\\""),
+                '\\' => try out.appendSlice(gpa, "\\\\"),
+                '\n' => try out.appendSlice(gpa, "\\n"),
+                '\r' => try out.appendSlice(gpa, "\\r"),
+                '\t' => try out.appendSlice(gpa, "\\t"),
+                else => {
+                    if (ch < 0x20) {
+                        const hex = "0123456789abcdef";
+                        try out.appendSlice(gpa, "\\u00");
+                        try out.append(gpa, hex[ch >> 4]);
+                        try out.append(gpa, hex[ch & 0x0f]);
+                    } else {
+                        try out.append(gpa, ch);
+                    }
+                },
+            }
+        }
+        try out.append(gpa, '"');
+    }
+    try out.append(gpa, ']');
+}
+
 /// Compute the output path for a source file with the given extension
 /// (e.g. `.js`, `.d.ts`). With no out_dir, emit alongside the source
 /// (`a.ts` → `a.js`). With an out_dir, mirror just the basename
@@ -837,4 +953,50 @@ fn resolveTsConfigPath(gpa: std.mem.Allocator, project: ?[]const u8) !?[]u8 {
         cur = new_cur;
     }
     return null;
+}
+
+test "tsc_main: TS18003 no-input config diagnostic uses include and exclude specs" {
+    const include = [_][]const u8{ "src/**/*.ts", "tests/**/*.ts" };
+    const exclude = [_][]const u8{"dist"};
+    const msg = try noInputsFoundInConfigDiagnostic(std.testing.allocator, "/repo/tsconfig.json", &include, &exclude);
+    defer std.testing.allocator.free(msg);
+    try std.testing.expectEqualStrings(
+        "error TS18003: No inputs were found in config file '/repo/tsconfig.json'. Specified 'include' paths were '[\"src/**/*.ts\",\"tests/**/*.ts\"]' and 'exclude' paths were '[\"dist\"]'.",
+        msg,
+    );
+}
+
+test "tsc_main: TS18003 no-input config diagnostic preserves empty include list" {
+    const include = [_][]const u8{};
+    const exclude = [_][]const u8{};
+    const msg = try noInputsFoundInConfigDiagnostic(std.testing.allocator, "tsconfig.json", &include, &exclude);
+    defer std.testing.allocator.free(msg);
+    try std.testing.expectEqualStrings(
+        "error TS18003: No inputs were found in config file 'tsconfig.json'. Specified 'include' paths were '[]' and 'exclude' paths were '[]'.",
+        msg,
+    );
+}
+
+test "tsc_main: TS18003 diagnostic uses implicit outDir exclude display" {
+    const cfg = try tsconfig_mod.parse(std.testing.allocator,
+        \\{ "compilerOptions": { "outDir": "dist" } }
+    );
+    defer cfg.deinit();
+    var out: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer out.deinit(std.testing.allocator);
+    var owned: ?[]u8 = null;
+    defer if (owned) |p| std.testing.allocator.free(p);
+
+    const patterns = try effectiveExcludeDiagnosticPatterns(std.testing.allocator, "/repo", cfg, &out, &owned);
+    try std.testing.expectEqual(@as(usize, 1), patterns.len);
+    try std.testing.expectEqualStrings("/repo/dist", patterns[0]);
+}
+
+test "tsc_main: TS18003 diagnostic JSON-escapes control characters" {
+    const include = [_][]const u8{"src/\x01*.ts"};
+    const exclude = [_][]const u8{};
+    const msg = try noInputsFoundInConfigDiagnostic(std.testing.allocator, "tsconfig.json", &include, &exclude);
+    defer std.testing.allocator.free(msg);
+
+    try std.testing.expect(std.mem.indexOf(u8, msg, "src/\\u0001*.ts") != null);
 }

@@ -1057,6 +1057,7 @@ pub fn compileSource(
     checker.setCheckJsEnabled(!options.suppress_js_check_diagnostics and
         (virtualFilenameIsJs(source) or pathIsJsLike(options.importer_path)));
     checker.setTargetEs5Baseline(options.report_deprecated_target_es5);
+    checker.setPrivateIdentifierDownlevelCollisionEnabled(!options.no_emit and !options.emit.es_target.supportsNativePrivateFields());
     if (options.external_resolver) |er| checker.setExternalResolver(er);
     if (options.script_object_expandos.len > 0) {
         checker.setScriptObjectExpandos(options.script_object_expandos);
@@ -3061,6 +3062,21 @@ test "driver: optionsFromConfig with no jsx leaves is_tsx false" {
     );
     const opts = optionsFromConfig(&cfg);
     try T.expect(!opts.is_tsx);
+}
+
+test "driver: noEmit suppresses downlevel private-name WeakMap collisions" {
+    var c = try compileSource(
+        T.allocator,
+        "let WeakMap;\nclass C { #x = 1; }\n",
+        .{ .no_emit = true, .syntax_target_es2015 = true, .emit = .{ .es_target = .es2015 } },
+    );
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != ts_checker.check.TsCodes.weakmap_weakset_private_identifier_downlevel_collision);
+    }
 }
 
 test "driver: scanner-error compilation deinitializes cleanly" {
