@@ -8450,10 +8450,12 @@ pub const Parser = struct {
             // Accept (and ignore for now) leading labelled tuple
             // elements: `[x: number, y?: number]`.
             var labeled_optional = false;
+            var saw_label_before_type = false;
             if (self.peek().kind == .identifier and
                 (self.peekAt(1).kind == .colon or
                     (self.peekAt(1).kind == .question and self.peekAt(2).kind == .colon)))
             {
+                saw_label_before_type = true;
                 _ = self.advance();
                 if (self.match(.question)) labeled_optional = true;
                 _ = self.advance();
@@ -8463,10 +8465,21 @@ pub const Parser = struct {
             // lowerer / checker can model spread expansion.
             const rest_tok = self.peek();
             const has_rest = self.match(.dot_dot_dot);
-            // Tolerate a labeled rest: `[...rest: T[]]`.
-            if (has_rest and self.peek().kind == .identifier and self.peekAt(1).kind == .colon) {
-                _ = self.advance();
-                _ = self.advance();
+            const rest_type_after_label = saw_label_before_type and has_rest;
+            var rest_label_optional = false;
+            var saw_label_after_rest = false;
+            // Tolerate a labeled rest: `[...rest: T[]]` and recover
+            // optional rest labels so TS5085 can be reported at the
+            // same tuple member rather than cascading into `] expected`.
+            if (has_rest and self.peek().kind == .identifier) {
+                if (self.peekAt(1).kind == .colon or
+                    (self.peekAt(1).kind == .question and self.peekAt(2).kind == .colon))
+                {
+                    saw_label_after_rest = true;
+                    _ = self.advance();
+                    if (self.match(.question)) rest_label_optional = true;
+                    _ = self.advance();
+                }
             }
             const elem_start = self.peek().span.start;
             const elem_line = self.peek().line;
@@ -8486,7 +8499,15 @@ pub const Parser = struct {
             }
             var e = try self.parseTypeAnnotation();
             const trailing_optional = self.match(.question); // optional element marker
-            const this_optional = labeled_optional or trailing_optional;
+            const this_optional = labeled_optional or rest_label_optional or trailing_optional;
+            if (rest_label_optional) {
+                try self.reportCodeAt(rest_tok.span.start, rest_tok.line, 5085, "A tuple member cannot be both optional and rest.");
+            }
+            if (rest_type_after_label) {
+                try self.reportCodeAt(rest_tok.span.start, rest_tok.line, 5087, "A labeled tuple element is declared as rest with a '...' before the name, rather than before the type.");
+            } else if ((saw_label_before_type or saw_label_after_rest) and trailing_optional) {
+                try self.reportCodeAt(elem_start, elem_line, 5086, "A labeled tuple element is declared as optional with a question mark after the name and before the colon, rather than after the type.");
+            }
             // TS1257 — a required tuple element cannot follow an
             // optional one. Mirrors `optionalTupleElements1.ts(11,29)`.
             if (saw_optional and !this_optional and !has_rest) {
@@ -15263,6 +15284,40 @@ test "parser: labeled tuple elements allow optional marker" {
     const alias = hir_mod.typeAliasOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.tuple_type, s.hir.kindOf(alias.aliased));
     try T.expectEqual(@as(usize, 3), hir_mod.tupleTypeElements(&s.hir, alias.aliased).len);
+}
+
+test "parser: labeled tuple optional type marker emits TS5086" {
+    var s = try newTestSetup("type T = [element: string?];");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    const diag = s.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 5086), diag.code);
+    try T.expectEqualStrings("A labeled tuple element is declared as optional with a question mark after the name and before the colon, rather than after the type.", diag.message);
+}
+
+test "parser: labeled tuple rest type marker emits TS5087" {
+    var s = try newTestSetup("type T = [first: string, rest: ...string[]];");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    for (s.parser.diagnostics.items) |diag| {
+        if (diag.code == 5087) {
+            found = true;
+            try T.expectEqualStrings("A labeled tuple element is declared as rest with a '...' before the name, rather than before the type.", diag.message);
+        }
+    }
+    try T.expect(found);
+}
+
+test "parser: labeled tuple optional rest emits TS5085" {
+    var s = try newTestSetup("type T = [first: string, ...rest?: string[]];");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    const diag = s.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 5085), diag.code);
+    try T.expectEqualStrings("A tuple member cannot be both optional and rest.", diag.message);
 }
 
 test "parser: infer extends before question parses as conditional in grouped type" {
