@@ -8194,8 +8194,8 @@ pub const Parser = struct {
         return false;
     }
 
-    /// `keyof T`, `typeof e`, `infer X`, `readonly T[]` (modifier
-    /// stripped); other forms fall through to `parseArrayType`.
+    /// `keyof T`, `typeof e`, `infer X`, `readonly T[]`; other forms fall
+    /// through to `parseArrayType`.
     fn parseTypeOperator(self: *Parser) ParseError!NodeId {
         const t = self.peek();
         switch (t.kind) {
@@ -8264,10 +8264,11 @@ pub const Parser = struct {
                 return try self.builder.addInferType(.{ .start = t.span.start, .end = end_pos }, name_id, constraint);
             },
             .kw_readonly => {
-                // `readonly T[]` — the modifier doesn't get its own
-                // HIR node yet; we fold it as a comment-equivalent.
-                _ = self.advance();
-                return try self.parseArrayType();
+                const readonly_tok = self.advance();
+                const operand_parenthesized = self.readonlyOperandIsBareParenthesizedType();
+                const operand = try self.parseTypeOperator();
+                const sp: Span = .{ .start = readonly_tok.span.start, .end = self.hir.spanOf(operand).end };
+                return try self.builder.addReadonlyType(sp, operand, operand_parenthesized);
             },
             .kw_unique => {
                 const unique_tok = self.advance();
@@ -8281,6 +8282,40 @@ pub const Parser = struct {
             },
             else => return try self.parseArrayType(),
         }
+    }
+
+    fn readonlyOperandIsBareParenthesizedType(self: *const Parser) bool {
+        if (self.peek().kind != .open_paren) return false;
+        var depth: i32 = 0;
+        var i = self.cursor;
+        while (i < self.tokens.len) : (i += 1) {
+            const tk = self.tokens[i].kind;
+            switch (tk) {
+                .open_paren, .open_bracket, .open_brace, .less_than => depth += 1,
+                .close_paren, .close_bracket, .close_brace, .greater_than, .greater_greater, .greater_greater_greater => {
+                    const count: u8 = switch (tk) {
+                        .greater_greater => 2,
+                        .greater_greater_greater => 3,
+                        else => 1,
+                    };
+                    var n: u8 = 0;
+                    while (n < count) : (n += 1) {
+                        depth -= 1;
+                        if (depth == 0 and tk == .close_paren) {
+                            const next_index = i + 1;
+                            if (next_index >= self.tokens.len) return true;
+                            const next = self.tokens[next_index];
+                            return next.kind != .open_bracket or next.flags.preceded_by_newline;
+                        }
+                        if (depth <= 0) break;
+                    }
+                    if (depth <= 0) return false;
+                },
+                .eof => return true,
+                else => {},
+            }
+        }
+        return true;
     }
 
     fn parseArrayType(self: *Parser) ParseError!NodeId {
@@ -17708,6 +17743,30 @@ test "parser: type annotation — array T[]" {
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     const v = hir_mod.varDeclOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.array_type, s.hir.kindOf(v.type_annotation));
+}
+
+test "parser: type annotation — readonly operator preserves operand" {
+    var s = try newTestSetup("let x: readonly number[] = [];");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.readonly_type, s.hir.kindOf(v.type_annotation));
+    const rt = hir_mod.readonlyTypeOf(&s.hir, v.type_annotation);
+    try T.expect(!rt.operand_parenthesized);
+    try T.expectEqual(hir_mod.NodeKind.array_type, s.hir.kindOf(rt.operand));
+}
+
+test "parser: type annotation — readonly tracks bare parenthesized operand" {
+    var s = try newTestSetup("let x: readonly (number[]) = [];");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.readonly_type, s.hir.kindOf(v.type_annotation));
+    const rt = hir_mod.readonlyTypeOf(&s.hir, v.type_annotation);
+    try T.expect(rt.operand_parenthesized);
+    try T.expectEqual(hir_mod.NodeKind.array_type, s.hir.kindOf(rt.operand));
 }
 
 test "parser: type annotation — generic type ref Foo<T>" {

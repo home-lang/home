@@ -68,6 +68,7 @@ pub const Lowerer = struct {
             .keyof_type => try self.lowerKeyof(node),
             .indexed_access_type => try self.lowerIndexedAccess(node),
             .typeof_type => types.Primitive.unknown, // requires symbol resolution
+            .readonly_type => try self.lower(hir_mod.readonlyTypeOf(self.hir, node).operand),
             .conditional_type => try self.lowerConditional(node),
             .infer_type => try self.lowerInferType(node),
             .type_literal => try self.lowerLiteralType(node),

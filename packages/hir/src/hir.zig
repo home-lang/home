@@ -183,6 +183,7 @@ pub const NodeKind = enum(u8) {
     indexed_access_type,
     keyof_type,
     typeof_type,
+    readonly_type,
     infer_type,
     template_literal_type,
     tuple_type,
@@ -815,6 +816,13 @@ pub const TypeofTypePayload = struct {
     operand: NodeId,
 };
 
+/// `readonly T` in type position. The checker keeps this wrapper for grammar
+/// parity, then lowering unwraps it to the operand's semantic type.
+pub const ReadonlyTypePayload = struct {
+    operand: NodeId,
+    operand_parenthesized: bool,
+};
+
 /// `\`hello ${name}\`` — template-literal *expression* (value
 /// position). Text parts are `literal_string` HIR nodes; there
 /// are exactly `exprs_len + 1` of them.
@@ -1149,6 +1157,7 @@ pub const Hir = struct {
     indexed_access_type_payloads: std.ArrayListUnmanaged(IndexedAccessTypePayload),
     keyof_type_payloads: std.ArrayListUnmanaged(KeyofTypePayload),
     typeof_type_payloads: std.ArrayListUnmanaged(TypeofTypePayload),
+    readonly_type_payloads: std.ArrayListUnmanaged(ReadonlyTypePayload),
     type_predicate_payloads: std.ArrayListUnmanaged(TypePredicatePayload),
     template_literal_type_payloads: std.ArrayListUnmanaged(TemplateLiteralTypePayload),
     template_literal_payloads: std.ArrayListUnmanaged(TemplateLiteralPayload),
@@ -1234,6 +1243,7 @@ pub const Hir = struct {
             .indexed_access_type_payloads = .empty,
             .keyof_type_payloads = .empty,
             .typeof_type_payloads = .empty,
+            .readonly_type_payloads = .empty,
             .type_predicate_payloads = .empty,
             .template_literal_type_payloads = .empty,
             .template_literal_payloads = .empty,
@@ -1326,6 +1336,7 @@ pub const Hir = struct {
         self.indexed_access_type_payloads.deinit(self.gpa);
         self.keyof_type_payloads.deinit(self.gpa);
         self.typeof_type_payloads.deinit(self.gpa);
+        self.readonly_type_payloads.deinit(self.gpa);
         self.type_predicate_payloads.deinit(self.gpa);
         self.template_literal_type_payloads.deinit(self.gpa);
         self.template_literal_payloads.deinit(self.gpa);
@@ -2510,6 +2521,17 @@ pub const Builder = struct {
         return id;
     }
 
+    pub fn addReadonlyType(self: *Builder, span: Span, operand: NodeId, operand_parenthesized: bool) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.readonly_type_payloads.items.len);
+        try self.hir.readonly_type_payloads.append(self.hir.gpa, .{
+            .operand = operand,
+            .operand_parenthesized = operand_parenthesized,
+        });
+        const id = try self.newNode(.readonly_type, span, payload_idx);
+        self.hir.setParent(operand, id);
+        return id;
+    }
+
     pub fn addTemplateLiteralType(
         self: *Builder,
         span: Span,
@@ -3304,6 +3326,11 @@ pub fn indexSignatureOf(hir: *const Hir, id: NodeId) IndexSignaturePayload {
 pub fn typeofTypeOf(hir: *const Hir, id: NodeId) TypeofTypePayload {
     std.debug.assert(hir.kindOf(id) == .typeof_type);
     return hir.typeof_type_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn readonlyTypeOf(hir: *const Hir, id: NodeId) ReadonlyTypePayload {
+    std.debug.assert(hir.kindOf(id) == .readonly_type);
+    return hir.readonly_type_payloads.items[hir.payloads.items[id]];
 }
 
 pub fn typePredicateOf(hir: *const Hir, id: NodeId) TypePredicatePayload {
