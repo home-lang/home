@@ -1863,7 +1863,9 @@ pub const Parser = struct {
                 // upstream TS2457 ("Type alias name cannot be '...'.").
                 // Mirrors `reservedNamesInAliases.ts`.
                 const next = self.peekAt(1);
-                if (next.kind == .identifier or self.tokenAtLexemeIsReservedTypeAliasName(self.cursor + 1)) {
+                if ((next.kind == .identifier or self.tokenAtLexemeIsReservedTypeAliasName(self.cursor + 1)) and
+                    (!next.flags.preceded_by_newline or self.ambient_depth > 0))
+                {
                     break :blk try self.parseTypeAlias();
                 }
                 break :blk try self.parseExpressionStatement();
@@ -2964,10 +2966,11 @@ pub const Parser = struct {
 
     fn parseThrowStatement(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // throw
-        // ASI restriction: throw cannot be followed by a newline before
-        // the expression. If a newline intervenes, we still attempt to
-        // parse for recovery, since most editors will see this as an
-        // unfinished statement.
+        if (self.peek().flags.preceded_by_newline and self.peek().kind != .eof) {
+            try self.reportCodeAt(start.span.end, start.line, 1142, "Line break not permitted here.");
+            const missing = try self.missingIdentifierAt(start.span.end);
+            return try self.builder.addThrow(.{ .start = start.span.start, .end = start.span.end }, missing);
+        }
         const value = try self.parseExpression();
         try self.consumeStatementTerminator();
         const end_pos = self.hir.spanOf(value).end;
@@ -5662,6 +5665,9 @@ pub const Parser = struct {
             self.advance()
         else
             try self.expect(.identifier, "type alias name");
+        if (name_tok.flags.preceded_by_newline) {
+            try self.reportCodeAt(name_tok.span.start, name_tok.line, 1142, "Line break not permitted here.");
+        }
         // TS2457 — `Type alias name cannot be '<reserved>'.` fires for
         // primitive-type keywords used as type alias names. Mirrors
         // `reservedNamesInAliases.ts` lines 2-7.
@@ -14803,6 +14809,40 @@ test "parser: throw statement" {
     try T.expectEqual(hir_mod.NodeKind.throw_stmt, s.hir.kindOf(top));
 }
 
+test "parser: throw newline reports TS1142 and leaves next statement" {
+    var s = try newTestSetup("throw\na;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 2), stmts.len);
+    try T.expectEqual(hir_mod.NodeKind.throw_stmt, s.hir.kindOf(stmts[0]));
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(stmts[1]));
+
+    var saw_1142 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1142) {
+            saw_1142 = true;
+            try T.expectEqual(@as(u32, 5), d.pos);
+            try T.expectEqual(@as(u32, 1), d.line);
+            try T.expectEqualStrings("Line break not permitted here.", d.message);
+        }
+        try T.expect(d.code != 1109);
+    }
+    try T.expect(saw_1142);
+}
+
+test "parser: throw newline eof keeps expression expected diagnostic" {
+    var s = try newTestSetup("throw\n");
+    defer destroyTestSetup(s);
+    try T.expectError(error.UnexpectedToken, s.parser.parseSourceFile());
+    var saw_1109 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1109) saw_1109 = true;
+        try T.expect(d.code != 1142);
+    }
+    try T.expect(saw_1109);
+}
+
 test "parser: try-catch-finally" {
     var s = try newTestSetup("try { f(); } catch (e) { log(e); } finally { cleanup(); }");
     defer destroyTestSetup(s);
@@ -15774,6 +15814,31 @@ test "parser: type alias" {
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     try T.expectEqual(hir_mod.NodeKind.type_alias_decl, s.hir.kindOf(top));
+}
+
+test "parser: declare type newline reports TS1142 but declares alias" {
+    var s = try newTestSetup(
+        \\declare type
+        \\T1 = null;
+        \\declare
+        \\type
+        \\T = null;
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expect(stmts.len >= 2);
+    try T.expectEqual(hir_mod.NodeKind.type_alias_decl, s.hir.kindOf(stmts[0]));
+
+    var saw_1142 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1142) {
+            saw_1142 = true;
+            try T.expectEqual(@as(u32, 2), d.line);
+            try T.expectEqualStrings("Line break not permitted here.", d.message);
+        }
+    }
+    try T.expect(saw_1142);
 }
 
 test "parser: enum declaration" {
