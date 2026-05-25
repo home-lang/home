@@ -600,7 +600,7 @@ pub const Scanner = struct {
                 if (!self.scanNumberFragment(gpa, isHexDigit, false, &saw_separator)) {
                     self.report(gpa, "Hexadecimal digit expected.");
                 }
-                try self.checkIdentifierAfterNumericLiteral(gpa);
+                try self.checkIdentifierAfterNumericLiteral(gpa, start, line, .none);
                 return self.numberFinish(start, line, f, saw_separator);
             }
             if (c == 'o' or c == 'O') {
@@ -610,7 +610,7 @@ pub const Scanner = struct {
                     self.report(gpa, "Octal digit expected.");
                     if (self.pos == digit_start) self.consumeDecimalDigits();
                 }
-                try self.checkIdentifierAfterNumericLiteral(gpa);
+                try self.checkIdentifierAfterNumericLiteral(gpa, start, line, .none);
                 return self.numberFinish(start, line, f, saw_separator);
             }
             if (c == 'b' or c == 'B') {
@@ -620,7 +620,7 @@ pub const Scanner = struct {
                     self.report(gpa, "Binary digit expected.");
                     if (self.pos == digit_start) self.consumeDecimalDigits();
                 }
-                try self.checkIdentifierAfterNumericLiteral(gpa);
+                try self.checkIdentifierAfterNumericLiteral(gpa, start, line, .none);
                 return self.numberFinish(start, line, f, saw_separator);
             }
         }
@@ -633,13 +633,17 @@ pub const Scanner = struct {
         _ = self.scanNumberFragment(gpa, isDecimalDigit, self.pos > start, &saw_separator);
 
         // Optional decimal fraction.
+        var saw_decimal_point = self.source[start] == '.';
         if (!self.isAtEnd() and self.source[self.pos] == '.') {
+            saw_decimal_point = true;
             self.pos += 1;
             _ = self.scanNumberFragment(gpa, isDecimalDigit, false, &saw_separator);
         }
 
         // Exponent.
+        var saw_exponent = false;
         if (!self.isAtEnd() and (self.source[self.pos] == 'e' or self.source[self.pos] == 'E')) {
+            saw_exponent = true;
             self.pos += 1;
             if (!self.isAtEnd() and (self.source[self.pos] == '+' or self.source[self.pos] == '-')) {
                 self.pos += 1;
@@ -651,7 +655,7 @@ pub const Scanner = struct {
 
         f.has_separator = saw_separator;
         // BigInt suffix.
-        if (!self.isAtEnd() and self.source[self.pos] == 'n') {
+        if (!saw_decimal_point and !saw_exponent and !self.isAtEnd() and self.source[self.pos] == 'n') {
             self.pos += 1;
             return .{
                 .span = .{ .start = start, .end = self.pos },
@@ -660,7 +664,7 @@ pub const Scanner = struct {
                 .line = line,
             };
         }
-        try self.checkIdentifierAfterNumericLiteral(gpa);
+        try self.checkIdentifierAfterNumericLiteral(gpa, start, line, if (saw_exponent) .bigint_exponent else if (saw_decimal_point) .bigint_integer else .none);
         return .{
             .span = .{ .start = start, .end = self.pos },
             .kind = .number_literal,
@@ -720,11 +724,36 @@ pub const Scanner = struct {
         }
     }
 
-    fn checkIdentifierAfterNumericLiteral(self: *Scanner, gpa: std.mem.Allocator) ScanError!void {
+    const NumericIdentifierMode = enum {
+        none,
+        bigint_exponent,
+        bigint_integer,
+    };
+
+    fn checkIdentifierAfterNumericLiteral(
+        self: *Scanner,
+        gpa: std.mem.Allocator,
+        numeric_start: u32,
+        numeric_line: u32,
+        mode: NumericIdentifierMode,
+    ) ScanError!void {
         if (self.isAtEnd() or !isIdentStart(self.source[self.pos])) return;
         const id_start = self.pos;
         self.pos += 1;
         while (!self.isAtEnd() and isIdentCont(self.source[self.pos])) self.pos += 1;
+        if (self.pos == id_start + 1 and self.source[id_start] == 'n') {
+            switch (mode) {
+                .bigint_exponent => {
+                    self.reportAt(gpa, numeric_start, numeric_line, "A bigint literal cannot use exponential notation.");
+                    return;
+                },
+                .bigint_integer => {
+                    self.reportAt(gpa, numeric_start, numeric_line, "A bigint literal must be an integer.");
+                    return;
+                },
+                .none => {},
+            }
+        }
         self.reportAt(gpa, id_start, self.line, "An identifier or keyword cannot immediately follow a numeric literal.");
         self.pos = id_start;
     }
@@ -1598,6 +1627,30 @@ test "Scanner: numeric literals" {
     try t.expectEqual(TokenKind.bigint_literal, toks.items[10].kind);
     try t.expectEqualStrings("1n", toks.items[10].bytes(s.source));
     try t.expectEqual(TokenKind.bigint_literal, toks.items[11].kind);
+}
+
+test "Scanner: invalid bigint suffix on fractional and scientific numeric literals" {
+    var s = Scanner.init(t.allocator, "1e2n 4.1n .1n 123n");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+
+    try t.expectEqual(TokenKind.number_literal, toks.items[0].kind);
+    try t.expectEqualStrings("1e2n", toks.items[0].bytes(s.source));
+    try t.expectEqual(TokenKind.number_literal, toks.items[1].kind);
+    try t.expectEqualStrings("4.1n", toks.items[1].bytes(s.source));
+    try t.expectEqual(TokenKind.number_literal, toks.items[2].kind);
+    try t.expectEqualStrings(".1n", toks.items[2].bytes(s.source));
+    try t.expectEqual(TokenKind.bigint_literal, toks.items[3].kind);
+    try t.expectEqualStrings("123n", toks.items[3].bytes(s.source));
+
+    try t.expectEqual(@as(usize, 3), s.diagnostics.items.len);
+    try t.expectEqualStrings("A bigint literal cannot use exponential notation.", s.diagnostics.items[0].message);
+    try t.expectEqual(@as(u32, 0), s.diagnostics.items[0].pos);
+    try t.expectEqualStrings("A bigint literal must be an integer.", s.diagnostics.items[1].message);
+    try t.expectEqual(@as(u32, 5), s.diagnostics.items[1].pos);
+    try t.expectEqualStrings("A bigint literal must be an integer.", s.diagnostics.items[2].message);
+    try t.expectEqual(@as(u32, 10), s.diagnostics.items[2].pos);
 }
 
 test "Scanner: invalid first binary and octal digits stay one literal" {

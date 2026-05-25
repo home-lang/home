@@ -1453,6 +1453,12 @@ fn normalizeScannerDiagnostic(message: []const u8) NormalizedScannerDiagnostic {
     if (std.mem.eql(u8, message, "An identifier or keyword cannot immediately follow a numeric literal.")) {
         return .{ .code = 1351, .message = message };
     }
+    if (std.mem.eql(u8, message, "A bigint literal cannot use exponential notation.")) {
+        return .{ .code = 1352, .message = message };
+    }
+    if (std.mem.eql(u8, message, "A bigint literal must be an integer.")) {
+        return .{ .code = 1353, .message = message };
+    }
     if (std.mem.eql(u8, message, "Digit expected.")) {
         return .{ .code = 1124, .message = message };
     }
@@ -3108,6 +3114,32 @@ test "driver: unterminated string literal is normalized to TS1002" {
         try T.expect(!std.mem.eql(u8, d.message, "unterminated string literal"));
     }
     try T.expect(saw_ts1002);
+}
+
+test "driver: invalid bigint suffix diagnostics normalize to TS1352 and TS1353" {
+    var c = try compileSource(
+        T.allocator,
+        "const scientific = 1e2n;\nconst decimal = 4.1n;\nconst leadingDecimal = .1n;\nconst ok = 1n;\n",
+        .{ .no_emit = true, .syntax_target_es2015 = true, .emit = .{ .es_target = .es2020 } },
+    );
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var saw_1352 = false;
+    var count_1353: usize = 0;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 1352 and std.mem.eql(u8, d.message, "A bigint literal cannot use exponential notation.")) {
+            saw_1352 = true;
+        }
+        if (d.code == 1353 and std.mem.eql(u8, d.message, "A bigint literal must be an integer.")) {
+            count_1353 += 1;
+        }
+        try T.expect(d.code != 1351);
+    }
+    try T.expect(saw_1352);
+    try T.expectEqual(@as(usize, 2), count_1353);
 }
 
 test "driver: unterminated block comment still checks preceding expression" {
