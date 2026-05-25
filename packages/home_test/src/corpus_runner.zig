@@ -227,6 +227,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/ENG-24434.test.ts",
     "regression/issue/fuzzer-ENG-22942.test.ts",
     "bundler/transpiler/function-tostring-require.test.ts",
+    "bundler/transpiler/export-default.test.js",
     "js/bun/transpiler/transpiler-utf16-loader.test.ts",
     "regression/issue/012039.test.ts",
     "js/web/html/html-rewriter-doctype.test.ts",
@@ -276,6 +277,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/10887.test.ts",
     "regression/issue/11100.test.ts",
     "regression/issue/12034/12034.fixture.ts",
+    "regression/issue/12034/12034.test.js",
     "regression/issue/12548.test.ts",
     "regression/issue/12910/12910.test.ts",
     "regression/issue/13316.test.ts",
@@ -8587,6 +8589,42 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "",
         },
         .{
+            .needle = "import \"./12034.fixture\";",
+            .replacement =
+                \\test.each([
+                \\  ["expect", expect],
+                \\  ["test", test],
+                \\  ["describe", describe],
+                \\  ["it", it],
+                \\  ["beforeEach", beforeEach],
+                \\  ["afterEach", afterEach],
+                \\  ["beforeAll", beforeAll],
+                \\  ["afterAll", afterAll],
+                \\  ["jest", jest],
+                \\])("that %s is defined", (_, global) => {
+                \\  expect(global).toBeDefined();
+                \\});
+                \\expect.extend({
+                \\  toBeOne(actual) {
+                \\    return {
+                \\      pass: actual === 1,
+                \\      message: () => `expected ${actual} to be 1`,
+                \\    };
+                \\  },
+                \\});
+            ,
+        },
+        .{
+            .needle = "import WithStatic from \"./export-default-with-static-initializer\";",
+            .replacement =
+                \\const WithStatic = class {
+                \\  static {
+                \\    this.boop = "boop";
+                \\  }
+                \\};
+            ,
+        },
+        .{
             .needle = "import { fullGC } from \"bun:jsc\";",
             .replacement = "const { fullGC } = globalThis.__home_import(\"bun:jsc\");",
         },
@@ -8752,21 +8790,92 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         },
     };
 
-    var cursor: usize = 0;
-    while (cursor < source.len) {
-        var replaced = false;
-        for (replacements) |entry| {
-            if (std.mem.startsWith(u8, source[cursor..], entry.needle)) {
-                try out.appendSlice(allocator, entry.replacement);
-                cursor += entry.needle.len;
-                replaced = true;
-                break;
-            }
+    const Mode = enum { code, single_quote, double_quote, template, line_comment, block_comment };
+    var mode: Mode = .code;
+    var i: usize = 0;
+    while (i < source.len) {
+        const byte = source[i];
+        switch (mode) {
+            .code => {
+                var replaced = false;
+                for (replacements) |entry| {
+                    if (std.mem.startsWith(u8, source[i..], entry.needle)) {
+                        try out.appendSlice(allocator, entry.replacement);
+                        i += entry.needle.len;
+                        replaced = true;
+                        break;
+                    }
+                }
+                if (replaced) continue;
+
+                if (byte == '\'') {
+                    mode = .single_quote;
+                } else if (byte == '"') {
+                    mode = .double_quote;
+                } else if (byte == '`') {
+                    mode = .template;
+                } else if (byte == '/' and i + 1 < source.len and source[i + 1] == '/') {
+                    mode = .line_comment;
+                    try out.append(allocator, byte);
+                    i += 1;
+                    try out.append(allocator, source[i]);
+                    i += 1;
+                    continue;
+                } else if (byte == '/' and i + 1 < source.len and source[i + 1] == '*') {
+                    mode = .block_comment;
+                    try out.append(allocator, byte);
+                    i += 1;
+                    try out.append(allocator, source[i]);
+                    i += 1;
+                    continue;
+                }
+            },
+            .single_quote => {
+                if (byte == '\\' and i + 1 < source.len) {
+                    try out.append(allocator, byte);
+                    i += 1;
+                    try out.append(allocator, source[i]);
+                    i += 1;
+                    continue;
+                }
+                if (byte == '\'') mode = .code;
+            },
+            .double_quote => {
+                if (byte == '\\' and i + 1 < source.len) {
+                    try out.append(allocator, byte);
+                    i += 1;
+                    try out.append(allocator, source[i]);
+                    i += 1;
+                    continue;
+                }
+                if (byte == '"') mode = .code;
+            },
+            .template => {
+                if (byte == '\\' and i + 1 < source.len) {
+                    try out.append(allocator, byte);
+                    i += 1;
+                    try out.append(allocator, source[i]);
+                    i += 1;
+                    continue;
+                }
+                if (byte == '`') mode = .code;
+            },
+            .line_comment => {
+                if (byte == '\n') mode = .code;
+            },
+            .block_comment => {
+                if (byte == '*' and i + 1 < source.len and source[i + 1] == '/') {
+                    try out.append(allocator, byte);
+                    i += 1;
+                    try out.append(allocator, source[i]);
+                    i += 1;
+                    mode = .code;
+                    continue;
+                }
+            },
         }
-        if (!replaced) {
-            try out.append(allocator, source[cursor]);
-            cursor += 1;
-        }
+        try out.append(allocator, byte);
+        i += 1;
     }
 
     return out.toOwnedSlice(allocator);
@@ -9994,6 +10103,48 @@ test "Bun module import rewrite lowers Bake child imports" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const html = globalThis.__home_import(\"./index.html\").default;") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "WebSocket[]") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "Promise<void>") == null);
+}
+
+test "Bun module import rewrite preserves fixture strings" {
+    const source =
+        \\const fromTemplate = `import "./12034.fixture";`;
+        \\const fromString = "import WithStatic from \"./export-default-with-static-initializer\";";
+        \\// import "./12034.fixture";
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/12034/12034.test.js");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "`import \"./12034.fixture\";`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "\"import WithStatic from \\\"./export-default-with-static-initializer\\\";\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "// import \"./12034.fixture\";") != null);
+}
+
+test "Bun module import rewrite lowers imported Jest globals fixture" {
+    const source =
+        \\import "./12034.fixture";
+        \\import { expect, test } from "bun:test";
+        \\test("works", () => expect(1).toBeOne());
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "regression/issue/12034/12034.test.js");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "import \"./12034.fixture\";") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "expect.extend") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "toBeOne(actual)") != null);
+}
+
+test "Bun module import rewrite lowers default class static fixture" {
+    const source =
+        \\import WithStatic from "./export-default-with-static-initializer";
+        \\import { expect, test } from "bun:test";
+        \\test("works", () => expect(WithStatic.boop).toBe("boop"));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "bundler/transpiler/export-default.test.js");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "import WithStatic") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const WithStatic = class") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "this.boop = \"boop\"") != null);
 }
 
 test "Bun jsc import rewrite lowers shallow memory import" {

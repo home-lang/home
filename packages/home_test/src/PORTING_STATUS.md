@@ -921,6 +921,14 @@ The copied `regression/issue/11297/11297.test.ts`,
 and `regression/issue/28522.test.ts` fixtures now pass as `7` tests
 through the existing regression, HTTP server/leak, and Node util inspect
 bootstrap surfaces.
+The copied `regression/issue/12034/12034.test.js` fixture now passes as
+`10` tests by lowering its side-effect import to the copied
+`12034.fixture.ts` body, preserving the fixture's Jest-global assertions
+and `expect.extend` matcher before running the entry assertion.
+The copied `bundler/transpiler/export-default.test.js` fixture now
+passes as `1` test by lowering its default import to the copied
+`export-default-with-static-initializer` class body, preserving the
+static initializer that sets `boop`.
 The copied `js/bun/test/test-timers.test.ts` fixture now passes as `1`
 test through the Jest fake-timer bootstrap model. It covers Bun's stable
 `Date` identity, mocked `Date.now()` / `new Date()`,

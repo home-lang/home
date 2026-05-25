@@ -17,10 +17,10 @@ macOS, Linux, and the WASM target.
   bootstrap path exists for the current allowlist:
   `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
-  Latest measured subset run: `285` files, `1,216` passed, `0` failed,
+  Latest measured subset run: `287` files, `1,227` passed, `0` failed,
   `46` todo. That subset currently executes the todo-registration smoke, three Node
   `assert` CommonJS smokes, Node `path` smokes, three Node `url` smokes, the Web
-  `atob`/`btoa` smoke, fifty-seven regression smokes, one bundler
+  `atob`/`btoa` smoke, fifty-eight regression smokes, one bundler
   constant-fold smoke, bundler function-toString `require()`
   preservation, bundler `allowUnresolved`, banner, barrel,
   browser-target builtin diagnostics, CJS, CJS-to-ESM, compile-autoload,
@@ -47,6 +47,8 @@ macOS, Linux, and the WASM target.
   `Intl.DateTimeFormat` smoke coverage,
   `bun:internal-for-testing.highlightJavaScript` template-literal and
   utility highlighter coverage, a long-running Node util inspect regression,
+  imported Jest-global fixture registration, default class export
+  static-initializer coverage,
   `home test --pass-with-no-tests` subprocess coverage,
   JS-only `Bun.serve({ fetch })` / long-lived server-fixture `Bun.spawn` coverage,
   IPC-style server-fixture URL delivery and `new URL(input, base)` coverage,
