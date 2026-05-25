@@ -30202,6 +30202,37 @@ test "conformance: importDeclarationInModuleDeclaration1 matches TS1147 baseline
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: emptyThenWarning matches TS1313 baseline" {
+    // Regression pin for TS1313. Upstream:
+    //   emptyThenWarning.ts(1,6): error TS1313: The body of an 'if' \
+    //     statement cannot be the empty statement.
+    //   emptyThenWarning.ts(4,19): error TS1313: The body of an 'if' \
+    //     statement cannot be the empty statement.
+    // Pre-fix the parser silently accepted `if (cond);` as a valid
+    // empty-statement-body `if`. tsc rejects this shape because it
+    // is almost always a typo for a missing then-branch.
+    const result = try runOneEntry(T.allocator, .{
+        .name = "emptyThenWarning",
+        .path = "emptyThenWarning.ts",
+        .source =
+        \\if(1);
+        \\
+        \\let x = 0;
+        \\if (true === true); {
+        \\    x = 1;
+        \\}
+        ,
+        .expects_error = true,
+        .expected_errors = "emptyThenWarning.ts(1,6): error TS1313: The body of an 'if' statement cannot be the empty statement.\nemptyThenWarning.ts(4,19): error TS1313: The body of an 'if' statement cannot be the empty statement.",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: errorOnInitializerInInterfaceProperty matches TS1246 baseline" {
     // Regression pin for TS1246. Upstream:
     //   errorOnInitializerInInterfaceProperty.ts(2,19): error TS1246: \

@@ -25,7 +25,7 @@ upstream source that produces it.
 > are regression-gated on every PR; Bun port % is file-count progress
 > over integrated Home ports, while raw source presence is reported
 > separately now that the full Bun source backlog has been staged.
-> TS diagnostic-code coverage (631 / 2,076 emitted) tracks the catalog-
+> TS diagnostic-code coverage (632 / 2,076 emitted) tracks the catalog-
 > only → emitted ratchet; each `feat(ts-parity): implement TSxxxx`
 > commit moves this row by 1.
 
@@ -50,7 +50,7 @@ view; these are the drill-down pages — modeled after Bun's
 | **TypeScript — exact (byte-for-byte)** | **~4,060 / 5,907 — ~68.7%** | `HOME_TS_CONFORMANCE_FULL=1 HOME_TS_CONFORMANCE_EXACT=1` |
 | **TypeScript — baseline-aware (19 folders)** | **586 / 586 — 100%** | per-fixture `.errors.txt` byte comparison |
 | **TypeScript — named-category survey** | **86 / 86 — 100%** | `assignmentCompatibility` + `comparable` + `inOperator` + `stringLiteral` |
-| **TypeScript — diagnostic codes emitted** | **631 / 2,076 — ~30.4%** | `docs/TS_DIAGNOSTIC_CODE_STATUS.md` — codes referenced from production source; 1,441 catalog-only remain |
+| **TypeScript — diagnostic codes emitted** | **632 / 2,076 — ~30.4%** | `docs/TS_DIAGNOSTIC_CODE_STATUS.md` — codes referenced from production source; 1,440 catalog-only remain |
 | **LSP wire methods** | **53 / ~70 — ~76%** | `SUPPORTED_METHODS` in `packages/ts_lsp_server/` |
 | **Bun runtime — source files present** | **1,289 files in `packages/runtime/src/`** | live count from `scripts/measure-parity.sh --values`; audited Bun baseline is 1,193 files |
 | **Bun runtime — files integrated** | **552 / 1,193 — ~46.3%** | Home-import-rewritten, Zig 0.17-clean, build-wired, and tested |
@@ -58,7 +58,7 @@ view; these are the drill-down pages — modeled after Bun's
 | **Node.js — `node:*` binding files** | **28 files** | Zig substrate landing module-by-module (buffer / stream / fs / events / util / assert / os / url / querystring / crypto / process / string_decoder / tty) |
 | **JSC bring-up (Phase 12.2)** | **128 files** | M6 milestone + native eval smoke landed; JS-callable bridge pending |
 | **Language features (capability matrix)** | **18 stable / 43 partial / 2 not-yet — 63 total** | ~28.6% stable, ~68.3% in progress, ~3.2% not yet (includes TS frontend + Runtime/Bun rows) |
-| **Total test count** | **7,018 / 7,020 — ~100%** (2 skipped, 0 failed) | `./pantry/.bin/zig build test --summary all` on Zig 0.17.0-dev — full unit + integration + conformance pin suite |
+| **Total test count** | **7,019 / 7,021 — ~100%** (2 skipped, 0 failed) | `./pantry/.bin/zig build test --summary all` on Zig 0.17.0-dev — full unit + integration + conformance pin suite |
 
 ### TypeScript parity — `home tsc` vs `tsc` / `tsgo`
 
@@ -75,7 +75,7 @@ the same *families* of diagnostics.
 | Baseline-aware exact categories (19 folders, 586 cases) | 586 / 586 — 100% | `apparentType`, `bestCommonType`, `recursiveTypes`, `typeInference`, `keyof`, `conditional`, `instanceOf`, `widenedTypes`, `specifyingTypes`, `primitives`, `any`, `import`, `uniqueSymbol`, `namedTypes`, `localTypes`, `forAwait`, `unknown`, `witness`, `typeAliases`, `asyncGenerators`. |
 | Named-category exact survey (4 folders, 86 cases) | 86 / 86 — 100% | `assignmentCompatibility` 70/70, `comparable` 13/13, `inOperator` 2/2, `stringLiteral` 1/1. |
 | Smoke (3 folders, 16 cases) | 16 / 16 — 100% | Per-PR fast path. |
-| TS diagnostic-code catalogue | **631 / 2,076 emitted — ~30.4%** | Mirrors the full upstream code → message table; powers `home-lsp` hover-on-`TS1234`. 1,441 catalog-only entries remain (see `docs/TS_DIAGNOSTIC_CODE_STATUS.md`). |
+| TS diagnostic-code catalogue | **632 / 2,076 emitted — ~30.4%** | Mirrors the full upstream code → message table; powers `home-lsp` hover-on-`TS1234`. 1,440 catalog-only entries remain (see `docs/TS_DIAGNOSTIC_CODE_STATUS.md`). |
 
 **Exact mode by 1,000-case slice (latest):**
 

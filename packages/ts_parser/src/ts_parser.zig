@@ -2444,6 +2444,18 @@ pub const Parser = struct {
             try self.reportCodeAt(close_tok.span.start, close_tok.line, 1005, "')' expected.");
             missing_close_paren = true;
         }
+        // TS1313: `if (cond);` — the body is an empty statement.
+        // tsc anchors at the bare `;` position (after the close paren).
+        // Mirrors `emptyThenWarning.ts(1,6)` and `(4,19)`.
+        if (!missing_close_paren and self.peek().kind == .semicolon) {
+            const semi_tok = self.peek();
+            try self.reportCodeAt(
+                semi_tok.span.start,
+                semi_tok.line,
+                1313,
+                "The body of an 'if' statement cannot be the empty statement.",
+            );
+        }
         const then_branch = if (self.peek().kind == .close_brace or self.peek().kind == .eof) blk: {
             const close_tok = self.peek();
             if (!missing_close_paren) {
