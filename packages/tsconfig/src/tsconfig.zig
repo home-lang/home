@@ -207,7 +207,11 @@ pub const CompilerOptions = struct {
     type_roots: ?[][]const u8 = null,
     types: ?[][]const u8 = null,
     resolve_json_module: ?bool = null,
+    resolve_package_json_exports: ?bool = null,
+    resolve_package_json_imports: ?bool = null,
+    custom_conditions: ?[][]const u8 = null,
     allow_importing_ts_extensions: ?bool = null,
+    rewrite_relative_import_extensions: ?bool = null,
     es_module_interop: ?bool = null,
     isolated_modules: ?bool = null,
     isolated_declarations: ?bool = null,
@@ -366,6 +370,27 @@ pub const TsConfig = struct {
 
         const effective_module = effectiveModuleKind(co);
         const effective_module_resolution = effectiveModuleResolution(co, effective_module);
+        if (co.allow_importing_ts_extensions == true and !(co.no_emit == true or co.emit_declaration_only == true or co.rewrite_relative_import_extensions == true)) {
+            try diags.append(gpa, .{
+                .code = 5096,
+                .message = "Option 'allowImportingTsExtensions' can only be used when one of 'noEmit', 'emitDeclarationOnly', or 'rewriteRelativeImportExtensions' is set.",
+                .field = "allowImportingTsExtensions",
+            });
+        }
+        if (!moduleResolutionSupportsPackageJsonExportsAndImports(effective_module_resolution)) {
+            if (co.resolve_package_json_exports == true) {
+                try appendTs5098(gpa, &diags, "resolvePackageJsonExports");
+            }
+            if (co.resolve_package_json_imports == true) {
+                try appendTs5098(gpa, &diags, "resolvePackageJsonImports");
+            }
+            if (co.custom_conditions != null) {
+                try appendTs5098(gpa, &diags, "customConditions");
+            }
+        }
+        if (effective_module_resolution == .bundler and !moduleKindIsNonNodeESM(effective_module) and effective_module != .preserve and effective_module != .commonjs) {
+            try appendTs5095(gpa, &diags, "bundler");
+        }
         if (moduleKindIsNode(effective_module) and !moduleResolutionIsNode(effective_module_resolution)) {
             try appendTs5109(gpa, &diags, moduleResolutionNameForModule(effective_module), moduleName(effective_module));
         } else if (moduleResolutionIsNode(effective_module_resolution) and !moduleKindIsNode(effective_module)) {
@@ -670,7 +695,7 @@ fn targetAtLeastES2015(target: ?Target) bool {
 
 fn effectiveModuleKind(co: CompilerOptions) Module {
     if (co.module) |module| {
-        if (module != .none) return module;
+        return module;
     }
 
     return switch (co.target orelse .esnext) {
@@ -684,9 +709,10 @@ fn effectiveModuleKind(co: CompilerOptions) Module {
 
 fn effectiveModuleResolution(co: CompilerOptions, module: Module) ModuleResolution {
     if (co.module_resolution) |module_resolution| {
-        if (module_resolution != .classic and module_resolution != .node10) return module_resolution;
+        return module_resolution;
     }
     return switch (module) {
+        .none, .amd, .umd, .system => .classic,
         .node16, .node18, .node20 => .node16,
         .nodenext => .nodenext,
         else => .bundler,
@@ -703,6 +729,20 @@ fn moduleKindIsNode(module: Module) bool {
 fn moduleResolutionIsNode(module_resolution: ModuleResolution) bool {
     return switch (module_resolution) {
         .node16, .nodenext => true,
+        else => false,
+    };
+}
+
+fn moduleResolutionSupportsPackageJsonExportsAndImports(module_resolution: ModuleResolution) bool {
+    return switch (module_resolution) {
+        .node16, .nodenext, .bundler => true,
+        else => false,
+    };
+}
+
+fn moduleKindIsNonNodeESM(module: Module) bool {
+    return switch (module) {
+        .es6, .es2015, .es2020, .es2022, .esnext => true,
         else => false,
     };
 }
@@ -755,6 +795,34 @@ fn appendTs5109(
         .message = msg,
         .owns_message = true,
         .field = "moduleResolution",
+    });
+}
+
+fn appendTs5095(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    option: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(gpa, "Option '{s}' can only be used when 'module' is set to 'preserve', 'commonjs', or 'es2015' or later.", .{option});
+    try diags.append(gpa, .{
+        .code = 5095,
+        .message = msg,
+        .owns_message = true,
+        .field = "moduleResolution",
+    });
+}
+
+fn appendTs5098(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    option: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(gpa, "Option '{s}' can only be used when 'moduleResolution' is set to 'node16', 'nodenext', or 'bundler'.", .{option});
+    try diags.append(gpa, .{
+        .code = 5098,
+        .message = msg,
+        .owns_message = true,
+        .field = option,
     });
 }
 
@@ -1110,7 +1178,10 @@ fn fillCompilerOptions(arena: std.mem.Allocator, co: *CompilerOptions, obj: json
             .{ .name = "allowSyntheticDefaultImports", .field = "allow_synthetic_default_imports" },
             .{ .name = "useDefineForClassFields", .field = "use_define_for_class_fields" },
             .{ .name = "resolveJsonModule", .field = "resolve_json_module" },
+            .{ .name = "resolvePackageJsonExports", .field = "resolve_package_json_exports" },
+            .{ .name = "resolvePackageJsonImports", .field = "resolve_package_json_imports" },
             .{ .name = "allowImportingTsExtensions", .field = "allow_importing_ts_extensions" },
+            .{ .name = "rewriteRelativeImportExtensions", .field = "rewrite_relative_import_extensions" },
             .{ .name = "esModuleInterop", .field = "es_module_interop" },
             .{ .name = "isolatedModules", .field = "isolated_modules" },
             .{ .name = "isolatedDeclarations", .field = "isolated_declarations" },
@@ -1185,6 +1256,10 @@ fn fillCompilerOptions(arena: std.mem.Allocator, co: *CompilerOptions, obj: json
         }
         if (std.mem.eql(u8, key, "types")) {
             co.types = try parseStringArray(arena, value);
+            continue;
+        }
+        if (std.mem.eql(u8, key, "customConditions")) {
+            co.custom_conditions = try parseStringArray(arena, value);
             continue;
         }
 
@@ -1924,7 +1999,7 @@ test "tsconfig.validate: node module kinds report TS5109 for incompatible module
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
     const cfg = try parseString(t.allocator, arena.allocator(),
-        \\{ "compilerOptions": { "module": "node20", "moduleResolution": "bundler" } }
+        \\{ "compilerOptions": { "module": "node20", "moduleResolution": "classic" } }
     );
     const diags = try cfg.validate(t.allocator);
     defer freeValidationDiagnostics(t.allocator, diags);
@@ -1932,6 +2007,79 @@ test "tsconfig.validate: node module kinds report TS5109 for incompatible module
     try t.expectEqual(@as(u32, 5109), diags[0].code);
     try t.expectEqualStrings("moduleResolution", diags[0].field);
     try t.expectEqualStrings("Option 'moduleResolution' must be set to 'Node16' (or left unspecified) when option 'module' is set to 'Node20'.", diags[0].message);
+}
+
+test "tsconfig.validate: bundler moduleResolution reports TS5095 for incompatible module" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "module": "system", "moduleResolution": "bundler" } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), diags.len);
+    try t.expectEqual(@as(u32, 5095), diags[0].code);
+    try t.expectEqualStrings("moduleResolution", diags[0].field);
+    try t.expectEqualStrings("Option 'bundler' can only be used when 'module' is set to 'preserve', 'commonjs', or 'es2015' or later.", diags[0].message);
+}
+
+test "tsconfig.validate: package-json condition options report TS5098 outside modern resolution" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "moduleResolution": "classic",
+        \\    "resolvePackageJsonExports": true,
+        \\    "resolvePackageJsonImports": true,
+        \\    "customConditions": ["home"]
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 3), diags.len);
+    try t.expectEqual(@as(u32, 5098), diags[0].code);
+    try t.expectEqualStrings("Option 'resolvePackageJsonExports' can only be used when 'moduleResolution' is set to 'node16', 'nodenext', or 'bundler'.", diags[0].message);
+    try t.expectEqual(@as(u32, 5098), diags[1].code);
+    try t.expectEqualStrings("Option 'resolvePackageJsonImports' can only be used when 'moduleResolution' is set to 'node16', 'nodenext', or 'bundler'.", diags[1].message);
+    try t.expectEqual(@as(u32, 5098), diags[2].code);
+    try t.expectEqualStrings("Option 'customConditions' can only be used when 'moduleResolution' is set to 'node16', 'nodenext', or 'bundler'.", diags[2].message);
+}
+
+test "tsconfig.validate: allowImportingTsExtensions reports TS5096 without no-emit mode" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "allowImportingTsExtensions": true } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), diags.len);
+    try t.expectEqual(@as(u32, 5096), diags[0].code);
+    try t.expectEqualStrings("allowImportingTsExtensions", diags[0].field);
+    try t.expectEqualStrings("Option 'allowImportingTsExtensions' can only be used when one of 'noEmit', 'emitDeclarationOnly', or 'rewriteRelativeImportExtensions' is set.", diags[0].message);
+}
+
+test "tsconfig.validate: package-json and TS extension options accept supported modes" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "moduleResolution": "bundler",
+        \\    "resolvePackageJsonExports": true,
+        \\    "resolvePackageJsonImports": true,
+        \\    "customConditions": ["home"],
+        \\    "allowImportingTsExtensions": true,
+        \\    "rewriteRelativeImportExtensions": true
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 0), diags.len);
+    try t.expectEqualStrings("home", cfg.compiler_options.custom_conditions.?[0]);
 }
 
 test "tsconfig.validate: node moduleResolution reports TS5110 for incompatible module" {
