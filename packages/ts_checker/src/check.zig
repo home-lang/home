@@ -47334,6 +47334,35 @@ pub const Checker = struct {
         return cur;
     }
 
+    /// True when `arg_node` is syntactically an indexed-access type
+    /// (`Object[Index]`, possibly nested) whose innermost object is a
+    /// reference to a name currently bound in a narrow scope — i.e. a
+    /// type parameter of the enclosing generic alias/function being
+    /// instantiated. Such an access is a deferred type and its
+    /// constraint check must be skipped (see
+    /// `checkTypeArgSatisfiesConstraint`). A concrete external type
+    /// (`User["id"]`) resolves via `type_names`, not `lookupNarrow`,
+    /// so it does not match.
+    fn indexedAccessOverBoundTypeParameter(self: *Checker, arg_node: NodeId) bool {
+        if (arg_node == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(arg_node) != .indexed_access_type) return false;
+        var obj_node = hir_mod.indexedAccessTypeOf(self.hir, arg_node).object;
+        // Peel nested indexed accesses to reach the root object.
+        while (self.hir.kindOf(obj_node) == .indexed_access_type) {
+            obj_node = hir_mod.indexedAccessTypeOf(self.hir, obj_node).object;
+        }
+        const obj_name: hir_mod.StringId = switch (self.hir.kindOf(obj_node)) {
+            .identifier => hir_mod.identifierOf(self.hir, obj_node).name,
+            .type_ref => blk: {
+                const r = hir_mod.typeRefOf(self.hir, obj_node);
+                if (r.qualifier_len != 0) return false;
+                break :blk r.name;
+            },
+            else => return false,
+        };
+        return self.lookupNarrow(obj_name) != null;
+    }
+
     /// TS2344: Type 'X' does not satisfy the constraint 'Y'.
     /// Conservative: only emit when both `arg_t` and the parameter's
     /// constraint render as simple, fully-resolved type names AND the
@@ -47364,6 +47393,22 @@ pub const Checker = struct {
         // noise on `inferTypesWithExtends1.ts(136)` and similar
         // conditional-type alias bodies.
         if (self.containsFreeTypeParameter(arg_t)) return;
+        // Deferred indexed-access argument over a generic parameter
+        // (`Foo<Source[Key], …>` inside the body of a generic alias
+        // `Foo<Source extends object, …>`). When the type argument is
+        // syntactically an indexed access whose object resolves to a
+        // *bound* type parameter of the enclosing instantiation, the
+        // access is a deferred type: upstream only resolves it (and
+        // only reaches the recursive instantiation) inside the
+        // conditional branch that already guards `Source[Key] extends
+        // object`. Eagerly peeling it to a concrete member type (e.g.
+        // `number` for `User["id"]`) and testing that against the
+        // `object` constraint produces a spurious TS2344. tsc emits no
+        // diagnostic here (`mappedTypeAsClauseRecursiveNoCrash1.ts`).
+        // A genuine concrete indexed access (`Box<User["id"]>`) has a
+        // *non*-bound object name (resolved via `type_names`), so this
+        // guard leaves the real-violation case reporting TS2344.
+        if (self.indexedAccessOverBoundTypeParameter(arg_node)) return;
         const arg_text = (try self.simpleDiagnosticTypeName(arg_t)) orelse return;
         const constraint_text = (try self.simpleDiagnosticTypeName(constraint)) orelse return;
         // Special-case the upstream wording for `extends object`:
@@ -83957,6 +84002,59 @@ test "checker: TS2344 skipped for any/unknown placeholder type arguments" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_does_not_satisfy_constraint);
     }
+}
+
+// Regression for `mappedTypeAsClauseRecursiveNoCrash1.ts`: a recursive
+// mapped type whose `as` clause re-instantiates the alias with an
+// indexed-access type argument (`FlattenType<Source[Key], Target>`)
+// must NOT emit TS2344. `Source[Key]` is an indexed access over a free
+// type parameter; upstream defers the `Source extends object`
+// constraint check until a concrete instantiation, and our recursive
+// instantiation must do the same rather than testing a peeled member
+// type (e.g. `number`) against the constraint. tsc emits zero
+// diagnostics for this fixture.
+test "checker: TS2344 not emitted for recursive mapped-type as-clause instantiation" {
+    const s = try newSetup(
+        \\export type FlattenType<Source extends object, Target> = {
+        \\  [Key in keyof Source as Key extends string
+        \\    ? Source[Key] extends object
+        \\      ? `${Key}.${keyof FlattenType<Source[Key], Target> & string}`
+        \\      : Key
+        \\    : never]-?: Target;
+        \\};
+        \\type User = { id: number; name: string; };
+        \\type FieldSelect = { table: string; };
+        \\type FlattenedUser = FlattenType<User, FieldSelect>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_does_not_satisfy_constraint);
+    }
+}
+
+// Negative companion: a *concrete* indexed-access type argument whose
+// object is an ordinary type (not a bound type parameter) must still
+// report TS2344 when it violates the constraint. Here `User["id"]`
+// resolves to `number`, which does not satisfy `extends object`. The
+// deferral guard added for the recursive mapped-type case keys off a
+// *narrow-bound* object name, so this concrete access is unaffected.
+test "checker: TS2344 still fires for concrete indexed-access arg violating constraint" {
+    const s = try newSetup(
+        \\interface Proxy<T extends object> { value: T; }
+        \\type User = { id: number; name: string; };
+        \\var bad: Proxy<User["id"]>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.type_does_not_satisfy_constraint) continue;
+        try T.expect(std.mem.indexOf(u8, d.message, "'number'") != null);
+        try T.expect(std.mem.indexOf(u8, d.message, "'object'") != null);
+        found = true;
+    }
+    try T.expect(found);
 }
 
 // §6.A wave-2 — TS2367 / TS2678 should prefer literal-text rendering
