@@ -9806,7 +9806,17 @@ pub const Parser = struct {
             return false;
         }
         // Look for the `[ident : ident]` pattern, optionally followed
-        // by `:` (annotation) or `in` (mapped type).
+        // by `:` (annotation) or `in` (mapped type). Also accept the
+        // upstream recovery shape `[ident? ]:` (where the `?` forces
+        // index-sig interpretation despite the missing param type) —
+        // tsc's checker then surfaces TS1022 at the parameter name.
+        // We do both in one pass at parse time so the diagnostic
+        // lands without the checker having to model a typeless
+        // index-signature parameter. Plain `[ident]: T` (no `?`)
+        // stays on the computed-property path so existing fixtures
+        // like `object type computed members accept const literal
+        // keys` (`type Shape = { [a]: number }` where `a` is a
+        // string-typed const) continue to parse cleanly.
         const after_bracket = self.cursor + 1;
         if (after_bracket >= self.tokens.len) {
             self.cursor = checkpoint;
@@ -9818,15 +9828,37 @@ pub const Parser = struct {
             return false;
         }
         const colon_pos = after_bracket + 1;
-        if (colon_pos >= self.tokens.len or self.tokens[colon_pos].kind != .colon) {
+        if (colon_pos >= self.tokens.len) {
+            self.cursor = checkpoint;
+            return false;
+        }
+        const has_param_type = self.tokens[colon_pos].kind == .colon;
+        const is_optional_no_type = self.tokens[colon_pos].kind == .question and
+            colon_pos + 1 < self.tokens.len and
+            self.tokens[colon_pos + 1].kind == .close_bracket and
+            colon_pos + 2 < self.tokens.len and
+            self.tokens[colon_pos + 2].kind == .colon;
+        if (!has_param_type and !is_optional_no_type) {
             self.cursor = checkpoint;
             return false;
         }
         // Commit to parsing the index signature.
         _ = self.advance(); // [
         _ = self.advance(); // key name
-        _ = self.advance(); // :
-        const key_type = try self.parseTypeAnnotation();
+        var key_type: NodeId = hir_mod.none_node_id;
+        if (has_param_type) {
+            _ = self.advance(); // :
+            key_type = try self.parseTypeAnnotation();
+        } else {
+            // `[ident?]: T` — emit TS1022 at the param name. tsc's
+            // `checkGrammarIndexSignatureParameters` anchors at the
+            // parameter identifier. Consume the `?` so the trailing
+            // `]: T` still parses; the `?` itself is invalid on an
+            // index-sig param and could be flagged TS1019 in a
+            // follow-up pass.
+            try self.reportCodeAt(id1.span.start, id1.line, 1022, "An index signature parameter must have a type annotation.");
+            _ = self.advance(); // ?
+        }
         // If the next token is `in`, this is actually a mapped
         // type — back out so the higher-level parser handles it.
         if (self.peek().kind == .kw_in) {
@@ -9868,8 +9900,12 @@ pub const Parser = struct {
                 }
             }
         }
-        const key_type_valid = self.indexSignatureKeyTypeIsValid(key_type);
-        if (!key_type_valid) {
+        const key_type_valid = key_type != hir_mod.none_node_id and self.indexSignatureKeyTypeIsValid(key_type);
+        if (!key_type_valid and key_type != hir_mod.none_node_id) {
+            // Only emit TS1268 when there IS a key type and it's of the
+            // wrong shape. The missing-key-type case already surfaced
+            // TS1022 above; suppressing TS1268 here keeps the diagnostic
+            // list aligned with upstream's grammar-check phase.
             try self.reportCodeAt(id1.span.start, id1.line, 1268, "An index signature parameter type must be 'string', 'number', 'symbol', or a template literal type.");
         }
         _ = try self.expect(.close_bracket, "']' to close index signature");
@@ -22200,6 +22236,48 @@ test "parser: TS1180 fires when an operator starts an object binding element" {
     };
     const d = findDiag(s, 1180) orelse return error.MissingDiagnostic;
     try T.expectEqualStrings("Property destructuring pattern expected.", d.message);
+}
+
+test "parser: TS1022 fires for `[id?]: T` (index signature with no parameter type)" {
+    // Mirrors upstream checker's `checkGrammarIndexSignatureParameters`
+    // which anchors TS1022 "An index signature parameter must have a
+    // type annotation." at the parameter identifier when the parser
+    // commits to an index signature recovery shape (here `[id?]`,
+    // where the `?` forces index-sig interpretation per upstream's
+    // `isUnambiguouslyIndexSignature`) but the parameter has no
+    // type annotation. Plain `[id]: T` deliberately stays on the
+    // computed-property-name path so existing const-literal-keyed
+    // type-member fixtures don't regress.
+    var s = try newTestSetup("interface Foo { [key?]: number; }");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findDiag(s, 1022) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("An index signature parameter must have a type annotation.", d.message);
+}
+
+test "parser: TS1022 stays clean for well-formed index signatures and computed keys" {
+    // Guard rails:
+    //   - `[k: string]: V` (canonical index sig, no TS1022)
+    //   - `readonly [k: number]: V` (with modifier, no TS1022)
+    //   - `[K in keyof T]: V` (mapped type, must back out cleanly)
+    //   - `[a]: V` where `a` is a const-typed key (computed property,
+    //     no TS1022 — `object type computed members accept const
+    //     literal keys` fixture asserts this exact behavior).
+    const cases = [_][]const u8{
+        "interface Foo { [k: string]: number; }",
+        "interface Foo { readonly [k: number]: string; }",
+        "type T<K, V> = { [P in keyof K]: V };",
+        "const k = \"x\"; type Shape = { [k]: number; };",
+    };
+    inline for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = s.parser.parseSourceFile() catch |err| switch (err) {
+            error.UnexpectedToken => hir_mod.none_node_id,
+            else => return err,
+        };
+        try T.expectEqual(@as(u32, 0), countDiag(s, 1022));
+    }
 }
 
 test "parser: TS1140 fires when a type-argument slot has no type-start token" {
