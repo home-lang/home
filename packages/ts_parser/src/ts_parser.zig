@@ -7207,6 +7207,30 @@ pub const Parser = struct {
             if (name_tok.kind == .private_identifier) {
                 try self.reportCodeAt(name_tok.span.start, name_tok.line, 18029, "Private identifiers are not allowed in variable declarations.");
             }
+            // TS1216: `__esModule` is reserved as the marker tsc
+            // emits when downleveling ECMAScript modules to
+            // CommonJS / AMD / UMD. `export var __esModule = …`
+            // would collide with the runtime helper. Mirrors
+            // upstream `checkESModuleMarker` in checker.ts (anchored
+            // at the binding name with the identifier's span).
+            // Fires only for top-level exported bindings — nested
+            // names inside a namespace / block / ambient context
+            // don't participate in the module marker emission.
+            if (self.in_export_declaration and
+                self.block_depth == 0 and
+                self.namespace_depth == 0 and
+                self.ambient_depth == 0 and
+                name_tok.kind == .identifier and
+                std.mem.eql(u8, self.source[name_tok.span.start..name_tok.span.end], "__esModule"))
+            {
+                try self.reportCodeAtWithSpan(
+                    name_tok.span.start,
+                    name_tok.line,
+                    name_tok.span.end - name_tok.span.start,
+                    1216,
+                    "Identifier expected. '__esModule' is reserved as an exported marker when transforming ECMAScript modules.",
+                );
+            }
             try self.reportInvalidVariableDeclarationName(name_tok);
             try self.reportInvalidStrictName(name_tok);
             try self.reportInvalidFutureReservedName(name_tok);
@@ -22236,6 +22260,53 @@ test "parser: TS1180 fires when an operator starts an object binding element" {
     };
     const d = findDiag(s, 1180) orelse return error.MissingDiagnostic;
     try T.expectEqualStrings("Property destructuring pattern expected.", d.message);
+}
+
+test "parser: TS1216 fires for `export var __esModule = 1;`" {
+    // Mirrors upstream `es5-commonjs3.ts(2,12)`:
+    //
+    //     export default "test";
+    //     export var __esModule = 1;
+    //
+    // tsc anchors TS1216 at the `__esModule` identifier with the
+    // identifier's span. `__esModule` is reserved as the runtime
+    // marker tsc emits when downleveling ECMAScript modules to
+    // CommonJS / AMD / UMD; binding it via `export var` collides
+    // with that helper. The new emission lives in `parseVarDecl`'s
+    // identifier-binding path, gated on `in_export_declaration` and
+    // top-level depth (block/namespace/ambient all 0).
+    var s = try newTestSetup("export var __esModule = 1;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findDiag(s, 1216) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Identifier expected. '__esModule' is reserved as an exported marker when transforming ECMAScript modules.", d.message);
+}
+
+test "parser: TS1216 stays clean for non-export and non-top-level `__esModule` bindings" {
+    // Guard rails:
+    //   - `var __esModule = 1;` without `export` — internal binding
+    //     is fine, no marker collision.
+    //   - `function f() { var __esModule = 1; }` — function-scoped
+    //     local, not exported, no collision.
+    //   - `namespace N { export var __esModule = 1; }` — namespace-
+    //     scoped export; upstream's gate runs at the top-level
+    //     `VariableDeclaration` walker so nested forms don't trigger.
+    //   - `export const other = 1;` — different name, no collision.
+    const cases = [_][]const u8{
+        "var __esModule = 1;",
+        "function f() { var __esModule = 1; }",
+        "namespace N { export var __esModule = 1; }",
+        "export const other = 1;",
+    };
+    inline for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = s.parser.parseSourceFile() catch |err| switch (err) {
+            error.UnexpectedToken => hir_mod.none_node_id,
+            else => return err,
+        };
+        try T.expectEqual(@as(u32, 0), countDiag(s, 1216));
+    }
 }
 
 test "parser: TS1022 fires for `[id?]: T` (index signature with no parameter type)" {
