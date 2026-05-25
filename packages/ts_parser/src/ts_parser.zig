@@ -4762,7 +4762,7 @@ pub const Parser = struct {
                     continue;
                 }
                 // property
-                _ = self.match(.bang);
+                const definite_assignment_token: ?Token = if (self.peek().kind == .bang) self.advance() else null;
                 var type_anno: NodeId = hir_mod.none_node_id;
                 if (self.match(.colon)) {
                     type_anno = try self.parseTypeAnnotation();
@@ -4794,6 +4794,7 @@ pub const Parser = struct {
                     try self.reportCodeAt(bad.span.start, bad.line, 1442, "Expected '=' for property initializer.");
                     default_value = try self.parseAssignmentExpression();
                 }
+                try self.reportInvalidDefiniteAssignmentAssertion(definite_assignment_token, type_anno, default_value);
                 try self.consumeClassPropertyTerminator();
                 if (name_tok.kind == .private_identifier) {
                     try self.reportPrivateIdentifierTargetDiagnostic(name_tok);
@@ -5209,6 +5210,20 @@ pub const Parser = struct {
         }
     }
 
+    fn reportInvalidDefiniteAssignmentAssertion(
+        self: *Parser,
+        bang_token: ?Token,
+        type_annotation: NodeId,
+        initializer: NodeId,
+    ) ParseError!void {
+        const bad = bang_token orelse return;
+        if (initializer != hir_mod.none_node_id) {
+            try self.reportCodeAt(bad.span.start, bad.line, 1263, "Declarations with initializers cannot also have definite assignment assertions.");
+        } else if (type_annotation == hir_mod.none_node_id) {
+            try self.reportCodeAt(bad.span.start, bad.line, 1264, "Declarations with definite assignment assertions must also have type annotations.");
+        }
+    }
+
     fn reportPrivateIdentifierModifierDiagnostics(self: *Parser, mods: ClassModifiers, is_property: bool) ParseError!void {
         if (mods.accessibility_token) |bad| {
             if (!self.hasDiagnosticAt(18010, bad.span.start)) {
@@ -5489,13 +5504,14 @@ pub const Parser = struct {
             is_method = true;
         } else {
             _ = self.match(.question);
-            _ = self.match(.bang);
+            const definite_assignment_token: ?Token = if (self.peek().kind == .bang) self.advance() else null;
             if (self.match(.colon)) {
                 type_anno = try self.parseTypeAnnotation();
                 _ = self.match(.question);
                 _ = self.match(.bang);
             }
             if (self.match(.equal)) value = try self.parseAssignmentExpression();
+            try self.reportInvalidDefiniteAssignmentAssertion(definite_assignment_token, type_anno, value);
             self.consumeClassPropertyTerminator() catch |err| switch (err) {
                 error.UnexpectedToken => self.skipMalformedClassFieldTail(),
                 else => return err,
@@ -6818,7 +6834,7 @@ pub const Parser = struct {
         // Definite-assignment assertion in declarations: `let x!: T`.
         // It affects TS control-flow checks only; HIR keeps the same
         // declaration shape and the emitter erases it.
-        _ = self.match(.bang);
+        const definite_assignment_token: ?Token = if (self.peek().kind == .bang) self.advance() else null;
 
         var type_annotation: NodeId = hir_mod.none_node_id;
         if (self.match(.colon)) {
@@ -6850,6 +6866,7 @@ pub const Parser = struct {
         if (self.match(.equal)) {
             init_node = try self.parseAssignmentExpression();
         }
+        try self.reportInvalidDefiniteAssignmentAssertion(definite_assignment_token, type_annotation, init_node);
         try self.recoverRegexVariableDeclarationTail(init_node);
         if (self.peek().kind == .number_literal and
             self.cursor > 0 and
@@ -6895,11 +6912,12 @@ pub const Parser = struct {
                 const name_id = try self.internToken(name_tok);
                 break :id_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
             };
-            _ = self.match(.bang);
+            const extra_definite_assignment_token: ?Token = if (self.peek().kind == .bang) self.advance() else null;
             var extra_type: NodeId = hir_mod.none_node_id;
             if (self.match(.colon)) extra_type = try self.parseTypeAnnotation();
             var extra_init: NodeId = hir_mod.none_node_id;
             if (self.match(.equal)) extra_init = try self.parseAssignmentExpression();
+            try self.reportInvalidDefiniteAssignmentAssertion(extra_definite_assignment_token, extra_type, extra_init);
             try self.recoverRegexVariableDeclarationTail(extra_init);
             if (decl_kind == .const_decl and extra_init == hir_mod.none_node_id and !is_ambient_decl) {
                 const extra_kind = self.hir.kindOf(extra_name);
@@ -14401,6 +14419,51 @@ test "parser: variable declaration definite-assignment assertion" {
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     const v = hir_mod.varDeclOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(v.type_annotation));
+}
+
+test "parser: variable definite-assignment assertion reports TS1263 and TS1264" {
+    var s = try newTestSetup("let x!, y!: number, z! = 1, w!: string = \"s\";");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var saw_1263: u32 = 0;
+    var saw_1264: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1263) {
+            saw_1263 += 1;
+            try T.expectEqualStrings("Declarations with initializers cannot also have definite assignment assertions.", d.message);
+        } else if (d.code == 1264) {
+            saw_1264 += 1;
+            try T.expectEqualStrings("Declarations with definite assignment assertions must also have type annotations.", d.message);
+        }
+    }
+    try T.expectEqual(@as(u32, 2), saw_1263);
+    try T.expectEqual(@as(u32, 1), saw_1264);
+}
+
+test "parser: class property definite-assignment assertion reports TS1263 and TS1264" {
+    var s = try newTestSetup(
+        \\class C {
+        \\  p!;
+        \\  q! = 1;
+        \\  r!: number = 1;
+        \\  ok!: string;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var saw_1263: u32 = 0;
+    var saw_1264: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1263) {
+            saw_1263 += 1;
+            try T.expectEqualStrings("Declarations with initializers cannot also have definite assignment assertions.", d.message);
+        } else if (d.code == 1264) {
+            saw_1264 += 1;
+            try T.expectEqualStrings("Declarations with definite assignment assertions must also have type annotations.", d.message);
+        }
+    }
+    try T.expectEqual(@as(u32, 2), saw_1263);
+    try T.expectEqual(@as(u32, 1), saw_1264);
 }
 
 test "parser: numeric literal — hex/oct/bin/exponent" {
