@@ -1995,13 +1995,14 @@ pub const Parser = struct {
             },
             .kw_type => blk: {
                 // `type X = T;` is a TS type alias. `type` is contextual,
-                // so only treat as a keyword when followed by an identifier.
+                // so only treat as a keyword when followed by an identifier
+                // or the blank-name `type = T` recovery shape.
                 // Reserved primitive-type keywords (`any`, `string`, …)
                 // ALSO route here so `parseTypeAlias` can emit the
                 // upstream TS2457 ("Type alias name cannot be '...'.").
                 // Mirrors `reservedNamesInAliases.ts`.
                 const next = self.peekAt(1);
-                if ((next.kind == .identifier or self.tokenAtLexemeIsReservedTypeAliasName(self.cursor + 1)) and
+                if ((next.kind == .identifier or next.kind == .equal or self.tokenAtLexemeIsReservedTypeAliasName(self.cursor + 1)) and
                     (!next.flags.preceded_by_newline or self.ambient_depth > 0))
                 {
                     break :blk try self.parseTypeAlias();
@@ -5910,17 +5911,26 @@ pub const Parser = struct {
 
     fn parseInterfaceDeclaration(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // interface
-        const name_tok = if (self.peek().kind == .identifier or
-            self.peek().kind.isContextualKeyword() or
-            self.peek().kind.isPrimitiveTypeKeyword())
-            self.advance()
-        else
-            try self.expect(.identifier, "interface name");
-        if (name_tok.kind.isPrimitiveTypeKeyword() or self.isReservedTypeNameToken(name_tok)) {
-            const raw = self.source[name_tok.span.start..name_tok.span.end];
-            const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Interface name cannot be '{s}'.", .{raw});
-            try self.reportCodeAt(name_tok.span.start, name_tok.line, 2427, msg);
-        }
+        const name_node: NodeId = name_blk: {
+            if (self.peek().kind == .open_brace) {
+                const brace = self.peek();
+                try self.reportCodeAt(brace.span.start, brace.line, 1438, "Interface must be given a name.");
+                break :name_blk try self.missingIdentifierAt(brace.span.start);
+            }
+            const name_tok = if (self.peek().kind == .identifier or
+                self.peek().kind.isContextualKeyword() or
+                self.peek().kind.isPrimitiveTypeKeyword())
+                self.advance()
+            else
+                try self.expect(.identifier, "interface name");
+            if (name_tok.kind.isPrimitiveTypeKeyword() or self.isReservedTypeNameToken(name_tok)) {
+                const raw = self.source[name_tok.span.start..name_tok.span.end];
+                const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Interface name cannot be '{s}'.", .{raw});
+                try self.reportCodeAt(name_tok.span.start, name_tok.line, 2427, msg);
+            }
+            const name_id_str = try self.internToken(name_tok);
+            break :name_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id_str);
+        };
         var type_params: []NodeId = &.{};
         var owns_tps = false;
         if (self.peek().kind == .less_than) {
@@ -5978,8 +5988,6 @@ pub const Parser = struct {
             }
             break :blk at;
         };
-        const name_id_str = try self.internToken(name_tok);
-        const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id_str);
         return try self.builder.addInterface(
             .{ .start = start.span.start, .end = close.span.end },
             name_node,
@@ -5998,31 +6006,40 @@ pub const Parser = struct {
         // with TS1005 ("';' expected.") and the rest of the file
         // recovers badly. Mirrors `reservedNamesInAliases.ts`.
         const peek_kind = self.peek().kind;
-        const name_tok = if (peek_kind == .identifier or self.tokenLexemeIsReservedTypeAliasName())
-            self.advance()
-        else
-            try self.expect(.identifier, "type alias name");
-        if (name_tok.flags.preceded_by_newline) {
-            try self.reportCodeAt(name_tok.span.start, name_tok.line, 1142, "Line break not permitted here.");
-        }
-        try self.reportTypeAliasOnlyInTsIfNeeded(name_tok);
-        // TS2457 — `Type alias name cannot be '<reserved>'.` fires for
-        // primitive-type keywords used as type alias names. Mirrors
-        // `reservedNamesInAliases.ts` lines 2-7.
-        const name_text = self.source[name_tok.span.start..name_tok.span.end];
-        if (isReservedTypeAliasName(name_text)) {
-            const msg = try std.fmt.allocPrint(
-                self.diag_arena.allocator(),
-                "Type alias name cannot be '{s}'.",
-                .{name_text},
-            );
-            try self.diagnostics.append(self.gpa, .{
-                .pos = name_tok.span.start,
-                .line = name_tok.line,
-                .code = 2457,
-                .message = msg,
-            });
-        }
+        const name_node: NodeId = name_blk: {
+            if (peek_kind == .equal) {
+                const equal = self.peek();
+                try self.reportCodeAt(equal.span.start, equal.line, 1439, "Type alias must be given a name.");
+                break :name_blk try self.missingIdentifierAt(equal.span.start);
+            }
+            const name_tok = if (peek_kind == .identifier or self.tokenLexemeIsReservedTypeAliasName())
+                self.advance()
+            else
+                try self.expect(.identifier, "type alias name");
+            if (name_tok.flags.preceded_by_newline) {
+                try self.reportCodeAt(name_tok.span.start, name_tok.line, 1142, "Line break not permitted here.");
+            }
+            try self.reportTypeAliasOnlyInTsIfNeeded(name_tok);
+            // TS2457 — `Type alias name cannot be '<reserved>'.` fires for
+            // primitive-type keywords used as type alias names. Mirrors
+            // `reservedNamesInAliases.ts` lines 2-7.
+            const name_text = self.source[name_tok.span.start..name_tok.span.end];
+            if (isReservedTypeAliasName(name_text)) {
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Type alias name cannot be '{s}'.",
+                    .{name_text},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .pos = name_tok.span.start,
+                    .line = name_tok.line,
+                    .code = 2457,
+                    .message = msg,
+                });
+            }
+            const name_id = try self.internToken(name_tok);
+            break :name_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+        };
         var type_params: []NodeId = &.{};
         var owns_tps = false;
         if (self.peek().kind == .less_than) {
@@ -6033,8 +6050,6 @@ pub const Parser = struct {
         _ = try self.expect(.equal, "'=' in type alias");
         const aliased = try self.parseTypeAnnotation();
         try self.consumeStatementTerminator();
-        const name_id = try self.internToken(name_tok);
-        const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
         const end_pos = self.tokens[self.cursor - 1].span.end;
         return try self.builder.addTypeAlias(
             .{ .start = start.span.start, .end = end_pos },
@@ -16725,6 +16740,40 @@ test "parser: type alias" {
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     try T.expectEqual(hir_mod.NodeKind.type_alias_decl, s.hir.kindOf(top));
+}
+
+test "parser: TS1438 for interface without a name" {
+    var s = try newTestSetup("interface { x: string }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.interface_decl, s.hir.kindOf(top));
+
+    var found = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1438) {
+            found = true;
+            try T.expectEqualStrings("Interface must be given a name.", d.message);
+        }
+    }
+    try T.expect(found);
+}
+
+test "parser: TS1439 for type alias without a name" {
+    var s = try newTestSetup("type = string;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.type_alias_decl, s.hir.kindOf(top));
+
+    var found = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1439) {
+            found = true;
+            try T.expectEqualStrings("Type alias must be given a name.", d.message);
+        }
+    }
+    try T.expect(found);
 }
 
 test "parser: declare type newline reports TS1142 but declares alias" {
