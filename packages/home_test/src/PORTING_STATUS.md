@@ -720,6 +720,13 @@ cwd/tsconfig path mapping, `Bun.spawn` pipe `.text()` helpers, split
 output hash/path identity, and copied memory-growth subprocess smokes.
 Native parity still needs Bun's real bundler, resolver, plugin API,
 source map writer, bytecode output, and BuildArtifact implementation.
+The copied `bundler/transpiler/function-tostring-require.test.ts`
+fixture now passes as `1` test through the Bun test bootstrap model. It
+keeps the upstream `export {};` module marker in the copied source while
+the Home bootstrap erases that marker in code mode, then verifies
+`Function.prototype.toString()` preserves the real `require("fs")` body
+for the original function and observes the injected fake `require` only
+inside the `new Function("require", ...)` recreation.
 The copied `bundler/bundler_allow_unresolved.test.ts` fixture now passes
 as `16` tests through the Home `expectBundled` harness, covering Bun's
 dynamic `import()`, `require()`, and `require.resolve()` unresolved
