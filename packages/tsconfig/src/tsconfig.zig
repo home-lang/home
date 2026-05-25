@@ -221,6 +221,7 @@ pub const CompilerOptions = struct {
     jsx_factory: ?[]const u8 = null,
     jsx_fragment_factory: ?[]const u8 = null,
     jsx_import_source: ?[]const u8 = null,
+    react_namespace: ?[]const u8 = null,
     out_dir: ?[]const u8 = null,
     root_dir: ?[]const u8 = null,
     declaration: ?bool = null,
@@ -367,6 +368,37 @@ pub const TsConfig = struct {
         if (co.isolated_declarations == true and co.allow_js == true) {
             try appendTs5053(gpa, &diags, "allowJs", "allowJs", "isolatedDeclarations");
         }
+        if (co.jsx_factory) |jsx_factory| {
+            if (co.react_namespace != null) {
+                try appendTs5053(gpa, &diags, "reactNamespace", "reactNamespace", "jsxFactory");
+            }
+            if (jsxDisallowsClassicFactory(co.jsx)) |jsx_value| {
+                try appendTs5089(gpa, &diags, "jsxFactory", "jsxFactory", jsx_value);
+            }
+            if (!isEntityNameText(jsx_factory)) {
+                try appendInvalidJsxFactory(gpa, &diags, "jsxFactory", jsx_factory);
+            }
+        } else if (co.react_namespace) |react_namespace| {
+            if (!isIdentifierNameText(react_namespace)) {
+                try appendInvalidReactNamespace(gpa, &diags, "reactNamespace", react_namespace);
+            }
+        }
+        if (co.jsx_fragment_factory) |jsx_fragment_factory| {
+            if (co.jsx_factory == null) {
+                try appendTs5052(gpa, &diags, "jsxFragmentFactory", "jsxFragmentFactory", "jsxFactory");
+            }
+            if (jsxDisallowsClassicFactory(co.jsx)) |jsx_value| {
+                try appendTs5089(gpa, &diags, "jsxFragmentFactory", "jsxFragmentFactory", jsx_value);
+            }
+            if (!isEntityNameText(jsx_fragment_factory)) {
+                try appendInvalidJsxFragmentFactory(gpa, &diags, "jsxFragmentFactory", jsx_fragment_factory);
+            }
+        }
+        if (co.react_namespace != null) {
+            if (jsxDisallowsClassicFactory(co.jsx)) |jsx_value| {
+                try appendTs5089(gpa, &diags, "reactNamespace", "reactNamespace", jsx_value);
+            }
+        }
 
         const emit_declarations = co.declaration == true or co.composite == true;
         if (co.isolated_declarations == true and !emit_declarations) {
@@ -440,6 +472,14 @@ pub fn freeValidationDiagnostics(gpa: std.mem.Allocator, diags: []ValidationDiag
     gpa.free(diags);
 }
 
+fn jsxDisallowsClassicFactory(jsx: ?Jsx) ?[]const u8 {
+    return switch (jsx orelse return null) {
+        .react_jsx => "react-jsx",
+        .react_jsxdev => "react-jsxdev",
+        else => null,
+    };
+}
+
 fn appendTs5052(
     gpa: std.mem.Allocator,
     diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
@@ -489,6 +529,22 @@ fn appendTs5069(
     });
 }
 
+fn appendTs5089(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    field: []const u8,
+    option: []const u8,
+    jsx_value: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(gpa, "Option '{s}' cannot be specified when option 'jsx' is '{s}'.", .{ option, jsx_value });
+    try diags.append(gpa, .{
+        .code = 5089,
+        .message = msg,
+        .owns_message = true,
+        .field = field,
+    });
+}
+
 /// Mirrors TypeScript's `parseIsolatedEntityName` validity check for
 /// JSX factory options: IdentifierName (`.` IdentifierName)*, with
 /// reserved words allowed. The ASCII path is exact for the common
@@ -526,6 +582,86 @@ fn isEntityNameStart(c: u8) bool {
 
 fn isEntityNameContinue(c: u8) bool {
     return isEntityNameStart(c) or std.ascii.isDigit(c);
+}
+
+fn appendInvalidJsxFactory(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    field: []const u8,
+    value: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(gpa, "Invalid value for 'jsxFactory'. '{s}' is not a valid identifier or qualified-name.", .{value});
+    try diags.append(gpa, .{
+        .code = 5067,
+        .message = msg,
+        .owns_message = true,
+        .field = field,
+    });
+}
+
+fn appendInvalidJsxFragmentFactory(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    field: []const u8,
+    value: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(gpa, "Invalid value for 'jsxFragmentFactory'. '{s}' is not a valid identifier or qualified-name.", .{value});
+    try diags.append(gpa, .{
+        .code = 18035,
+        .message = msg,
+        .owns_message = true,
+        .field = field,
+    });
+}
+
+fn appendInvalidReactNamespace(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    field: []const u8,
+    value: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(gpa, "Invalid value for '--reactNamespace'. '{s}' is not a valid identifier.", .{value});
+    try diags.append(gpa, .{
+        .code = 5059,
+        .message = msg,
+        .owns_message = true,
+        .field = field,
+    });
+}
+
+fn isEntityNameText(text: []const u8) bool {
+    if (text.len == 0) return false;
+
+    var segment_start: usize = 0;
+    var i: usize = 0;
+    while (i <= text.len) : (i += 1) {
+        if (i == text.len or text[i] == '.') {
+            if (!isIdentifierNameText(text[segment_start..i])) return false;
+            segment_start = i + 1;
+        }
+    }
+    return true;
+}
+
+fn isIdentifierNameText(text: []const u8) bool {
+    if (text.len == 0) return false;
+    if (!isIdentifierStartByte(text[0])) return false;
+    for (text[1..]) |ch| {
+        if (!isIdentifierPartByte(ch)) return false;
+    }
+    return true;
+}
+
+fn isIdentifierStartByte(ch: u8) bool {
+    return (ch >= 'A' and ch <= 'Z') or
+        (ch >= 'a' and ch <= 'z') or
+        ch == '_' or
+        ch == '$' or
+        ch >= 0x80;
+}
+
+fn isIdentifierPartByte(ch: u8) bool {
+    return isIdentifierStartByte(ch) or (ch >= '0' and ch <= '9');
 }
 
 pub const LoadError = error{
@@ -746,6 +882,7 @@ fn fillCompilerOptions(arena: std.mem.Allocator, co: *CompilerOptions, obj: json
             .{ .name = "jsxFactory", .field = "jsx_factory" },
             .{ .name = "jsxFragmentFactory", .field = "jsx_fragment_factory" },
             .{ .name = "jsxImportSource", .field = "jsx_import_source" },
+            .{ .name = "reactNamespace", .field = "react_namespace" },
             .{ .name = "moduleDetection", .field = "module_detection" },
         };
         inline for (str_table) |entry| {
