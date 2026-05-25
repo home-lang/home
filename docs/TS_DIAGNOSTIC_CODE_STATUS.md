@@ -1011,9 +1011,9 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS2866 | err | catalog-only |  | Import_0_conflicts_with_global_value_used_in_this_file_so_must_be_declared_with_a_type_only_import_w_2866 |
 | TS2867 | err | catalog-only |  | Cannot_find_name_0_Do_you_need_to_install_type_definitions_for_Bun_Try_npm_i_save_dev_types_Slashbun_2867 |
 | TS2868 | err | emitted | packages/ts_checker/src/check.zig:49981 | Cannot_find_name_0_Do_you_need_to_install_type_definitions_for_Bun_Try_npm_i_save_dev_types_Slashbun_2868 |
-| TS2869 | err | emitted | packages/ts_checker/src/check.zig:55308 | Right_operand_of_is_unreachable_because_the_left_operand_is_never_nullish_2869 |
+| TS2869 | err | emitted | packages/ts_checker/src/check.zig:55308<br>packages/ts_checker/src/check.zig:93231 | Right_operand_of_is_unreachable_because_the_left_operand_is_never_nullish_2869 |
 | TS2870 | err | catalog-only |  | This_binary_expression_is_never_nullish_Are_you_missing_parentheses_2870 |
-| TS2871 | err | emitted | packages/ts_checker/src/check.zig:55306 | This_expression_is_always_nullish_2871 |
+| TS2871 | err | emitted | packages/ts_checker/src/check.zig:55306<br>packages/ts_checker/src/check.zig:93177<br>packages/ts_checker/src/check.zig:93188 | This_expression_is_always_nullish_2871 |
 | TS2872 | err | emitted | packages/ts_checker/src/check.zig:55201<br>packages/ts_checker/src/check.zig:55321<br>packages/ts_checker/src/check.zig:55334 | This_kind_of_expression_is_always_truthy_2872 |
 | TS2873 | err | emitted | packages/ts_checker/src/check.zig:55209<br>packages/ts_checker/src/check.zig:55220<br>packages/ts_checker/src/check.zig:55340 | This_kind_of_expression_is_always_falsy_2873 |
 | TS2874 | err | emitted | packages/ts_driver/src/ts_driver.zig:684 | This_JSX_tag_requires_0_to_be_in_scope_but_it_could_not_be_found_2874 |
