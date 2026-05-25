@@ -72,7 +72,6 @@ for (const code of tsCodeNames.values()) {
 
 const scanRoots = [
   "build.zig",
-  "docs",
   "scripts",
   "packages/ts_checker",
   "packages/ts_parser",
@@ -174,7 +173,15 @@ Status meanings:
 - \`tested-only\`: referenced only from test code or test fixtures.
 - \`catalog-only\`: present in the upstream TypeScript catalogue but not yet referenced by Home source.
 
-This is a code-coverage ledger, not a proof of exact parity. Exact wording, ordering, spans, related information, and fixture pass/fail status remain tracked by [TS_PARITY_PLAN.md](./TS_PARITY_PLAN.md) and the exact conformance runners.
+This is a scanner-generated code-coverage ledger, not a proof of exact parity. Documentation references are intentionally excluded from status classification so coordination notes cannot make a code look implemented. Exact wording, ordering, spans, related information, and fixture pass/fail status remain tracked by [TS_PARITY_PLAN.md](./TS_PARITY_PLAN.md) and the exact conformance runners.
+
+## Multi-Agent Usage
+
+- Pick a narrow, non-overlapping row or small cluster before editing. \`catalog-only\`, \`declared\`, and \`tested-only\` rows are good discovery targets, but every change still needs upstream TypeScript source/baseline verification.
+- Claim active work in [TS_PARITY_PLAN.md](./TS_PARITY_PLAN.md) when a task will take more than a quick local patch, and keep write scopes disjoint across agents wherever possible.
+- Do not hand-edit status rows. After adding or moving diagnostics, run \`node scripts/gen-ts-diagnostic-status.mjs\` so references and counts are regenerated consistently.
+- A row becoming \`emitted\` only means Home has a production reference to that code. Faithful parity still requires focused unit coverage plus exact TypeScript fixture verification, with the command and pass count recorded in the parity plan.
+- When closing a code, prefer the smallest faithful semantic implementation over fixture-specific wording shims; preserve upstream diagnostic category, message, anchor/span behavior, ordering, and related information where Home models it.
 
 ## Summary
 

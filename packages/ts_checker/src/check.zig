@@ -502,6 +502,11 @@ pub const TsCodes = struct {
     pub const type_does_not_satisfy_constraint: u32 = 2344;
     pub const circular_constraint: u32 = 2313;
     pub const type_alias_circular: u32 = 2456;
+    /// TS2301 — an instance field initializer cannot close over a
+    /// constructor-local binding because fields are evaluated before
+    /// the constructor's local scope exists under legacy class-field
+    /// semantics.
+    pub const field_initializer_constructor_local: u32 = 2301;
     pub const static_member_type_parameter: u32 = 2302;
     /// TS2699 — `static prototype` conflicts with the implicit
     /// `Function.prototype` property on the class constructor.
@@ -44540,6 +44545,123 @@ pub const Checker = struct {
     /// — proper lexical scoping per the binder's Scope graph lands
     /// in a follow-up; this covers the high-frequency patterns
     /// (function parameter use, top-level decl reference).
+    const ConstructorFieldLocalRef = struct {
+        field_name: hir_mod.StringId,
+    };
+
+    fn constructorFieldLocalRef(self: *Checker, node: NodeId, name: hir_mod.StringId) ?ConstructorFieldLocalRef {
+        if (self.isDeclNameSlot(node)) return null;
+        if (self.sourceHasUseDefineForClassFieldsTrueDirective()) return null;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            if (self.hir.kindOf(cur) != .object_property) continue;
+            const class_node = self.hir.parentOf(cur);
+            if (class_node == hir_mod.none_node_id) continue;
+            const class_kind = self.hir.kindOf(class_node);
+            if (class_kind != .class_decl and class_kind != .class_expr) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, cur);
+            if (op.is_static or op.value == hir_mod.none_node_id) return null;
+            const field_name = (self.classMemberNameFromPropertyKey(op.key, op.is_computed) catch null) orelse return null;
+            if (!self.classConstructorLocalsContain(class_node, name)) return null;
+            return .{ .field_name = field_name };
+        }
+        return null;
+    }
+
+    fn classConstructorLocalsContain(self: *Checker, class_node: NodeId, name: hir_mod.StringId) bool {
+        var locals: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer locals.deinit(self.gpa);
+        for (hir_mod.classMembers(self.hir, class_node)) |member| {
+            const k = self.hir.kindOf(member);
+            if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
+            const f = hir_mod.fnDeclOf(self.hir, member);
+            if (!f.flags.is_constructor or f.body == hir_mod.none_node_id) continue;
+            for (hir_mod.fnParams(self.hir, member)) |param| {
+                if (self.hir.kindOf(param) != .parameter) continue;
+                const p = hir_mod.parameterOf(self.hir, param);
+                self.collectBindingNames(p.name, &locals) catch return false;
+            }
+            self.collectConstructorLocalNames(f.body, &locals) catch return false;
+            break;
+        }
+        return locals.contains(name);
+    }
+
+    fn collectConstructorLocalNames(
+        self: *Checker,
+        node: NodeId,
+        out: *std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .block_stmt => for (hir_mod.blockStmts(self.hir, node)) |s| try self.collectConstructorLocalNames(s, out),
+            .var_decl, .let_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, node);
+                try self.collectBindingNames(v.name, out);
+            },
+            .fn_decl, .fn_expr => {
+                const f = hir_mod.fnDeclOf(self.hir, node);
+                if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
+                    try out.put(self.gpa, hir_mod.identifierOf(self.hir, f.name).name, {});
+                }
+            },
+            .class_decl, .class_expr => {
+                const c = hir_mod.classOf(self.hir, node);
+                if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
+                    try out.put(self.gpa, hir_mod.identifierOf(self.hir, c.name).name, {});
+                }
+            },
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                try self.collectConstructorLocalNames(i.then_branch, out);
+                try self.collectConstructorLocalNames(i.else_branch, out);
+            },
+            .for_stmt => {
+                const fr = hir_mod.forStmtOf(self.hir, node);
+                try self.collectConstructorLocalNames(fr.init, out);
+                try self.collectConstructorLocalNames(fr.body, out);
+            },
+            .for_in_stmt, .for_of_stmt => {
+                const fr = hir_mod.forInOf(self.hir, node);
+                try self.collectConstructorLocalNames(fr.target, out);
+                try self.collectConstructorLocalNames(fr.body, out);
+            },
+            .while_stmt => try self.collectConstructorLocalNames(hir_mod.whileOf(self.hir, node).body, out),
+            .do_while_stmt => try self.collectConstructorLocalNames(hir_mod.doWhileOf(self.hir, node).body, out),
+            .switch_stmt => for (hir_mod.switchCases(self.hir, node)) |case| try self.collectConstructorLocalNames(case, out),
+            .switch_case => for (hir_mod.switchCaseStmts(self.hir, node)) |s| try self.collectConstructorLocalNames(s, out),
+            .try_stmt => {
+                const ts = hir_mod.tryOf(self.hir, node);
+                try self.collectConstructorLocalNames(ts.block, out);
+                try self.collectConstructorLocalNames(ts.catch_block, out);
+                try self.collectConstructorLocalNames(ts.finally_block, out);
+            },
+            .arrow_fn => return,
+            else => {},
+        }
+    }
+
+    fn reportFieldInitializerConstructorLocalOnce(
+        self: *Checker,
+        node: NodeId,
+        info: ConstructorFieldLocalRef,
+        name: hir_mod.StringId,
+    ) !void {
+        for (self.diagnostics.items) |d| {
+            if (d.node == node and d.code == TsCodes.field_initializer_constructor_local) return;
+        }
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Initializer of instance member variable '{s}' cannot reference identifier '{s}' declared in the constructor.",
+            .{ self.string_interner.get(info.field_name), self.string_interner.get(name) },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.field_initializer_constructor_local,
+            .message = msg,
+        });
+    }
+
     fn typeOfIdentifier(self: *Checker, node: NodeId) TypeId {
         const id = hir_mod.identifierOf(self.hir, node);
         const name_str = self.string_interner.get(id.name);
@@ -44999,6 +45121,10 @@ pub const Checker = struct {
             const t = self.hir.typeOf(decl);
             if (t != types.Primitive.none) return t;
             return types.Primitive.number_t;
+        }
+        if (self.constructorFieldLocalRef(node, id.name)) |info| {
+            self.reportFieldInitializerConstructorLocalOnce(node, info, id.name) catch {};
+            return types.Primitive.any;
         }
         if (self.identifierIsExportEqualsTarget(node)) {
             if (self.findNamedDeclInVirtualSection(node, id.name)) |decl| {
@@ -62560,6 +62686,59 @@ test "checker: static method type-param TS2302 anchors at annotation ref" {
         try T.expectEqualStrings("T", b.base.checker.nodeSourceTextOrEmpty(d.node));
     }
     try T.expectEqual(@as(usize, 2), count);
+}
+
+test "checker: instance field initializer cannot reference constructor locals (TS2301)" {
+    const b = try newBoundSetup(
+        \\class A {
+        \\    private a = x;
+        \\    private b = { p: x };
+        \\    private c = () => x;
+        \\    constructor(x: number) {
+        \\    }
+        \\}
+        \\
+        \\class B {
+        \\    private a = x;
+        \\    private b = { p: x };
+        \\    private c = () => x;
+        \\    constructor() {
+        \\        var x = 1;
+        \\    }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var count: usize = 0;
+    var saw_a = false;
+    var saw_b = false;
+    var saw_c = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.field_initializer_constructor_local) continue;
+        count += 1;
+        if (std.mem.indexOf(u8, d.message, "'a'") != null) saw_a = true;
+        if (std.mem.indexOf(u8, d.message, "'b'") != null) saw_b = true;
+        if (std.mem.indexOf(u8, d.message, "'c'") != null) saw_c = true;
+        try T.expect(std.mem.indexOf(u8, d.message, "identifier 'x'") != null);
+    }
+    try T.expectEqual(@as(usize, 6), count);
+    try T.expect(saw_a and saw_b and saw_c);
+}
+
+test "checker: constructor local TS2301 respects static fields and local arrow params" {
+    const b = try newBoundSetup(
+        \\class A {
+        \\    static a = x;
+        \\    b = (x: number) => x;
+        \\    constructor(x: number) {
+        \\    }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.field_initializer_constructor_local);
+    }
 }
 
 test "checker: class field named 'constructor' emits TS18006" {
