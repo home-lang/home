@@ -17,8 +17,8 @@ macOS, Linux, and the WASM target.
   bootstrap path exists for the current allowlist:
   `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
-  Latest measured subset run: `357` files, `2,006` passed, `0` failed,
-  `73` todo. That subset currently executes the todo-registration smoke, three Node
+  Latest measured subset run: `378` files, `2,196` passed, `0` failed,
+  `76` todo. That subset currently executes the todo-registration smoke, three Node
   `assert` CommonJS smokes, the full Node `path` corpus slice, six Node `url` smokes, Deno
   event/fetch/crypto platform smokes, the Web
   `atob`/`btoa` smoke, sixty-four regression smokes, one bundler
@@ -47,7 +47,8 @@ macOS, Linux, and the WASM target.
   `process.binding("constants")` /
   `process.binding("uv")` smoke coverage, `process.constructor.call`
   prototype-shape coverage, Jest fake-timer Date /
-  `Intl.DateTimeFormat` smoke coverage,
+  `Intl.DateTimeFormat` smoke coverage plus the upstream Bun
+  fake-timers and focused sinon issue corpus,
   `bun:internal-for-testing.highlightJavaScript` template-literal and
   utility highlighter coverage, a long-running Node util inspect regression,
   imported Jest-global fixture registration, default class export
@@ -100,8 +101,8 @@ macOS, Linux, and the WASM target.
   crash smoke plus a non-empty filename regression, Web empty-body
   `Response.json()` / `Request.json()` SyntaxError matching, four sync runner
   fixture smokes (`only-fixture-4`, `21177`, `5738`, and printing dots),
-  Web `TextDecoder`
-  CJK and single-byte encoding smokes, Node `module.SourceMap`, and a JSC string atomization smoke through
+  broader Web `TextEncoder` / `TextDecoder` and Deno encoding smokes,
+  Node `module.SourceMap`, and a JSC string atomization smoke through
   `Bun.jest(import.meta.path)` plus a narrow `structuredClone` fallback,
   CommonJS invalid-wrapper and empty-file subprocess smokes, `mock.module`
   validation and mocked dynamic-import routing, queried relative dynamic

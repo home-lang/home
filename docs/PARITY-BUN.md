@@ -207,7 +207,7 @@ feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
---bun-corpus-native-subset=minimal-js` executes three hundred fifty-seven allowlisted JS
+--bun-corpus-native-subset=minimal-js` executes three hundred seventy-eight allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator. On macOS this
 JSC path is now part of the default `./pantry/.bin/zig build test` graph
 (`-Denable_jsc=false` remains available for constrained hosts): the
@@ -262,9 +262,9 @@ behavior, Bun version aliases, lifecycle hooks, own-key matchers, and a
 scheduling fixtures, six `test.only` / `describe.only` / `--only` flag
 fixtures, concurrent alias, failure-skip lifecycle hooks, preload global
 lifecycle hooks, conditional skip / `test.if` helpers, and two todo-only
-test fixtures, plus one type-only `expectTypeOf` doctest), Web
-`TextDecoder` CJK and single-byte
-encoding smokes, a `prepareStackTrace` non-empty filename regression,
+test fixtures, plus one type-only `expectTypeOf` doctest), broader Web
+`TextEncoder` / `TextDecoder` and Deno encoding smokes, a
+`prepareStackTrace` non-empty filename regression,
 Node `module.SourceMap`, and a JSC string atomization smoke through the
 `Bun.jest(import.meta.path)` alias plus a narrow `structuredClone`
 fallback, validation-only `Bun.S3Client.write` numeric path errors,
@@ -282,7 +282,8 @@ POSIX `node:url.pathToFileURL` path encoding,
 `Bun.fileURLToPath` / `pathToFileURL` conversion and throw behavior,
 Node `url.fileURLToPath` POSIX roundtrip coverage,
 `process.binding("constants")` / `process.binding("uv")` smoke coverage,
-Jest fake-timer Date / `Intl.DateTimeFormat` smoke coverage,
+Jest fake-timer Date / `Intl.DateTimeFormat` smoke coverage plus the
+upstream Bun fake-timers and focused sinon issue corpus,
 `bun:internal-for-testing.highlightJavaScript` template-literal and
 utility highlighter coverage,
 `home test --pass-with-no-tests` subprocess exit/stderr coverage,
@@ -354,8 +355,8 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `357` files, `2,006` passed, `0` failed,
-`73` todo.
+Latest measured subset run: `378` files, `2,196` passed, `0` failed,
+`76` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
 uses the same Home-native JSC bootstrap instead of the retired

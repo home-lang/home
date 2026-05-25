@@ -180,6 +180,22 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/process-binding.test.ts",
     "js/node/process/call-constructor.test.js",
     "js/bun/test/test-timers.test.ts",
+    "js/bun/test/fake-timers/fake-timers.test.ts",
+    "js/bun/test/fake-timers/sinonjs/issue-59.test.ts",
+    "js/bun/test/fake-timers/sinonjs/issue-67.test.ts",
+    "js/bun/test/fake-timers/sinonjs/issue-73.test.ts",
+    "js/bun/test/fake-timers/sinonjs/issue-187.test.ts",
+    "js/bun/test/fake-timers/sinonjs/issue-207.test.ts",
+    "js/bun/test/fake-timers/sinonjs/issue-276.test.ts",
+    "js/bun/test/fake-timers/sinonjs/issue-315.test.ts",
+    "js/bun/test/fake-timers/sinonjs/issue-347.test.ts",
+    "js/bun/test/fake-timers/sinonjs/issue-368.test.ts",
+    "js/bun/test/fake-timers/sinonjs/issue-437.test.ts",
+    "js/bun/test/fake-timers/sinonjs/issue-504.test.ts",
+    "js/bun/test/fake-timers/sinonjs/issue-516.test.ts",
+    "js/bun/test/fake-timers/sinonjs/issue-1852.test.ts",
+    "js/bun/test/fake-timers/sinonjs/issue-2086.test.ts",
+    "js/bun/test/fake-timers/sinonjs/issue-2449.test.ts",
     "internal/highlighter.test.ts",
     "js/bun/util/highlighter.test.ts",
     "internal/int_from_float.test.ts",
@@ -210,8 +226,11 @@ pub const minimal_js_files = [_][]const u8{
     "js/web/url/url.test.ts",
     "js/web/fetch/headers.test.ts",
     "regression/issue/07917/7917.test.ts",
+    "js/web/encoding/text-encoder.test.js",
+    "js/web/encoding/text-decoder.test.js",
     "js/web/encoding/text-decoder-cjk.test.ts",
     "js/web/encoding/text-decoder-single-byte.test.ts",
+    "js/deno/encoding/encoding.test.ts",
     "regression/issue/fix-bindings-stack-trace.test.ts",
     "js/node/module/module-sourcemap.test.js",
     "js/node/console/console-constructor-exception.test.ts",
@@ -378,6 +397,8 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/net/blocklist-gc.test.ts",
     "js/node/process/process-signal-windows.test.ts",
     "js/node/url/url-parse-invalid-input.test.js",
+    "js/node/url/url-parse-format.test.js",
+    "js/node/url/url-relative.test.js",
     "js/node/vm/sourcetextmodule-link-gc.test.ts",
     "js/node/zlib/zlib-onerror-reentrancy.test.ts",
     "js/node/zlib/zlib-reset-race.test.ts",
@@ -508,8 +529,18 @@ const harness_prelude =
     \\  Intl.DateTimeFormat = __home_DateTimeFormat;
     \\}
     \\var __home_bun_tests = globalThis.__home_bun_tests || { passed: 0, failed: 0, todo: 0, pending: 0, unsupported: 0, firstFailure: null };
+    \\var __home_real_timer_bindings = null;
     \\globalThis.__home_reset_tests = function() {
     \\  __home_use_real_timers();
+    \\  if (__home_real_timer_bindings) {
+    \\    globalThis.setTimeout = __home_real_timer_bindings.setTimeout;
+    \\    globalThis.clearTimeout = __home_real_timer_bindings.clearTimeout;
+    \\    globalThis.setInterval = __home_real_timer_bindings.setInterval;
+    \\    globalThis.clearInterval = __home_real_timer_bindings.clearInterval;
+    \\    globalThis.setImmediate = __home_real_timer_bindings.setImmediate;
+    \\    globalThis.clearImmediate = __home_real_timer_bindings.clearImmediate;
+    \\    globalThis.queueMicrotask = __home_real_timer_bindings.queueMicrotask;
+    \\  }
     \\  if (typeof globalThis.__home_reset_performance_clock === "function") globalThis.__home_reset_performance_clock();
     \\  __home_bun_tests = globalThis.__home_bun_tests = { passed: 0, failed: 0, todo: 0, pending: 0, unsupported: 0, firstFailure: null };
     \\  globalThis.__home_root_scope = {
@@ -700,6 +731,7 @@ const harness_prelude =
     \\function clearInterval(id) {
     \\  __home_clear_fake_timer(id);
     \\}
+    \\__home_real_timer_bindings = { setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate, queueMicrotask };
     \\setTimeout[__home_util_promisify_custom] = function(delay, value) {
     \\  return new Promise(resolve => {
     \\    setTimeout(resolve, delay, value);
@@ -1419,6 +1451,19 @@ const harness_prelude =
     \\  },
     \\  readableStreamToArrayBuffer(stream) {
     \\    return __home_readable_stream_to_array_buffer(stream);
+    \\  },
+    \\  readableStreamToArray(stream) {
+    \\    const reader = stream && typeof stream.getReader === "function" ? stream.getReader() : null;
+    \\    if (!reader || typeof reader.read !== "function") return Promise.reject(new TypeError("ReadableStream reader is unavailable"));
+    \\    const chunks = [];
+    \\    function pump() {
+    \\      return reader.read().then(result => {
+    \\        if (result.done) return chunks;
+    \\        chunks.push(result.value);
+    \\        return pump();
+    \\      });
+    \\    }
+    \\    return pump();
     \\  },
     \\  __home_next_js_serve_id: 1,
     \\  fileURLToPath(url) {
@@ -2209,14 +2254,41 @@ const harness_prelude =
     \\process.chdir = function(path) {
     \\  globalThis.__home_process_cwd = String(path || "/");
     \\};
+    \\process.memoryUsage = function() {
+    \\  return { rss: 1024 * 1024, heapTotal: 1024 * 1024, heapUsed: 512 * 1024, external: 0, arrayBuffers: 0 };
+    \\};
+    \\process.memoryUsage.rss = function() {
+    \\  return 1024 * 1024;
+    \\};
     \\globalThis.process = process;
     \\if (typeof structuredClone !== "function") {
-    \\  var structuredClone = function(value) {
+    \\  function __home_structured_clone(value, seen) {
     \\    if (value === null || typeof value !== "object") return value;
-    \\    if (Array.isArray(value)) return value.slice();
-    \\    const clone = {};
-    \\    for (const key of Object.keys(value)) clone[key] = value[key];
+    \\    if (seen.has(value)) return seen.get(value);
+    \\    if (value instanceof Date) return new Date(value.getTime());
+    \\    if (value instanceof RegExp) return new RegExp(value.source, value.flags);
+    \\    if (value instanceof ArrayBuffer) return value.slice(0);
+    \\    if (ArrayBuffer.isView(value)) return new value.constructor(value);
+    \\    if (value instanceof Map) {
+    \\      const clone = new Map();
+    \\      seen.set(value, clone);
+    \\      for (const entry of value) clone.set(__home_structured_clone(entry[0], seen), __home_structured_clone(entry[1], seen));
+    \\      return clone;
+    \\    }
+    \\    if (value instanceof Set) {
+    \\      const clone = new Set();
+    \\      seen.set(value, clone);
+    \\      for (const entry of value) clone.add(__home_structured_clone(entry, seen));
+    \\      return clone;
+    \\    }
+    \\    if (value === null || typeof value !== "object") return value;
+    \\    const clone = Array.isArray(value) ? new Array(value.length) : {};
+    \\    seen.set(value, clone);
+    \\    for (const key of Object.keys(value)) clone[key] = __home_structured_clone(value[key], seen);
     \\    return clone;
+    \\  }
+    \\  var structuredClone = function(value) {
+    \\    return __home_structured_clone(value, new Map());
     \\  };
     \\}
     \\function __home_fail(message) {
@@ -3579,7 +3651,16 @@ const harness_prelude =
     \\  __home_write_temp_files(root, files || {});
     \\  return root;
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, gc(force) { return Bun.gc(force); }, withoutAggressiveGC(callback) { return callback(); }, normalizeBunSnapshot(value) { return String(value); }, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); } };
+    \\function __home_readable_stream_from_array(chunks) {
+    \\  const values = Array.from(chunks || []);
+    \\  return new ReadableStream({
+    \\    start(controller) {
+    \\      for (const chunk of values) controller.enqueue(chunk);
+    \\      controller.close();
+    \\    },
+    \\  });
+    \\}
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, gc(force) { return Bun.gc(force); }, withoutAggressiveGC(callback) { return callback(); }, normalizeBunSnapshot(value) { return String(value); }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); } };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -7317,6 +7398,13 @@ const harness_prelude =
     \\  ["украина.icom.museum", "xn--80aaxgrpt.icom.museum"],
     \\  ["việtnam.icom.museum", "xn--vitnam-jk8b.icom.museum"],
     \\  ["münchen.de", "xn--mnchen-3ya.de"],
+    \\  ["www.日本語.com", "www.xn--wgv71a119e.com"],
+    \\  ["example.bücher.com", "example.xn--bcher-kva.com"],
+    \\  ["www.äffchen.com", "www.xn--ffchen-9ta.com"],
+    \\  ["sélier.com", "xn--slier-bsa.com"],
+    \\  ["ليهمابتكلموشعربي؟.ي؟", "xn--egbpdaj6bu4bxfgehfvwxn.xn--egb9f"],
+    \\  ["➡.ws", "xn--hgi.ws"],
+    \\  ["💥.net", "xn--hs8h.net"],
     \\];
     \\function __home_url_domain_to_ascii(value) {
     \\  if (value === null || value === undefined) return value;
@@ -7335,59 +7423,464 @@ const harness_prelude =
     \\  for (const pair of __home_url_domain_pairs) if (pair[1] === text) return pair[0];
     \\  return text;
     \\}
-    \\function __home_url_format_pathname(pathname) {
-    \\  return String(pathname).replace(/#/g, "%23").replace(/\?/g, "%3F");
+    \\function __home_legacy_Url() {
+    \\  this.protocol = null;
+    \\  this.slashes = null;
+    \\  this.auth = null;
+    \\  this.host = null;
+    \\  this.port = null;
+    \\  this.hostname = null;
+    \\  this.hash = null;
+    \\  this.search = null;
+    \\  this.query = null;
+    \\  this.pathname = null;
+    \\  this.path = null;
+    \\  this.href = null;
     \\}
-    \\function __home_url_format_search(search) {
-    \\  if (search === null || search === undefined || search === "") return "";
-    \\  const text = String(search);
-    \\  return (text.charAt(0) === "?" ? text : "?" + text).replace(/#/g, "%23");
+    \\__home_legacy_Url.prototype = {};
+    \\const __home_url_protocol_pattern = /^([a-z0-9.+-]+:)/i;
+    \\const __home_url_port_pattern = /:[0-9]*$/;
+    \\const __home_url_simple_path_pattern = /^(\/\/?(?!\/)[^?\s]*)(\?[^\s]*)?$/;
+    \\const __home_url_delims = ["<", ">", '"', "`", " ", "\r", "\n", "\t"];
+    \\const __home_url_unwise = ["{", "}", "|", "\\", "^", "`"].concat(__home_url_delims);
+    \\const __home_url_auto_escape = ["'"].concat(__home_url_unwise);
+    \\const __home_url_non_host_chars = ["%", "/", "?", ";", "#"].concat(__home_url_auto_escape);
+    \\const __home_url_host_ending_chars = ["/", "?", "#"];
+    \\const __home_url_hostname_max_len = 255;
+    \\const __home_url_unsafe_protocol = { javascript: true, "javascript:": true };
+    \\const __home_url_hostless_protocol = { javascript: true, "javascript:": true };
+    \\const __home_url_slashed_protocol = { http: true, https: true, ftp: true, gopher: true, file: true, "http:": true, "https:": true, "ftp:": true, "gopher:": true, "file:": true };
+    \\function __home_url_is_ws(code) {
+    \\  return code < 33 || code === 160 || code === 65279;
     \\}
-    \\function __home_url_format_query(query) {
-    \\  if (query === null || query === undefined) return "";
-    \\  if (typeof query === "string") return __home_url_format_search(query);
-    \\  if (typeof URLSearchParams === "function") return __home_url_format_search(new URLSearchParams(query).toString());
-    \\  const parts = [];
-    \\  for (const key of Object.keys(query)) {
-    \\    const value = query[key];
-    \\    if (value === undefined) continue;
-    \\    if (Array.isArray(value)) {
-    \\      for (const item of value) parts.push(encodeURIComponent(key) + "=" + encodeURIComponent(String(item)));
-    \\    } else {
-    \\      parts.push(encodeURIComponent(key) + "=" + encodeURIComponent(String(value)));
+    \\function __home_url_is_ipv6_hostname(hostname) {
+    \\  return typeof hostname === "string" && hostname.charCodeAt(0) === 91 && hostname.charCodeAt(hostname.length - 1) === 93;
+    \\}
+    \\function __home_url_invalid_type(value) {
+    \\  const error = new TypeError('The "url" argument must be of type string.');
+    \\  error.code = "ERR_INVALID_ARG_TYPE";
+    \\  error.input = value;
+    \\  return error;
+    \\}
+    \\function __home_url_get_hostname(self, rest, hostname, source) {
+    \\  for (let i = 0; i < hostname.length; ++i) {
+    \\    const code = hostname.charCodeAt(i);
+    \\    const valid = code !== 47 && code !== 92 && code !== 35 && code !== 63 && code !== 58;
+    \\    if (!valid) {
+    \\      if (code === 58 && process && typeof process.emitWarning === "function") {
+    \\        try { process.emitWarning("The URL " + source + " is invalid. Future versions of Node.js will throw an error.", "DeprecationWarning", "DEP0170"); } catch (error) {}
+    \\      }
+    \\      self.hostname = hostname.slice(0, i);
+    \\      return "/" + hostname.slice(i) + rest;
     \\    }
     \\  }
-    \\  return parts.length === 0 ? "" : "?" + parts.join("&");
+    \\  return rest;
     \\}
-    \\function __home_url_format_auth(auth) {
-    \\  return String(auth).split(":").map(part => encodeURIComponent(part)).join(":");
-    \\}
-    \\function __home_url_format_legacy(value) {
-    \\  if (!value || typeof value !== "object") throw new TypeError('The "urlObject" argument must be one of type object or string.');
-    \\  if (Object.keys(value).length === 0) return "";
-    \\  if (typeof value.href === "string") return value.href;
-    \\  let protocol = value.protocol === undefined || value.protocol === null ? "" : String(value.protocol);
-    \\  if (protocol.length > 0 && protocol.charAt(protocol.length - 1) !== ":") protocol += ":";
-    \\  const lowerProtocol = protocol.toLowerCase();
-    \\  const slashed = value.slashes === true || lowerProtocol === "http:" || lowerProtocol === "https:" || lowerProtocol === "ftp:" || lowerProtocol === "gopher:" || lowerProtocol === "file:";
-    \\  let auth = value.auth === undefined || value.auth === null ? "" : __home_url_format_auth(value.auth) + "@";
-    \\  let host = "";
-    \\  if (value.host !== undefined && value.host !== null) {
-    \\    host = String(value.host);
-    \\  } else if (value.hostname !== undefined && value.hostname !== null) {
-    \\    host = String(value.hostname);
-    \\    if (host.indexOf(":") !== -1 && host.charAt(0) !== "[") host = "[" + host + "]";
-    \\    if (value.port !== undefined && value.port !== null && String(value.port).length > 0) host += ":" + String(value.port);
+    \\function __home_url_parse(value, parseQueryString, slashesDenoteHost) {
+    \\  if (value instanceof __home_legacy_Url) return value;
+    \\  const url = new __home_legacy_Url();
+    \\  try {
+    \\    url.parse(value, parseQueryString, slashesDenoteHost);
+    \\  } catch (error) {
+    \\    try { error.input = value; } catch (inner) {}
+    \\    throw error;
     \\  }
-    \\  let pathname = value.pathname === undefined || value.pathname === null ? "" : __home_url_format_pathname(value.pathname);
-    \\  if (slashed && host.length > 0 && pathname.length > 0 && pathname.charAt(0) !== "/") pathname = "/" + pathname;
-    \\  let search = value.search !== undefined && value.search !== null ? __home_url_format_search(value.search) : __home_url_format_query(value.query);
-    \\  let hash = value.hash === undefined || value.hash === null || value.hash === "" ? "" : String(value.hash);
-    \\  if (hash.length > 0 && hash.charAt(0) !== "#") hash = "#" + hash;
-    \\  return protocol + (slashed ? "//" : "") + auth + host + pathname + search + hash;
+    \\  return url;
     \\}
+    \\__home_legacy_Url.prototype.parse = function(url, parseQueryString, slashesDenoteHost) {
+    \\  if (typeof url !== "string") throw __home_url_invalid_type(url);
+    \\  let hasHash = false;
+    \\  let hasAt = false;
+    \\  let start = -1;
+    \\  let end = -1;
+    \\  let rest = "";
+    \\  let lastPos = 0;
+    \\  for (let i = 0, inWs = false, split = false; i < url.length; ++i) {
+    \\    const code = url.charCodeAt(i);
+    \\    const isWs = __home_url_is_ws(code);
+    \\    if (start === -1) {
+    \\      if (isWs) continue;
+    \\      lastPos = start = i;
+    \\    } else if (inWs) {
+    \\      if (!isWs) {
+    \\        end = -1;
+    \\        inWs = false;
+    \\      }
+    \\    } else if (isWs) {
+    \\      end = i;
+    \\      inWs = true;
+    \\    }
+    \\    if (!split) {
+    \\      if (code === 64) {
+    \\        hasAt = true;
+    \\      } else if (code === 35) {
+    \\        hasHash = true;
+    \\        split = true;
+    \\      } else if (code === 63) {
+    \\        split = true;
+    \\      } else if (code === 92) {
+    \\        if (i - lastPos > 0) rest += url.slice(lastPos, i);
+    \\        rest += "/";
+    \\        lastPos = i + 1;
+    \\      }
+    \\    } else if (!hasHash && code === 35) {
+    \\      hasHash = true;
+    \\    }
+    \\  }
+    \\  if (start !== -1) {
+    \\    if (lastPos === start) {
+    \\      if (end === -1) rest = start === 0 ? url : url.slice(start);
+    \\      else rest = url.slice(start, end);
+    \\    } else if (end === -1 && lastPos < url.length) {
+    \\      rest += url.slice(lastPos);
+    \\    } else if (end !== -1 && lastPos < end) {
+    \\      rest += url.slice(lastPos, end);
+    \\    }
+    \\  }
+    \\  if (!slashesDenoteHost && !hasHash && !hasAt) {
+    \\    const simplePath = __home_url_simple_path_pattern.exec(rest);
+    \\    if (simplePath) {
+    \\      this.path = rest;
+    \\      this.href = rest;
+    \\      this.pathname = simplePath[1];
+    \\      if (simplePath[2]) {
+    \\        this.search = simplePath[2];
+    \\        this.query = parseQueryString ? new URLSearchParams(this.search.slice(1)).toJSON() : this.search.slice(1);
+    \\      } else if (parseQueryString) {
+    \\        this.search = null;
+    \\        this.query = Object.create(null);
+    \\      }
+    \\      return this;
+    \\    }
+    \\  }
+    \\  let proto = __home_url_protocol_pattern.exec(rest);
+    \\  let lowerProto;
+    \\  if (proto) {
+    \\    proto = proto[0];
+    \\    lowerProto = proto.toLowerCase();
+    \\    this.protocol = lowerProto;
+    \\    rest = rest.substring(proto.length);
+    \\  }
+    \\  let slashes;
+    \\  if (slashesDenoteHost || proto || rest.match(/^\/\/[^@/]+@[^@/]+/)) {
+    \\    slashes = rest.substring(0, 2) === "//";
+    \\    if (slashes && !(proto && __home_url_hostless_protocol[proto])) {
+    \\      rest = rest.substring(2);
+    \\      this.slashes = true;
+    \\    }
+    \\  }
+    \\  if (!__home_url_hostless_protocol[proto] && (slashes || (proto && !__home_url_slashed_protocol[proto]))) {
+    \\    let hostEnd = -1;
+    \\    for (let i = 0; i < __home_url_host_ending_chars.length; i++) {
+    \\      const hec = rest.indexOf(__home_url_host_ending_chars[i]);
+    \\      if (hec !== -1 && (hostEnd === -1 || hec < hostEnd)) hostEnd = hec;
+    \\    }
+    \\    const atSign = hostEnd === -1 ? rest.lastIndexOf("@") : rest.lastIndexOf("@", hostEnd);
+    \\    if (atSign !== -1) {
+    \\      const auth = rest.slice(0, atSign);
+    \\      rest = rest.slice(atSign + 1);
+    \\      this.auth = decodeURIComponent(auth);
+    \\    }
+    \\    hostEnd = -1;
+    \\    for (let i = 0; i < __home_url_non_host_chars.length; i++) {
+    \\      const hec = rest.indexOf(__home_url_non_host_chars[i]);
+    \\      if (hec !== -1 && (hostEnd === -1 || hec < hostEnd)) hostEnd = hec;
+    \\    }
+    \\    if (hostEnd === -1) hostEnd = rest.length;
+    \\    this.host = rest.slice(0, hostEnd);
+    \\    rest = rest.slice(hostEnd);
+    \\    this.parseHost();
+    \\    if (typeof this.hostname !== "string") this.hostname = "";
+    \\    const hostname = this.hostname;
+    \\    const ipv6Hostname = __home_url_is_ipv6_hostname(this.hostname);
+    \\    if (!ipv6Hostname) rest = __home_url_get_hostname(this, rest, hostname, url);
+    \\    if (this.hostname.length > __home_url_hostname_max_len) this.hostname = "";
+    \\    else this.hostname = this.hostname.toLowerCase();
+    \\    if (this.hostname) this.hostname = __home_url_domain_to_ascii(this.hostname) || new URL("http://" + this.hostname).hostname;
+    \\    const p = this.port ? ":" + this.port : "";
+    \\    const h = this.hostname || "";
+    \\    this.host = h + p;
+    \\    this.href += this.host;
+    \\    if (ipv6Hostname) {
+    \\      this.hostname = this.hostname.slice(1, -1);
+    \\      if (rest[0] !== "/") rest = "/" + rest;
+    \\    }
+    \\  }
+    \\  if (!__home_url_unsafe_protocol[lowerProto]) {
+    \\    for (let i = 0; i < __home_url_auto_escape.length; i++) {
+    \\      const ae = __home_url_auto_escape[i];
+    \\      if (rest.indexOf(ae) === -1) continue;
+    \\      let esc = encodeURIComponent(ae);
+    \\      if (esc === ae) esc = escape(ae);
+    \\      rest = rest.split(ae).join(esc);
+    \\    }
+    \\  }
+    \\  const hash = rest.indexOf("#");
+    \\  if (hash !== -1) {
+    \\    this.hash = rest.substring(hash);
+    \\    rest = rest.slice(0, hash);
+    \\  }
+    \\  const qm = rest.indexOf("?");
+    \\  if (qm !== -1) {
+    \\    this.search = rest.substring(qm);
+    \\    this.query = rest.substring(qm + 1);
+    \\    if (parseQueryString) this.query = new URLSearchParams(this.query).toJSON();
+    \\    rest = rest.slice(0, qm);
+    \\  } else if (parseQueryString) {
+    \\    this.search = null;
+    \\    this.query = {};
+    \\  }
+    \\  if (rest) this.pathname = rest;
+    \\  if (__home_url_slashed_protocol[lowerProto] && this.hostname && !this.pathname) this.pathname = "/";
+    \\  if (this.pathname || this.search) {
+    \\    const p = this.pathname || "";
+    \\    const s = this.search || "";
+    \\    this.path = p + s;
+    \\  }
+    \\  this.href = this.format();
+    \\  return this;
+    \\};
+    \\__home_legacy_Url.prototype.parseHost = function() {
+    \\  let host = this.host;
+    \\  const port = __home_url_port_pattern.exec(host);
+    \\  if (port) {
+    \\    const text = port[0];
+    \\    if (text !== ":") this.port = text.slice(1);
+    \\    host = host.slice(0, host.length - text.length);
+    \\  }
+    \\  if (host) this.hostname = host;
+    \\};
+    \\__home_legacy_Url.prototype.format = function() {
+    \\  let auth = this.auth || "";
+    \\  if (auth) {
+    \\    auth = encodeURIComponent(auth).replace(/%3A/i, ":") + "@";
+    \\  }
+    \\  let protocol = this.protocol || "";
+    \\  let pathname = this.pathname || "";
+    \\  let hash = this.hash || "";
+    \\  let host = "";
+    \\  let query = "";
+    \\  if (this.host) {
+    \\    host = auth + this.host;
+    \\  } else if (this.hostname) {
+    \\    host = auth + (this.hostname.indexOf(":") === -1 ? this.hostname : "[" + this.hostname + "]");
+    \\    if (this.port) host += ":" + this.port;
+    \\  }
+    \\  if (this.query && typeof this.query === "object" && Object.keys(this.query).length) {
+    \\    query = new URLSearchParams(this.query).toString();
+    \\  }
+    \\  let search = this.search || (query && "?" + query) || "";
+    \\  if (protocol && protocol.substr(-1) !== ":") protocol += ":";
+    \\  if (protocol && !host && !pathname && !search && !hash) pathname = "/";
+    \\  if (this.slashes && host && !pathname && !search && !hash) pathname = "/";
+    \\  if (this.slashes || ((!protocol || __home_url_slashed_protocol[protocol]) && host.length > 0)) {
+    \\    host = "//" + (host || "");
+    \\    if (pathname && pathname.charAt(0) !== "/") pathname = "/" + pathname;
+    \\  } else if (!host) {
+    \\    host = "";
+    \\  }
+    \\  if (hash && hash.charAt(0) !== "#") hash = "#" + hash;
+    \\  if (search && search.charAt(0) !== "?") search = "?" + search;
+    \\  pathname = String(pathname).replace(/[?#]/g, match => encodeURIComponent(match));
+    \\  search = String(search).replace("#", "%23");
+    \\  const formatted = protocol + host + pathname + search + hash;
+    \\  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\/?#]+$/.test(formatted)) return formatted + "/";
+    \\  return formatted;
+    \\};
+    \\function __home_url_format_legacy(urlObject) {
+    \\  if (typeof urlObject === "string") urlObject = __home_url_parse(urlObject);
+    \\  else if (typeof urlObject !== "object" || urlObject === null) throw new TypeError('The "urlObject" argument must be one of type object or string.');
+    \\  if (urlObject instanceof __home_legacy_Url) return urlObject.format();
+    \\  return __home_legacy_Url.prototype.format.call(urlObject);
+    \\}
+    \\function __home_url_resolve(source, relative) {
+    \\  return __home_url_parse(source, false, true).resolve(relative);
+    \\}
+    \\__home_legacy_Url.prototype.resolve = function(relative) {
+    \\  return this.resolveObject(__home_url_parse(relative, false, true)).format();
+    \\};
+    \\function __home_url_resolve_object(source, relative) {
+    \\  if (!source) return relative;
+    \\  return __home_url_parse(source, false, true).resolveObject(relative);
+    \\}
+    \\__home_legacy_Url.prototype.resolveObject = function(relative) {
+    \\  if (typeof relative === "string") {
+    \\    const rel = new __home_legacy_Url();
+    \\    rel.parse(relative, false, true);
+    \\    relative = rel;
+    \\  }
+    \\  const result = new __home_legacy_Url();
+    \\  const tkeys = Object.keys(this);
+    \\  for (let tk = 0; tk < tkeys.length; tk++) {
+    \\    const tkey = tkeys[tk];
+    \\    result[tkey] = this[tkey];
+    \\  }
+    \\  result.hash = relative.hash;
+    \\  if (relative.href === "") {
+    \\    result.href = result.format();
+    \\    return result;
+    \\  }
+    \\  if (relative.slashes && !relative.protocol) {
+    \\    const rkeys = Object.keys(relative);
+    \\    for (let rk = 0; rk < rkeys.length; rk++) {
+    \\      const rkey = rkeys[rk];
+    \\      if (rkey !== "protocol") result[rkey] = relative[rkey];
+    \\    }
+    \\    if (__home_url_slashed_protocol[result.protocol] && result.hostname && !result.pathname) {
+    \\      result.pathname = "/";
+    \\      result.path = result.pathname;
+    \\    }
+    \\    result.href = result.format();
+    \\    return result;
+    \\  }
+    \\  if (relative.protocol && relative.protocol !== result.protocol) {
+    \\    if (!__home_url_slashed_protocol[relative.protocol]) {
+    \\      const keys = Object.keys(relative);
+    \\      for (let v = 0; v < keys.length; v++) result[keys[v]] = relative[keys[v]];
+    \\      result.href = result.format();
+    \\      return result;
+    \\    }
+    \\    result.protocol = relative.protocol;
+    \\    if (!relative.host && !(relative.protocol === "file" || relative.protocol === "file:") && !__home_url_hostless_protocol[relative.protocol]) {
+    \\      const relPath = (relative.pathname || "").split("/");
+    \\      while (relPath.length && !(relative.host = relPath.shift())) {}
+    \\      if (!relative.host) relative.host = "";
+    \\      if (!relative.hostname) relative.hostname = "";
+    \\      if (relPath[0] !== "") relPath.unshift("");
+    \\      if (relPath.length < 2) relPath.unshift("");
+    \\      result.pathname = relPath.join("/");
+    \\    } else {
+    \\      result.pathname = relative.pathname;
+    \\    }
+    \\    result.search = relative.search;
+    \\    result.query = relative.query;
+    \\    result.host = relative.host || "";
+    \\    result.auth = relative.auth;
+    \\    result.hostname = relative.hostname || relative.host;
+    \\    result.port = relative.port;
+    \\    if (result.pathname || result.search) {
+    \\      const p = result.pathname || "";
+    \\      const s = result.search || "";
+    \\      result.path = p + s;
+    \\    }
+    \\    result.slashes = result.slashes || relative.slashes;
+    \\    result.href = result.format();
+    \\    return result;
+    \\  }
+    \\  const isSourceAbs = result.pathname && result.pathname.charAt(0) === "/";
+    \\  const isRelAbs = relative.host || (relative.pathname && relative.pathname.charAt(0) === "/");
+    \\  let mustEndAbs = isRelAbs || isSourceAbs || (result.host && relative.pathname);
+    \\  const removeAllDots = mustEndAbs;
+    \\  let srcPath = (result.pathname && result.pathname.split("/")) || [];
+    \\  const relPath = (relative.pathname && relative.pathname.split("/")) || [];
+    \\  const psychotic = result.protocol && !__home_url_slashed_protocol[result.protocol];
+    \\  if (psychotic) {
+    \\    result.hostname = "";
+    \\    result.port = null;
+    \\    if (result.host) {
+    \\      if (srcPath[0] === "") srcPath[0] = result.host;
+    \\      else srcPath.unshift(result.host);
+    \\    }
+    \\    result.host = "";
+    \\    if (relative.protocol) {
+    \\      relative.hostname = null;
+    \\      relative.port = null;
+    \\      result.auth = null;
+    \\      if (relative.host) {
+    \\        if (relPath[0] === "") relPath[0] = relative.host;
+    \\        else relPath.unshift(relative.host);
+    \\      }
+    \\      relative.host = null;
+    \\    }
+    \\    mustEndAbs = mustEndAbs && (relPath[0] === "" || srcPath[0] === "");
+    \\  }
+    \\  if (isRelAbs) {
+    \\    if (relative.host || relative.host === "") {
+    \\      if (result.host !== relative.host) result.auth = null;
+    \\      result.host = relative.host;
+    \\      result.port = relative.port;
+    \\    }
+    \\    if (relative.hostname || relative.hostname === "") {
+    \\      if (result.hostname !== relative.hostname) result.auth = null;
+    \\      result.hostname = relative.hostname;
+    \\    }
+    \\    result.search = relative.search;
+    \\    result.query = relative.query;
+    \\    srcPath = relPath;
+    \\  } else if (relPath.length) {
+    \\    if (!srcPath) srcPath = [];
+    \\    srcPath.pop();
+    \\    srcPath = srcPath.concat(relPath);
+    \\    result.search = relative.search;
+    \\    result.query = relative.query;
+    \\  } else if (relative.search !== null && relative.search !== undefined) {
+    \\    if (psychotic) {
+    \\      result.hostname = result.host = srcPath.shift();
+    \\      const authInHost = result.host && result.host.indexOf("@") > 0 ? result.host.split("@") : false;
+    \\      if (authInHost) {
+    \\        result.auth = authInHost.shift();
+    \\        result.hostname = result.host = authInHost.shift();
+    \\      }
+    \\    }
+    \\    result.search = relative.search;
+    \\    result.query = relative.query;
+    \\    if (result.pathname !== null || result.search !== null) result.path = (result.pathname ? result.pathname : "") + (result.search ? result.search : "");
+    \\    result.href = result.format();
+    \\    return result;
+    \\  }
+    \\  if (!srcPath.length) {
+    \\    result.pathname = null;
+    \\    result.path = result.search ? "/" + result.search : null;
+    \\    result.href = result.format();
+    \\    return result;
+    \\  }
+    \\  let last = srcPath.slice(-1)[0];
+    \\  const hasTrailingSlash = (((result.host || relative.host || srcPath.length > 1) && (last === "." || last === "..")) || last === "");
+    \\  let up = 0;
+    \\  for (let i = srcPath.length; i >= 0; i--) {
+    \\    last = srcPath[i];
+    \\    if (last === ".") srcPath.splice(i, 1);
+    \\    else if (last === "..") {
+    \\      srcPath.splice(i, 1);
+    \\      up++;
+    \\    } else if (up) {
+    \\      srcPath.splice(i, 1);
+    \\      up--;
+    \\    }
+    \\  }
+    \\  if (!mustEndAbs && !removeAllDots) {
+    \\    for (; up--; up) srcPath.unshift("..");
+    \\  }
+    \\  if (mustEndAbs && srcPath[0] !== "" && (!srcPath[0] || srcPath[0].charAt(0) !== "/")) srcPath.unshift("");
+    \\  if (hasTrailingSlash && srcPath.join("/").substr(-1) !== "/") srcPath.push("");
+    \\  const isAbsolute = srcPath[0] === "" || (srcPath[0] && srcPath[0].charAt(0) === "/");
+    \\  if (psychotic) {
+    \\    result.hostname = isAbsolute ? "" : (srcPath.length ? srcPath.shift() : "");
+    \\    result.host = result.hostname;
+    \\    const authInHost = result.host && result.host.indexOf("@") > 0 ? result.host.split("@") : false;
+    \\    if (authInHost) {
+    \\      result.auth = authInHost.shift();
+    \\      result.hostname = result.host = authInHost.shift();
+    \\    }
+    \\  }
+    \\  mustEndAbs = mustEndAbs || (result.host && srcPath.length);
+    \\  if (mustEndAbs && !isAbsolute) srcPath.unshift("");
+    \\  if (srcPath.length > 0) {
+    \\    result.pathname = srcPath.join("/");
+    \\  } else {
+    \\    result.pathname = null;
+    \\    result.path = null;
+    \\  }
+    \\  if (result.pathname !== null || result.search !== null) result.path = (result.pathname ? result.pathname : "") + (result.search ? result.search : "");
+    \\  result.auth = relative.auth || result.auth;
+    \\  result.slashes = result.slashes || relative.slashes;
+    \\  result.href = result.format();
+    \\  return result;
+    \\};
     \\const __home_url_module = {
     \\  URL: URL,
+    \\  URLSearchParams: URLSearchParams,
+    \\  Url: __home_legacy_Url,
     \\  domainToASCII(value) {
     \\    return __home_url_domain_to_ascii(value);
     \\  },
@@ -7410,9 +7903,9 @@ const harness_prelude =
     \\    }
     \\    return output;
     \\  },
-    \\  parse(value) {
-    \\    __home_unsupported("node:url.parse is only present for skipped bootstrap tests");
-    \\  },
+    \\  parse: __home_url_parse,
+    \\  resolve: __home_url_resolve,
+    \\  resolveObject: __home_url_resolve_object,
     \\  fileURLToPath: __home_url_file_url_to_path,
     \\  pathToFileURL: __home_url_path_to_file_url,
     \\};
@@ -8513,19 +9006,50 @@ const harness_prelude =
     \\    return output;
     \\  };
     \\}
+    \\function __home_normalize_text_encoding_label(label) {
+    \\  const raw = label === undefined ? "utf-8" : String(label).trim().toLowerCase();
+    \\  const labels = {
+    \\    "unicode-1-1-utf-8": "utf-8", "utf8": "utf-8", "utf-8": "utf-8",
+    \\    "866": "ibm866", "cp866": "ibm866", "csibm866": "ibm866", "ibm866": "ibm866",
+    \\    "arabic": "iso-8859-6", "asmo-708": "iso-8859-6", "csisolatin3": "iso-8859-3", "csisolatin6": "iso-8859-6", "csisolatingreek": "iso-8859-7", "csisolatinhebrew": "iso-8859-8",
+    \\    "ecma-114": "iso-8859-6", "ecma-118": "iso-8859-7", "elot_928": "iso-8859-7", "greek": "iso-8859-7", "greek8": "iso-8859-7", "hebrew": "iso-8859-8",
+    \\    "iso-ir-109": "iso-8859-3", "iso-ir-127": "iso-8859-6", "iso-ir-126": "iso-8859-7", "iso-ir-138": "iso-8859-8",
+    \\    "iso8859-3": "iso-8859-3", "iso8859-6": "iso-8859-6", "iso8859-7": "iso-8859-7", "iso8859-8": "iso-8859-8", "iso_8859-3": "iso-8859-3", "iso_8859-6": "iso-8859-6", "iso_8859-7": "iso-8859-7", "iso_8859-8": "iso-8859-8",
+    \\    "iso-8859-3": "iso-8859-3", "iso-8859-6": "iso-8859-6", "iso-8859-7": "iso-8859-7", "iso-8859-8": "iso-8859-8", "iso-8859-8-i": "iso-8859-8-i",
+    \\    "latin3": "iso-8859-3", "l3": "iso-8859-3", "logical": "iso-8859-8-i", "sun_eu_greek": "iso-8859-7", "visual": "iso-8859-8",
+    \\    "koi8-ru": "koi8-u", "koi8-u": "koi8-u",
+    \\    "dos-874": "windows-874", "iso-8859-11": "windows-874", "iso8859-11": "windows-874", "iso885911": "windows-874", "tis-620": "windows-874", "windows-874": "windows-874",
+    \\    "ansi_x3.4-1968": "windows-1252", "ascii": "windows-1252", "cp1252": "windows-1252", "cp819": "windows-1252", "csisolatin1": "windows-1252", "ibm819": "windows-1252", "iso-8859-1": "windows-1252", "iso-ir-100": "windows-1252", "iso8859-1": "windows-1252", "iso_8859-1": "windows-1252", "l1": "windows-1252", "latin1": "windows-1252", "us-ascii": "windows-1252", "windows-1252": "windows-1252", "x-cp1252": "windows-1252",
+    \\    "cp1253": "windows-1253", "windows-1253": "windows-1253", "x-cp1253": "windows-1253",
+    \\    "cp1255": "windows-1255", "windows-1255": "windows-1255", "x-cp1255": "windows-1255",
+    \\    "cp1257": "windows-1257", "windows-1257": "windows-1257", "x-cp1257": "windows-1257",
+    \\    "unicodefffe": "utf-16be", "utf-16be": "utf-16be",
+    \\    "csunicode": "utf-16le", "iso-10646-ucs-2": "utf-16le", "ucs-2": "utf-16le", "unicode": "utf-16le", "unicodefeff": "utf-16le", "utf-16": "utf-16le", "utf-16le": "utf-16le",
+    \\    "x-user-defined": "x-user-defined", "replacement": "replacement",
+    \\    "big5": "big5", "big5-hkscs": "big5", "cn-big5": "big5", "csbig5": "big5", "x-x-big5": "big5",
+    \\    "cseucpkdfmtjapanese": "euc-jp", "euc-jp": "euc-jp", "x-euc-jp": "euc-jp",
+    \\    "csiso2022jp": "iso-2022-jp", "iso-2022-jp": "iso-2022-jp",
+    \\    "csshiftjis": "shift_jis", "ms932": "shift_jis", "ms_kanji": "shift_jis", "shift-jis": "shift_jis", "shift_jis": "shift_jis", "sjis": "shift_jis", "windows-31j": "shift_jis", "x-sjis": "shift_jis",
+    \\    "cseuckr": "euc-kr", "csksc56011987": "euc-kr", "euc-kr": "euc-kr", "iso-ir-149": "euc-kr", "korean": "euc-kr", "ks_c_5601-1987": "euc-kr", "ks_c_5601-1989": "euc-kr", "ksc5601": "euc-kr", "ksc_5601": "euc-kr", "windows-949": "euc-kr",
+    \\    "chinese": "gbk", "csgb2312": "gbk", "csiso58gb231280": "gbk", "gb2312": "gbk", "gb_2312": "gbk", "gb_2312-80": "gbk", "gbk": "gbk", "iso-ir-58": "gbk", "x-gbk": "gbk",
+    \\    "gb18030": "gb18030",
+    \\  };
+    \\  return Object.prototype.hasOwnProperty.call(labels, raw) ? labels[raw] : raw;
+    \\}
     \\if (typeof TextDecoder === "function" && !TextDecoder.__home_constructor_normalized) {
     \\  const __home_NativeTextDecoder = TextDecoder;
     \\  TextDecoder = function(label, options) {
     \\    if (options && typeof options.ignoreBOM === "object" && options.ignoreBOM !== null) throw new TypeError("TextDecoder ignoreBOM must be boolean-convertible");
-    \\    const decoder = new __home_NativeTextDecoder(label, options);
-    \\    const rawLabel = label === undefined ? "utf-8" : String(label).toLowerCase();
-    \\    const normalized = rawLabel === "ascii" || rawLabel === "latin1" || rawLabel === "iso-8859-1" ? "windows-1252" : rawLabel;
+    \\    const normalized = __home_normalize_text_encoding_label(label);
+    \\    const decoder = new __home_NativeTextDecoder(normalized === "replacement" ? "utf-8" : normalized, options);
     \\    try { Object.defineProperty(decoder, "encoding", { configurable: true, value: normalized }); } catch (error) {}
     \\    try { Object.defineProperty(decoder, "fatal", { configurable: true, value: !!(options && options.fatal) }); } catch (error) {}
     \\    try { Object.defineProperty(decoder, "ignoreBOM", { configurable: true, value: !!(options && options.ignoreBOM) }); } catch (error) {}
     \\    decoder.__home_encoding = normalized;
     \\    decoder.__home_fatal = !!(options && options.fatal);
     \\    decoder.__home_ignoreBOM = !!(options && options.ignoreBOM);
+    \\    decoder.__home_pending_bytes = [];
+    \\    decoder.__home_pending_code_unit = null;
     \\    return decoder;
     \\  };
     \\  TextDecoder.prototype = __home_NativeTextDecoder.prototype;
@@ -8551,41 +9075,152 @@ const harness_prelude =
     \\    }
     \\    return false;
     \\  }
-    \\  __home_NativeTextDecoder.prototype.decode = function(input, options) {
-    \\    const view = input === undefined ? new Uint8Array() : __home_array_buffer_view(input);
-    \\    const bytes = view ? Array.from(view) : Array.from(input || []);
-    \\    if (this.__home_fatal && (this.__home_encoding === "utf-8" || this.__home_encoding === "utf8") && __home_has_invalid_utf8(bytes)) {
-    \\      const error = new TypeError("The encoded data was not valid UTF-8");
+    \\  function __home_decode_utf8_stateful(bytes, final) {
+    \\    let output = "";
+    \\    let i = 0;
+    \\    let invalid = false;
+    \\    function cont(index) { return index < bytes.length && (bytes[index] & 0xc0) === 0x80; }
+    \\    while (i < bytes.length) {
+    \\      const b0 = bytes[i] & 0xff;
+    \\      if (b0 < 0x80) { output += String.fromCharCode(b0); i++; continue; }
+    \\      if (b0 >= 0xc2 && b0 <= 0xdf) {
+    \\        if (cont(i + 1)) { output += String.fromCodePoint(((b0 & 0x1f) << 6) | (bytes[i + 1] & 0x3f)); i += 2; continue; }
+    \\        if (!final && i + 1 >= bytes.length) break;
+    \\        output += "\uFFFD"; invalid = true; i++; continue;
+    \\      }
+    \\      if (b0 >= 0xe0 && b0 <= 0xef) {
+    \\        if (cont(i + 1)) {
+    \\          const b1 = bytes[i + 1] & 0xff;
+    \\          const validSecond = !((b0 === 0xe0 && b1 < 0xa0) || (b0 === 0xed && b1 >= 0xa0));
+    \\          if (validSecond && cont(i + 2)) { output += String.fromCodePoint(((b0 & 0x0f) << 12) | ((b1 & 0x3f) << 6) | (bytes[i + 2] & 0x3f)); i += 3; continue; }
+    \\          if (validSecond) {
+    \\            if (!final && i + 2 >= bytes.length) break;
+    \\            output += "\uFFFD"; invalid = true; i += 2; continue;
+    \\          }
+    \\        } else if (!final && i + 1 >= bytes.length) break;
+    \\        output += "\uFFFD"; invalid = true; i++; continue;
+    \\      }
+    \\      if (b0 >= 0xf0 && b0 <= 0xf4) {
+    \\        if (cont(i + 1)) {
+    \\          const b1 = bytes[i + 1] & 0xff;
+    \\          const validSecond = !((b0 === 0xf0 && b1 < 0x90) || (b0 === 0xf4 && b1 >= 0x90));
+    \\          if (validSecond && cont(i + 2) && cont(i + 3)) {
+    \\            output += String.fromCodePoint(((b0 & 0x07) << 18) | ((b1 & 0x3f) << 12) | ((bytes[i + 2] & 0x3f) << 6) | (bytes[i + 3] & 0x3f));
+    \\            i += 4;
+    \\            continue;
+    \\          }
+    \\          if (validSecond && (!cont(i + 2) || !cont(i + 3))) {
+    \\            if (!final && (i + 2 >= bytes.length || (cont(i + 2) && i + 3 >= bytes.length))) break;
+    \\            output += "\uFFFD"; invalid = true;
+    \\            i += 2;
+    \\            if (i < bytes.length && cont(i)) i++;
+    \\            continue;
+    \\          }
+    \\        } else if (!final && i + 1 >= bytes.length) break;
+    \\        output += "\uFFFD"; invalid = true; i++; continue;
+    \\      }
+    \\      output += "\uFFFD"; invalid = true; i++;
+    \\    }
+    \\    if (final && i < bytes.length) {
+    \\      output += "\uFFFD";
+    \\      invalid = true;
+    \\      i = bytes.length;
+    \\    }
+    \\    return { text: output, pending: bytes.slice(i), invalid };
+    \\  }
+    \\  function __home_decode_utf16_stateful(decoder, bytes, stream) {
+    \\    const encoding = decoder.__home_encoding || decoder.encoding || "utf-16le";
+    \\    const fatal = decoder.__home_fatal === undefined ? !!decoder.fatal : decoder.__home_fatal;
+    \\    const ignoreBOM = decoder.__home_ignoreBOM === undefined ? !!decoder.ignoreBOM : decoder.__home_ignoreBOM;
+    \\    const all = (decoder.__home_pending_bytes || []).concat(bytes);
+    \\    let length = all.length;
+    \\    const hasOddByte = length % 2 === 1;
+    \\    if (hasOddByte) length--;
+    \\    if (!stream && fatal && hasOddByte) {
+    \\      decoder.__home_pending_bytes = [];
+    \\      decoder.__home_pending_code_unit = null;
+    \\      const error = new TypeError("The encoded data was not valid UTF-16");
     \\      error.code = "ERR_ENCODING_INVALID_ENCODED_DATA";
     \\      throw error;
     \\    }
-    \\    if ((this.__home_encoding === "utf-8" || this.__home_encoding === "utf8") && bytes.length >= 3 && bytes[bytes.length - 3] === 0xf0 && bytes[bytes.length - 2] === 0xa4 && bytes[bytes.length - 1] === 0xad) {
-    \\      const prefix = __home_decode_utf8(bytes.slice(0, bytes.length - 3));
-    \\      return options && options.stream ? prefix : prefix + "\uFFFD";
+    \\    decoder.__home_pending_bytes = stream && hasOddByte ? all.slice(length) : [];
+    \\    let decoded = "";
+    \\    const little = encoding === "utf-16le";
+    \\    let pendingLead = decoder.__home_pending_code_unit;
+    \\    decoder.__home_pending_code_unit = null;
+    \\    for (let i = 0; i + 1 < length; i += 2) {
+    \\      const code = little ? ((all[i + 1] << 8) | all[i]) : ((all[i] << 8) | all[i + 1]);
+    \\      if (pendingLead !== null && pendingLead !== undefined) {
+    \\        if (code >= 0xdc00 && code <= 0xdfff) {
+    \\          decoded += String.fromCodePoint(0x10000 + ((pendingLead - 0xd800) << 10) + (code - 0xdc00));
+    \\          pendingLead = null;
+    \\          continue;
+    \\        }
+    \\        decoded += "\uFFFD";
+    \\        pendingLead = null;
+    \\      }
+    \\      if (code >= 0xd800 && code <= 0xdbff) {
+    \\        if (i + 3 < length) {
+    \\          const next = little ? ((all[i + 3] << 8) | all[i + 2]) : ((all[i + 2] << 8) | all[i + 3]);
+    \\          if (next >= 0xdc00 && next <= 0xdfff) {
+    \\            decoded += String.fromCodePoint(0x10000 + ((code - 0xd800) << 10) + (next - 0xdc00));
+    \\            i += 2;
+    \\            continue;
+    \\          }
+    \\        } else if (stream) {
+    \\          decoder.__home_pending_code_unit = code;
+    \\          break;
+    \\        }
+    \\        decoded += "\uFFFD";
+    \\      } else if (code >= 0xdc00 && code <= 0xdfff) {
+    \\        decoded += "\uFFFD";
+    \\      } else {
+    \\        decoded += String.fromCharCode(code);
+    \\      }
     \\    }
-    \\    if (this.__home_encoding === "utf-8" || this.__home_encoding === "utf8") {
-    \\      let decoded = __home_decode_utf8(bytes);
-    \\      if (!this.__home_ignoreBOM && decoded.charCodeAt(0) === 0xfeff) decoded = decoded.slice(1);
-    \\      return decoded;
+    \\    if (pendingLead !== null && pendingLead !== undefined) {
+    \\      if (stream) decoder.__home_pending_code_unit = pendingLead;
+    \\      else decoded += "\uFFFD";
     \\    }
-    \\    if (this.__home_encoding === "utf-16le" || this.__home_encoding === "utf-16be") {
-    \\      if (this.__home_fatal && bytes.length % 2 === 1 && !(options && options.stream)) {
-    \\        const error = new TypeError("The encoded data was not valid UTF-16");
+    \\    if (!stream && decoder.__home_pending_code_unit !== null && decoder.__home_pending_code_unit !== undefined) {
+    \\      decoded += "\uFFFD";
+    \\      decoder.__home_pending_code_unit = null;
+    \\    }
+    \\    if (!stream && hasOddByte) decoded += "\uFFFD";
+    \\    if (!ignoreBOM && decoded.charCodeAt(0) === 0xfeff) decoded = decoded.slice(1);
+    \\    return decoded;
+    \\  }
+    \\  __home_NativeTextDecoder.prototype.decode = function(input, options) {
+    \\    const stream = !!(options && options.stream);
+    \\    let bytes;
+    \\    try {
+    \\      const view = input === undefined ? new Uint8Array() : __home_array_buffer_view(input);
+    \\      bytes = view ? Array.from(view) : Array.from(input || []);
+    \\    } catch (error) {
+    \\      if (String(error && error.message || error).toLowerCase().includes("detached")) bytes = [];
+    \\      else throw error;
+    \\    }
+    \\    const encoding = this.__home_encoding || this.encoding || "utf-8";
+    \\    const fatal = this.__home_fatal === undefined ? !!this.fatal : this.__home_fatal;
+    \\    const ignoreBOM = this.__home_ignoreBOM === undefined ? !!this.ignoreBOM : this.__home_ignoreBOM;
+    \\    if (encoding === "replacement") return "\uFFFD";
+    \\    if (encoding === "utf-8" || encoding === "utf8") {
+    \\      const all = (this.__home_pending_bytes || []).concat(bytes);
+    \\      const result = __home_decode_utf8_stateful(all, !stream);
+    \\      this.__home_pending_bytes = stream ? result.pending : [];
+    \\      if (fatal && (result.invalid || (!stream && result.pending.length > 0))) {
+    \\        const error = new TypeError("The encoded data was not valid UTF-8");
     \\        error.code = "ERR_ENCODING_INVALID_ENCODED_DATA";
     \\        throw error;
     \\      }
-    \\      let decoded = "";
-    \\      const little = this.__home_encoding === "utf-16le";
-    \\      for (let i = 0; i + 1 < bytes.length; i += 2) {
-    \\        const code = little ? ((bytes[i + 1] << 8) | bytes[i]) : ((bytes[i] << 8) | bytes[i + 1]);
-    \\        decoded += String.fromCharCode(code);
-    \\      }
-    \\      if (bytes.length % 2 === 1 && !(options && options.stream)) decoded += "\uFFFD";
-    \\      if (!this.__home_ignoreBOM && decoded.charCodeAt(0) === 0xfeff) decoded = decoded.slice(1);
+    \\      let decoded = result.text;
+    \\      if (!ignoreBOM && decoded.charCodeAt(0) === 0xfeff) decoded = decoded.slice(1);
     \\      return decoded;
     \\    }
+    \\    if (encoding === "utf-16le" || encoding === "utf-16be") return __home_decode_utf16_stateful(this, bytes, stream);
+    \\    this.__home_pending_bytes = [];
     \\    let decoded = __home_text_decoder_decode.call(this, input, options);
-    \\    if (!this.__home_ignoreBOM && decoded.charCodeAt(0) === 0xfeff) decoded = decoded.slice(1);
+    \\    if (!ignoreBOM && decoded.charCodeAt(0) === 0xfeff) decoded = decoded.slice(1);
     \\    return decoded;
     \\  };
     \\}
@@ -8657,7 +9292,14 @@ const harness_prelude =
     \\    let written = 0;
     \\    for (const ch of text) {
     \\      const bytes = this.encode(ch);
-    \\      if (written + bytes.length > destination.length) break;
+    \\      if (written + bytes.length > destination.length) {
+    \\        if (ch.length === 2 && destination.length - written >= 3) {
+    \\          destination.set(this.encode("\uFFFD"), written);
+    \\          written += 3;
+    \\          read += 1;
+    \\        }
+    \\        break;
+    \\      }
     \\      destination.set(bytes, written);
     \\      written += bytes.length;
     \\      read += ch.length;
@@ -9191,7 +9833,17 @@ const harness_prelude =
     \\  var MessageChannel = function() {
     \\    this.port1 = new MessagePort();
     \\    this.port2 = new MessagePort();
+    \\    this.port1.__home_peer = this.port2;
+    \\    this.port2.__home_peer = this.port1;
     \\  };
+    \\}
+    \\if (typeof MessagePort === "function" && MessagePort.prototype && typeof MessagePort.prototype.postMessage !== "function") {
+    \\  MessagePort.prototype.postMessage = function(data) {
+    \\    const peer = this.__home_peer;
+    \\    if (peer && typeof peer.onmessage === "function") peer.onmessage({ data: structuredClone(data), target: peer, currentTarget: peer });
+    \\  };
+    \\  MessagePort.prototype.close = function() {};
+    \\  MessagePort.prototype.start = function() {};
     \\}
     \\if (typeof MessageEvent !== "function") {
     \\  var MessageEvent = function(type, options) {
@@ -9419,6 +10071,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "takeOrderMessages(): string[] {", .replacement = "takeOrderMessages() {" },
         .{ .needle = ": Array<string> =", .replacement = " =" },
         .{ .needle = ": Record<string, number> =", .replacement = " =" },
+        .{ .needle = ": Record<string, string[]> =", .replacement = " =" },
         .{ .needle = ": Uint8Array[] =", .replacement = " =" },
         .{ .needle = ": Record<string, string> =", .replacement = " =" },
         .{ .needle = ": Record<Component, Component[]> =", .replacement = " =" },
@@ -9474,6 +10127,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": string) =>", .replacement = ") =>" },
         .{ .needle = ": number)=>", .replacement = ")=>" },
         .{ .needle = ": number) =>", .replacement = ") =>" },
+        .{ .needle = "(a: number, b: number) =>", .replacement = "(a, b) =>" },
         .{ .needle = ": number | undefined =>", .replacement = " =>" },
         .{ .needle = ": string)=>", .replacement = ")=>" },
         .{ .needle = ": string): number | undefined =>", .replacement = ") =>" },
@@ -9528,6 +10182,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = " as keyof typeof props", .replacement = "" },
         .{ .needle = " as string[][]", .replacement = "" },
         .{ .needle = " as Array<[string, string]>", .replacement = "" },
+        .{ .needle = " as ArrayBuffer", .replacement = "" },
         .{ .needle = " as Record<string, string | undefined>", .replacement = "" },
         .{ .needle = " as TestEntry[]", .replacement = "" },
         .{ .needle = " as Body", .replacement = "" },
@@ -10035,6 +10690,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { normalizeBunSnapshot } from \"harness\";",
             .replacement = "const { normalizeBunSnapshot } = globalThis.__home_import(\"harness\");",
+        },
+        .{
+            .needle = "import { readableStreamFromArray } from \"harness\";",
+            .replacement = "const { readableStreamFromArray } = globalThis.__home_import(\"harness\");",
         },
         .{
             .needle = "import { bunEnv, bunExe, tempDirWithFiles } from \"harness\";",
@@ -11284,8 +11943,11 @@ test "bun test import detector ignores fixture source strings" {
 test "minimal JS subset includes low-risk Bun corpus expansion files" {
     const expected = [_][]const u8{
         "cli/test/test-randomize.fixture.ts",
+        "js/web/encoding/text-encoder.test.js",
+        "js/web/encoding/text-decoder.test.js",
         "js/web/encoding/text-decoder-cjk.test.ts",
         "js/web/encoding/text-decoder-single-byte.test.ts",
+        "js/deno/encoding/encoding.test.ts",
         "js/web/fetch/body-async-iterator.test.ts",
         "js/web/fetch/fetch-abort-queued.test.ts",
         "js/web/fetch/fetch-abort-stream-body.test.ts",
