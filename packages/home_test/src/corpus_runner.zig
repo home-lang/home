@@ -334,6 +334,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/test/skip-test-fixture.js",
     "js/bun/test/expect-type-doctest.test.ts",
     "js/bun/test/todo-test-fixture.js",
+    "js/bun/test/mock-disposable.test.ts",
     "js/web/websocket/error-event.test.ts",
     "cli/test/test-randomize.fixture.ts",
     "bundler/bun-build-api.test.ts",
@@ -2355,6 +2356,13 @@ const harness_prelude =
     \\    currentImplementation = function() {};
     \\    return wrapped;
     \\  };
+    \\  wrapped.mockRestore = function() {
+    \\    wrapped.mockClear();
+    \\    return wrapped;
+    \\  };
+    \\  wrapped[Symbol.dispose] = function() {
+    \\    wrapped.mockRestore();
+    \\  };
     \\  globalThis.__home_mocks.push(wrapped);
     \\  return wrapped;
     \\}
@@ -2371,12 +2379,13 @@ const harness_prelude =
     \\  const descriptor = Object.getOwnPropertyDescriptor(target, key);
     \\  const original = descriptor && Object.prototype.hasOwnProperty.call(descriptor, "value") ? descriptor.value : target[key];
     \\  if (typeof original !== "function") throw new TypeError("spyOn() property must be a function");
+    \\  let currentImplementation = original;
     \\  const calls = [];
     \\  const holder = {
     \\    [key]: function() {
     \\      calls.push(Array.prototype.slice.call(arguments));
     \\      try {
-    \\        const result = original.apply(this, arguments);
+    \\        const result = currentImplementation.apply(this, arguments);
     \\        wrapped.mock.results.push({ type: "return", value: result });
     \\        return result;
     \\      } catch (error) {
@@ -2404,6 +2413,16 @@ const harness_prelude =
     \\  wrapped.mockRestore = function() {
     \\    if (descriptor) Object.defineProperty(target, key, descriptor);
     \\    else delete target[key];
+    \\    return wrapped;
+    \\  };
+    \\  wrapped.mockImplementation = function(fn) {
+    \\    if (typeof fn !== "function") throw new TypeError("mockImplementation() requires a function");
+    \\    currentImplementation = fn;
+    \\    return wrapped;
+    \\  };
+    \\  wrapped.mockReturnValue = function(value) {
+    \\    currentImplementation = function() { return value; };
+    \\    return wrapped;
     \\  };
     \\  wrapped.mockClear = function() {
     \\    calls.length = 0;
@@ -2411,6 +2430,9 @@ const harness_prelude =
     \\    return wrapped;
     \\  };
     \\  wrapped.mockReset = wrapped.mockClear;
+    \\  wrapped[Symbol.dispose] = function() {
+    \\    wrapped.mockRestore();
+    \\  };
     \\  Object.defineProperty(target, key, {
     \\    configurable: true,
     \\    enumerable: descriptor ? descriptor.enumerable : true,
@@ -8158,6 +8180,52 @@ fn appendBootstrapTypeScriptReplacement(
 }
 
 fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const disposable_spy_block =
+        \\  {
+        \\    using spy = spyOn(obj, "method").mockReturnValue("mocked");
+        \\    expect(obj.method()).toBe("mocked");
+        \\    expect(spy).toHaveBeenCalledTimes(1);
+        \\  }
+    ;
+    const disposable_spy_replacement =
+        \\  {
+        \\    const spy = spyOn(obj, "method").mockReturnValue("mocked");
+        \\    try {
+        \\      expect(obj.method()).toBe("mocked");
+        \\      expect(spy).toHaveBeenCalledTimes(1);
+        \\    } finally {
+        \\      spy[Symbol.dispose]();
+        \\    }
+        \\  }
+    ;
+    if (std.mem.indexOf(u8, source, disposable_spy_block) != null) {
+        const replaced = try std.mem.replaceOwned(u8, allocator, source, disposable_spy_block, disposable_spy_replacement);
+        defer allocator.free(replaced);
+        return rewriteBootstrapTypeScript(allocator, replaced);
+    }
+
+    const disposable_prototype_block =
+        \\  {
+        \\    using spy = spyOn(Greeter.prototype, "greet").mockReturnValue("hola");
+        \\    expect(new Greeter().greet()).toBe("hola");
+        \\  }
+    ;
+    const disposable_prototype_replacement =
+        \\  {
+        \\    const spy = spyOn(Greeter.prototype, "greet").mockReturnValue("hola");
+        \\    try {
+        \\      expect(new Greeter().greet()).toBe("hola");
+        \\    } finally {
+        \\      spy[Symbol.dispose]();
+        \\    }
+        \\  }
+    ;
+    if (std.mem.indexOf(u8, source, disposable_prototype_block) != null) {
+        const replaced = try std.mem.replaceOwned(u8, allocator, source, disposable_prototype_block, disposable_prototype_replacement);
+        defer allocator.free(replaced);
+        return rewriteBootstrapTypeScript(allocator, replaced);
+    }
+
     if (std.mem.indexOf(u8, source, "extractSourceMap(dev: Dev, scriptSource: string)")) |start| {
         var replaced_signature = std.ArrayList(u8).empty;
         defer replaced_signature.deinit(allocator);
@@ -9344,7 +9412,9 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function mock(implementation)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function spyOn(target, property)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapped.mockRestore = function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapped.mockReturnValue = function(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapped.mockReturnValueOnce = function(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapped[Symbol.dispose] = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapped.mockImplementationOnce = function(fn)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock.clearAllMocks") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock.resetAllMocks") != null);

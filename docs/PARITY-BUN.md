@@ -325,6 +325,8 @@ third-party `jsonwebtoken` default-import decode/sign/verify and compact-token
 header/encoding plus missing-secret validation coverage,
 `Bun.file().exists()` with real corpus/temp-file write/unlink coverage,
 `bun:test` `xit`/`xtest`/`xdescribe` alias coverage through spawned tests,
+`mock()` / `spyOn()` disposable cleanup with `mockReturnValue` and
+`Symbol.dispose`,
 plus one snapshot `test.todo` fixture whose
 snapshot body remains intentionally unexecuted. The bootstrap harness is installed once
 per JSC engine, resets counters before each file, lowers supported
@@ -339,7 +341,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `266` files, `1,188` passed, `0` failed,
+Latest measured subset run: `267` files, `1,191` passed, `0` failed,
 `45` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
