@@ -4267,6 +4267,7 @@ pub const Parser = struct {
                     try self.reportCodeAt(at.span.start, at.line, 1243, "'private' modifier cannot be used with 'abstract' modifier.");
                 }
             }
+            try self.reportClassMemberConstKeyword(mods);
             var member_start = self.peek();
             var invalid_index_modifier: ?Token = null;
             if (self.peek().kind == .kw_export and self.peekAt(1).kind == .open_bracket) {
@@ -4892,6 +4893,7 @@ pub const Parser = struct {
         is_abstract: bool = false,
         is_readonly: bool = false,
         is_accessor: bool = false,
+        const_token: ?Token = null,
         invalid_class_element_modifier: ?Token = null,
         /// `declare` is valid on class *property* members (it tells the
         /// type system the field is initialized externally) but invalid
@@ -4927,6 +4929,16 @@ pub const Parser = struct {
                 const mod = self.advance();
                 if (mods.first_modifier_token == null) mods.first_modifier_token = mod;
                 if (mods.invalid_class_element_modifier == null) mods.invalid_class_element_modifier = mod;
+                continue;
+            }
+            if (k == .kw_const) {
+                const next_can_start_member = canStartClassMemberAfterModifier(self.peekAt(1).kind);
+                if (!next_can_start_member and !self.peekAt(1).kind.isModifierKeyword()) {
+                    return mods;
+                }
+                const mod = self.advance();
+                if (mods.first_modifier_token == null) mods.first_modifier_token = mod;
+                if (mods.const_token == null) mods.const_token = mod;
                 continue;
             }
             if (k.isModifierKeyword()) {
@@ -5186,6 +5198,14 @@ pub const Parser = struct {
             const mod_name = self.source[bad.span.start..bad.span.end];
             const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier cannot appear on class elements of this kind.", .{mod_name});
             try self.reportCodeAt(bad.span.start, bad.line, 1031, msg);
+        }
+    }
+
+    fn reportClassMemberConstKeyword(self: *Parser, mods: ClassModifiers) ParseError!void {
+        if (mods.const_token) |bad| {
+            const mod_name = self.source[bad.span.start..bad.span.end];
+            const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "A class member cannot have the '{s}' keyword.", .{mod_name});
+            try self.reportCodeAt(bad.span.start, bad.line, 1248, msg);
         }
     }
 
@@ -14001,6 +14021,35 @@ test "parser: TS1031 fires for `export` modifier on class member" {
         if (d.code == 1031) saw_1031 += 1;
     }
     try T.expect(saw_1031 >= 1);
+}
+
+test "parser: TS1248 fires for const keyword on class field" {
+    var s = try newTestSetup(
+        \\class AtomicNumbers {
+        \\    static const H = 1;
+        \\}
+        \\let C = class { const a = 4; };
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var count: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1248) {
+            count += 1;
+            try T.expectEqualStrings("A class member cannot have the 'const' keyword.", d.message);
+            try T.expect(std.mem.eql(u8, s.parser.source[d.pos .. d.pos + 5], "const"));
+        }
+    }
+    try T.expectEqual(@as(u32, 2), count);
+}
+
+test "parser: const may be a class method name" {
+    var s = try newTestSetup("class C { const() {} }");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1248);
+    }
 }
 
 test "parser: TS1031 fires for `declare` modifier on constructor" {
