@@ -482,6 +482,10 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/26632.test.ts",
     "js/node/url/url-parse-query.test.js",
     "integration/bun-types/fixture/5396.test.ts",
+    "js/web/fetch/utf8-bom.test.ts",
+    "js/web/fetch/form-data-boundary-crash.test.ts",
+    "js/bun/http/bun-serve-fetch-invalid-args.test.ts",
+    "js/bun/http/getIfPropertyExists.test.ts",
 };
 
 const harness_prelude =
@@ -1479,6 +1483,18 @@ const harness_prelude =
     \\  readableStreamToArrayBuffer(stream) {
     \\    return __home_readable_stream_to_array_buffer(stream);
     \\  },
+    \\  readableStreamToText(stream) {
+    \\    return __home_body_bytes(stream).then(bytes => __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(bytes)));
+    \\  },
+    \\  readableStreamToJSON(stream) {
+    \\    return Bun.readableStreamToText(stream).then(text => __home_parse_json_body_text(text));
+    \\  },
+    \\  readableStreamToFormData(stream, contentType) {
+    \\    return Bun.readableStreamToText(stream).then(text => __home_parse_formdata_text(text, contentType || "application/x-www-form-urlencoded"));
+    \\  },
+    \\  readableStreamToBlob(stream) {
+    \\    return __home_body_bytes(stream).then(bytes => new Blob([new Uint8Array(bytes)]));
+    \\  },
     \\  readableStreamToArray(stream) {
     \\    const reader = stream && typeof stream.getReader === "function" ? stream.getReader() : null;
     \\    if (!reader || typeof reader.read !== "function") return Promise.reject(new TypeError("ReadableStream reader is unavailable"));
@@ -1533,6 +1549,17 @@ const harness_prelude =
     \\        handle.abrupt = !!closeActiveConnections;
     \\        delete globalThis.__home_serve_handles_by_origin[handle.origin];
     \\        if (handle.native) return globalThis.__home_stopServeNative(handle.id, handle.abrupt);
+    \\      },
+    \\      fetch(input, init) {
+    \\        const inputType = typeof input;
+    \\        if (inputType === "bigint") return __home_fetch_thenable(null, new TypeError("fetch() expects a string, but received BigInt"));
+    \\        if (inputType === "symbol") return __home_fetch_thenable(null, new TypeError("fetch() expects a string, but received Symbol"));
+    \\        if (inputType === "boolean") return __home_fetch_thenable(null, new TypeError("fetch() expects a string, but received Boolean"));
+    \\        if (inputType === "number") return __home_fetch_thenable(null, new TypeError("fetch() expects a string, but received Number"));
+    \\        return fetch(input, init);
+    \\      },
+    \\      [Symbol.dispose]() {
+    \\        this.stop(true);
     \\      },
     \\    };
     \\    return server;
@@ -1992,8 +2019,24 @@ const harness_prelude =
     \\      lines.push("}");
     \\      return lines.join("\n");
     \\    }
-    \\    if (value === null || typeof value !== "object" || Array.isArray(value)) __home_unsupported("Only Bun.inspect({ key: Set<string> }) is supported by the Home Bun corpus bootstrap runner");
+    \\    function inspectSimple(item) {
+    \\      if (item === null) return "null";
+    \\      if (typeof item === "string") return JSON.stringify(item);
+    \\      if (typeof item === "number" || typeof item === "boolean" || typeof item === "bigint") return String(item);
+    \\      if (item === undefined) return "undefined";
+    \\      if (Array.isArray(item)) return "[ " + item.map(inspectSimple).join(", ") + " ]";
+    \\      if (item instanceof Set) return "Set(" + item.size + ") { " + Array.from(item).map(inspectSimple).join(", ") + " }";
+    \\      if (typeof Headers === "function" && item instanceof Headers) return Bun.inspect(item);
+    \\      if (typeof URL === "function" && item instanceof URL) return item.href;
+    \\      if (typeof item === "object") {
+    \\        const objectKeys = Object.keys(item);
+    \\        return "{ " + objectKeys.map(key => key + ": " + inspectSimple(item[key])).join(", ") + " }";
+    \\      }
+    \\      return String(item);
+    \\    }
+    \\    if (value === null || typeof value !== "object" || Array.isArray(value)) return inspectSimple(value);
     \\    const keys = Object.keys(value);
+    \\    if (!keys.every(key => value[key] instanceof Set)) return inspectSimple(value);
     \\    const lines = ["{"];
     \\    for (let keyIndex = 0; keyIndex < keys.length; keyIndex++) {
     \\      const key = keys[keyIndex];
@@ -3306,6 +3349,46 @@ const harness_prelude =
     \\      return {
     \\        toThrow(expected) {
     \\          const thrown = value && value.__home_rejected_error;
+    \\          if (!thrown && __home_is_thenable(value)) {
+    \\            __home_bun_tests.pending++;
+    \\            Promise.resolve(value).then(
+    \\              function() {
+    \\                try {
+    \\                  __home_assert(false, isNot, "Expected promise" + (isNot ? " not" : "") + " to reject");
+    \\                } catch (error) {
+    \\                  __home_record_async_failure(error);
+    \\                }
+    \\              },
+    \\              function(error) {
+    \\                try {
+    \\                  const actual = error;
+    \\                  if (expected !== undefined && expected !== "" && (expected === null || (typeof expected !== "object" && typeof expected !== "string" && typeof expected !== "function"))) {
+    \\                    __home_fail("Expected value must be string or Error: " + __home_format(expected));
+    \\                  }
+    \\                  if (expected && expected.__home_expect_any) __home_assert(actual instanceof expected.ctor, isNot, "Expected rejected value" + (isNot ? " not" : "") + " to be instance of " + expected.ctor.name);
+    \\                  else if (typeof expected === "function") __home_assert(actual instanceof expected, isNot, "Expected rejected value" + (isNot ? " not" : "") + " to be instance of " + expected.name);
+    \\                  else if (expected instanceof RegExp) __home_assert(expected.test(String(actual && actual.message)), isNot, "Expected rejection message" + (isNot ? " not" : "") + " to match " + String(expected));
+    \\                  else if (expected && typeof expected === "object" && ("message" in expected || "name" in expected)) {
+    \\                    let pass = true;
+    \\                    if ("message" in expected) pass = pass && Object.is(actual && actual.message, expected.message);
+    \\                    if ("name" in expected) pass = pass && Object.is(actual && actual.name, expected.name);
+    \\                    __home_assert(pass, isNot, "Expected rejected error" + (isNot ? " not" : "") + " to match " + __home_format(expected));
+    \\                  } else if (expected !== undefined) {
+    \\                    __home_assert(String(actual && actual.message).includes(String(expected)), isNot, "Expected rejection message" + (isNot ? " not" : "") + " to include " + String(expected));
+    \\                  }
+    \\                } catch (assertionError) {
+    \\                  __home_record_async_failure(assertionError);
+    \\                }
+    \\              },
+    \\            ).then(
+    \\              function() { __home_bun_tests.pending--; },
+    \\              function(error) {
+    \\                __home_bun_tests.pending--;
+    \\                __home_record_async_failure(error);
+    \\              },
+    \\            );
+    \\            return;
+    \\          }
     \\          if (!thrown) __home_fail("Expected promise to reject");
     \\          if (expected !== undefined && expected !== "" && (expected === null || (typeof expected !== "object" && typeof expected !== "string" && typeof expected !== "function"))) {
     \\            __home_fail("Expected value must be string or Error: " + __home_format(expected));
@@ -6772,6 +6855,11 @@ const harness_prelude =
     \\    if (typeof globalThis.__home_getDevServerDeinitCountNative !== "function") __home_unsupported("Bun Bake DevServer deinit counter native bridge is not installed");
     \\    return globalThis.__home_getDevServerDeinitCountNative();
     \\  },
+    \\  setSyntheticAllocationLimitForTesting(value) {
+    \\    const previous = globalThis.__home_synthetic_allocation_limit || Infinity;
+    \\    globalThis.__home_synthetic_allocation_limit = Number(value);
+    \\    return previous;
+    \\  },
     \\  stringsInternals: {
     \\    toUTF16AllocSentinel(input) {
     \\      return new TextDecoder("utf-8").decode(input);
@@ -7140,7 +7228,7 @@ const harness_prelude =
     \\  };
     \\  function __home_formdata_value(value, filename) {
     \\    if (value && Array.isArray(value.__home_blob_bytes)) {
-    \\      if (typeof File === "function" && (filename !== undefined || !(value instanceof File))) {
+    \\      if (typeof File === "function" && filename !== undefined) {
     \\        return new File([value], filename === undefined ? (value.name || "blob") : String(filename), { type: value.type || "" });
     \\      }
     \\      return value;
@@ -7175,9 +7263,35 @@ const harness_prelude =
     \\  FormData.prototype.entries = function() {
     \\    return this.__home_entries[Symbol.iterator]();
     \\  };
+    \\  FormData.prototype.keys = function*() {
+    \\    for (const entry of this.__home_entries) yield entry[0];
+    \\  };
+    \\  FormData.prototype.values = function*() {
+    \\    for (const entry of this.__home_entries) yield entry[1];
+    \\  };
     \\  FormData.prototype[Symbol.iterator] = FormData.prototype.entries;
     \\  FormData.prototype.forEach = function(callback, thisArg) {
     \\    for (const entry of this.__home_entries) callback.call(thisArg, entry[1], entry[0], this);
+    \\  };
+    \\  FormData.prototype.toJSON = function() {
+    \\    const json = {};
+    \\    for (const entry of this.__home_entries) {
+    \\      const key = String(entry[0]);
+    \\      const value = entry[1] && Array.isArray(entry[1].__home_blob_bytes) ? entry[1] : String(entry[1]);
+    \\      if (Object.prototype.hasOwnProperty.call(json, key)) {
+    \\        if (Array.isArray(json[key])) json[key].push(value);
+    \\        else json[key] = [json[key], value];
+    \\      } else {
+    \\        json[key] = value;
+    \\      }
+    \\    }
+    \\    return json;
+    \\  };
+    \\  FormData.from = function(value) {
+    \\    const bytes = __home_body_bytes_sync(value);
+    \\    const limit = globalThis.__home_synthetic_allocation_limit || Infinity;
+    \\    if (bytes.length > limit) throw new RangeError("Cannot create a string longer than " + String(limit));
+    \\    return __home_parse_urlencoded_formdata(__home_utf8_bytes_to_text(bytes));
     \\  };
     \\}
     \\let __home_formdata_boundary_counter = 0;
@@ -8000,6 +8114,7 @@ const harness_prelude =
     \\globalThis.__home_modules["node:url"] = __home_url_module;
     \\function __home_body_bytes_sync(body) {
     \\  if (body == null) return [];
+    \\  if (body && Object.prototype.hasOwnProperty.call(body, "__home_body_value")) return __home_body_bytes_sync(body.__home_body_value);
     \\  if (body && body.__home_is_formdata) return __home_text_to_utf8_bytes(__home_formdata_serialize(body).text);
     \\  if (typeof URLSearchParams === "function" && body instanceof URLSearchParams) return __home_text_to_utf8_bytes(body.toString());
     \\  if (typeof body === "string") return __home_text_to_utf8_bytes(body);
@@ -8043,6 +8158,75 @@ const harness_prelude =
     \\function __home_response_body_text(body) {
     \\  return __home_utf8_bytes_to_text(__home_body_bytes_sync(body));
     \\}
+    \\function __home_strip_utf8_bom_text(text) {
+    \\  const value = String(text);
+    \\  return value.charCodeAt(0) === 0xfeff ? value.slice(1) : value;
+    \\}
+    \\function __home_body_record(value) {
+    \\  if (value == null) return null;
+    \\  if (value && typeof value.getReader === "function") return value;
+    \\  return { __home_body_value: value, locked: false, cancel() { this.locked = false; return Promise.resolve(); } };
+    \\}
+    \\function __home_content_type(headers) {
+    \\  if (!headers || typeof headers.get !== "function") return "";
+    \\  return String(headers.get("content-type") || headers.get("Content-Type") || "");
+    \\}
+    \\function __home_multipart_boundary(contentType) {
+    \\  const match = String(contentType || "").match(/(?:^|;)\s*boundary=(?:"([^"]+)"|([^;]+))/i);
+    \\  return match ? String(match[1] || match[2] || "").trim() : "";
+    \\}
+    \\function __home_formdata_param(value) {
+    \\  try {
+    \\    return decodeURIComponent(String(value || "").replace(/\+/g, " "));
+    \\  } catch (error) {
+    \\    return String(value || "").replace(/\+/g, " ");
+    \\  }
+    \\}
+    \\function __home_parse_multipart_formdata(text, contentType) {
+    \\  const boundary = __home_multipart_boundary(contentType);
+    \\  if (!boundary) throw new TypeError("Failed to parse body as FormData: missing boundary in " + String(contentType || ""));
+    \\  const marker = "--" + boundary;
+    \\  if (String(text).indexOf(marker) === -1) throw new TypeError("Failed to parse body as FormData: boundary not found");
+    \\  const form = new FormData();
+    \\  const parts = String(text).split(marker);
+    \\  for (const rawPart of parts) {
+    \\    let part = rawPart;
+    \\    if (part === "" || part === "--" || part === "--\r\n") continue;
+    \\    if (part.startsWith("\r\n")) part = part.slice(2);
+    \\    if (part.endsWith("--")) part = part.slice(0, -2);
+    \\    if (part.endsWith("\r\n")) part = part.slice(0, -2);
+    \\    const split = part.indexOf("\r\n\r\n");
+    \\    if (split === -1) continue;
+    \\    const headerText = part.slice(0, split);
+    \\    let body = part.slice(split + 4);
+    \\    if (body.endsWith("\r\n")) body = body.slice(0, -2);
+    \\    const disposition = (headerText.match(/^content-disposition:\s*([^\r\n]+)/im) || [])[1] || "";
+    \\    const nameMatch = disposition.match(/(?:^|;)\s*name=(?:"([^"]*)"|([^;]*))/i);
+    \\    if (!nameMatch) continue;
+    \\    const name = __home_formdata_param(nameMatch[1] !== undefined ? nameMatch[1] : nameMatch[2]);
+    \\    const filenameMatch = disposition.match(/(?:^|;)\s*filename=(?:"([^"]*)"|([^;]*))/i);
+    \\    if (filenameMatch) {
+    \\      const typeMatch = headerText.match(/^content-type:\s*([^\r\n]+)/im);
+    \\      const filename = __home_formdata_param(filenameMatch[1] !== undefined ? filenameMatch[1] : filenameMatch[2]);
+    \\      form.append(name, new File([body], filename, { type: typeMatch ? typeMatch[1].trim() : "" }));
+    \\    } else {
+    \\      form.append(name, body);
+    \\    }
+    \\  }
+    \\  return form;
+    \\}
+    \\function __home_parse_urlencoded_formdata(text) {
+    \\  const form = new FormData();
+    \\  const params = new URLSearchParams(String(text || ""));
+    \\  for (const pair of params.entries()) form.append(pair[0], pair[1]);
+    \\  return form;
+    \\}
+    \\function __home_parse_formdata_text(text, contentType) {
+    \\  const type = String(contentType || "").toLowerCase();
+    \\  if (type.includes("multipart/form-data")) return __home_parse_multipart_formdata(text, contentType);
+    \\  if (type.includes("application/x-www-form-urlencoded") || type === "") return __home_parse_urlencoded_formdata(text);
+    \\  throw new TypeError("Failed to parse body as FormData: unsupported content-type");
+    \\}
     \\function __home_consume_body(owner) {
     \\  if (owner.bodyUsed) return Promise.reject(new TypeError("Body already used"));
     \\  owner.bodyUsed = true;
@@ -8059,7 +8243,7 @@ const harness_prelude =
     \\    if (typeof options !== "object") throw new TypeError("Response init must be an object");
     \\    const status = options.status === undefined ? 200 : Number(options.status);
     \\    if (!Number.isFinite(status) || status < 200 || status > 599) throw new RangeError("Invalid response status");
-    \\    this.body = body == null ? null : body;
+    \\    this.body = __home_body_record(body);
     \\    this.init = options;
     \\    this.status = status;
     \\    this.statusText = options.statusText === undefined ? "" : String(options.statusText);
@@ -8067,14 +8251,14 @@ const harness_prelude =
     \\    this.bodyUsed = false;
     \\    if (body && body.__home_is_formdata && this.headers.get("content-type") === null) {
     \\      const serialized = __home_formdata_serialize(body);
-    \\      this.body = { __home_text: serialized.text, locked: false };
+    \\      this.body = __home_body_record({ __home_text: serialized.text });
     \\      this.__home_formdata = body;
     \\      this.headers.set("content-type", "multipart/form-data; boundary=" + serialized.boundary);
     \\    } else if (body && typeof body === "object" && typeof body.type === "string" && this.headers.get("content-type") === null) this.headers.set("content-type", body.type);
     \\  };
     \\}
     \\Response.prototype.text = function() {
-    \\  return __home_consume_body(this).then(bytes => __home_utf8_bytes_to_text(bytes));
+    \\  return __home_consume_body(this).then(bytes => __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(bytes)));
     \\};
     \\Response.prototype.json = function() {
     \\  return this.text().then(text => __home_parse_json_body_text(text));
@@ -8091,13 +8275,22 @@ const harness_prelude =
     \\    for (const entry of this.__home_formdata) form.append(entry[0], entry[1]);
     \\    return form;
     \\  });
-    \\  return this.text().then(() => new FormData());
+    \\  return this.text().then(text => __home_parse_formdata_text(text, __home_content_type(this.headers)));
     \\};
     \\Response.prototype.clone = function() {
+    \\  if (this.body && typeof this.body.tee === "function") {
+    \\    const branches = this.body.tee();
+    \\    this.body = branches[0];
+    \\    return new Response(branches[1], { status: this.status, statusText: this.statusText, headers: this.headers });
+    \\  }
     \\  return new Response(this.body, { status: this.status, headers: this.headers });
     \\};
     \\Response.redirect = function(url, status) {
-    \\  return new Response(null, { status: status || 302, headers: { Location: String(url) } });
+    \\  let code = 302;
+    \\  if (status && typeof status === "object") code = status.status === undefined ? 302 : Number(status.status);
+    \\  else if (status !== undefined && typeof status !== "string") code = Number(status);
+    \\  if (![301, 302, 303, 307, 308].includes(code)) throw new RangeError("Invalid redirect status code");
+    \\  return new Response(null, { status: code, headers: { Location: String(url) } });
     \\};
     \\Response.json = function(value, init) {
     \\  const valueType = typeof value;
@@ -8129,7 +8322,7 @@ const harness_prelude =
     \\  };
     \\}
     \\function fetch(input, init) {
-    \\  const href = String(input && input.href ? input.href : input);
+    \\  const href = String(input && typeof input.url === "string" ? input.url : (input && input.href ? input.href : input));
     \\  let origin = href;
     \\  const scheme = href.indexOf("://");
     \\  if (scheme !== -1) {
@@ -8141,7 +8334,8 @@ const harness_prelude =
     \\  if (typeof globalThis.__home_beginServeRequestNative === "function") globalThis.__home_beginServeRequestNative(handle.id);
     \\  if (typeof handle.fetch === "function") {
     \\    try {
-    \\      const response = handle.fetch(new Request(href, init || {}));
+    \\      const request = typeof Request === "function" && input instanceof Request && init === undefined ? input : new Request(href, init || {});
+    \\      const response = handle.fetch(request);
     \\      return Promise.resolve(response).finally(() => {
     \\        if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
     \\      });
@@ -8255,7 +8449,13 @@ const harness_prelude =
     \\  return Promise.resolve(new Uint8Array(this.__home_blob_bytes || []));
     \\};
     \\Blob.prototype.text = function() {
-    \\  return Promise.resolve(__home_utf8_bytes_to_text(this.__home_blob_bytes || []));
+    \\  return Promise.resolve(__home_strip_utf8_bom_text(__home_utf8_bytes_to_text(this.__home_blob_bytes || [])));
+    \\};
+    \\Blob.prototype.json = function() {
+    \\  return this.text().then(text => __home_parse_json_body_text(text));
+    \\};
+    \\Blob.prototype.formData = function() {
+    \\  return this.text().then(text => __home_parse_formdata_text(text, this.type || "application/x-www-form-urlencoded"));
     \\};
     \\Blob.prototype.slice = function(start, end, contentType) {
     \\  const size = this.size || 0;
@@ -8316,7 +8516,7 @@ const harness_prelude =
     \\  HTMLRewriter.prototype.transform = function(input) {
     \\    if (input === null || input === undefined) throw new TypeError("Expected Response or Body");
     \\    const body = input instanceof Response ? input.body : input;
-    \\    const text = String(body);
+    \\    const text = __home_response_body_text(body);
     \\    let output = text;
     \\    const doctypeMatch = output.match(/^<!DOCTYPE[^>]*>/i);
     \\    if (doctypeMatch) {
@@ -8362,6 +8562,10 @@ const harness_prelude =
     \\    return new Headers(headers && headers.__home_headers ? headers.__home_headers : headers);
     \\  }
     \\  var Request = function(input, init) {
+    \\    if (init === undefined && input && typeof input === "object" && !(input instanceof Request) && typeof input.href !== "string" && Object.prototype.hasOwnProperty.call(input, "url")) {
+    \\      init = input;
+    \\      input = input.url;
+    \\    }
     \\    const options = init || {};
     \\    if (input instanceof Request) {
     \\      this.url = input.url;
@@ -8383,25 +8587,30 @@ const harness_prelude =
     \\      this.body = null;
     \\    }
     \\    this.bodyUsed = false;
-    \\    if (Object.prototype.hasOwnProperty.call(options, "cache")) this.cache = String(options.cache);
-    \\    if (Object.prototype.hasOwnProperty.call(options, "mode")) this.mode = String(options.mode);
-    \\    if (options.method !== undefined) this.method = String(options.method).toUpperCase();
-    \\    if (options.headers !== undefined) this.headers = new Headers(options.headers);
-    \\    if (Object.prototype.hasOwnProperty.call(options, "body") && options.body && options.body.__home_is_formdata) {
-    \\      const serialized = __home_formdata_serialize(options.body);
+    \\    const cacheOption = options.cache;
+    \\    const modeOption = options.mode;
+    \\    const methodOption = options.method;
+    \\    const headersOption = options.headers;
+    \\    const bodyOption = options.body;
+    \\    if (cacheOption !== undefined) this.cache = String(cacheOption);
+    \\    if (modeOption !== undefined) this.mode = String(modeOption);
+    \\    if (methodOption !== undefined) this.method = String(methodOption).toUpperCase();
+    \\    if (headersOption !== undefined) this.headers = new Headers(headersOption);
+    \\    if (bodyOption !== undefined && bodyOption && bodyOption.__home_is_formdata) {
+    \\      const serialized = __home_formdata_serialize(bodyOption);
     \\      this.__home_text = serialized.text;
-    \\      this.__home_formdata = options.body;
-    \\      this.body = { __home_text: this.__home_text, locked: false };
+    \\      this.__home_formdata = bodyOption;
+    \\      this.body = __home_body_record({ __home_text: this.__home_text });
     \\      if (this.headers.get("content-type") === null) this.headers.set("content-type", "multipart/form-data; boundary=" + serialized.boundary);
-    \\    } else if (Object.prototype.hasOwnProperty.call(options, "body")) {
+    \\    } else if (bodyOption !== undefined) {
     \\      this.__home_formdata = null;
-    \\      this.body = options.body && typeof options.body.getReader === "function" ? options.body : { __home_text: __home_request_body_text(options.body), locked: false };
-    \\      this.__home_text = __home_request_body_text(options.body);
+    \\      this.body = __home_body_record(bodyOption && typeof bodyOption.getReader === "function" ? bodyOption : { __home_text: __home_request_body_text(bodyOption) });
+    \\      this.__home_text = __home_request_body_text(bodyOption);
     \\    }
-    \\    if (this.body === null) this.body = { __home_text: this.__home_text, locked: false };
+    \\    if (this.body === null) this.body = __home_body_record({ __home_text: this.__home_text });
     \\  };
     \\  Request.prototype.text = function() {
-    \\    return __home_consume_body(this).then(bytes => __home_utf8_bytes_to_text(bytes));
+    \\    return __home_consume_body(this).then(bytes => __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(bytes)));
     \\  };
     \\  Request.prototype.arrayBuffer = function() {
     \\    return __home_consume_body(this).then(bytes => new Uint8Array(bytes).buffer);
@@ -8415,7 +8624,7 @@ const harness_prelude =
     \\      for (const entry of this.__home_formdata) form.append(entry[0], entry[1]);
     \\      return form;
     \\    });
-    \\    return this.text().then(() => new FormData());
+    \\    return this.text().then(text => __home_parse_formdata_text(text, __home_content_type(this.headers)));
     \\  };
     \\  Request.prototype.clone = function() {
     \\    if (this.body && typeof this.body.tee === "function") {
@@ -8434,6 +8643,17 @@ const harness_prelude =
     \\  return Promise.resolve(this.text()).then(text => __home_parse_json_body_text(text));
     \\};
     \\globalThis.__home_modules["node-fetch"] = { Request };
+    \\globalThis.__home_modules["./bun-request-fixture.js"] = {
+    \\  method: "POST",
+    \\  body: JSON.stringify({ hello: "world" }),
+    \\  headers: { "content-type": "application/json" },
+    \\};
+    \\globalThis.__home_modules["./bun-serve-exports-fixture.js"] = {
+    \\  port: 0,
+    \\  fetch() {
+    \\    return new Response("ok");
+    \\  },
+    \\};
     \\globalThis.__home_modules["yargs/yargs"] = function yargs() {
     \\  return {};
     \\};
@@ -9590,8 +9810,24 @@ const harness_prelude =
     \\  return asUint8Array ? output : output.buffer;
     \\}
     \\function __home_readable_stream_to_array_buffer(stream) {
-    \\  if (!stream || !Array.isArray(stream.__home_chunks)) throw new TypeError("Expected ReadableStream");
-    \\  return __home_concat_array_buffers(stream.__home_chunks);
+    \\  if (!stream) throw new TypeError("Expected ReadableStream");
+    \\  if (Array.isArray(stream.__home_chunks)) return __home_concat_array_buffers(stream.__home_chunks);
+    \\  return __home_body_bytes(stream).then(bytes => new Uint8Array(bytes).buffer);
+    \\}
+    \\if (typeof ReadableStream === "function" && ReadableStream.prototype && !ReadableStream.prototype.__home_body_methods) {
+    \\  Object.defineProperty(ReadableStream.prototype, "__home_body_methods", { value: true });
+    \\  ReadableStream.prototype.text = function() {
+    \\    return __home_body_bytes(this).then(bytes => __home_strip_utf8_bom_text(__home_utf8_bytes_to_text(bytes)));
+    \\  };
+    \\  ReadableStream.prototype.json = function() {
+    \\    return this.text().then(text => __home_parse_json_body_text(text));
+    \\  };
+    \\  ReadableStream.prototype.formData = function(contentType) {
+    \\    return this.text().then(text => __home_parse_formdata_text(text, contentType || "application/x-www-form-urlencoded"));
+    \\  };
+    \\  ReadableStream.prototype.blob = function() {
+    \\    return __home_body_bytes(this).then(bytes => new Blob([new Uint8Array(bytes)]));
+    \\  };
     \\}
     \\var ShadowRealm = (function() {
     \\  class HomeShadowRealm {
@@ -10073,6 +10309,7 @@ fn appendImportMetaReplacement(
         .{ .needle = "import.meta.resolve", .replacement = "__home_import_meta_resolve" },
         .{ .needle = "import.meta.dirname", .replacement = "__home_import_meta_dirname" },
         .{ .needle = "import.meta.dir", .replacement = "__home_import_meta_dir" },
+        .{ .needle = "import.meta.filename", .replacement = "__filename" },
         .{ .needle = "import.meta.file", .replacement = "__filename" },
         .{ .needle = "import.meta.path", .replacement = "__home_import_meta_path" },
         .{ .needle = "import.meta.url", .replacement = "\"file:///\" + __home_import_meta_path" },
@@ -10258,6 +10495,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "override foo: FooChild", .replacement = "foo" },
         .{ .needle = "![", .replacement = "[" },
         .{ .needle = ": any)", .replacement = ")" },
+        .{ .needle = "e: any", .replacement = "e" },
         .{ .needle = ": Event)", .replacement = ")" },
         .{ .needle = ": any;", .replacement = ";" },
         .{ .needle = ": unknown[]", .replacement = "" },
@@ -10290,11 +10528,16 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = " as {\n        files: Array<{ loader: string; path: string; headers: { etag: string } }>;\n      }", .replacement = "" },
         .{ .needle = " as TestEntry[]", .replacement = "" },
         .{ .needle = " as Body", .replacement = "" },
+        .{ .needle = " as Blob", .replacement = "" },
+        .{ .needle = " as File", .replacement = "" },
         .{ .needle = " as string", .replacement = "" },
         .{ .needle = " as any", .replacement = "" },
         .{ .needle = " as const", .replacement = "" },
         .{ .needle = " as CustomEventInit", .replacement = "" },
         .{ .needle = " as EventInit", .replacement = "" },
+        .{ .needle = " as FetchReqArgs", .replacement = "" },
+        .{ .needle = " as FetchURLArgs", .replacement = "" },
+        .{ .needle = " as {}", .replacement = "" },
         .{ .needle = "line!", .replacement = "line" },
         .{ .needle = "hash!", .replacement = "hash" },
         .{ .needle = "jsOutput!", .replacement = "jsOutput" },
@@ -10302,9 +10545,19 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "originalSource!", .replacement = "originalSource" },
         .{ .needle = "pop()!", .replacement = "pop()" },
         .{ .needle = "o.kind === \"entry-point\")!", .replacement = "o.kind === \"entry-point\")" },
+        .{ .needle = ")!.", .replacement = ")." },
+        .{ .needle = ".get(\"foo\")!", .replacement = ".get(\"foo\")" },
+        .{ .needle = ": { [k: string]: any } =", .replacement = " =" },
+        .{ .needle = ": FetchReqArgs =", .replacement = " =" },
+        .{ .needle = ": FetchURLArgs =", .replacement = " =" },
         .{ .needle = "expect(onFinalizeCallCount).toBe(3);", .replacement = "expect(3).toBe(3);" },
         .{ .needle = "type SourceMap = (BasicSourceMapConsumer | IndexedSourceMapConsumer) & {\n  /** Original script generated */\n  script: string;\n  [Symbol.dispose](): void;\n};\n", .replacement = "" },
         .{ .needle = "type Action = \"onLoad\" | \"onStart\";\n", .replacement = "" },
+        .{ .needle = "type FetchReqArgs = [request: Request, init?: RequestInit];\n", .replacement = "" },
+        .{ .needle = "type FetchURLArgs = [url: string | URL | Request, init?: RequestInit];\n", .replacement = "" },
+        .{ .needle = "function send(args: FetchReqArgs | FetchURLArgs)", .replacement = "function send(args)" },
+        .{ .needle = "constructor(input: string | URL | Request, init?: RequestInit)", .replacement = "constructor(input, init)" },
+        .{ .needle = "testFn(server: ReturnType<typeof createTestServer>)", .replacement = "testFn(server)" },
         .{ .needle = "type Component = (typeof kComponents)[number];\n\n", .replacement = "" },
         .{ .needle = "interface TestEntry {\n  pattern: any[];\n  inputs?: any[];\n  expected_obj?: Record<string, string> | \"error\";\n  expected_match?: Record<string, any> | null | \"error\";\n  exactly_empty_components?: string[];\n}\n\n", .replacement = "" },
         .{ .needle = "interface TemplateStringTest {\n  expr: string;\n  print?: string | boolean; // expect stdout\n  capture?: string | boolean; // expect literal transpilation\n  captureRaw?: string; // expect raw transpilation\n}\n\n", .replacement = "" },
@@ -10471,6 +10724,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { Request } from \"node-fetch\";",
             .replacement = "const { Request } = globalThis.__home_import(\"node-fetch\");",
+        },
+        .{
+            .needle = "import * as RequestOptions from \"./bun-request-fixture.js\";",
+            .replacement = "const RequestOptions = globalThis.__home_import(\"./bun-request-fixture.js\");",
+        },
+        .{
+            .needle = "import * as ServerOptions from \"./bun-serve-exports-fixture.js\";",
+            .replacement = "const ServerOptions = globalThis.__home_import(\"./bun-serve-exports-fixture.js\");",
         },
         .{
             .needle = "import \"reflect-metadata\";",
