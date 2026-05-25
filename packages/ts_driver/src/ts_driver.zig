@@ -1095,6 +1095,9 @@ pub fn compileSource(
             .no_unchecked_indexed_access = co.no_unchecked_indexed_access orelse false,
             .isolated_modules = co.isolated_modules orelse false,
             .isolated_declarations = co.isolated_declarations orelse false,
+            // `composite` implies `declaration` in tsc (unless the user
+            // explicitly disables it, which tsconfig validation rejects).
+            .declaration = (co.declaration orelse false) or (co.composite orelse false),
             .resolve_json_module = co.resolve_json_module orelse false,
             .no_implicit_override = co.no_implicit_override orelse false,
             // `noImplicitReturns` is independent of `strict` in tsc.
