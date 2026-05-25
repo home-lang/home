@@ -455,6 +455,45 @@ fn appendTs5053(
     });
 }
 
+/// Mirrors TypeScript's `parseIsolatedEntityName` validity check for
+/// JSX factory options: IdentifierName (`.` IdentifierName)*, with
+/// reserved words allowed. The ASCII path is exact for the common
+/// compiler-option surface; non-ASCII bytes are accepted as identifier
+/// characters so this validator avoids rejecting valid Unicode names
+/// until the tsconfig package grows a full TS scanner dependency.
+pub fn isValidIsolatedEntityName(text: []const u8) bool {
+    if (text.len == 0) return false;
+
+    var at_segment_start = true;
+    var saw_segment_char = false;
+    for (text) |c| {
+        if (c == '.') {
+            if (at_segment_start or !saw_segment_char) return false;
+            at_segment_start = true;
+            saw_segment_char = false;
+            continue;
+        }
+
+        const ok = if (at_segment_start)
+            isEntityNameStart(c)
+        else
+            isEntityNameContinue(c);
+        if (!ok) return false;
+        at_segment_start = false;
+        saw_segment_char = true;
+    }
+
+    return !at_segment_start and saw_segment_char;
+}
+
+fn isEntityNameStart(c: u8) bool {
+    return std.ascii.isAlphabetic(c) or c == '_' or c == '$' or c >= 0x80;
+}
+
+fn isEntityNameContinue(c: u8) bool {
+    return isEntityNameStart(c) or std.ascii.isDigit(c);
+}
+
 pub const LoadError = error{
     NotAnObject,
     InvalidExtends,
@@ -855,6 +894,18 @@ test "tsconfig: jsx enum" {
         \\{ "compilerOptions": { "jsx": "react-jsx" } }
     );
     try t.expectEqual(@as(?Jsx, .react_jsx), cfg.compiler_options.jsx);
+}
+
+test "tsconfig: JSX factory entity-name validation" {
+    try t.expect(isValidIsolatedEntityName("h"));
+    try t.expect(isValidIsolatedEntityName("React.createElement"));
+    try t.expect(isValidIsolatedEntityName("null"));
+
+    try t.expect(!isValidIsolatedEntityName("234"));
+    try t.expect(!isValidIsolatedEntityName("Element.createElement="));
+    try t.expect(!isValidIsolatedEntityName("id1 id2"));
+    try t.expect(!isValidIsolatedEntityName("React."));
+    try t.expect(!isValidIsolatedEntityName(".Fragment"));
 }
 
 test "tsconfig: include / exclude / files" {

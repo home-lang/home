@@ -191,6 +191,28 @@ fn appendDriverDiagnostic(
     c.has_errors = true;
 }
 
+fn appendInvalidJsxFactoryValueDiagnostic(
+    gpa: std.mem.Allocator,
+    c: *Compilation,
+    option_name: []const u8,
+    value: []const u8,
+) CompileError!void {
+    const msg = try std.fmt.allocPrint(
+        gpa,
+        "Invalid value for '{s}'. '{s}' is not a valid identifier or qualified-name.",
+        .{ option_name, value },
+    );
+    try c.diagnostics.append(gpa, .{
+        .phase = .parse,
+        .pos = 0,
+        .line = 0,
+        .code = if (std.mem.eql(u8, option_name, "jsxFactory")) 5067 else 18035,
+        .is_global = true,
+        .message = msg,
+    });
+    c.has_errors = true;
+}
+
 /// Emit `tsc`'s option-deprecation diagnostics for the directive-driven
 /// compiler options we can detect from the source. Mirrors TS5101 /
 /// TS5107 emission shape upstream uses for `outFile`, `module=AMD`,
@@ -331,6 +353,38 @@ fn reportDeprecatedOptionDirectives(
     }
 }
 
+fn reportJsxFactoryOptionDiagnostics(
+    gpa: std.mem.Allocator,
+    c: *Compilation,
+    source: []const u8,
+    options: CompileOptions,
+) CompileError!void {
+    if (options.pub_tsconfig) |cfg| {
+        const co = cfg.compiler_options;
+        if (co.jsx_factory) |value| {
+            if (!tsconfig_mod.isValidIsolatedEntityName(value)) {
+                try appendInvalidJsxFactoryValueDiagnostic(gpa, c, "jsxFactory", value);
+            }
+        }
+        if (co.jsx_fragment_factory) |value| {
+            if (!tsconfig_mod.isValidIsolatedEntityName(value)) {
+                try appendInvalidJsxFactoryValueDiagnostic(gpa, c, "jsxFragmentFactory", value);
+            }
+        }
+    }
+
+    if (compilerOptionDirectiveValue(source, "jsxFactory")) |value| {
+        if (!tsconfig_mod.isValidIsolatedEntityName(value)) {
+            try appendInvalidJsxFactoryValueDiagnostic(gpa, c, "jsxFactory", value);
+        }
+    }
+    if (compilerOptionDirectiveValue(source, "jsxFragmentFactory")) |value| {
+        if (!tsconfig_mod.isValidIsolatedEntityName(value)) {
+            try appendInvalidJsxFactoryValueDiagnostic(gpa, c, "jsxFragmentFactory", value);
+        }
+    }
+}
+
 fn reportMissingReferencePathDiagnostics(
     gpa: std.mem.Allocator,
     c: *Compilation,
@@ -432,6 +486,21 @@ fn directiveValue(source: []const u8, name: []const u8) ?[]const u8 {
         if (!std.mem.startsWith(u8, rest, name)) continue;
         var value = std.mem.trim(u8, rest[name.len..], " \t:");
         if (std.mem.indexOfAny(u8, value, " \t*/\r")) |end| value = value[0..end];
+        return value;
+    }
+    return null;
+}
+
+fn compilerOptionDirectiveValue(source: []const u8, name: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |line_raw| {
+        const marker = directiveValueStart(line_raw, name) orelse continue;
+        var value = std.mem.trim(u8, marker, " \t:");
+        if (std.mem.indexOf(u8, value, "*/")) |end| {
+            value = value[0..end];
+        }
+        value = std.mem.trim(u8, value, " \t\r");
+        if (value.len == 0) return null;
         return value;
     }
     return null;
@@ -695,6 +764,7 @@ pub fn compileSource(
     }
 
     try reportDeprecatedOptionDirectives(gpa, c, source, options);
+    try reportJsxFactoryOptionDiagnostics(gpa, c, source, options);
 
     try reportMissingReferencePathDiagnostics(gpa, c, source);
 
@@ -2555,6 +2625,76 @@ test "driver: jsx pragma with fragment requires jsxFrag pragma" {
     var found = false;
     for (c.diagnostics.items) |d| {
         if (d.code == 17017) found = true;
+    }
+    try T.expect(found);
+}
+
+test "driver: invalid jsxFragmentFactory pragma reports TS18035" {
+    var c = try compileSource(T.allocator,
+        \\//@jsx: react
+        \\//@jsxFactory: h
+        \\//@jsxFragmentFactory: 234
+        \\declare var h: any;
+        \\let v = <></>;
+    , .{ .is_tsx = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 18035 and d.is_global and
+            std.mem.eql(u8, d.message, "Invalid value for 'jsxFragmentFactory'. '234' is not a valid identifier or qualified-name."))
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
+}
+
+test "driver: invalid jsxFactory pragma with whitespace reports TS5067" {
+    var c = try compileSource(T.allocator,
+        \\//@jsx: react
+        \\//@jsxFactory: id1 id2
+        \\let v = <div />;
+    , .{ .is_tsx = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 5067 and d.is_global and
+            std.mem.eql(u8, d.message, "Invalid value for 'jsxFactory'. 'id1 id2' is not a valid identifier or qualified-name."))
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
+}
+
+test "driver: invalid jsxFragmentFactory from tsconfig reports TS18035" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(
+        T.allocator,
+        arena.allocator(),
+        \\{ "compilerOptions": { "jsx": "react", "jsxFactory": "h", "jsxFragmentFactory": "234" } }
+        ,
+    );
+    var opts = optionsFromConfig(&cfg);
+    opts.no_emit = true;
+    var c = try compileSource(T.allocator, "declare var h: any; let v = <></>;", opts);
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 18035 and d.is_global) found = true;
     }
     try T.expect(found);
 }
