@@ -3493,7 +3493,11 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
             .is_declaration_file = entry.is_declaration_file,
             .strict_flags = entry.strict_flags,
             .always_strict = entry.always_strict,
-            .syntax_target_es2015 = entry.syntax_target_es2015,
+            // Honor an embedded `// @target: es2015`(+) directive even when
+            // the pinned entry didn't set the flag explicitly, so
+            // target-gated diagnostics (e.g. TS18028 private identifiers)
+            // don't fire on fixtures that target ES2015 or higher.
+            .syntax_target_es2015 = entry.syntax_target_es2015 or directiveTargetEs2015OrLater(entry.source),
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
@@ -18853,6 +18857,7 @@ test "conformance: mixinClassesAnonymous passes clean" {
 test "conformance: privateNameFieldAssignment passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "privateNameFieldAssignment",
+        .syntax_target_es2015 = true,
         .path = "privateNameFieldAssignment.ts",
         .source =
         \\class A {
@@ -18904,6 +18909,7 @@ test "conformance: privateNameFieldAssignment passes clean" {
 test "conformance: privateNameStaticFieldClassExpression passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "privateNameStaticFieldClassExpression",
+        .syntax_target_es2015 = true,
         .path = "privateNameStaticFieldClassExpression.ts",
         .source =
         \\class B {
@@ -19000,6 +19006,7 @@ test "conformance: functionExpressionContextualTyping1 passes clean" {
 test "conformance: privateNameFieldAccess passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "privateNameFieldAccess",
+        .syntax_target_es2015 = true,
         .path = "privateNameFieldAccess.ts",
         .source =
         \\class A {
@@ -19023,6 +19030,7 @@ test "conformance: privateNameFieldAccess passes clean" {
 test "conformance: privateNameFieldInitializer passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "privateNameFieldInitializer",
+        .syntax_target_es2015 = true,
         .path = "privateNameFieldInitializer.ts",
         .source =
         \\class A {
@@ -19044,6 +19052,7 @@ test "conformance: privateNameFieldInitializer passes clean" {
 test "conformance: privateNameStaticFieldAssignment passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "privateNameStaticFieldAssignment",
+        .syntax_target_es2015 = true,
         .path = "privateNameStaticFieldAssignment.ts",
         .source =
         \\class A {
@@ -19095,6 +19104,7 @@ test "conformance: privateNameStaticFieldAssignment passes clean" {
 test "conformance: privateNameFieldUnaryMutation passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "privateNameFieldUnaryMutation",
+        .syntax_target_es2015 = true,
         .path = "privateNameFieldUnaryMutation.ts",
         .source =
         \\class C {
@@ -19162,6 +19172,7 @@ test "conformance: privateNameFieldUnaryMutation passes clean" {
 test "conformance: privateNameStaticFieldUnaryMutation passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "privateNameStaticFieldUnaryMutation",
+        .syntax_target_es2015 = true,
         .path = "privateNameStaticFieldUnaryMutation.ts",
         .source =
         \\class C {
@@ -19207,6 +19218,7 @@ test "conformance: privateNameStaticFieldUnaryMutation passes clean" {
 test "conformance: privateNameLateSuper passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "privateNameLateSuper",
+        .syntax_target_es2015 = true,
         .path = "privateNameLateSuper.ts",
         .source =
         \\class B {}
@@ -21672,6 +21684,7 @@ test "conformance: templateStringTermination3_ES6 passes clean" {
 test "conformance: classStaticBlock12 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "classStaticBlock12",
+        .syntax_target_es2015 = true,
         .path = "classStaticBlock12.ts",
         .source =
         \\class C {
@@ -21696,6 +21709,7 @@ test "conformance: classStaticBlock12 passes clean" {
 test "conformance: classStaticBlock17 passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "classStaticBlock17",
+        .syntax_target_es2015 = true,
         .path = "classStaticBlock17.ts",
         .source =
         \\let friendA: { getX(o: A): number, setX(o: A, v: number): void };
@@ -22291,6 +22305,7 @@ test "conformance: esDecorators_contextualTypes passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "esDecorators-contextualTypes",
         .path = "esDecorators-contextualTypes.ts",
+        .syntax_target_es2015 = true,
         .source =
         \\@((t, c) => { })
         \\class C {
