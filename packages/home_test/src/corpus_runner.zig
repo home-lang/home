@@ -314,6 +314,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/path/resolve-long-cwd.test.ts",
     "bundler/bundler_allow_unresolved.test.ts",
     "bundler/bundler_bun.test.ts",
+    "bundler/bundler_comments.test.ts",
     "bundler/bundler_banner.test.ts",
     "bundler/bundler_barrel.test.ts",
     "bundler/bundler_browser.test.ts",
@@ -8327,6 +8328,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "hash!", .replacement = "hash" },
         .{ .needle = "jsOutput!", .replacement = "jsOutput" },
         .{ .needle = "mapOutput!", .replacement = "mapOutput" },
+        .{ .needle = "originalSource!", .replacement = "originalSource" },
         .{ .needle = "o.kind === \"entry-point\")!", .replacement = "o.kind === \"entry-point\")" },
         .{ .needle = "type SourceMap = (BasicSourceMapConsumer | IndexedSourceMapConsumer) & {\n  /** Original script generated */\n  script: string;\n  [Symbol.dispose](): void;\n};\n", .replacement = "" },
     };
@@ -8638,6 +8640,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { test } from \"node:test\";",
             .replacement = "const { test } = globalThis.__home_import(\"node:test\");",
+        },
+        .{
+            .needle = "import { SourceMap } from \"node:module\";",
+            .replacement = "const { SourceMap } = globalThis.__home_import(\"node:module\");",
         },
         .{
             .needle = "import testHelpers from \"bun:internal-for-testing\";",
@@ -9931,6 +9937,24 @@ test "Bun sqlite import rewrite lowers Database binding" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:sqlite\"") == null);
 }
 
+test "Node module import rewrite lowers SourceMap binding" {
+    const source =
+        \\import { SourceMap } from "node:module";
+        \\import { describe } from "bun:test";
+        \\import { itBundled } from "./expectBundled";
+        \\describe("comments", () => {
+        \\  itBundled("comment with sourcemap", { sourceMap: "external", onAfterBundle(api) { new SourceMap({}); } });
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "bundler/bundler_comments.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { SourceMap } = globalThis.__home_import(\"node:module\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { describe } = globalThis.__home_import(\"bun:test\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { itBundled } = globalThis.__home_import(\"./expectBundled\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"node:module\"") == null);
+}
+
 test "internal highlighter import rewrite lowers alias binding" {
     const source =
         \\import { highlightJavaScript as highlighter } from "bun:internal-for-testing";
@@ -10053,6 +10077,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/node/path/resolve-long-cwd.test.ts",
         "bundler/bundler_allow_unresolved.test.ts",
         "bundler/bundler_bun.test.ts",
+        "bundler/bundler_comments.test.ts",
         "bundler/bundler_banner.test.ts",
         "bundler/bundler_barrel.test.ts",
         "bundler/bundler_browser.test.ts",

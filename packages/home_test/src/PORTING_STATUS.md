@@ -964,6 +964,10 @@ The copied `bake/deinitialization.test.ts`,
 `bake/dev/stress.test.ts` fixtures now pass as `3` parent tests through
 the existing Bake harness shim, child `bunExe()` execution, `Bun.write`,
 `Bun.sleep`, and `import.meta` child-process coverage.
+The copied `bundler/bundler_comments.test.ts` fixture now passes as
+`42` tests by lowering `node:module.SourceMap` into the Home bootstrap
+module table and erasing Bun's copied TypeScript postfix non-null
+assertion on the source-map entry check.
 The copied `js/bun/test/test-timers.test.ts` fixture now passes as `1`
 test through the Jest fake-timer bootstrap model. It covers Bun's stable
 `Date` identity, mocked `Date.now()` / `new Date()`,
