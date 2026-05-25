@@ -5006,8 +5006,25 @@ pub const Parser = struct {
                     // `numericIndexerConstrainsPropertyDeclarations.ts(15-17)`
                     // where `c: () => {}` is followed on the next line by
                     // `"d": string;` (string-literal-keyed member).
+                    //
+                    // Surgical TS1146 swap: when the "property name" we
+                    // just consumed was actually a strict modifier keyword
+                    // (`public`/`private`/`protected`/`static`/`abstract`/
+                    // `readonly`/`declare`/`override`/`async`/…) AND no
+                    // type annotation followed (so this can't be a
+                    // legitimate property named after a contextual
+                    // keyword), upstream tsc treats the modifier as a
+                    // dangling-modifier-with-missing-declaration and
+                    // fires TS1146 instead of TS1442. Mirrors
+                    // `classMemberWithMissingIdentifier.ts(2,11)` for
+                    // `public {};`. Anchor + recovery stay identical
+                    // so existing TS1442 tests are unaffected.
                     const bad = self.peek();
-                    try self.reportCodeAt(bad.span.start, bad.line, 1442, "Expected '=' for property initializer.");
+                    if (name_tok.kind.isModifierKeyword() and type_anno == hir_mod.none_node_id) {
+                        try self.reportCodeAt(bad.span.start, bad.line, 1146, "Declaration expected.");
+                    } else {
+                        try self.reportCodeAt(bad.span.start, bad.line, 1442, "Expected '=' for property initializer.");
+                    }
                     default_value = try self.parseAssignmentExpression();
                 }
                 try self.reportInvalidDefiniteAssignmentAssertion(definite_assignment_token, type_anno, default_value);
@@ -22135,6 +22152,62 @@ test "parser: TS1180 fires when an operator starts an object binding element" {
     };
     const d = findDiag(s, 1180) orelse return error.MissingDiagnostic;
     try T.expectEqualStrings("Property destructuring pattern expected.", d.message);
+}
+
+test "parser: TS1146 fires for a modifier-keyword class member with no name" {
+    // Mirrors upstream `classMemberWithMissingIdentifier.ts(2,11)`:
+    //
+    //     class C {
+    //         public {};
+    //     }
+    //
+    // tsc anchors TS1146 "Declaration expected." at the position
+    // immediately after the trailing modifier (`public`). Pre-fix
+    // Home parsed `public` as a property NAME (because
+    // `skipClassModifiers` refuses to consume a modifier whose next
+    // token can't start a member) and surfaced TS1442 "Expected '='
+    // for property initializer." at the `{`. The new gate detects
+    // the modifier-as-name shape and swaps the code at the same
+    // anchor so the ledger credits a real upstream parser recovery.
+    var s = try newTestSetup("class C { public {}; }");
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch |err| switch (err) {
+        error.UnexpectedToken => hir_mod.none_node_id,
+        else => return err,
+    };
+    const d = findDiag(s, 1146) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Declaration expected.", d.message);
+    // TS1442 must NOT also fire for the same site — the swap is
+    // not additive.
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1442));
+}
+
+test "parser: TS1146 stays clean for legitimate modifier-named properties" {
+    // The swap must not regress legitimate properties named after
+    // modifier keywords (`public: T;`, `private?: T;`, `static = 1;`,
+    // `abstract;`, `readonly!: T;`). Each shape declares a real
+    // property — the discriminator is "did the parser see a `:` /
+    // `?` / `=` / `!` / `;` continuation that proves the modifier
+    // keyword is being used as a name".
+    const cases = [_][]const u8{
+        "class C { public: number; }",
+        "class C { private?: string; }",
+        "class C { static = 1; }",
+        "class C { abstract; }",
+        "class C { readonly!: T; }",
+        "class C { declare = 0; }",
+        "class C { override; }",
+        "class C { async; }",
+    };
+    inline for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = s.parser.parseSourceFile() catch |err| switch (err) {
+            error.UnexpectedToken => hir_mod.none_node_id,
+            else => return err,
+        };
+        try T.expectEqual(@as(u32, 0), countDiag(s, 1146));
+    }
 }
 
 test "parser: TS1180/TS1181 stay clean on legitimate destructuring" {
