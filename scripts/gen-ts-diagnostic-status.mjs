@@ -136,7 +136,24 @@ for (const file of sourceFiles) {
   // Emissions live only in Zig source; restricting this liberal numeric
   // pass to `.zig` avoids crediting example codes in scripts/docs/comments
   // (e.g. this generator's own description text).
-  const emitLineRe = /\b(?:reportCodeAt|reportCodeAtWithSpan|reportCodeWithSpanAt|reportAt|reportCode|reportCodeOnce|appendDriverDiagnostic)\s*\(|\.code\s*=/;
+  //
+  // Additional patterns beyond direct emission helpers:
+  //   * `self.report(node, code, message)` / `self.reportOnce(...)` — the
+  //     checker's terse 3-arg wrappers; bare `report` here also matches the
+  //     scanner's 2-arg form which has no code on the line, so it just
+  //     becomes a no-op rather than a false positive.
+  //   * `parseTypeReferenceWithOptionalChainDiagnostic(...)` — a parser-side
+  //     wrapper that receives the code via positional arg and emits via an
+  //     inner `reportCodeAt`. The literal codes (TS2499/TS2500) appear on
+  //     the next line of the multi-line call, caught by the 8-line window.
+  //   * `^\s+const X: u32 = ... NNNN ... else NNNN ...;` — function-local
+  //     code constants like `const code: u32 = if (await_using) 1495 else
+  //     1491;` where the actual `reportCodeAt` later references `code` as
+  //     a variable. The `pub const` form (used by the TsCodes table) is
+  //     deliberately excluded so catalog declarations stay tracked via the
+  //     existing `tsCodeNames` map rather than being credited as production
+  //     emissions.
+  const emitLineRe = /\b(?:reportCodeAt|reportCodeAtWithSpan|reportCodeWithSpanAt|reportAt|reportCodeOnce|reportOnce|reportCode|appendDriverDiagnostic|parseTypeReferenceWithOptionalChainDiagnostic|report)\s*\(|\.code\s*=|^\s+const\s+\w+\s*:\s*u32\s*=/;
   const lineList = file.endsWith(".zig") ? text.split("\n") : [];
   for (let i = 0; i < lineList.length; i++) {
     if (!emitLineRe.test(lineList[i])) continue;

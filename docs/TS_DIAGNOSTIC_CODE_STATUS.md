@@ -26,10 +26,10 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 
 | Status | Count |
 | --- | ---: |
-| emitted | 635 |
+| emitted | 642 |
 | declared | 2 |
-| tested-only | 2 |
-| catalog-only | 1437 |
+| tested-only | 0 |
+| catalog-only | 1432 |
 | total upstream codes | 2076 |
 
 ## Codes
@@ -159,7 +159,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS1163 | err | emitted | packages/ts_parser/src/ts_parser.zig:11603<br>packages/ts_parser/src/ts_parser.zig:11653<br>packages/ts_parser/src/ts_parser.zig:19952 | A_yield_expression_is_only_allowed_in_a_generator_body_1163 |
 | TS1164 | err | emitted | packages/ts_parser/src/ts_parser.zig:6010<br>packages/ts_driver/src/ts_driver.zig:2346 | Computed_property_names_are_not_allowed_in_enums_1164 |
 | TS1165 | err | catalog-only |  | A_computed_property_name_in_an_ambient_context_must_refer_to_an_expression_whose_type_is_a_literal_t_1165 |
-| TS1166 | err | tested-only | packages/ts_checker/src/check.zig:81407<br>packages/ts_checker/src/check.zig:83503 | A_computed_property_name_in_a_class_property_declaration_must_have_a_simple_literal_type_or_a_unique_1166 |
+| TS1166 | err | emitted | packages/ts_checker/src/check.zig:16853<br>packages/ts_checker/src/check.zig:81407<br>packages/ts_checker/src/check.zig:83503 | A_computed_property_name_in_a_class_property_declaration_must_have_a_simple_literal_type_or_a_unique_1166 |
 | TS1168 | err | catalog-only |  | A_computed_property_name_in_a_method_overload_must_refer_to_an_expression_whose_type_is_a_literal_ty_1168 |
 | TS1169 | err | emitted | packages/ts_parser/src/ts_parser.zig:9402<br>packages/ts_parser/src/ts_parser.zig:9405<br>packages/ts_parser/src/ts_parser.zig:9436 | A_computed_property_name_in_an_interface_must_refer_to_an_expression_whose_type_is_a_literal_type_or_1169 |
 | TS1170 | err | emitted | packages/ts_parser/src/ts_parser.zig:9438 | A_computed_property_name_in_a_type_literal_must_refer_to_an_expression_whose_type_is_a_literal_type__1170 |
@@ -440,11 +440,11 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS1488 | err | catalog-only |  | Escape_sequence_0_is_not_allowed_1488 |
 | TS1489 | err | emitted | packages/ts_parser/src/ts_parser.zig:2474 | Decimals_with_leading_zeros_are_not_allowed_1489 |
 | TS1490 | err | catalog-only |  | File_appears_to_be_binary_1490 |
-| TS1491 | err | catalog-only |  | _0_modifier_cannot_appear_on_a_using_declaration_1491 |
+| TS1491 | err | emitted | packages/ts_parser/src/ts_parser.zig:7385 | _0_modifier_cannot_appear_on_a_using_declaration_1491 |
 | TS1492 | err | emitted | packages/ts_parser/src/ts_parser.zig:2658<br>packages/ts_parser/src/ts_parser.zig:7302<br>packages/ts_parser/src/ts_parser.zig:7341 | _0_declarations_may_not_have_binding_patterns_1492 |
 | TS1493 | err | emitted | packages/ts_parser/src/ts_parser.zig:2699 | The_left_hand_side_of_a_for_in_statement_cannot_be_a_using_declaration_1493 |
 | TS1494 | err | emitted | packages/ts_parser/src/ts_parser.zig:2699 | The_left_hand_side_of_a_for_in_statement_cannot_be_an_await_using_declaration_1494 |
-| TS1495 | err | catalog-only |  | _0_modifier_cannot_appear_on_an_await_using_declaration_1495 |
+| TS1495 | err | emitted | packages/ts_parser/src/ts_parser.zig:7385 | _0_modifier_cannot_appear_on_an_await_using_declaration_1495 |
 | TS1496 | err | catalog-only |  | Identifier_string_literal_or_number_literal_expected_1496 |
 | TS1497 | err | catalog-only |  | Expression_must_be_enclosed_in_parentheses_to_be_used_as_a_decorator_1497 |
 | TS1498 | err | catalog-only |  | Invalid_syntax_in_decorator_1498 |
@@ -550,7 +550,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS2348 | err | emitted | packages/ts_checker/src/check.zig:40627<br>packages/ts_checker/src/check.zig:40629 | Value_of_type_0_is_not_callable_Did_you_mean_to_include_new_2348 |
 | TS2349 | err | emitted | packages/ts_checker/src/check.zig:40574<br>packages/ts_checker/src/check.zig:40643<br>packages/ts_checker/src/check.zig:80165 | This_expression_is_not_callable_2349 |
 | TS2350 | err | emitted | packages/ts_checker/src/check.zig:39856<br>packages/ts_checker/src/check.zig:40067<br>packages/ts_checker/src/check.zig:67206 | Only_a_void_function_can_be_called_with_the_new_keyword_2350 |
-| TS2351 | err | tested-only | packages/ts_checker/src/check.zig:67191 | This_expression_is_not_constructable_2351 |
+| TS2351 | err | emitted | packages/ts_checker/src/check.zig:40057<br>packages/ts_checker/src/check.zig:40059<br>packages/ts_checker/src/check.zig:67191 | This_expression_is_not_constructable_2351 |
 | TS2352 | err | emitted | packages/ts_checker/src/check.zig:64076<br>packages/ts_checker/src/check.zig:64084<br>packages/ts_checker/src/check.zig:72376 | Conversion_of_type_0_to_type_1_may_be_a_mistake_because_neither_type_sufficiently_overlaps_with_the__2352 |
 | TS2353 | err | emitted | packages/ts_checker/src/check.zig:42553<br>packages/ts_checker/src/check.zig:42634<br>packages/ts_checker/src/check.zig:59956 | Object_literal_may_only_specify_known_properties_and_0_does_not_exist_in_type_1_2353 |
 | TS2354 | err | catalog-only |  | This_syntax_requires_an_imported_helper_but_module_0_cannot_be_found_2354 |
@@ -656,7 +656,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS2464 | err | emitted | packages/ts_checker/src/check.zig:16453<br>packages/ts_checker/src/check.zig:16847<br>packages/ts_checker/src/check.zig:41670 | A_computed_property_name_must_be_of_type_string_number_symbol_or_any_2464 |
 | TS2465 | err | emitted | packages/ts_checker/src/check.zig:47122<br>packages/ts_checker/src/check.zig:52037<br>packages/ts_checker/src/check.zig:70428 | this_cannot_be_referenced_in_a_computed_property_name_2465 |
 | TS2466 | err | emitted | packages/ts_checker/src/check.zig:16428<br>packages/ts_checker/src/check.zig:16819<br>packages/ts_checker/src/check.zig:41627 | super_cannot_be_referenced_in_a_computed_property_name_2466 |
-| TS2467 | err | catalog-only |  | A_computed_property_name_cannot_reference_a_type_parameter_from_its_containing_type_2467 |
+| TS2467 | err | emitted | packages/ts_checker/src/check.zig:16423<br>packages/ts_checker/src/check.zig:16814<br>packages/ts_checker/src/check.zig:26727 | A_computed_property_name_cannot_reference_a_type_parameter_from_its_containing_type_2467 |
 | TS2468 | err | catalog-only |  | Cannot_find_global_value_0_2468 |
 | TS2469 | err | emitted | packages/ts_checker/src/check.zig:52865<br>packages/ts_checker/src/check.zig:52882<br>packages/ts_checker/src/check.zig:69149 | The_0_operator_cannot_be_applied_to_type_symbol_2469 |
 | TS2472 | err | catalog-only |  | Spread_operator_in_new_expressions_is_only_available_when_targeting_ECMAScript_5_and_higher_2472 |
@@ -682,8 +682,8 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS2496 | err | emitted | packages/ts_checker/src/check.zig:47171<br>packages/ts_checker/src/check.zig:89293<br>packages/ts_checker/src/check.zig:89314 | The_arguments_object_cannot_be_referenced_in_an_arrow_function_in_ES5_Consider_using_a_standard_func_2496 |
 | TS2497 | err | catalog-only |  | This_module_can_only_be_referenced_with_ECMAScript_imports_Slashexports_by_turning_on_the_0_flag_and_2497 |
 | TS2498 | err | catalog-only |  | Module_0_uses_export_and_cannot_be_used_with_export_Asterisk_2498 |
-| TS2499 | err | catalog-only |  | An_interface_can_only_extend_an_identifier_Slashqualified_name_with_optional_type_arguments_2499 |
-| TS2500 | err | catalog-only |  | A_class_can_only_implement_an_identifier_Slashqualified_name_with_optional_type_arguments_2500 |
+| TS2499 | err | emitted | packages/ts_parser/src/ts_parser.zig:10129 | An_interface_can_only_extend_an_identifier_Slashqualified_name_with_optional_type_arguments_2499 |
+| TS2500 | err | emitted | packages/ts_parser/src/ts_parser.zig:10136 | A_class_can_only_implement_an_identifier_Slashqualified_name_with_optional_type_arguments_2500 |
 | TS2501 | err | catalog-only |  | A_rest_element_cannot_contain_a_binding_pattern_2501 |
 | TS2502 | err | emitted | packages/ts_checker/src/check.zig:29129<br>packages/ts_checker/src/check.zig:29152<br>packages/ts_checker/src/check.zig:38147 | _0_is_referenced_directly_or_indirectly_in_its_own_type_annotation_2502 |
 | TS2503 | err | emitted | packages/ts_checker/src/check.zig:25070<br>packages/ts_checker/src/check.zig:25101<br>packages/ts_checker/src/check.zig:31839 | Cannot_find_namespace_0_2503 |
