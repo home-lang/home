@@ -2958,6 +2958,19 @@ pub const Parser = struct {
                     }
                     try self.skipTypeAnnotation();
                 }
+                // A catch binding may not have an initializer
+                // (`catch (e = 1)`). Upstream tsc's checkCatchClause
+                // anchors TS1197 on the initializer's first token via
+                // grammarErrorOnFirstToken; mirror that here. Parse and
+                // discard the initializer so the trailing `)` still
+                // closes the header cleanly (matching
+                // `catchClauseWithInitializer1`).
+                if (self.peek().kind == .equal) {
+                    _ = self.advance(); // consume '='
+                    const init_tok = self.peek();
+                    try self.reportCodeAt(init_tok.span.start, init_tok.line, 1197, "Catch clause variable cannot have an initializer.");
+                    _ = try self.parseAssignmentExpression();
+                }
                 _ = try self.expect(.close_paren, "')' to close catch param");
             }
             catch_block = try self.parseBlockStatement();
@@ -13239,6 +13252,17 @@ fn destroyTestSetup(s: *TestSetup) void {
     T.allocator.destroy(s);
 }
 
+/// Returns the first emitted diagnostic with the given code, or null.
+/// Used by grammar-diagnostic tests to assert on a specific code's
+/// message and anchor without depending on the count of unrelated
+/// diagnostics (e.g. the TS2304 that trails for-in/of header errors).
+fn findFirstDiagnosticOfCode(parser: *const Parser, code: u32) ?Diagnostic {
+    for (parser.diagnostics.items) |d| {
+        if (d.code == code) return d;
+    }
+    return null;
+}
+
 test "parser: empty source → empty block" {
     var s = try newTestSetup("");
     defer destroyTestSetup(s);
@@ -14347,6 +14371,113 @@ test "parser: catch type annotation reports TS1196" {
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1196), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: for-in multiple declarations reports TS1091 on the second binding" {
+    // Upstream `parserForInStatement7`: the diagnostic anchors on the
+    // second declarator (`b`), via grammarErrorOnFirstToken.
+    var s = try newTestSetup("for (var a, b in X) {}");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findFirstDiagnosticOfCode(&s.parser, 1091) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings(
+        "Only a single variable declaration is allowed in a 'for...in' statement.",
+        d.message,
+    );
+    // `for (var a, b in X)` — `b` is the 13th character (1-based col 13,
+    // byte offset 12).
+    try T.expectEqual(@as(u32, 12), d.pos);
+}
+
+test "parser: single-declaration for-in is clean of TS1091" {
+    var s = try newTestSetup("for (var a in X) {}");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expect(findFirstDiagnosticOfCode(&s.parser, 1091) == null);
+}
+
+test "parser: for-of multiple declarations reports TS1188 on the second binding" {
+    // Upstream `parserForOfStatement3`: anchors on the second
+    // declarator (`b`).
+    var s = try newTestSetup("for (var a, b of X) {}");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findFirstDiagnosticOfCode(&s.parser, 1188) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings(
+        "Only a single variable declaration is allowed in a 'for...of' statement.",
+        d.message,
+    );
+    try T.expectEqual(@as(u32, 12), d.pos);
+}
+
+test "parser: single-declaration for-of is clean of TS1188" {
+    var s = try newTestSetup("for (var a of X) {}");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expect(findFirstDiagnosticOfCode(&s.parser, 1188) == null);
+}
+
+test "parser: for-in declaration with initializer reports TS1189 on the binding name" {
+    // Upstream anchors on `firstVariableDeclaration.Name()`.
+    var s = try newTestSetup("for (var a = 1 in X) {}");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findFirstDiagnosticOfCode(&s.parser, 1189) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings(
+        "The variable declaration of a 'for...in' statement cannot have an initializer.",
+        d.message,
+    );
+    // `for (var a = 1 in X)` — `a` is at byte offset 9 (1-based col 10).
+    try T.expectEqual(@as(u32, 9), d.pos);
+}
+
+test "parser: initializer-free for-in is clean of TS1189" {
+    var s = try newTestSetup("for (var a in X) {}");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expect(findFirstDiagnosticOfCode(&s.parser, 1189) == null);
+}
+
+test "parser: for-of declaration with initializer reports TS1190 on the binding name" {
+    // Upstream `parserForOfStatement4`: anchors on the binding name `a`.
+    var s = try newTestSetup("for (var a = 1 of X) {}");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findFirstDiagnosticOfCode(&s.parser, 1190) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings(
+        "The variable declaration of a 'for...of' statement cannot have an initializer.",
+        d.message,
+    );
+    try T.expectEqual(@as(u32, 9), d.pos);
+}
+
+test "parser: initializer-free for-of is clean of TS1190" {
+    var s = try newTestSetup("for (var a of X) {}");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expect(findFirstDiagnosticOfCode(&s.parser, 1190) == null);
+}
+
+test "parser: catch clause initializer reports TS1197 on the initializer" {
+    // Upstream `catchClauseWithInitializer1`: anchors on the
+    // initializer's first token via grammarErrorOnFirstToken.
+    var s = try newTestSetup("try {} catch (e = 1) {}");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findFirstDiagnosticOfCode(&s.parser, 1197) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings(
+        "Catch clause variable cannot have an initializer.",
+        d.message,
+    );
+    // `try {} catch (e = 1) {}` — the `1` literal is at byte offset 18.
+    try T.expectEqual(@as(u32, 18), d.pos);
+}
+
+test "parser: catch clause without initializer is clean of TS1197" {
+    var s = try newTestSetup("try {} catch (e) {}");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expect(findFirstDiagnosticOfCode(&s.parser, 1197) == null);
 }
 
 test "parser: try without catch" {
