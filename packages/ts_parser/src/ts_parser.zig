@@ -12538,6 +12538,32 @@ pub const Parser = struct {
         return try self.parseJsxElementOrFragment();
     }
 
+    fn jsxTagText(self: *const Parser, tag: NodeId) []const u8 {
+        const tag_span = self.hir.spanOf(tag);
+        if (tag_span.end <= tag_span.start or tag_span.end > self.source.len) return "";
+        return self.source[tag_span.start..tag_span.end];
+    }
+
+    fn lineForPos(self: *const Parser, pos: u32) u32 {
+        var line: u32 = 1;
+        var i: usize = 0;
+        const raw: usize = @intCast(pos);
+        const end: usize = @min(raw, self.source.len);
+        while (i < end) : (i += 1) {
+            if (self.source[i] == '\n') line += 1;
+        }
+        return line;
+    }
+
+    fn reportJsxCommaExpressionIfNeeded(self: *Parser, expr: NodeId) ParseError!void {
+        if (expr == hir_mod.none_node_id or self.hir.kindOf(expr) != .binary_op) return;
+        const bin = hir_mod.binopOf(self.hir, expr);
+        if (bin.op != .comma) return;
+        const expr_span = self.hir.spanOf(expr);
+        const line = self.lineForPos(expr_span.start);
+        try self.reportCodeAt(expr_span.start, line, 18007, "JSX expressions may not use the comma operator. Did you mean to write an array?");
+    }
+
     fn newExpressionTypeArgsCanEndHere(self: *const Parser) bool {
         return switch (self.peek().kind) {
             .eof,
@@ -12697,6 +12723,8 @@ pub const Parser = struct {
         // Attributes.
         var attrs: std.ArrayListUnmanaged(NodeId) = .empty;
         defer attrs.deinit(self.gpa);
+        var seen_attr_names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer seen_attr_names.deinit(self.gpa);
         while (true) {
             const t = self.peek();
             // Context-free lexer hazard: in `<Foo x={0} />;` the `}`
@@ -12724,6 +12752,19 @@ pub const Parser = struct {
                 else => {
                     // `name`, `name="str"`, `name={expr}`.
                     const name = try self.parseJsxName("JSX attribute name");
+                    var duplicate_attr = false;
+                    for (seen_attr_names.items) |seen_name| {
+                        if (seen_name == name.name) {
+                            duplicate_attr = true;
+                            break;
+                        }
+                    }
+                    if (duplicate_attr) {
+                        const line = self.lineForPos(name.span.start);
+                        try self.reportCodeAt(name.span.start, line, 17001, "JSX elements cannot have multiple attributes with the same name.");
+                    } else {
+                        try seen_attr_names.append(self.gpa, name.name);
+                    }
                     var value: NodeId = hir_mod.none_node_id;
                     if (self.match(.equal)) {
                         if (self.peek().kind == .string_literal) {
@@ -12732,7 +12773,8 @@ pub const Parser = struct {
                             value = try self.builder.addLiteralString(tokenSpan(str_tok), str_id);
                         } else if (self.peek().kind == .open_brace) {
                             _ = self.advance();
-                            const expr = try self.parseAssignmentExpression();
+                            const expr = try self.parseExpression();
+                            try self.reportJsxCommaExpressionIfNeeded(expr);
                             _ = try self.expect(.close_brace, "'}' to close JSX expression value");
                             value = try self.builder.addJsxExpression(name.span, expr);
                         } else if (self.peek().kind == .less_than) {
@@ -12801,16 +12843,57 @@ pub const Parser = struct {
         defer children.deinit(self.gpa);
         try self.parseJsxChildren(&children, open_close.span.end);
 
+        if (self.peek().kind == .eof) {
+            const tag_text = self.jsxTagText(tag);
+            const tag_span = self.hir.spanOf(tag);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "JSX element '{s}' has no corresponding closing tag.",
+                .{tag_text},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .pos = tag_span.start,
+                .line = self.lineForPos(tag_span.start),
+                .code = 17008,
+                .message = msg,
+            });
+            return try self.builder.addJsxElement(
+                .{ .start = open.span.start, .end = self.peek().span.start },
+                tag,
+                attrs.items,
+                children.items,
+                false,
+            );
+        }
+
         // Closing tag `</Foo>`.
         _ = try self.expect(.less_than, "'<' to start JSX closing tag");
         _ = try self.expect(.slash, "'/' in JSX closing tag");
-        // Skip the closing tag identifier (and any qualified-name
-        // chain) — semantic equivalence is the binder's job.
+        var close_name_span: ?Span = null;
         if (self.peek().kind == .identifier or self.peek().kind.isKeyword() or self.peek().kind.isContextualKeyword()) {
-            _ = try self.parseJsxName("JSX closing tag name");
+            const close_name = try self.parseJsxName("JSX closing tag name");
+            close_name_span = close_name.span;
             while (self.peek().kind == .dot) {
                 _ = self.advance();
-                _ = try self.parseJsxName("JSX closing tag name");
+                const part = try self.parseJsxName("JSX closing tag name");
+                close_name_span.?.end = part.span.end;
+            }
+        }
+        if (close_name_span) |close_span| {
+            const open_text = self.jsxTagText(tag);
+            const close_text = self.source[close_span.start..close_span.end];
+            if (!std.mem.eql(u8, open_text, close_text)) {
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Expected corresponding JSX closing tag for '{s}'.",
+                    .{open_text},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .pos = close_span.start,
+                    .line = self.lineForPos(close_span.start),
+                    .code = 17002,
+                    .message = msg,
+                });
             }
         }
         const close = try self.expect(.greater_than, "'>' to close JSX closing tag");
@@ -12962,7 +13045,8 @@ pub const Parser = struct {
                         last_child_end = self.hir.spanOf(node).end;
                         continue;
                     }
-                    const expr = try self.parseAssignmentExpression();
+                    const expr = try self.parseExpression();
+                    try self.reportJsxCommaExpressionIfNeeded(expr);
                     const close = try self.expect(.close_brace, "'}' to close JSX child expression");
                     const node = try self.builder.addJsxExpression(
                         .{ .start = t.span.start, .end = close.span.end },
@@ -17359,6 +17443,47 @@ test "parser: jsx unicode escapes in tag and attribute names report TS17021" {
         }
     }
     try T.expectEqual(@as(usize, 7), count);
+}
+
+test "parser: jsx grammar diagnostics report duplicate attrs comma expressions and closing tags" {
+    var s = try newTsxTestSetup(
+        \\let dup = <Foo a="1" a="2" data-id data-id />;
+        \\let comma = <Foo prop={x, y}>{a, b}</Foo>;
+        \\let mismatch = <Foo></Bar>;
+        \\let missing = <Missing>
+    );
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+
+    var ts17001_count: usize = 0;
+    var ts17002_count: usize = 0;
+    var ts17008_count: usize = 0;
+    var ts18007_count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        switch (d.code) {
+            17001 => {
+                ts17001_count += 1;
+                try T.expectEqualStrings("JSX elements cannot have multiple attributes with the same name.", d.message);
+            },
+            17002 => {
+                ts17002_count += 1;
+                try T.expectEqualStrings("Expected corresponding JSX closing tag for 'Foo'.", d.message);
+            },
+            17008 => {
+                ts17008_count += 1;
+                try T.expectEqualStrings("JSX element 'Missing' has no corresponding closing tag.", d.message);
+            },
+            18007 => {
+                ts18007_count += 1;
+                try T.expectEqualStrings("JSX expressions may not use the comma operator. Did you mean to write an array?", d.message);
+            },
+            else => {},
+        }
+    }
+    try T.expectEqual(@as(usize, 2), ts17001_count);
+    try T.expectEqual(@as(usize, 1), ts17002_count);
+    try T.expectEqual(@as(usize, 1), ts17008_count);
+    try T.expectEqual(@as(usize, 2), ts18007_count);
 }
 
 test "parser: jsx empty attribute initializer reports TS1145" {
