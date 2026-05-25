@@ -227,6 +227,10 @@ pub const Parser = struct {
     /// True for `.d.ts` inputs. Top-level declarations are ambient even
     /// without an explicit `declare` modifier.
     is_declaration_file: bool,
+    /// True for `.js`/`.jsx`/`.mjs`/`.cjs` inputs. Virtual `@filename:`
+    /// sections override this per position so multi-file fixtures get
+    /// JavaScript-only syntax diagnostics only in JS-like sections.
+    is_javascript_file: bool,
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -296,6 +300,7 @@ pub const Parser = struct {
             .fn_type_binding_pattern_depth = 0,
             .is_tsx = false,
             .is_declaration_file = false,
+            .is_javascript_file = false,
         };
     }
 
@@ -307,6 +312,10 @@ pub const Parser = struct {
 
     pub fn setDeclarationFile(self: *Parser, enabled: bool) void {
         self.is_declaration_file = enabled;
+    }
+
+    pub fn setJavaScriptFile(self: *Parser, enabled: bool) void {
+        self.is_javascript_file = enabled;
     }
 
     pub fn setStrictMode(self: *Parser, enabled: bool) void {
@@ -3416,8 +3425,10 @@ pub const Parser = struct {
                 // Modifiers on parameter properties: `readonly`, `public`, etc.
                 var saw_override_modifier = false;
                 var saw_readonly_modifier = false;
+                var first_parameter_property_modifier: ?Token = null;
                 while (isParameterPropertyModifier(self.peek().kind)) {
                     const mod = self.advance();
+                    if (first_parameter_property_modifier == null) first_parameter_property_modifier = mod;
                     switch (mod.kind) {
                         .kw_readonly => {
                             if (saw_override_modifier) {
@@ -3475,6 +3486,9 @@ pub const Parser = struct {
                         },
                         else => {},
                     }
+                }
+                if (first_parameter_property_modifier) |mod| {
+                    try self.reportParameterModifiersOnlyInTsIfNeeded(mod);
                 }
                 // Decorators may not legally follow an accessibility
                 // modifier on a parameter property — `public @dec p`
@@ -4094,6 +4108,7 @@ pub const Parser = struct {
             if (self.peek().kind == .less_than) {
                 const args = try self.parseTypeArgumentList();
                 defer self.gpa.free(args);
+                try self.reportTypeArgumentsOnlyInTsIfNeeded(args);
                 if (self.hir.kindOf(extends) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, extends);
                     extends = try self.builder.addTypeRef(
@@ -4142,6 +4157,7 @@ pub const Parser = struct {
         defer implements_list.deinit(self.gpa);
         if (self.peek().kind == .kw_implements) {
             const implements_tok = self.advance();
+            try self.reportImplementsOnlyInTsIfNeeded(implements_tok);
             if (self.peek().kind == .open_brace or self.peek().kind == .eof) {
                 try self.reportCodeAt(implements_tok.span.end, implements_tok.line, 1097, "'implements' list cannot be empty.");
             } else {
@@ -5311,6 +5327,13 @@ pub const Parser = struct {
         return isDeclarationFilename(filename);
     }
 
+    fn isJavaScriptSyntaxAt(self: *const Parser, pos: u32) bool {
+        if (self.virtualSectionFilenameAt(pos)) |filename| {
+            return isJavaScriptFilename(filename);
+        }
+        return self.is_javascript_file;
+    }
+
     fn isDeclarationFilename(filename: []const u8) bool {
         if (std.mem.endsWith(u8, filename, ".d.ts")) return true;
         if (std.mem.endsWith(u8, filename, ".d.mts")) return true;
@@ -5318,6 +5341,51 @@ pub const Parser = struct {
         if (std.mem.endsWith(u8, filename, ".d.hm")) return true;
         if (std.mem.endsWith(u8, filename, ".d.home")) return true;
         return std.mem.endsWith(u8, filename, ".ts") and std.mem.indexOf(u8, filename, ".d.") != null;
+    }
+
+    fn isJavaScriptFilename(filename: []const u8) bool {
+        return std.mem.endsWith(u8, filename, ".js") or
+            std.mem.endsWith(u8, filename, ".jsx") or
+            std.mem.endsWith(u8, filename, ".mjs") or
+            std.mem.endsWith(u8, filename, ".cjs");
+    }
+
+    fn reportTypeArgumentsOnlyInTsIfNeeded(self: *Parser, args: []const NodeId) ParseError!void {
+        if (args.len == 0) return;
+        const first_span = self.hir.spanOf(args[0]);
+        if (!self.isJavaScriptSyntaxAt(first_span.start)) return;
+        try self.reportCodeAt(first_span.start, self.lineForPos(first_span.start), 8011, "Type arguments can only be used in TypeScript files.");
+    }
+
+    fn reportExportAssignmentOnlyInTsIfNeeded(self: *Parser, tok: Token) ParseError!void {
+        if (!self.isJavaScriptSyntaxAt(tok.span.start)) return;
+        try self.reportCodeAt(tok.span.start, tok.line, 8003, "'export =' can only be used in TypeScript files.");
+    }
+
+    fn reportImplementsOnlyInTsIfNeeded(self: *Parser, tok: Token) ParseError!void {
+        if (!self.isJavaScriptSyntaxAt(tok.span.start)) return;
+        try self.reportCodeAt(tok.span.start, tok.line, 8005, "'implements' clauses can only be used in TypeScript files.");
+    }
+
+    fn reportTypeAliasOnlyInTsIfNeeded(self: *Parser, tok: Token) ParseError!void {
+        if (!self.isJavaScriptSyntaxAt(tok.span.start)) return;
+        try self.reportCodeAt(tok.span.start, tok.line, 8008, "Type aliases can only be used in TypeScript files.");
+    }
+
+    fn reportParameterModifiersOnlyInTsIfNeeded(self: *Parser, tok: Token) ParseError!void {
+        if (!self.isJavaScriptSyntaxAt(tok.span.start)) return;
+        try self.reportCodeAt(tok.span.start, tok.line, 8012, "Parameter modifiers can only be used in TypeScript files.");
+    }
+
+    fn reportNonNullOnlyInTsIfNeeded(self: *Parser, pos: u32) ParseError!void {
+        if (!self.isJavaScriptSyntaxAt(pos)) return;
+        try self.reportCodeAt(pos, self.lineForPos(pos), 8013, "Non-null assertions can only be used in TypeScript files.");
+    }
+
+    fn reportTypeAssertionOnlyInTsIfNeeded(self: *Parser, type_node: NodeId) ParseError!void {
+        const type_span = self.hir.spanOf(type_node);
+        if (!self.isJavaScriptSyntaxAt(type_span.start)) return;
+        try self.reportCodeAt(type_span.start, self.lineForPos(type_span.start), 8016, "Type assertion expressions can only be used in TypeScript files.");
     }
 
     fn virtualSectionFilenameAt(self: *const Parser, pos: u32) ?[]const u8 {
@@ -5727,6 +5795,7 @@ pub const Parser = struct {
         if (name_tok.flags.preceded_by_newline) {
             try self.reportCodeAt(name_tok.span.start, name_tok.line, 1142, "Line break not permitted here.");
         }
+        try self.reportTypeAliasOnlyInTsIfNeeded(name_tok);
         // TS2457 — `Type alias name cannot be '<reserved>'.` fires for
         // primitive-type keywords used as type alias names. Mirrors
         // `reservedNamesInAliases.ts` lines 2-7.
@@ -6528,6 +6597,7 @@ pub const Parser = struct {
         // assigned expression as an export payload so multi-file fixtures
         // keep their module shape without producing a parser diagnostic.
         if (self.match(.equal)) {
+            try self.reportExportAssignmentOnlyInTsIfNeeded(start);
             // `declare export = x` — the `declare` modifier is disallowed
             // on an export assignment (TS1120, anchored on `declare`).
             if (pending_modifier) |pm| {
@@ -10845,6 +10915,9 @@ pub const Parser = struct {
                     continue;
                 }
                 const type_node = try self.parseTypeAnnotation();
+                if (t.kind == .kw_as) {
+                    try self.reportTypeAssertionOnlyInTsIfNeeded(type_node);
+                }
                 const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(type_node).end };
                 const kind: hir_mod.NodeKind = if (t.kind == .kw_as) .as_expr else .satisfies_expr;
                 left = try self.builder.addAsExpression(kind, sp, left, type_node);
@@ -11622,6 +11695,7 @@ pub const Parser = struct {
                         // them to override call-site inference.
                         const type_args = try self.parseExplicitCallTypeArgs(after_gt);
                         defer self.gpa.free(type_args);
+                        try self.reportTypeArgumentsOnlyInTsIfNeeded(type_args);
                         if (self.peek().kind == .no_substitution_template or self.peek().kind == .template_head) {
                             node = try self.parseTaggedTemplateWithTypeArgs(node, type_args);
                         } else {
@@ -11635,6 +11709,7 @@ pub const Parser = struct {
                         const less = self.peek();
                         const type_args = try self.parseExplicitCallTypeArgs(after_gt);
                         defer self.gpa.free(type_args);
+                        try self.reportTypeArgumentsOnlyInTsIfNeeded(type_args);
                         try self.reportCodeAt(less.span.start, less.line, 1477, "An instantiation expression cannot be followed by a property access.");
                         const end_pos = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else self.hir.spanOf(node).end;
                         const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = end_pos };
@@ -11656,6 +11731,7 @@ pub const Parser = struct {
                     // here is sufficient for the common case.
                     _ = self.advance();
                     const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = t.span.end };
+                    try self.reportNonNullOnlyInTsIfNeeded(sp.start);
                     node = try self.builder.addNonNullExpression(sp, node);
                 },
                 .plus_plus, .minus_minus => {
@@ -12196,8 +12272,10 @@ pub const Parser = struct {
                     if (self.parseTypeArgumentList()) |parsed| {
                         if (self.peek().kind == .open_paren) {
                             type_args = parsed;
+                            try self.reportTypeArgumentsOnlyInTsIfNeeded(type_args);
                         } else if (self.newExpressionTypeArgsCanEndHere()) {
                             type_args = parsed;
+                            try self.reportTypeArgumentsOnlyInTsIfNeeded(type_args);
                         } else {
                             self.gpa.free(parsed);
                             self.cursor = saved_cursor;
@@ -21415,6 +21493,57 @@ test "parser: TS1193 stays clean for a plain export declaration" {
         defer destroyTestSetup(s);
         _ = try s.parser.parseSourceFile();
         try T.expectEqual(@as(u32, 0), countDiag(s, 1193));
+    }
+}
+
+test "parser: JS-only syntax diagnostics report TS8003 TS8005 TS8008 TS8011 TS8012 TS8013 TS8016" {
+    var s = try newTestSetup(
+        \\// @filename: a.js
+        \\export = value;
+        \\type Alias = string;
+        \\class C extends Base<T> implements I {
+        \\  constructor(public x) {}
+        \\}
+        \\f<T>();
+        \\new C<T>();
+        \\value!;
+        \\value as number;
+    );
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+
+    const d8003 = findDiag(s, 8003) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("'export =' can only be used in TypeScript files.", d8003.message);
+    const d8005 = findDiag(s, 8005) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("'implements' clauses can only be used in TypeScript files.", d8005.message);
+    const d8008 = findDiag(s, 8008) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Type aliases can only be used in TypeScript files.", d8008.message);
+    const d8012 = findDiag(s, 8012) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Parameter modifiers can only be used in TypeScript files.", d8012.message);
+    const d8013 = findDiag(s, 8013) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Non-null assertions can only be used in TypeScript files.", d8013.message);
+    const d8016 = findDiag(s, 8016) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Type assertion expressions can only be used in TypeScript files.", d8016.message);
+    try T.expectEqual(@as(u32, 3), countDiag(s, 8011));
+}
+
+test "parser: TypeScript sources do not report JavaScript TS800x syntax diagnostics" {
+    var s = try newTestSetup(
+        \\type Alias = string;
+        \\class C extends Base<T> implements I {
+        \\  constructor(public x) {}
+        \\}
+        \\f<T>();
+        \\new C<T>();
+        \\value!;
+        \\value as number;
+    );
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+
+    const codes = [_]u32{ 8003, 8005, 8008, 8011, 8012, 8013, 8016 };
+    for (codes) |code| {
+        try T.expectEqual(@as(u32, 0), countDiag(s, code));
     }
 }
 

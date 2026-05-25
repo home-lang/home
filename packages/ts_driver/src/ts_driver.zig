@@ -112,6 +112,11 @@ pub const CompileOptions = struct {
     no_emit: bool = false,
     /// Treat the source as `.tsx` — enables JSX parsing.
     is_tsx: bool = false,
+    /// True when the effective compiler options include `jsx`.
+    /// Kept separate from `is_tsx`: `.tsx` syntax still parses even
+    /// when `--jsx` is absent, but the checker must report TS17004
+    /// when JSX syntax is actually used in that state.
+    jsx_option_present: bool = false,
     /// Treat the source as a declaration file. Declaration files allow
     /// ambient forms such as `export const x: T;` without initializers.
     is_declaration_file: bool = false,
@@ -582,6 +587,24 @@ fn compilerOptionDirectiveValue(source: []const u8, name: []const u8) ?[]const u
     return null;
 }
 
+fn sourceHasJsxCompilerOptionDirective(source: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |line_raw| {
+        const marker = directiveValueStart(line_raw, "jsx") orelse continue;
+        const trimmed = std.mem.trim(u8, marker, " \t");
+        if (std.mem.startsWith(u8, trimmed, ":")) return true;
+    }
+    return false;
+}
+
+fn jsxOptionPresent(source: []const u8, options: CompileOptions) bool {
+    if (options.jsx_option_present) return true;
+    if (options.pub_tsconfig) |cfg| {
+        if (cfg.compiler_options.jsx != null) return true;
+    }
+    return sourceHasJsxCompilerOptionDirective(source);
+}
+
 fn hasJsxSyntax(source: []const u8) bool {
     return std.mem.indexOf(u8, source, "<>") != null or
         std.mem.indexOf(u8, source, "</") != null or
@@ -677,6 +700,7 @@ pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
     var opts: CompileOptions = .{};
     opts.pub_tsconfig = cfg;
     if (cfg.compiler_options.jsx) |jsx| {
+        opts.jsx_option_present = true;
         // Any jsx mode implies the source is .tsx.
         switch (jsx) {
             .preserve, .react, .react_jsx, .react_jsxdev, .react_native => opts.is_tsx = true,
@@ -928,6 +952,7 @@ pub fn compileSource(
     var parser = ts_parser.Parser.init(gpa, &c.hir, &c.interner, source, c.tokens.items);
     parser.setTsx(options.is_tsx);
     parser.setDeclarationFile(options.is_declaration_file);
+    parser.setJavaScriptFile(pathIsJsLike(options.importer_path));
     parser.setStrictMode(options.always_strict);
     parser.setTargetEs2015OrLater(options.syntax_target_es2015);
     defer parser.deinit();
@@ -1020,6 +1045,7 @@ pub fn compileSource(
     checker.setModule(c.module);
     checker.setSource(source);
     checker.setIsDeclarationFile(options.is_declaration_file);
+    checker.setJsxOptionPresent(jsxOptionPresent(source, options));
     checker.setCheckJsEnabled(!options.suppress_js_check_diagnostics and
         (virtualFilenameIsJs(source) or pathIsJsLike(options.importer_path)));
     checker.setTargetEs5Baseline(options.report_deprecated_target_es5);
@@ -2710,6 +2736,46 @@ test "driver: tsx fragment" {
     try T.expect(std.mem.indexOf(u8, c.js, "React.Fragment") != null);
 }
 
+test "driver: tsx JSX without jsx option reports TS17004" {
+    var c = try compileSource(T.allocator, "let v = <div />;", .{ .is_tsx = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == ts_checker.check.TsCodes.jsx_without_jsx_flag and
+            std.mem.eql(u8, d.message, "Cannot use JSX unless the '--jsx' flag is provided."))
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
+}
+
+test "driver: tsconfig jsx option suppresses TS17004" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(
+        T.allocator,
+        arena.allocator(),
+        \\{ "compilerOptions": { "jsx": "react" } }
+        ,
+    );
+    var opts = optionsFromConfig(&cfg);
+    opts.no_emit = true;
+    var c = try compileSource(T.allocator, "declare var React: any; let v = <div />;", opts);
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != ts_checker.check.TsCodes.jsx_without_jsx_flag);
+    }
+}
+
 test "driver: tsx jsx text entities do not surface lex diagnostics" {
     var c = try compileSource(T.allocator,
         \\declare namespace JSX { interface Element {} interface IntrinsicElements { [name: string]: any; } }
@@ -2840,6 +2906,7 @@ test "driver: optionsFromConfig enables tsx for jsx=react-jsx" {
     );
     const opts = optionsFromConfig(&cfg);
     try T.expect(opts.is_tsx);
+    try T.expect(opts.jsx_option_present);
 }
 
 test "driver: optionsFromConfig wires useDefineForClassFields=false" {
