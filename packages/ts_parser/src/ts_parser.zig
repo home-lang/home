@@ -6241,18 +6241,18 @@ pub const Parser = struct {
             while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
                 const spec_start = self.peek();
                 const spec_type_only = self.match(.kw_type);
-                const imported_tok = if (self.peek().kind.isKeyword() or self.peek().kind == .identifier)
-                    self.advance()
-                else
-                    return error.UnexpectedToken;
-                var local_id = try self.internToken(imported_tok);
+                const imported_tok = try self.expectModuleExportName();
+                const imported_is_string_literal = imported_tok.kind == .string_literal;
+                var local_id = try self.internModuleExportName(imported_tok);
                 const imported_id = local_id;
                 var local_tok_for_diag = imported_tok;
+                var local_is_string_literal = imported_is_string_literal;
                 var has_alias = false;
                 if (self.match(.kw_as)) {
                     const local_tok = try self.expectIdentifierLike();
                     local_id = try self.internToken(local_tok);
                     local_tok_for_diag = local_tok;
+                    local_is_string_literal = false;
                     has_alias = true;
                 }
                 if (!has_alias and imported_tok.kind == .kw_await and self.top_level_external_module_indicator) {
@@ -6279,11 +6279,15 @@ pub const Parser = struct {
                         "Identifier expected. 'yield' is a reserved word in strict mode. Modules are automatically in strict mode.",
                     );
                 }
-                const spec = try self.builder.addImportSpecifier(
+                const spec = try self.builder.addImportSpecifierFull(
                     .{ .start = spec_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                     imported_id,
                     local_id,
                     spec_type_only,
+                    imported_is_string_literal,
+                    local_is_string_literal,
+                    imported_tok.span.start,
+                    local_tok_for_diag.span.start,
                 );
                 try named.append(self.gpa, spec);
                 if (!self.match(.comma)) break;
@@ -6748,21 +6752,27 @@ pub const Parser = struct {
             while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
                 const spec_start = self.peek();
                 const spec_type_only = self.match(.kw_type);
-                const imported_tok = if (self.peek().kind.isKeyword() or self.peek().kind == .identifier)
-                    self.advance()
-                else
-                    return error.UnexpectedToken;
-                const imported_id = try self.internToken(imported_tok);
+                const imported_tok = try self.expectModuleExportName();
+                const imported_id = try self.internModuleExportName(imported_tok);
+                const imported_is_string_literal = imported_tok.kind == .string_literal;
                 var local_id = imported_id;
+                var local_tok = imported_tok;
+                var local_is_string_literal = imported_is_string_literal;
                 if (self.match(.kw_as)) {
-                    const local_tok = try self.expectIdentifierLike();
+                    local_tok = try self.expectModuleExportName();
                     local_id = try self.internToken(local_tok);
+                    if (local_tok.kind == .string_literal) local_id = try self.internStringLiteral(local_tok);
+                    local_is_string_literal = local_tok.kind == .string_literal;
                 }
-                const spec = try self.builder.addImportSpecifier(
+                const spec = try self.builder.addImportSpecifierFull(
                     .{ .start = spec_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                     imported_id,
                     local_id,
                     spec_type_only,
+                    imported_is_string_literal,
+                    local_is_string_literal,
+                    imported_tok.span.start,
+                    local_tok.span.start,
                 );
                 try named.append(self.gpa, spec);
                 if (!self.match(.comma)) break;
@@ -6818,9 +6828,13 @@ pub const Parser = struct {
                 try self.reportCodeAt(start.span.start, start.line, 1233, "An export declaration can only be used at the top level of a namespace or module.");
             }
             var ns_alias: hir_mod.StringId = empty_string;
+            var ns_alias_is_string_literal = false;
+            var ns_alias_pos: u32 = 0;
             if (self.match(.kw_as)) {
-                const ns_tok = try self.expectIdentifierLike();
-                ns_alias = try self.internToken(ns_tok);
+                const ns_tok = try self.expectModuleExportName();
+                ns_alias_is_string_literal = ns_tok.kind == .string_literal;
+                ns_alias = try self.internModuleExportName(ns_tok);
+                ns_alias_pos = ns_tok.span.start;
             }
             _ = try self.expect(.kw_from, "'from' after 'export *'");
             const mod_tok = try self.expect(.string_literal, "module specifier");
@@ -6835,7 +6849,7 @@ pub const Parser = struct {
             if (self.namespace_depth > 0 and !self.in_string_named_module and !self.moduleElementContextIsIllegal()) {
                 try self.reportCodeAt(mod_tok.span.start, mod_tok.line, 1194, "Export declarations are not permitted in a namespace.");
             }
-            return try self.builder.addExportFull(
+            return try self.builder.addExportFullWithNamespaceAliasPos(
                 .{ .start = start.span.start, .end = end_pos },
                 hir_mod.none_node_id,
                 &.{},
@@ -6844,6 +6858,8 @@ pub const Parser = struct {
                 false,
                 true,
                 ns_alias,
+                ns_alias_is_string_literal,
+                ns_alias_pos,
             );
         }
 
@@ -13732,6 +13748,22 @@ pub const Parser = struct {
         return error.UnexpectedToken;
     }
 
+    fn expectModuleExportName(self: *Parser) ParseError!Token {
+        const t = self.peek();
+        if (t.kind == .string_literal or t.kind == .identifier or t.kind.isKeyword()) {
+            return self.advance();
+        }
+        try self.reportCodeAt(t.span.start, t.line, 1003, "Identifier expected.");
+        return error.UnexpectedToken;
+    }
+
+    fn internModuleExportName(self: *Parser, tok: Token) ParseError!hir_mod.StringId {
+        return if (tok.kind == .string_literal)
+            try self.internStringLiteral(tok)
+        else
+            try self.internToken(tok);
+    }
+
     fn accessibilityKeywordIsMemberRoot(self: *Parser, tok: Token) bool {
         if (self.strict_mode) return false;
         return switch (tok.kind) {
@@ -16291,6 +16323,20 @@ test "parser: import named" {
     try T.expectEqual(@as(usize, 2), named.len);
 }
 
+test "parser: import named string-literal module export name" {
+    var s = try newTestSetup("import { \"str-name\" as imported } from \"./m\";");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const named = hir_mod.importNamed(&s.hir, top);
+    try T.expectEqual(@as(usize, 1), named.len);
+    const spec = hir_mod.importSpecifierOf(&s.hir, named[0]);
+    try T.expect(spec.imported_is_string_literal);
+    try T.expect(!spec.local_is_string_literal);
+    try T.expectEqualStrings("str-name", s.interner.get(spec.imported));
+    try T.expectEqualStrings("imported", s.interner.get(spec.local));
+}
+
 test "parser: deferred import cannot use named bindings" {
     var s = try newTestSetup("import defer { foo } from \"./a\";");
     defer destroyTestSetup(s);
@@ -16454,6 +16500,35 @@ test "parser: export named" {
     const ex = hir_mod.exportOf(&s.hir, top);
     try T.expectEqual(@as(usize, 2), hir_mod.exportNamed(&s.hir, top).len);
     try T.expect(!ex.is_default);
+}
+
+test "parser: export named string-literal module export names" {
+    var s = try newTestSetup(
+        \\export { local as "str-name" };
+        \\export { "source-name" as "exported-name" } from "./m";
+        \\export * as "ns-name" from "./n";
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 3), stmts.len);
+
+    const first = hir_mod.importSpecifierOf(&s.hir, hir_mod.exportNamed(&s.hir, stmts[0])[0]);
+    try T.expect(!first.imported_is_string_literal);
+    try T.expect(first.local_is_string_literal);
+    try T.expectEqualStrings("local", s.interner.get(first.imported));
+    try T.expectEqualStrings("str-name", s.interner.get(first.local));
+
+    const second = hir_mod.importSpecifierOf(&s.hir, hir_mod.exportNamed(&s.hir, stmts[1])[0]);
+    try T.expect(second.imported_is_string_literal);
+    try T.expect(second.local_is_string_literal);
+    try T.expectEqualStrings("source-name", s.interner.get(second.imported));
+    try T.expectEqualStrings("exported-name", s.interner.get(second.local));
+
+    const third = hir_mod.exportOf(&s.hir, stmts[2]);
+    try T.expect(third.is_namespace);
+    try T.expect(third.namespace_alias_is_string_literal);
+    try T.expectEqualStrings("ns-name", s.interner.get(third.namespace_alias));
 }
 
 test "parser: namespace export assignment forms report diagnostics" {

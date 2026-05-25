@@ -664,6 +664,8 @@ pub const ExportPayload = struct {
     /// For `export * as ns from "m"` — the local namespace binding,
     /// or `string_interner.empty_id` for plain `export *`.
     namespace_alias: StringId,
+    namespace_alias_is_string_literal: bool = false,
+    namespace_alias_pos: u32 = 0,
 };
 
 pub const ImportSpecifierPayload = struct {
@@ -672,6 +674,10 @@ pub const ImportSpecifierPayload = struct {
     /// Local binding (defaults to `imported` if no `as` rename).
     local: StringId,
     is_type_only: bool,
+    imported_is_string_literal: bool = false,
+    local_is_string_literal: bool = false,
+    imported_pos: u32 = 0,
+    local_pos: u32 = 0,
 };
 
 pub const ArrayLiteralPayload = struct {
@@ -2076,11 +2082,29 @@ pub const Builder = struct {
         local: StringId,
         is_type_only: bool,
     ) !NodeId {
+        return self.addImportSpecifierFull(span, imported, local, is_type_only, false, false, span.start, span.start);
+    }
+
+    pub fn addImportSpecifierFull(
+        self: *Builder,
+        span: Span,
+        imported: StringId,
+        local: StringId,
+        is_type_only: bool,
+        imported_is_string_literal: bool,
+        local_is_string_literal: bool,
+        imported_pos: u32,
+        local_pos: u32,
+    ) !NodeId {
         const payload_idx: u32 = @intCast(self.hir.import_specifier_payloads.items.len);
         try self.hir.import_specifier_payloads.append(self.hir.gpa, .{
             .imported = imported,
             .local = local,
             .is_type_only = is_type_only,
+            .imported_is_string_literal = imported_is_string_literal,
+            .local_is_string_literal = local_is_string_literal,
+            .imported_pos = imported_pos,
+            .local_pos = local_pos,
         });
         return self.newNode(.import_specifier, span, payload_idx);
     }
@@ -2144,6 +2168,22 @@ pub const Builder = struct {
         is_namespace: bool,
         namespace_alias: StringId,
     ) !NodeId {
+        return self.addExportFullWithNamespaceAliasPos(span, decl, named, module, is_type_only, is_default, is_namespace, namespace_alias, false, 0);
+    }
+
+    pub fn addExportFullWithNamespaceAliasPos(
+        self: *Builder,
+        span: Span,
+        decl: NodeId,
+        named: []const NodeId,
+        module: StringId,
+        is_type_only: bool,
+        is_default: bool,
+        is_namespace: bool,
+        namespace_alias: StringId,
+        namespace_alias_is_string_literal: bool,
+        namespace_alias_pos: u32,
+    ) !NodeId {
         const named_start: u32 = @intCast(self.hir.child_pool.items.len);
         try self.hir.child_pool.appendSlice(self.hir.gpa, named);
         const payload_idx: u32 = @intCast(self.hir.export_payloads.items.len);
@@ -2156,6 +2196,8 @@ pub const Builder = struct {
             .is_default = is_default,
             .is_namespace = is_namespace,
             .namespace_alias = namespace_alias,
+            .namespace_alias_is_string_literal = namespace_alias_is_string_literal,
+            .namespace_alias_pos = namespace_alias_pos,
         });
         const id = try self.newNode(.export_decl, span, payload_idx);
         if (decl != none_node_id) self.hir.setParent(decl, id);

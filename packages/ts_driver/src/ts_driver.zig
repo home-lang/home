@@ -1066,6 +1066,9 @@ pub fn compileSource(
     }
     if (options.importer_path.len > 0) checker.setImporterPath(options.importer_path);
     if (options.module_resolution.len > 0) checker.setModuleResolution(options.module_resolution);
+    if (options.pub_tsconfig) |cfg| {
+        if (cfg.compiler_options.module) |m| checker.setModuleKind(@tagName(m));
+    }
     // Translate strictness flags. `strict: true` implies every
     // individual strict-family flag in TS; options.strict is the CLI
     // override, then tsconfig, then tsc's default (`false`).
