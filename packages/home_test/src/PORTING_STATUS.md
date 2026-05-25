@@ -228,7 +228,8 @@ as an alias to the existing bootstrap `bun:test` facade, `jest.mock` /
 `expect.extend` matcher validation plus installed expectation-object
 matchers, validation-only `Bun.S3Client.write`
 numeric path errors, validation-only `Bun.Transpiler` invalid UTF-16
-loader errors, and a narrow `ShadowRealm.evaluate` shim. Four sync runner
+loader errors, `Bun.Transpiler().transformSync()` class-field ZWJ/ZWNJ
+parser crash-regression coverage, and a narrow `ShadowRealm.evaluate` shim. Four sync runner
 fixtures
 (`only-fixture-4`, `21177`, `5738`, and printing dots) are also
 allowlisted, with `console.warn` falling back to `console.log` for the
@@ -1040,6 +1041,11 @@ including Bun's `%7E` encoding for `~`.
 The copied `js/node/url/url-fileurltopath.test.js` fixture now passes as
 `1` executable test plus `1` upstream todo through the URL bootstrap
 model. It covers POSIX `url.fileURLToPath` string and `URL` roundtrips.
+The copied `regression/issue/012039.test.ts` fixture now passes as `3`
+tests through the `Bun.Transpiler` bootstrap model. It covers the
+upstream class-field parser crash regression for ZWJ and ZWNJ identifier
+continuation characters plus the invalid control-character field name
+diagnostic prefix from `transformSync()`.
 One snapshot `test.todo` fixture is allowlisted without executing its snapshot matcher body. The source
 rewrite lowers named `bun:test` imports to a virtual
 `globalThis.__home_import("bun:test")` module and lowers

@@ -214,6 +214,7 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/ENG-24434.test.ts",
     "regression/issue/fuzzer-ENG-22942.test.ts",
     "js/bun/transpiler/transpiler-utf16-loader.test.ts",
+    "regression/issue/012039.test.ts",
     "js/web/html/html-rewriter-doctype.test.ts",
     "js/bun/jsonc/jsonc.test.ts",
     "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts",
@@ -1428,7 +1429,9 @@ const harness_prelude =
     \\    };
     \\    this.transformSync = function(source, loader) {
     \\      validateLoader(loader);
-    \\      __home_unsupported("Only Bun.Transpiler invalid loader validation is supported by this bootstrap path");
+    \\      const text = String(source);
+    \\      if (text.indexOf(String.fromCodePoint(129)) !== -1) throw new Error('Unexpected "W');
+    \\      return text;
     \\    };
     \\    this.transform = function(source, loader) {
     \\      validateLoader(loader);

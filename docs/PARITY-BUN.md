@@ -265,6 +265,8 @@ Node `module.SourceMap`, and a JSC string atomization smoke through the
 `Bun.jest(import.meta.path)` alias plus a narrow `structuredClone`
 fallback, validation-only `Bun.S3Client.write` numeric path errors,
 validation-only `Bun.Transpiler` invalid UTF-16 loader errors,
+`Bun.Transpiler().transformSync()` coverage for the class-field
+ZWJ/ZWNJ parser crash regression and invalid identifier diagnostics,
 `HTMLRewriter.onDocument({ doctype })` removal, narrow HTMLRewriter
 selector / handler validation plus element callback methods,
 `Bun.JSONC.parse` for comments, trailing commas, and deep-nesting
@@ -345,7 +347,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `269` files, `1,193` passed, `0` failed,
+Latest measured subset run: `270` files, `1,196` passed, `0` failed,
 `46` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
