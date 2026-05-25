@@ -8452,6 +8452,8 @@ pub const Parser = struct {
         var elems: std.ArrayListUnmanaged(NodeId) = .empty;
         defer elems.deinit(self.gpa);
         var saw_optional = false;
+        var saw_rest = false;
+        var reported_tuple_order_error = false;
         while (self.peek().kind != .close_bracket and self.peek().kind != .eof) {
             // Accept (and ignore for now) leading labelled tuple
             // elements: `[x: number, y?: number]`.
@@ -8514,9 +8516,20 @@ pub const Parser = struct {
             } else if ((saw_label_before_type or saw_label_after_rest) and trailing_optional) {
                 try self.reportCodeAt(elem_start, elem_line, 5086, "A labeled tuple element is declared as optional with a question mark after the name and before the colon, rather than after the type.");
             }
+            if (!reported_tuple_order_error and has_rest) {
+                if (saw_rest) {
+                    reported_tuple_order_error = true;
+                    try self.reportCodeAt(rest_tok.span.start, rest_tok.line, 1265, "A rest element cannot follow another rest element.");
+                }
+                saw_rest = true;
+            } else if (!reported_tuple_order_error and this_optional and saw_rest) {
+                reported_tuple_order_error = true;
+                try self.reportCodeAt(elem_start, elem_line, 1266, "An optional element cannot follow a rest element.");
+            }
             // TS1257 — a required tuple element cannot follow an
             // optional one. Mirrors `optionalTupleElements1.ts(11,29)`.
-            if (saw_optional and !this_optional and !has_rest) {
+            if (!reported_tuple_order_error and saw_optional and !this_optional and !has_rest) {
+                reported_tuple_order_error = true;
                 try self.reportCodeAt(elem_start, elem_line, 1257, "A required element cannot follow an optional element.");
             }
             if (this_optional) saw_optional = true;
@@ -15389,6 +15402,36 @@ test "parser: labeled tuple optional rest emits TS5085" {
     const diag = s.parser.diagnostics.items[0];
     try T.expectEqual(@as(u32, 5085), diag.code);
     try T.expectEqualStrings("A tuple member cannot be both optional and rest.", diag.message);
+}
+
+test "parser: tuple rest element cannot follow rest element emits TS1265" {
+    var s = try newTestSetup("type T = [number, ...string[], ...boolean[]];");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    for (s.parser.diagnostics.items) |diag| {
+        if (diag.code == 1265) {
+            found = true;
+            try T.expectEqualStrings("A rest element cannot follow another rest element.", diag.message);
+        }
+        try T.expect(diag.code != 1266);
+    }
+    try T.expect(found);
+}
+
+test "parser: tuple optional element cannot follow rest element emits TS1266" {
+    var s = try newTestSetup("type T = [number, ...string[], boolean?];");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    for (s.parser.diagnostics.items) |diag| {
+        if (diag.code == 1266) {
+            found = true;
+            try T.expectEqualStrings("An optional element cannot follow a rest element.", diag.message);
+        }
+        try T.expect(diag.code != 1265);
+    }
+    try T.expect(found);
 }
 
 test "parser: infer extends before question parses as conditional in grouped type" {
