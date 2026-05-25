@@ -10118,6 +10118,31 @@ pub const Parser = struct {
                 try self.reportCodeAt(bad.span.start, bad.line, 1127, "Invalid character.");
                 return try args.toOwnedSlice(self.gpa);
             }
+            // TS1140 — `parsingContextErrors(TypeArguments)` upstream
+            // fires when `isListElement` returns false for the current
+            // token (i.e. it isn't `,` and can't start a type). Catch
+            // the obvious anti-shapes here so the diagnostic surfaces
+            // before parseConditionalType cascades into TS1110
+            // ("Type expected.") at the same position. Conservative
+            // list: tokens that unambiguously can't begin a type AND
+            // aren't list separators or terminators. Sibling of
+            // TS1139 we ship from `parseTypeParameter`.
+            switch (self.peek().kind) {
+                .comma,
+                .semicolon,
+                .colon,
+                .equal,
+                .arrow,
+                .close_paren,
+                .close_brace,
+                .close_bracket,
+                => {
+                    const bad = self.peek();
+                    try self.reportCodeAt(bad.span.start, bad.line, 1140, "Type argument expected.");
+                    return try args.toOwnedSlice(self.gpa);
+                },
+                else => {},
+            }
             const arg = try self.parseTypeAnnotation();
             try args.append(self.gpa, arg);
             if (!self.match(.comma)) break;
@@ -10308,6 +10333,29 @@ pub const Parser = struct {
         if (self.peek().kind == .less_than and !self.peek().flags.preceded_by_newline) {
             _ = self.advance();
             while (self.peek().kind != .greater_than and self.peek().kind != .eof) {
+                // TS1140 — see the same gate in `parseTypeArgumentList`
+                // below. This path is the qualified-name type-reference
+                // parser (`Foo<…>`, `Foo.Bar<…>`); mirror the obvious-
+                // anti-token check so `Foo<,>` / `Foo<;>` / `Foo<:>`
+                // surface the upstream parser-recovery code rather
+                // than cascading through `parseTypeAnnotation` into
+                // TS1110 ("Type expected.") at the same anchor.
+                switch (self.peek().kind) {
+                    .comma,
+                    .semicolon,
+                    .colon,
+                    .equal,
+                    .arrow,
+                    .close_paren,
+                    .close_brace,
+                    .close_bracket,
+                    => {
+                        const bad = self.peek();
+                        try self.reportCodeAt(bad.span.start, bad.line, 1140, "Type argument expected.");
+                        break;
+                    },
+                    else => {},
+                }
                 const a = try self.parseTypeAnnotation();
                 try args.append(self.gpa, a);
                 if (!self.match(.comma)) break;
@@ -22152,6 +22200,38 @@ test "parser: TS1180 fires when an operator starts an object binding element" {
     };
     const d = findDiag(s, 1180) orelse return error.MissingDiagnostic;
     try T.expectEqualStrings("Property destructuring pattern expected.", d.message);
+}
+
+test "parser: TS1140 fires when a type-argument slot has no type-start token" {
+    // Mirrors upstream `parsingContextErrors(TypeArguments)`. Triggers
+    // for shapes like `Foo<,>` or `Foo<;>` where the next token can't
+    // begin a type (the canonical TS1140 "Type argument expected.").
+    // Sibling of TS1139 we ship from `parseTypeParameter`. Anchor at
+    // the offending token; recovery is "stop the arg list and let the
+    // outer parser see the closing `>`".
+    var s = try newTestSetup("type T = Foo<,>;");
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch |err| switch (err) {
+        error.UnexpectedToken => hir_mod.none_node_id,
+        else => return err,
+    };
+    const d = findDiag(s, 1140) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Type argument expected.", d.message);
+}
+
+test "parser: TS1140 stays clean for empty type-argument list `Foo<>`" {
+    // `Foo<>` is parsed as a zero-arg type-argument list and the
+    // diagnostic landscape is left to the existing TS-checker layer
+    // (TS2314 / TS2347 etc.) — the parser must NOT preempt with
+    // TS1140. The new gate's switch deliberately skips `>` so the
+    // outer while-loop terminator runs as-is.
+    var s = try newTestSetup("type U = Foo<>;");
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch |err| switch (err) {
+        error.UnexpectedToken => hir_mod.none_node_id,
+        else => return err,
+    };
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1140));
 }
 
 test "parser: TS1146 fires for a modifier-keyword class member with no name" {
