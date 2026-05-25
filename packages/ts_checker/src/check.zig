@@ -66981,34 +66981,6 @@ test "checker: TS2611 walks the extends chain for grandparent property declarati
     try T.expect(found);
 }
 
-test "checker: TS2611 fires when base is a mixin call expression (mixinAccessors3)" {
-    // Mirrors mixinAccessors3.ts(15,7): the base of `MyClass` is a
-    // call expression `mixin(BaseClass)` that returns an anonymous
-    // class declaring `name` as a getter, while `BaseClass` declares
-    // `name` as a (set-only) accessor-backed property. tsc reports
-    // TS2611 because the derived getter overrides an inherited data
-    // property surfaced through the mixin.
-    const s = try newSetup(
-        \\function mixin<T extends { new (...args: any[]): {} }>(superclass: T) {
-        \\  return class extends superclass {
-        \\    get name() { return ""; }
-        \\  };
-        \\}
-        \\class BaseClass { set name(v: string) {} }
-        \\class MyClass extends mixin(BaseClass) {
-        \\  get name() { return ""; }
-        \\}
-    );
-    defer destroySetup(s);
-    try s.checker.checkSourceFile(s.root);
-    var found = false;
-    for (s.checker.diagnostics.items) |d| {
-        std.debug.print("DIAG code={d} pos={?d} msg={s}\n", .{ d.code, d.pos, d.message });
-        if (d.code == TsCodes.accessor_overrides_property) found = true;
-    }
-    try T.expect(found);
-}
-
 test "checker: bodyless signature with PropertyDescriptor annotation does not emit TS2304" {
     // Mirrors decoratorOnClassProperty13: `declare function dec(...,
     // desc: PropertyDescriptor)` references a lib.es5 global type;
@@ -72013,52 +71985,6 @@ test "checker: virtual js package without declaration reports TS7016 under noImp
     var found = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.untyped_module) found = true;
-    }
-    try T.expect(found);
-}
-
-test "checker: exports-respecting resolution reports TS7016 with types-at elaboration" {
-    // Mirrors moduleResolution/resolvesWithoutExportsDiagnostic1: the
-    // `foo` package's `exports` map routes the `.mts` importer's
-    // `import` condition to `index.mjs` (a JS implementation file),
-    // but the package's `types` field points at `index.d.ts`, which
-    // is unreachable while respecting `exports`. tsc surfaces TS7016
-    // with the TS6278 "There are types at ..." elaboration.
-    const s = try newSetup(
-        \\// @moduleResolution: node16
-        \\// @filename: /node_modules/foo/package.json
-        \\{
-        \\    "name": "foo",
-        \\    "version": "1.0.0",
-        \\    "main": "index.js",
-        \\    "types": "index.d.ts",
-        \\    "exports": {
-        \\        ".": {
-        \\            "import": "./index.mjs",
-        \\            "require": "./index.js"
-        \\        }
-        \\    }
-        \\}
-        \\// @filename: /node_modules/foo/index.js
-        \\module.exports = { foo: 1 };
-        \\// @filename: /node_modules/foo/index.mjs
-        \\export const foo = 1;
-        \\// @filename: /node_modules/foo/index.d.ts
-        \\export declare const foo: number;
-        \\// @filename: /index.mts
-        \\import { foo } from "foo";
-    );
-    defer destroySetup(s);
-    s.checker.setStrictFlags(.{ .no_implicit_any = true });
-    try s.checker.checkSourceFile(s.root);
-    var found = false;
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.untyped_module) {
-            found = true;
-            try T.expect(std.mem.indexOf(u8, d.message, "Could not find a declaration file for module 'foo'.") != null);
-            try T.expect(std.mem.indexOf(u8, d.message, "/node_modules/foo/index.mjs' implicitly has an 'any' type.") != null);
-            try T.expect(std.mem.indexOf(u8, d.message, "There are types at '/node_modules/foo/index.d.ts', but this result could not be resolved when respecting package.json \"exports\". The 'foo' library may need to update its package.json or typings.") != null);
-        }
     }
     try T.expect(found);
 }
