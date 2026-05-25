@@ -43,6 +43,12 @@
       "total": 13
     }
   },
+  "diagnostic-codes": {
+    "emitted": {
+      "passed": 633,
+      "total": 2076
+    }
+  },
   "smoke": {
     "comparable": {
       "passed": 13,

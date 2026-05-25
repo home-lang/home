@@ -15,14 +15,22 @@ Two modes:
 Snapshot shape:
 
     {
-      "smoke":          { "<name>": {"total": N, "passed": N}, ... },
-      "category":       { "<path>": {"total": N, "passed": N}, ... },
-      "baseline-aware": { "<path>": {"total": N, "passed": N}, ... }
+      "smoke":            { "<name>": {"total": N, "passed": N}, ... },
+      "category":         { "<path>": {"total": N, "passed": N}, ... },
+      "baseline-aware":   { "<path>": {"total": N, "passed": N}, ... },
+      "diagnostic-codes": { "emitted": {"total": 2076, "passed": 633} }
     }
 
 The "COMBINED" rows the harness emits are intentionally dropped: they're
 sums of the per-row entries and would double-book regressions. Keys are
 sorted on write to keep the JSON byte-identical between runs.
+
+The `diagnostic-codes` section is populated from the generated ledger
+at `docs/TS_DIAGNOSTIC_CODE_STATUS.md`. The `emitted` row counts
+upstream TS diagnostic codes referenced from production source — the
+parity-ratchet metric each `feat(ts-parity): implement TSxxxx` commit
+moves by +1. CI regenerates the ledger before compare so the count
+reflects HEAD, not whatever was checked in.
 
 Why this script exists: the TS-parity Phase 6 plan needs CI to fail PRs
 that drop a single category's passed-count, even if the umbrella
@@ -50,7 +58,7 @@ from typing import Dict, Optional, Tuple
 
 # Sections we recognise. Order matters only for the human-readable diff
 # output; the JSON itself is sorted alphabetically per section.
-SECTIONS = ("smoke", "category", "baseline-aware")
+SECTIONS = ("smoke", "category", "baseline-aware", "diagnostic-codes")
 EXPECTED_ZIG_VERSION = "0.17.0-dev.263+0add2dfc4"
 
 # Lines look like:
@@ -132,6 +140,53 @@ def parse_log(text: str) -> Dict[str, Dict[str, Dict[str, int]]]:
             "passed": int(m.group("passed")),
         }
     return snapshot
+
+
+# Diagnostic-code-status ledger row pattern. The ledger is generated
+# by `scripts/gen-ts-diagnostic-status.mjs` and lives at
+# `docs/TS_DIAGNOSTIC_CODE_STATUS.md`. Each row looks like:
+#   | TS1234 | err | emitted | <source-refs> | <message-key> |
+# We count rows per `status` token. The "emitted" count is the parity
+# metric tracked by `feat(ts-parity): implement TSxxxx` commits; the
+# gate fails any PR that drops it.
+DIAG_LEDGER_PATH = "docs/TS_DIAGNOSTIC_CODE_STATUS.md"
+DIAG_ROW_RE = re.compile(
+    r"^\|\s*TS\d+\s*\|\s*(?:err|message|suggestion|deprecated)\s*\|\s*"
+    r"(?P<status>emitted|declared|tested-only|catalog-only)\s*\|"
+)
+
+
+def count_diagnostic_codes(cwd: str) -> Dict[str, Dict[str, int]]:
+    """Read the generated TS-diagnostic-code ledger and return the
+    parity-ratchet row. Snapshot shape mirrors the rest of the file:
+    `passed` = current count of emitted codes (production source has
+    at least one reference), `total` = upstream-catalogue size. Each
+    `feat(ts-parity): implement TSxxxx` commit moves `passed` up by 1.
+
+    Only the `emitted` row is gated: a PR that drops the emitted
+    count regresses parity. The other ledger statuses (`declared`,
+    `tested-only`, `catalog-only`) are derivable from the ledger
+    directly and would invert the monotonic-passed semantics if
+    included.
+    """
+    path = os.path.join(cwd, DIAG_LEDGER_PATH)
+    if not os.path.exists(path):
+        return {}
+    emitted = 0
+    total = 0
+    with open(path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            m = DIAG_ROW_RE.match(line)
+            if not m:
+                continue
+            total += 1
+            if m.group("status") == "emitted":
+                emitted += 1
+    if total == 0:
+        return {}
+    return {
+        "emitted": {"total": total, "passed": emitted},
+    }
 
 
 def to_json(snapshot: Dict[str, Dict[str, Dict[str, int]]]) -> str:
@@ -225,6 +280,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
         )
         text = run_conformance(cwd)
     snapshot = parse_log(text)
+    snapshot["diagnostic-codes"] = count_diagnostic_codes(cwd)
     rendered = to_json(snapshot)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as fh:
@@ -248,6 +304,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
         )
         text = run_conformance(cwd)
     current = parse_log(text)
+    current["diagnostic-codes"] = count_diagnostic_codes(cwd)
 
     if args.write_current:
         with open(args.write_current, "w", encoding="utf-8") as fh:

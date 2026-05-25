@@ -1,10 +1,21 @@
 name: TS Conformance Delta Gate
 
-# Per-PR gate that fails if any per-category passing-test count drops below
-# the snapshot in .github/conformance-baseline.json. Total may grow (we add
-# tests), but `passed` per row must be monotonic across PRs. This complements
-# the umbrella `test-count-gate` in ci.yml, which only watches the global
-# pass count and would miss a category swap (e.g. +5 here, -5 there).
+# Per-PR gate that fails if any tracked parity row regresses below the
+# snapshot in .github/conformance-baseline.json. Tracked rows:
+#
+#   - `smoke` / `category` / `baseline-aware`: per-folder pass counts
+#     parsed from the conformance-suite output. Total may grow (new
+#     tests added), but `passed` per row must be monotonic.
+#   - `diagnostic-codes`: parity-ratchet count of upstream TS diagnostic
+#     codes the Home compiler emits in production source. Parsed from
+#     `docs/TS_DIAGNOSTIC_CODE_STATUS.md` (regenerated each run by
+#     `scripts/gen-ts-diagnostic-status.mjs`). Every `feat(ts-parity):
+#     implement TSxxxx` commit moves the `emitted` row by +1; this gate
+#     catches PRs that drop the count.
+#
+# Together these complement the umbrella `test-count-gate` in ci.yml
+# (which only watches the global pass count) by catching swaps where a
+# row grows while another shrinks.
 #
 # Regenerate the baseline (intentional bumps only) with:
 #   ./tools/ts_parity_snapshot.py generate \
@@ -48,6 +59,16 @@ jobs:
           # the gate script is what decides whether the run is a regression,
           # so swallow the exit here and let the script speak.
           zig build test -Dfilter=ts_conformance 2>&1 | tee conformance-run.log || true
+
+      # The diagnostic-codes row in the snapshot is parsed from the
+      # generated ledger. Regen against HEAD so the gate compares
+      # current production source's emission count to the baseline,
+      # not whatever was checked in. Drift between checked-in and
+      # regenerated ledger triggers the `--check-ledger` flag below.
+      - name: Regenerate TS diagnostic-code ledger
+        run: |
+          # Node is preinstalled on ubuntu-latest runners.
+          node scripts/gen-ts-diagnostic-status.mjs
 
       - name: Compare against baseline
         run: |
