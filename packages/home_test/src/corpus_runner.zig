@@ -165,6 +165,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/deno/performance/performance.test.ts",
     "regression/issue/015201.test.ts",
     "js/node/process-binding.test.ts",
+    "js/node/process/call-constructor.test.js",
     "js/bun/test/test-timers.test.ts",
     "internal/highlighter.test.ts",
     "js/bun/util/highlighter.test.ts",
@@ -8418,6 +8419,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { promisify } = globalThis.__home_import(\"node:util\");",
         },
         .{
+            .needle = "import process from \"process\";",
+            .replacement = "const process = globalThis.process;",
+        },
+        .{
             .needle = "import { writeFileSync } from \"node:fs\";",
             .replacement = "const { writeFileSync } = globalThis.__home_import(\"node:fs\");",
         },
@@ -12713,6 +12718,20 @@ test "corpus module preparation reports unsupported module syntax" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expectEqualStrings("unsupported module syntax", prepared.unsupported_reason.?);
+}
+
+test "corpus module preparation lowers process default import" {
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import process from "process";
+        \\test("works", () => expect(process).toBe(globalThis.process));
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/process/call-constructor.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const process = globalThis.process;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import process from \"process\"") == null);
 }
 
 test "unsupported module scanner ignores imports inside nested template fixture strings" {

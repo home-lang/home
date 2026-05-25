@@ -903,6 +903,10 @@ The copied `js/node/process-binding.test.ts` fixture now passes as `2`
 tests through the `process.binding` bootstrap model. It covers the
 `constants` binding buckets Bun asserts plus the `uv` error-name and
 `getErrorMap()` surface used by the upstream fixture.
+The copied `js/node/process/call-constructor.test.js` fixture now passes
+as `2` tests through the process bootstrap model. It covers default
+`import process from "process"` lowering plus Bun's asserted
+`process.constructor.call(...)` prototype shape.
 The copied `js/bun/test/test-timers.test.ts` fixture now passes as `1`
 test through the Jest fake-timer bootstrap model. It covers Bun's stable
 `Date` identity, mocked `Date.now()` / `new Date()`,
