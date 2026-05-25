@@ -26,10 +26,10 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 
 | Status | Count |
 | --- | ---: |
-| emitted | 526 |
+| emitted | 529 |
 | declared | 3 |
 | tested-only | 6 |
-| catalog-only | 1541 |
+| catalog-only | 1538 |
 | total upstream codes | 2076 |
 
 ## Codes
@@ -1131,7 +1131,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS4125 | err | catalog-only |  | Each_declaration_of_0_1_differs_in_its_value_where_2_was_expected_but_3_was_given_4125 |
 | TS4126 | err | catalog-only |  | One_value_of_0_1_is_the_string_2_and_the_other_is_assumed_to_be_an_unknown_numeric_value_4126 |
 | TS5001 | err | catalog-only |  | The_current_host_does_not_support_the_0_option_5001 |
-| TS5009 | err | emitted | packages/tsconfig/src/tsconfig.zig:327 | Cannot_find_the_common_subdirectory_path_for_the_input_files_5009 |
+| TS5009 | err | emitted | packages/tsconfig/src/tsconfig.zig:365 | Cannot_find_the_common_subdirectory_path_for_the_input_files_5009 |
 | TS5010 | err | catalog-only |  | File_specification_cannot_end_in_a_recursive_directory_wildcard_Asterisk_Asterisk_Colon_0_5010 |
 | TS5012 | err | catalog-only |  | Cannot_read_file_0_Colon_1_5012 |
 | TS5023 | err | catalog-only |  | Unknown_compiler_option_0_5023 |
@@ -1141,8 +1141,8 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS5042 | err | catalog-only |  | Option_project_cannot_be_mixed_with_source_files_on_a_command_line_5042 |
 | TS5047 | err | catalog-only |  | Option_isolatedModules_can_only_be_used_when_either_option_module_is_provided_or_option_target_is_ES_5047 |
 | TS5051 | err | catalog-only |  | Option_0_can_only_be_used_when_either_option_inlineSourceMap_or_option_sourceMap_is_provided_5051 |
-| TS5052 | err | catalog-only |  | Option_0_cannot_be_specified_without_specifying_option_1_5052 |
-| TS5053 | err | catalog-only |  | Option_0_cannot_be_specified_with_option_1_5053 |
+| TS5052 | err | emitted | packages/tsconfig/src/tsconfig.zig:421 | Option_0_cannot_be_specified_without_specifying_option_1_5052 |
+| TS5053 | err | emitted | packages/tsconfig/src/tsconfig.zig:437 | Option_0_cannot_be_specified_with_option_1_5053 |
 | TS5054 | err | catalog-only |  | A_tsconfig_json_file_is_already_defined_at_Colon_0_5054 |
 | TS5055 | err | catalog-only |  | Cannot_write_file_0_because_it_would_overwrite_input_file_5055 |
 | TS5056 | err | catalog-only |  | Cannot_write_file_0_because_it_would_be_overwritten_by_multiple_input_files_5056 |
@@ -1438,7 +1438,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6282 | message | catalog-only |  | Found_peerDependency_0_with_1_version_6282 |
 | TS6283 | message | catalog-only |  | Failed_to_find_peerDependency_0_6283 |
 | TS6302 | message | catalog-only |  | Enable_project_compilation_6302 |
-| TS6304 | err | emitted | packages/tsconfig/src/tsconfig.zig:343 | Composite_projects_may_not_disable_declaration_emit_6304 |
+| TS6304 | err | emitted | packages/tsconfig/src/tsconfig.zig:381 | Composite_projects_may_not_disable_declaration_emit_6304 |
 | TS6305 | err | catalog-only |  | Output_file_0_has_not_been_built_from_source_file_1_6305 |
 | TS6306 | err | catalog-only |  | Referenced_project_0_must_have_setting_composite_Colon_true_6306 |
 | TS6307 | err | catalog-only |  | File_0_is_not_listed_within_the_file_list_of_project_1_Projects_must_list_all_files_or_use_an_includ_6307 |
@@ -1807,7 +1807,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS17019 | err | emitted | packages/ts_parser/src/ts_parser.zig:7781 | _0_at_the_end_of_a_type_is_not_valid_TypeScript_syntax_Did_you_mean_to_write_1_17019 |
 | TS17020 | err | emitted | packages/ts_parser/src/ts_parser.zig:7884<br>packages/ts_parser/src/ts_parser.zig:7896 | _0_at_the_start_of_a_type_is_not_valid_TypeScript_syntax_Did_you_mean_to_write_1_17020 |
 | TS17021 | err | catalog-only |  | Unicode_escape_sequence_cannot_appear_here_17021 |
-| TS18002 | err | catalog-only |  | The_files_list_in_config_file_0_is_empty_18002 |
+| TS18002 | err | emitted | packages/tsconfig/src/tsconfig.zig:329 | The_files_list_in_config_file_0_is_empty_18002 |
 | TS18003 | err | catalog-only |  | No_inputs_were_found_in_config_file_0_Specified_include_paths_were_1_and_exclude_paths_were_2_18003 |
 | TS18004 | err | emitted | packages/ts_checker/src/check.zig:41074<br>packages/ts_checker/src/check.zig:71285<br>packages/ts_checker/src/check.zig:71303 | No_value_exists_in_scope_for_the_shorthand_property_0_Either_declare_one_or_provide_an_initializer_18004 |
 | TS18006 | err | emitted | packages/ts_checker/src/check.zig:16463<br>packages/ts_checker/src/check.zig:64305<br>packages/ts_checker/src/check.zig:64319 | Classes_may_not_have_a_field_named_constructor_18006 |
@@ -1848,7 +1848,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS18048 | err | emitted | packages/ts_checker/src/check.zig:62651<br>packages/ts_checker/src/check.zig:85232<br>packages/ts_checker/src/check.zig:85255 | _0_is_possibly_undefined_18048 |
 | TS18049 | err | emitted | packages/ts_checker/src/check.zig:62652<br>packages/ts_checker/src/check.zig:85231<br>packages/ts_checker/src/check.zig:85253 | _0_is_possibly_null_or_undefined_18049 |
 | TS18050 | err | emitted | packages/ts_checker/src/check.zig:52293<br>packages/ts_checker/src/check.zig:52330<br>packages/ts_checker/src/check.zig:65828 | The_value_0_cannot_be_used_here_18050 |
-| TS18051 | err | emitted | packages/tsconfig/src/tsconfig.zig:312 | Compiler_option_0_cannot_be_given_an_empty_string_18051 |
+| TS18051 | err | emitted | packages/tsconfig/src/tsconfig.zig:317 | Compiler_option_0_cannot_be_given_an_empty_string_18051 |
 | TS18053 | err | catalog-only |  | Its_type_0_is_not_a_valid_JSX_element_type_18053 |
 | TS18054 | err | emitted | packages/ts_parser/src/ts_parser.zig:7105 | await_using_statements_cannot_be_used_inside_a_class_static_block_18054 |
 | TS18055 | err | catalog-only |  | _0_has_a_string_type_but_must_have_syntactically_recognizable_string_syntax_when_isolatedModules_is__18055 |

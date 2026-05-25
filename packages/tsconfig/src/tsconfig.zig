@@ -270,6 +270,10 @@ pub const TsConfig = struct {
     compiler_options: CompilerOptions,
     /// `extends`: paths of other tsconfig files this one inherits from.
     extends: [][]const u8,
+    /// Whether the raw config contained an `extends` property. This is
+    /// distinct from `extends.len`: `extends: []` still suppresses the
+    /// empty-`files` diagnostic in tsc.
+    has_extends: bool,
     /// `files`: explicit file list. `null` if not present.
     files: ?[][]const u8,
     /// `include`: glob patterns. `null` if not present (default
@@ -289,7 +293,8 @@ pub const TsConfig = struct {
     /// `outDir == rootDir` (TS5009-style overlap).
     ///
     /// Returns an owned slice allocated with `gpa`. Caller frees with
-    /// `gpa.free`. Empty slice when the config is consistent.
+    /// `freeValidationDiagnostics`. Empty slice when the config is
+    /// consistent.
     ///
     /// v0 covers two cross-field checks; the rest of the matrix
     /// (noEmit + outFile contradiction, decorators mutual exclusion,
@@ -314,6 +319,39 @@ pub const TsConfig = struct {
                     .field = "extends",
                 });
             }
+        }
+
+        if (self.files) |files| {
+            if (files.len == 0 and self.references.len == 0 and !self.has_extends) {
+                const path = if (self.file_path.len > 0) self.file_path else "tsconfig.json";
+                const msg = try std.fmt.allocPrint(gpa, "The 'files' list in config file '{s}' is empty.", .{path});
+                try diags.append(gpa, .{
+                    .code = 18002,
+                    .message = msg,
+                    .owns_message = true,
+                    .field = "files",
+                });
+            }
+        }
+
+        const strict_null_checks_enabled = co.strict_null_checks orelse (co.strict == true);
+        if (co.strict_property_initialization == true and !strict_null_checks_enabled) {
+            try appendTs5052(gpa, &diags, "strictPropertyInitialization", "strictPropertyInitialization", "strictNullChecks");
+        }
+        if (co.exact_optional_property_types == true and !strict_null_checks_enabled) {
+            try appendTs5052(gpa, &diags, "exactOptionalPropertyTypes", "exactOptionalPropertyTypes", "strictNullChecks");
+        }
+        if (co.check_js == true and co.allow_js != true) {
+            try appendTs5052(gpa, &diags, "checkJs", "checkJs", "allowJs");
+        }
+        if (co.emit_decorator_metadata == true and co.experimental_decorators != true) {
+            try appendTs5052(gpa, &diags, "emitDecoratorMetadata", "emitDecoratorMetadata", "experimentalDecorators");
+        }
+        if (co.inline_source_map == true and co.source_map == true) {
+            try appendTs5053(gpa, &diags, "sourceMap", "sourceMap", "inlineSourceMap");
+        }
+        if (co.isolated_declarations == true and co.allow_js == true) {
+            try appendTs5053(gpa, &diags, "allowJs", "allowJs", "isolatedDeclarations");
         }
 
         // TS5009-shaped: `outDir` and `rootDir` must not be the same
@@ -358,10 +396,50 @@ pub const TsConfig = struct {
 pub const ValidationDiagnostic = struct {
     code: u32,
     message: []const u8,
+    owns_message: bool = false,
     /// Which option triggered the diagnostic. Empty when the issue
     /// spans multiple fields equally.
     field: []const u8 = "",
 };
+
+pub fn freeValidationDiagnostics(gpa: std.mem.Allocator, diags: []ValidationDiagnostic) void {
+    for (diags) |d| {
+        if (d.owns_message) gpa.free(d.message);
+    }
+    gpa.free(diags);
+}
+
+fn appendTs5052(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    field: []const u8,
+    option: []const u8,
+    required: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(gpa, "Option '{s}' cannot be specified without specifying option '{s}'.", .{ option, required });
+    try diags.append(gpa, .{
+        .code = 5052,
+        .message = msg,
+        .owns_message = true,
+        .field = field,
+    });
+}
+
+fn appendTs5053(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    field: []const u8,
+    option: []const u8,
+    conflicting: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(gpa, "Option '{s}' cannot be specified with option '{s}'.", .{ option, conflicting });
+    try diags.append(gpa, .{
+        .code = 5053,
+        .message = msg,
+        .owns_message = true,
+        .field = field,
+    });
+}
 
 pub const LoadError = error{
     NotAnObject,
@@ -392,6 +470,7 @@ pub fn parseString(
         .file_path = "",
         .compiler_options = .{},
         .extends = &.{},
+        .has_extends = false,
         .files = null,
         .include = null,
         .exclude = null,
@@ -400,6 +479,7 @@ pub fn parseString(
 
     // extends: string or [string]
     if (root.get("extends")) |ext_v| {
+        cfg.has_extends = true;
         switch (ext_v) {
             .string => |s| {
                 const arr = try arena.alloc([]const u8, 1);
@@ -659,6 +739,7 @@ pub fn merge(arena: std.mem.Allocator, base: TsConfig, child: TsConfig) !TsConfi
     if (child.exclude) |f| merged.exclude = f;
     if (child.references.len > 0) merged.references = child.references;
     if (child.extends.len > 0) merged.extends = child.extends;
+    merged.has_extends = base.has_extends or child.has_extends;
     return merged;
 }
 
@@ -998,7 +1079,7 @@ test "tsconfig.validate: clean config produces no diagnostics" {
         \\{ "compilerOptions": { "strict": true, "outDir": "dist", "rootDir": "src" } }
     );
     const diags = try cfg.validate(t.allocator);
-    defer t.allocator.free(diags);
+    defer freeValidationDiagnostics(t.allocator, diags);
     try t.expectEqual(@as(usize, 0), diags.len);
 }
 
@@ -1009,7 +1090,7 @@ test "tsconfig.validate: outDir == rootDir reports TS5009-shaped diagnostic" {
         \\{ "compilerOptions": { "outDir": "build", "rootDir": "build" } }
     );
     const diags = try cfg.validate(t.allocator);
-    defer t.allocator.free(diags);
+    defer freeValidationDiagnostics(t.allocator, diags);
     try t.expectEqual(@as(usize, 1), diags.len);
     try t.expectEqual(@as(u32, 5009), diags[0].code);
     try t.expectEqualStrings("outDir", diags[0].field);
@@ -1022,7 +1103,7 @@ test "tsconfig.validate: composite without declaration reports TS6304-shaped dia
         \\{ "compilerOptions": { "composite": true, "declaration": false } }
     );
     const diags = try cfg.validate(t.allocator);
-    defer t.allocator.free(diags);
+    defer freeValidationDiagnostics(t.allocator, diags);
     try t.expectEqual(@as(usize, 1), diags.len);
     try t.expectEqual(@as(u32, 6304), diags[0].code);
     try t.expectEqualStrings("declaration", diags[0].field);
@@ -1035,7 +1116,7 @@ test "tsconfig.validate: empty extends string reports TS18051" {
         \\{ "extends": "" }
     );
     const diags = try cfg.validate(t.allocator);
-    defer t.allocator.free(diags);
+    defer freeValidationDiagnostics(t.allocator, diags);
     try t.expectEqual(@as(usize, 1), diags.len);
     try t.expectEqual(@as(u32, 18051), diags[0].code);
     try t.expectEqualStrings("Compiler option 'extends' cannot be given an empty string.", diags[0].message);
@@ -1049,10 +1130,113 @@ test "tsconfig.validate: empty extends array elements each report TS18051" {
         \\{ "extends": ["./base.json", "", ""] }
     );
     const diags = try cfg.validate(t.allocator);
-    defer t.allocator.free(diags);
+    defer freeValidationDiagnostics(t.allocator, diags);
     try t.expectEqual(@as(usize, 2), diags.len);
     try t.expectEqual(@as(u32, 18051), diags[0].code);
     try t.expectEqual(@as(u32, 18051), diags[1].code);
+}
+
+test "tsconfig.validate: empty files list without references or extends reports TS18002" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    var cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "files": [] }
+    );
+    cfg.file_path = "/apath/tsconfig.json";
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), diags.len);
+    try t.expectEqual(@as(u32, 18002), diags[0].code);
+    try t.expectEqualStrings("The 'files' list in config file '/apath/tsconfig.json' is empty.", diags[0].message);
+    try t.expectEqualStrings("files", diags[0].field);
+}
+
+test "tsconfig.validate: empty files list is allowed with references or extends" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+
+    const with_references = try parseString(t.allocator, arena.allocator(),
+        \\{ "files": [], "references": [{ "path": "/apath" }] }
+    );
+    const ref_diags = try with_references.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, ref_diags);
+    try t.expectEqual(@as(usize, 0), ref_diags.len);
+
+    const with_extends = try parseString(t.allocator, arena.allocator(),
+        \\{ "extends": [], "files": [] }
+    );
+    const ext_diags = try with_extends.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, ext_diags);
+    try t.expectEqual(@as(usize, 0), ext_diags.len);
+}
+
+test "tsconfig.validate: dependent options report TS5052" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "checkJs": true,
+        \\    "emitDecoratorMetadata": true,
+        \\    "exactOptionalPropertyTypes": true,
+        \\    "strictPropertyInitialization": true
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 4), diags.len);
+    try t.expectEqual(@as(u32, 5052), diags[0].code);
+    try t.expectEqualStrings("Option 'strictPropertyInitialization' cannot be specified without specifying option 'strictNullChecks'.", diags[0].message);
+    try t.expectEqual(@as(u32, 5052), diags[1].code);
+    try t.expectEqualStrings("Option 'exactOptionalPropertyTypes' cannot be specified without specifying option 'strictNullChecks'.", diags[1].message);
+    try t.expectEqual(@as(u32, 5052), diags[2].code);
+    try t.expectEqualStrings("Option 'checkJs' cannot be specified without specifying option 'allowJs'.", diags[2].message);
+    try t.expectEqual(@as(u32, 5052), diags[3].code);
+    try t.expectEqualStrings("Option 'emitDecoratorMetadata' cannot be specified without specifying option 'experimentalDecorators'.", diags[3].message);
+}
+
+test "tsconfig.validate: dependent options accept required pairs" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "allowJs": true,
+        \\    "checkJs": true,
+        \\    "experimentalDecorators": true,
+        \\    "emitDecoratorMetadata": true,
+        \\    "strict": true,
+        \\    "exactOptionalPropertyTypes": true,
+        \\    "strictPropertyInitialization": true
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 0), diags.len);
+}
+
+test "tsconfig.validate: mutually exclusive options report TS5053" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "sourceMap": true,
+        \\    "inlineSourceMap": true,
+        \\    "allowJs": true,
+        \\    "isolatedDeclarations": true
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 2), diags.len);
+    try t.expectEqual(@as(u32, 5053), diags[0].code);
+    try t.expectEqualStrings("Option 'sourceMap' cannot be specified with option 'inlineSourceMap'.", diags[0].message);
+    try t.expectEqual(@as(u32, 5053), diags[1].code);
+    try t.expectEqualStrings("Option 'allowJs' cannot be specified with option 'isolatedDeclarations'.", diags[1].message);
 }
 
 // ============================================================================
