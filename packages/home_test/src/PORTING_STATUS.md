@@ -912,9 +912,15 @@ The copied `js/bun/resolve/jsonc.test.ts`,
 `js/bun/test/snapshot-tests/existing-snapshots.test.ts`,
 `js/bun/test/expect-stack-overflow-crash.test.ts`,
 `js/bun/test/expect-symbol-toPrimitive-crash.test.ts`, and
-`js/node/dns/dns-lookup-keepalive.test.ts` fixtures now pass as `10`
-tests through the existing JSONC/module, Bun.write, expectation,
-subprocess, and DNS bootstrap surfaces.
+`js/node/dns/dns-lookup-keepalive.test.ts` fixtures now contribute `9`
+aggregate passed tests through the existing JSONC/module, Bun.write,
+expectation, subprocess, and DNS bootstrap surfaces.
+The copied `regression/issue/11297/11297.test.ts`,
+`regression/issue/11866.test.ts`, `js/bun/http/leaks-test.test.ts`,
+`js/node/util/node-inspect-tests/parallel/util-inspect-long-running.test.mjs`,
+and `regression/issue/28522.test.ts` fixtures now pass as `7` tests
+through the existing regression, HTTP server/leak, and Node util inspect
+bootstrap surfaces.
 The copied `js/bun/test/test-timers.test.ts` fixture now passes as `1`
 test through the Jest fake-timer bootstrap model. It covers Bun's stable
 `Date` identity, mocked `Date.now()` / `new Date()`,

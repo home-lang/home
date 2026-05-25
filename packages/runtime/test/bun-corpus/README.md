@@ -17,10 +17,10 @@ macOS, Linux, and the WASM target.
   bootstrap path exists for the current allowlist:
   `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
-  Latest measured subset run: `280` files, `1,209` passed, `0` failed,
+  Latest measured subset run: `285` files, `1,216` passed, `0` failed,
   `46` todo. That subset currently executes the todo-registration smoke, three Node
   `assert` CommonJS smokes, Node `path` smokes, three Node `url` smokes, the Web
-  `atob`/`btoa` smoke, fifty-five regression smokes, one bundler
+  `atob`/`btoa` smoke, fifty-seven regression smokes, one bundler
   constant-fold smoke, bundler function-toString `require()`
   preservation, bundler `allowUnresolved`, banner, barrel,
   browser-target builtin diagnostics, CJS, CJS-to-ESM, compile-autoload,
@@ -39,13 +39,14 @@ macOS, Linux, and the WASM target.
   formatting smoke, Node console/watch/worker/fs/dns/readline one-shot smokes, a WebSocket
   close-reentrancy smoke, a `node:vm.runInNewContext` / `process.on` throw
   propagation smoke, JSONC and `bun.lock` resolution smokes,
-  `Bun.write` leak coverage, `dns.lookup` keepalive coverage,
+  `Bun.write` leak coverage, HTTP leak smokes,
+  `dns.lookup` keepalive coverage,
   `process.binding("constants")` /
   `process.binding("uv")` smoke coverage, `process.constructor.call`
   prototype-shape coverage, Jest fake-timer Date /
   `Intl.DateTimeFormat` smoke coverage,
   `bun:internal-for-testing.highlightJavaScript` template-literal and
-  utility highlighter coverage,
+  utility highlighter coverage, a long-running Node util inspect regression,
   `home test --pass-with-no-tests` subprocess coverage,
   JS-only `Bun.serve({ fetch })` / long-lived server-fixture `Bun.spawn` coverage,
   IPC-style server-fixture URL delivery and `new URL(input, base)` coverage,
