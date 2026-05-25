@@ -779,8 +779,15 @@ pub const Scanner = struct {
                 const slash_pos = self.pos;
                 self.pos += 1;
                 if (self.isAtEnd()) {
+                    // tsc distinguishes "backslash immediately before
+                    // EOF" from the generic unterminated-string case:
+                    // the former emits TS1126 ("Unexpected end of
+                    // text.") rather than TS1002. Mirrors
+                    // `unterminatedStringLiteralWithBackslash1.ts(1,3)`.
+                    // Emit our internal marker; ts_driver maps it to
+                    // TS1126.
                     if (!self.suppress_unterminated_literal) {
-                        self.report(gpa, "unterminated string literal at EOF");
+                        self.report(gpa, "Unexpected end of text.");
                     }
                     self.pending_unterm_string_start = start;
                     self.pending_unterm_string_line = line;

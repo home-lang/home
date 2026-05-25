@@ -1430,6 +1430,13 @@ fn normalizeScannerDiagnostic(message: []const u8) NormalizedScannerDiagnostic {
     {
         return .{ .code = 1002, .message = "Unterminated string literal." };
     }
+    // TS1126 — backslash immediately before EOF inside a string
+    // literal. tsc emits "Unexpected end of text." instead of the
+    // generic TS1002 for this specific shape. Mirrors
+    // `unterminatedStringLiteralWithBackslash1.ts(1,3)`.
+    if (std.mem.eql(u8, message, "Unexpected end of text.")) {
+        return .{ .code = 1126, .message = "Unexpected end of text." };
+    }
     if (std.mem.eql(u8, message, "'*/' expected") or std.mem.eql(u8, message, "'*/' expected.")) {
         return .{ .code = 1010, .message = "'*/' expected." };
     }

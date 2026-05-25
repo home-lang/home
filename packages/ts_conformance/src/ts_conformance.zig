@@ -30202,6 +30202,29 @@ test "conformance: importDeclarationInModuleDeclaration1 matches TS1147 baseline
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: unterminatedStringLiteralWithBackslash1 matches TS1126 baseline" {
+    // Regression pin for the lexer-level TS1126 emission landed in
+    // scanner + ts_driver. Upstream baseline:
+    //   unterminatedStringLiteralWithBackslash1.ts(1,3): error TS1126: \
+    //     Unexpected end of text.
+    // Pre-fix the scanner emitted TS1002 ("Unterminated string literal.")
+    // for the backslash-immediately-before-EOF shape. tsc distinguishes
+    // that case as TS1126.
+    const result = try runOneEntry(T.allocator, .{
+        .name = "unterminatedStringLiteralWithBackslash1",
+        .path = "unterminatedStringLiteralWithBackslash1.ts",
+        .source = "\"\\",
+        .expects_error = true,
+        .expected_errors = "unterminatedStringLiteralWithBackslash1.ts(1,3): error TS1126: Unexpected end of text.",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: typeGuardsInConditionalExpression passes clean" {
     // Regression pin for the synth-update target narrowing fix in
     // ts_checker. Previously TS2356 (arithmetic operand must be number)
