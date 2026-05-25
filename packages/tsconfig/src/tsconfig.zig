@@ -218,6 +218,7 @@ pub const CompilerOptions = struct {
     verbatim_module_syntax: ?bool = null,
     allow_synthetic_default_imports: ?bool = null,
     module_detection: ?[]const u8 = null,
+    ignore_deprecations: ?[]const u8 = null,
 
     // -- Emit --
     target: ?Target = null,
@@ -358,6 +359,16 @@ pub const TsConfig = struct {
 
         if (co.paths) |paths| {
             try validatePaths(gpa, &diags, paths, co.base_url != null);
+        }
+
+        if (co.ignore_deprecations) |ignore_deprecations| {
+            if (!std.mem.eql(u8, ignore_deprecations, "5.0") and !std.mem.eql(u8, ignore_deprecations, "6.0")) {
+                try diags.append(gpa, .{
+                    .code = 5103,
+                    .message = "Invalid value for '--ignoreDeprecations'.",
+                    .field = "ignoreDeprecations",
+                });
+            }
         }
 
         if (co.isolated_modules == true and co.module == .none and !targetAtLeastES2015(co.target)) {
@@ -1232,6 +1243,7 @@ fn fillCompilerOptions(arena: std.mem.Allocator, co: *CompilerOptions, obj: json
             .{ .name = "jsxImportSource", .field = "jsx_import_source" },
             .{ .name = "reactNamespace", .field = "react_namespace" },
             .{ .name = "moduleDetection", .field = "module_detection" },
+            .{ .name = "ignoreDeprecations", .field = "ignore_deprecations" },
         };
         inline for (str_table) |entry| {
             if (std.mem.eql(u8, key, entry.name)) {
@@ -1606,9 +1618,10 @@ test "tsconfig: moduleDetection parses as string" {
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
     const cfg = try parseString(t.allocator, arena.allocator(),
-        \\{ "compilerOptions": { "moduleDetection": "force" } }
+        \\{ "compilerOptions": { "moduleDetection": "force", "ignoreDeprecations": "5.0" } }
     );
     try t.expectEqualStrings("force", cfg.compiler_options.module_detection.?);
+    try t.expectEqualStrings("5.0", cfg.compiler_options.ignore_deprecations.?);
 }
 
 test "tsconfig: JSX factory string fields parse" {
@@ -1968,6 +1981,41 @@ test "tsconfig.validate: paths accepts non-relative substitutions when baseUrl i
     const diags = try cfg.validate(t.allocator);
     defer freeValidationDiagnostics(t.allocator, diags);
     try t.expectEqual(@as(usize, 0), diags.len);
+}
+
+test "tsconfig.validate: ignoreDeprecations reports TS5103 for unsupported values" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "ignoreDeprecations": "5.1" } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), diags.len);
+    try t.expectEqual(@as(u32, 5103), diags[0].code);
+    try t.expectEqualStrings("ignoreDeprecations", diags[0].field);
+    try t.expectEqualStrings("Invalid value for '--ignoreDeprecations'.", diags[0].message);
+}
+
+test "tsconfig.validate: ignoreDeprecations accepts supported values" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+
+    const current = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "ignoreDeprecations": "5.0" } }
+    );
+    const current_diags = try current.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, current_diags);
+    try t.expectEqual(@as(usize, 0), current_diags.len);
+    try t.expectEqualStrings("5.0", current.compiler_options.ignore_deprecations.?);
+
+    const next = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "ignoreDeprecations": "6.0" } }
+    );
+    const next_diags = try next.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, next_diags);
+    try t.expectEqual(@as(usize, 0), next_diags.len);
+    try t.expectEqualStrings("6.0", next.compiler_options.ignore_deprecations.?);
 }
 
 test "tsconfig.validate: isolatedModules reports TS5047 for module none below ES2015" {
