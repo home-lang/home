@@ -524,6 +524,7 @@ pub const TsCodes = struct {
     pub const binding_element_implicitly_any: u32 = 7031;
     pub const rest_parameter_implicitly_any: u32 = 7019;
     pub const jsdoc_extends_not_attached: u32 = 8022;
+    pub const jsdoc_param_name_no_parameter: u32 = 8024;
     pub const jsdoc_param_name_matches_arguments_if_array: u32 = 8029;
     pub const setter_property_implicitly_any: u32 = 7032;
     pub const new_expression_implicitly_any: u32 = 7009;
@@ -12926,6 +12927,7 @@ pub const Checker = struct {
         try self.checkJsOnlySignatureAnnotations(node);
         try self.checkJsDocThisTagOnArrowFunction(node);
         try self.checkJsDocFunctionTypeReturnAnnotations(node);
+        try self.checkUnmatchedJsDocParameters(node);
         const type_params = hir_mod.fnTypeParams(self.hir, node);
         const has_jsdoc_templates = self.fnHasJsDocTemplateTags(node);
         try self.checkTypeParameterDeclList(type_params);
@@ -33706,6 +33708,63 @@ pub const Checker = struct {
         defer self.gpa.free(tags);
         for (tags) |tag| {
             if (tag.kind == .param_tag or tag.kind == .type_tag) return true;
+        }
+        return false;
+    }
+
+    fn checkUnmatchedJsDocParameters(self: *Checker, fn_node: NodeId) CheckError!void {
+        if (!self.sourceHasCheckJsDirective()) return;
+        if (!self.virtualSectionIsJsLike(fn_node)) return;
+        const src = self.source orelse return;
+        const jsdoc = self.leadingJsDocBodyForFunctionOrOwnerWithStart(src, fn_node) orelse return;
+        if (std.mem.indexOf(u8, jsdoc.body, "@param") == null) return;
+        const tags = ts_parser.jsdoc.parse(self.gpa, jsdoc.body) catch return;
+        defer self.gpa.free(tags);
+
+        var jsdoc_param_index: usize = 0;
+        const contains_arguments = try self.functionBodyReferencesArguments(fn_node);
+        for (tags) |tag| {
+            if (tag.kind != .param_tag) continue;
+            defer jsdoc_param_index += 1;
+            if (tag.name.len == 0) continue;
+            if (contains_arguments) continue;
+            if (self.fnParamAtIndexIsBindingPattern(fn_node, jsdoc_param_index)) continue;
+            if (self.fnHasIdentifierParamNamed(fn_node, tag.name)) continue;
+            if (tag.is_name_first) continue;
+
+            const pos = self.sliceStartPos(src, tag.name) orelse @as(u32, @intCast(jsdoc.start));
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "JSDoc '@param' tag has name '{s}', but there is no parameter with that name.",
+                .{tag.name},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = fn_node,
+                .pos = pos,
+                .code = TsCodes.jsdoc_param_name_no_parameter,
+                .message = msg,
+            });
+        }
+    }
+
+    fn fnParamAtIndexIsBindingPattern(self: *Checker, fn_node: NodeId, wanted_index: usize) bool {
+        const params = hir_mod.fnParams(self.hir, fn_node);
+        if (wanted_index >= params.len) return false;
+        const p = params[wanted_index];
+        if (self.hir.kindOf(p) != .parameter) return false;
+        const pp = hir_mod.parameterOf(self.hir, p);
+        if (pp.name == hir_mod.none_node_id) return false;
+        const kind = self.hir.kindOf(pp.name);
+        return kind == .object_pattern or kind == .array_pattern;
+    }
+
+    fn fnHasIdentifierParamNamed(self: *Checker, fn_node: NodeId, wanted: []const u8) bool {
+        for (hir_mod.fnParams(self.hir, fn_node)) |p| {
+            if (self.hir.kindOf(p) != .parameter) continue;
+            const pp = hir_mod.parameterOf(self.hir, p);
+            if (pp.name == hir_mod.none_node_id or self.hir.kindOf(pp.name) != .identifier) continue;
+            const name = self.string_interner.get(hir_mod.identifierOf(self.hir, pp.name).name);
+            if (std.mem.eql(u8, name, wanted)) return true;
         }
         return false;
     }
@@ -80365,6 +80424,46 @@ test "checker: checkjs JSDoc function @type return participates in TS2355" {
         }
     }
     try T.expect(found);
+}
+
+test "checker: checkjs unmatched JSDoc param emits TS8024" {
+    const source =
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: /a.js
+        \\/** @param {string} colour */
+        \\function f(color) {}
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.jsdoc_param_name_no_parameter) {
+            found = true;
+            try T.expect(d.pos != null);
+            try T.expectEqual(@as(u8, 'c'), source[d.pos.?]);
+            try T.expect(std.mem.indexOf(u8, d.message, "colour") != null);
+        }
+    }
+    try T.expect(found);
+}
+
+test "checker: checkjs matched and name-first JSDoc params do not emit TS8024" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: /a.js
+        \\/** @param {string} color */
+        \\function f(color) {}
+        \\/** @param colour {string} */
+        \\function g(color) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.jsdoc_param_name_no_parameter);
+    }
 }
 
 test "checker: checkjs JSDoc param optional suffix rejects null" {

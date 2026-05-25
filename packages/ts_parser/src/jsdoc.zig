@@ -67,6 +67,10 @@ pub const Tag = struct {
     /// Captured default-value expression when the source used the
     /// `@param {T} [name=DEFAULT]` form. Empty otherwise.
     default_text: []const u8 = "",
+    /// True when the tag used Closure's name-first spelling
+    /// (`@param name {T}`). Upstream suppresses unmatched-name
+    /// TS8024 for that spelling.
+    is_name_first: bool = false,
 };
 
 /// Parse a single JSDoc comment block (the bytes *between* `/**`
@@ -128,6 +132,7 @@ fn parseLine(line: []const u8) ?Tag {
     var type_text: []const u8 = "";
     var optional = false;
     var optional_from_type_suffix = false;
+    var is_name_first = false;
     if (rest.len > 0 and rest[0] == '{') {
         const parsed = parseTypeExpression(rest) orelse return null;
         type_text = parsed.type_text;
@@ -169,6 +174,7 @@ fn parseLine(line: []const u8) ?Tag {
             const parsed = parseTypeExpression(rest) orelse return null;
             type_text = parsed.type_text;
             rest = std.mem.trimStart(u8, rest[parsed.len..], " \t");
+            is_name_first = true;
             if (parsed.optional_from_type_suffix) {
                 optional = true;
                 optional_from_type_suffix = true;
@@ -183,6 +189,7 @@ fn parseLine(line: []const u8) ?Tag {
         .optional = optional,
         .optional_from_type_suffix = optional_from_type_suffix,
         .default_text = default_text,
+        .is_name_first = is_name_first,
     };
 }
 
