@@ -313,6 +313,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/path/matches-glob.test.ts",
     "js/node/path/resolve-long-cwd.test.ts",
     "bundler/bundler_allow_unresolved.test.ts",
+    "bundler/bundler_bun.test.ts",
     "bundler/bundler_banner.test.ts",
     "bundler/bundler_barrel.test.ts",
     "bundler/bundler_browser.test.ts",
@@ -2987,6 +2988,43 @@ const harness_prelude =
     \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, write: Bun.write };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["bun:build"] = { BuildArtifact, BuildMessage };
+    \\function __home_sqlite_database(filename) {
+    \\  this.filename = String(filename || "");
+    \\  this.tables = Object.create(null);
+    \\}
+    \\__home_sqlite_database.prototype.exec = function(sql) {
+    \\  const text = String(sql || "");
+    \\  const create = text.match(/create\s+table\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)/i);
+    \\  if (create) {
+    \\    const columns = create[2].split(",").map(part => part.trim().split(/\s+/)[0]).filter(Boolean);
+    \\    this.tables[create[1]] = { columns, rows: [] };
+    \\    return this;
+    \\  }
+    \\  const insert = text.match(/insert\s+into\s+([A-Za-z_][A-Za-z0-9_]*)\s+values\s*\((.*)\)/i);
+    \\  if (insert) {
+    \\    const table = this.tables[insert[1]] || (this.tables[insert[1]] = { columns: ["message"], rows: [] });
+    \\    const raw = insert[2].trim();
+    \\    const value = raw.replace(/^['"]|['"]$/g, "");
+    \\    const row = {};
+    \\    row[table.columns[0] || "value"] = value;
+    \\    table.rows.push(row);
+    \\    return this;
+    \\  }
+    \\  return this;
+    \\};
+    \\__home_sqlite_database.prototype.query = function(sql) {
+    \\  const tableMatch = String(sql || "").match(/from\s+([A-Za-z_][A-Za-z0-9_]*)/i);
+    \\  const table = tableMatch ? this.tables[tableMatch[1]] : null;
+    \\  return {
+    \\    get() {
+    \\      return table && table.rows.length > 0 ? table.rows[0] : {};
+    \\    },
+    \\  };
+    \\};
+    \\__home_sqlite_database.prototype.serialize = function() {
+    \\  return JSON.stringify({ filename: this.filename, tables: this.tables });
+    \\};
+    \\globalThis.__home_modules["bun:sqlite"] = { Database: __home_sqlite_database };
     \\globalThis.__home_modules["node:test"] = { test };
     \\let __home_temp_dir_counter = 0;
     \\function __home_write_temp_files(root, files) {
@@ -8823,6 +8861,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { buildNoThrow } = globalThis.__home_import(\"./buildNoThrow\");",
         },
         .{
+            .needle = "import { Database } from \"bun:sqlite\";",
+            .replacement = "const { Database } = globalThis.__home_import(\"bun:sqlite\");",
+        },
+        .{
             .needle = "import { itBundled } from \"./expectBundled\";",
             .replacement = "const { itBundled } = globalThis.__home_import(\"./expectBundled\");",
         },
@@ -9714,6 +9756,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mkdirSync(path, options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"./expectBundled\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_expect_bundled_allow_unresolved_errors") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"bun:sqlite\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_sqlite_database.prototype.serialize") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "js/node/path/common/fixtures.js") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"node:url\"] = __home_url_module") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "URL.canParse = function(input, base)") != null);
@@ -9861,6 +9905,25 @@ test "Bun test import rewrite lowers single describe binding" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"./expectBundled\"") == null);
 }
 
+test "Bun sqlite import rewrite lowers Database binding" {
+    const source =
+        \\import { Database } from "bun:sqlite";
+        \\import { describe } from "bun:test";
+        \\import { itBundled } from "./expectBundled";
+        \\describe("bundler", () => {
+        \\  const db = new Database(":memory:");
+        \\  itBundled("bun/sqlite-file", { files: { "/db.sqlite": db.serialize() } });
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "bundler/bundler_bun.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { Database } = globalThis.__home_import(\"bun:sqlite\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { describe } = globalThis.__home_import(\"bun:test\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { itBundled } = globalThis.__home_import(\"./expectBundled\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:sqlite\"") == null);
+}
+
 test "internal highlighter import rewrite lowers alias binding" {
     const source =
         \\import { highlightJavaScript as highlighter } from "bun:internal-for-testing";
@@ -9982,6 +10045,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/node/path/matches-glob.test.ts",
         "js/node/path/resolve-long-cwd.test.ts",
         "bundler/bundler_allow_unresolved.test.ts",
+        "bundler/bundler_bun.test.ts",
         "bundler/bundler_banner.test.ts",
         "bundler/bundler_barrel.test.ts",
         "bundler/bundler_browser.test.ts",

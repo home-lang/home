@@ -948,6 +948,10 @@ The copied `integration/bun-types/fixture/5396.test.ts` fixture now
 passes as `1` test by erasing its type-only DTO/class annotations and
 supporting Bun/Jest mock promise helpers on both `mock()` functions and
 `spyOn()` wrappers.
+The copied `bundler/bundler_bun.test.ts` fixture now passes as `6` tests
+by lowering its `bun:sqlite` `Database` import to the Home bootstrap
+sqlite shim and running the upstream `itBundled` cases through the
+existing bundler harness surface.
 The copied `js/bun/test/test-timers.test.ts` fixture now passes as `1`
 test through the Jest fake-timer bootstrap model. It covers Bun's stable
 `Date` identity, mocked `Date.now()` / `new Date()`,
