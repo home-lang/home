@@ -1446,6 +1446,9 @@ fn normalizeScannerDiagnostic(message: []const u8) NormalizedScannerDiagnostic {
     if (std.mem.eql(u8, message, "Unknown regular expression flag.")) {
         return .{ .code = 1499, .message = message };
     }
+    if (std.mem.eql(u8, message, "Merge conflict marker encountered.")) {
+        return .{ .code = 1185, .message = message };
+    }
     return .{ .message = message };
 }
 
@@ -1742,6 +1745,30 @@ test "driver: simple let binding round-trips" {
     // Symbol table is populated.
     const sym = c.lookupTopLevel("x") orelse return error.NoSymbol;
     try T.expect(sym.flags.is_let);
+}
+
+test "driver: scanner merge conflict marker diagnostic maps to TS1185" {
+    var c = try compileSource(T.allocator,
+        \\<<<<<<< HEAD
+        \\let x = 1;
+        \\=======
+        \\let x = 2;
+        \\>>>>>>> branch
+        \\
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var count: usize = 0;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 1185) {
+            count += 1;
+            try T.expectEqualStrings("Merge conflict marker encountered.", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 3), count);
 }
 
 test "driver: alwaysStrict enables strict parser early errors" {

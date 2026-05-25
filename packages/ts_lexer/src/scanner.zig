@@ -367,9 +367,72 @@ pub const Scanner = struct {
                         return;
                     }
                 },
+                '<', '|', '=', '>' => {
+                    if (self.isConflictMarkerTrivia(self.pos)) {
+                        self.scanConflictMarkerTrivia(gpa);
+                        continue;
+                    }
+                    return;
+                },
                 else => return,
             }
         }
+    }
+
+    fn isConflictMarkerTrivia(self: *const Scanner, pos: u32) bool {
+        const marker_len: u32 = 7;
+        if (!(pos == 0 or (pos > 0 and isLineBreakByte(self.source[pos - 1])))) return false;
+        if (pos + marker_len >= self.source.len) return false;
+
+        const ch = self.source[pos];
+        var i: u32 = 0;
+        while (i < marker_len) : (i += 1) {
+            if (self.source[pos + i] != ch) return false;
+        }
+
+        return ch == '=' or self.source[pos + marker_len] == ' ';
+    }
+
+    fn scanConflictMarkerTrivia(self: *Scanner, gpa: std.mem.Allocator) void {
+        const start = self.pos;
+        const line = self.line;
+        self.reportAt(gpa, start, line, "Merge conflict marker encountered.");
+
+        const ch = self.source[start];
+        const len: u32 = @intCast(self.source.len);
+        if (ch == '<' or ch == '>') {
+            while (self.pos < len and !isLineBreakByte(self.source[self.pos])) {
+                self.pos += 1;
+            }
+            return;
+        }
+
+        while (self.pos < len) {
+            const current = self.source[self.pos];
+            if ((current == '=' or current == '>') and current != ch and self.isConflictMarkerTrivia(self.pos)) {
+                break;
+            }
+            if (current == '\n') {
+                self.pos += 1;
+                self.line += 1;
+                self.line_start = self.pos;
+                self.saw_newline = true;
+                continue;
+            }
+            if (current == '\r') {
+                self.pos += 1;
+                if (self.pos < len and self.source[self.pos] == '\n') self.pos += 1;
+                self.line += 1;
+                self.line_start = self.pos;
+                self.saw_newline = true;
+                continue;
+            }
+            self.pos += 1;
+        }
+    }
+
+    fn isLineBreakByte(c: u8) bool {
+        return c == '\n' or c == '\r';
     }
 
     fn isIdentStart(c: u8) bool {
@@ -1698,6 +1761,45 @@ test "Scanner: unterminated block comment reports diagnostic" {
     try t.expectEqual(TokenKind.eof, tok.kind);
     try t.expect(s.diagnostics.items.len > 0);
     try t.expectEqualStrings("'*/' expected.", s.diagnostics.items[0].message);
+}
+
+test "Scanner: merge conflict markers are trivia diagnostics at line start" {
+    const source =
+        "<<<<<<< HEAD\n" ++
+        "let x = 1;\n" ++
+        "=======\n" ++
+        "let x = 2;\n" ++
+        ">>>>>>> branch\n";
+    var s = Scanner.init(t.allocator, source);
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+
+    try t.expectEqual(@as(usize, 3), s.diagnostics.items.len);
+    try t.expectEqualStrings("Merge conflict marker encountered.", s.diagnostics.items[0].message);
+    try t.expectEqual(@as(u32, 0), s.diagnostics.items[0].pos);
+    try t.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, source, "=======").?)), s.diagnostics.items[1].pos);
+    try t.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, source, ">>>>>>>").?)), s.diagnostics.items[2].pos);
+    try t.expectEqual(TokenKind.kw_let, toks.items[0].kind);
+    try t.expectEqual(TokenKind.eof, toks.items[toks.items.len - 1].kind);
+}
+
+test "Scanner: merge conflict marker shape requires line start and following character" {
+    const source =
+        "let x = 1;<<<<<<< HEAD\n" ++
+        "<<<<<<<HEAD\n" ++
+        "|||||||base\n" ++
+        ">>>>>>>branch\n" ++
+        "=======\n" ++
+        "=======";
+    var s = Scanner.init(t.allocator, source);
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+
+    try t.expectEqual(@as(usize, 1), s.diagnostics.items.len);
+    try t.expectEqualStrings("Merge conflict marker encountered.", s.diagnostics.items[0].message);
+    try t.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, source, "=======\n").?)), s.diagnostics.items[0].pos);
 }
 
 test "Scanner: line and block comments are trivia" {
