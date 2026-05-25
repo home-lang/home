@@ -3055,6 +3055,94 @@ pub const Checker = struct {
         return false;
     }
 
+    /// Append the full qualified-name path of a `namespace_decl`,
+    /// outermost-first. Mirrors `collectNamespaceQualifiedPath` but
+    /// starts FROM the namespace node itself (rather than an arbitrary
+    /// descendant), so the result is exactly that namespace's own path:
+    /// `namespace my.data.foo {}` yields `["my","data","foo"]`, and a
+    /// `namespace Point {}` nested inside `namespace X.Y {}` yields
+    /// `["X","Y","Point"]`. Used to detect merged namespace scopes.
+    fn collectNamespaceOwnPath(
+        self: *Checker,
+        ns_node: NodeId,
+        path: *std.ArrayListUnmanaged(hir_mod.StringId),
+    ) CheckError!void {
+        var stack: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer stack.deinit(self.gpa);
+        var cur = ns_node;
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            if (self.hir.kindOf(cur) == .namespace_decl) {
+                try stack.append(self.gpa, cur);
+            }
+        }
+        var i = stack.items.len;
+        while (i > 0) {
+            i -= 1;
+            const cand = stack.items[i];
+            const ns = hir_mod.namespaceOf(self.hir, cand);
+            if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) continue;
+            const name_str = self.string_interner.get(hir_mod.identifierOf(self.hir, ns.name).name);
+            var it = std.mem.splitScalar(u8, name_str, '.');
+            while (it.next()) |segment| {
+                const seg_id = self.string_interner.intern(segment) catch return error.OutOfMemory;
+                try path.append(self.gpa, seg_id);
+            }
+        }
+    }
+
+    fn qualifiedPathsEqual(a: []const hir_mod.StringId, b: []const hir_mod.StringId) bool {
+        if (a.len != b.len) return false;
+        for (a, b) |x, y| {
+            if (x != y) return false;
+        }
+        return true;
+    }
+
+    /// True if `name` is declared as a VALUE in any namespace declaration
+    /// that is a *merged enclosing scope* of the namespace `ns_node`.
+    ///
+    /// Dotted namespace names (`namespace my.data.foo {}`) are stored as a
+    /// single `namespace_decl` whose name string is the full dotted path,
+    /// so the parser never materializes the implied enclosing namespaces
+    /// (`my`, `my.data`). Per tsc, `my.data` from `namespace my.data {}`
+    /// and the `my.data` segment of `namespace my.data.foo {}` MERGE into
+    /// one namespace — so a value exported from the former is visible to
+    /// references inside the latter. The local parent-chain walk only sees
+    /// the body the reference is physically nested in, missing the merged
+    /// sibling. This scans every namespace_decl whose own qualified path is
+    /// a PROPER PREFIX of `ns_node`'s path and reports whether it declares
+    /// the name. (A genuinely undeclared name matches no prefix scope, so
+    /// TS2304 still fires — see the negative test.)
+    fn mergedEnclosingNamespaceDeclaresValueName(
+        self: *Checker,
+        ns_node: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!bool {
+        var own_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer own_path.deinit(self.gpa);
+        try self.collectNamespaceOwnPath(ns_node, &own_path);
+        // Need at least one enclosing segment to have a merged scope.
+        if (own_path.items.len < 2) return false;
+
+        var cand_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer cand_path.deinit(self.gpa);
+
+        var i: hir_mod.NodeId = 1;
+        while (i < self.hir.nodeCount()) : (i += 1) {
+            if (self.hir.kindOf(i) != .namespace_decl) continue;
+            if (i == ns_node) continue;
+            cand_path.clearRetainingCapacity();
+            self.collectNamespaceOwnPath(i, &cand_path) catch continue;
+            // Only proper prefixes of `ns_node`'s path are enclosing
+            // (merged) scopes; equal-length or longer paths are siblings
+            // or descendants, which don't contribute to this lookup.
+            if (cand_path.items.len == 0 or cand_path.items.len >= own_path.items.len) continue;
+            if (!qualifiedPathsEqual(cand_path.items, own_path.items[0..cand_path.items.len])) continue;
+            if (self.namespaceBodyDeclaresValueName(hir_mod.namespaceBody(self.hir, i), name)) return true;
+        }
+        return false;
+    }
+
     /// True if `receiver` (an identifier or member_access) resolves to
     /// a namespace declaration whose body exports a class declared
     /// with `abstract` named `member_name`. Used by `new M.A` to
@@ -44800,6 +44888,16 @@ pub const Checker = struct {
                         }
                     }
                 }
+                // Merged-namespace fallback: the name isn't declared in
+                // THIS namespace's own body, but a dotted name like
+                // `namespace my.data.foo {}` shares its `my.data` prefix
+                // with a separate `namespace my.data {}` declaration that
+                // tsc merges into the same scope. A value exported there
+                // (e.g. `buz`) is visible here. See
+                // `mergedModuleDeclarationCodeGen3`.
+                if (self.mergedEnclosingNamespaceDeclaresValueName(cur, id.name) catch false) {
+                    return types.Primitive.any;
+                }
             }
             if (k == .for_in_stmt or k == .for_of_stmt) {
                 // The loop binding lives directly on the for node;
@@ -62364,6 +62462,59 @@ test "checker: new on namespaced concrete class does not emit TS2511" {
     for (b.base.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.abstract_class_instantiation);
     }
+}
+
+test "checker: merged dotted namespace exposes value to nested merged part (no TS2304)" {
+    // mergedModuleDeclarationCodeGen3.ts: `my.data` and `my.data.foo` are
+    // dotted namespace names. The second declaration's `my.data` segment
+    // merges with the first, so `buz` (exported from the first `my.data`)
+    // is in scope from inside `my.data.foo`. tsc reports no errors here;
+    // we must not emit TS2304 for the `buz` reference.
+    const b = try newBoundSetup(
+        \\namespace my.data {
+        \\    export function buz() { }
+        \\}
+        \\namespace my.data.foo {
+        \\    function data(my, foo) {
+        \\        buz();
+        \\    }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name and
+            std.mem.indexOf(u8, d.message, "'buz'") != null)
+        {
+            std.debug.print("unexpected TS2304 for merged namespace value 'buz': {s}\n", .{d.message});
+            try T.expect(false);
+        }
+    }
+}
+
+test "checker: genuinely undeclared name in nested merged namespace still emits TS2304" {
+    // Negative guard for the merged-namespace fix: `qux` is never declared
+    // in any merged part of `my.data`, so the reference inside
+    // `my.data.foo` must still surface TS2304.
+    const b = try newBoundSetup(
+        \\namespace my.data {
+        \\    export function buz() { }
+        \\}
+        \\namespace my.data.foo {
+        \\    function data(my, foo) {
+        \\        qux();
+        \\    }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name and
+            std.mem.indexOf(u8, d.message, "'qux'") != null)
+            found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: static index signature value cannot reference class type parameter (TS2302)" {
