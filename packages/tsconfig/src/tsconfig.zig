@@ -227,6 +227,7 @@ pub const CompilerOptions = struct {
     declaration_dir: ?[]const u8 = null,
     declaration_map: ?bool = null,
     emit_declaration_only: ?bool = null,
+    map_root: ?[]const u8 = null,
     composite: ?bool = null,
     incremental: ?bool = null,
     ts_buildinfo_file: ?[]const u8 = null,
@@ -303,9 +304,8 @@ pub const TsConfig = struct {
     /// v0 covers two cross-field checks; the rest of the matrix
     /// (noEmit + outFile contradiction, decorators mutual exclusion,
     /// experimentalDecorators stage-3 conflict, lib/target sanity,
-    /// emitDeclarationOnly without declaration, etc.) is tracked as
-    /// follow-ups and will land alongside the option-resolution pass
-    /// in the type checker.
+    /// etc.) is tracked as follow-ups and will land alongside the
+    /// option-resolution pass in the type checker.
     pub fn validate(self: TsConfig, gpa: std.mem.Allocator) ![]ValidationDiagnostic {
         var diags: std.ArrayListUnmanaged(ValidationDiagnostic) = .empty;
         errdefer diags.deinit(gpa);
@@ -366,6 +366,23 @@ pub const TsConfig = struct {
         }
         if (co.isolated_declarations == true and co.allow_js == true) {
             try appendTs5053(gpa, &diags, "allowJs", "allowJs", "isolatedDeclarations");
+        }
+
+        const emit_declarations = co.declaration == true or co.composite == true;
+        if (co.isolated_declarations == true and !emit_declarations) {
+            try appendTs5069(gpa, &diags, "isolatedDeclarations", "isolatedDeclarations", "declaration", "composite");
+        }
+        if (co.map_root != null and !(co.source_map == true or co.declaration_map == true)) {
+            try appendTs5069(gpa, &diags, "mapRoot", "mapRoot", "sourceMap", "declarationMap");
+        }
+        if (co.declaration_dir != null and !emit_declarations) {
+            try appendTs5069(gpa, &diags, "declarationDir", "declarationDir", "declaration", "composite");
+        }
+        if (co.declaration_map == true and !emit_declarations) {
+            try appendTs5069(gpa, &diags, "declarationMap", "declarationMap", "declaration", "composite");
+        }
+        if (co.emit_declaration_only == true and !emit_declarations) {
+            try appendTs5069(gpa, &diags, "emitDeclarationOnly", "emitDeclarationOnly", "declaration", "composite");
         }
 
         // TS5009-shaped: `outDir` and `rootDir` must not be the same
@@ -449,6 +466,23 @@ fn appendTs5053(
     const msg = try std.fmt.allocPrint(gpa, "Option '{s}' cannot be specified with option '{s}'.", .{ option, conflicting });
     try diags.append(gpa, .{
         .code = 5053,
+        .message = msg,
+        .owns_message = true,
+        .field = field,
+    });
+}
+
+fn appendTs5069(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    field: []const u8,
+    option: []const u8,
+    first_required: []const u8,
+    second_required: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(gpa, "Option '{s}' cannot be specified without specifying option '{s}' or option '{s}'.", .{ option, first_required, second_required });
+    try diags.append(gpa, .{
+        .code = 5069,
         .message = msg,
         .owns_message = true,
         .field = field,
@@ -708,6 +742,7 @@ fn fillCompilerOptions(arena: std.mem.Allocator, co: *CompilerOptions, obj: json
             .{ .name = "rootDir", .field = "root_dir" },
             .{ .name = "declarationDir", .field = "declaration_dir" },
             .{ .name = "tsBuildInfoFile", .field = "ts_buildinfo_file" },
+            .{ .name = "mapRoot", .field = "map_root" },
             .{ .name = "jsxFactory", .field = "jsx_factory" },
             .{ .name = "jsxFragmentFactory", .field = "jsx_fragment_factory" },
             .{ .name = "jsxImportSource", .field = "jsx_import_source" },
@@ -1371,11 +1406,90 @@ test "tsconfig.validate: mutually exclusive options report TS5053" {
     );
     const diags = try cfg.validate(t.allocator);
     defer freeValidationDiagnostics(t.allocator, diags);
-    try t.expectEqual(@as(usize, 2), diags.len);
+    try t.expectEqual(@as(usize, 3), diags.len);
     try t.expectEqual(@as(u32, 5053), diags[0].code);
     try t.expectEqualStrings("Option 'sourceMap' cannot be specified with option 'inlineSourceMap'.", diags[0].message);
     try t.expectEqual(@as(u32, 5053), diags[1].code);
     try t.expectEqualStrings("Option 'allowJs' cannot be specified with option 'isolatedDeclarations'.", diags[1].message);
+    try t.expectEqual(@as(u32, 5069), diags[2].code);
+    try t.expectEqualStrings("Option 'isolatedDeclarations' cannot be specified without specifying option 'declaration' or option 'composite'.", diags[2].message);
+}
+
+test "tsconfig.validate: declaration-dependent options report TS5069" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "declarationDir": "types",
+        \\    "declarationMap": true,
+        \\    "emitDeclarationOnly": true,
+        \\    "isolatedDeclarations": true
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 4), diags.len);
+    try t.expectEqual(@as(u32, 5069), diags[0].code);
+    try t.expectEqualStrings("Option 'isolatedDeclarations' cannot be specified without specifying option 'declaration' or option 'composite'.", diags[0].message);
+    try t.expectEqual(@as(u32, 5069), diags[1].code);
+    try t.expectEqualStrings("Option 'declarationDir' cannot be specified without specifying option 'declaration' or option 'composite'.", diags[1].message);
+    try t.expectEqual(@as(u32, 5069), diags[2].code);
+    try t.expectEqualStrings("Option 'declarationMap' cannot be specified without specifying option 'declaration' or option 'composite'.", diags[2].message);
+    try t.expectEqual(@as(u32, 5069), diags[3].code);
+    try t.expectEqualStrings("Option 'emitDeclarationOnly' cannot be specified without specifying option 'declaration' or option 'composite'.", diags[3].message);
+}
+
+test "tsconfig.validate: mapRoot reports TS5069 without sourceMap or declarationMap" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "mapRoot": "maps" } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), diags.len);
+    try t.expectEqual(@as(u32, 5069), diags[0].code);
+    try t.expectEqualStrings("Option 'mapRoot' cannot be specified without specifying option 'sourceMap' or option 'declarationMap'.", diags[0].message);
+}
+
+test "tsconfig.validate: declaration-dependent options accept declaration or composite" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+
+    const with_declaration = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "declaration": true,
+        \\    "declarationDir": "types",
+        \\    "declarationMap": true,
+        \\    "emitDeclarationOnly": true,
+        \\    "isolatedDeclarations": true,
+        \\    "mapRoot": "maps"
+        \\  }
+        \\}
+    );
+    const declaration_diags = try with_declaration.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, declaration_diags);
+    try t.expectEqual(@as(usize, 0), declaration_diags.len);
+
+    const with_composite = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "composite": true,
+        \\    "declarationDir": "types",
+        \\    "declarationMap": true,
+        \\    "emitDeclarationOnly": true,
+        \\    "isolatedDeclarations": true,
+        \\    "mapRoot": "maps",
+        \\    "sourceMap": true
+        \\  }
+        \\}
+    );
+    const composite_diags = try with_composite.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, composite_diags);
+    try t.expectEqual(@as(usize, 0), composite_diags.len);
 }
 
 // ============================================================================

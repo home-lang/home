@@ -26,10 +26,10 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 
 | Status | Count |
 | --- | ---: |
-| emitted | 534 |
+| emitted | 535 |
 | declared | 3 |
 | tested-only | 6 |
-| catalog-only | 1533 |
+| catalog-only | 1532 |
 | total upstream codes | 2076 |
 
 ## Codes
@@ -1131,7 +1131,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS4125 | err | catalog-only |  | Each_declaration_of_0_1_differs_in_its_value_where_2_was_expected_but_3_was_given_4125 |
 | TS4126 | err | catalog-only |  | One_value_of_0_1_is_the_string_2_and_the_other_is_assumed_to_be_an_unknown_numeric_value_4126 |
 | TS5001 | err | catalog-only |  | The_current_host_does_not_support_the_0_option_5001 |
-| TS5009 | err | emitted | packages/tsconfig/src/tsconfig.zig:379 | Cannot_find_the_common_subdirectory_path_for_the_input_files_5009 |
+| TS5009 | err | emitted | packages/tsconfig/src/tsconfig.zig:396 | Cannot_find_the_common_subdirectory_path_for_the_input_files_5009 |
 | TS5010 | err | catalog-only |  | File_specification_cannot_end_in_a_recursive_directory_wildcard_Asterisk_Asterisk_Colon_0_5010 |
 | TS5012 | err | catalog-only |  | Cannot_read_file_0_Colon_1_5012 |
 | TS5023 | err | catalog-only |  | Unknown_compiler_option_0_5023 |
@@ -1141,8 +1141,8 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS5042 | err | catalog-only |  | Option_project_cannot_be_mixed_with_source_files_on_a_command_line_5042 |
 | TS5047 | err | catalog-only |  | Option_isolatedModules_can_only_be_used_when_either_option_module_is_provided_or_option_target_is_ES_5047 |
 | TS5051 | err | catalog-only |  | Option_0_can_only_be_used_when_either_option_inlineSourceMap_or_option_sourceMap_is_provided_5051 |
-| TS5052 | err | emitted | packages/tsconfig/src/tsconfig.zig:435 | Option_0_cannot_be_specified_without_specifying_option_1_5052 |
-| TS5053 | err | emitted | packages/tsconfig/src/tsconfig.zig:451 | Option_0_cannot_be_specified_with_option_1_5053 |
+| TS5052 | err | emitted | packages/tsconfig/src/tsconfig.zig:452 | Option_0_cannot_be_specified_without_specifying_option_1_5052 |
+| TS5053 | err | emitted | packages/tsconfig/src/tsconfig.zig:468 | Option_0_cannot_be_specified_with_option_1_5053 |
 | TS5054 | err | catalog-only |  | A_tsconfig_json_file_is_already_defined_at_Colon_0_5054 |
 | TS5055 | err | catalog-only |  | Cannot_write_file_0_because_it_would_overwrite_input_file_5055 |
 | TS5056 | err | catalog-only |  | Cannot_write_file_0_because_it_would_be_overwritten_by_multiple_input_files_5056 |
@@ -1157,7 +1157,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS5066 | err | catalog-only |  | Substitutions_for_pattern_0_shouldn_t_be_an_empty_array_5066 |
 | TS5067 | err | emitted | packages/ts_driver/src/ts_driver.zig:209<br>packages/ts_driver/src/ts_driver.zig:2669 | Invalid_value_for_jsxFactory_0_is_not_a_valid_identifier_or_qualified_name_5067 |
 | TS5068 | err | catalog-only |  | Adding_a_tsconfig_json_file_will_help_organize_projects_that_contain_both_TypeScript_and_JavaScript__5068 |
-| TS5069 | err | catalog-only |  | Option_0_cannot_be_specified_without_specifying_option_1_or_option_2_5069 |
+| TS5069 | err | emitted | packages/tsconfig/src/tsconfig.zig:485 | Option_0_cannot_be_specified_without_specifying_option_1_or_option_2_5069 |
 | TS5070 | err | emitted | packages/ts_driver/src/ts_driver.zig:273<br>packages/ts_driver/src/ts_driver.zig:3044 | Option_resolveJsonModule_cannot_be_specified_when_moduleResolution_is_set_to_classic_5070 |
 | TS5071 | err | emitted | packages/ts_driver/src/ts_driver.zig:286<br>packages/ts_driver/src/ts_driver.zig:3022<br>packages/ts_driver/src/ts_driver.zig:3069 | Option_resolveJsonModule_cannot_be_specified_when_module_is_set_to_none_system_or_umd_5071 |
 | TS5072 | err | catalog-only |  | Unknown_build_option_0_5072 |
@@ -1438,7 +1438,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS6282 | message | catalog-only |  | Found_peerDependency_0_with_1_version_6282 |
 | TS6283 | message | catalog-only |  | Failed_to_find_peerDependency_0_6283 |
 | TS6302 | message | catalog-only |  | Enable_project_compilation_6302 |
-| TS6304 | err | emitted | packages/tsconfig/src/tsconfig.zig:395 | Composite_projects_may_not_disable_declaration_emit_6304 |
+| TS6304 | err | emitted | packages/tsconfig/src/tsconfig.zig:412 | Composite_projects_may_not_disable_declaration_emit_6304 |
 | TS6305 | err | catalog-only |  | Output_file_0_has_not_been_built_from_source_file_1_6305 |
 | TS6306 | err | catalog-only |  | Referenced_project_0_must_have_setting_composite_Colon_true_6306 |
 | TS6307 | err | catalog-only |  | File_0_is_not_listed_within_the_file_list_of_project_1_Projects_must_list_all_files_or_use_an_includ_6307 |
