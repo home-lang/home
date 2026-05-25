@@ -57,7 +57,11 @@ const CheckerResolverAdapter = struct {
         var stack_buf: [1024]u8 = undefined;
         const containing = canonicalContainingPath(&stack_buf, containing_file);
         const r = self.resolver.resolve(specifier, containing) catch return null;
-        return .{ .path = r.path, .is_declaration = r.is_declaration };
+        return .{
+            .path = r.path,
+            .is_declaration = r.is_declaration,
+            .alternate_result = r.alternate_result,
+        };
     }
 };
 

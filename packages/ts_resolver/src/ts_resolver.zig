@@ -96,6 +96,16 @@ pub const Resolution = struct {
     source: Source,
     /// True for `.d.ts` / `.d.hm` / `.d.home` summary files.
     is_declaration: bool,
+    /// When the primary resolution went through `package.json`
+    /// `exports` and landed on a non-declaration (JS) file under an
+    /// ESM (`import`) importer, but a declaration file WOULD have
+    /// resolved had `exports` been ignored, this holds that
+    /// otherwise-unreachable declaration path. tsc uses it to emit
+    /// the TS6278 "There are types at '{0}', but this result could
+    /// not be resolved when respecting package.json \"exports\""
+    /// elaboration on TS7016. Null when there is no such alternate.
+    /// Borrowed from the resolver's arena like `path`.
+    alternate_result: ?[]const u8 = null,
 
     pub const Source = enum {
         relative,
@@ -150,6 +160,13 @@ pub const Resolver = struct {
     fs: FileSystem,
     config: Config,
     arena: std.heap.ArenaAllocator,
+    /// Set transiently by `attachExportsAlternateResult` while probing
+    /// the exports-disabled "alternate" resolution. In this mode the
+    /// legacy `main`/`types`/`module` fields only count when they
+    /// produce a declaration file, so a JS-only `main` falls through to
+    /// the sibling `@types/<pkg>` package (mirroring tsc's
+    /// declaration-only alternate pass).
+    alternate_mode: bool = false,
 
     pub fn init(gpa: std.mem.Allocator, fs: FileSystem, config: Config) Resolver {
         return .{
@@ -202,8 +219,72 @@ pub const Resolver = struct {
 
         // Bare specifier — paths mapping → node_modules.
         if (try self.tryPathsMapping(specifier)) |r| return r;
-        if (try self.tryNodeModules(specifier, containing_file)) |r| return r;
+        if (try self.tryNodeModules(specifier, containing_file)) |r| {
+            return try self.attachExportsAlternateResult(r, specifier, containing_file);
+        }
         return error.NotFound;
+    }
+
+    /// Mirrors tsc's `resolveNodeLike` alternate-result post-step: when
+    /// the primary resolution went through `package.json` `exports`
+    /// (modern resolver) under an ESM (`import`) importer and landed on
+    /// a non-declaration JS file, tsc re-resolves with `exports`
+    /// IGNORED and only declaration/TypeScript extensions enabled to
+    /// see whether the library *could* have been typed had it published
+    /// `exports` correctly. If that alternate finds a declaration file,
+    /// it is stashed on `Resolution.alternate_result` so the checker can
+    /// surface the TS6278 elaboration on TS7016. Returns `r` unchanged
+    /// when no alternate applies.
+    fn attachExportsAlternateResult(
+        self: *Resolver,
+        r: Resolution,
+        specifier: []const u8,
+        containing_file: []const u8,
+    ) ResolveError!Resolution {
+        // Only the modern resolvers consult `exports`; the legacy
+        // strategies never need an alternate.
+        if (!self.exportsResolutionEnabled()) return r;
+        // The primary result is already typed — nothing to recover.
+        if (r.is_declaration) return r;
+        // Bare (non-relative) specifiers only — `exports` is a
+        // node_modules-package concept.
+        if (isRelative(specifier) or isAbsolute(specifier)) return r;
+        // The alternate only fires for ESM importers, matching tsc's
+        // `slices.Contains(r.conditions, "import")` guard.
+        if (!self.hasCondition("import")) return r;
+
+        // Re-resolve with `exports` disabled (node10 strategy) and only
+        // declaration/TypeScript extensions in play, so a `.js`/`.mjs`
+        // implementation can't masquerade as the alternate.
+        const saved_strategy = self.config.strategy;
+        const saved_exts = self.config.extensions;
+        self.config.strategy = .node10;
+        self.config.extensions = &.{ ".d.ts", ".d.mts", ".d.cts", ".ts", ".tsx", ".mts", ".cts", ".d.hm", ".d.home" };
+        self.alternate_mode = true;
+        defer {
+            self.config.strategy = saved_strategy;
+            self.config.extensions = saved_exts;
+            self.alternate_mode = false;
+        }
+        if (try self.tryNodeModules(specifier, containing_file)) |alt| {
+            if (alt.is_declaration) {
+                return .{
+                    .path = r.path,
+                    .source = r.source,
+                    .is_declaration = r.is_declaration,
+                    .alternate_result = alt.path,
+                };
+            }
+        }
+        return r;
+    }
+
+    /// True when `cond` is among the configured `exports` conditions.
+    fn hasCondition(self: *Resolver, cond: []const u8) bool {
+        for (self.config.conditions) |c| {
+            if (std.mem.eql(u8, c, cond)) return true;
+        }
+        return false;
     }
 
     // ---- Internal helpers ----
@@ -380,11 +461,19 @@ pub const Resolver = struct {
                 if (v == .string) {
                     const target = try self.joinPath(dir, v.string);
                     if (try self.tryFileWithExtensions(target)) |r| {
-                        return .{
-                            .path = r.path,
-                            .source = .package_main,
-                            .is_declaration = r.is_declaration,
-                        };
+                        // In alternate (declaration-only) mode, a JS
+                        // `main`/`module` target that resolves to a
+                        // non-declaration file does NOT count — tsc's
+                        // alternate pass only probes declaration/TS
+                        // extensions, so such a package falls through
+                        // to the sibling `@types/<pkg>` lookup.
+                        if (!self.alternate_mode or r.is_declaration) {
+                            return .{
+                                .path = r.path,
+                                .source = .package_main,
+                                .is_declaration = r.is_declaration,
+                            };
+                        }
                     }
                     // `main`-pointed directories only fall through to
                     // their `index.{ext}` — NOT to a nested
@@ -395,11 +484,13 @@ pub const Resolver = struct {
                     // file alone. Mirrors
                     // `packageJsonMain_isNonRecursive.ts`.
                     if (try self.tryDirectoryIndexNoPkg(target)) |r| {
-                        return .{
-                            .path = r.path,
-                            .source = .package_main,
-                            .is_declaration = r.is_declaration,
-                        };
+                        if (!self.alternate_mode or r.is_declaration) {
+                            return .{
+                                .path = r.path,
+                                .source = .package_main,
+                                .is_declaration = r.is_declaration,
+                            };
+                        }
                     }
                 }
             }
@@ -1524,6 +1615,151 @@ test "Resolver: package exports — null without sibling types is a hard fail" {
     });
     defer r.deinit();
     try T.expectError(error.NotFound, r.resolve("dep", "/a.ts"));
+}
+
+test "Resolver: exports routes to JS but legacy types yields alternate_result" {
+    // Mirrors moduleResolution/resolvesWithoutExportsDiagnostic1: the
+    // `exports` map only exposes `import`/`require` JS entry points, so
+    // an ESM importer resolves to `index.mjs` (untyped). The legacy
+    // top-level `types` field still points at `index.d.ts`, which is
+    // unreachable while respecting `exports` — tsc records it as the
+    // alternate result so the checker can emit the TS6278 elaboration.
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/foo/package.json",
+        \\{
+        \\  "name": "foo",
+        \\  "main": "index.js",
+        \\  "types": "index.d.ts",
+        \\  "exports": {
+        \\    ".": {
+        \\      "import": "./index.mjs",
+        \\      "require": "./index.js"
+        \\    }
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/node_modules/foo/index.js", "");
+    try vfs.addFile("/node_modules/foo/index.mjs", "");
+    try vfs.addFile("/node_modules/foo/index.d.ts", "");
+    try vfs.addFile("/index.mts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .strategy = .node16,
+        .conditions = &.{ "import", "node" },
+    });
+    defer r.deinit();
+    const res = try r.resolve("foo", "/index.mts");
+    try T.expectEqualStrings("/node_modules/foo/index.mjs", res.path);
+    try T.expect(!res.is_declaration);
+    try T.expect(res.alternate_result != null);
+    try T.expectEqualStrings("/node_modules/foo/index.d.ts", res.alternate_result.?);
+}
+
+test "Resolver: exports routes to JS, @types sibling yields alternate_result" {
+    // The `bar` package itself ships only JS via `exports`, but a
+    // sibling `@types/bar` declares the types. tsc reports the
+    // alternate path under `/node_modules/@types/` so the checker
+    // rewrites the package name to `@types/bar` in TS6278.
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/bar/package.json",
+        \\{
+        \\  "name": "bar",
+        \\  "main": "index.js",
+        \\  "exports": {
+        \\    ".": {
+        \\      "import": "./index.mjs",
+        \\      "require": "./index.js"
+        \\    }
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/node_modules/bar/index.js", "");
+    try vfs.addFile("/node_modules/bar/index.mjs", "");
+    try vfs.addFile("/node_modules/@types/bar/package.json",
+        \\{ "name": "@types/bar", "types": "index.d.ts" }
+    );
+    try vfs.addFile("/node_modules/@types/bar/index.d.ts", "");
+    try vfs.addFile("/index.mts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .strategy = .node16,
+        .conditions = &.{ "import", "node" },
+    });
+    defer r.deinit();
+    const res = try r.resolve("bar", "/index.mts");
+    try T.expectEqualStrings("/node_modules/bar/index.mjs", res.path);
+    try T.expect(!res.is_declaration);
+    try T.expect(res.alternate_result != null);
+    try T.expectEqualStrings("/node_modules/@types/bar/index.d.ts", res.alternate_result.?);
+}
+
+test "Resolver: no alternate_result when exports already exposes types" {
+    // Negative: when `exports` resolves directly to a declaration file
+    // (via the `types` condition), there is nothing unreachable, so no
+    // alternate_result is recorded.
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/dep/package.json",
+        \\{
+        \\  "name": "dep",
+        \\  "exports": {
+        \\    ".": {
+        \\      "import": "./dist/index.mjs",
+        \\      "types": "./dist/index.d.ts"
+        \\    }
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/node_modules/dep/dist/index.d.ts", "");
+    try vfs.addFile("/node_modules/dep/dist/index.mjs", "");
+    try vfs.addFile("/index.mts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .strategy = .node16,
+        .conditions = &.{ "import", "node" },
+    });
+    defer r.deinit();
+    const res = try r.resolve("dep", "/index.mts");
+    try T.expectEqualStrings("/node_modules/dep/dist/index.d.ts", res.path);
+    try T.expect(res.is_declaration);
+    try T.expect(res.alternate_result == null);
+}
+
+test "Resolver: no alternate_result for require (non-ESM) importer" {
+    // Negative: tsc only computes the alternate result when `import`
+    // is among the active conditions. A CJS (`require`) importer never
+    // gets the elaboration even though types are unreachable.
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/foo/package.json",
+        \\{
+        \\  "name": "foo",
+        \\  "main": "index.js",
+        \\  "types": "index.d.ts",
+        \\  "exports": {
+        \\    ".": {
+        \\      "import": "./index.mjs",
+        \\      "require": "./index.js"
+        \\    }
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/node_modules/foo/index.js", "");
+    try vfs.addFile("/node_modules/foo/index.mjs", "");
+    try vfs.addFile("/node_modules/foo/index.d.ts", "");
+    try vfs.addFile("/index.cts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .strategy = .node16,
+        .conditions = &.{ "require", "node" },
+    });
+    defer r.deinit();
+    const res = try r.resolve("foo", "/index.cts");
+    try T.expectEqualStrings("/node_modules/foo/index.js", res.path);
+    try T.expect(!res.is_declaration);
+    try T.expect(res.alternate_result == null);
 }
 
 test "Resolver: package exports — subpath resolves through pattern wildcard" {

@@ -85,6 +85,14 @@ pub const ExternalResolver = struct {
         /// or `.ts` / `.tsx` / `.mts` / `.cts` — i.e. tsc would
         /// treat the resolution as "typed".
         is_declaration: bool,
+        /// When the resolution went through `package.json` `exports`
+        /// and landed on an untyped JS file under an ESM importer, but
+        /// a declaration file WOULD have resolved with `exports`
+        /// ignored, this carries that otherwise-unreachable declaration
+        /// path. The checker uses it to attach the TS6278 "There are
+        /// types at ..." elaboration to TS7016. Null when none applies.
+        /// Borrowed like `path`.
+        alternate_result: ?[]const u8 = null,
     };
 
     pub const VTable = struct {
@@ -22581,7 +22589,7 @@ pub const Checker = struct {
                 if (external_opt) |external| switch (external.kind) {
                     .implementation => {
                         if (self.strict_flags.no_implicit_any) {
-                            try self.appendUntypedModuleDiagnostic(node, spec, external.resolved_path);
+                            try self.appendUntypedModuleDiagnosticAlt(node, spec, external.resolved_path, external.alternate_result);
                         }
                         return true;
                     },
@@ -22599,7 +22607,11 @@ pub const Checker = struct {
                         external.resolved_path
                     else
                         null;
-                    try self.appendUntypedModuleDiagnostic(node, spec, path);
+                    const alt: ?[]const u8 = if (external_opt) |external|
+                        external.alternate_result
+                    else
+                        null;
+                    try self.appendUntypedModuleDiagnosticAlt(node, spec, path, alt);
                 }
                 return true;
             },
@@ -22613,6 +22625,11 @@ pub const Checker = struct {
         kind: enum { declaration, implementation },
         /// Borrowed from the caller's external-resolver arena.
         resolved_path: []const u8,
+        /// Path to types that exist but were unreachable while
+        /// respecting `package.json` `exports` (tsc's "alternate
+        /// result"). Borrowed; null when none. Drives the TS6278
+        /// elaboration on TS7016.
+        alternate_result: ?[]const u8 = null,
     };
 
     fn resolveBareModuleViaExternal(
@@ -22642,7 +22659,7 @@ pub const Checker = struct {
             // Unknown extension — treat as declaration so we don't
             // gratuitously fire TS7016 against e.g. `.json` resolutions.
             .declaration;
-        return .{ .kind = kind, .resolved_path = r.path };
+        return .{ .kind = kind, .resolved_path = r.path, .alternate_result = r.alternate_result };
     }
 
     /// Returns true when the active importer file's extension makes
@@ -22672,6 +22689,16 @@ pub const Checker = struct {
         spec: []const u8,
         resolved_path: ?[]const u8,
     ) CheckError!void {
+        return self.appendUntypedModuleDiagnosticAlt(node, spec, resolved_path, null);
+    }
+
+    fn appendUntypedModuleDiagnosticAlt(
+        self: *Checker,
+        node: NodeId,
+        spec: []const u8,
+        resolved_path: ?[]const u8,
+        alternate_result: ?[]const u8,
+    ) CheckError!void {
         for (self.diagnostics.items) |d| {
             if (d.node == node and d.code == TsCodes.untyped_module) return;
         }
@@ -22696,11 +22723,43 @@ pub const Checker = struct {
             "Could not find a declaration file for module '{s}'.",
             .{spec},
         );
+        // tsc appends the TS6278 elaboration when types exist but were
+        // unreachable while respecting `package.json` `exports`. The
+        // package name in the elaboration is rewritten to `@types/<pkg>`
+        // when the alternate result lives under `node_modules/@types/`
+        // (mirrors `createModuleNotFoundChain`).
+        const final_msg = if (alternate_result) |alt| ablk: {
+            const pkg_label = self.untypedModulePackageLabel(spec, alt);
+            break :ablk try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "{s}\nThere are types at '{s}', but this result could not be resolved when respecting package.json \"exports\". The '{s}' library may need to update its package.json or typings.",
+                .{ msg, alt, pkg_label },
+            );
+        } else msg;
         try self.diagnostics.append(self.gpa, .{
             .node = node,
             .code = TsCodes.untyped_module,
-            .message = msg,
+            .message = final_msg,
         });
+    }
+
+    /// The package-name label used in the TS6278 elaboration. tsc
+    /// rewrites it to `@types/<mangled-pkg>` when the alternate result
+    /// resolved out of a `node_modules/@types/` directory; otherwise it
+    /// is the bare package name extracted from the specifier.
+    fn untypedModulePackageLabel(self: *Checker, spec: []const u8, alternate_result: []const u8) []const u8 {
+        const pkg = spec[0..packageNameEnd(spec)];
+        if (std.mem.indexOf(u8, alternate_result, "/node_modules/@types/") == null) return pkg;
+        // Scoped packages mangle to `@types/<scope>__<name>`; bare
+        // packages to `@types/<name>`.
+        if (pkg.len > 0 and pkg[0] == '@') {
+            if (std.mem.indexOfScalar(u8, pkg, '/')) |slash| {
+                const scope = pkg[1..slash];
+                const tail = pkg[slash + 1 ..];
+                return std.fmt.allocPrint(self.diag_arena.allocator(), "@types/{s}__{s}", .{ scope, tail }) catch pkg;
+            }
+        }
+        return std.fmt.allocPrint(self.diag_arena.allocator(), "@types/{s}", .{pkg}) catch pkg;
     }
 
     fn importerPathIsAbsoluteForNode(self: *Checker, node: NodeId) bool {
@@ -84042,6 +84101,7 @@ test "checker: qualified type-ref resolves relative nested namespace" {
 const StubExternalResolver = struct {
     canned_path: []const u8,
     canned_is_declaration: bool,
+    canned_alternate_result: ?[]const u8 = null,
 
     pub const vtable = ExternalResolver.VTable{ .resolve = resolveImpl };
 
@@ -84053,7 +84113,11 @@ const StubExternalResolver = struct {
         const self: *StubExternalResolver = @ptrCast(@alignCast(ptr));
         _ = specifier;
         _ = containing_file;
-        return .{ .path = self.canned_path, .is_declaration = self.canned_is_declaration };
+        return .{
+            .path = self.canned_path,
+            .is_declaration = self.canned_is_declaration,
+            .alternate_result = self.canned_alternate_result,
+        };
     }
 };
 
@@ -84077,6 +84141,86 @@ test "checker: external resolver enriches TS7016 with resolved path" {
         if (std.mem.indexOf(u8, d.message, "'/node_modules/foo/index.js' implicitly has an 'any' type.") == null) continue;
         if (std.mem.indexOf(u8, d.message, "Could not find a declaration file for module 'foo'") == null) continue;
         found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: external resolver alternate_result adds TS6278 types-at elaboration" {
+    // Mirrors moduleResolution/resolvesWithoutExportsDiagnostic1 (the
+    // `foo` case): exports routed to `index.mjs`, but legacy `types`
+    // points at the unreachable `index.d.ts`.
+    const s = try newSetup(
+        \\import { foo } from "foo";
+        \\foo;
+    );
+    defer destroySetup(s);
+    var stub = StubExternalResolver{
+        .canned_path = "/node_modules/foo/index.mjs",
+        .canned_is_declaration = false,
+        .canned_alternate_result = "/node_modules/foo/index.d.ts",
+    };
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+    s.checker.setImporterPath("/index.mts");
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.untyped_module) continue;
+        found = true;
+        try T.expect(std.mem.indexOf(u8, d.message, "Could not find a declaration file for module 'foo'. '/node_modules/foo/index.mjs' implicitly has an 'any' type.") != null);
+        try T.expect(std.mem.indexOf(u8, d.message, "There are types at '/node_modules/foo/index.d.ts', but this result could not be resolved when respecting package.json \"exports\". The 'foo' library may need to update its package.json or typings.") != null);
+    }
+    try T.expect(found);
+}
+
+test "checker: external resolver alternate_result rewrites package name for @types" {
+    // The `bar` case: alternate result lives under `node_modules/@types`
+    // so the elaboration names the `@types/bar` library.
+    const s = try newSetup(
+        \\import { bar } from "bar";
+        \\bar;
+    );
+    defer destroySetup(s);
+    var stub = StubExternalResolver{
+        .canned_path = "/node_modules/bar/index.mjs",
+        .canned_is_declaration = false,
+        .canned_alternate_result = "/node_modules/@types/bar/index.d.ts",
+    };
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+    s.checker.setImporterPath("/index.mts");
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.untyped_module) continue;
+        found = true;
+        try T.expect(std.mem.indexOf(u8, d.message, "There are types at '/node_modules/@types/bar/index.d.ts', but this result could not be resolved when respecting package.json \"exports\". The '@types/bar' library may need to update its package.json or typings.") != null);
+    }
+    try T.expect(found);
+}
+
+test "checker: external resolver without alternate_result emits plain TS7016" {
+    // Negative: a JS-only resolution with no alternate types must NOT
+    // gain the TS6278 elaboration.
+    const s = try newSetup(
+        \\import * as foo from "foo";
+        \\foo;
+    );
+    defer destroySetup(s);
+    var stub = StubExternalResolver{
+        .canned_path = "/node_modules/foo/index.js",
+        .canned_is_declaration = false,
+    };
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+    s.checker.setImporterPath("/main.ts");
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.untyped_module) continue;
+        found = true;
+        try T.expect(std.mem.indexOf(u8, d.message, "Could not find a declaration file for module 'foo'.") != null);
+        try T.expect(std.mem.indexOf(u8, d.message, "There are types at") == null);
     }
     try T.expect(found);
 }

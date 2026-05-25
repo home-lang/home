@@ -108,7 +108,11 @@ const CheckerResolverAdapter = struct {
     ) ?ts_driver.ExternalResolver.Resolution {
         const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
         const r = self.resolver.resolve(specifier, containing_file) catch return null;
-        return .{ .path = r.path, .is_declaration = r.is_declaration };
+        return .{
+            .path = r.path,
+            .is_declaration = r.is_declaration,
+            .alternate_result = r.alternate_result,
+        };
     }
 };
 
