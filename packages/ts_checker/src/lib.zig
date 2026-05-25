@@ -9,8 +9,8 @@
 //! Scope is intentionally small. Anything more elaborate (full
 //! generic instantiation of `Array.prototype.map<U>`, the dozens of
 //! string methods, regex / iterator types, …) is a follow-up. For
-//! now `map` / `filter` / `forEach` use loose signatures that accept
-//! a callback and return `T[]` / `T[]` / `void` respectively. The
+//! now `map` / `flatMap` / `filter` / `forEach` use loose signatures that accept
+//! a callback and return `any[]` / `any[]` / `T[]` / `void` respectively. The
 //! arity-and-existence check still fires; sharper inference of `U`
 //! is deferred until the generic-instantiation work lands here.
 //!
@@ -192,7 +192,7 @@ pub fn arrayProto(
     // `T[]` itself — used as both receiver and return type for
     // `slice`, `filter`, `concat`, `reverse`, `sort`.
     const arr_t = try ti.internArrayType(sint, elem);
-    // `any[]` — return type for `map` (until generic <U> support).
+    // `any[]` — return type for `map` / `flatMap` (until generic <U> support).
     const any_arr = try ti.internArrayType(sint, any_t);
     // `T | undefined` — return for `pop`, `find`.
     const t_or_undef = try ti.internUnion(&[_]TypeId{ elem, undef_t });
@@ -211,6 +211,7 @@ pub fn arrayProto(
     const sig_push = try ti.internSignature(&[_]TypeId{elem}, number_t, false);
     const sig_pop = try ti.internSignature(&[_]TypeId{}, t_or_undef, false);
     const sig_map = try ti.internSignature(&[_]TypeId{cb_t_any}, any_arr, false);
+    const sig_flatMap = try ti.internSignature(&[_]TypeId{cb_t_any}, any_arr, false);
     const sig_filter = try ti.internSignature(&[_]TypeId{cb_t_bool}, arr_t, false);
     const sig_forEach = try ti.internSignature(&[_]TypeId{cb_t_void}, void_t, false);
     const sig_every = try ti.internSignature(&[_]TypeId{cb_t_bool}, boolean_t, false);
@@ -237,6 +238,7 @@ pub fn arrayProto(
         .{ .name = try sint.intern("push"), .type = sig_push, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("pop"), .type = sig_pop, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("map"), .type = sig_map, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("flatMap"), .type = sig_flatMap, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("filter"), .type = sig_filter, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("forEach"), .type = sig_forEach, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("every"), .type = sig_every, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -504,7 +506,7 @@ test "lib: numberProto exposes formatting methods" {
     try T.expectEqual(types.Primitive.number_t, ti.signatureReturn(ti.objectMember(proto, value_of_id).?).?);
 }
 
-test "lib: arrayProto exposes length/push/map" {
+test "lib: arrayProto exposes length/push/map/flatMap" {
     var sint = try string_interner.Interner.init(T.allocator);
     defer sint.deinit();
     var ti = try interner_mod.Interner.init(T.allocator);
@@ -516,9 +518,11 @@ test "lib: arrayProto exposes length/push/map" {
     const length_id = try sint.intern("length");
     const push_id = try sint.intern("push");
     const map_id = try sint.intern("map");
+    const flat_map_id = try sint.intern("flatMap");
     try T.expect(ti.objectMember(proto, length_id) != null);
     try T.expect(ti.objectMember(proto, push_id) != null);
     try T.expect(ti.objectMember(proto, map_id) != null);
+    try T.expect(ti.objectMember(proto, flat_map_id) != null);
 }
 
 test "lib: arrayProto exposes iterator helper toArray" {

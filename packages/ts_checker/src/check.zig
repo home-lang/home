@@ -303,6 +303,10 @@ pub const TsCodes = struct {
     /// Emitted on the second (or later) declaration of a property with
     /// the same name but a different type when interfaces merge.
     pub const subsequent_property_declaration_same_type: u32 = 2717;
+    /// TS2687 — `All declarations of '<name>' must have identical
+    /// modifiers.` Used for merged interface optionality and
+    /// class/interface private-vs-public member collisions.
+    pub const declarations_must_have_identical_modifiers: u32 = 2687;
     /// TS2804 — emitted when static and instance elements share the same
     /// ECMAScript private name.
     pub const private_static_instance_duplicate: u32 = 2804;
@@ -565,6 +569,7 @@ pub const TsCodes = struct {
     pub const yield_implicit_any: u32 = 7057;
     pub const no_overlap_comparison: u32 = 2367;
     pub const object_reference_comparison: u32 = 2839;
+    pub const duplicate_default_clause: u32 = 1113;
     pub const switch_case_not_comparable: u32 = 2678;
     pub const for_of_var_conflict: u32 = 2481;
     pub const iterator_value_missing: u32 = 2490;
@@ -3437,6 +3442,7 @@ pub const Checker = struct {
         // sees each block in isolation. Mirrors fixture
         // `twoGenericInterfacesWithTheSameNameButDifferentArity` M3.
         try self.checkSiblingNamespaceInterfaceMerges(stmts);
+        try self.checkClassInterfaceMemberModifierMerges(stmts);
 
         var previous_overload_name: ?hir_mod.StringId = null;
         var previous_overload_section: usize = 0;
@@ -3867,7 +3873,6 @@ pub const Checker = struct {
     fn checkInterfaceMembersMerge(self: *Checker, first: NodeId, current: NodeId) CheckError!void {
         const a_members = hir_mod.interfaceMembers(self.hir, first);
         const b_members = hir_mod.interfaceMembers(self.hir, current);
-        var any_conflict_unreported = false;
         for (b_members) |b_member| {
             const bp = if (self.hir.kindOf(b_member) == .interface_member)
                 hir_mod.interfaceMemberOf(self.hir, b_member)
@@ -3880,7 +3885,8 @@ pub const Checker = struct {
                 if (ap.name == 0 or ap.is_method) continue;
                 if (ap.name != bp.name) continue;
                 if (ap.is_optional != bp.is_optional) {
-                    any_conflict_unreported = true;
+                    try self.reportDeclarationsMustHaveIdenticalModifiers(a_member, ap.name);
+                    try self.reportDeclarationsMustHaveIdenticalModifiers(b_member, bp.name);
                     continue;
                 }
                 if (self.nodeSourceTextEqual(ap.type_node, bp.type_node)) continue;
@@ -3907,22 +3913,85 @@ pub const Checker = struct {
         // still surface as the legacy TS2300 marker on the second
         // declaration so existing baselines that depend on that signal
         // don't regress.
-        if (any_conflict_unreported) {
-            try self.reportDuplicateIdentifier(current, hir_mod.interfaceOf(self.hir, current).name);
-        } else {
-            for (a_members) |a_member| {
-                for (b_members) |b_member| {
-                    if (self.hir.kindOf(a_member) == .index_signature and
-                        self.hir.kindOf(b_member) == .index_signature)
-                    {
-                        if (self.interfaceMembersConflict(a_member, b_member)) {
-                            try self.reportDuplicateIdentifier(current, hir_mod.interfaceOf(self.hir, current).name);
-                            return;
-                        }
+        for (a_members) |a_member| {
+            for (b_members) |b_member| {
+                if (self.hir.kindOf(a_member) == .index_signature and
+                    self.hir.kindOf(b_member) == .index_signature)
+                {
+                    if (self.interfaceMembersConflict(a_member, b_member)) {
+                        const current_name = self.declarationName(current) orelse return;
+                        try self.reportDuplicateIdentifier(current, current_name);
+                        return;
                     }
                 }
             }
         }
+    }
+
+    fn reportDeclarationsMustHaveIdenticalModifiers(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "All declarations of '{s}' must have identical modifiers.",
+            .{self.string_interner.get(name)},
+        );
+        try self.reportAt(node, self.declarationNameSpanStart(node), TsCodes.declarations_must_have_identical_modifiers, msg);
+    }
+
+    fn checkClassInterfaceMemberModifierMerges(self: *Checker, stmts: []const NodeId) CheckError!void {
+        for (stmts) |class_raw| {
+            const class_node = self.unwrapExportDecl(class_raw);
+            if (class_node == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(class_node) != .class_decl and self.hir.kindOf(class_node) != .class_expr) continue;
+            const class_name = self.declarationName(class_node) orelse continue;
+            const class_section = self.virtualSectionStartForNode(class_node);
+            for (stmts) |iface_raw| {
+                const iface_node = self.unwrapExportDecl(iface_raw);
+                if (iface_node == hir_mod.none_node_id or self.hir.kindOf(iface_node) != .interface_decl) continue;
+                if (self.virtualSectionStartForNode(iface_node) != class_section) continue;
+                const iface_name = self.declarationName(iface_node) orelse continue;
+                if (iface_name != class_name) continue;
+                try self.checkClassInterfaceMemberModifierMerge(class_node, iface_node);
+            }
+        }
+    }
+
+    fn checkClassInterfaceMemberModifierMerge(self: *Checker, class_node: NodeId, iface_node: NodeId) CheckError!void {
+        for (hir_mod.classMembers(self.hir, class_node)) |member| {
+            const member_name = (try self.privateOrProtectedClassMemberName(member)) orelse continue;
+            const iface_member = self.interfaceMemberByName(iface_node, member_name) orelse continue;
+            try self.reportDeclarationsMustHaveIdenticalModifiers(self.classMemberNameAnchor(member), member_name);
+            try self.reportDeclarationsMustHaveIdenticalModifiers(iface_member, member_name);
+        }
+    }
+
+    fn interfaceMemberByName(self: *Checker, iface_node: NodeId, name: hir_mod.StringId) ?NodeId {
+        if (iface_node == hir_mod.none_node_id or self.hir.kindOf(iface_node) != .interface_decl) return null;
+        for (hir_mod.interfaceMembers(self.hir, iface_node)) |member| {
+            if (self.hir.kindOf(member) != .interface_member) continue;
+            const im = hir_mod.interfaceMemberOf(self.hir, member);
+            if (im.name == name) return member;
+        }
+        return null;
+    }
+
+    fn classMemberNameAnchor(self: *Checker, member: NodeId) NodeId {
+        return switch (self.hir.kindOf(member)) {
+            .fn_decl, .fn_expr => blk: {
+                const f = hir_mod.fnDeclOf(self.hir, member);
+                if (f.name != hir_mod.none_node_id) break :blk f.name;
+                break :blk member;
+            },
+            .object_property => blk: {
+                const op = hir_mod.objectPropertyOf(self.hir, member);
+                if (op.key != hir_mod.none_node_id) break :blk op.key;
+                break :blk member;
+            },
+            else => member,
+        };
     }
 
     fn nodeSourceTextOrEmpty(self: *Checker, node: NodeId) []const u8 {
@@ -5216,10 +5285,22 @@ pub const Checker = struct {
         defer case_literal_types.deinit(self.gpa);
         var has_default = false;
         var all_value_cases_exit = true;
+        var first_default_clause = false;
+        var duplicate_default_reported = false;
 
         for (cases) |case_node| {
             const case_p = hir_mod.switchCaseOf(self.hir, case_node);
             const stmts = hir_mod.switchCaseStmts(self.hir, case_node);
+            if (case_p.value == hir_mod.none_node_id) {
+                if (first_default_clause) {
+                    if (!duplicate_default_reported) {
+                        try self.report(case_node, TsCodes.duplicate_default_clause, "A 'default' clause cannot appear more than once in a 'switch' statement.");
+                        duplicate_default_reported = true;
+                    }
+                } else {
+                    first_default_clause = true;
+                }
+            }
 
             try self.pushNarrowScope();
             defer self.popNarrowScope();
@@ -75490,6 +75571,26 @@ test "checker: union switch case comparability rejects disjoint case type" {
         if (d.code == TsCodes.switch_case_not_comparable) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: duplicate switch default reports once on second default" {
+    const s = try newSetup(
+        \\var x = 10;
+        \\switch (x) {
+        \\  default:
+        \\    break;
+        \\  default:
+        \\  default:
+        \\    x *= x;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.duplicate_default_clause) count += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count);
 }
 
 test "checker: object intersection equality reports no structural overlap" {
