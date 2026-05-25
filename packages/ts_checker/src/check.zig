@@ -43910,6 +43910,16 @@ pub const Checker = struct {
                     if (self.overloadedFunctionValueType(id.name) catch null) |overload_t| return overload_t;
                     const t = self.hir.typeOf(s);
                     if (t != types.Primitive.none) return t;
+                    // The name IS declared by a sibling function in this
+                    // block scope, but its signature type hasn't been
+                    // assigned yet (this happens when the reference is
+                    // resolved before the nested declaration is checked —
+                    // e.g. `return bar;` for a nested `function bar` inside
+                    // a class method body, cf. wrappedAndRecursiveConstraints3).
+                    // tsc never emits TS2304 for a declared binding, so fall
+                    // back to `any` rather than letting the unresolved-name
+                    // chain fire.
+                    return types.Primitive.any;
                 }
             }
         } else if (sk == .class_decl or sk == .class_expr) {
@@ -43920,6 +43930,10 @@ pub const Checker = struct {
                     if (self.class_static_types.get(id.name)) |static_t| return static_t;
                     const t = self.hir.typeOf(s);
                     if (t != types.Primitive.none) return t;
+                    // Declared by a sibling class in this block scope but
+                    // not yet typed — same rationale as the function case
+                    // above: a declared binding must not surface TS2304.
+                    return types.Primitive.any;
                 }
             }
         } else if (sk == .import_decl) {
@@ -61316,6 +61330,31 @@ test "checker: generic function expression type parameter is in scope for its ow
                 std.debug.print("unexpected TS2304 for 'U' in: {s}\n", .{src});
                 try T.expect(false);
             }
+        }
+    }
+}
+
+test "checker: nested function declaration is in scope in wrapped/recursive constraints" {
+    // Mirrors wrappedAndRecursiveConstraints3.ts: a nested function `bar`
+    // declared inside a generic method `foo<U>` is referenced by `return bar;`.
+    // tsc emits no diagnostics, so we must not raise TS2304 for `'bar'`.
+    const b = try newBoundSetup(
+        \\class C<T extends { length: number }> {
+        \\    constructor(x: T) { }
+        \\    foo<U extends T>(x: U) {
+        \\        function bar<V extends U>(x: V) {
+        \\            return x;
+        \\        }
+        \\        return bar;
+        \\    }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name and std.mem.indexOf(u8, d.message, "'bar'") != null) {
+            std.debug.print("unexpected TS2304 for 'bar'\n", .{});
+            try T.expect(false);
         }
     }
 }
