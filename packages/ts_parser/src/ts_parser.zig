@@ -162,6 +162,13 @@ pub const Parser = struct {
     /// case clause clears the flag.
     in_switch_case_clause: bool,
     namespace_depth: u32,
+    /// True while parsing the body of an ambient external module — a
+    /// namespace/module declared with a string-literal name
+    /// (`declare module "foo" { ... }`). Reflects only the *immediately*
+    /// enclosing namespace so TS1194 can exempt re-exports inside an
+    /// external module while still flagging them inside an identifier-named
+    /// namespace. Mirrors upstream `ast.IsAmbientModule(node.Parent.Parent)`.
+    in_string_named_module: bool,
     strict_mode: bool,
     target_es2015_or_later: bool,
     suppress_strict_param_names: bool,
@@ -269,6 +276,7 @@ pub const Parser = struct {
             .outer_loop_or_switch_active = false,
             .in_switch_case_clause = false,
             .namespace_depth = 0,
+            .in_string_named_module = false,
             .strict_mode = false,
             .target_es2015_or_later = false,
             .suppress_strict_param_names = false,
@@ -1768,8 +1776,21 @@ pub const Parser = struct {
                 // `declare global { ... }` lowers through the
                 // `kw_global` arm below; `declare let x: T` and friends
                 // parse as ordinary declarations with an ambient bit.
+                // TS1234: `declare module "name" { ... }` is an ambient
+                // module declaration; it is only allowed at the top level
+                // of a file. Nested in a `{ }` block or control-flow body
+                // upstream tsc anchors the error at the declaration's first
+                // token — the `declare` keyword (e.g.
+                // `moduleElementsInWrongContext.ts(9,5)`) — and suppresses
+                // the generic TS1184 it would otherwise raise on it.
+                const is_ambient_module_decl = self.peekAt(1).kind == .kw_module and
+                    self.peekAt(2).kind == .string_literal;
                 const declare_tok = self.advance(); // declare
-                try self.reportModifierInBlock(declare_tok);
+                if (is_ambient_module_decl and self.moduleElementContextIsIllegal()) {
+                    try self.reportCodeAt(declare_tok.span.start, declare_tok.line, 1234, "An ambient module declaration is only allowed at the top level in a file.");
+                } else {
+                    try self.reportModifierInBlock(declare_tok);
+                }
                 // TS1038: redundant `declare` inside an already
                 // ambient context. Fires when wrapped by another
                 // `declare` block OR when nested inside a namespace
@@ -1832,7 +1853,6 @@ pub const Parser = struct {
                 break :blk try self.parseImportDeclaration();
             },
             .kw_export => blk: {
-                try self.reportModifierInBlock(t);
                 break :blk try self.parseExportDeclaration();
             },
             .kw_type => blk: {
@@ -1993,6 +2013,16 @@ pub const Parser = struct {
     fn reportModifierInBlock(self: *Parser, tok: Token) ParseError!void {
         if (self.block_depth == 0 and self.nested_statement_depth == 0) return;
         try self.reportCodeAt(tok.span.start, tok.line, 1184, "Modifiers cannot appear here.");
+    }
+
+    /// True when the current parse position is NOT at the top level of a
+    /// file, namespace, or module body — i.e. nested inside a `{ }` block
+    /// or an unbraced control-flow statement body. Mirrors upstream tsc's
+    /// `checkGrammarModuleElementContext`, which only permits import /
+    /// export / ambient-module declarations when the parent is a
+    /// SourceFile, ModuleBlock, or ModuleDeclaration.
+    fn moduleElementContextIsIllegal(self: *const Parser) bool {
+        return self.block_depth != 0 or self.nested_statement_depth != 0;
     }
 
     fn hasPendingStatement(self: *const Parser) bool {
@@ -5811,6 +5841,9 @@ pub const Parser = struct {
         _ = try self.expect(.open_brace, "'{' to open namespace body");
         self.namespace_depth += 1;
         defer self.namespace_depth -= 1;
+        const old_in_string_named_module = self.in_string_named_module;
+        self.in_string_named_module = name_tok.kind == .string_literal;
+        defer self.in_string_named_module = old_in_string_named_module;
         var body: std.ArrayListUnmanaged(NodeId) = .empty;
         defer body.deinit(self.gpa);
         while (self.hasPendingStatement() or (self.peek().kind != .close_brace and self.peek().kind != .eof)) {
@@ -5844,6 +5877,13 @@ pub const Parser = struct {
         if (self.block_depth == 0 and self.namespace_depth == 0 and self.ambient_depth == 0) {
             self.top_level_external_module_indicator = true;
             self.top_level_module_syntax_indicator = true;
+        }
+        if (self.moduleElementContextIsIllegal()) {
+            // TS1232: an import declaration (ES import or `import x =`)
+            // nested inside a block or control-flow body. Anchored at the
+            // `import` keyword to match upstream tsc on
+            // `moduleElementsInWrongContext.ts(23,5)`.
+            try self.reportCodeAt(start.span.start, start.line, 1232, "An import declaration can only be used at the top level of a namespace or module.");
         }
         var is_type_only = false;
         var type_kw_start: u32 = start.span.start;
@@ -6382,7 +6422,12 @@ pub const Parser = struct {
             if (pending_modifier) |pm| {
                 try self.reportCodeAt(pm.span.start, pm.line, 1120, "An export assignment cannot have modifiers.");
             }
-            if (self.namespace_depth > 0 and self.ambient_depth == 0) {
+            if (self.moduleElementContextIsIllegal()) {
+                // TS1231: `export =` nested inside a block or control-flow
+                // body. Anchored at the `export` keyword to match upstream
+                // tsc on `moduleElementsInWrongContext.ts(13,5)`.
+                try self.reportCodeAt(start.span.start, start.line, 1231, "An export assignment must be at the top level of a file or module declaration.");
+            } else if (self.namespace_depth > 0 and self.ambient_depth == 0) {
                 try self.reportCodeAt(start.span.start, start.line, 1063, "An export assignment cannot be used in a namespace.");
             }
             const expr = try self.parseAssignmentExpression();
@@ -6434,6 +6479,11 @@ pub const Parser = struct {
 
         // export default <expr>;
         if (self.match(.kw_default)) {
+            // `export default` acts as a modifier on the following
+            // declaration/value. Nested in a block, upstream tsc reports
+            // TS1184 on the declaration forms and TS1258 on the value
+            // form; Home reports TS1184 uniformly (TS1258 is unimplemented).
+            try self.reportModifierInBlock(start);
             if (self.namespace_depth > 0 and self.ambient_depth == 0) {
                 try self.reportCodeAt(start.span.start, start.line, 1319, "A default export can only be used in an ECMAScript-style module.");
             }
@@ -6488,6 +6538,12 @@ pub const Parser = struct {
 
         // export { a, b as c } [from "m"];
         if (self.match(.open_brace)) {
+            if (self.moduleElementContextIsIllegal()) {
+                // TS1233: `export { ... }` nested inside a block or
+                // control-flow body. Anchored at the `export` keyword to
+                // match upstream `moduleElementsInWrongContext.ts(18,5)`.
+                try self.reportCodeAt(start.span.start, start.line, 1233, "An export declaration can only be used at the top level of a namespace or module.");
+            }
             var named: std.ArrayListUnmanaged(NodeId) = .empty;
             defer named.deinit(self.gpa);
             while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
@@ -6514,13 +6570,36 @@ pub const Parser = struct {
             }
             _ = try self.expect(.close_brace, "'}' to close named exports");
             var module_id = empty_string;
+            var module_tok_start: u32 = 0;
+            var module_tok_line: u32 = 0;
+            var has_module_specifier = false;
             if (self.match(.kw_from)) {
                 const mod_tok = try self.expect(.string_literal, "module specifier");
                 module_id = try self.internStringLiteral(mod_tok);
+                module_tok_start = mod_tok.span.start;
+                module_tok_line = mod_tok.line;
+                has_module_specifier = true;
                 try self.skipImportAttributesClause();
             }
             try self.consumeStatementTerminator();
             const end_pos = self.tokens[self.cursor - 1].span.end;
+            // TS1194: an `export { ... }` re-export inside an
+            // identifier-named namespace (not a string-named external
+            // module). A module-specifier re-export (`export {x} from "m"`)
+            // is always illegal in a namespace and is anchored at the
+            // specifier string (`exportDeclarationsInAmbientNamespaces2.ts
+            // (6,23)`). A bare `export { x }` re-export is illegal only in a
+            // *non-ambient* namespace and is anchored at the whole node
+            // (`es6ModuleInternalNamedImports.ts(22,5)`); inside a `declare
+            // namespace` it is a legal local re-export
+            // (`reExportAliasMakesInstantiated.ts`).
+            if (self.namespace_depth > 0 and !self.in_string_named_module and !self.moduleElementContextIsIllegal()) {
+                if (has_module_specifier) {
+                    try self.reportCodeAt(module_tok_start, module_tok_line, 1194, "Export declarations are not permitted in a namespace.");
+                } else if (self.ambient_depth == 0) {
+                    try self.reportCodeAt(start.span.start, start.line, 1194, "Export declarations are not permitted in a namespace.");
+                }
+            }
             return try self.builder.addExport(
                 .{ .start = start.span.start, .end = end_pos },
                 hir_mod.none_node_id,
@@ -6533,6 +6612,12 @@ pub const Parser = struct {
 
         // export * [as ns] from "m";
         if (self.match(.asterisk)) {
+            if (self.moduleElementContextIsIllegal()) {
+                // TS1233: `export * from "m"` nested inside a block or
+                // control-flow body. Anchored at the `export` keyword to
+                // match upstream `moduleElementsInWrongContext.ts(17,5)`.
+                try self.reportCodeAt(start.span.start, start.line, 1233, "An export declaration can only be used at the top level of a namespace or module.");
+            }
             var ns_alias: hir_mod.StringId = empty_string;
             if (self.match(.kw_as)) {
                 const ns_tok = try self.expectIdentifierLike();
@@ -6544,6 +6629,13 @@ pub const Parser = struct {
             try self.consumeStatementTerminator();
             const mod_id = try self.internStringLiteral(mod_tok);
             const end_pos = self.tokens[self.cursor - 1].span.end;
+            // TS1194: `export * from "m"` inside an identifier-named
+            // namespace. As a module-specifier re-export, upstream anchors
+            // the error at the specifier string (checkExternalImport-
+            // OrExportDeclaration).
+            if (self.namespace_depth > 0 and !self.in_string_named_module and !self.moduleElementContextIsIllegal()) {
+                try self.reportCodeAt(mod_tok.span.start, mod_tok.line, 1194, "Export declarations are not permitted in a namespace.");
+            }
             return try self.builder.addExportFull(
                 .{ .start = start.span.start, .end = end_pos },
                 hir_mod.none_node_id,
@@ -6557,6 +6649,9 @@ pub const Parser = struct {
         }
 
         // export <decl>
+        // `export` is a modifier on the following declaration; nested in a
+        // block it is TS1184, matching `export function`/`export var` etc.
+        try self.reportModifierInBlock(start);
         const old_in_export_declaration = self.in_export_declaration;
         self.in_export_declaration = true;
         defer self.in_export_declaration = old_in_export_declaration;
@@ -15741,6 +15836,165 @@ test "parser: ambient external module permits default export" {
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: TS1232 import declaration not at top level of namespace or module" {
+    var s = try newTestSetup(
+        \\{
+        \\    import I = M;
+        \\    import bar from "ambient";
+        \\    import "ambient";
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 3), s.parser.diagnostics.items.len);
+    for (s.parser.diagnostics.items) |d| {
+        try T.expectEqual(@as(u32, 1232), d.code);
+        try T.expectEqualStrings("An import declaration can only be used at the top level of a namespace or module.", d.message);
+    }
+    // Anchored at the `import` keyword (column 5 inside the block).
+    try T.expectEqual(@as(u32, 2), s.parser.diagnostics.items[0].line);
+}
+
+test "parser: TS1232 not reported for top-level or namespace imports" {
+    var s = try newTestSetup(
+        \\import a from "a";
+        \\namespace N { import b from "b"; }
+        \\declare module "m" { import c from "c"; }
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1232);
+    }
+}
+
+test "parser: TS1233 export declaration not at top level of namespace or module" {
+    var s = try newTestSetup(
+        \\{
+        \\    export * from "ambient";
+        \\    export { foo };
+        \\    export { baz as b } from "ambient";
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 3), s.parser.diagnostics.items.len);
+    for (s.parser.diagnostics.items) |d| {
+        try T.expectEqual(@as(u32, 1233), d.code);
+        try T.expectEqualStrings("An export declaration can only be used at the top level of a namespace or module.", d.message);
+    }
+}
+
+test "parser: TS1233 not reported for top-level export declarations" {
+    var s = try newTestSetup(
+        \\export { foo };
+        \\export * from "m";
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1233);
+    }
+}
+
+test "parser: TS1231 export assignment not at top level of file or module" {
+    var s = try newTestSetup(
+        \\{
+        \\    export = M;
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1231), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("An export assignment must be at the top level of a file or module declaration.", s.parser.diagnostics.items[0].message);
+    try T.expectEqual(@as(u32, 2), s.parser.diagnostics.items[0].line);
+}
+
+test "parser: TS1231 not reported for export assignment in ambient module" {
+    var s = try newTestSetup(
+        \\declare module "m" {
+        \\    export = x;
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1231);
+    }
+}
+
+test "parser: TS1234 ambient module declaration not at top level in a file" {
+    var s = try newTestSetup(
+        \\{
+        \\    declare module "ambient" {
+        \\    }
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1234), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("An ambient module declaration is only allowed at the top level in a file.", s.parser.diagnostics.items[0].message);
+    // Anchored at the declaration's first token — `declare` (line 2).
+    try T.expectEqual(@as(u32, 2), s.parser.diagnostics.items[0].line);
+}
+
+test "parser: TS1234 not reported for top-level ambient module" {
+    var s = try newTestSetup(
+        \\declare module "ambient" {
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1234);
+    }
+}
+
+test "parser: TS1194 export declarations not permitted in a namespace" {
+    var s = try newTestSetup(
+        \\declare namespace N {
+        \\    export { x } from "mod";
+        \\}
+        \\namespace M {
+        \\    export { y };
+        \\    export * from "mod";
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 3), s.parser.diagnostics.items.len);
+    for (s.parser.diagnostics.items) |d| {
+        try T.expectEqual(@as(u32, 1194), d.code);
+        try T.expectEqualStrings("Export declarations are not permitted in a namespace.", d.message);
+    }
+}
+
+test "parser: TS1194 not reported in string-named ambient external module" {
+    var s = try newTestSetup(
+        \\declare module "mod" {
+        \\    export { x } from "other";
+        \\    export * from "other";
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1194);
+    }
 }
 
 test "parser: import equals accepts type/contextual aliases and ASI" {
