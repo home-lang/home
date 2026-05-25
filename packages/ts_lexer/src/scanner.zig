@@ -932,6 +932,16 @@ pub const Scanner = struct {
 
         // Private identifier #foo
         if (c == '#') {
+            if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '!') {
+                self.pos += 1;
+                self.reportAt(gpa, start, line, "'#!' can only be used at the start of a file.");
+                return .{
+                    .span = .{ .start = start, .end = self.pos },
+                    .kind = .invalid,
+                    .flags = flags,
+                    .line = line,
+                };
+            }
             self.pos += 1;
             return self.scanPrivateIdentifier(start, line, flags);
         }
@@ -1924,6 +1934,22 @@ test "Scanner: shebang without trailing newline (file with only shebang)" {
     defer toks.deinit(t.allocator);
     try t.expectEqual(@as(usize, 1), toks.items.len);
     try t.expectEqual(TokenKind.eof, toks.items[0].kind);
+}
+
+test "Scanner: shebang after the start reports TS18026 message" {
+    var s = Scanner.init(t.allocator, "const x = 1;\n#!nope\n");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+
+    var found_invalid = false;
+    for (toks.items) |tok| {
+        if (tok.kind == .invalid and tok.span.start == 13) found_invalid = true;
+    }
+    try t.expect(found_invalid);
+    try t.expectEqual(@as(usize, 1), s.diagnostics.items.len);
+    try t.expectEqual(@as(u32, 13), s.diagnostics.items[0].pos);
+    try t.expectEqualStrings("'#!' can only be used at the start of a file.", s.diagnostics.items[0].message);
 }
 
 test "Scanner: punctuation — full ASCII set" {

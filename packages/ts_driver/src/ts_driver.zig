@@ -1475,6 +1475,9 @@ fn normalizeScannerDiagnostic(message: []const u8) NormalizedScannerDiagnostic {
     if (std.mem.eql(u8, message, "Merge conflict marker encountered.")) {
         return .{ .code = 1185, .message = message };
     }
+    if (std.mem.eql(u8, message, "'#!' can only be used at the start of a file.")) {
+        return .{ .code = 18026, .message = message };
+    }
     return .{ .message = message };
 }
 
@@ -1795,6 +1798,27 @@ test "driver: scanner merge conflict marker diagnostic maps to TS1185" {
         }
     }
     try T.expectEqual(@as(usize, 3), count);
+}
+
+test "driver: misplaced shebang diagnostic maps to TS18026" {
+    var c = try compileSource(T.allocator,
+        \\const x = 1;
+        \\#!nope
+        \\
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 18026) {
+            found = true;
+            try T.expectEqualStrings("'#!' can only be used at the start of a file.", d.message);
+        }
+    }
+    try T.expect(found);
 }
 
 test "driver: alwaysStrict enables strict parser early errors" {
