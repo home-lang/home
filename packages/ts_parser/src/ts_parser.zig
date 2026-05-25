@@ -189,6 +189,13 @@ pub const Parser = struct {
     top_level_export_indicator: bool,
     in_top_level_module_binding_decl: bool,
     in_export_declaration: bool,
+    /// When an `export` / `declare` modifier keyword precedes an
+    /// import or export declaration / export assignment, the dispatcher
+    /// records the offending modifier token here so the import/export
+    /// parser can anchor TS1191 / TS1193 / TS1120 at it. Cleared once
+    /// consumed. Mirrors upstream `checkGrammarModifiers` rejecting any
+    /// modifier on these constructs.
+    pending_decl_modifier: ?Token = null,
     /// True while parsing the body of an `interface { ... }` or
     /// `interface X { ... }` so type-member diagnostics distinguish
     /// interface from anonymous type-literal context. Used to pick
@@ -1776,6 +1783,17 @@ pub const Parser = struct {
                 {
                     try self.reportCodeAt(declare_tok.span.start, declare_tok.line, 1038, "A 'declare' modifier cannot be used in an already ambient context.");
                 }
+                // `declare export = x` / `declare export { … }` /
+                // `declare export * …` — the `declare` is a disallowed
+                // modifier on an export assignment / export declaration.
+                // Record it so `parseExportDeclaration` can anchor TS1120
+                // / TS1193 on this `declare` token (the construct's first
+                // token). Mirrors `exportAssignmentWithDeclareModifier`.
+                if (self.peek().kind == .kw_export and
+                    self.modifierlessExportKind(self.cursor) != null)
+                {
+                    self.pending_decl_modifier = declare_tok;
+                }
                 self.ambient_depth += 1;
                 defer self.ambient_depth -= 1;
                 break :blk try self.parseStatement();
@@ -3338,6 +3356,25 @@ pub const Parser = struct {
                         .end = self.hir.spanOf(dec_expr).end,
                     }, dec_expr);
                     try param_decorators.append(self.gpa, dec_node);
+                }
+                // TS1090: `export` / `declare` / `async` / `static` are
+                // never valid modifiers on a parameter. tsc parses them
+                // as leading modifiers (when the following token can begin
+                // a binding name) and then rejects each via
+                // `checkGrammarModifiers`, anchoring on the offending
+                // modifier keyword and interpolating its text as `{0}`.
+                // Consume them here so the parameter name still parses.
+                // Mirrors `modifierOnParameter1.ts` and the `*Param`
+                // cases in `plainJSGrammarErrors.js`.
+                while (isInvalidParameterModifier(self.peek().kind) and
+                    parameterModifierIsFollowedByName(self.peekAt(1).kind))
+                {
+                    const mod = self.advance();
+                    try self.reportCodeAt(mod.span.start, mod.line, 1090, try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "'{s}' modifier cannot appear on a parameter.",
+                        .{self.source[mod.span.start..mod.span.end]},
+                    ));
                 }
                 // Modifiers on parameter properties: `readonly`, `public`, etc.
                 var saw_override_modifier = false;
@@ -5008,6 +5045,47 @@ pub const Parser = struct {
         };
     }
 
+    /// Modifier keywords that are syntactically parsed as modifiers but
+    /// are never valid on a parameter — they surface as TS1090. The
+    /// parameter-property modifiers (`public`/`readonly`/…) are handled
+    /// separately and are not listed here.
+    fn isInvalidParameterModifier(kind: TokenKind) bool {
+        return switch (kind) {
+            .kw_export,
+            .kw_declare,
+            .kw_async,
+            .kw_static,
+            => true,
+            else => false,
+        };
+    }
+
+    /// Whether the token after a candidate parameter modifier can begin
+    /// a binding name (identifier / pattern / rest / another modifier).
+    /// Mirrors tsc's `canFollowModifier`; when false the keyword is the
+    /// parameter name itself (e.g. `function f(static)`), not a modifier.
+    fn parameterModifierIsFollowedByName(kind: TokenKind) bool {
+        return switch (kind) {
+            .identifier,
+            .open_brace,
+            .open_bracket,
+            .dot_dot_dot,
+            .string_literal,
+            .number_literal,
+            .kw_public,
+            .kw_private,
+            .kw_protected,
+            .kw_readonly,
+            .kw_override,
+            .kw_export,
+            .kw_declare,
+            .kw_async,
+            .kw_static,
+            => true,
+            else => kind.isContextualKeyword(),
+        };
+    }
+
     fn isClassMemberNameStart(kind: TokenKind) bool {
         return kind == .identifier or
             kind == .private_identifier or
@@ -6195,16 +6273,85 @@ pub const Parser = struct {
         _ = self.advance(); // closing `}`
     }
 
+    /// Given the index of an `import` keyword token, report whether it
+    /// begins an import-equals declaration (`import name = …`, optionally
+    /// `import type name = …`). Those accept an `export` modifier and
+    /// stay clean; all other import forms reject modifiers (TS1191).
+    fn importKeywordBeginsImportEquals(self: *const Parser, import_idx: usize) bool {
+        if (import_idx >= self.tokens.len or self.tokens[import_idx].kind != .kw_import) return false;
+        var i = import_idx + 1;
+        // `import type name = require(…)` is still an import-equals.
+        if (i < self.tokens.len and self.tokens[i].kind == .kw_type and
+            i + 1 < self.tokens.len and self.tokens[i + 1].kind != .equal)
+        {
+            i += 1;
+        }
+        if (i + 1 >= self.tokens.len) return false;
+        const name = self.tokens[i].kind;
+        const is_name = name == .identifier or name == .kw_await or
+            name.isContextualKeyword() or name.isKeyword();
+        return is_name and self.tokens[i + 1].kind == .equal;
+    }
+
+    const ModifierlessExportKind = enum { assignment, declaration };
+
+    /// Given the index of an `export` keyword token, classify whether it
+    /// begins an *export assignment* (`export = …`) or an *export
+    /// declaration* (`export { … }`, `export * …`, `export type { … }`,
+    /// `export type * …`) — the two forms that reject leading modifiers
+    /// (TS1120 / TS1193). Returns null for anything else (e.g. `export
+    /// interface`, `export var`), which stays the duplicate-export case.
+    fn modifierlessExportKind(self: *const Parser, export_idx: usize) ?ModifierlessExportKind {
+        if (export_idx >= self.tokens.len or self.tokens[export_idx].kind != .kw_export) return null;
+        var i = export_idx + 1;
+        if (i >= self.tokens.len) return null;
+        if (self.tokens[i].kind == .equal) return .assignment;
+        // Skip an optional `type` only when it is the type-only re-export
+        // marker (`export type { … }` / `export type * …`).
+        if (self.tokens[i].kind == .kw_type and i + 1 < self.tokens.len and
+            (self.tokens[i + 1].kind == .open_brace or self.tokens[i + 1].kind == .asterisk))
+        {
+            i += 1;
+        }
+        if (i >= self.tokens.len) return null;
+        return switch (self.tokens[i].kind) {
+            .open_brace, .asterisk => .declaration,
+            else => null,
+        };
+    }
+
     fn parseExportDeclaration(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // export
+        // A `declare` modifier recorded by the statement dispatcher
+        // anchors TS1120 / TS1193 on the `declare` keyword itself.
+        const pending_modifier = self.pending_decl_modifier;
+        self.pending_decl_modifier = null;
         if (self.block_depth == 0 and self.namespace_depth == 0 and self.ambient_depth == 0) {
             self.top_level_external_module_indicator = true;
             self.top_level_module_syntax_indicator = true;
             self.top_level_export_indicator = true;
         }
         if (self.peek().kind == .kw_export) {
-            const dup = self.advance();
-            try self.reportCodeAt(dup.span.start, dup.line, 1030, "'export' modifier already seen.");
+            // `export export = x` / `export export { … }` / `export export * …`
+            // — here the leading `export` is a *modifier* on an export
+            // assignment / export declaration, which reject modifiers.
+            // tsc anchors TS1120 / TS1193 on the first token (the leading
+            // `export`). Every other doubled-export form (`export export
+            // interface`, `export export var`, …) is the duplicate-modifier
+            // case and stays TS1030 anchored on the second `export`.
+            // Mirrors `exportAssignmentWithExportModifier` and the
+            // `export export { C }` line in `plainJSGrammarErrors.js`.
+            if (self.modifierlessExportKind(self.cursor)) |kind| {
+                switch (kind) {
+                    .assignment => try self.reportCodeAt(start.span.start, start.line, 1120, "An export assignment cannot have modifiers."),
+                    .declaration => try self.reportCodeAt(start.span.start, start.line, 1193, "An export declaration cannot have modifiers."),
+                }
+                _ = self.advance(); // consume the second `export` so the
+                // construct itself parses below as the real keyword.
+            } else {
+                const dup = self.advance();
+                try self.reportCodeAt(dup.span.start, dup.line, 1030, "'export' modifier already seen.");
+            }
         }
         // `type` after `export` is the type-only marker only when
         // the next token is `{` (named re-export) or `*` (namespace
@@ -6226,6 +6373,11 @@ pub const Parser = struct {
         // assigned expression as an export payload so multi-file fixtures
         // keep their module shape without producing a parser diagnostic.
         if (self.match(.equal)) {
+            // `declare export = x` — the `declare` modifier is disallowed
+            // on an export assignment (TS1120, anchored on `declare`).
+            if (pending_modifier) |pm| {
+                try self.reportCodeAt(pm.span.start, pm.line, 1120, "An export assignment cannot have modifiers.");
+            }
             if (self.namespace_depth > 0 and self.ambient_depth == 0) {
                 try self.reportCodeAt(start.span.start, start.line, 1063, "An export assignment cannot be used in a namespace.");
             }
@@ -6251,6 +6403,17 @@ pub const Parser = struct {
         // references against the alias. Mirrors fixture
         // `typeofAnExportedType.ts(33,23)` / `(34,23)`.
         if (self.peek().kind == .kw_import) {
+            // `export import Foo = …` is a valid export-import-equals
+            // alias and stays clean. Any *other* `export import` form
+            // (`export import { … }`, `export import "m"`,
+            // `export import Foo from`, `export import * as`) is an ES
+            // import declaration carrying a disallowed `export` modifier
+            // → TS1191, anchored on the leading `export` (the first
+            // token). Mirrors `es6Import*WithExport` and the
+            // `export import 'fs'` line in `plainJSGrammarErrors.js`.
+            if (!self.importKeywordBeginsImportEquals(self.cursor)) {
+                try self.reportCodeAt(start.span.start, start.line, 1191, "An import declaration cannot have modifiers.");
+            }
             return try self.parseImportDeclaration();
         }
 
@@ -6306,6 +6469,17 @@ pub const Parser = struct {
                 is_type_only,
                 true,
             );
+        }
+
+        // `declare export { … }` / `declare export * …` — the `declare`
+        // modifier is disallowed on an export declaration (TS1193,
+        // anchored on `declare`). Other `declare export <decl>` forms
+        // (e.g. `declare export class`) keep `export` on the declaration
+        // and are not reported here.
+        if (pending_modifier) |pm| {
+            if (self.peek().kind == .open_brace or self.peek().kind == .asterisk) {
+                try self.reportCodeAt(pm.span.start, pm.line, 1193, "An export declaration cannot have modifiers.");
+            }
         }
 
         // export { a, b as c } [from "m"];
@@ -20001,4 +20175,175 @@ test "parser: plusOperatorInvalidOperations fixture emits TS1109 at both unary-p
         if (d.code == 1109) ts1109_count += 1;
     }
     try T.expect(ts1109_count >= 2);
+}
+
+// ---------------------------------------------------------------------------
+// Modifier-grammar diagnostics TS1090 / TS1120 / TS1191 / TS1193
+// ---------------------------------------------------------------------------
+
+/// Find the first diagnostic with `code`, returning its message + byte pos.
+fn findDiag(s: *TestSetup, code: u32) ?Diagnostic {
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == code) return d;
+    }
+    return null;
+}
+
+fn countDiag(s: *TestSetup, code: u32) u32 {
+    var n: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == code) n += 1;
+    }
+    return n;
+}
+
+test "parser: TS1090 fires for `export`/`declare`/`async`/`static` on a parameter" {
+    const cases = [_]struct { src: []const u8, name: []const u8 }{
+        .{ .src = "function f(export x) {}", .name = "export" },
+        .{ .src = "function f(declare x) {}", .name = "declare" },
+        .{ .src = "function f(async x) {}", .name = "async" },
+        .{ .src = "function f(static x) {}", .name = "static" },
+    };
+    inline for (cases) |c| {
+        var s = try newTestSetup(c.src);
+        defer destroyTestSetup(s);
+        _ = try s.parser.parseSourceFile();
+        const d = findDiag(s, 1090) orelse return error.MissingDiagnostic;
+        const expected = "'" ++ c.name ++ "' modifier cannot appear on a parameter.";
+        try T.expectEqualStrings(expected, d.message);
+        // Anchor on the modifier keyword token.
+        try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, c.src, c.name).?)), d.pos);
+    }
+}
+
+test "parser: TS1090 fires for `declare` on a constructor parameter" {
+    // Mirrors upstream `modifierOnParameter1.ts`.
+    var s = try newTestSetup("class C { constructor(declare p) {} }");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findDiag(s, 1090) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("'declare' modifier cannot appear on a parameter.", d.message);
+}
+
+test "parser: TS1090 stays clean for valid parameters and contextual names" {
+    // `static` as a parameter *name* (not a modifier) and a plain
+    // annotated parameter must not trip the TS1090 detector.
+    const cases = [_][]const u8{
+        "function ok(static) {}",
+        "function ok(x: number) {}",
+        "function ok(public x) {}", // parameter property — handled elsewhere
+    };
+    inline for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(u32, 0), countDiag(s, 1090));
+    }
+}
+
+test "parser: TS1120 fires for a modifier before `export =`" {
+    // `export export = x` and `declare export = x` carry a disallowed
+    // modifier on an export assignment. Mirrors upstream
+    // `exportAssignmentWithExportModifier` / `…WithDeclareModifier`.
+    const cases = [_][]const u8{
+        "var x; export export = x;",
+        "var x; declare export = x;",
+    };
+    inline for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = try s.parser.parseSourceFile();
+        const d = findDiag(s, 1120) orelse return error.MissingDiagnostic;
+        try T.expectEqualStrings("An export assignment cannot have modifiers.", d.message);
+        // No spurious duplicate-export diagnostic for the doubled form.
+        try T.expectEqual(@as(u32, 0), countDiag(s, 1030));
+    }
+}
+
+test "parser: TS1120 stays clean for a plain `export =`" {
+    var s = try newTestSetup("export = x;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1120));
+}
+
+test "parser: TS1191 fires for a modifier on an import declaration" {
+    // `export import { a } from "m"` / `export import "m"` are ES import
+    // declarations carrying a disallowed `export` modifier. Mirrors
+    // upstream `es6ImportNamedImportWithExport` / `…WithoutFromClause…`.
+    const cases = [_][]const u8{
+        "export import { a } from \"./server\";",
+        "export import \"server\";",
+        "export import a from \"./server\";",
+        "export import * as ns from \"./server\";",
+    };
+    inline for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = try s.parser.parseSourceFile();
+        const d = findDiag(s, 1191) orelse return error.MissingDiagnostic;
+        try T.expectEqualStrings("An import declaration cannot have modifiers.", d.message);
+        // Anchored on the leading `export` (first token, byte 0).
+        try T.expectEqual(@as(u32, 0), d.pos);
+    }
+}
+
+test "parser: TS1191 stays clean for export-import-equals and plain import" {
+    // `export import x = require(...)` / `export import x = ns.y` are
+    // valid export-import-equals aliases; a bare `import` is fine too.
+    const cases = [_][]const u8{
+        "export import x = require(\"y\");",
+        "import { a } from \"./server\";",
+        "import \"server\";",
+    };
+    inline for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(u32, 0), countDiag(s, 1191));
+    }
+}
+
+test "parser: TS1193 fires for a modifier on an export declaration" {
+    // `export export { C }` / `export export * from "m"` /
+    // `declare export { C }` carry a disallowed modifier on an export
+    // declaration. Mirrors the `export export { C }` line in upstream
+    // `plainJSGrammarErrors.js`.
+    const cases = [_][]const u8{
+        "export export { C };",
+        "export export * from \"m\";",
+        "declare export { C };",
+    };
+    inline for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = try s.parser.parseSourceFile();
+        const d = findDiag(s, 1193) orelse return error.MissingDiagnostic;
+        try T.expectEqualStrings("An export declaration cannot have modifiers.", d.message);
+        // No spurious duplicate-export diagnostic for the doubled form.
+        try T.expectEqual(@as(u32, 0), countDiag(s, 1030));
+    }
+}
+
+test "parser: TS1193 stays clean for a plain export declaration" {
+    const cases = [_][]const u8{
+        "export { C };",
+        "export * from \"m\";",
+        "export type { C };",
+    };
+    inline for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(u32, 0), countDiag(s, 1193));
+    }
+}
+
+test "parser: doubled export on a declaration stays TS1030" {
+    // `export export interface I {}` keeps the duplicate-modifier path.
+    var s = try newTestSetup("export export interface I {}");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1030));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1193));
 }
