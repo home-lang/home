@@ -8907,6 +8907,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const process = globalThis.process;",
         },
         .{
+            .needle = "import \"harness\";",
+            .replacement = "globalThis.__home_import(\"harness\");",
+        },
+        .{
             .needle = "import { writeFileSync } from \"node:fs\";",
             .replacement = "const { writeFileSync } = globalThis.__home_import(\"node:fs\");",
         },
