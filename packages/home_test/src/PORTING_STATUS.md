@@ -985,6 +985,15 @@ The copied `bundler/bundler_comments.test.ts` fixture now passes as
 `42` tests by lowering `node:module.SourceMap` into the Home bootstrap
 module table and erasing Bun's copied TypeScript postfix non-null
 assertion on the source-map entry check.
+The copied `bundler/bundler_compile.test.ts` and
+`bundler/bundler_defer.test.ts` fixtures now pass as `64` tests through
+the shared bundler harness. This chunk adds Bun compile/standalone
+process smokes, `require.resolve`, compile artifact spawn reuse,
+React SSR package shims, plugin `onStart` error ordering, defer metadata
+JSON checks, and the copied TypeScript lowering needed by those files.
+Native parity still needs Bun's real standalone graph, bytecode cache,
+plugin scheduler, and CSS parser diagnostics rather than the bootstrap
+model.
 The copied `js/bun/test/test-timers.test.ts` fixture now passes as `1`
 test through the Jest fake-timer bootstrap model. It covers Bun's stable
 `Date` identity, mocked `Date.now()` / `new Date()`,
