@@ -48,6 +48,7 @@ pub const Module = enum {
     esnext,
     node16,
     node18,
+    node20,
     nodenext,
     preserve,
 
@@ -65,6 +66,7 @@ pub const Module = enum {
             .{ "esnext", .esnext },
             .{ "node16", .node16 },
             .{ "node18", .node18 },
+            .{ "node20", .node20 },
             .{ "nodenext", .nodenext },
             .{ "preserve", .preserve },
         };
@@ -354,6 +356,22 @@ pub const TsConfig = struct {
             try validatePaths(gpa, &diags, paths, co.base_url != null);
         }
 
+        if (co.isolated_modules == true and co.module == .none and !targetAtLeastES2015(co.target)) {
+            try diags.append(gpa, .{
+                .code = 5047,
+                .message = "Option 'isolatedModules' can only be used when either option '--module' is provided or option 'target' is 'ES2015' or higher.",
+                .field = "isolatedModules",
+            });
+        }
+
+        const effective_module = effectiveModuleKind(co);
+        const effective_module_resolution = effectiveModuleResolution(co, effective_module);
+        if (moduleKindIsNode(effective_module) and !moduleResolutionIsNode(effective_module_resolution)) {
+            try appendTs5109(gpa, &diags, moduleResolutionNameForModule(effective_module), moduleName(effective_module));
+        } else if (moduleResolutionIsNode(effective_module_resolution) and !moduleKindIsNode(effective_module)) {
+            try appendTs5110(gpa, &diags, moduleResolutionName(effective_module_resolution), moduleResolutionName(effective_module_resolution));
+        }
+
         const strict_null_checks_enabled = co.strict_null_checks orelse (co.strict == true);
         if (co.strict_property_initialization == true and !strict_null_checks_enabled) {
             try appendTs5052(gpa, &diags, "strictPropertyInitialization", "strictPropertyInitialization", "strictNullChecks");
@@ -640,6 +658,118 @@ fn appendTs5090(
         .message = msg,
         .owns_message = true,
         .field = "paths",
+    });
+}
+
+fn targetAtLeastES2015(target: ?Target) bool {
+    return switch (target orelse .esnext) {
+        .es3, .es5 => false,
+        else => true,
+    };
+}
+
+fn effectiveModuleKind(co: CompilerOptions) Module {
+    if (co.module) |module| {
+        if (module != .none) return module;
+    }
+
+    return switch (co.target orelse .esnext) {
+        .esnext => .esnext,
+        .es2022, .es2023, .es2024 => .es2022,
+        .es2020, .es2021 => .es2020,
+        .es2015, .es2016, .es2017, .es2018, .es2019 => .es2015,
+        .es3, .es5 => .commonjs,
+    };
+}
+
+fn effectiveModuleResolution(co: CompilerOptions, module: Module) ModuleResolution {
+    if (co.module_resolution) |module_resolution| {
+        if (module_resolution != .classic and module_resolution != .node10) return module_resolution;
+    }
+    return switch (module) {
+        .node16, .node18, .node20 => .node16,
+        .nodenext => .nodenext,
+        else => .bundler,
+    };
+}
+
+fn moduleKindIsNode(module: Module) bool {
+    return switch (module) {
+        .node16, .node18, .node20, .nodenext => true,
+        else => false,
+    };
+}
+
+fn moduleResolutionIsNode(module_resolution: ModuleResolution) bool {
+    return switch (module_resolution) {
+        .node16, .nodenext => true,
+        else => false,
+    };
+}
+
+fn moduleName(module: Module) []const u8 {
+    return switch (module) {
+        .none => "None",
+        .commonjs => "CommonJS",
+        .amd => "AMD",
+        .umd => "UMD",
+        .system => "System",
+        .es6, .es2015 => "ES2015",
+        .es2020 => "ES2020",
+        .es2022 => "ES2022",
+        .esnext => "ESNext",
+        .node16 => "Node16",
+        .node18 => "Node18",
+        .node20 => "Node20",
+        .nodenext => "NodeNext",
+        .preserve => "Preserve",
+    };
+}
+
+fn moduleResolutionName(module_resolution: ModuleResolution) []const u8 {
+    return switch (module_resolution) {
+        .classic => "Classic",
+        .node10 => "Node10",
+        .node16 => "Node16",
+        .nodenext => "NodeNext",
+        .bundler => "Bundler",
+    };
+}
+
+fn moduleResolutionNameForModule(module: Module) []const u8 {
+    return switch (module) {
+        .nodenext => "NodeNext",
+        else => "Node16",
+    };
+}
+
+fn appendTs5109(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    required_module_resolution: []const u8,
+    module: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(gpa, "Option 'moduleResolution' must be set to '{s}' (or left unspecified) when option 'module' is set to '{s}'.", .{ required_module_resolution, module });
+    try diags.append(gpa, .{
+        .code = 5109,
+        .message = msg,
+        .owns_message = true,
+        .field = "moduleResolution",
+    });
+}
+
+fn appendTs5110(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    required_module: []const u8,
+    module_resolution: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(gpa, "Option 'module' must be set to '{s}' when option 'moduleResolution' is set to '{s}'.", .{ required_module, module_resolution });
+    try diags.append(gpa, .{
+        .code = 5110,
+        .message = msg,
+        .owns_message = true,
+        .field = "module",
     });
 }
 
@@ -1199,9 +1329,9 @@ test "tsconfig: module / moduleResolution / target enums" {
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
     const cfg = try parseString(t.allocator, arena.allocator(),
-        \\{ "compilerOptions": { "module": "esnext", "moduleResolution": "bundler", "target": "ES2022" } }
+        \\{ "compilerOptions": { "module": "node20", "moduleResolution": "bundler", "target": "ES2022" } }
     );
-    try t.expectEqual(@as(?Module, .esnext), cfg.compiler_options.module);
+    try t.expectEqual(@as(?Module, .node20), cfg.compiler_options.module);
     try t.expectEqual(@as(?ModuleResolution, .bundler), cfg.compiler_options.module_resolution);
     try t.expectEqual(@as(?Target, .es2022), cfg.compiler_options.target);
 }
@@ -1763,6 +1893,78 @@ test "tsconfig.validate: paths accepts non-relative substitutions when baseUrl i
     const diags = try cfg.validate(t.allocator);
     defer freeValidationDiagnostics(t.allocator, diags);
     try t.expectEqual(@as(usize, 0), diags.len);
+}
+
+test "tsconfig.validate: isolatedModules reports TS5047 for module none below ES2015" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "isolatedModules": true, "module": "none", "target": "es5" } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), diags.len);
+    try t.expectEqual(@as(u32, 5047), diags[0].code);
+    try t.expectEqualStrings("isolatedModules", diags[0].field);
+    try t.expectEqualStrings("Option 'isolatedModules' can only be used when either option '--module' is provided or option 'target' is 'ES2015' or higher.", diags[0].message);
+}
+
+test "tsconfig.validate: isolatedModules accepts module none at ES2015" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "isolatedModules": true, "module": "none", "target": "es2015" } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 0), diags.len);
+}
+
+test "tsconfig.validate: node module kinds report TS5109 for incompatible moduleResolution" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "module": "node20", "moduleResolution": "bundler" } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), diags.len);
+    try t.expectEqual(@as(u32, 5109), diags[0].code);
+    try t.expectEqualStrings("moduleResolution", diags[0].field);
+    try t.expectEqualStrings("Option 'moduleResolution' must be set to 'Node16' (or left unspecified) when option 'module' is set to 'Node20'.", diags[0].message);
+}
+
+test "tsconfig.validate: node moduleResolution reports TS5110 for incompatible module" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "module": "esnext", "moduleResolution": "node16" } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), diags.len);
+    try t.expectEqual(@as(u32, 5110), diags[0].code);
+    try t.expectEqualStrings("module", diags[0].field);
+    try t.expectEqualStrings("Option 'module' must be set to 'Node16' when option 'moduleResolution' is set to 'Node16'.", diags[0].message);
+}
+
+test "tsconfig.validate: node module and moduleResolution compatible pairs pass" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+
+    const implicit_resolution = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "module": "node16" } }
+    );
+    const implicit_diags = try implicit_resolution.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, implicit_diags);
+    try t.expectEqual(@as(usize, 0), implicit_diags.len);
+
+    const cross_node_pair = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "module": "nodenext", "moduleResolution": "node16" } }
+    );
+    const cross_node_diags = try cross_node_pair.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, cross_node_diags);
+    try t.expectEqual(@as(usize, 0), cross_node_diags.len);
 }
 
 test "tsconfig.validate: source map companion options report TS5051" {
