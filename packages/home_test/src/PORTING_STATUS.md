@@ -959,6 +959,11 @@ The copied `cli/run/shell-keepalive.test.ts`,
 as `7` tests through the existing `bunExe()` child-process bridge,
 `expect(...).toRun()`, piped stdout/stderr text helpers, and empty
 `ArrayBuffer` / `Uint8Array` / `Blob` stdin handling.
+The copied `bake/deinitialization.test.ts`,
+`bake/dev/import-meta-inline-negative.test.ts`, and
+`bake/dev/stress.test.ts` fixtures now pass as `3` parent tests through
+the existing Bake harness shim, child `bunExe()` execution, `Bun.write`,
+`Bun.sleep`, and `import.meta` child-process coverage.
 The copied `js/bun/test/test-timers.test.ts` fixture now passes as `1`
 test through the Jest fake-timer bootstrap model. It covers Bun's stable
 `Date` identity, mocked `Date.now()` / `new Date()`,
