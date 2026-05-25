@@ -1839,6 +1839,21 @@ pub const Parser = struct {
                 {
                     self.pending_decl_modifier = declare_tok;
                 }
+                // TS1079: `declare` is a disallowed modifier on an
+                // import declaration. tsc anchors at the `declare`
+                // keyword with a span covering it. Mirrors
+                // `declareModifierOnImport1.ts(1,1)`. We fire here
+                // before recursing into the import path so the modifier
+                // doesn't flow through silently.
+                if (self.peek().kind == .kw_import) {
+                    try self.reportCodeAtWithSpan(
+                        declare_tok.span.start,
+                        declare_tok.line,
+                        declare_tok.span.end - declare_tok.span.start,
+                        1079,
+                        "A 'declare' modifier cannot be used with an import declaration.",
+                    );
+                }
                 self.ambient_depth += 1;
                 defer self.ambient_depth -= 1;
                 break :blk try self.parseStatement();

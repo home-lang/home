@@ -30202,6 +30202,32 @@ test "conformance: importDeclarationInModuleDeclaration1 matches TS1147 baseline
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: declareModifierOnImport1 matches TS1079 + TS2503 baseline" {
+    // Regression pin for the TS1079 emission landed in ts_parser.
+    // Upstream baseline:
+    //   declareModifierOnImport1.ts(1,1): error TS1079: A 'declare' \
+    //     modifier cannot be used with an import declaration.
+    //   declareModifierOnImport1.ts(1,20): error TS2503: \
+    //     Cannot find namespace 'b'.
+    // Pre-fix the parser silently passed through the `declare` modifier
+    // on `import a = b;` and emitted only the cascading TS2503. The
+    // fix detects `declare` immediately followed by `import` and
+    // anchors TS1079 at the `declare` keyword with its full span.
+    const result = try runOneEntry(T.allocator, .{
+        .name = "declareModifierOnImport1",
+        .path = "declareModifierOnImport1.ts",
+        .source = "declare import a = b;",
+        .expects_error = true,
+        .expected_errors = "declareModifierOnImport1.ts(1,1): error TS1079: A 'declare' modifier cannot be used with an import declaration.\ndeclareModifierOnImport1.ts(1,20): error TS2503: Cannot find namespace 'b'.",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: unterminatedStringLiteralWithBackslash1 matches TS1126 baseline" {
     // Regression pin for the lexer-level TS1126 emission landed in
     // scanner + ts_driver. Upstream baseline:
