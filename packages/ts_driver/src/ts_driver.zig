@@ -984,6 +984,8 @@ pub fn compileSource(
             .no_implicit_override = co.no_implicit_override orelse false,
             // `noImplicitReturns` is independent of `strict` in tsc.
             .no_implicit_returns = co.no_implicit_returns orelse false,
+            // `noFallthroughCasesInSwitch` is independent of `strict`.
+            .no_fallthrough_cases_in_switch = co.no_fallthrough_cases_in_switch orelse false,
             .always_strict = options.always_strict or (co.always_strict orelse false),
         });
     } else {

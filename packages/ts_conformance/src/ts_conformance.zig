@@ -2859,6 +2859,7 @@ const StrictDirectiveState = struct {
     no_property_access_from_index_signature: ?bool = null,
     no_implicit_override: ?bool = null,
     no_implicit_returns: ?bool = null,
+    no_fallthrough_cases_in_switch: ?bool = null,
     use_unknown_in_catch_variables: ?bool = null,
 };
 
@@ -3286,6 +3287,7 @@ fn strictFlagsFromState(state: StrictDirectiveState, strict_on: bool) ts_driver.
         .no_property_access_from_index_signature = state.no_property_access_from_index_signature orelse false,
         .no_implicit_override = state.no_implicit_override orelse false,
         .no_implicit_returns = state.no_implicit_returns orelse false,
+        .no_fallthrough_cases_in_switch = state.no_fallthrough_cases_in_switch orelse false,
         .use_unknown_in_catch_variables = state.use_unknown_in_catch_variables orelse strict_on,
     };
 }
@@ -3330,6 +3332,8 @@ fn setStrictDirective(state: *StrictDirectiveState, name: []const u8, value: boo
         state.no_implicit_override = value;
     } else if (std.mem.eql(u8, name, "noImplicitReturns")) {
         state.no_implicit_returns = value;
+    } else if (std.mem.eql(u8, name, "noFallthroughCasesInSwitch")) {
+        state.no_fallthrough_cases_in_switch = value;
     } else if (std.mem.eql(u8, name, "useUnknownInCatchVariables")) {
         state.use_unknown_in_catch_variables = value;
     } else {
