@@ -546,6 +546,19 @@ pub const Engine = struct {
             return false;
         }
 
+        // Weak-type / common-property rule (TS2559). When the target is
+        // a weak type (all members optional, no signatures/index infos —
+        // or an intersection of such) and the source object/intersection
+        // shares no property name with it, the relation fails even though
+        // the all-optional target would otherwise accept it vacuously.
+        // Source and target unions are handled above, so by here neither
+        // is a union. Mirrors tsc's `isPerformingCommonPropertyChecks`.
+        // Numeric-enum nominal intersections (`number & { __enum:E }`) are
+        // excluded via the `isWeakType` signature/property gates below.
+        if ((sf.is_object_type or sf.is_intersection) and self.weakTypeNoCommonProperties(source, target)) {
+            return false;
+        }
+
         // Numeric enum types are represented as branded
         // intersections (`number & { __enum:E: never }`), while TS
         // still allows plain numbers to flow into numeric enum
@@ -720,6 +733,118 @@ pub const Engine = struct {
             }
         }
         return saw_number and saw_enum_brand;
+    }
+
+    /// Mirrors tsc's `isWeakType`: an object type is "weak" when it has
+    /// at least one property, every property is optional, and it has no
+    /// index/call/construct signatures. An intersection is weak when
+    /// every constituent is itself weak. Weak targets feed the
+    /// common-property check that surfaces TS2559 — see
+    /// `weakTypeNoCommonProperties` and the upstream relater's
+    /// `isPerformingCommonPropertyChecks` block.
+    pub fn isWeakType(self: *Engine, t: TypeId) bool {
+        if (t < Primitive.first_dynamic or t >= self.pool().typeCount()) return false;
+        const flags = self.pool().flagsOf(t);
+        if (flags.is_intersection) {
+            const members = self.interner.intersectionMembers(t);
+            if (members.len == 0) return false;
+            for (members) |m| {
+                if (!self.isWeakType(m)) return false;
+            }
+            return true;
+        }
+        if (!flags.is_object_type) return false;
+        if (self.interner.objectStringIndex(t) != Primitive.none) return false;
+        if (self.interner.objectNumberIndex(t) != Primitive.none) return false;
+        if (self.interner.objectSymbolIndex(t) != Primitive.none) return false;
+        const members = self.interner.objectMembers(t);
+        if (members.len == 0) return false;
+        for (members) |m| {
+            if (self.isCallOrConstructMember(m.name)) return false;
+            if (!m.is_optional) return false;
+        }
+        return true;
+    }
+
+    /// True when a member's name is a synthetic call (`__call`) or
+    /// construct (`__construct`) signature slot. Compares by the
+    /// interned bytes so it works against the read-only interner.
+    fn isCallOrConstructMember(self: *Engine, name: types.StringId) bool {
+        const si = self.string_interner orelse return false;
+        const bytes = si.getOptional(name) orelse return false;
+        return std.mem.eql(u8, bytes, "__call") or std.mem.eql(u8, bytes, "__construct");
+    }
+
+    /// True if `t` (object or intersection of objects) declares a named
+    /// property `name` in any constituent. Used to detect common
+    /// properties between a source and a weak target.
+    fn objectOrIntersectionHasMemberNamed(self: *Engine, t: TypeId, name: types.StringId) bool {
+        if (t < Primitive.first_dynamic or t >= self.pool().typeCount()) return false;
+        const flags = self.pool().flagsOf(t);
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |m| {
+                if (self.objectOrIntersectionHasMemberNamed(m, name)) return true;
+            }
+            return false;
+        }
+        if (!flags.is_object_type) return false;
+        for (self.interner.objectMembers(t)) |m| {
+            if (m.name == name) return true;
+        }
+        return false;
+    }
+
+    /// Counts the source's named properties and how many of them appear
+    /// in `target`. Mirrors tsc's `hasCommonProperties`: the weak-type
+    /// error fires only when the source has at least one property and
+    /// none of them appear anywhere in the (weak) target.
+    fn collectSourcePropertyOverlap(
+        self: *Engine,
+        source: TypeId,
+        target: TypeId,
+        had_props: *bool,
+        had_common: *bool,
+    ) void {
+        if (source < Primitive.first_dynamic or source >= self.pool().typeCount()) return;
+        const flags = self.pool().flagsOf(source);
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(source)) |m| {
+                self.collectSourcePropertyOverlap(m, target, had_props, had_common);
+            }
+            return;
+        }
+        if (!flags.is_object_type) return;
+        for (self.interner.objectMembers(source)) |m| {
+            // Skip synthetic call/construct members — they are not
+            // "common properties" in tsc's name-overlap sense.
+            if (self.isCallOrConstructMember(m.name)) continue;
+            had_props.* = true;
+            if (self.objectOrIntersectionHasMemberNamed(target, m.name)) had_common.* = true;
+        }
+    }
+
+    /// tsc's weak-type / common-property rule (TS2559): when the target
+    /// is a weak type and the source (an object or intersection of
+    /// objects with at least one property) shares NO property name with
+    /// it, the relation fails. This is checked independently of the
+    /// structural relation — an all-optional target would otherwise
+    /// accept the source vacuously. See relater.go's
+    /// `isPerformingCommonPropertyChecks`/`hasCommonProperties`.
+    pub fn weakTypeNoCommonProperties(self: *Engine, source: TypeId, target: TypeId) bool {
+        if (source < Primitive.first_dynamic or source >= self.pool().typeCount()) return false;
+        if (target < Primitive.first_dynamic or target >= self.pool().typeCount()) return false;
+        const sf = self.pool().flagsOf(source);
+        // Only object types and intersections-of-objects qualify as a
+        // source here (tsc also admits primitives with call/construct
+        // signatures, which our model doesn't represent).
+        if (!sf.is_object_type and !sf.is_intersection) return false;
+        if (!self.isWeakType(target)) return false;
+        var had_props = false;
+        var had_common = false;
+        self.collectSourcePropertyOverlap(source, target, &had_props, &had_common);
+        // Fire only when the source actually carries properties and none
+        // of them overlap the target.
+        return had_props and !had_common;
     }
 
     fn primitiveApparentAssignableToObject(self: *Engine, source: TypeId, target: TypeId) bool {

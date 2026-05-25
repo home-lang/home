@@ -57193,6 +57193,11 @@ pub const Checker = struct {
         target: TypeId,
         fallback: []const u8,
     ) !void {
+        // Weak-type rule (TS2559): when the target is a weak type and the
+        // source shares no property name with it, tsc reports
+        // "no properties in common" in place of the generic TS2322.
+        // Mirrors `intersectionAsWeakTypeSource.ts(8,7)`.
+        if (try self.tryReportWeakTypeNoOverlap(node, source, target)) return;
         // TS2322 prose widens optional property types with a trailing
         // `| undefined` — use the suffix variant so fixtures like
         // `subtypingWithOptionalProperties.ts(5,9)` get the upstream
@@ -57631,43 +57636,13 @@ pub const Checker = struct {
             source >= self.interner.pool.typeCount()) return false;
         if (target < types.Primitive.first_dynamic or
             target >= self.interner.pool.typeCount()) return false;
-        const tflags = self.interner.pool.flagsOf(target);
-        const sflags = self.interner.pool.flagsOf(source);
-        if (!tflags.is_object_type) return false;
-        if (!sflags.is_object_type) return false;
-        const target_members = self.interner.objectMembers(target);
-        if (target_members.len == 0) return false;
-        // Target must be "weak": every named member is optional, and
-        // there is no index / call / construct signature that could
-        // accept arbitrary keys.
-        if (self.interner.objectStringIndex(target) != types.Primitive.none) return false;
-        if (self.interner.objectNumberIndex(target) != types.Primitive.none) return false;
-        if (self.interner.objectSymbolIndex(target) != types.Primitive.none) return false;
-        const call_id = self.string_interner.intern("__call") catch return false;
-        const construct_id = self.string_interner.intern("__construct") catch return false;
-        for (target_members) |m| {
-            if (m.name == call_id or m.name == construct_id) return false;
-            if (!m.is_optional) return false;
-        }
-        const source_members = self.interner.objectMembers(source);
-        if (source_members.len == 0) return false;
-        // Bail on source-side index signatures / call/construct
-        // members — those make "overlap" ill-defined for weak-type
-        // diagnostics; upstream tsc skips TS2559 in those cases too.
-        if (self.interner.objectStringIndex(source) != types.Primitive.none) return false;
-        if (self.interner.objectNumberIndex(source) != types.Primitive.none) return false;
-        if (self.interner.objectSymbolIndex(source) != types.Primitive.none) return false;
-        for (source_members) |sm| {
-            if (sm.name == call_id or sm.name == construct_id) return false;
-        }
-        // Detect overlap by property name only — the property's type
-        // is checked separately by the relation engine and isn't part
-        // of the TS2559 trigger.
-        for (target_members) |tm| {
-            for (source_members) |sm| {
-                if (tm.name == sm.name) return false;
-            }
-        }
+        // Delegate weak-type eligibility (weak target, source carries
+        // properties, no common property name) to the relation engine,
+        // which already mirrors tsc's `isWeakType`/`hasCommonProperties`
+        // and handles intersection sources/targets — e.g.
+        // `intersectionAsWeakTypeSource.ts(8,7)` where `XY = X & Y` is
+        // assigned to the weak target `Z = { z?: boolean }`.
+        if (!self.engine.weakTypeNoCommonProperties(source, target)) return false;
         const source_name = (try self.allocSimpleTypeName(source)) orelse
             (try self.allocObjectTypeShape(source)) orelse return false;
         const target_name = (try self.allocSimpleTypeName(target)) orelse
@@ -61557,6 +61532,83 @@ test "checker: unresolved identifier emits TS2304" {
         if (d.code == TsCodes.cannot_find_name) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: intersection source assigned to weak target emits TS2559" {
+    // Mirrors intersectionAsWeakTypeSource.ts(8,7): `XY = X & Y` (an
+    // intersection of two object types, none of whose members overlap
+    // the weak target `Z = { z?: boolean }`) is assigned to `Z`. tsc
+    // surfaces TS2559 ("no properties in common"), because the target
+    // is a weak type (all members optional, no index/call/construct
+    // signatures) and the source shares no property name with it.
+    const b = try newBoundSetup(
+        \\interface X { x: string }
+        \\interface Y { y: number }
+        \\interface Z { z?: boolean }
+        \\type XY = X & Y;
+        \\const xy: XY = {x: 'x', y: 10};
+        \\const z1: Z = xy;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.no_properties_in_common and
+            std.mem.indexOf(u8, d.message, "Type 'XY' has no properties in common with type 'Z'.") != null)
+            found = true;
+    }
+    if (!found) {
+        std.debug.print("expected TS2559 for intersection source assigned to weak target; diagnostics:\n", .{});
+        for (b.base.checker.diagnostics.items) |d| {
+            std.debug.print("  TS{d}: {s}\n", .{ d.code, d.message });
+        }
+    }
+    try T.expect(found);
+}
+
+test "checker: intersection source overlapping weak target stays clean (no TS2559)" {
+    // Negative: when the intersection source DOES share a property name
+    // with the weak target, the weak-type rule must NOT fire. Here `B`
+    // contributes `z`, which overlaps the target `Z = { z?: boolean }`.
+    const b = try newBoundSetup(
+        \\interface A { a: string }
+        \\interface B { z: boolean }
+        \\interface Z { z?: boolean }
+        \\type AB = A & B;
+        \\const ab: AB = {a: 'a', z: true};
+        \\const z1: Z = ab;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.no_properties_in_common) {
+            std.debug.print("unexpected TS2559 when source overlaps weak target: {s}\n", .{d.message});
+            try T.expect(false);
+        }
+    }
+}
+
+test "checker: intersection source assigned to non-weak target stays clean (no TS2559)" {
+    // Negative: the target is NOT a weak type (its member `w` is
+    // required), so the weak-type rule must NOT fire even though the
+    // intersection source shares no property name with it. (A different
+    // diagnostic may apply, but never TS2559.)
+    const b = try newBoundSetup(
+        \\interface X { x: string }
+        \\interface Y { y: number }
+        \\interface W { w: boolean }
+        \\type XY = X & Y;
+        \\const xy: XY = {x: 'x', y: 10};
+        \\const w1: W = xy;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.no_properties_in_common) {
+            std.debug.print("unexpected TS2559 for non-weak target: {s}\n", .{d.message});
+            try T.expect(false);
+        }
+    }
 }
 
 test "checker: generic function expression type parameter is in scope for its own params" {
