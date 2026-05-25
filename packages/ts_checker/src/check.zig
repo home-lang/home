@@ -51359,6 +51359,115 @@ pub const Checker = struct {
         };
     }
 
+    /// Strict-arity subtype test between two bare call signatures, used
+    /// only for the conditional-union subtype reduction below. Mirrors
+    /// tsc's `compareSignaturesRelated` under
+    /// `SignatureCheckModeStrictArity` (the mode `removeSubtypes` runs in
+    /// via `strictSubtypeRelation`):
+    ///   * a source signature with MORE parameters than the target is
+    ///     never a subtype (no effective rest params here);
+    ///   * parameters relate contravariantly (target param assignable to
+    ///     source param);
+    ///   * an OPTIONAL source parameter that is REQUIRED in the target
+    ///     (and whose types relate covariantly) breaks the subtype — this
+    ///     is what keeps `(x: T) => void` from being a subtype of
+    ///     `(x?: T) => void`, so the optional branch wins union reduction;
+    ///   * the source return type must relate to the target's (a `void`
+    ///     target return accepts anything).
+    /// Restricted to bare signatures; returns false for anything else so
+    /// the caller leaves the union untouched.
+    fn strictCallableSubtype(self: *Checker, source: TypeId, target: TypeId) bool {
+        if (source == target) return true;
+        if (!self.interner.isSignature(source) or !self.interner.isSignature(target)) return false;
+        // Rest signatures have variable arity; their subtype rules differ
+        // from the fixed-arity case modeled here. Bail to stay faithful.
+        if (self.rest_signatures.contains(source) or self.rest_signatures.contains(target)) return false;
+        const sp = self.interner.signatureParams(source);
+        const tp = self.interner.signatureParams(target);
+        // Source must not provide more parameters than the target accepts.
+        if (sp.len > tp.len) return false;
+        const source_min = self.signatureMinRequiredArgs(source, sp);
+        const target_min = self.signatureMinRequiredArgs(target, tp);
+        const param_count = @max(sp.len, tp.len);
+        var i: usize = 0;
+        while (i < param_count) : (i += 1) {
+            const s_has = i < sp.len;
+            const t_has = i < tp.len;
+            // A position present only in the (longer) source can't exist
+            // here because `sp.len <= tp.len`; a position present only in
+            // the target is fine — source simply omits an optional arg.
+            if (!s_has) continue;
+            if (!t_has) return false;
+            const s_param = sp[i];
+            const t_param = tp[i];
+            // Contravariant: the target's parameter must be assignable to
+            // the source's parameter.
+            if (!(self.engine.isSubtypeOf(t_param, s_param) catch false)) return false;
+            // Optional-in-source / required-in-target rejection (tsc:
+            // "(x: T) => void is NOT a subtype of (x?: T) => void").
+            if (i >= source_min and i < target_min and
+                (self.engine.isSubtypeOf(s_param, t_param) catch false))
+            {
+                return false;
+            }
+        }
+        // Return-type relation: a void/any target return accepts anything.
+        const t_ret = self.interner.signatureReturn(target) orelse types.Primitive.any;
+        if (t_ret == types.Primitive.void_t or t_ret == types.Primitive.any) return true;
+        const s_ret = self.interner.signatureReturn(source) orelse types.Primitive.any;
+        return self.engine.isSubtypeOf(s_ret, t_ret) catch false;
+    }
+
+    /// Subtype-reduce a union of *callable* branches, mirroring tsc's
+    /// `removeSubtypes` (UnionReductionSubtype) used when forming the
+    /// type of a conditional `cond ? then : else`. When one callable
+    /// branch is a strict subtype of another, tsc drops the subtype and
+    /// keeps the supertype, collapsing e.g.
+    ///   `((x: string | undefined) => void) | ((x?: string) => void)`
+    /// down to the single signature `(x?: string) => void` — whose
+    /// optional parameter then lets `f()` type-check. Critically, when
+    /// neither branch subsumes the other (e.g. f6 in
+    /// `unionTypeReduction2.ts`, where the kept signature has a REQUIRED
+    /// `'hello' | undefined` parameter) the union is left intact, so the
+    /// downstream call-arity check still fires TS2554 for `f()`.
+    ///
+    /// Scoped to unions whose every constituent is a bare call signature:
+    /// general union construction is left untouched to avoid perturbing
+    /// unrelated reduction behavior. Returns the (possibly reduced)
+    /// interned type for `members`.
+    fn internConditionalUnion(self: *Checker, members: []const TypeId) CheckError!TypeId {
+        const u = self.interner.internUnion(members) catch return error.OutOfMemory;
+        if (u >= self.interner.pool.typeCount()) return u;
+        if (!self.interner.pool.flagsOf(u).is_union) return u;
+        // Only reduce when every constituent is a bare call signature —
+        // the union-of-function-types shape tsc subtype-reduces here.
+        const union_members = self.interner.unionMembers(u);
+        if (union_members.len < 2) return u;
+        for (union_members) |m| {
+            if (!self.interner.isSignature(m)) return u;
+            if (self.signatureIsConstruct(m)) return u;
+        }
+        var kept = std.ArrayListUnmanaged(TypeId).empty;
+        defer kept.deinit(self.gpa);
+        try kept.appendSlice(self.gpa, union_members);
+        // Walk from the end and drop any `source` that is a strict-arity
+        // subtype of some other surviving `target` (tsc removeSubtypes).
+        var i: usize = kept.items.len;
+        while (i > 0) {
+            i -= 1;
+            const source = kept.items[i];
+            for (kept.items, 0..) |target, j| {
+                if (j == i) continue;
+                if (self.strictCallableSubtype(source, target)) {
+                    _ = kept.orderedRemove(i);
+                    break;
+                }
+            }
+        }
+        if (kept.items.len == union_members.len) return u;
+        return self.interner.internUnion(kept.items) catch error.OutOfMemory;
+    }
+
     fn checkConditional(self: *Checker, node: NodeId) CheckError!TypeId {
         const c = hir_mod.conditionalOf(self.hir, node);
         _ = try self.checkExpression(c.cond);
@@ -51376,7 +51485,7 @@ pub const Checker = struct {
         try self.applyTypeGuard(c.cond, false);
         const ff = try self.checkExpression(c.else_branch);
         self.popNarrowScope();
-        return self.interner.internUnion(&.{ tt, ff }) catch error.OutOfMemory;
+        return self.internConditionalUnion(&.{ tt, ff });
     }
 
     fn reportStaticTruthiness(self: *Checker, node: NodeId) CheckError!void {
@@ -70562,6 +70671,117 @@ test "checker: instantiated void parameter can be omitted" {
         if (d.code == TsCodes.expected_n_arguments) count_2554 += 1;
     }
     try T.expectEqual(@as(usize, 2), count_2554);
+}
+
+test "checker: union of call signatures requires the larger min-arity (unionTypeReduction2 f6)" {
+    // Full unionTypeReduction2.ts fixture. A conditional `x : y` forms a
+    // union of two callables that tsc subtype-reduces. The ONLY expected
+    // diagnostic is at f6's `f()`:
+    //   unionTypeReduction2.ts(33,5): error TS2554:
+    //     Expected 1 arguments, but got 0.
+    // f6: x = (x: 'hello' | undefined) => void  (required param, min 1)
+    //     y = (x?: string) => void              (optional param, min 0)
+    // Reduction keeps x (y is the subtype), so the resulting signature
+    // still requires 1 argument and `f()` is too few. f3/f4/f5 reduce to
+    // an optional-parameter signature, and the f1/f2/f11 object/method
+    // unions stay callable — none of those may emit TS2554.
+    const s = try newSetup(
+        \\function f1(x: { f(): void }, y: { f(x?: string): void }) {
+        \\    let z = !!true ? x : y;
+        \\    z.f();
+        \\    z.f('hello');
+        \\}
+        \\function f2(x: { f(x: string | undefined): void }, y: { f(x?: string): void }) {
+        \\    let z = !!true ? x : y;
+        \\    z.f();
+        \\    z.f('hello');
+        \\}
+        \\function f3(x: () => void, y: (x?: string) => void) {
+        \\    let f = !!true ? x : y;
+        \\    f();
+        \\    f('hello');
+        \\}
+        \\function f4(x: (x: string | undefined) => void, y: (x?: string) => void) {
+        \\    let f = !!true ? x : y;
+        \\    f();
+        \\    f('hello');
+        \\}
+        \\function f5(x: (x: string | undefined) => void, y: (x?: 'hello') => void) {
+        \\    let f = !!true ? x : y;
+        \\    f();
+        \\    f('hello');
+        \\}
+        \\function f6(x: (x: 'hello' | undefined) => void, y: (x?: string) => void) {
+        \\    let f = !!true ? x : y;
+        \\    f();
+        \\    f('hello');
+        \\}
+        \\type A = { f(): void; }
+        \\type B = { f(x?: string): void; g(): void; }
+        \\function f11(a: A, b: B) {
+        \\    let z = !!true ? a : b;
+        \\    z.f();
+        \\    z.f('hello');
+        \\}
+    );
+    defer destroySetup(s);
+    // Mirrors the fixture's `// @strict: true` header — strictNullChecks
+    // and strictFunctionTypes drive the union subtype reduction.
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true });
+    try s.checker.checkSourceFile(s.root);
+    var count_2554: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.expected_n_arguments) count_2554 += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count_2554);
+}
+
+test "checker: conditional callable union with optional branch stays clean (unionTypeReduction2 negatives)" {
+    // Each conditional reduces to a signature with an OPTIONAL parameter
+    // (f3/f4/f5), so calling with 0 OR 1 argument is valid — no TS2554.
+    const cases = [_][]const u8{
+        // f3: () => void  |  (x?: string) => void
+        "function g(x: () => void, y: (x?: string) => void) { let f = !!true ? x : y; f(); f('hello'); }",
+        // f4: (x: string | undefined) => void  |  (x?: string) => void
+        "function g(x: (x: string | undefined) => void, y: (x?: string) => void) { let f = !!true ? x : y; f(); f('hello'); }",
+        // f5: (x: string | undefined) => void  |  (x?: 'hello') => void
+        "function g(x: (x: string | undefined) => void, y: (x?: 'hello') => void) { let f = !!true ? x : y; f(); f('hello'); }",
+    };
+    for (cases) |src| {
+        const s = try newSetup(src);
+        defer destroySetup(s);
+        s.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true });
+        try s.checker.checkSourceFile(s.root);
+        for (s.checker.diagnostics.items) |d| {
+            if (d.code == TsCodes.expected_n_arguments) {
+                std.debug.print("unexpected TS2554 in: {s}\n", .{src});
+                try T.expect(false);
+            }
+        }
+    }
+}
+
+test "checker: conditional union reduction does not break ordinary calls" {
+    // Guard against the subtype-reduction helper mis-collapsing unions
+    // that are NOT pure callables, or dropping the wrong branch. A plain
+    // numeric conditional and a callable-vs-non-callable union must keep
+    // their normal behavior (and produce no spurious TS2554).
+    const s = try newSetup(
+        \\function h(cond: boolean, a: (x: number) => number, b: (x: number) => number) {
+        \\    let f = cond ? a : b;
+        \\    f(1);
+        \\}
+        \\function k(cond: boolean) {
+        \\    let v = cond ? 1 : 'two';
+        \\    return v;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.expected_n_arguments);
+    }
 }
 
 test "checker: contextual callable parameter preserves void omission after substitution" {
