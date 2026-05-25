@@ -8988,6 +8988,45 @@ pub const Parser = struct {
                     _ = self.advance(); // consume the modifier and fall through
                 }
             }
+            // TS1131: a statement-introducing keyword followed by an
+            // identifier (e.g. `var x: T;` inside an interface body) is
+            // a misplaced declaration, not a property whose name happens
+            // to be the keyword. tsc emits TS1131
+            // "Property or signature expected." anchored at the keyword
+            // with a span covering the keyword itself. Mirrors
+            // `instantiateTypeParameter.ts(2,5)`. We DON'T fire when the
+            // next token is `:` / `?` / `(` / `<` / `;` / `,` / `}` —
+            // those are legal continuations for a property whose name
+            // is the contextual keyword (`interface I { var: T; }` is
+            // valid, `interface I { var x: T; }` is not).
+            const peek_now = self.peek();
+            const looks_like_statement_keyword =
+                peek_now.kind == .kw_var or peek_now.kind == .kw_let or
+                peek_now.kind == .kw_const or peek_now.kind == .kw_function or
+                peek_now.kind == .kw_class or peek_now.kind == .kw_enum or
+                peek_now.kind == .kw_import or peek_now.kind == .kw_export or
+                peek_now.kind == .kw_interface or peek_now.kind == .kw_if or
+                peek_now.kind == .kw_while or peek_now.kind == .kw_for or
+                peek_now.kind == .kw_do or peek_now.kind == .kw_switch or
+                peek_now.kind == .kw_try or peek_now.kind == .kw_return or
+                peek_now.kind == .kw_throw;
+            if (looks_like_statement_keyword) {
+                const next = self.peekAt(1).kind;
+                const is_property_continuation = next == .colon or next == .question or
+                    next == .open_paren or next == .less_than or
+                    next == .semicolon or next == .comma or
+                    next == .close_brace;
+                if (!is_property_continuation) {
+                    try self.reportCodeAtWithSpan(
+                        peek_now.span.start,
+                        peek_now.line,
+                        peek_now.span.end - peek_now.span.start,
+                        1131,
+                        "Property or signature expected.",
+                    );
+                    _ = self.advance(); // consume the offending keyword so recovery proceeds
+                }
+            }
             var is_readonly = false;
             var is_override = false;
             if (t.kind == .kw_readonly and self.peekAt(1).kind != .colon) {
@@ -21752,5 +21791,44 @@ test "parser: TS1139 stays clean for a real type-parameter name" {
         defer destroyTestSetup(s);
         _ = try s.parser.parseSourceFile();
         try T.expectEqual(@as(u32, 0), countDiag(s, 1139));
+    }
+}
+
+test "parser: TS1131 fires for a `var`-led declaration inside interface body" {
+    // Mirrors upstream `instantiateTypeParameter.ts(2,5)`:
+    //
+    //     interface Foo<T> {
+    //         var x: T<>;
+    //     }
+    //
+    // tsc anchors TS1131 "Property or signature expected." at the
+    // `var` keyword (column 5, span 3 chars). Pre-fix Home parser
+    // accepted `var` as the property name and emitted a generic
+    // TS1005 instead.
+    var s = try newTestSetup("interface Foo<T> { var x: T<>; }");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findDiag(s, 1131) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Property or signature expected.", d.message);
+}
+
+test "parser: TS1131 stays clean when contextual keyword is the property name" {
+    // The fix must not regress legitimate property names like
+    // `var:`/`let:`/`return:` inside type literals & interfaces.
+    // tsc accepts these because the following token (`:` / `?` / `(` /
+    // `<` / `;` / `,` / `}`) shows the keyword is being used as a
+    // property name. Mirrors `typeQueryWithReservedWords.ts`.
+    const cases = [_][]const u8{
+        "interface IScope { var: number; }",
+        "interface IScope { return: string; }",
+        "interface IScope { class?: boolean; }",
+        "type T = { for: number; if(): void; };",
+        "type T = { var<U>(x: U): U };",
+    };
+    inline for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(u32, 0), countDiag(s, 1131));
     }
 }
