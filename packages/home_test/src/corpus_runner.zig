@@ -360,6 +360,7 @@ pub const minimal_js_files = [_][]const u8{
     "bundler/bundler_files.test.ts",
     "bundler/bundler_footer.test.ts",
     "bundler/bundler_html_server.test.ts",
+    "bundler/bundler_minify.test.ts",
     "bundler/bundler_minify_symbol_for.test.ts",
     "bundler/bundler_npm.test.ts",
     "bundler/bundler_plugin.test.ts",
@@ -391,6 +392,9 @@ pub const minimal_js_files = [_][]const u8{
     "cli/run/jsx-symbol-collision.test.ts",
     "cli/run/shell-keepalive.test.ts",
     "js/bun/spawn/spawn-empty-arrayBufferOrBlob.test.ts",
+    "js/bun/http/bun-serve-headers.test.ts",
+    "js/bun/http/serve-response-stream-sink-leak.test.ts",
+    "js/bun/http/serve-stream-reject-flush-leak.test.ts",
     "js/bun/test/snapshot-tests/snapshots/more.test.ts",
     "js/node/http/early-hints-crlf-injection.test.ts",
     "js/node/http/node-http-nested-cork.test.ts",
@@ -3557,6 +3561,7 @@ const harness_prelude =
     \\globalThis.__home_modules["react/package.json"] = { version: "19.2.0-canary-b94603b9-20250513" };
     \\globalThis.__home_modules["react"] = { default: { createElement() { return {}; } }, createElement() { return {}; }, Fragment: Symbol.for("react.fragment") };
     \\globalThis.__home_modules["react-dom/server"] = { renderToReadableStream() { return "<!DOCTYPE html><html><head></head><body><h1>Hello World</h1><p>This is an example.</p></body></html>"; } };
+    \\globalThis.__home_modules["reflect-metadata"] = {};
     \\globalThis.__home_modules["node:test"] = { test };
     \\function __home_fake_timers_clock() {}
     \\__home_fake_timers_clock.install = function(options) {
@@ -3738,7 +3743,26 @@ const harness_prelude =
     \\  it.skip(String(id), () => __home_expect_bundled(id, options));
     \\  return ref;
     \\};
-    \\globalThis.__home_modules["./expectBundled"] = { ESBUILD: false, expectBundled: __home_expect_bundled, itBundled: __home_it_bundled, testForFile() {}, BundlerTestInput: function BundlerTestInput() {} };
+    \\function __home_dedent(strings) {
+    \\  let text = "";
+    \\  const values = Array.prototype.slice.call(arguments, 1);
+    \\  const raw = strings && strings.raw ? strings.raw : strings;
+    \\  for (let i = 0; i < raw.length; i++) {
+    \\    text += raw[i];
+    \\    if (i < values.length) text += String(values[i]);
+    \\  }
+    \\  text = text.replace(/^\n/, "").replace(/\n\s*$/, "\n");
+    \\  const lines = text.split("\n");
+    \\  let indent = Infinity;
+    \\  for (const line of lines) {
+    \\    if (line.trim().length === 0) continue;
+    \\    const match = line.match(/^[ \t]*/);
+    \\    indent = Math.min(indent, match ? match[0].length : 0);
+    \\  }
+    \\  if (Number.isFinite(indent) && indent > 0) text = lines.map(line => line.slice(Math.min(indent, line.match(/^[ \t]*/)[0].length))).join("\n");
+    \\  return text;
+    \\}
+    \\globalThis.__home_modules["./expectBundled"] = { ESBUILD: false, ESBUILD_PATH: "", dedent: __home_dedent, expectBundled: __home_expect_bundled, itBundled: __home_it_bundled, testForFile() {}, BundlerTestInput: function BundlerTestInput() {} };
     \\globalThis.__home_modules["../expectBundled"] = globalThis.__home_modules["./expectBundled"];
     \\globalThis.__home_modules["../../expectBundled"] = globalThis.__home_modules["./expectBundled"];
     \\function __home_source_map_consumer(payload) {
@@ -10074,6 +10098,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": Record<string, string[]> =", .replacement = " =" },
         .{ .needle = ": Uint8Array[] =", .replacement = " =" },
         .{ .needle = ": Record<string, string> =", .replacement = " =" },
+        .{ .needle = ": Record<string, TemplateStringTest> =", .replacement = " =" },
         .{ .needle = ": Record<Component, Component[]> =", .replacement = " =" },
         .{ .needle = "(style: string) =>", .replacement = "(style) =>" },
         .{ .needle = "(pattern: string, expected: string, kind: \"page\" | \"layout\" | \"extra\" = \"page\") =>", .replacement = "(pattern, expected, kind = \"page\") =>" },
@@ -10128,6 +10153,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": number)=>", .replacement = ")=>" },
         .{ .needle = ": number) =>", .replacement = ") =>" },
         .{ .needle = "(a: number, b: number) =>", .replacement = "(a, b) =>" },
+        .{ .needle = "(f: any) =>", .replacement = "(f) =>" },
         .{ .needle = ": number | undefined =>", .replacement = " =>" },
         .{ .needle = ": string)=>", .replacement = ")=>" },
         .{ .needle = ": string): number | undefined =>", .replacement = ") =>" },
@@ -10143,6 +10169,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": string, value: string)", .replacement = ", value)" },
         .{ .needle = "path: string)", .replacement = "path)" },
         .{ .needle = "constructor(public x: number) {}", .replacement = "constructor(x) { this.x = x; }" },
+        .{ .needle = "constructor(public name: string) {}", .replacement = "constructor(name) { this.name = name; }" },
+        .{ .needle = "constructor(public y: number, a) { super(a); }", .replacement = "constructor(y, a) { super(a); this.y = y; }" },
         .{ .needle = ": ReturnType<typeof setTimeout> | null =", .replacement = " =" },
         .{ .needle = "await import(\"mock-module-non-string-test-fixture\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"mock-module-non-string-test-fixture\"))" },
         .{ .needle = "await import(\"abort-controller\")", .replacement = "await globalThis.__home_dynamic_import(\"abort-controller\")" },
@@ -10183,7 +10211,9 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = " as string[][]", .replacement = "" },
         .{ .needle = " as Array<[string, string]>", .replacement = "" },
         .{ .needle = " as ArrayBuffer", .replacement = "" },
+        .{ .needle = " as [string, TemplateStringTest][]", .replacement = "" },
         .{ .needle = " as Record<string, string | undefined>", .replacement = "" },
+        .{ .needle = " as {\n        files: Array<{ loader: string; path: string; headers: { etag: string } }>;\n      }", .replacement = "" },
         .{ .needle = " as TestEntry[]", .replacement = "" },
         .{ .needle = " as Body", .replacement = "" },
         .{ .needle = " as string", .replacement = "" },
@@ -10203,6 +10233,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "type Action = \"onLoad\" | \"onStart\";\n", .replacement = "" },
         .{ .needle = "type Component = (typeof kComponents)[number];\n\n", .replacement = "" },
         .{ .needle = "interface TestEntry {\n  pattern: any[];\n  inputs?: any[];\n  expected_obj?: Record<string, string> | \"error\";\n  expected_match?: Record<string, any> | null | \"error\";\n  exactly_empty_components?: string[];\n}\n\n", .replacement = "" },
+        .{ .needle = "interface TemplateStringTest {\n  expr: string;\n  print?: string | boolean; // expect stdout\n  capture?: string | boolean; // expect literal transpilation\n  captureRaw?: string; // expect raw transpilation\n}\n\n", .replacement = "" },
         .{ .needle = "type Action = {\n      type: \"load\" | \"defer\";\n      path: string;\n    };\n", .replacement = "" },
         .{ .needle = "type Import = {\n                  imported: string[];\n                  dep: string;\n                };\n                type Export = {\n                  ident: string;\n                };\n", .replacement = "" },
     };
@@ -10368,6 +10399,34 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { Request } = globalThis.__home_import(\"node-fetch\");",
         },
         .{
+            .needle = "import \"reflect-metadata\";",
+            .replacement = "globalThis.__home_import(\"reflect-metadata\");",
+        },
+        .{
+            .needle = "import assert from \"assert\";",
+            .replacement = "const assert = globalThis.__home_import(\"assert\");",
+        },
+        .{
+            .needle = "import path from \"path\";",
+            .replacement = "const path = globalThis.__home_import(\"path\");",
+        },
+        .{
+            .needle = "import path from \"node:path\";",
+            .replacement = "const path = globalThis.__home_import(\"node:path\");",
+        },
+        .{
+            .needle = "import path, { join } from \"path\";",
+            .replacement = "const path = globalThis.__home_import(\"path\");\nconst { join } = path;",
+        },
+        .{
+            .needle = "import path, { join } from \"node:path\";",
+            .replacement = "const path = globalThis.__home_import(\"node:path\");\nconst { join } = path;",
+        },
+        .{
+            .needle = "import path, { dirname, join, resolve } from \"node:path\";",
+            .replacement = "const path = globalThis.__home_import(\"node:path\");\nconst { dirname, join, resolve } = path;",
+        },
+        .{
             .needle = "import jwt from \"jsonwebtoken\";",
             .replacement = "const jwt = globalThis.__home_import(\"jsonwebtoken\");",
         },
@@ -10406,6 +10465,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { writeFileSync } from \"node:fs\";",
             .replacement = "const { writeFileSync } = globalThis.__home_import(\"node:fs\");",
+        },
+        .{
+            .needle = "import { mkdirSync, writeFileSync } from \"node:fs\";",
+            .replacement = "const { mkdirSync, writeFileSync } = globalThis.__home_import(\"node:fs\");",
+        },
+        .{
+            .needle = "import { existsSync, readFileSync } from \"fs\";",
+            .replacement = "const { existsSync, readFileSync } = globalThis.__home_import(\"fs\");",
         },
         .{
             .needle = "import { existsSync, statSync } from \"node:fs\";",
@@ -10474,6 +10541,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import fs, { readdirSync } from \"node:fs\";",
             .replacement = "const __home_node_fs_for_import = globalThis.__home_import(\"node:fs\");\nconst fs = __home_node_fs_for_import.default;\nconst { readdirSync } = __home_node_fs_for_import;",
+        },
+        .{
+            .needle = "import fs, { mkdirSync, realpathSync, rmSync, writeFileSync } from \"node:fs\";",
+            .replacement = "const __home_node_fs_for_import = globalThis.__home_import(\"node:fs\");\nconst fs = __home_node_fs_for_import.default;\nconst { mkdirSync, realpathSync, rmSync, writeFileSync } = __home_node_fs_for_import;",
         },
         .{
             .needle = "import { renameSync, unlinkSync, writeFileSync } from \"node:fs\";",
@@ -11215,6 +11286,30 @@ fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: 
         "bun:test",
         "vitest",
         "./helpers/setup-tests",
+        "harness",
+        "./expectBundled",
+        "../expectBundled",
+        "../../expectBundled",
+        "./buildNoThrow",
+        "bun",
+        "bun:build",
+        "bun:sqlite",
+        "bun:jsc",
+        "bun:internal-for-testing",
+        "node:module",
+        "source-map",
+        "assert",
+        "node:assert",
+        "path",
+        "node:path",
+        "fs",
+        "node:fs",
+        "fs/promises",
+        "node:fs/promises",
+        "os",
+        "node:os",
+        "child_process",
+        "node:child_process",
     };
     for (modules) |name| {
         if (std.mem.startsWith(u8, source[start..], name)) return .{ .name = name, .end = start + name.len };
@@ -12124,6 +12219,37 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         }
         try std.testing.expect(found);
     }
+}
+
+test "temporary HTTP corpus direct survey" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const relative = std.mem.span(std.c.getenv("HOME_HTTP_SURVEY_FILE") orelse return error.SkipZigTest);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", relative });
+    defer std.testing.allocator.free(path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, relative);
+    defer prepared.deinit(std.testing.allocator);
+    if (prepared.unsupported_reason) |reason| {
+        std.debug.print("SURVEY unsupported {s}: {s}\n", .{ relative, reason });
+        return error.HttpSurveyComplete;
+    }
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() == .passed) {
+        std.debug.print("SURVEY pass {s} ({d} tests)\n", .{ relative, file_run.result.passed });
+    } else {
+        std.debug.print("SURVEY {s} {s}: {s}\n", .{ @tagName(file_run.result.status()), relative, file_run.result.first_failure_message });
+    }
+    return error.HttpSurveyComplete;
 }
 
 test "Bun module import rewrite lowers semver to the virtual bun module" {

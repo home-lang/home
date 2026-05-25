@@ -17,7 +17,7 @@ macOS, Linux, and the WASM target.
   bootstrap path exists for the current allowlist:
   `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
-  Latest measured subset run: `378` files, `2,196` passed, `0` failed,
+  Latest measured subset run: `382` files, `2,231` passed, `0` failed,
   `76` todo. That subset currently executes the todo-registration smoke, three Node
   `assert` CommonJS smokes, the full Node `path` corpus slice, six Node `url` smokes, Deno
   event/fetch/crypto platform smokes, the Web
@@ -42,7 +42,7 @@ macOS, Linux, and the WASM target.
   formatting smoke, Node console/watch/worker/fs/dns/readline one-shot smokes, a WebSocket
   close-reentrancy smoke, a `node:vm.runInNewContext` / `process.on` throw
   propagation smoke, JSONC and `bun.lock` resolution smokes,
-  `Bun.write` leak coverage, HTTP leak smokes,
+  `Bun.write` leak coverage, HTTP leak/header smokes,
   `dns.lookup` keepalive coverage,
   `process.binding("constants")` /
   `process.binding("uv")` smoke coverage, `process.constructor.call`
@@ -119,8 +119,8 @@ macOS, Linux, and the WASM target.
   `util.formatWithOptions` object, numeric-separator, circular-reference,
   error-cause, and proxy-safe formatting coverage, `Bun.Transpiler().transformSync()`
   parser-crash regression coverage for class-field ZWJ/ZWNJ and invalid
-  identifier diagnostics, and current compile-mode
-  Bun.build smokes. It is only a smoke path for JSC + `home_test`; it is not the
+  identifier diagnostics, current compile-mode
+  Bun.build smokes, and the bundler minify corpus smoke. It is only a smoke path for JSC + `home_test`; it is not the
   release gate. The bootstrap harness is installed once per JSC engine, resets
   counters before each file, lowers named `bun:test` imports through a
   virtual `globalThis.__home_import("bun:test")` module shim, and fails closed
