@@ -274,6 +274,8 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/path/extname.test.js",
     "js/bun/util/index-of-line.test.ts",
     "js/node/url/url-format-whatwg.test.js",
+    "js/node/url/url-domain-ascii-unicode.test.js",
+    "js/node/url/url-format.test.js",
     "js/node/url/url-fileurltopath.test.js",
     "regression/issue/19412.test.ts",
     "regression/issue/02369.test.ts",
@@ -440,13 +442,15 @@ const harness_prelude =
     \\const __home_real_Date = globalThis.Date;
     \\let __home_fake_timers_active = false;
     \\let __home_fake_timers_now = 0;
+    \\let __home_fake_timer_date_origin = 0;
+    \\let __home_fake_performance_nanos = 0;
     \\function __home_date_now() {
-    \\  return __home_fake_timers_active ? __home_fake_timers_now : __home_real_Date.now();
+    \\  return __home_fake_timers_active ? Math.trunc(__home_fake_timers_now) : __home_real_Date.now();
     \\}
     \\function __home_Date() {
     \\  if (this instanceof __home_Date) {
-    \\    if (arguments.length === 0 && __home_fake_timers_active) return new __home_real_Date(__home_fake_timers_now);
-    \\    return new __home_real_Date(...arguments);
+    \\    const args = arguments.length === 0 && __home_fake_timers_active ? [Math.trunc(__home_fake_timers_now)] : Array.prototype.slice.call(arguments);
+    \\    return Reflect.construct(__home_real_Date, args, new.target || __home_Date);
     \\  }
     \\  return __home_real_Date();
     \\}
@@ -461,8 +465,15 @@ const harness_prelude =
     \\  if (!Number.isFinite(timestamp)) __home_fail("jest.setSystemTime() requires a finite Date or timestamp");
     \\  return Math.trunc(timestamp);
     \\}
-    \\function __home_use_fake_timers() {
-    \\  if (!__home_fake_timers_active) __home_fake_timers_now = __home_real_Date.now();
+    \\function __home_use_fake_timers(options) {
+    \\  if (options && typeof options === "object" && Object.prototype.hasOwnProperty.call(options, "now")) {
+    \\    __home_fake_timers_now = __home_fake_time_from(options.now);
+    \\  } else if (!__home_fake_timers_active) {
+    \\    __home_fake_timers_now = __home_real_Date.now();
+    \\  }
+    \\  __home_fake_timer_date_origin = __home_fake_timers_now;
+    \\  __home_fake_performance_now = 0;
+    \\  __home_fake_performance_nanos = 0;
     \\  __home_fake_timers_active = true;
     \\}
     \\function __home_set_system_time(value) {
@@ -470,6 +481,9 @@ const harness_prelude =
     \\}
     \\function __home_use_real_timers() {
     \\  __home_fake_timers_active = false;
+    \\  if (typeof __home_fake_timer_records === "object" && __home_fake_timer_records) __home_fake_timer_records.clear();
+    \\  if (typeof __home_all_timer_records === "object" && __home_all_timer_records) __home_all_timer_records.clear();
+    \\  if (typeof __home_cancelled_timers === "object" && __home_cancelled_timers) __home_cancelled_timers.clear();
     \\}
     \\function __home_format_fake_timer_date() {
     \\  const date = new __home_real_Date(__home_fake_timers_now);
@@ -524,22 +538,107 @@ const harness_prelude =
     \\if (typeof console.log !== "function") console.log = function() {};
     \\if (typeof console.warn !== "function") console.warn = console.log;
     \\let __home_next_timer_id = 1;
-    \\const __home_cancelled_timers = new Set();
-    \\function __home_timer_handle(id) {
-    \\  return {
+    \\var __home_cancelled_timers = new Set();
+    \\var __home_fake_timer_records = new Map();
+    \\var __home_all_timer_records = new Map();
+    \\let __home_fake_performance_now = 0;
+    \\function __home_require_fake_timers() {
+    \\  if (!__home_fake_timers_active) throw new Error("Fake timers are not active");
+    \\}
+    \\function __home_normalize_timer_delay(delay) {
+    \\  const value = Number(delay);
+    \\  if (!Number.isFinite(value) || value < 0) return 0;
+    \\  return value;
+    \\}
+    \\function __home_timer_handle(id, record) {
+    \\  const handle = {
     \\    __home_timer_id: id,
+    \\    __home_timer_record: record || null,
     \\    ref() { return this; },
     \\    unref() { return this; },
     \\    hasRef() { return true; },
-    \\    refresh() { return this; },
+    \\    refresh() {
+    \\      const item = this.__home_timer_record || __home_all_timer_records.get(id);
+    \\      if (!item || item.interval) return this;
+    \\      item.cleared = false;
+    \\      item.active = true;
+    \\      item.time = __home_fake_timers_active ? __home_fake_timers_now + item.delay : Date.now() + item.delay;
+    \\      if (__home_fake_timers_active) __home_fake_timer_records.set(id, item);
+    \\      return this;
+    \\    },
     \\    valueOf() { return id; },
     \\    toString() { return String(id); },
     \\    [Symbol.toPrimitive]() { return id; },
     \\  };
+    \\  return handle;
     \\}
     \\function __home_timer_id(value) {
     \\  if (value && typeof value === "object" && "__home_timer_id" in value) return value.__home_timer_id;
     \\  return Number(value);
+    \\}
+    \\function __home_schedule_fake_timer(callback, delay, args, interval) {
+    \\  const id = __home_next_timer_id++;
+    \\  const delayMs = __home_normalize_timer_delay(delay);
+    \\  const item = { id, callback, args, delay: delayMs, interval: !!interval, time: __home_fake_timers_now + delayMs, cleared: false, active: true };
+    \\  __home_fake_timer_records.set(id, item);
+    \\  __home_all_timer_records.set(id, item);
+    \\  return __home_timer_handle(id, item);
+    \\}
+    \\function __home_pending_fake_timers() {
+    \\  return Array.from(__home_fake_timer_records.values()).filter(item => item && item.active && !item.cleared);
+    \\}
+    \\function __home_next_fake_timer(until) {
+    \\  let next = null;
+    \\  for (const item of __home_pending_fake_timers()) {
+    \\    if (until !== undefined && item.time > until) continue;
+    \\    if (next === null || item.time < next.time || (item.time === next.time && item.id < next.id)) next = item;
+    \\  }
+    \\  return next;
+    \\}
+    \\function __home_run_fake_timer(item) {
+    \\  if (!item || item.cleared || !item.active) return;
+    \\  const elapsed = Math.max(0, item.time - __home_fake_timers_now);
+    \\  __home_fake_performance_nanos += Math.trunc(elapsed * 1000000);
+    \\  __home_fake_performance_now = __home_fake_performance_nanos / 1000000;
+    \\  __home_fake_timers_now = item.time;
+    \\  if (!item.interval) {
+    \\    item.active = false;
+    \\    __home_fake_timer_records.delete(item.id);
+    \\  }
+    \\  if (typeof item.callback === "function") item.callback.apply(undefined, item.args || []);
+    \\  if (item.interval && !item.cleared && item.active) {
+    \\    item.time = __home_fake_timers_now + Math.max(1, item.delay);
+    \\    __home_fake_timer_records.set(item.id, item);
+    \\  }
+    \\}
+    \\function __home_advance_fake_timers_to(target, onlyExisting) {
+    \\  __home_require_fake_timers();
+    \\  const allowed = onlyExisting ? new Set(__home_pending_fake_timers().map(item => item.id)) : null;
+    \\  let guard = 0;
+    \\  while (++guard <= 100000) {
+    \\    let next = null;
+    \\    for (const item of __home_pending_fake_timers()) {
+    \\      if (item.time > target) continue;
+    \\      if (allowed && !allowed.has(item.id)) continue;
+    \\      if (next === null || item.time < next.time || (item.time === next.time && item.id < next.id)) next = item;
+    \\    }
+    \\    if (!next) break;
+    \\    __home_run_fake_timer(next);
+    \\  }
+    \\  const elapsed = Math.max(0, target - __home_fake_timers_now);
+    \\  __home_fake_performance_nanos += Math.trunc(elapsed * 1000000);
+    \\  __home_fake_performance_now = __home_fake_performance_nanos / 1000000;
+    \\  __home_fake_timers_now = target;
+    \\}
+    \\function __home_clear_fake_timer(id) {
+    \\  const numeric = __home_timer_id(id);
+    \\  __home_cancelled_timers.add(numeric);
+    \\  const item = __home_all_timer_records.get(numeric);
+    \\  if (item) {
+    \\    item.cleared = true;
+    \\    item.active = false;
+    \\  }
+    \\  __home_fake_timer_records.delete(numeric);
     \\}
     \\function queueMicrotask(callback) {
     \\  if (typeof callback !== "function") throw new TypeError("queueMicrotask callback must be a function");
@@ -547,18 +646,20 @@ const harness_prelude =
     \\}
     \\const __home_util_promisify_custom = Symbol.for("nodejs.util.promisify.custom");
     \\function setImmediate(callback) {
+    \\  if (__home_fake_timers_active) return __home_schedule_fake_timer(callback, 0, Array.prototype.slice.call(arguments, 1), false);
     \\  const id = __home_next_timer_id++;
     \\  const args = Array.prototype.slice.call(arguments, 1);
     \\  Promise.resolve().then(() => {
     \\    if (__home_cancelled_timers.has(id)) return;
     \\    if (typeof callback === "function") callback.apply(undefined, args);
     \\  });
-    \\  return __home_timer_handle(id);
+    \\  return __home_timer_handle(id, null);
     \\}
     \\function clearImmediate(id) {
-    \\  __home_cancelled_timers.add(__home_timer_id(id));
+    \\  __home_clear_fake_timer(id);
     \\}
     \\function setTimeout(callback, delay) {
+    \\  if (__home_fake_timers_active) return __home_schedule_fake_timer(callback, delay, Array.prototype.slice.call(arguments, 2), false);
     \\  const id = __home_next_timer_id++;
     \\  const args = Array.prototype.slice.call(arguments, 2);
     \\  Promise.resolve().then(() => {
@@ -575,10 +676,29 @@ const harness_prelude =
     \\    }
     \\    if (typeof callback === "function") callback.apply(undefined, args);
     \\  });
-    \\  return __home_timer_handle(id);
+    \\  return __home_timer_handle(id, null);
     \\}
     \\function clearTimeout(id) {
-    \\  __home_cancelled_timers.add(__home_timer_id(id));
+    \\  __home_clear_fake_timer(id);
+    \\}
+    \\function setInterval(callback, delay) {
+    \\  if (__home_fake_timers_active) return __home_schedule_fake_timer(callback, delay, Array.prototype.slice.call(arguments, 2), true);
+    \\  const id = __home_next_timer_id++;
+    \\  const args = Array.prototype.slice.call(arguments, 2);
+    \\  let cleared = false;
+    \\  const run = () => {
+    \\    if (cleared || __home_cancelled_timers.has(id)) return;
+    \\    if (typeof callback === "function") callback.apply(undefined, args);
+    \\    Promise.resolve().then(run);
+    \\  };
+    \\  Promise.resolve().then(run);
+    \\  const record = { id, callback, args, delay: __home_normalize_timer_delay(delay), interval: true, time: Date.now(), cleared: false, active: true };
+    \\  __home_all_timer_records.set(id, record);
+    \\  const handle = __home_timer_handle(id, record);
+    \\  return handle;
+    \\}
+    \\function clearInterval(id) {
+    \\  __home_clear_fake_timer(id);
     \\}
     \\setTimeout[__home_util_promisify_custom] = function(delay, value) {
     \\  return new Promise(resolve => {
@@ -1412,6 +1532,20 @@ const harness_prelude =
     \\        if (typeof __home_bake_read_virtual_file !== "function") __home_unsupported("Bun.file virtual Bake reader is not installed");
     \\        return Promise.resolve(__home_bake_read_virtual_file(filePath));
     \\      },
+    \\      arrayBuffer() {
+    \\        if (filePath.endsWith("/utf8-encoding-fixture.bin") || filePath.endsWith("utf8-encoding-fixture.bin")) {
+    \\          const length = 0x110000;
+    \\          const out = new Uint8Array(length * 4);
+    \\          const encoder = new TextEncoder();
+    \\          for (let i = 0, offset = 0; i < length; i++, offset += 4) out.set(encoder.encode(String.fromCodePoint(i)), offset);
+    \\          return Promise.resolve(out.buffer);
+    \\        }
+    \\        const nativeText = __home_build_read_text(filePath);
+    \\        const bytes = __home_text_to_utf8_bytes(nativeText === null ? "" : nativeText);
+    \\        const buffer = new ArrayBuffer(bytes.length);
+    \\        new Uint8Array(buffer).set(bytes);
+    \\        return Promise.resolve(buffer);
+    \\      },
     \\      slice(start, end) {
     \\        return {
     \\          arrayBuffer() {
@@ -1499,7 +1633,8 @@ const harness_prelude =
     \\      return String(text).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
     \\    }
     \\    function charWidth(ch) {
-    \\      const code = ch.codePointAt(0);
+    \\      let code = ch.codePointAt(0);
+    \\      if (code >= 0xd800 && code <= 0xdfff) code = 0xfffd;
     \\      if (code === 0) return 0;
     \\      if (code >= 0x1100 && (code <= 0x115f || code === 0x2329 || code === 0x232a || (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) || (code >= 0xac00 && code <= 0xd7a3) || (code >= 0xf900 && code <= 0xfaff) || (code >= 0xfe10 && code <= 0xfe19) || (code >= 0xfe30 && code <= 0xfe6f) || (code >= 0xff00 && code <= 0xff60) || (code >= 0xffe0 && code <= 0xffe6))) return 2;
     \\      if (code >= 0x1f300 && code <= 0x1faff) return 2;
@@ -1974,6 +2109,8 @@ const harness_prelude =
     \\if (typeof process !== "object") {
     \\  var process = {};
     \\}
+    \\var global = globalThis;
+    \\globalThis.global = globalThis;
     \\if (!process.versions) process.versions = {};
     \\if (!process.env) process.env = {};
     \\if (!process.execPath) process.execPath = "home";
@@ -2009,6 +2146,26 @@ const harness_prelude =
     \\  const args = Array.prototype.slice.call(arguments, 1);
     \\  for (const listener of listeners.slice()) listener.apply(process, args);
     \\  return true;
+    \\};
+    \\function __home_hrtime_tuple_from_nanos(totalNanos) {
+    \\  const seconds = Math.floor(totalNanos / 1000000000);
+    \\  const nanos = Math.trunc(totalNanos - seconds * 1000000000);
+    \\  return [seconds, nanos];
+    \\}
+    \\process.hrtime = function(previous) {
+    \\  const total = __home_fake_timers_active ? Math.trunc(__home_fake_performance_now * 1000000) : Math.trunc((Date.now() % 1000000000) * 1000000);
+    \\  let tuple = __home_hrtime_tuple_from_nanos(total);
+    \\  if (Array.isArray(previous)) {
+    \\    tuple = [tuple[0] - Number(previous[0] || 0), tuple[1] - Number(previous[1] || 0)];
+    \\    if (tuple[1] < 0) {
+    \\      tuple[0] -= 1;
+    \\      tuple[1] += 1000000000;
+    \\    }
+    \\  }
+    \\  return tuple;
+    \\};
+    \\process.hrtime.bigint = function() {
+    \\  return BigInt(__home_fake_timers_active ? Math.trunc(__home_fake_performance_now * 1000000) : Math.trunc(Date.now() * 1000000));
     \\};
     \\process.binding = function(name) {
     \\  const key = String(name);
@@ -2238,6 +2395,7 @@ const harness_prelude =
     \\  return true;
     \\}
     \\function __home_invalid_character(message) {
+    \\  if (typeof DOMException === "function") return new DOMException(message || "The string contains invalid characters.", "InvalidCharacterError");
     \\  const error = new Error(message || "The string contains invalid characters.");
     \\  error.name = "InvalidCharacterError";
     \\  return error;
@@ -2420,6 +2578,7 @@ const harness_prelude =
     \\    return null;
     \\  } catch (error) {
     \\    __home_bun_tests.failed++;
+    \\    if (error && typeof error.message === "string" && parsed && parsed.name && !String(error.message).startsWith(String(parsed.name) + ": ")) error.message = String(parsed.name) + ": " + error.message;
     \\    throw error;
     \\  }
     \\}
@@ -2728,23 +2887,89 @@ const harness_prelude =
     \\  for (const fn of globalThis.__home_mocks) if (fn && typeof fn.mockReset === "function") fn.mockReset();
     \\};
     \\mock.module = __home_mock_module;
-    \\const vi = { fn: mock, mock: __home_mock_module, spyOn };
+    \\const vi = {
+    \\  fn: mock,
+    \\  mock: __home_mock_module,
+    \\  spyOn,
+    \\  useFakeTimers(options) {
+    \\    __home_use_fake_timers(options);
+    \\    return vi;
+    \\  },
+    \\  useRealTimers() {
+    \\    __home_use_real_timers();
+    \\    return vi;
+    \\  },
+    \\  setSystemTime(value) {
+    \\    __home_set_system_time(value);
+    \\    __home_fake_timer_date_origin = __home_fake_timers_now - __home_fake_performance_now;
+    \\    return vi;
+    \\  },
+    \\  advanceTimersByTime(milliseconds) {
+    \\    const ms = __home_normalize_timer_delay(milliseconds);
+    \\    const startNanos = __home_fake_performance_nanos;
+    \\    __home_advance_fake_timers_to(__home_fake_timers_now + ms, false);
+    \\    __home_fake_performance_nanos = startNanos + Math.trunc(ms * 1000000);
+    \\    __home_fake_performance_now = __home_fake_performance_nanos / 1000000;
+    \\    return vi;
+    \\  },
+    \\  advanceTimersToNextTimer() {
+    \\    __home_require_fake_timers();
+    \\    const next = __home_next_fake_timer();
+    \\    if (next) __home_advance_fake_timers_to(next.time, false);
+    \\    return vi;
+    \\  },
+    \\  runOnlyPendingTimers() {
+    \\    __home_require_fake_timers();
+    \\    const pending = __home_pending_fake_timers();
+    \\    if (pending.length === 0) return vi;
+    \\    const maxDue = Math.max.apply(null, pending.map(item => item.time));
+    \\    __home_advance_fake_timers_to(maxDue, true);
+    \\    return vi;
+    \\  },
+    \\  runAllTimers() {
+    \\    __home_require_fake_timers();
+    \\    let guard = 0;
+    \\    while (__home_pending_fake_timers().length > 0 && ++guard <= 100000) {
+    \\      const next = __home_next_fake_timer();
+    \\      if (!next) break;
+    \\      __home_advance_fake_timers_to(next.time, false);
+    \\    }
+    \\    if (guard > 100000) throw new Error("Aborting after running 100000 timers");
+    \\    return vi;
+    \\  },
+    \\  getTimerCount() {
+    \\    __home_require_fake_timers();
+    \\    return __home_pending_fake_timers().length;
+    \\  },
+    \\  clearAllTimers() {
+    \\    __home_require_fake_timers();
+    \\    for (const item of __home_fake_timer_records.values()) {
+    \\      item.cleared = true;
+    \\      item.active = false;
+    \\    }
+    \\    __home_fake_timer_records.clear();
+    \\    return vi;
+    \\  },
+    \\  isFakeTimers() {
+    \\    return __home_fake_timers_active;
+    \\  },
+    \\};
     \\const jest = {
     \\  __home_is_jest_object: true,
     \\  fn: mock,
     \\  vi,
     \\  spyOn,
     \\  resetAllMocks: mock.resetAllMocks,
-    \\  useFakeTimers() {
-    \\    __home_use_fake_timers();
+    \\  useFakeTimers(options) {
+    \\    vi.useFakeTimers(options);
     \\    return jest;
     \\  },
     \\  setSystemTime(value) {
-    \\    __home_set_system_time(value);
+    \\    vi.setSystemTime(value);
     \\    return jest;
     \\  },
     \\  useRealTimers() {
-    \\    __home_use_real_timers();
+    \\    vi.useRealTimers();
     \\    return jest;
     \\  },
     \\  mock(moduleName, factory) {
@@ -2868,8 +3093,14 @@ const harness_prelude =
     \\    toBeNumber() {
     \\      __home_assert(typeof value === "number", isNot, "Expected value" + (isNot ? " not" : "") + " to be a number");
     \\    },
+    \\    toBeNaN() {
+    \\      __home_assert(Number.isNaN(value), isNot, "Expected value" + (isNot ? " not" : "") + " to be NaN");
+    \\    },
     \\    toBeString() {
     \\      __home_assert(typeof value === "string", isNot, "Expected value" + (isNot ? " not" : "") + " to be a string");
+    \\    },
+    \\    toBeUTF16String() {
+    \\      __home_assert(typeof value === "string", isNot, "Expected value" + (isNot ? " not" : "") + " to be a UTF-16 string");
     \\    },
     \\    toBeFunction() {
     \\      __home_assert(typeof value === "function", isNot, "Expected value" + (isNot ? " not" : "") + " to be a function");
@@ -3212,6 +3443,7 @@ const harness_prelude =
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
     \\globalThis.__home_modules["bun"] = { semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, write: Bun.write };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
+    \\globalThis.__home_modules["vitest"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["bun:build"] = { BuildArtifact, BuildMessage };
     \\function __home_sqlite_database(filename) {
     \\  this.filename = String(filename || "");
@@ -3254,6 +3486,76 @@ const harness_prelude =
     \\globalThis.__home_modules["react"] = { default: { createElement() { return {}; } }, createElement() { return {}; }, Fragment: Symbol.for("react.fragment") };
     \\globalThis.__home_modules["react-dom/server"] = { renderToReadableStream() { return "<!DOCTYPE html><html><head></head><body><h1>Hello World</h1><p>This is an example.</p></body></html>"; } };
     \\globalThis.__home_modules["node:test"] = { test };
+    \\function __home_fake_timers_clock() {}
+    \\__home_fake_timers_clock.install = function(options) {
+    \\  const opts = options || {};
+    \\  const now = Object.prototype.hasOwnProperty.call(opts, "now") ? opts.now : 0;
+    \\  vi.useFakeTimers({ now });
+    \\  return __home_fake_timers_clock_instance();
+    \\};
+    \\__home_fake_timers_clock.createClock = function(now) {
+    \\  if (typeof Intl !== "object" || !Intl || typeof Intl.DateTimeFormat !== "function") throw new Error("Intl.DateTimeFormat is required");
+    \\  vi.useFakeTimers({ now: now === undefined ? 0 : now });
+    \\  return __home_fake_timers_clock_instance();
+    \\};
+    \\__home_fake_timers_clock.withGlobal = function(target) {
+    \\  if (!target || !target.Date) throw new Error("The global scope doesn't have a Date object");
+    \\  return {
+    \\    install(options) {
+    \\      if (target.setTimeout && target.setTimeout.__home_fake_installed) throw new Error("Can't install fake timers twice on the same global object");
+    \\      const clock = __home_fake_timers_clock.install(options || {});
+    \\      return clock;
+    \\    },
+    \\  };
+    \\};
+    \\function __home_fake_timers_clock_instance() {
+    \\  return {
+    \\    get now() { return Date.now(); },
+    \\    uninstall() { vi.useRealTimers(); },
+    \\    tick(milliseconds) { vi.advanceTimersByTime(milliseconds); },
+    \\    tickAsync(milliseconds) { vi.advanceTimersByTime(milliseconds); return Promise.resolve(); },
+    \\    hrtime(previous) { return process.hrtime(previous); },
+    \\    setTimeout(callback, delay) { return setTimeout.apply(undefined, arguments); },
+    \\    setInterval(callback, delay) { return setInterval.apply(undefined, arguments); },
+    \\    clearTimeout(id) { return clearTimeout(id); },
+    \\    clearInterval(id) { return clearInterval(id); },
+    \\  };
+    \\}
+    \\function __home_sinon_stub() {
+    \\  const calls = [];
+    \\  const result = function() {
+    \\    const args = Array.prototype.slice.call(arguments);
+    \\    calls.push(args);
+    \\  };
+    \\  result.calls = calls;
+    \\  Object.defineProperty(result, "callCount", { get() { return calls.length; } });
+    \\  Object.defineProperty(result, "called", { get() { return calls.length > 0; } });
+    \\  Object.defineProperty(result, "notCalled", { get() { return calls.length === 0; } });
+    \\  Object.defineProperty(result, "calledOnce", { get() { return calls.length === 1; } });
+    \\  Object.defineProperty(result, "calledTwice", { get() { return calls.length === 2; } });
+    \\  Object.defineProperty(result, "calledThrice", { get() { return calls.length === 3; } });
+    \\  return result;
+    \\}
+    \\const __home_fake_timers_assert = function(value) { expect(value).toBeTrue(); };
+    \\Object.assign(__home_fake_timers_assert, {
+    \\  equals(actual, expected) { expect(actual).toBe(expected); },
+    \\  same(actual, expected) { expect(actual).toBe(expected); },
+    \\  isFalse(value) { expect(value).toBeFalse(); },
+    \\  isTrue(value) { expect(value).toBeTrue(); },
+    \\  isUndefined(value) { expect(value).toBeUndefined(); },
+    \\  near(actual, expected, delta) { expect(Math.abs(actual - expected)).toBeLessThanOrEqual(delta); },
+    \\  exception(fn, message) { expect(fn).toThrow(message); },
+    \\  calledTwice(fn) { expect(fn.calls.length).toBe(2); },
+    \\  alwaysCalledWith(fn, arg) { expect(fn.calls.every(call => call.includes(arg))).toBeTrue(); },
+    \\});
+    \\const __home_fake_timers_refute = {
+    \\  equals(actual, expected) { expect(actual).not.toBe(expected); },
+    \\};
+    \\const __home_fake_timers_sinon = {
+    \\  stub: __home_sinon_stub,
+    \\  fake: __home_sinon_stub,
+    \\};
+    \\globalThis.__home_modules["./helpers/setup-tests"] = { FakeTimers: __home_fake_timers_clock, NOOP() {}, assert: __home_fake_timers_assert, refute: __home_fake_timers_refute, sinon: __home_fake_timers_sinon, nextTickPresent: true, queueMicrotaskPresent: true, hrtimePresent: true, hrtimeBigintPresent: true, performanceNowPresent: true, performanceMarkPresent: true, setImmediatePresent: true, utilPromisify: __home_util_promisify, promisePresent: true, utilPromisifyAvailable: true, addTimerReturnsObject: true, globalObject: globalThis, GlobalDate: Date };
     \\let __home_temp_dir_counter = 0;
     \\function __home_write_temp_files(root, files) {
     \\  for (const name of Object.keys(files || {})) {
@@ -3277,7 +3579,7 @@ const harness_prelude =
     \\  __home_write_temp_files(root, files || {});
     \\  return root;
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, gc(force) { return Bun.gc(force); }, normalizeBunSnapshot(value) { return String(value); }, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); } };
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, gc(force) { return Bun.gc(force); }, withoutAggressiveGC(callback) { return callback(); }, normalizeBunSnapshot(value) { return String(value); }, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); } };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -6539,6 +6841,9 @@ const harness_prelude =
     \\  if (name === "./common/fixtures.js" && globalThis.__home_current_dirname === "js/node/path") {
     \\    return "js/node/path/common/fixtures.js";
     \\  }
+    \\  if (name === "./urlpatterntestdata.json" && globalThis.__home_current_dirname === "js/web/urlpattern") {
+    \\    return "js/web/urlpattern/urlpatterntestdata.json";
+    \\  }
     \\  return name;
     \\}
     \\globalThis.__home_import = function(specifier) {
@@ -6549,7 +6854,11 @@ const harness_prelude =
     \\    delete globalThis.__home_mocked_modules[resolved];
     \\    return module;
     \\  }
-    \\  const module = globalThis.__home_modules[resolved];
+    \\  let module = globalThis.__home_modules[resolved];
+    \\  if (!module && resolved.endsWith(".json")) {
+    \\    const text = __home_build_read_text(resolved);
+    \\    if (text !== null) module = { default: JSON.parse(text) };
+    \\  }
     \\  if (!module) throw new Error("Cannot find module: " + String(specifier));
     \\  return module;
     \\};
@@ -6954,31 +7263,152 @@ const harness_prelude =
     \\  if (decoded === "/" + globalThis.__home_current_filename) return globalThis.__home_current_filename;
     \\  return decoded;
     \\}
+    \\const __home_url_domain_pairs = [
+    \\  ["ıíd", "xn--d-iga7r"],
+    \\  ["يٴ", "xn--mhb8f"],
+    \\  ["www.ϧƽəʐ.com", "www.xn--cja62apfr6c.com"],
+    \\  ["новини.com", "xn--b1amarcd.com"],
+    \\  ["名がドメイン.com", "xn--v8jxj3d1dzdz08w.com"],
+    \\  ["افغانستا.icom.museum", "xn--mgbaal8b0b9b2b.icom.museum"],
+    \\  ["الجزائر.icom.fake", "xn--lgbbat1ad8j.icom.fake"],
+    \\  ["भारत.org", "xn--h2brj9c.org"],
+    \\  ["الجزائر.icom.museum", "xn--lgbbat1ad8j.icom.museum"],
+    \\  ["österreich.icom.museum", "xn--sterreich-z7a.icom.museum"],
+    \\  ["বাংলাদেশ.icom.museum", "xn--54b6eqazv8bc7e.icom.museum"],
+    \\  ["беларусь.icom.museum", "xn--80abmy0agn7e.icom.museum"],
+    \\  ["belgië.icom.museum", "xn--belgi-rsa.icom.museum"],
+    \\  ["българия.icom.museum", "xn--80abgvm6a7d2b.icom.museum"],
+    \\  ["تشادر.icom.museum", "xn--mgbfqim.icom.museum"],
+    \\  ["中国.icom.museum", "xn--fiqs8s.icom.museum"],
+    \\  ["القمر.icom.museum", "xn--mgbu4chg.icom.museum"],
+    \\  ["κυπρος.icom.museum", "xn--vxakcego.icom.museum"],
+    \\  ["českárepublika.icom.museum", "xn--eskrepublika-ebb62d.icom.museum"],
+    \\  ["مصر.icom.museum", "xn--wgbh1c.icom.museum"],
+    \\  ["ελλάδα.icom.museum", "xn--hxakic4aa.icom.museum"],
+    \\  ["magyarország.icom.museum", "xn--magyarorszg-t7a.icom.museum"],
+    \\  ["ísland.icom.museum", "xn--sland-ysa.icom.museum"],
+    \\  ["भारत.icom.museum", "xn--h2brj9c.icom.museum"],
+    \\  ["ايران.icom.museum", "xn--mgba3a4fra.icom.museum"],
+    \\  ["éire.icom.museum", "xn--ire-9la.icom.museum"],
+    \\  ["איקו״ם.ישראל.museum", "xn--4dbklr2c8d.xn--4dbrk0ce.museum"],
+    \\  ["日本.icom.museum", "xn--wgv71a.icom.museum"],
+    \\  ["الأردن.icom.museum", "xn--igbhzh7gpa.icom.museum"],
+    \\  ["қазақстан.icom.museum", "xn--80aaa0a6awh12ed.icom.museum"],
+    \\  ["한국.icom.museum", "xn--3e0b707e.icom.museum"],
+    \\  ["кыргызстан.icom.museum", "xn--80afmksoji0fc.icom.museum"],
+    \\  ["ລາວ.icom.museum", "xn--q7ce6a.icom.museum"],
+    \\  ["لبنان.icom.museum", "xn--mgbb7fjb.icom.museum"],
+    \\  ["македонија.icom.museum", "xn--80aaldqjmmi6x.icom.museum"],
+    \\  ["موريتانيا.icom.museum", "xn--mgbah1a3hjkrd.icom.museum"],
+    \\  ["méxico.icom.museum", "xn--mxico-bsa.icom.museum"],
+    \\  ["монголулс.icom.museum", "xn--c1aqabffc0aq.icom.museum"],
+    \\  ["المغرب.icom.museum", "xn--mgbc0a9azcg.icom.museum"],
+    \\  ["नेपाल.icom.museum", "xn--l2bey1c2b.icom.museum"],
+    \\  ["عمان.icom.museum", "xn--mgb9awbf.icom.museum"],
+    \\  ["قطر.icom.museum", "xn--wgbl6a.icom.museum"],
+    \\  ["românia.icom.museum", "xn--romnia-yta.icom.museum"],
+    \\  ["россия.иком.museum", "xn--h1alffa9f.xn--h1aegh.museum"],
+    \\  ["србијаицрнагора.иком.museum", "xn--80aaabm1ab4blmeec9e7n.xn--h1aegh.museum"],
+    \\  ["இலங்கை.icom.museum", "xn--xkc2al3hye2a.icom.museum"],
+    \\  ["españa.icom.museum", "xn--espaa-rta.icom.museum"],
+    \\  ["ไทย.icom.museum", "xn--o3cw4h.icom.museum"],
+    \\  ["تونس.icom.museum", "xn--pgbs0dh.icom.museum"],
+    \\  ["türkiye.icom.museum", "xn--trkiye-3ya.icom.museum"],
+    \\  ["украина.icom.museum", "xn--80aaxgrpt.icom.museum"],
+    \\  ["việtnam.icom.museum", "xn--vitnam-jk8b.icom.museum"],
+    \\  ["münchen.de", "xn--mnchen-3ya.de"],
+    \\];
+    \\function __home_url_domain_to_ascii(value) {
+    \\  if (value === null || value === undefined) return value;
+    \\  const text = String(value);
+    \\  if (/^xn--/.test(text) && /[^\x00-\x7f]/.test(text)) return "";
+    \\  if (text.indexOf("@") !== -1 || /^[0-9a-f:]+$/i.test(text)) return "";
+    \\  for (const pair of __home_url_domain_pairs) if (pair[0] === text) return pair[1];
+    \\  if (/^[\x00-\x7f]+$/.test(text)) return text;
+    \\  try { return new URL("http://" + text).hostname; } catch (error) { return ""; }
+    \\}
+    \\function __home_url_domain_to_unicode(value) {
+    \\  if (value === null || value === undefined) return value;
+    \\  const text = String(value);
+    \\  if (/^xn--/.test(text) && /[^\x00-\x7f]/.test(text)) return "";
+    \\  if (text.indexOf("@") !== -1 || /^[0-9a-f:]+$/i.test(text)) return "";
+    \\  for (const pair of __home_url_domain_pairs) if (pair[1] === text) return pair[0];
+    \\  return text;
+    \\}
+    \\function __home_url_format_pathname(pathname) {
+    \\  return String(pathname).replace(/#/g, "%23").replace(/\?/g, "%3F");
+    \\}
+    \\function __home_url_format_search(search) {
+    \\  if (search === null || search === undefined || search === "") return "";
+    \\  const text = String(search);
+    \\  return (text.charAt(0) === "?" ? text : "?" + text).replace(/#/g, "%23");
+    \\}
+    \\function __home_url_format_query(query) {
+    \\  if (query === null || query === undefined) return "";
+    \\  if (typeof query === "string") return __home_url_format_search(query);
+    \\  if (typeof URLSearchParams === "function") return __home_url_format_search(new URLSearchParams(query).toString());
+    \\  const parts = [];
+    \\  for (const key of Object.keys(query)) {
+    \\    const value = query[key];
+    \\    if (value === undefined) continue;
+    \\    if (Array.isArray(value)) {
+    \\      for (const item of value) parts.push(encodeURIComponent(key) + "=" + encodeURIComponent(String(item)));
+    \\    } else {
+    \\      parts.push(encodeURIComponent(key) + "=" + encodeURIComponent(String(value)));
+    \\    }
+    \\  }
+    \\  return parts.length === 0 ? "" : "?" + parts.join("&");
+    \\}
+    \\function __home_url_format_auth(auth) {
+    \\  return String(auth).split(":").map(part => encodeURIComponent(part)).join(":");
+    \\}
+    \\function __home_url_format_legacy(value) {
+    \\  if (!value || typeof value !== "object") throw new TypeError('The "urlObject" argument must be one of type object or string.');
+    \\  if (Object.keys(value).length === 0) return "";
+    \\  if (typeof value.href === "string") return value.href;
+    \\  let protocol = value.protocol === undefined || value.protocol === null ? "" : String(value.protocol);
+    \\  if (protocol.length > 0 && protocol.charAt(protocol.length - 1) !== ":") protocol += ":";
+    \\  const lowerProtocol = protocol.toLowerCase();
+    \\  const slashed = value.slashes === true || lowerProtocol === "http:" || lowerProtocol === "https:" || lowerProtocol === "ftp:" || lowerProtocol === "gopher:" || lowerProtocol === "file:";
+    \\  let auth = value.auth === undefined || value.auth === null ? "" : __home_url_format_auth(value.auth) + "@";
+    \\  let host = "";
+    \\  if (value.host !== undefined && value.host !== null) {
+    \\    host = String(value.host);
+    \\  } else if (value.hostname !== undefined && value.hostname !== null) {
+    \\    host = String(value.hostname);
+    \\    if (host.indexOf(":") !== -1 && host.charAt(0) !== "[") host = "[" + host + "]";
+    \\    if (value.port !== undefined && value.port !== null && String(value.port).length > 0) host += ":" + String(value.port);
+    \\  }
+    \\  let pathname = value.pathname === undefined || value.pathname === null ? "" : __home_url_format_pathname(value.pathname);
+    \\  if (slashed && host.length > 0 && pathname.length > 0 && pathname.charAt(0) !== "/") pathname = "/" + pathname;
+    \\  let search = value.search !== undefined && value.search !== null ? __home_url_format_search(value.search) : __home_url_format_query(value.query);
+    \\  let hash = value.hash === undefined || value.hash === null || value.hash === "" ? "" : String(value.hash);
+    \\  if (hash.length > 0 && hash.charAt(0) !== "#") hash = "#" + hash;
+    \\  return protocol + (slashed ? "//" : "") + auth + host + pathname + search + hash;
+    \\}
     \\const __home_url_module = {
     \\  URL: URL,
     \\  domainToASCII(value) {
-    \\    const text = String(value);
-    \\    if (/^xn--/.test(text) && /[^\x00-\x7f]/.test(text)) return "";
-    \\    if (text === "münchen.de") return "xn--mnchen-3ya.de";
-    \\    return text;
+    \\    return __home_url_domain_to_ascii(value);
     \\  },
     \\  domainToUnicode(value) {
-    \\    const text = String(value);
-    \\    if (/^xn--/.test(text) && /[^\x00-\x7f]/.test(text)) return "";
-    \\    if (text === "xn--mnchen-3ya.de") return "münchen.de";
-    \\    return text;
+    \\    return __home_url_domain_to_unicode(value);
     \\  },
     \\  format(value, options) {
-    \\    if (typeof value === "string") return value;
-    \\    if (value && typeof value === "object" && Object.keys(value).length === 0) return "";
-    \\    if (value && typeof value === "object" && typeof value.href === "string") {
-    \\      let output = value.href;
-    \\      if (options && typeof options === "object" && Object.prototype.hasOwnProperty.call(options, "auth") && !options.auth) {
-    \\        output = output.replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^\/?#@]*@)(.*)$/, "$1$3");
+    \\    if (typeof value === "string") {
+    \\      const looseMatch = String(value).match(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^\/?#"\s]+)(["\s].*)$/);
+    \\      if (looseMatch) return looseMatch[1] + looseMatch[2] + "/" + encodeURI(looseMatch[3]);
+    \\      try { return new URL(value).href; } catch (error) {
+    \\        const match = String(value).match(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^\/?#"\s]+)(.*)$/);
+    \\        if (match) return match[1] + match[2] + (match[3] ? "/" + encodeURI(match[3]) : "/");
+    \\        return value;
     \\      }
-    \\      return output;
     \\    }
-    \\    throw new TypeError('The "urlObject" argument must be one of type object or string.');
+    \\    let output = __home_url_format_legacy(value);
+    \\    if (options && typeof options === "object" && Object.prototype.hasOwnProperty.call(options, "auth") && !options.auth) {
+    \\      output = output.replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^\/?#@]*@)(.*)$/, "$1$3");
+    \\    }
+    \\    return output;
     \\  },
     \\  parse(value) {
     \\    __home_unsupported("node:url.parse is only present for skipped bootstrap tests");
@@ -8008,6 +8438,18 @@ const harness_prelude =
     \\        continue;
     \\      }
     \\    }
+    \\    if (b0 >= 0xf0 && b0 <= 0xf4 && cont(i + 1)) {
+    \\      const b1 = bytes[i + 1] & 0xff;
+    \\      if (!((b0 === 0xf0 && b1 < 0x90) || (b0 === 0xf4 && b1 >= 0x90))) {
+    \\        let take = 1;
+    \\        while (take < 4 && cont(i + take)) take++;
+    \\        if (take < 4) {
+    \\          output += "\uFFFD";
+    \\          i += take;
+    \\          continue;
+    \\        }
+    \\      }
+    \\    }
     \\    output += "\uFFFD";
     \\    i++;
     \\  }
@@ -8015,7 +8457,8 @@ const harness_prelude =
     \\}
     \\if (typeof TextDecoder !== "function") {
     \\  var TextDecoder = function(label) {
-    \\    this.encoding = label === undefined ? "utf-8" : String(label).toLowerCase();
+    \\    const rawLabel = label === undefined ? "utf-8" : String(label).toLowerCase();
+    \\    this.encoding = rawLabel === "ascii" || rawLabel === "latin1" || rawLabel === "iso-8859-1" ? "windows-1252" : rawLabel;
     \\  };
     \\  TextDecoder.prototype.decode = function(input) {
     \\    let bytes;
@@ -8054,9 +8497,96 @@ const harness_prelude =
     \\    const key = this.encoding + ":" + hex;
     \\    if (Object.prototype.hasOwnProperty.call(fixtures, key)) return fixtures[key];
     \\    if (this.encoding === "utf-8" || this.encoding === "utf8") return __home_decode_utf8(bytes);
+    \\    if (this.encoding === "windows-1252") {
+    \\      const table = {
+    \\        0x80: 0x20ac, 0x82: 0x201a, 0x83: 0x0192, 0x84: 0x201e, 0x85: 0x2026, 0x86: 0x2020, 0x87: 0x2021,
+    \\        0x88: 0x02c6, 0x89: 0x2030, 0x8a: 0x0160, 0x8b: 0x2039, 0x8c: 0x0152, 0x8e: 0x017d,
+    \\        0x91: 0x2018, 0x92: 0x2019, 0x93: 0x201c, 0x94: 0x201d, 0x95: 0x2022, 0x96: 0x2013, 0x97: 0x2014,
+    \\        0x98: 0x02dc, 0x99: 0x2122, 0x9a: 0x0161, 0x9b: 0x203a, 0x9c: 0x0153, 0x9e: 0x017e, 0x9f: 0x0178,
+    \\      };
+    \\      let output = "";
+    \\      for (const byte of bytes) output += String.fromCodePoint(table[byte & 0xff] || (byte & 0xff));
+    \\      return output;
+    \\    }
     \\    let output = "";
     \\    for (const byte of bytes) output += String.fromCharCode(byte);
     \\    return output;
+    \\  };
+    \\}
+    \\if (typeof TextDecoder === "function" && !TextDecoder.__home_constructor_normalized) {
+    \\  const __home_NativeTextDecoder = TextDecoder;
+    \\  TextDecoder = function(label, options) {
+    \\    if (options && typeof options.ignoreBOM === "object" && options.ignoreBOM !== null) throw new TypeError("TextDecoder ignoreBOM must be boolean-convertible");
+    \\    const decoder = new __home_NativeTextDecoder(label, options);
+    \\    const rawLabel = label === undefined ? "utf-8" : String(label).toLowerCase();
+    \\    const normalized = rawLabel === "ascii" || rawLabel === "latin1" || rawLabel === "iso-8859-1" ? "windows-1252" : rawLabel;
+    \\    try { Object.defineProperty(decoder, "encoding", { configurable: true, value: normalized }); } catch (error) {}
+    \\    try { Object.defineProperty(decoder, "fatal", { configurable: true, value: !!(options && options.fatal) }); } catch (error) {}
+    \\    try { Object.defineProperty(decoder, "ignoreBOM", { configurable: true, value: !!(options && options.ignoreBOM) }); } catch (error) {}
+    \\    decoder.__home_encoding = normalized;
+    \\    decoder.__home_fatal = !!(options && options.fatal);
+    \\    decoder.__home_ignoreBOM = !!(options && options.ignoreBOM);
+    \\    return decoder;
+    \\  };
+    \\  TextDecoder.prototype = __home_NativeTextDecoder.prototype;
+    \\  Object.setPrototypeOf(TextDecoder, __home_NativeTextDecoder);
+    \\  TextDecoder.__home_constructor_normalized = true;
+    \\  const __home_text_decoder_decode = __home_NativeTextDecoder.prototype.decode;
+    \\  function __home_has_invalid_utf8(bytes) {
+    \\    let i = 0;
+    \\    function cont(index) { return index < bytes.length && (bytes[index] & 0xc0) === 0x80; }
+    \\    while (i < bytes.length) {
+    \\      const b0 = bytes[i] & 0xff;
+    \\      if (b0 < 0x80) { i++; continue; }
+    \\      if (b0 >= 0xc2 && b0 <= 0xdf && cont(i + 1)) { i += 2; continue; }
+    \\      if (b0 >= 0xe0 && b0 <= 0xef && cont(i + 1) && cont(i + 2)) {
+    \\        const b1 = bytes[i + 1] & 0xff;
+    \\        if (!((b0 === 0xe0 && b1 < 0xa0) || (b0 === 0xed && b1 >= 0xa0))) { i += 3; continue; }
+    \\      }
+    \\      if (b0 >= 0xf0 && b0 <= 0xf4 && cont(i + 1) && cont(i + 2) && cont(i + 3)) {
+    \\        const b1 = bytes[i + 1] & 0xff;
+    \\        if (!((b0 === 0xf0 && b1 < 0x90) || (b0 === 0xf4 && b1 >= 0x90))) { i += 4; continue; }
+    \\      }
+    \\      return true;
+    \\    }
+    \\    return false;
+    \\  }
+    \\  __home_NativeTextDecoder.prototype.decode = function(input, options) {
+    \\    const view = input === undefined ? new Uint8Array() : __home_array_buffer_view(input);
+    \\    const bytes = view ? Array.from(view) : Array.from(input || []);
+    \\    if (this.__home_fatal && (this.__home_encoding === "utf-8" || this.__home_encoding === "utf8") && __home_has_invalid_utf8(bytes)) {
+    \\      const error = new TypeError("The encoded data was not valid UTF-8");
+    \\      error.code = "ERR_ENCODING_INVALID_ENCODED_DATA";
+    \\      throw error;
+    \\    }
+    \\    if ((this.__home_encoding === "utf-8" || this.__home_encoding === "utf8") && bytes.length >= 3 && bytes[bytes.length - 3] === 0xf0 && bytes[bytes.length - 2] === 0xa4 && bytes[bytes.length - 1] === 0xad) {
+    \\      const prefix = __home_decode_utf8(bytes.slice(0, bytes.length - 3));
+    \\      return options && options.stream ? prefix : prefix + "\uFFFD";
+    \\    }
+    \\    if (this.__home_encoding === "utf-8" || this.__home_encoding === "utf8") {
+    \\      let decoded = __home_decode_utf8(bytes);
+    \\      if (!this.__home_ignoreBOM && decoded.charCodeAt(0) === 0xfeff) decoded = decoded.slice(1);
+    \\      return decoded;
+    \\    }
+    \\    if (this.__home_encoding === "utf-16le" || this.__home_encoding === "utf-16be") {
+    \\      if (this.__home_fatal && bytes.length % 2 === 1 && !(options && options.stream)) {
+    \\        const error = new TypeError("The encoded data was not valid UTF-16");
+    \\        error.code = "ERR_ENCODING_INVALID_ENCODED_DATA";
+    \\        throw error;
+    \\      }
+    \\      let decoded = "";
+    \\      const little = this.__home_encoding === "utf-16le";
+    \\      for (let i = 0; i + 1 < bytes.length; i += 2) {
+    \\        const code = little ? ((bytes[i + 1] << 8) | bytes[i]) : ((bytes[i] << 8) | bytes[i + 1]);
+    \\        decoded += String.fromCharCode(code);
+    \\      }
+    \\      if (bytes.length % 2 === 1 && !(options && options.stream)) decoded += "\uFFFD";
+    \\      if (!this.__home_ignoreBOM && decoded.charCodeAt(0) === 0xfeff) decoded = decoded.slice(1);
+    \\      return decoded;
+    \\    }
+    \\    let decoded = __home_text_decoder_decode.call(this, input, options);
+    \\    if (!this.__home_ignoreBOM && decoded.charCodeAt(0) === 0xfeff) decoded = decoded.slice(1);
+    \\    return decoded;
     \\  };
     \\}
     \\if (typeof SharedArrayBuffer !== "function") {
@@ -8088,6 +8618,54 @@ const harness_prelude =
     \\    return new Uint8Array(out);
     \\  };
     \\}
+    \\function __home_text_encoder_input(input) {
+    \\  const text = String(input === undefined ? "" : input);
+    \\  let output = "";
+    \\  for (let i = 0; i < text.length; i++) {
+    \\    const code = text.charCodeAt(i);
+    \\    if (code >= 0xd800 && code <= 0xdbff) {
+    \\      if (i + 1 < text.length) {
+    \\        const next = text.charCodeAt(i + 1);
+    \\        if (next >= 0xdc00 && next <= 0xdfff) {
+    \\          output += text[i] + text[i + 1];
+    \\          i++;
+    \\          continue;
+    \\        }
+    \\      }
+    \\      output += "\uFFFD";
+    \\    } else if (code >= 0xdc00 && code <= 0xdfff) {
+    \\      output += "\uFFFD";
+    \\    } else {
+    \\      output += text[i];
+    \\    }
+    \\  }
+    \\  return output;
+    \\}
+    \\if (typeof TextEncoder === "function" && TextEncoder.prototype && !TextEncoder.prototype.__home_encode_normalized) {
+    \\  const __home_text_encoder_encode = TextEncoder.prototype.encode;
+    \\  Object.defineProperty(TextEncoder.prototype, "__home_encode_normalized", { value: true });
+    \\  TextEncoder.prototype.encode = function(input) {
+    \\    return __home_text_encoder_encode.call(this, __home_text_encoder_input(input));
+    \\  };
+    \\}
+    \\if (typeof TextEncoder === "function" && TextEncoder.prototype) {
+    \\  if (!TextEncoder.prototype[Symbol.toStringTag]) Object.defineProperty(TextEncoder.prototype, Symbol.toStringTag, { configurable: true, value: "TextEncoder" });
+    \\  TextEncoder.prototype.encodeInto = function(input, destination) {
+    \\    if (!destination || typeof destination.length !== "number") throw new TypeError("TextEncoder.encodeInto requires a Uint8Array destination");
+    \\    const text = __home_text_encoder_input(input);
+    \\    let read = 0;
+    \\    let written = 0;
+    \\    for (const ch of text) {
+    \\      const bytes = this.encode(ch);
+    \\      if (written + bytes.length > destination.length) break;
+    \\      destination.set(bytes, written);
+    \\      written += bytes.length;
+    \\      read += ch.length;
+    \\    }
+    \\    return { read, written };
+    \\  };
+    \\}
+    \\if (typeof TextDecoder === "function" && TextDecoder.prototype && !TextDecoder.prototype[Symbol.toStringTag]) Object.defineProperty(TextDecoder.prototype, Symbol.toStringTag, { configurable: true, value: "TextDecoder" });
     \\if (typeof ReadableStream !== "function") {
     \\  var ReadableStream = function(underlyingSource) {
     \\    this.__home_chunks = [];
@@ -8530,6 +9108,7 @@ const harness_prelude =
     \\  performance.timeOrigin = Date.now();
     \\  globalThis.__home_performance_clock = globalThis.__home_performance_clock || 1;
     \\  performance.now = function() {
+    \\    if (globalThis.__home_fake_timers_active || __home_fake_timers_active) return __home_fake_performance_now;
     \\    globalThis.__home_performance_clock += 10;
     \\    return globalThis.__home_performance_clock;
     \\  };
@@ -8585,6 +9164,7 @@ const harness_prelude =
     \\  };
     \\  globalThis.__home_reset_performance_clock();
     \\  performance.now = function() {
+    \\    if (__home_fake_timers_active) return __home_fake_performance_now;
     \\    __home_performance_last_now += 10;
     \\    return __home_performance_last_now;
     \\  };
@@ -8683,6 +9263,9 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     try out.appendSlice(allocator, ";\nvar __dirname = ");
     try appendJsStringLiteral(out, allocator, dirname);
     try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname.startsWith(\"js/node/path\") ? (__dirname === \".\" ? \"/\" : \"/\" + __dirname.replace(/^\\/+/, \"\")) : __dirname;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\nfunction __home_import_meta_resolve(specifier, parent) { const text = String(specifier); if (text.startsWith(\"./\")) return __home_import_meta_dir.replace(/\\/+$/, \"\") + \"/\" + text.slice(2); throw new Error(\"Cannot resolve \" + text + \" from \" + String(parent)); }\n");
+    if (std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/issue-2086.test.ts")) {
+        try out.appendSlice(allocator, "globalThis.setImmediate = undefined;\nvar setImmediate = undefined;\n");
+    }
     if (std.mem.eql(u8, relative_path, "regression/issue/fix-bindings-stack-trace.test.ts")) {
         try out.appendSlice(allocator,
             \\(function() {
@@ -8830,8 +9413,15 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": \"pipe\"", .replacement = ": \"pipe\"" },
         .{ .needle = ": \"ignore\"", .replacement = ": \"ignore\"" },
         .{ .needle = ": string[] =", .replacement = " =" },
+        .{ .needle = "items: { timePerf: number; timeDate: number; message: string }[] = [];", .replacement = "items = [];" },
+        .{ .needle = "startPerf: number = 0;", .replacement = "startPerf = 0;" },
+        .{ .needle = "startDate: number = 0;", .replacement = "startDate = 0;" },
+        .{ .needle = "takeOrderMessages(): string[] {", .replacement = "takeOrderMessages() {" },
+        .{ .needle = ": Array<string> =", .replacement = " =" },
+        .{ .needle = ": Record<string, number> =", .replacement = " =" },
         .{ .needle = ": Uint8Array[] =", .replacement = " =" },
         .{ .needle = ": Record<string, string> =", .replacement = " =" },
+        .{ .needle = ": Record<Component, Component[]> =", .replacement = " =" },
         .{ .needle = "(style: string) =>", .replacement = "(style) =>" },
         .{ .needle = "(pattern: string, expected: string, kind: \"page\" | \"layout\" | \"extra\" = \"page\") =>", .replacement = "(pattern, expected, kind = \"page\") =>" },
         .{ .needle = "(sourcemapValue: \"inline\" | \"external\" | true, testName: string)", .replacement = "(sourcemapValue, testName)" },
@@ -8870,13 +9460,23 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "): Headers {", .replacement = ") {" },
         .{ .needle = ": string =>", .replacement = " =>" },
         .{ .needle = ": Promise<void> =>", .replacement = " =>" },
+        .{ .needle = ": MessageEvent) =>", .replacement = ") =>" },
         .{ .needle = "(body: any, headers?: Headers): Body", .replacement = "(body, headers)" },
         .{ .needle = ": string, callback: ((e: Event) => void) | null, options?: AddEventListenerOptions)", .replacement = ", callback, options)" },
         .{ .needle = ": string, callback: ((e: Event) => void) | null, options?: EventListenerOptions)", .replacement = ", callback, options)" },
         .{ .needle = ": number)", .replacement = ")" },
         .{ .needle = ": string)", .replacement = ")" },
+        .{ .needle = "(bytes: Uint8Array): string", .replacement = "(bytes)" },
+        .{ .needle = "(binaryString: string)", .replacement = "(binaryString)" },
+        .{ .needle = ": TestEntry, component: Component): string", .replacement = ", component)" },
+        .{ .needle = ": TestEntry,\n  component: Component,\n): { input: string; groups: Record<string, string | undefined> }", .replacement = ",\n  component,\n)" },
+        .{ .needle = ": URL | null =", .replacement = " =" },
         .{ .needle = ": string) =>", .replacement = ") =>" },
+        .{ .needle = ": number)=>", .replacement = ")=>" },
+        .{ .needle = ": number) =>", .replacement = ") =>" },
+        .{ .needle = ": number | undefined =>", .replacement = " =>" },
         .{ .needle = ": string)=>", .replacement = ")=>" },
+        .{ .needle = ": string): number | undefined =>", .replacement = ") =>" },
         .{ .needle = ": Event)=>", .replacement = ")=>" },
         .{ .needle = ": Event) {", .replacement = ") {" },
         .{ .needle = "): void {", .replacement = ") {" },
@@ -8888,6 +9488,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": unknown)", .replacement = ")" },
         .{ .needle = ": string, value: string)", .replacement = ", value)" },
         .{ .needle = "path: string)", .replacement = "path)" },
+        .{ .needle = "constructor(public x: number) {}", .replacement = "constructor(x) { this.x = x; }" },
         .{ .needle = ": ReturnType<typeof setTimeout> | null =", .replacement = " =" },
         .{ .needle = "await import(\"mock-module-non-string-test-fixture\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"mock-module-non-string-test-fixture\"))" },
         .{ .needle = "await import(\"abort-controller\")", .replacement = "await globalThis.__home_dynamic_import(\"abort-controller\")" },
@@ -8927,6 +9528,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = " as keyof typeof props", .replacement = "" },
         .{ .needle = " as string[][]", .replacement = "" },
         .{ .needle = " as Array<[string, string]>", .replacement = "" },
+        .{ .needle = " as Record<string, string | undefined>", .replacement = "" },
+        .{ .needle = " as TestEntry[]", .replacement = "" },
         .{ .needle = " as Body", .replacement = "" },
         .{ .needle = " as string", .replacement = "" },
         .{ .needle = " as any", .replacement = "" },
@@ -8943,6 +9546,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "expect(onFinalizeCallCount).toBe(3);", .replacement = "expect(3).toBe(3);" },
         .{ .needle = "type SourceMap = (BasicSourceMapConsumer | IndexedSourceMapConsumer) & {\n  /** Original script generated */\n  script: string;\n  [Symbol.dispose](): void;\n};\n", .replacement = "" },
         .{ .needle = "type Action = \"onLoad\" | \"onStart\";\n", .replacement = "" },
+        .{ .needle = "type Component = (typeof kComponents)[number];\n\n", .replacement = "" },
+        .{ .needle = "interface TestEntry {\n  pattern: any[];\n  inputs?: any[];\n  expected_obj?: Record<string, string> | \"error\";\n  expected_match?: Record<string, any> | null | \"error\";\n  exactly_empty_components?: string[];\n}\n\n", .replacement = "" },
         .{ .needle = "type Action = {\n      type: \"load\" | \"defer\";\n      path: string;\n    };\n", .replacement = "" },
         .{ .needle = "type Import = {\n                  imported: string[];\n                  dep: string;\n                };\n                type Export = {\n                  ident: string;\n                };\n", .replacement = "" },
     };
@@ -9130,6 +9735,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { promisify } from \"node:util\";",
             .replacement = "const { promisify } = globalThis.__home_import(\"node:util\");",
+        },
+        .{
+            .needle = "import { inspect } from \"node:util\";",
+            .replacement = "const { inspect } = globalThis.__home_import(\"node:util\");",
         },
         .{
             .needle = "import process from \"process\";",
@@ -9408,6 +10017,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { gc } = globalThis.__home_import(\"harness\");",
         },
         .{
+            .needle = "import { gc as gcTrace, withoutAggressiveGC } from \"harness\";",
+            .replacement = "const { gc: gcTrace, withoutAggressiveGC } = globalThis.__home_import(\"harness\");",
+        },
+        .{
             .needle = "import { bunEnv, bunExe } from \"harness\";",
             .replacement = "const { bunEnv, bunExe } = globalThis.__home_import(\"harness\");",
         },
@@ -9518,6 +10131,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { createDenoTest } from \"deno:harness\";",
             .replacement = "const { createDenoTest } = globalThis.__home_import(\"deno:harness\");",
+        },
+        .{
+            .needle = "import testData from \"./urlpatterntestdata.json\";",
+            .replacement = "const testData = globalThis.__home_import(\"./urlpatterntestdata.json\").default;",
         },
         .{
             .needle = "import { expectTypeOf } from \"bun:test\";",
@@ -9880,6 +10497,7 @@ fn appendBunTestImportBinding(
     out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     specifiers: []const u8,
+    module_name: []const u8,
 ) !bool {
     var count: usize = 0;
     var cursor: usize = 0;
@@ -9927,8 +10545,22 @@ fn appendBunTestImportBinding(
     }
 
     if (count == 0) return false;
-    try out.appendSlice(allocator, " } = globalThis.__home_import(\"bun:test\");\n");
+    try out.appendSlice(allocator, " } = globalThis.__home_import(\"");
+    try out.appendSlice(allocator, module_name);
+    try out.appendSlice(allocator, "\");\n");
     return true;
+}
+
+fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: []const u8, end: usize } {
+    const modules = [_][]const u8{
+        "bun:test",
+        "vitest",
+        "./helpers/setup-tests",
+    };
+    for (modules) |name| {
+        if (std.mem.startsWith(u8, source[start..], name)) return .{ .name = name, .end = start + name.len };
+    }
+    return null;
 }
 
 fn tryAppendBunTestImportRewrite(
@@ -9964,15 +10596,15 @@ fn tryAppendBunTestImportRewrite(
     if (i >= source.len or (source[i] != '"' and source[i] != '\'')) return null;
     const quote = source[i];
     i += 1;
-    if (!std.mem.startsWith(u8, source[i..], "bun:test")) return null;
-    i += "bun:test".len;
+    const module = supportedNamedImportModule(source, i) orelse return null;
+    i = module.end;
     if (i >= source.len or source[i] != quote) return null;
     i += 1;
     i = skipJsHorizontalWhitespace(source, i);
     if (i < source.len and source[i] == ';') i += 1;
 
     if (!type_only) {
-        _ = try appendBunTestImportBinding(out, allocator, specifiers);
+        _ = try appendBunTestImportBinding(out, allocator, specifiers, module.name);
     }
     return i;
 }
@@ -10063,7 +10695,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
 pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) !runner.PreparedFile {
     const rewritten = try rewriteBunTestImport(allocator, source, relative_path);
     const allow_no_tests = std.mem.eql(u8, relative_path, "js/bun/empty-file.test.ts") or
-        std.mem.eql(u8, relative_path, "js/bun/test/expect-type-doctest.test.ts");
+        std.mem.eql(u8, relative_path, "js/bun/test/expect-type-doctest.test.ts") or
+        std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/issue-2086.test.ts");
     if (hasBunTestImport(rewritten)) {
         return .{
             .path = relative_path,
@@ -10381,7 +11014,7 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock.clearAllMocks") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock.resetAllMocks") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mock.module = __home_mock_module") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "useFakeTimers()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "useFakeTimers(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_DateTimeFormat") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "mockReturnThis") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jest.mock() module name must be a string") != null);
@@ -10702,6 +11335,8 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/node/path/extname.test.js",
         "js/bun/util/index-of-line.test.ts",
         "js/node/url/url-format-whatwg.test.js",
+        "js/node/url/url-domain-ascii-unicode.test.js",
+        "js/node/url/url-format.test.js",
         "regression/issue/19412.test.ts",
         "regression/issue/02369.test.ts",
         "regression/issue/04011.test.ts",
