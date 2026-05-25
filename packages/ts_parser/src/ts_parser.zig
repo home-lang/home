@@ -12523,6 +12523,9 @@ pub const Parser = struct {
         while (self.peek().kind == .dot) {
             _ = self.advance();
             const member_tok = try self.expectIdentifierLike();
+            if (member_tok.flags.has_escape) {
+                try self.reportCodeAt(member_tok.span.start, member_tok.line, 17021, "Unicode escape sequence cannot appear here.");
+            }
             const member_id = try self.internToken(member_tok);
             tag = try self.builder.addMemberAccess(
                 .{ .start = self.hir.spanOf(tag).start, .end = member_tok.span.end },
@@ -12732,6 +12735,7 @@ pub const Parser = struct {
         }
         const first = self.advance();
         var parsed_span = tokenSpan(first);
+        var has_escape = first.flags.has_escape;
         // Hyphenated parts (`data-foo`) AND single-colon namespaced
         // parts (`svg:path`, `xlink:href`). The namespaced form is
         // never a valid lowercase intrinsic in the React JSX rules —
@@ -12745,15 +12749,20 @@ pub const Parser = struct {
                 _ = self.advance();
                 const part = self.advance();
                 parsed_span.end = part.span.end;
+                has_escape = has_escape or part.flags.has_escape;
                 continue;
             }
             if (k == .colon and isJsxNamePart(self.peekAt(1).kind)) {
                 _ = self.advance();
                 const part = self.advance();
                 parsed_span.end = part.span.end;
+                has_escape = has_escape or part.flags.has_escape;
                 continue;
             }
             break;
+        }
+        if (has_escape) {
+            try self.reportCodeAt(parsed_span.start, first.line, 17021, "Unicode escape sequence cannot appear here.");
         }
         const text = self.source[parsed_span.start..parsed_span.end];
         const id = self.interner.intern(text) catch return error.OutOfMemory;
@@ -16955,6 +16964,29 @@ test "parser: jsx hyphenated tag and attribute names" {
     try T.expectEqualStrings("data-id", s.interner.get(a0.name));
     try T.expectEqualStrings("ignore-prop", s.interner.get(a1.name));
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: jsx unicode escapes in tag and attribute names report TS17021" {
+    var s = try newTsxTestSetup(
+        \\; <\u0061></a>;
+        \\; <a-\u0063></a-c>;
+        \\; <Comp\u{0061} x={12} />;
+        \\; <x.\u0076ideo />;
+        \\;<video data-\u0076ideo />;
+        \\;<video \u0073rc="" />;
+        \\let v = <a></\u0061>;
+    );
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 17021) {
+            count += 1;
+            try T.expectEqualStrings("Unicode escape sequence cannot appear here.", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 7), count);
 }
 
 test "parser: jsx empty attribute initializer reports TS1145" {
