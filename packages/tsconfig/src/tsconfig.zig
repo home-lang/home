@@ -1259,6 +1259,26 @@ test "tsconfig: moduleDetection parses as string" {
     try t.expectEqualStrings("force", cfg.compiler_options.module_detection.?);
 }
 
+test "tsconfig: JSX factory string fields parse" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "jsxFactory": "h",
+        \\    "jsxFragmentFactory": "Fragment",
+        \\    "jsxImportSource": "preact",
+        \\    "reactNamespace": "Preact"
+        \\  }
+        \\}
+    );
+    const co = cfg.compiler_options;
+    try t.expectEqualStrings("h", co.jsx_factory.?);
+    try t.expectEqualStrings("Fragment", co.jsx_fragment_factory.?);
+    try t.expectEqualStrings("preact", co.jsx_import_source.?);
+    try t.expectEqualStrings("Preact", co.react_namespace.?);
+}
+
 test "tsconfig: merge propagates new bool fields" {
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
@@ -1627,6 +1647,98 @@ test "tsconfig.validate: declaration-dependent options accept declaration or com
     const composite_diags = try with_composite.validate(t.allocator);
     defer freeValidationDiagnostics(t.allocator, composite_diags);
     try t.expectEqual(@as(usize, 0), composite_diags.len);
+}
+
+test "tsconfig.validate: JSX factory cluster accepts classic React values" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "jsx": "react",
+        \\    "jsxFactory": "h.create",
+        \\    "jsxFragmentFactory": "null"
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 0), diags.len);
+}
+
+test "tsconfig.validate: jsxFragmentFactory without jsxFactory reports TS5052" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "jsxFragmentFactory": "Fragment" } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), diags.len);
+    try t.expectEqual(@as(u32, 5052), diags[0].code);
+    try t.expectEqualStrings("Option 'jsxFragmentFactory' cannot be specified without specifying option 'jsxFactory'.", diags[0].message);
+    try t.expectEqualStrings("jsxFragmentFactory", diags[0].field);
+}
+
+test "tsconfig.validate: automatic JSX runtime rejects classic factory options with TS5089" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "jsx": "react-jsx",
+        \\    "jsxFactory": "h",
+        \\    "jsxFragmentFactory": "Fragment",
+        \\    "reactNamespace": "React"
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 4), diags.len);
+    try t.expectEqual(@as(u32, 5053), diags[0].code);
+    try t.expectEqualStrings("Option 'reactNamespace' cannot be specified with option 'jsxFactory'.", diags[0].message);
+    try t.expectEqual(@as(u32, 5089), diags[1].code);
+    try t.expectEqualStrings("Option 'jsxFactory' cannot be specified when option 'jsx' is 'react-jsx'.", diags[1].message);
+    try t.expectEqual(@as(u32, 5089), diags[2].code);
+    try t.expectEqualStrings("Option 'jsxFragmentFactory' cannot be specified when option 'jsx' is 'react-jsx'.", diags[2].message);
+    try t.expectEqual(@as(u32, 5089), diags[3].code);
+    try t.expectEqualStrings("Option 'reactNamespace' cannot be specified when option 'jsx' is 'react-jsx'.", diags[3].message);
+}
+
+test "tsconfig.validate: invalid JSX factory option values report upstream codes" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "jsx": "react",
+        \\    "jsxFactory": "Element.createElement=",
+        \\    "jsxFragmentFactory": "234"
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 2), diags.len);
+    try t.expectEqual(@as(u32, 5067), diags[0].code);
+    try t.expectEqualStrings("Invalid value for 'jsxFactory'. 'Element.createElement=' is not a valid identifier or qualified-name.", diags[0].message);
+    try t.expectEqual(@as(u32, 18035), diags[1].code);
+    try t.expectEqualStrings("Invalid value for 'jsxFragmentFactory'. '234' is not a valid identifier or qualified-name.", diags[1].message);
+}
+
+test "tsconfig.validate: invalid reactNamespace reports TS5059" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "reactNamespace": "my-React-Lib" } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), diags.len);
+    try t.expectEqual(@as(u32, 5059), diags[0].code);
+    try t.expectEqualStrings("Invalid value for '--reactNamespace'. 'my-React-Lib' is not a valid identifier.", diags[0].message);
+    try t.expectEqualStrings("reactNamespace", diags[0].field);
 }
 
 // ============================================================================
