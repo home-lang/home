@@ -4817,6 +4817,7 @@ pub const Parser = struct {
         declare_token: ?Token = null,
         async_token: ?Token = null,
         abstract_token: ?Token = null,
+        readonly_token: ?Token = null,
         static_token: ?Token = null,
         override_token: ?Token = null,
         first_modifier_token: ?Token = null,
@@ -4963,6 +4964,7 @@ pub const Parser = struct {
                             try self.reportCodeAt(self.peek().span.start, self.peek().line, 1030, "'readonly' modifier already seen.");
                         }
                         mods.is_readonly = true;
+                        if (mods.readonly_token == null) mods.readonly_token = self.peek();
                     },
                     .kw_accessor => {
                         // `accessor x = …` modifier (TS 4.9 / Stage 3).
@@ -5040,6 +5042,17 @@ pub const Parser = struct {
             const mod_name = self.source[bad.span.start..bad.span.end];
             const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier cannot appear on class elements of this kind.", .{mod_name});
             try self.reportCodeAt(bad.span.start, bad.line, 1031, msg);
+        }
+        // TS1024: `readonly` is only valid on a property declaration,
+        // property signature, index signature, or parameter property. The
+        // method/accessor/constructor paths that call this helper are all
+        // ineligible, so a captured `readonly` modifier is a grammar error
+        // anchored at the keyword. Property members route through
+        // `reportInvalidClassElementModifierForProperty` and index
+        // signatures consume their own `readonly`, so neither reaches here.
+        // Mirrors `privateNamesIncompatibleModifiers.ts(11,5)`.
+        if (mods.readonly_token) |bad| {
+            try self.reportCodeAt(bad.span.start, bad.line, 1024, "'readonly' modifier can only appear on a property declaration or index signature.");
         }
         // `declare` is invalid on methods/constructors/accessors only.
         // Callers parsing a class *property* skip this branch entirely
@@ -8970,12 +8983,39 @@ pub const Parser = struct {
             self.cursor = checkpoint;
             return false;
         }
+        // TS1020: an index-signature parameter may not carry a default
+        // initializer (`[a: number = 1]`). tsc anchors the diagnostic at
+        // the parameter name and recovers by consuming the initializer
+        // expression so the trailing `]` still parses. Mirrors
+        // `indexSignatureWithInitializer1.ts(2,4)`.
+        if (self.peek().kind == .equal) {
+            try self.reportCodeAt(id1.span.start, id1.line, 1020, "An index signature parameter cannot have an initializer.");
+            _ = self.advance(); // `=`
+            _ = self.parseAssignmentExpression() catch {
+                while (self.peek().kind != .close_bracket and
+                    self.peek().kind != .close_brace and
+                    self.peek().kind != .eof)
+                {
+                    _ = self.advance();
+                }
+            };
+        }
         var has_multiple_parameters = false;
         if (self.peek().kind == .comma) {
-            has_multiple_parameters = true;
-            try self.reportCodeAt(id1.span.start, id1.line, 1096, "An index signature must have exactly one parameter.");
-            while (self.peek().kind != .close_bracket and self.peek().kind != .close_brace and self.peek().kind != .eof) {
-                _ = self.advance();
+            // Distinguish a trailing comma (`[key: string,]`, TS1025) from a
+            // genuine second parameter (`[a: K, b: K]`, TS1096). tsc anchors
+            // TS1025 at the comma. Mirrors `indexSignatureWithTrailingComma`.
+            const comma_tok = self.peek();
+            const next_after_comma = self.peekAt(1).kind;
+            if (next_after_comma == .close_bracket or next_after_comma == .close_brace) {
+                try self.reportCodeAt(comma_tok.span.start, comma_tok.line, 1025, "An index signature cannot have a trailing comma.");
+                _ = self.advance(); // consume the trailing comma
+            } else {
+                has_multiple_parameters = true;
+                try self.reportCodeAt(id1.span.start, id1.line, 1096, "An index signature must have exactly one parameter.");
+                while (self.peek().kind != .close_bracket and self.peek().kind != .close_brace and self.peek().kind != .eof) {
+                    _ = self.advance();
+                }
             }
         }
         const key_type_valid = self.indexSignatureKeyTypeIsValid(key_type);
@@ -17831,6 +17871,97 @@ test "parser: malformed interface index signatures use upstream recovery diagnos
     _ = try invalid_key.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), invalid_key.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1268), invalid_key.parser.diagnostics.items[0].code);
+}
+
+test "parser: index signature parameter initializer reports TS1020" {
+    // tsc anchors TS1020 at the parameter name and recovers by consuming
+    // the initializer. Mirrors `indexSignatureWithInitializer1.ts(2,4)`.
+    var s = try newTestSetup("class C {\n  [a: number = 1]: number;\n}");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1020), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 13), s.parser.diagnostics.items[0].pos);
+    try T.expectEqualStrings("An index signature parameter cannot have an initializer.", s.parser.diagnostics.items[0].message);
+
+    // Negative: a valid index signature stays clean.
+    var clean = try newTestSetup("class C {\n  [a: number]: number;\n}");
+    defer destroyTestSetup(clean);
+    _ = try clean.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), clean.parser.diagnostics.items.len);
+}
+
+test "parser: index signature trailing comma reports TS1025" {
+    // tsc anchors TS1025 at the trailing comma; a genuine second parameter
+    // still reports TS1096. Mirrors `indexSignatureWithTrailingComma.ts`.
+    var type_lit = try newTestSetup("type A = {\n    [key: string,]: string;\n};");
+    defer destroyTestSetup(type_lit);
+    _ = try type_lit.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), type_lit.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1025), type_lit.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 27), type_lit.parser.diagnostics.items[0].pos);
+    try T.expectEqualStrings("An index signature cannot have a trailing comma.", type_lit.parser.diagnostics.items[0].message);
+
+    var iface = try newTestSetup("interface B {\n    [key: string,]: string;\n}");
+    defer destroyTestSetup(iface);
+    _ = try iface.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), iface.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1025), iface.parser.diagnostics.items[0].code);
+
+    var class_member = try newTestSetup("class C {\n    [key: string,]: null;\n}");
+    defer destroyTestSetup(class_member);
+    _ = try class_member.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), class_member.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1025), class_member.parser.diagnostics.items[0].code);
+
+    // A real second parameter is TS1096, not a trailing comma.
+    var two_params = try newTestSetup("class C {\n  [a: number, b: string]: number;\n}");
+    defer destroyTestSetup(two_params);
+    _ = try two_params.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), two_params.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1096), two_params.parser.diagnostics.items[0].code);
+
+    // Negative: a valid index signature stays clean.
+    var clean = try newTestSetup("interface B {\n    [key: string]: string;\n}");
+    defer destroyTestSetup(clean);
+    _ = try clean.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), clean.parser.diagnostics.items.len);
+}
+
+test "parser: readonly modifier on method or accessor reports TS1024" {
+    // tsc anchors TS1024 at the `readonly` keyword when it appears on a
+    // member kind other than a property/index signature. Mirrors
+    // `privateNamesIncompatibleModifiers.ts(11,5)`.
+    var method = try newTestSetup("class E {\n  readonly m() { return 1; }\n}");
+    defer destroyTestSetup(method);
+    _ = try method.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), method.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1024), method.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 12), method.parser.diagnostics.items[0].pos);
+    try T.expectEqualStrings("'readonly' modifier can only appear on a property declaration or index signature.", method.parser.diagnostics.items[0].message);
+
+    var accessor = try newTestSetup("class F {\n  readonly get p() { return 1; }\n}");
+    defer destroyTestSetup(accessor);
+    _ = try accessor.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), accessor.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1024), accessor.parser.diagnostics.items[0].code);
+
+    // Negatives: `readonly` is valid on a property, an index signature, and
+    // a constructor parameter property — none of these report TS1024.
+    var property = try newTestSetup("class G {\n  readonly x = 1;\n}");
+    defer destroyTestSetup(property);
+    _ = try property.parser.parseSourceFile();
+    for (property.parser.diagnostics.items) |d| try T.expect(d.code != 1024);
+
+    var index_sig = try newTestSetup("class H {\n  readonly [k: string]: number;\n}");
+    defer destroyTestSetup(index_sig);
+    _ = try index_sig.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), index_sig.parser.diagnostics.items.len);
+
+    var param_prop = try newTestSetup("class J {\n  constructor(readonly x: number) {}\n}");
+    defer destroyTestSetup(param_prop);
+    _ = try param_prop.parser.parseSourceFile();
+    for (param_prop.parser.diagnostics.items) |d| try T.expect(d.code != 1024);
 }
 
 test "parser: unresolved computed interface member reports missing key name" {
