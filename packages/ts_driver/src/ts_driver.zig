@@ -448,6 +448,82 @@ fn reportMissingReferencePathDiagnostics(
     }
 }
 
+fn reportInvalidReferenceDirectiveSyntaxDiagnostics(
+    gpa: std.mem.Allocator,
+    c: *Compilation,
+    source: []const u8,
+) CompileError!void {
+    if (std.mem.indexOf(u8, source, "<reference") == null) return;
+
+    var offset: usize = 0;
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |raw_line| {
+        const line_without_cr = std.mem.trim(u8, raw_line, "\r");
+        defer offset += raw_line.len + 1;
+
+        var leading: usize = 0;
+        while (leading < line_without_cr.len and
+            (line_without_cr[leading] == ' ' or line_without_cr[leading] == '\t')) : (leading += 1)
+        {}
+        const line = line_without_cr[leading..];
+        if (!std.mem.startsWith(u8, line, "///")) continue;
+
+        var idx: usize = 3;
+        while (idx < line.len and (line[idx] == ' ' or line[idx] == '\t')) : (idx += 1) {}
+        if (!std.mem.startsWith(u8, line[idx..], "<reference")) continue;
+
+        if (!isValidReferenceDirectiveElement(line[idx..])) {
+            try c.diagnostics.append(gpa, .{
+                .phase = .bind,
+                .pos = @intCast(offset + leading),
+                .line = 0,
+                .code = 1084,
+                .message = try gpa.dupe(u8, "Invalid 'reference' directive syntax."),
+            });
+            c.has_errors = true;
+        }
+    }
+}
+
+fn isValidReferenceDirectiveElement(text: []const u8) bool {
+    const gt = std.mem.indexOfScalar(u8, text, '>') orelse return false;
+    const element = text[0 .. gt + 1];
+    if (!std.mem.startsWith(u8, element, "<reference")) return false;
+    if (element.len < "<reference".len + 2 or element[element.len - 1] != '>') return false;
+
+    var body = std.mem.trim(u8, element["<reference".len .. element.len - 1], " \t\r");
+    if (body.len == 0 or body[body.len - 1] != '/') return false;
+    body = std.mem.trim(u8, body[0 .. body.len - 1], " \t\r");
+    if (body.len == 0) return false;
+
+    var idx: usize = 0;
+    var saw_attr = false;
+    while (idx < body.len) {
+        while (idx < body.len and (body[idx] == ' ' or body[idx] == '\t')) : (idx += 1) {}
+        if (idx >= body.len) break;
+
+        const name_start = idx;
+        while (idx < body.len and isReferenceDirectiveAttributeNameChar(body[idx])) : (idx += 1) {}
+        if (idx == name_start) return false;
+        while (idx < body.len and (body[idx] == ' ' or body[idx] == '\t')) : (idx += 1) {}
+        if (idx >= body.len or body[idx] != '=') return false;
+        idx += 1;
+        while (idx < body.len and (body[idx] == ' ' or body[idx] == '\t')) : (idx += 1) {}
+        if (idx >= body.len or (body[idx] != '"' and body[idx] != '\'')) return false;
+        const quote = body[idx];
+        idx += 1;
+        while (idx < body.len and body[idx] != quote) : (idx += 1) {}
+        if (idx >= body.len) return false;
+        idx += 1;
+        saw_attr = true;
+    }
+    return saw_attr;
+}
+
+fn isReferenceDirectiveAttributeNameChar(ch: u8) bool {
+    return std.ascii.isAlphanumeric(ch) or ch == '-';
+}
+
 fn isHarnessProvidedReferencePath(path: []const u8) bool {
     return std.mem.startsWith(u8, path, "/.lib/");
 }
@@ -766,6 +842,7 @@ pub fn compileSource(
     try reportDeprecatedOptionDirectives(gpa, c, source, options);
     try reportJsxFactoryOptionDiagnostics(gpa, c, source, options);
 
+    try reportInvalidReferenceDirectiveSyntaxDiagnostics(gpa, c, source);
     try reportMissingReferencePathDiagnostics(gpa, c, source);
 
     const effective_import_helpers = options.emit.import_helpers or (directiveBool(source, "importHelpers") orelse false);
@@ -2849,6 +2926,43 @@ test "driver: missing triple-slash path reference reports TS6053" {
         }
     }
     try T.expect(found);
+}
+
+test "driver: invalid triple-slash reference syntax reports TS1084" {
+    var c = try compileSource(T.allocator,
+        \\/// <reference path="missingquote.ts />
+        \\class C {}
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 6053);
+        if (d.code == 1084) {
+            found = true;
+            try T.expectEqual(@as(u32, 0), d.pos);
+            try T.expectEqualStrings("Invalid 'reference' directive syntax.", d.message);
+        }
+    }
+    try T.expect(found);
+}
+
+test "driver: valid triple-slash reference directives do not report TS1084" {
+    var c = try compileSource(T.allocator,
+        \\/// <reference types="node" />
+        \\/// <reference lib='es2015'/>
+        \\/// <reference path="/.lib/react16.d.ts" />
+        \\let x = 1;
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 1084);
+    }
 }
 
 test "driver: classic for initializer binding pattern is visible in condition update and body" {
