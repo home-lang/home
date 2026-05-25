@@ -2,7 +2,7 @@
 
 > **Status:** Phase 0 in progress (started 2026-05-04). Authored 2026-05-04. Verified against tsgo source 2026-05-04 (see Appendix D). Settlers III TS-flavor Home remake planning added 2026-05-11 (see Appendix E).
 >
-> Cross-references: [`ARCHITECTURE.md`](./ARCHITECTURE.md), [`COMPILER_PIPELINE.md`](./COMPILER_PIPELINE.md), [`CAPABILITY_MATRIX.md`](./CAPABILITY_MATRIX.md), [`ROADMAP-WEB-COMPETITIVE.md`](./ROADMAP-WEB-COMPETITIVE.md), Appendix E below for the game-scale TS-flavor validation track.
+> Cross-references: [`ARCHITECTURE.md`](./ARCHITECTURE.md), [`COMPILER_PIPELINE.md`](./COMPILER_PIPELINE.md), [`CAPABILITY_MATRIX.md`](./CAPABILITY_MATRIX.md), [`ROADMAP-WEB-COMPETITIVE.md`](./ROADMAP-WEB-COMPETITIVE.md), [`TS_DIAGNOSTIC_CODE_STATUS.md`](./TS_DIAGNOSTIC_CODE_STATUS.md) for the generated all-TSxxxx diagnostic-code ledger, Appendix E below for the game-scale TS-flavor validation track.
 >
 > **Source verification.** All claims about tsgo internals in this document have been verified against the tsgo source tree at `~/Code/typescript-go` (Go port of `tsc` from microsoft/typescript-go). Citations use the form `path/file.go:line` referencing that tree. See Appendix D for a full verification table.
 
