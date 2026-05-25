@@ -4981,6 +4981,10 @@ pub const Parser = struct {
                     type_anno = try self.parseTypeAnnotation();
                     _ = self.match(.question);
                     _ = self.match(.bang);
+                    if (self.peek().kind == .open_paren and !self.peek().flags.preceded_by_newline) {
+                        const bad = self.advance();
+                        try self.reportCodeAt(bad.span.start, bad.line, 1441, "Cannot start a function call in a type annotation.");
+                    }
                 }
                 var default_value: NodeId = hir_mod.none_node_id;
                 if (self.match(.equal)) {
@@ -6206,10 +6210,20 @@ pub const Parser = struct {
         {
             try self.reportCodeAt(start.span.start, start.line, 1046, "Top-level declarations in .d.ts files must start with either a 'declare' or 'export' modifier.");
         }
-        const name_tok = if (self.peek().kind == .string_literal)
-            self.advance()
-        else
-            try self.expectIdentifierLike();
+        const name_tok: Token = name_blk: {
+            if (self.peek().kind == .string_literal) break :name_blk self.advance();
+            if (self.peek().kind == .open_brace) {
+                const brace = self.peek();
+                try self.reportCodeAt(brace.span.start, brace.line, 1437, "Namespace must be given a name.");
+                break :name_blk .{
+                    .span = .{ .start = brace.span.start, .end = brace.span.start },
+                    .kind = .identifier,
+                    .flags = .{},
+                    .line = brace.line,
+                };
+            }
+            break :name_blk try self.expectIdentifierLike();
+        };
         // TS1035: A quoted-name namespace/module declaration is only
         // legal in an ambient context (after `declare` or inside a
         // `.d.ts` file). Bare `module "Foo" {}` in a `.ts` file is an
@@ -6284,11 +6298,14 @@ pub const Parser = struct {
             self.top_level_module_syntax_indicator = true;
         }
         if (self.moduleElementContextIsIllegal()) {
-            // TS1232: an import declaration (ES import or `import x =`)
-            // nested inside a block or control-flow body. Anchored at the
-            // `import` keyword to match upstream tsc on
-            // `moduleElementsInWrongContext.ts(23,5)`.
-            try self.reportCodeAt(start.span.start, start.line, 1232, "An import declaration can only be used at the top level of a namespace or module.");
+            // TS1232 / TS1473: an import declaration (ES import or
+            // `import x =`) nested inside a block or control-flow body.
+            // JavaScript files use the module-only wording upstream.
+            if (self.is_javascript_file) {
+                try self.reportCodeAt(start.span.start, start.line, 1473, "An import declaration can only be used at the top level of a module.");
+            } else {
+                try self.reportCodeAt(start.span.start, start.line, 1232, "An import declaration can only be used at the top level of a namespace or module.");
+            }
         }
         var is_type_only = false;
         var type_kw_start: u32 = start.span.start;
@@ -6707,7 +6724,13 @@ pub const Parser = struct {
             } else if (key_kind == .identifier or key_kind.isKeyword()) {
                 _ = self.advance();
             } else {
-                return error.UnexpectedToken;
+                const bad = self.advance();
+                try self.reportCodeAt(bad.span.start, bad.line, 1478, "Identifier or string literal expected.");
+                while (self.peek().kind != .comma and self.peek().kind != .close_brace and self.peek().kind != .eof) {
+                    _ = self.advance();
+                }
+                if (!self.match(.comma)) break;
+                continue;
             }
             _ = try self.expect(.colon, "':' in import attribute");
             // value: string literal per spec; accept identifier too for
@@ -6991,10 +7014,14 @@ pub const Parser = struct {
         // export { a, b as c } [from "m"];
         if (self.match(.open_brace)) {
             if (self.moduleElementContextIsIllegal()) {
-                // TS1233: `export { ... }` nested inside a block or
-                // control-flow body. Anchored at the `export` keyword to
-                // match upstream `moduleElementsInWrongContext.ts(18,5)`.
-                try self.reportCodeAt(start.span.start, start.line, 1233, "An export declaration can only be used at the top level of a namespace or module.");
+                // TS1233 / TS1474: `export { ... }` nested inside a block
+                // or control-flow body. JavaScript files use the
+                // module-only wording upstream.
+                if (self.is_javascript_file) {
+                    try self.reportCodeAt(start.span.start, start.line, 1474, "An export declaration can only be used at the top level of a module.");
+                } else {
+                    try self.reportCodeAt(start.span.start, start.line, 1233, "An export declaration can only be used at the top level of a namespace or module.");
+                }
             }
             var named: std.ArrayListUnmanaged(NodeId) = .empty;
             defer named.deinit(self.gpa);
@@ -7071,10 +7098,14 @@ pub const Parser = struct {
         // export * [as ns] from "m";
         if (self.match(.asterisk)) {
             if (self.moduleElementContextIsIllegal()) {
-                // TS1233: `export * from "m"` nested inside a block or
-                // control-flow body. Anchored at the `export` keyword to
-                // match upstream `moduleElementsInWrongContext.ts(17,5)`.
-                try self.reportCodeAt(start.span.start, start.line, 1233, "An export declaration can only be used at the top level of a namespace or module.");
+                // TS1233 / TS1474: `export * from "m"` nested inside a
+                // block or control-flow body. JavaScript files use the
+                // module-only wording upstream.
+                if (self.is_javascript_file) {
+                    try self.reportCodeAt(start.span.start, start.line, 1474, "An export declaration can only be used at the top level of a module.");
+                } else {
+                    try self.reportCodeAt(start.span.start, start.line, 1233, "An export declaration can only be used at the top level of a namespace or module.");
+                }
             }
             var ns_alias: hir_mod.StringId = empty_string;
             var ns_alias_is_string_literal = false;
@@ -17295,6 +17326,54 @@ test "parser: TS1233 not reported for top-level export declarations" {
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1233);
     }
+}
+
+test "parser: JS nested import/export use TS1473 and TS1474 module wording" {
+    var s = try newTestSetup(
+        \\{
+        \\    import foo from "m";
+        \\    export { foo };
+        \\    export * from "m";
+        \\}
+    );
+    defer destroyTestSetup(s);
+    s.parser.setJavaScriptFile(true);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 3), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1473), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("An import declaration can only be used at the top level of a module.", s.parser.diagnostics.items[0].message);
+    try T.expectEqual(@as(u32, 1474), s.parser.diagnostics.items[1].code);
+    try T.expectEqualStrings("An export declaration can only be used at the top level of a module.", s.parser.diagnostics.items[1].message);
+    try T.expectEqual(@as(u32, 1474), s.parser.diagnostics.items[2].code);
+    try T.expectEqualStrings("An export declaration can only be used at the top level of a module.", s.parser.diagnostics.items[2].message);
+}
+
+test "parser: namespace without name reports TS1437" {
+    var s = try newTestSetup("namespace { export const value = 1; }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    const d = findFirstDiagnosticOfCode(&s.parser, 1437) orelse return error.TestExpectedEqual;
+    try T.expectEqualStrings("Namespace must be given a name.", d.message);
+}
+
+test "parser: malformed import attribute key reports TS1478" {
+    var s = try newTestSetup("import data from \"x\" with { 0: \"json\" };");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    const d = findFirstDiagnosticOfCode(&s.parser, 1478) orelse return error.TestExpectedEqual;
+    try T.expectEqualStrings("Identifier or string literal expected.", d.message);
+}
+
+test "parser: property type annotation cannot start call TS1441" {
+    var s = try newTestSetup("class C { x: T(); }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    const d = findFirstDiagnosticOfCode(&s.parser, 1441) orelse return error.TestExpectedEqual;
+    try T.expectEqualStrings("Cannot start a function call in a type annotation.", d.message);
 }
 
 test "parser: TS1231 export assignment not at top level of file or module" {

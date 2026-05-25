@@ -486,8 +486,60 @@ fn reportInvalidReferenceDirectiveSyntaxDiagnostics(
                 .message = try gpa.dupe(u8, "Invalid 'reference' directive syntax."),
             });
             c.has_errors = true;
+        } else if (invalidReferenceResolutionModeValuePos(line[idx..])) |rel_pos| {
+            try appendDriverDiagnostic(
+                gpa,
+                c,
+                @intCast(offset + leading + idx + rel_pos),
+                1453,
+                "`resolution-mode` should be either `require` or `import`.",
+            );
         }
     }
+}
+
+fn invalidReferenceResolutionModeValuePos(text: []const u8) ?usize {
+    const gt = std.mem.indexOfScalar(u8, text, '>') orelse return null;
+    const element = text[0 .. gt + 1];
+    var body = std.mem.trim(u8, element["<reference".len .. element.len - 1], " \t\r");
+    if (body.len == 0 or body[body.len - 1] != '/') return null;
+    const body_offset = std.mem.indexOf(u8, element, body) orelse return null;
+    body = std.mem.trim(u8, body[0 .. body.len - 1], " \t\r");
+
+    var idx: usize = 0;
+    var has_types = false;
+    var resolution_mode_value: ?[]const u8 = null;
+    var resolution_mode_value_pos: usize = 0;
+    while (idx < body.len) {
+        while (idx < body.len and (body[idx] == ' ' or body[idx] == '\t')) : (idx += 1) {}
+        if (idx >= body.len) break;
+        const name_start = idx;
+        while (idx < body.len and isReferenceDirectiveAttributeNameChar(body[idx])) : (idx += 1) {}
+        if (idx == name_start) return null;
+        const name = body[name_start..idx];
+        while (idx < body.len and (body[idx] == ' ' or body[idx] == '\t')) : (idx += 1) {}
+        if (idx >= body.len or body[idx] != '=') return null;
+        idx += 1;
+        while (idx < body.len and (body[idx] == ' ' or body[idx] == '\t')) : (idx += 1) {}
+        if (idx >= body.len or (body[idx] != '"' and body[idx] != '\'')) return null;
+        const quote = body[idx];
+        idx += 1;
+        const value_start = idx;
+        while (idx < body.len and body[idx] != quote) : (idx += 1) {}
+        if (idx >= body.len) return null;
+        const value = body[value_start..idx];
+        idx += 1;
+
+        if (std.mem.eql(u8, name, "types")) has_types = true;
+        if (std.mem.eql(u8, name, "resolution-mode")) {
+            resolution_mode_value = value;
+            resolution_mode_value_pos = body_offset + value_start;
+        }
+    }
+    const mode = resolution_mode_value orelse return null;
+    if (!has_types) return null;
+    if (std.mem.eql(u8, mode, "import") or std.mem.eql(u8, mode, "require")) return null;
+    return resolution_mode_value_pos;
 }
 
 fn isValidReferenceDirectiveElement(text: []const u8) bool {
@@ -3208,6 +3260,40 @@ test "driver: valid triple-slash reference directives do not report TS1084" {
     }
     for (c.diagnostics.items) |d| {
         try T.expect(d.code != 1084);
+    }
+}
+
+test "driver: triple-slash reference invalid resolution-mode reports TS1453" {
+    var c = try compileSource(T.allocator,
+        \\/// <reference types="node" resolution-mode="esm" />
+        \\let x = 1;
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 1453) {
+            found = true;
+            try T.expectEqualStrings("`resolution-mode` should be either `require` or `import`.", d.message);
+        }
+    }
+    try T.expect(found);
+}
+
+test "driver: triple-slash reference valid resolution-mode stays clean" {
+    var c = try compileSource(T.allocator,
+        \\/// <reference types="node" resolution-mode="import" />
+        \\/// <reference types="node" resolution-mode='require' />
+        \\let x = 1;
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 1453);
     }
 }
 
