@@ -940,6 +940,10 @@ The copied `regression/issue/27428.test.ts`,
 `regression/issue/26632.test.ts` fixtures now pass as `15` tests through
 the existing child-process, HTTP/server, resolver, bundler, and
 `Bun.file` bootstrap surfaces.
+The copied `js/node/url/url-parse-query.test.js` fixture now registers
+as `1` todo through the existing Node `url` import rewrite, preserving
+Bun's upstream TODO around parsed query-object prototypes and null
+values.
 The copied `js/bun/test/test-timers.test.ts` fixture now passes as `1`
 test through the Jest fake-timer bootstrap model. It covers Bun's stable
 `Date` identity, mocked `Date.now()` / `new Date()`,
