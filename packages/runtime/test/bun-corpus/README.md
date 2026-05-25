@@ -17,7 +17,7 @@ macOS, Linux, and the WASM target.
   bootstrap path exists for the current allowlist:
   `home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js`
   after building `home` with `./pantry/.bin/zig build -Denable_jsc=true`.
-  Latest measured subset run: `273` files, `1,200` passed, `0` failed,
+  Latest measured subset run: `280` files, `1,209` passed, `0` failed,
   `46` todo. That subset currently executes the todo-registration smoke, three Node
   `assert` CommonJS smokes, Node `path` smokes, three Node `url` smokes, the Web
   `atob`/`btoa` smoke, fifty-five regression smokes, one bundler
@@ -28,7 +28,7 @@ macOS, Linux, and the WASM target.
   minify-symbol, npm, Promise.all dead-code, regression, process `execArgv`,
   plugin exception, and transpiler decorator / use-strict / template-literal
   smokes, one bun-types
-  `test.each` type-shape smoke, seven test-runner expectation smokes, one nested-describe
+  `test.each` type-shape smoke, ten test-runner expectation smokes, one nested-describe
   smoke, two `expectTypeOf` type-only smokes, a narrow `Bun.TOML.parse` throw smoke, `Bun.stripANSI`, `Bun.wrapAnsi`, `Bun.semver.satisfies`, and
   `bun:internal-for-testing` regexp / PowerShell escaping smokes, retry/repeats runner
   behavior, `test.concurrent.each`, `expect().pass`, `expect().toBeEmpty`, a narrow `mock.clearAllMocks` /
@@ -38,7 +38,9 @@ macOS, Linux, and the WASM target.
   including POSIX `pathToFileURL`, Bun file URL helper conversion, Node `fileURLToPath` POSIX roundtrips, path `toNamespacedPath` / `_makeLong` / `matchesGlob`, long-CWD POSIX resolution subprocess coverage, and relative CJS fixture smokes, a narrow inline-snapshot Unicode object
   formatting smoke, Node console/watch/worker/fs/dns/readline one-shot smokes, a WebSocket
   close-reentrancy smoke, a `node:vm.runInNewContext` / `process.on` throw
-  propagation smoke, `process.binding("constants")` /
+  propagation smoke, JSONC and `bun.lock` resolution smokes,
+  `Bun.write` leak coverage, `dns.lookup` keepalive coverage,
+  `process.binding("constants")` /
   `process.binding("uv")` smoke coverage, `process.constructor.call`
   prototype-shape coverage, Jest fake-timer Date /
   `Intl.DateTimeFormat` smoke coverage,

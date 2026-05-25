@@ -907,6 +907,14 @@ The copied `js/node/process/call-constructor.test.js` fixture now passes
 as `2` tests through the process bootstrap model. It covers default
 `import process from "process"` lowering plus Bun's asserted
 `process.constructor.call(...)` prototype shape.
+The copied `js/bun/resolve/jsonc.test.ts`,
+`js/bun/resolve/bun-lock.test.ts`, `js/bun/io/bun-write-leak.test.ts`,
+`js/bun/test/snapshot-tests/existing-snapshots.test.ts`,
+`js/bun/test/expect-stack-overflow-crash.test.ts`,
+`js/bun/test/expect-symbol-toPrimitive-crash.test.ts`, and
+`js/node/dns/dns-lookup-keepalive.test.ts` fixtures now pass as `10`
+tests through the existing JSONC/module, Bun.write, expectation,
+subprocess, and DNS bootstrap surfaces.
 The copied `js/bun/test/test-timers.test.ts` fixture now passes as `1`
 test through the Jest fake-timer bootstrap model. It covers Bun's stable
 `Date` identity, mocked `Date.now()` / `new Date()`,
