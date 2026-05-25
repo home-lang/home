@@ -879,6 +879,18 @@ test through the Node util bootstrap model. It covers named
 `node:util` module, and the `nodejs.util.promisify.custom` hook on the
 timer shim so `promisify(globalThis.setTimeout)(1, "ok")` resolves
 `"ok"`.
+The copied `js/node/util/node-inspect-tests/import.test.mjs` fixture now
+passes as `1` test through the Node util bootstrap model. It covers
+default plus named `util` import lowering, `util.inspect === inspect`,
+`null` formatting, and non-compact object formatting with Bun/Node-style
+line breaks.
+The copied `js/node/util/node-inspect-tests/internal-inspect.test.js`
+fixture now passes as `1` executable test plus `1` upstream skipped test
+through the Node util bootstrap model. It covers `util.format()` on
+proxy-wrapped data properties without invoking the proxy getter,
+`formatWithOptions({ numericSeparator: true }, "%d", 4000)`, compact and
+non-compact circular-reference formatting, and `Error({ cause })`
+inspection including the `[cause]` line.
 The copied `js/node/process-binding.test.ts` fixture now passes as `2`
 tests through the `process.binding` bootstrap model. It covers the
 `constants` binding buckets Bun asserts plus the `uv` error-name and

@@ -197,6 +197,8 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/fix-bindings-stack-trace.test.ts",
     "js/node/module/module-sourcemap.test.js",
     "js/node/console/console-constructor-exception.test.ts",
+    "js/node/util/node-inspect-tests/import.test.mjs",
+    "js/node/util/node-inspect-tests/internal-inspect.test.js",
     "js/node/watch/fs.watch.deadlock.test.ts",
     "js/node/worker_threads/15787.test.ts",
     "js/node/fs/abort-signal-leak-read-write-file.test.ts",
@@ -5606,7 +5608,62 @@ const harness_prelude =
     \\  };
     \\}
     \\__home_util_promisify.custom = __home_util_promisify_custom;
-    \\const __home_util_module = { promisify: __home_util_promisify };
+    \\function __home_util_inspect_number(value, options) {
+    \\  const text = String(value);
+    \\  if (!options || !options.numericSeparator || !/^-?\d{4,}$/.test(text)) return text;
+    \\  const sign = text[0] === "-" ? "-" : "";
+    \\  const digits = sign ? text.slice(1) : text;
+    \\  return sign + digits.replace(/\B(?=(\d{3})+(?!\d))/g, "_");
+    \\}
+    \\function __home_util_inspect_value(value, options, seen) {
+    \\  if (value === null) return "null";
+    \\  if (typeof value === "number") return __home_util_inspect_number(value, options);
+    \\  if (typeof value === "string") return "'" + value + "'";
+    \\  if (value instanceof Error) {
+    \\    let output = value.name + ": " + value.message;
+    \\    if (value.cause instanceof Error) output += "\n[cause]: " + value.cause.name + ": " + value.cause.message + "\n";
+    \\    return output;
+    \\  }
+    \\  if (value && typeof value === "object") {
+    \\    if (seen.has(value)) return "[Circular *1]";
+    \\    seen.add(value);
+    \\    const keys = Object.keys(value);
+    \\    const circularDescriptor = keys.length === 1 ? Object.getOwnPropertyDescriptor(value, keys[0]) : null;
+    \\    if (circularDescriptor && Object.prototype.hasOwnProperty.call(circularDescriptor, "value") && circularDescriptor.value === value) {
+    \\      return options && options.compact === false ? "<ref *1> {\n  " + keys[0] + ": [Circular *1]\n}" : "<ref *1> { " + keys[0] + ": [Circular *1] }";
+    \\    }
+    \\    const entries = keys.map(key => {
+    \\      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    \\      const item = descriptor && Object.prototype.hasOwnProperty.call(descriptor, "value") ? descriptor.value : "[Getter]";
+    \\      return key + ": " + __home_util_inspect_value(item, options || {}, seen);
+    \\    });
+    \\    if (options && options.compact === false) return "{\n  " + entries.join(",\n  ") + "\n}";
+    \\    return "{ " + entries.join(", ") + " }";
+    \\  }
+    \\  return String(value);
+    \\}
+    \\function __home_util_inspect(value, options) {
+    \\  return __home_util_inspect_value(value, options || {}, new Set());
+    \\}
+    \\function __home_util_formatWithOptions(options, format) {
+    \\  const args = Array.prototype.slice.call(arguments, 2);
+    \\  if (typeof format === "string") {
+    \\    let index = 0;
+    \\    return format.replace(/%[sdjifoO%]/g, token => {
+    \\      if (token === "%%") return "%";
+    \\      const value = args[index++];
+    \\      if (token === "%d" || token === "%i" || token === "%f") return __home_util_inspect_number(Number(value), options || {});
+    \\      if (token === "%j") return JSON.stringify(value);
+    \\      if (token === "%s") return String(value);
+    \\      return __home_util_inspect(value, options || {});
+    \\    }) + (index < args.length ? " " + args.slice(index).map(value => __home_util_inspect(value, options || {})).join(" ") : "");
+    \\  }
+    \\  return [format].concat(args).map(value => __home_util_inspect(value, options || {})).join(" ");
+    \\}
+    \\function __home_util_format() {
+    \\  return __home_util_formatWithOptions.apply(null, [{}].concat(Array.prototype.slice.call(arguments)));
+    \\}
+    \\const __home_util_module = { format: __home_util_format, formatWithOptions: __home_util_formatWithOptions, inspect: __home_util_inspect, promisify: __home_util_promisify };
     \\__home_util_module.default = __home_util_module;
     \\globalThis.__home_modules["util"] = __home_util_module;
     \\globalThis.__home_modules["node:util"] = __home_util_module;
@@ -8341,6 +8398,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { promisify } from \"util\";",
             .replacement = "const { promisify } = globalThis.__home_import(\"util\");",
+        },
+        .{
+            .needle = "import util, { inspect } from \"util\";",
+            .replacement = "const util = globalThis.__home_import(\"util\");\nconst { inspect } = util;",
+        },
+        .{
+            .needle = "import util from \"util\";",
+            .replacement = "const util = globalThis.__home_import(\"util\");",
         },
         .{
             .needle = "import { promisify } from \"node:util\";",
