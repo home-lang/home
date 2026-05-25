@@ -9135,6 +9135,25 @@ pub const Parser = struct {
             // Property: `name: T;`.
             var type_node: NodeId = hir_mod.none_node_id;
             if (self.match(.colon)) type_node = try self.parseTypeAnnotation();
+            // TS1246/TS1247: a property in an interface body / type
+            // literal cannot carry an initializer (`bar: number = 5;`).
+            // tsc anchors at the initializer value (the token after `=`)
+            // — TS1246 inside `interface { … }`, TS1247 inside a type
+            // literal. Mirrors `errorOnInitializerInInterfaceProperty.ts(2,19)`
+            // and `errorOnInitializerInObjectTypeLiteralProperty.ts(2,19)`.
+            // We detect the `=`, anchor on the next token, consume
+            // the initializer expression, and continue so cascading
+            // TS1005 stays suppressed.
+            if (self.peek().kind == .equal) {
+                _ = self.advance(); // consume `=`
+                const init_tok = self.peek();
+                if (self.parsing_interface_body) {
+                    try self.reportCodeAt(init_tok.span.start, init_tok.line, 1246, "An interface property cannot have an initializer.");
+                } else {
+                    try self.reportCodeAt(init_tok.span.start, init_tok.line, 1247, "A type literal property cannot have an initializer.");
+                }
+                _ = self.parseAssignmentExpression() catch {};
+            }
             if (self.peek().kind == .semicolon or self.peek().kind == .comma) {
                 _ = self.advance();
             } else if (self.peek().kind != .close_brace and self.peek().kind != .eof) {

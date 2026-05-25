@@ -30202,6 +30202,60 @@ test "conformance: importDeclarationInModuleDeclaration1 matches TS1147 baseline
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: errorOnInitializerInInterfaceProperty matches TS1246 baseline" {
+    // Regression pin for TS1246. Upstream:
+    //   errorOnInitializerInInterfaceProperty.ts(2,19): error TS1246: \
+    //     An interface property cannot have an initializer.
+    // Pre-fix the parser emitted a cascading TS1005 (`';' expected.`)
+    // and missed the upstream code entirely.
+    const result = try runOneEntry(T.allocator, .{
+        .name = "errorOnInitializerInInterfaceProperty",
+        .path = "errorOnInitializerInInterfaceProperty.ts",
+        .source =
+        \\interface Foo {
+        \\    bar: number = 5;
+        \\}
+        ,
+        .expects_error = true,
+        .expected_errors = "errorOnInitializerInInterfaceProperty.ts(2,19): error TS1246: An interface property cannot have an initializer.",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: errorOnInitializerInObjectTypeLiteralProperty matches TS1247 baseline" {
+    // Regression pin for TS1247. Upstream:
+    //   errorOnInitializerInObjectTypeLiteralProperty.ts(2,19): error TS1247: \
+    //     A type literal property cannot have an initializer.
+    //   errorOnInitializerInObjectTypeLiteralProperty.ts(6,19): error TS1247: \
+    //     A type literal property cannot have an initializer.
+    const result = try runOneEntry(T.allocator, .{
+        .name = "errorOnInitializerInObjectTypeLiteralProperty",
+        .path = "errorOnInitializerInObjectTypeLiteralProperty.ts",
+        .source =
+        \\var Foo: {
+        \\    bar: number = 5;
+        \\};
+        \\
+        \\let Bar: {
+        \\    bar: number = 5;
+        \\};
+        ,
+        .expects_error = true,
+        .expected_errors = "errorOnInitializerInObjectTypeLiteralProperty.ts(2,19): error TS1247: A type literal property cannot have an initializer.\nerrorOnInitializerInObjectTypeLiteralProperty.ts(6,19): error TS1247: A type literal property cannot have an initializer.",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: declareModifierOnImport1 matches TS1079 + TS2503 baseline" {
     // Regression pin for the TS1079 emission landed in ts_parser.
     // Upstream baseline:
