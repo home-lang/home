@@ -350,6 +350,10 @@ pub const TsConfig = struct {
             });
         }
 
+        if (co.paths) |paths| {
+            try validatePaths(gpa, &diags, paths, co.base_url != null);
+        }
+
         const strict_null_checks_enabled = co.strict_null_checks orelse (co.strict == true);
         if (co.strict_property_initialization == true and !strict_null_checks_enabled) {
             try appendTs5052(gpa, &diags, "strictPropertyInitialization", "strictPropertyInitialization", "strictNullChecks");
@@ -537,6 +541,105 @@ fn appendTs5051(
         .message = msg,
         .owns_message = true,
         .field = field,
+    });
+}
+
+fn validatePaths(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    paths: Paths,
+    has_base_url: bool,
+) !void {
+    for (paths.patterns, 0..) |pattern, idx| {
+        if (!hasZeroOrOneAsteriskCharacter(pattern)) {
+            try appendTs5061(gpa, diags, pattern);
+        }
+
+        const substitutions = paths.substitutions[idx];
+        if (substitutions.len == 0) {
+            try appendTs5066(gpa, diags, pattern);
+        }
+        for (substitutions) |subst| {
+            if (!hasZeroOrOneAsteriskCharacter(subst)) {
+                try appendTs5062(gpa, diags, subst, pattern);
+            }
+            if (!has_base_url and !pathIsRelative(subst) and !pathIsAbsolute(subst)) {
+                try appendTs5090(gpa, diags);
+            }
+        }
+    }
+}
+
+fn hasZeroOrOneAsteriskCharacter(text: []const u8) bool {
+    return std.mem.count(u8, text, "*") <= 1;
+}
+
+fn pathIsRelative(path: []const u8) bool {
+    return std.mem.startsWith(u8, path, "./") or
+        std.mem.startsWith(u8, path, "../") or
+        std.mem.eql(u8, path, ".") or
+        std.mem.eql(u8, path, "..");
+}
+
+fn pathIsAbsolute(path: []const u8) bool {
+    if (std.mem.startsWith(u8, path, "/") or std.mem.startsWith(u8, path, "\\")) return true;
+    if (path.len >= 3 and std.ascii.isAlphabetic(path[0]) and path[1] == ':' and (path[2] == '/' or path[2] == '\\')) return true;
+    return false;
+}
+
+fn appendTs5061(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    pattern: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(gpa, "Pattern '{s}' can have at most one '*' character.", .{pattern});
+    try diags.append(gpa, .{
+        .code = 5061,
+        .message = msg,
+        .owns_message = true,
+        .field = "paths",
+    });
+}
+
+fn appendTs5062(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    substitution: []const u8,
+    pattern: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(gpa, "Substitution '{s}' in pattern '{s}' can have at most one '*' character.", .{ substitution, pattern });
+    try diags.append(gpa, .{
+        .code = 5062,
+        .message = msg,
+        .owns_message = true,
+        .field = "paths",
+    });
+}
+
+fn appendTs5066(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    pattern: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(gpa, "Substitutions for pattern '{s}' shouldn't be an empty array.", .{pattern});
+    try diags.append(gpa, .{
+        .code = 5066,
+        .message = msg,
+        .owns_message = true,
+        .field = "paths",
+    });
+}
+
+fn appendTs5090(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+) !void {
+    const msg = try gpa.dupe(u8, "Non-relative paths are not allowed when 'baseUrl' is not set. Did you forget a leading './'?");
+    try diags.append(gpa, .{
+        .code = 5090,
+        .message = msg,
+        .owns_message = true,
+        .field = "paths",
     });
 }
 
@@ -1614,6 +1717,52 @@ test "tsconfig.validate: mutually exclusive options report TS5053" {
     try t.expectEqualStrings("Option 'allowJs' cannot be specified with option 'isolatedDeclarations'.", diags[1].message);
     try t.expectEqual(@as(u32, 5069), diags[2].code);
     try t.expectEqualStrings("Option 'isolatedDeclarations' cannot be specified without specifying option 'declaration' or option 'composite'.", diags[2].message);
+}
+
+test "tsconfig.validate: paths reports TS5061 TS5062 TS5066 and TS5090" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "paths": {
+        \\      "bad**": [],
+        \\      "ok/*": ["src/*", "./rel/*", "/abs/*", "bad/**/x"]
+        \\    }
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 5), diags.len);
+    try t.expectEqual(@as(u32, 5061), diags[0].code);
+    try t.expectEqualStrings("Pattern 'bad**' can have at most one '*' character.", diags[0].message);
+    try t.expectEqual(@as(u32, 5066), diags[1].code);
+    try t.expectEqualStrings("Substitutions for pattern 'bad**' shouldn't be an empty array.", diags[1].message);
+    try t.expectEqual(@as(u32, 5090), diags[2].code);
+    try t.expectEqualStrings("Non-relative paths are not allowed when 'baseUrl' is not set. Did you forget a leading './'?", diags[2].message);
+    try t.expectEqual(@as(u32, 5062), diags[3].code);
+    try t.expectEqualStrings("Substitution 'bad/**/x' in pattern 'ok/*' can have at most one '*' character.", diags[3].message);
+    try t.expectEqual(@as(u32, 5090), diags[4].code);
+    try t.expectEqualStrings("paths", diags[4].field);
+}
+
+test "tsconfig.validate: paths accepts non-relative substitutions when baseUrl is set" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "baseUrl": ".",
+        \\    "paths": {
+        \\      "@/*": ["src/*", "vendor/*"]
+        \\    }
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 0), diags.len);
 }
 
 test "tsconfig.validate: source map companion options report TS5051" {
