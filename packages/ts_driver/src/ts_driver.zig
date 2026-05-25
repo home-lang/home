@@ -228,7 +228,32 @@ fn reportDeprecatedOptionDirectives(
             if (cfg.compiler_options.module) |m| break :blk @tagName(m);
             break :blk "";
         } else "";
-        if (std.ascii.eqlIgnoreCase(module_raw, "none") or
+        const module_resolution_raw = if (options.module_resolution.len > 0)
+            options.module_resolution
+        else if (directiveValue(source, "moduleResolution")) |mr|
+            mr
+        else if (options.pub_tsconfig) |cfg| blk: {
+            if (cfg.compiler_options.module_resolution) |mr| break :blk @tagName(mr);
+            break :blk "";
+        } else "";
+        const effective_classic_resolution = if (module_resolution_raw.len > 0)
+            std.ascii.eqlIgnoreCase(module_resolution_raw, "classic")
+        else
+            !std.ascii.eqlIgnoreCase(module_raw, "commonjs") and
+                !std.ascii.eqlIgnoreCase(module_raw, "node16") and
+                !std.ascii.eqlIgnoreCase(module_raw, "node18") and
+                !std.ascii.eqlIgnoreCase(module_raw, "nodenext");
+        if (effective_classic_resolution) {
+            try c.diagnostics.append(gpa, .{
+                .phase = .parse,
+                .pos = 0,
+                .line = 0,
+                .code = 5070,
+                .is_global = true,
+                .message = try gpa.dupe(u8, "Option '--resolveJsonModule' cannot be specified when 'moduleResolution' is set to 'classic'."),
+            });
+            c.has_errors = true;
+        } else if (std.ascii.eqlIgnoreCase(module_raw, "none") or
             std.ascii.eqlIgnoreCase(module_raw, "system") or
             std.ascii.eqlIgnoreCase(module_raw, "umd"))
         {
@@ -2860,6 +2885,48 @@ test "driver: bundler moduleResolution implies resolveJsonModule TS5071 under sy
         {
             found_5071 = true;
         }
+    }
+    try T.expect(found_5071);
+}
+
+test "driver: resolveJsonModule reports TS5070 under classic module resolution" {
+    var c = try compileSource(T.allocator,
+        \\// @module: amd
+        \\// @resolveJsonModule: true
+        \\export {};
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var found_5070 = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 5070 and
+            d.is_global and
+            std.mem.eql(u8, d.message, "Option '--resolveJsonModule' cannot be specified when 'moduleResolution' is set to 'classic'."))
+        {
+            found_5070 = true;
+        }
+        try T.expect(d.code != 5071);
+    }
+    try T.expect(found_5070);
+}
+
+test "driver: node moduleResolution keeps resolveJsonModule module restriction TS5071" {
+    var c = try compileSource(T.allocator,
+        \\// @module: system
+        \\// @moduleResolution: node
+        \\// @resolveJsonModule: true
+        \\export {};
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var found_5071 = false;
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 5070);
+        if (d.code == 5071 and d.is_global) found_5071 = true;
     }
     try T.expect(found_5071);
 }
