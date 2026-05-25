@@ -205,7 +205,45 @@ fn reportDeprecatedOptionDirectives(
     gpa: std.mem.Allocator,
     c: *Compilation,
     source: []const u8,
+    options: CompileOptions,
 ) CompileError!void {
+    const effective_resolve_json_module = blk: {
+        if (directiveBool(source, "resolveJsonModule")) |explicit| break :blk explicit;
+        if (options.pub_tsconfig) |cfg| {
+            if (cfg.compiler_options.resolve_json_module) |explicit| break :blk explicit;
+            if (cfg.compiler_options.module_resolution) |mr| {
+                if (mr == .bundler) break :blk true;
+            }
+        }
+        const module_resolution = if (options.module_resolution.len > 0)
+            options.module_resolution
+        else
+            (directiveValue(source, "moduleResolution") orelse "");
+        break :blk std.ascii.eqlIgnoreCase(module_resolution, "bundler");
+    };
+    if (effective_resolve_json_module) {
+        const module_raw = if (directiveValue(source, "module")) |m|
+            m
+        else if (options.pub_tsconfig) |cfg| blk: {
+            if (cfg.compiler_options.module) |m| break :blk @tagName(m);
+            break :blk "";
+        } else "";
+        if (std.ascii.eqlIgnoreCase(module_raw, "none") or
+            std.ascii.eqlIgnoreCase(module_raw, "system") or
+            std.ascii.eqlIgnoreCase(module_raw, "umd"))
+        {
+            try c.diagnostics.append(gpa, .{
+                .phase = .parse,
+                .pos = 0,
+                .line = 0,
+                .code = 5071,
+                .is_global = true,
+                .message = try gpa.dupe(u8, "Option '--resolveJsonModule' cannot be specified when 'module' is set to 'none', 'system', or 'umd'."),
+            });
+            c.has_errors = true;
+        }
+    }
+
     if (directiveValue(source, "outFile") != null) {
         try c.diagnostics.append(gpa, .{
             .phase = .parse,
@@ -631,7 +669,7 @@ pub fn compileSource(
         c.has_errors = true;
     }
 
-    try reportDeprecatedOptionDirectives(gpa, c, source);
+    try reportDeprecatedOptionDirectives(gpa, c, source, options);
 
     try reportMissingReferencePathDiagnostics(gpa, c, source);
 
@@ -2800,6 +2838,44 @@ test "driver: @module: system emits TS5107 module=System deprecation" {
             std.mem.indexOf(u8, d.message, "module=System") != null) found = true;
     }
     try T.expect(found);
+}
+
+test "driver: bundler moduleResolution implies resolveJsonModule TS5071 under system module" {
+    var c = try compileSource(T.allocator,
+        \\// @module: system
+        \\// @moduleResolution: bundler
+        \\export {};
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var found_5071 = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 5071 and
+            d.is_global and
+            std.mem.indexOf(u8, d.message, "--resolveJsonModule") != null)
+        {
+            found_5071 = true;
+        }
+    }
+    try T.expect(found_5071);
+}
+
+test "driver: explicit resolveJsonModule false suppresses bundler TS5071" {
+    var c = try compileSource(T.allocator,
+        \\// @module: system
+        \\// @moduleResolution: bundler
+        \\// @resolveJsonModule: false
+        \\export {};
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 5071);
+    }
 }
 
 test "driver: @module: umd emits TS5107 module=UMD deprecation" {
