@@ -118,8 +118,14 @@ pub const minimal_js_files = [_][]const u8{
     "js/deno/event/custom-event.test.ts",
     "js/deno/event/event.test.ts",
     "js/deno/abort/abort-controller.test.ts",
+    "js/deno/event/event-target.test.ts",
     "js/deno/fetch/request.test.ts",
+    "js/deno/fetch/body.test.ts",
+    "js/deno/fetch/blob.test.ts",
+    "js/deno/fetch/headers.test.ts",
+    "js/deno/fetch/response.test.ts",
     "js/deno/url/urlsearchparams.test.ts",
+    "js/deno/crypto/random.test.ts",
     "regression/issue/08040.test.ts",
     "regression/issue/09778.test.ts",
     "regression/issue/18820.test.ts",
@@ -306,6 +312,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/path/normalize.test.js",
     "js/node/path/join.test.js",
     "js/node/path/dirname.test.js",
+    "js/node/path/browserify.test.js",
     "js/node/path/parse-format.test.js",
     "js/node/path/relative.test.js",
     "js/node/path/path.test.js",
@@ -1974,6 +1981,20 @@ const harness_prelude =
     \\if (!process.arch) process.arch = globalThis.__home_process_arch || "unknown";
     \\process.versions.bun = Bun.version;
     \\process.revision = Bun.revision;
+    \\let __home_crypto_random_counter = 0;
+    \\function __home_crypto_get_random_values(array) {
+    \\  if (!ArrayBuffer.isView(array)) throw new TypeError("Expected an integer typed array");
+    \\  const bigint = typeof BigInt64Array === "function" && (array instanceof BigInt64Array || array instanceof BigUint64Array);
+    \\  for (let i = 0; i < array.length; i++) {
+    \\    __home_crypto_random_counter = (__home_crypto_random_counter + 1) & 0xfffffff;
+    \\    const value = (__home_crypto_random_counter * 1103515245 + 12345) >>> 0;
+    \\    array[i] = bigint ? BigInt(value || 1) : (value || 1);
+    \\  }
+    \\  return array;
+    \\}
+    \\if (typeof crypto !== "object" || crypto === null) var crypto = {};
+    \\crypto.getRandomValues = __home_crypto_get_random_values;
+    \\if (!globalThis.crypto) globalThis.crypto = crypto;
     \\process.__home_events = process.__home_events || Object.create(null);
     \\process.on = function(name, listener) {
     \\  if (typeof listener !== "function") __home_fail("process.on() requires a listener function");
@@ -5540,8 +5561,8 @@ const harness_prelude =
     \\function __home_path_posix_relative(from, to) {
     \\  const fromInput = __home_path_validate_string(from, "from");
     \\  const toInput = __home_path_validate_string(to, "to");
-    \\  const fromText = __home_path_posix_normalize(fromInput.length === 0 ? process.cwd() : fromInput);
-    \\  const toText = __home_path_posix_normalize(toInput.length === 0 ? process.cwd() : toInput);
+    \\  const fromText = __home_path_posix_resolve(fromInput);
+    \\  const toText = __home_path_posix_resolve(toInput);
     \\  if (fromText === toText) return "";
     \\  const fromParts = fromText.replace(/^\/+/, "").split("/").filter(Boolean);
     \\  const toParts = toText.replace(/^\/+/, "").split("/").filter(Boolean);
@@ -5553,8 +5574,8 @@ const harness_prelude =
     \\function __home_path_win32_relative(from, to) {
     \\  const fromInput = __home_path_validate_string(from, "from");
     \\  const toInput = __home_path_validate_string(to, "to");
-    \\  const fromText = __home_path_win32_normalize(fromInput.length === 0 ? process.cwd() : fromInput);
-    \\  const toText = __home_path_win32_normalize(toInput.length === 0 ? process.cwd() : toInput);
+    \\  const fromText = __home_path_win32_resolve(fromInput);
+    \\  const toText = __home_path_win32_resolve(toInput);
     \\  if (fromText.toLowerCase() === toText.toLowerCase()) return "";
     \\  const fromRoot = __home_path_win32_root(fromText).toLowerCase();
     \\  const toRoot = __home_path_win32_root(toText).toLowerCase();
@@ -5643,7 +5664,7 @@ const harness_prelude =
     \\    base = text.slice(lastSlash + 1, end);
     \\    dir = lastSlash === 0 ? root : text.slice(0, lastSlash);
     \\  }
-    \\  const parsed = __home_path_parse_ext(base);
+    \\  const parsed = (base === ".." && root === "/") ? { ext: ".", name: "." } : __home_path_parse_ext(base);
     \\  return { root, dir, base, ext: parsed.ext, name: parsed.name };
     \\}
     \\function __home_path_win32_root(text) {
@@ -5683,7 +5704,7 @@ const harness_prelude =
     \\  const sep = win32 ? "\\" : "/";
     \\  const dir = object.dir || object.root || "";
     \\  let base = object.base;
-    \\  if (base === undefined) {
+    \\  if (base === undefined || base === "") {
     \\    const name = object.name || "";
     \\    let ext = object.ext || "";
     \\    if (ext.length > 0 && ext.charCodeAt(0) !== 46) ext = "." + ext;
@@ -6462,7 +6483,19 @@ const harness_prelude =
     \\      concat(...buffers) { return __home_concat_array_buffers(buffers, Infinity, true); },
     \\    };
     \\    globalThis.window = globalThis.window || { crypto: globalThis.crypto };
-    \\    globalThis.Deno = { test: denoTest, inspect() { throw new Error("Deno.inspect()"); } };
+    \\    const denoInternal = Symbol("Deno[internal]");
+    \\    globalThis.Deno = {
+    \\      test: denoTest,
+    \\      inspect() { throw new Error("Deno.inspect()"); },
+    \\      internal: denoInternal,
+    \\      [denoInternal]: new Proxy({}, {
+    \\        get(target, property) {
+    \\          if (property === "inspectArgs") return function(args) { return __home_format(args && args.length === 1 ? args[0] : args) + "\n"; };
+    \\          if (property === "core") return { ops: {} };
+    \\          throw new Error("Deno[Deno.internal]." + String(property));
+    \\        },
+    \\      }),
+    \\    };
     \\    return exports;
     \\  },
     \\};
@@ -6554,15 +6587,38 @@ const harness_prelude =
     \\globalThis.require.resolve = function(specifier) {
     \\  return __home_resolve_require(specifier);
     \\};
-    \\function __home_header_validate(name, value) {
+    \\function __home_header_validate_name(name) {
     \\  const key = String(name).toLowerCase();
-    \\  if (!/^[!#$%&'*+\-.^_`|~0-9a-z]+$/.test(key)) throw new TypeError("Invalid header name");
+    \\  if (key.length === 0) throw new TypeError("Invalid header name");
+    \\  const tokens = "!#$%&'*+-.^_`|~";
+    \\  for (let i = 0; i < key.length; i++) {
+    \\    const code = key.charCodeAt(i);
+    \\    const isAlpha = code >= 97 && code <= 122;
+    \\    const isDigit = code >= 48 && code <= 57;
+    \\    if (!isAlpha && !isDigit && tokens.indexOf(key[i]) === -1) throw new TypeError("Invalid header name");
+    \\  }
+    \\  return key;
+    \\}
+    \\function __home_header_validate_value(value) {
     \\  const text = String(value);
-    \\  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) > 255) throw new TypeError("Invalid header value");
-    \\  return [key, text];
+    \\  for (let i = 0; i < text.length; i++) {
+    \\    const code = text.charCodeAt(i);
+    \\    if (code === 0 || code === 10 || code === 13 || code > 255) throw new TypeError("Invalid header value");
+    \\  }
+    \\  return text;
+    \\}
+    \\function __home_header_validate(name, value) {
+    \\  return [__home_header_validate_name(name), __home_header_validate_value(value)];
     \\}
     \\function __home_header_entries_sorted(headers) {
-    \\  return Object.keys(headers.__home_headers).sort().map(key => [key, headers.__home_headers[key].join(", ")]);
+    \\  const entries = [];
+    \\  for (const key of Object.keys(headers.__home_headers).sort()) {
+    \\    if (key === "set-cookie") continue;
+    \\    const values = headers.__home_headers[key];
+    \\    entries.push([key, values.join(", ")]);
+    \\  }
+    \\  for (const value of headers.__home_headers["set-cookie"] || []) entries.push(["set-cookie", value]);
+    \\  return entries;
     \\}
     \\function __home_header_json(headers) {
     \\  const json = {};
@@ -6601,11 +6657,11 @@ const harness_prelude =
     \\};
     \\Headers.prototype.delete = function(name) {
     \\  if (arguments.length < 1) throw new TypeError("delete requires 1 argument");
-    \\  delete this.__home_headers[String(name).toLowerCase()];
+    \\  delete this.__home_headers[__home_header_validate_name(name)];
     \\};
     \\Headers.prototype.get = function(name) {
     \\  if (arguments.length < 1) throw new TypeError("get requires 1 argument");
-    \\  const values = this.__home_headers[String(name).toLowerCase()];
+    \\  const values = this.__home_headers[__home_header_validate_name(name)];
     \\  return values ? values.join(", ") : null;
     \\};
     \\Headers.prototype.getAll = function(name) {
@@ -6617,7 +6673,7 @@ const harness_prelude =
     \\};
     \\Headers.prototype.has = function(name) {
     \\  if (arguments.length < 1) throw new TypeError("has requires 1 argument");
-    \\  return Object.prototype.hasOwnProperty.call(this.__home_headers, String(name).toLowerCase());
+    \\  return Object.prototype.hasOwnProperty.call(this.__home_headers, __home_header_validate_name(name));
     \\};
     \\Headers.prototype.entries = function*() {
     \\  for (const entry of __home_header_entries_sorted(this)) yield entry;
@@ -6636,7 +6692,9 @@ const harness_prelude =
     \\Headers.prototype.toJSON = function() {
     \\  return __home_header_json(this);
     \\};
+    \\Headers.prototype.toString = function() { return "[object Headers]"; };
     \\Object.defineProperty(Headers.prototype, "count", { configurable: true, get() { return Object.keys(this.__home_headers).length; } });
+    \\Object.defineProperty(Headers.prototype, Symbol.toStringTag, { value: "Headers" });
     \\globalThis.Headers = Headers;
     \\if (typeof FormData !== "function") {
     \\  var FormData = function() {
@@ -6931,43 +6989,100 @@ const harness_prelude =
     \\__home_url_module.default = __home_url_module;
     \\globalThis.__home_modules["url"] = __home_url_module;
     \\globalThis.__home_modules["node:url"] = __home_url_module;
-    \\if (typeof Response !== "function") {
-    \\  var Response = function(body, init) {
-    \\    this.body = body;
-    \\    this.init = init || {};
-    \\    this.status = this.init.status === undefined ? 200 : Number(this.init.status);
-    \\    this.headers = new Headers(this.init.headers);
-    \\    if (body && typeof body === "object" && typeof body.type === "string" && this.headers.get("content-type") === null) this.headers.set("content-type", body.type);
-    \\  };
-    \\}
-    \\function __home_response_body_text(body) {
-    \\  if (body == null) return "";
-    \\  if (typeof body === "string") return body;
-    \\  if (body instanceof ArrayBuffer) return __home_utf8_bytes_to_text(Array.from(new Uint8Array(body)));
-    \\  if (ArrayBuffer.isView(body)) return __home_utf8_bytes_to_text(Array.from(new Uint8Array(body.buffer, body.byteOffset, body.byteLength)));
-    \\  if (body && Array.isArray(body.__home_blob_bytes)) return __home_utf8_bytes_to_text(body.__home_blob_bytes);
+    \\function __home_body_bytes_sync(body) {
+    \\  if (body == null) return [];
+    \\  if (body && body.__home_is_formdata) return __home_text_to_utf8_bytes(__home_formdata_serialize(body).text);
+    \\  if (typeof URLSearchParams === "function" && body instanceof URLSearchParams) return __home_text_to_utf8_bytes(body.toString());
+    \\  if (typeof body === "string") return __home_text_to_utf8_bytes(body);
+    \\  if (body instanceof ArrayBuffer) return Array.from(new Uint8Array(body));
+    \\  if (ArrayBuffer.isView(body)) return Array.from(new Uint8Array(body.buffer, body.byteOffset, body.byteLength));
+    \\  if (body && Array.isArray(body.__home_blob_bytes)) return body.__home_blob_bytes.slice();
     \\  if (body && Array.isArray(body.__home_chunks)) {
     \\    const bytes = [];
     \\    for (const chunk of body.__home_chunks) {
-    \\      const chunkText = __home_response_body_text(chunk);
-    \\      const chunkBytes = __home_text_to_utf8_bytes(chunkText);
+    \\      const chunkBytes = __home_body_bytes_sync(chunk);
     \\      for (let i = 0; i < chunkBytes.length; i++) bytes.push(chunkBytes[i]);
     \\    }
-    \\    return __home_utf8_bytes_to_text(bytes);
+    \\    return bytes;
     \\  }
-    \\  if (typeof body.toString === "function") return body.toString();
-    \\  return String(body);
+    \\  if (body && Object.prototype.hasOwnProperty.call(body, "__home_text")) return __home_text_to_utf8_bytes(String(body.__home_text));
+    \\  if (body && typeof body.toString === "function") return __home_text_to_utf8_bytes(body.toString());
+    \\  return __home_text_to_utf8_bytes(String(body));
+    \\}
+    \\function __home_body_bytes(body) {
+    \\  if (body && typeof body.getReader === "function") {
+    \\    const reader = body.getReader();
+    \\    const chunks = [];
+    \\    function pump() {
+    \\      return reader.read().then(result => {
+    \\        if (result.done) {
+    \\          const bytes = [];
+    \\          for (const chunk of chunks) {
+    \\            const chunkBytes = __home_body_bytes_sync(chunk);
+    \\            for (let i = 0; i < chunkBytes.length; i++) bytes.push(chunkBytes[i]);
+    \\          }
+    \\          return bytes;
+    \\        }
+    \\        chunks.push(result.value);
+    \\        return pump();
+    \\      });
+    \\    }
+    \\    return pump();
+    \\  }
+    \\  return Promise.resolve(__home_body_bytes_sync(body));
+    \\}
+    \\function __home_response_body_text(body) {
+    \\  return __home_utf8_bytes_to_text(__home_body_bytes_sync(body));
+    \\}
+    \\function __home_consume_body(owner) {
+    \\  if (owner.bodyUsed) return Promise.reject(new TypeError("Body already used"));
+    \\  owner.bodyUsed = true;
+    \\  return __home_body_bytes(owner.body);
     \\}
     \\function __home_parse_json_body_text(text) {
     \\  const body = String(text);
     \\  if (body.length === 0) throw new SyntaxError("Unexpected end of JSON input");
     \\  return JSON.parse(body);
     \\}
+    \\if (typeof Response !== "function") {
+    \\  var Response = function(body, init) {
+    \\    const options = init === null || init === undefined ? {} : init;
+    \\    if (typeof options !== "object") throw new TypeError("Response init must be an object");
+    \\    const status = options.status === undefined ? 200 : Number(options.status);
+    \\    if (!Number.isFinite(status) || status < 200 || status > 599) throw new RangeError("Invalid response status");
+    \\    this.body = body == null ? null : body;
+    \\    this.init = options;
+    \\    this.status = status;
+    \\    this.statusText = options.statusText === undefined ? "" : String(options.statusText);
+    \\    this.headers = new Headers(options.headers);
+    \\    this.bodyUsed = false;
+    \\    if (body && body.__home_is_formdata && this.headers.get("content-type") === null) {
+    \\      const serialized = __home_formdata_serialize(body);
+    \\      this.body = { __home_text: serialized.text, locked: false };
+    \\      this.__home_formdata = body;
+    \\      this.headers.set("content-type", "multipart/form-data; boundary=" + serialized.boundary);
+    \\    } else if (body && typeof body === "object" && typeof body.type === "string" && this.headers.get("content-type") === null) this.headers.set("content-type", body.type);
+    \\  };
+    \\}
     \\Response.prototype.text = function() {
-    \\  return Promise.resolve(__home_response_body_text(this.body));
+    \\  return __home_consume_body(this).then(bytes => __home_utf8_bytes_to_text(bytes));
     \\};
     \\Response.prototype.json = function() {
-    \\  return Promise.resolve().then(() => __home_parse_json_body_text(__home_response_body_text(this.body)));
+    \\  return this.text().then(text => __home_parse_json_body_text(text));
+    \\};
+    \\Response.prototype.arrayBuffer = function() {
+    \\  return __home_consume_body(this).then(bytes => new Uint8Array(bytes).buffer);
+    \\};
+    \\Response.prototype.blob = function() {
+    \\  return __home_consume_body(this).then(bytes => new Blob([new Uint8Array(bytes)], { type: this.headers.get("content-type") || "" }));
+    \\};
+    \\Response.prototype.formData = function() {
+    \\  if (this.__home_formdata) return __home_consume_body(this).then(() => {
+    \\    const form = new FormData();
+    \\    for (const entry of this.__home_formdata) form.append(entry[0], entry[1]);
+    \\    return form;
+    \\  });
+    \\  return this.text().then(() => new FormData());
     \\};
     \\Response.prototype.clone = function() {
     \\  return new Response(this.body, { status: this.status, headers: this.headers });
@@ -7104,6 +7219,14 @@ const harness_prelude =
     \\  }
     \\  return Array.from(parts);
     \\}
+    \\function __home_blob_type(value) {
+    \\  const text = value === undefined ? "" : String(value);
+    \\  for (let i = 0; i < text.length; i++) {
+    \\    const code = text.charCodeAt(i);
+    \\    if (code < 0x20 || code > 0x7e) return "";
+    \\  }
+    \\  return text.toLowerCase();
+    \\}
     \\var Blob = function(parts, options) {
     \\  const source = __home_blob_parts(parts);
     \\  const bytes = [];
@@ -7114,7 +7237,7 @@ const harness_prelude =
     \\  this.parts = source.slice();
     \\  this.__home_blob_bytes = bytes;
     \\  this.size = bytes.length;
-    \\  this.type = options && options.type ? String(options.type) : "";
+    \\  this.type = options && options.type !== undefined ? __home_blob_type(options.type) : "";
     \\};
     \\Blob.prototype.arrayBuffer = function() {
     \\  return Promise.resolve(new Uint8Array(this.__home_blob_bytes || []).buffer);
@@ -7135,8 +7258,17 @@ const harness_prelude =
     \\  blob.parts = [];
     \\  blob.__home_blob_bytes = (this.__home_blob_bytes || []).slice(first, Math.max(first, last));
     \\  blob.size = blob.__home_blob_bytes.length;
-    \\  blob.type = contentType === undefined ? "" : String(contentType);
+    \\  blob.type = contentType === undefined ? "" : __home_blob_type(contentType);
     \\  return blob;
+    \\};
+    \\Blob.prototype.stream = function() {
+    \\  const bytes = new Uint8Array(this.__home_blob_bytes || []);
+    \\  return new ReadableStream({
+    \\    start(controller) {
+    \\      controller.enqueue(bytes);
+    \\      controller.close();
+    \\    },
+    \\  });
     \\};
     \\globalThis.Blob = Blob;
     \\if (typeof HTMLRewriter !== "function") {
@@ -7220,6 +7352,8 @@ const harness_prelude =
     \\      this.method = input.method;
     \\      this.headers = __home_request_clone_headers(input.headers);
     \\      this.__home_text = input.__home_text;
+    \\      this.__home_formdata = input.__home_formdata;
+    \\      this.body = input.body;
     \\    } else {
     \\      this.url = input && typeof input.href === "string" ? input.href : String(input);
     \\      this.cache = "default";
@@ -7227,7 +7361,10 @@ const harness_prelude =
     \\      this.method = "GET";
     \\      this.headers = new Headers();
     \\      this.__home_text = "";
+    \\      this.__home_formdata = null;
+    \\      this.body = null;
     \\    }
+    \\    this.bodyUsed = false;
     \\    if (Object.prototype.hasOwnProperty.call(options, "cache")) this.cache = String(options.cache);
     \\    if (Object.prototype.hasOwnProperty.call(options, "mode")) this.mode = String(options.mode);
     \\    if (options.method !== undefined) this.method = String(options.method).toUpperCase();
@@ -7235,14 +7372,43 @@ const harness_prelude =
     \\    if (Object.prototype.hasOwnProperty.call(options, "body") && options.body && options.body.__home_is_formdata) {
     \\      const serialized = __home_formdata_serialize(options.body);
     \\      this.__home_text = serialized.text;
+    \\      this.__home_formdata = options.body;
+    \\      this.body = { __home_text: this.__home_text, locked: false };
     \\      if (this.headers.get("content-type") === null) this.headers.set("content-type", "multipart/form-data; boundary=" + serialized.boundary);
-    \\    } else if (Object.prototype.hasOwnProperty.call(options, "body")) this.__home_text = __home_request_body_text(options.body);
-    \\    this.body = { __home_text: this.__home_text, locked: false };
+    \\    } else if (Object.prototype.hasOwnProperty.call(options, "body")) {
+    \\      this.__home_formdata = null;
+    \\      this.body = options.body && typeof options.body.getReader === "function" ? options.body : { __home_text: __home_request_body_text(options.body), locked: false };
+    \\      this.__home_text = __home_request_body_text(options.body);
+    \\    }
+    \\    if (this.body === null) this.body = { __home_text: this.__home_text, locked: false };
     \\  };
     \\  Request.prototype.text = function() {
-    \\    return Promise.resolve(this.__home_text);
+    \\    return __home_consume_body(this).then(bytes => __home_utf8_bytes_to_text(bytes));
+    \\  };
+    \\  Request.prototype.arrayBuffer = function() {
+    \\    return __home_consume_body(this).then(bytes => new Uint8Array(bytes).buffer);
+    \\  };
+    \\  Request.prototype.blob = function() {
+    \\    return __home_consume_body(this).then(bytes => new Blob([new Uint8Array(bytes)], { type: this.headers.get("content-type") || "" }));
+    \\  };
+    \\  Request.prototype.formData = function() {
+    \\    if (this.__home_formdata) return __home_consume_body(this).then(() => {
+    \\      const form = new FormData();
+    \\      for (const entry of this.__home_formdata) form.append(entry[0], entry[1]);
+    \\      return form;
+    \\    });
+    \\    return this.text().then(() => new FormData());
     \\  };
     \\  Request.prototype.clone = function() {
+    \\    if (this.body && typeof this.body.tee === "function") {
+    \\      const branches = this.body.tee();
+    \\      this.body = branches[0];
+    \\      return new Request(this, { body: branches[1] });
+    \\    }
+    \\    if (this.body && Array.isArray(this.body.__home_chunks)) {
+    \\      const chunks = this.body.__home_chunks.slice();
+    \\      return new Request(this, { body: new ReadableStream({ start(controller) { for (const chunk of chunks) controller.enqueue(chunk); controller.close(); } }) });
+    \\    }
     \\    return new Request(this);
     \\  };
     \\}
@@ -7926,6 +8092,8 @@ const harness_prelude =
     \\  var ReadableStream = function(underlyingSource) {
     \\    this.__home_chunks = [];
     \\    this.__home_closed = false;
+    \\    this.locked = false;
+    \\    this.__home_underlying_source = underlyingSource || {};
     \\    const stream = this;
     \\    const controller = {
     \\      enqueue(chunk) {
@@ -7937,6 +8105,35 @@ const harness_prelude =
     \\      },
     \\    };
     \\    if (underlyingSource && typeof underlyingSource.start === "function") underlyingSource.start(controller);
+    \\  };
+    \\  ReadableStream.prototype.getReader = function() {
+    \\    const stream = this;
+    \\    const controller = {
+    \\      enqueue(chunk) {
+    \\        if (stream.__home_closed) throw new TypeError("ReadableStream is closed");
+    \\        stream.__home_chunks.push(chunk);
+    \\      },
+    \\      close() {
+    \\        stream.__home_closed = true;
+    \\      },
+    \\    };
+    \\    return {
+    \\      read() {
+    \\        if (stream.__home_chunks.length > 0) return Promise.resolve({ done: false, value: stream.__home_chunks.shift() });
+    \\        if (!stream.__home_closed && stream.__home_underlying_source && typeof stream.__home_underlying_source.pull === "function") {
+    \\          return Promise.resolve(stream.__home_underlying_source.pull(controller)).then(() => {
+    \\            if (stream.__home_chunks.length > 0) return { done: false, value: stream.__home_chunks.shift() };
+    \\            return { done: !!stream.__home_closed, value: undefined };
+    \\          });
+    \\        }
+    \\        return Promise.resolve({ done: true, value: undefined });
+    \\      },
+    \\      cancel(reason) {
+    \\        stream.__home_closed = true;
+    \\        if (stream.__home_underlying_source && typeof stream.__home_underlying_source.cancel === "function") return Promise.resolve(stream.__home_underlying_source.cancel(reason));
+    \\        return Promise.resolve(undefined);
+    \\      },
+    \\    };
     \\  };
     \\}
     \\if (typeof WritableStream !== "function") {
@@ -8211,7 +8408,11 @@ const harness_prelude =
     \\  var EventTarget = function() {
     \\    this.__home_listeners = Object.create(null);
     \\  };
+    \\  function __home_event_target_assert(target) {
+    \\    if (!target || !Object.prototype.hasOwnProperty.call(target, "__home_listeners")) throw new TypeError("Illegal invocation");
+    \\  }
     \\  EventTarget.prototype.addEventListener = function(type, callback, options) {
+    \\    __home_event_target_assert(this);
     \\    if (callback == null) return undefined;
     \\    const key = String(type);
     \\    const listeners = this.__home_listeners[key] || (this.__home_listeners[key] = []);
@@ -8220,6 +8421,7 @@ const harness_prelude =
     \\    return undefined;
     \\  };
     \\  EventTarget.prototype.removeEventListener = function(type, callback, options) {
+    \\    __home_event_target_assert(this);
     \\    if (callback == null) return undefined;
     \\    const listeners = this.__home_listeners[String(type)];
     \\    if (!listeners) return undefined;
@@ -8232,6 +8434,7 @@ const harness_prelude =
     \\    return undefined;
     \\  };
     \\  EventTarget.prototype.dispatchEvent = function(event) {
+    \\    __home_event_target_assert(this);
     \\    if (!(event instanceof Event)) throw new TypeError("dispatchEvent requires an Event");
     \\    event.target = event.target || this;
     \\    event.currentTarget = this;
@@ -8249,6 +8452,10 @@ const harness_prelude =
     \\  };
     \\  EventTarget.prototype.toString = function() { return "[object EventTarget]"; };
     \\}
+    \\const __home_global_event_target = new EventTarget();
+    \\if (typeof globalThis.addEventListener !== "function") globalThis.addEventListener = function(type, callback, options) { return __home_global_event_target.addEventListener(type, callback, options); };
+    \\if (typeof globalThis.removeEventListener !== "function") globalThis.removeEventListener = function(type, callback, options) { return __home_global_event_target.removeEventListener(type, callback, options); };
+    \\if (typeof globalThis.dispatchEvent !== "function") globalThis.dispatchEvent = function(event) { return __home_global_event_target.dispatchEvent(event); };
     \\if (typeof AbortSignal !== "function") {
     \\  var AbortSignal = function() {
     \\    EventTarget.call(this);
@@ -8305,7 +8512,7 @@ const harness_prelude =
     \\  function __home_clone_detail(value) {
     \\    if (value === null || value === undefined) return null;
     \\    if (value instanceof ArrayBuffer) return value.slice(0);
-    \\    if (ArrayBuffer.isView(value)) return new value.constructor(value);
+    \\    if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
     \\    if (typeof value === "object") return JSON.parse(JSON.stringify(value));
     \\    return value;
     \\  }
@@ -8475,7 +8682,7 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     try appendJsStringLiteral(out, allocator, relative_path);
     try out.appendSlice(allocator, ";\nvar __dirname = ");
     try appendJsStringLiteral(out, allocator, dirname);
-    try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\nfunction __home_import_meta_resolve(specifier, parent) { const text = String(specifier); if (text.startsWith(\"./\")) return __home_import_meta_dir.replace(/\\/+$/, \"\") + \"/\" + text.slice(2); throw new Error(\"Cannot resolve \" + text + \" from \" + String(parent)); }\n");
+    try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname.startsWith(\"js/node/path\") ? (__dirname === \".\" ? \"/\" : \"/\" + __dirname.replace(/^\\/+/, \"\")) : __dirname;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\nfunction __home_import_meta_resolve(specifier, parent) { const text = String(specifier); if (text.startsWith(\"./\")) return __home_import_meta_dir.replace(/\\/+$/, \"\") + \"/\" + text.slice(2); throw new Error(\"Cannot resolve \" + text + \" from \" + String(parent)); }\n");
     if (std.mem.eql(u8, relative_path, "regression/issue/fix-bindings-stack-trace.test.ts")) {
         try out.appendSlice(allocator,
             \\(function() {
@@ -8529,10 +8736,14 @@ fn appendImportMetaReplacement(
         needle: []const u8,
         replacement: []const u8,
     }{
+        .{ .needle = "const { file } = import.meta;", .replacement = "const file = __filename;" },
+        .{ .needle = "const { path, dir, dirname, filename } = import.meta;", .replacement = "const path = __home_import_meta_path;\nconst dir = __home_import_meta_dir;\nconst dirname = __home_import_meta_dirname;\nconst filename = __filename;" },
+        .{ .needle = "var { require } = import.meta;", .replacement = "var require = globalThis.__home_require;" },
         .{ .needle = "import.meta.resolveSync", .replacement = "__home_import_meta_resolve" },
         .{ .needle = "import.meta.resolve", .replacement = "__home_import_meta_resolve" },
         .{ .needle = "import.meta.dirname", .replacement = "__home_import_meta_dirname" },
         .{ .needle = "import.meta.dir", .replacement = "__home_import_meta_dir" },
+        .{ .needle = "import.meta.file", .replacement = "__filename" },
         .{ .needle = "import.meta.path", .replacement = "__home_import_meta_path" },
         .{ .needle = "import.meta.url", .replacement = "\"file:///\" + __home_import_meta_path" },
     };
@@ -8614,7 +8825,13 @@ fn appendBootstrapTypeScriptReplacement(
         needle: []const u8,
         replacement: []const u8,
     }{
+        .{ .needle = ": String(dir)", .replacement = ": String(dir)" },
+        .{ .needle = ": String(\"tmp\")", .replacement = ": String(\"tmp\")" },
+        .{ .needle = ": \"pipe\"", .replacement = ": \"pipe\"" },
+        .{ .needle = ": \"ignore\"", .replacement = ": \"ignore\"" },
         .{ .needle = ": string[] =", .replacement = " =" },
+        .{ .needle = ": Uint8Array[] =", .replacement = " =" },
+        .{ .needle = ": Record<string, string> =", .replacement = " =" },
         .{ .needle = "(style: string) =>", .replacement = "(style) =>" },
         .{ .needle = "(pattern: string, expected: string, kind: \"page\" | \"layout\" | \"extra\" = \"page\") =>", .replacement = "(pattern, expected, kind = \"page\") =>" },
         .{ .needle = "(sourcemapValue: \"inline\" | \"external\" | true, testName: string)", .replacement = "(sourcemapValue, testName)" },
@@ -8650,11 +8867,19 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": number =", .replacement = " =" },
         .{ .needle = ": string =", .replacement = " =" },
         .{ .needle = ": string {", .replacement = " {" },
+        .{ .needle = "): Headers {", .replacement = ") {" },
         .{ .needle = ": string =>", .replacement = " =>" },
+        .{ .needle = ": Promise<void> =>", .replacement = " =>" },
+        .{ .needle = "(body: any, headers?: Headers): Body", .replacement = "(body, headers)" },
+        .{ .needle = ": string, callback: ((e: Event) => void) | null, options?: AddEventListenerOptions)", .replacement = ", callback, options)" },
+        .{ .needle = ": string, callback: ((e: Event) => void) | null, options?: EventListenerOptions)", .replacement = ", callback, options)" },
         .{ .needle = ": number)", .replacement = ")" },
         .{ .needle = ": string)", .replacement = ")" },
         .{ .needle = ": string) =>", .replacement = ") =>" },
         .{ .needle = ": string)=>", .replacement = ")=>" },
+        .{ .needle = ": Event)=>", .replacement = ")=>" },
+        .{ .needle = ": Event) {", .replacement = ") {" },
+        .{ .needle = "): void {", .replacement = ") {" },
         .{ .needle = "extractSourceMap(dev: Dev, scriptSource: string)", .replacement = "extractSourceMap(dev, scriptSource)" },
         .{ .needle = ": Dev, html: string)", .replacement = ", html)" },
         .{ .needle = ": Dev, scriptSource: string)", .replacement = ", scriptSource)" },
@@ -8671,12 +8896,14 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "await using ", .replacement = "const " },
         .{ .needle = "using ", .replacement = "const " },
         .{ .needle = "serverComponents!", .replacement = "serverComponents" },
+        .{ .needle = "!;", .replacement = ";" },
         .{ .needle = "readonly foo: FooParent", .replacement = "foo" },
         .{ .needle = "override foo: FooChild", .replacement = "foo" },
         .{ .needle = "![", .replacement = "[" },
         .{ .needle = ": any)", .replacement = ")" },
         .{ .needle = ": Event)", .replacement = ")" },
         .{ .needle = ": any;", .replacement = ";" },
+        .{ .needle = ": unknown[]", .replacement = "" },
         .{ .needle = ": IterableIterator<[string, string]>", .replacement = "" },
         .{ .needle = ": IterableIterator<[number, number]>", .replacement = "" },
         .{ .needle = "!: any", .replacement = "" },
@@ -8699,6 +8926,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = " as SourceMap", .replacement = "" },
         .{ .needle = " as keyof typeof props", .replacement = "" },
         .{ .needle = " as string[][]", .replacement = "" },
+        .{ .needle = " as Array<[string, string]>", .replacement = "" },
+        .{ .needle = " as Body", .replacement = "" },
         .{ .needle = " as string", .replacement = "" },
         .{ .needle = " as any", .replacement = "" },
         .{ .needle = " as const", .replacement = "" },
@@ -10026,34 +10255,40 @@ test "minimal JS subset starts with the todo smoke" {
     try std.testing.expectEqualStrings("js/deno/event/custom-event.test.ts", filesForSubset(.minimal_js)[38]);
     try std.testing.expectEqualStrings("js/deno/event/event.test.ts", filesForSubset(.minimal_js)[39]);
     try std.testing.expectEqualStrings("js/deno/abort/abort-controller.test.ts", filesForSubset(.minimal_js)[40]);
-    try std.testing.expectEqualStrings("js/deno/fetch/request.test.ts", filesForSubset(.minimal_js)[41]);
-    try std.testing.expectEqualStrings("js/deno/url/urlsearchparams.test.ts", filesForSubset(.minimal_js)[42]);
-    try std.testing.expectEqualStrings("regression/issue/08040.test.ts", filesForSubset(.minimal_js)[43]);
-    try std.testing.expectEqualStrings("regression/issue/09778.test.ts", filesForSubset(.minimal_js)[44]);
-    try std.testing.expectEqualStrings("regression/issue/18820.test.ts", filesForSubset(.minimal_js)[45]);
-    try std.testing.expectEqualStrings("regression/issue/23382.test.js", filesForSubset(.minimal_js)[46]);
-    try std.testing.expectEqualStrings("js/bun/util/escapeRegExp.test.ts", filesForSubset(.minimal_js)[47]);
-    try std.testing.expectEqualStrings("regression/issue/24045.test.ts", filesForSubset(.minimal_js)[48]);
-    try std.testing.expectEqualStrings("regression/issue/07324.test.ts", filesForSubset(.minimal_js)[49]);
-    try std.testing.expectEqualStrings("regression/issue/07827.test.ts", filesForSubset(.minimal_js)[50]);
-    try std.testing.expectEqualStrings("internal/powershell-escape.test.ts", filesForSubset(.minimal_js)[51]);
-    try std.testing.expectEqualStrings("js/node/assert/assert.test.cjs", filesForSubset(.minimal_js)[52]);
-    try std.testing.expectEqualStrings("js/node/assert/assert-match.test.cjs", filesForSubset(.minimal_js)[53]);
-    try std.testing.expectEqualStrings("js/node/assert/assert-doesNotMatch.test.cjs", filesForSubset(.minimal_js)[54]);
-    try std.testing.expectEqualStrings("js/node/path/posix-exists.test.js", filesForSubset(.minimal_js)[55]);
-    try std.testing.expectEqualStrings("js/node/path/win32-exists.test.js", filesForSubset(.minimal_js)[56]);
-    try std.testing.expectEqualStrings("js/node/path/15704.test.js", filesForSubset(.minimal_js)[57]);
-    try std.testing.expectEqualStrings("js/node/url/url-canParse-whatwg.test.js", filesForSubset(.minimal_js)[58]);
-    try std.testing.expectEqualStrings("js/node/url/url-format-invalid-input.test.js", filesForSubset(.minimal_js)[59]);
-    try std.testing.expectEqualStrings("integration/bun-types/fixture/23347.test.ts", filesForSubset(.minimal_js)[60]);
-    try std.testing.expectEqualStrings("js/bun/resolve/toml/toml-parse.test.ts", filesForSubset(.minimal_js)[61]);
-    try std.testing.expectEqualStrings("js/bun/resolve/toml/crash/toml-crash.test.ts", filesForSubset(.minimal_js)[62]);
-    try std.testing.expectEqualStrings("regression/issue/013880.test.ts", filesForSubset(.minimal_js)[63]);
-    try std.testing.expectEqualStrings("js/bun/util/exotic-global-mutable-prototype.test.ts", filesForSubset(.minimal_js)[64]);
-    try std.testing.expectEqualStrings("js/bun/jsc/native-constructor-identity.test.ts", filesForSubset(.minimal_js)[65]);
-    try std.testing.expectEqualStrings("js/bun/empty-file.test.ts", filesForSubset(.minimal_js)[66]);
-    try std.testing.expectEqualStrings("js/bun/test/expect-type-global.test.ts", filesForSubset(.minimal_js)[67]);
-    try std.testing.expectEqualStrings("js/bun/test/expect-type.test.ts", filesForSubset(.minimal_js)[68]);
+    try std.testing.expectEqualStrings("js/deno/event/event-target.test.ts", filesForSubset(.minimal_js)[41]);
+    try std.testing.expectEqualStrings("js/deno/fetch/request.test.ts", filesForSubset(.minimal_js)[42]);
+    try std.testing.expectEqualStrings("js/deno/fetch/body.test.ts", filesForSubset(.minimal_js)[43]);
+    try std.testing.expectEqualStrings("js/deno/fetch/blob.test.ts", filesForSubset(.minimal_js)[44]);
+    try std.testing.expectEqualStrings("js/deno/fetch/headers.test.ts", filesForSubset(.minimal_js)[45]);
+    try std.testing.expectEqualStrings("js/deno/fetch/response.test.ts", filesForSubset(.minimal_js)[46]);
+    try std.testing.expectEqualStrings("js/deno/url/urlsearchparams.test.ts", filesForSubset(.minimal_js)[47]);
+    try std.testing.expectEqualStrings("js/deno/crypto/random.test.ts", filesForSubset(.minimal_js)[48]);
+    try std.testing.expectEqualStrings("regression/issue/08040.test.ts", filesForSubset(.minimal_js)[49]);
+    try std.testing.expectEqualStrings("regression/issue/09778.test.ts", filesForSubset(.minimal_js)[50]);
+    try std.testing.expectEqualStrings("regression/issue/18820.test.ts", filesForSubset(.minimal_js)[51]);
+    try std.testing.expectEqualStrings("regression/issue/23382.test.js", filesForSubset(.minimal_js)[52]);
+    try std.testing.expectEqualStrings("js/bun/util/escapeRegExp.test.ts", filesForSubset(.minimal_js)[53]);
+    try std.testing.expectEqualStrings("regression/issue/24045.test.ts", filesForSubset(.minimal_js)[54]);
+    try std.testing.expectEqualStrings("regression/issue/07324.test.ts", filesForSubset(.minimal_js)[55]);
+    try std.testing.expectEqualStrings("regression/issue/07827.test.ts", filesForSubset(.minimal_js)[56]);
+    try std.testing.expectEqualStrings("internal/powershell-escape.test.ts", filesForSubset(.minimal_js)[57]);
+    try std.testing.expectEqualStrings("js/node/assert/assert.test.cjs", filesForSubset(.minimal_js)[58]);
+    try std.testing.expectEqualStrings("js/node/assert/assert-match.test.cjs", filesForSubset(.minimal_js)[59]);
+    try std.testing.expectEqualStrings("js/node/assert/assert-doesNotMatch.test.cjs", filesForSubset(.minimal_js)[60]);
+    try std.testing.expectEqualStrings("js/node/path/posix-exists.test.js", filesForSubset(.minimal_js)[61]);
+    try std.testing.expectEqualStrings("js/node/path/win32-exists.test.js", filesForSubset(.minimal_js)[62]);
+    try std.testing.expectEqualStrings("js/node/path/15704.test.js", filesForSubset(.minimal_js)[63]);
+    try std.testing.expectEqualStrings("js/node/url/url-canParse-whatwg.test.js", filesForSubset(.minimal_js)[64]);
+    try std.testing.expectEqualStrings("js/node/url/url-format-invalid-input.test.js", filesForSubset(.minimal_js)[65]);
+    try std.testing.expectEqualStrings("integration/bun-types/fixture/23347.test.ts", filesForSubset(.minimal_js)[66]);
+    try std.testing.expectEqualStrings("js/bun/resolve/toml/toml-parse.test.ts", filesForSubset(.minimal_js)[67]);
+    try std.testing.expectEqualStrings("js/bun/resolve/toml/crash/toml-crash.test.ts", filesForSubset(.minimal_js)[68]);
+    try std.testing.expectEqualStrings("regression/issue/013880.test.ts", filesForSubset(.minimal_js)[69]);
+    try std.testing.expectEqualStrings("js/bun/util/exotic-global-mutable-prototype.test.ts", filesForSubset(.minimal_js)[70]);
+    try std.testing.expectEqualStrings("js/bun/jsc/native-constructor-identity.test.ts", filesForSubset(.minimal_js)[71]);
+    try std.testing.expectEqualStrings("js/bun/empty-file.test.ts", filesForSubset(.minimal_js)[72]);
+    try std.testing.expectEqualStrings("js/bun/test/expect-type-global.test.ts", filesForSubset(.minimal_js)[73]);
+    try std.testing.expectEqualStrings("js/bun/test/expect-type.test.ts", filesForSubset(.minimal_js)[74]);
 }
 
 test "harness prelude installs Bun test globals once" {
@@ -10501,6 +10736,7 @@ test "minimal JS subset includes low-risk Bun corpus expansion files" {
         "js/node/path/normalize.test.js",
         "js/node/path/join.test.js",
         "js/node/path/dirname.test.js",
+        "js/node/path/browserify.test.js",
         "js/node/path/parse-format.test.js",
         "js/node/path/relative.test.js",
         "js/node/path/path.test.js",
