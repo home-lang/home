@@ -11009,6 +11009,62 @@ pub const Checker = struct {
         return false;
     }
 
+    /// Contextually type the *first* parameter of an un-annotated
+    /// callback passed to a built-in array iteration method
+    /// (`map` / `filter` / `forEach` / `some` / `every` / `find` /
+    /// `findIndex` / `findLast` / `findLastIndex` / `flatMap`). For
+    /// `arr.map((x) => …)` the callback's first parameter is the
+    /// array element type, exactly as tsc threads the element type
+    /// through `Array<T>.map`'s generic callback signature. This is
+    /// what lets `spreadNonObject1.ts` surface TS2698: the `.map`
+    /// callback param picks up the element type `S` (a template
+    /// literal type), and spreading it then fails the object-type
+    /// check. Only the first parameter is contextually typed — the
+    /// `index`/`array` parameters keep their own (number/array)
+    /// types, which these fixtures never spread. Returns `none` when
+    /// the receiver isn't an array-like so callers fall back to the
+    /// implicit-any path (and its TS7006 reporting).
+    fn arrayCallbackParameterElementType(
+        self: *Checker,
+        fn_node: NodeId,
+        param_index: usize,
+    ) CheckError!?TypeId {
+        if (param_index != 0) return null;
+        const parent = self.hir.parentOf(fn_node);
+        if (parent == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(parent) != .call_expr) return null;
+        const call = hir_mod.callOf(self.hir, parent);
+        // The callback must be an *argument*, not the callee itself
+        // (that IIFE shape is handled separately).
+        if (call.callee == fn_node) return null;
+        var is_arg = false;
+        for (hir_mod.callArgs(self.hir, parent)) |arg| {
+            if (arg == fn_node) {
+                is_arg = true;
+                break;
+            }
+        }
+        if (!is_arg) return null;
+        // Callee must be `receiver.method` and `method` one of the
+        // element-first array iteration helpers.
+        if (call.callee == hir_mod.none_node_id or self.hir.kindOf(call.callee) != .member_access) return null;
+        const m = hir_mod.memberOf(self.hir, call.callee);
+        if (m.object == hir_mod.none_node_id) return null;
+        const method = self.string_interner.get(m.name);
+        const element_first = std.StaticStringMap(void).initComptime(.{
+            .{"map"},       .{"filter"},   .{"forEach"},
+            .{"some"},      .{"every"},    .{"find"},
+            .{"findIndex"}, .{"findLast"}, .{"findLastIndex"},
+            .{"flatMap"},
+        });
+        if (!element_first.has(method)) return null;
+        const recv_t = try self.checkExpression(m.object);
+        if (recv_t >= self.interner.pool.typeCount()) return null;
+        const elem_t = try self.contextualArrayElementType(recv_t);
+        if (elem_t == types.Primitive.none) return null;
+        return elem_t;
+    }
+
     fn iifeParameterTypeFromCallArgument(
         self: *Checker,
         fn_node: NodeId,
@@ -12946,6 +13002,16 @@ pub const Checker = struct {
                 try self.iifeParameterTypeFromCallArgument(node, param_index, pp.flags.is_rest)
             else
                 null;
+            // An un-annotated callback passed to a built-in array
+            // iteration method (`arr.map((x) => …)`) gets its first
+            // parameter contextually typed to the array element type
+            // — mirroring tsc's generic callback inference. Only the
+            // IIFE path takes precedence; otherwise this seeds `x`.
+            const array_callback_context_t: ?TypeId = if (!has_anno and !is_this_param and
+                !pp.flags.is_rest and pp.default_value == hir_mod.none_node_id and iife_context_t == null)
+                try self.arrayCallbackParameterElementType(node, param_index)
+            else
+                null;
             const t: TypeId = if (has_anno)
                 try self.lowererLowerWithTypeParams(pp.type_annotation)
             else if (jsdoc_param_t) |jt|
@@ -12986,6 +13052,8 @@ pub const Checker = struct {
                 }
                 break :blk_default types.Primitive.any;
             } else if (iife_context_t) |context_t|
+                context_t
+            else if (array_callback_context_t) |context_t|
                 context_t
             else
                 types.Primitive.any;
@@ -84974,4 +85042,100 @@ test "checker: TS1093 fires on constructor return-type annotation and TS2355 sta
     }
     try T.expectEqual(@as(usize, 1), count_1093);
     try T.expectEqual(@as(usize, 0), count_2355);
+}
+
+// spreadNonObject1.ts — spreading a template-literal type (a
+// string subtype) into an object literal must surface TS2698.
+// tsc anchors the error on the `...s` spread because `s: S` where
+// `S = `${number}`` is a primitive (string-literal) type, not an
+// object type. We currently emit nothing; this pins the gap.
+test "checker: TS2698 fires when spreading a template-literal-typed value" {
+    const s = try newSetup(
+        \\type S = `${number}`;
+        \\const b = {
+        \\  c: (["4"] as S[]).map(function (x) {
+        \\    const a = { ...x, y: 6 };
+        \\  }),
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.spread_types_object_only) found = true;
+    }
+    try T.expect(found);
+}
+
+// Positive — the element-first contextual typing also applies to
+// `.filter`; spreading a `number`-typed element fails the
+// object-type check just like the `.map` baseline.
+test "checker: TS2698 fires when spreading a number element in a filter callback" {
+    const s = try newSetup(
+        \\const arr: number[] = [1, 2, 3];
+        \\const out = arr.filter(function (x) {
+        \\  const a = { ...x, y: 6 };
+        \\  return true;
+        \\});
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.spread_types_object_only) found = true;
+    }
+    try T.expect(found);
+}
+
+// Negative — spreading the element of an OBJECT-typed array inside
+// a `.map` callback is a valid spread and must NOT report TS2698.
+// Pins that the new array-callback contextual typing only changes
+// the param TYPE, not the spread-validity verdict for object
+// elements.
+test "checker: TS2698 stays silent spreading an object-typed map callback element" {
+    const s = try newSetup(
+        \\const arr: { a: number }[] = [{ a: 1 }];
+        \\const out = arr.map(function (x) {
+        \\  return { ...x, b: 2 };
+        \\});
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.spread_types_object_only);
+    }
+}
+
+// Negative — `any[]`-typed array callbacks keep the element type
+// `any`, which tsc allows spreading. No TS2698.
+test "checker: TS2698 stays silent spreading an any element in a forEach callback" {
+    const s = try newSetup(
+        \\const arr: any[] = [];
+        \\arr.forEach(function (x) {
+        \\  const a = { ...x, y: 6 };
+        \\});
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.spread_types_object_only);
+    }
+}
+
+// Negative — a non-array receiver (`.map` on an object that merely
+// has a `map` property) must NOT be treated as an array iteration
+// helper; the callback param stays implicit and no false TS2698
+// fires for the (now-`any`) spread.
+test "checker: TS2698 not triggered by map method on a non-array receiver" {
+    const s = try newSetup(
+        \\const o = { map: function (cb: (x: number) => void) { cb(1); } };
+        \\o.map(function (x) {
+        \\  const a = { ...x, y: 6 };
+        \\});
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.spread_types_object_only);
+    }
 }
