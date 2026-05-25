@@ -1441,6 +1441,43 @@ pub const Parser = struct {
         return false;
     }
 
+    /// Like [`sourceHasTopLevelExternalModuleIndicator`] but treats
+    /// `export as namespace Foo;` as NOT a module indicator. Mirrors
+    /// upstream `isExternalModule` which omits `GlobalModuleExport`
+    /// nodes from the module-promotion check. Used to decide TS1314
+    /// (`Global module exports may only appear in module files.`): a
+    /// `.d.ts` file whose only top-level export is `export as namespace`
+    /// is still a script file under TypeScript's rules.
+    fn hasNonNamespaceExportModuleIndicator(self: *const Parser) bool {
+        var depth: u32 = 0;
+        var i: usize = 0;
+        while (i < self.tokens.len) : (i += 1) {
+            const tok = self.tokens[i];
+            switch (tok.kind) {
+                .open_brace, .open_paren, .open_bracket => depth += 1,
+                .close_brace, .close_paren, .close_bracket => if (depth > 0) {
+                    depth -= 1;
+                },
+                .kw_import => {
+                    if (depth == 0) return true;
+                },
+                .kw_export => if (depth == 0) {
+                    if (i + 2 < self.tokens.len and
+                        self.tokens[i + 1].kind == .kw_as and
+                        self.tokens[i + 2].kind == .kw_namespace)
+                    {
+                        i += 2;
+                        continue;
+                    }
+                    return true;
+                },
+                .eof => return false,
+                else => {},
+            }
+        }
+        return false;
+    }
+
     // ========================================================================
     // Statements
     // ========================================================================
@@ -6799,6 +6836,27 @@ pub const Parser = struct {
             _ = try self.expectIdentifierLike();
             try self.consumeStatementTerminator();
             const end_pos = self.tokens[self.cursor - 1].span.end;
+            // Three positional checks mirror upstream `bindSourceFile`
+            // / `checkSourceFile` ordering for `GlobalModuleExport`:
+            //   TS1316 — appears anywhere other than the source-file
+            //   top level (inside a namespace body, ambient module
+            //   body, function body, …).
+            //   TS1315 — top-level but the containing file isn't a
+            //   `.d.ts` declaration file.
+            //   TS1314 — `.d.ts` and top-level, but no other top-level
+            //   import/export. `export as namespace` itself does not
+            //   promote a script file to a module under TypeScript.
+            // Only one of the three fires per declaration; the squiggle
+            // covers the full `export as namespace Foo;` span. Matches
+            // baselines `umd-errors.errors.txt` (err1, err2, err4, err5).
+            const span_len: u32 = end_pos - start.span.start;
+            if (self.block_depth > 0 or self.namespace_depth > 0 or self.ambient_depth > 0) {
+                try self.reportCodeAtWithSpan(start.span.start, start.line, span_len, 1316, "Global module exports may only appear at top level.");
+            } else if (!self.is_declaration_file) {
+                try self.reportCodeAtWithSpan(start.span.start, start.line, span_len, 1315, "Global module exports may only appear in declaration files.");
+            } else if (!self.hasNonNamespaceExportModuleIndicator()) {
+                try self.reportCodeAtWithSpan(start.span.start, start.line, span_len, 1314, "Global module exports may only appear in module files.");
+            }
             return try self.builder.addBlock(.{ .start = start.span.start, .end = end_pos }, &.{});
         }
 

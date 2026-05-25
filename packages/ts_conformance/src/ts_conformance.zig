@@ -30273,6 +30273,90 @@ test "conformance: inferTypeInsideExtends stays clean" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: globalModuleExportNotInModuleFile matches TS1314 baseline" {
+    // Regression pin for TS1314. Upstream `umd-errors.errors.txt`:
+    //   err1.d.ts(2,1): error TS1314: Global module exports may only \
+    //     appear in module files.
+    // Top-level `export as namespace Foo;` in a `.d.ts` whose only
+    // top-level module-shape is the namespace export itself — under
+    // TypeScript's `isExternalModule` rule that's still a script
+    // file, so the namespace export is rejected. Pre-fix Home parsed
+    // the form silently and emitted no diagnostic.
+    const result = try runOneEntry(T.allocator, .{
+        .name = "globalModuleExportNotInModuleFile",
+        .path = "err1.d.ts",
+        .is_declaration_file = true,
+        .source =
+        \\// Illegal, can't be in script file
+        \\export as namespace Foo;
+        ,
+        .expects_error = true,
+        .expected_errors = "err1.d.ts(2,1): error TS1314: Global module exports may only appear in module files.",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: globalModuleExportNotAtTopLevel matches TS1316 baseline" {
+    // Regression pin for TS1316. Upstream `umd-errors.errors.txt`:
+    //   err4.d.ts(3,2): error TS1316: Global module exports may only \
+    //     appear at top level.
+    // `export as namespace` nested inside a `namespace` body is
+    // rejected — the diagnostic anchors at the inner `export` token
+    // with the full statement span. Mirrors the same gate that fires
+    // for ambient module bodies (err2.d.ts in the same baseline).
+    const result = try runOneEntry(T.allocator, .{
+        .name = "globalModuleExportNotAtTopLevel",
+        .path = "err4.d.ts",
+        .is_declaration_file = true,
+        .source =
+        \\// Illegal, must be at top-level
+        \\export namespace B {
+        \\ export as namespace C1;
+        \\}
+        ,
+        .expects_error = true,
+        .expected_errors = "err4.d.ts(3,2): error TS1316: Global module exports may only appear at top level.",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: globalModuleExportNotInDeclarationFile matches TS1315 baseline" {
+    // Regression pin for TS1315. Upstream `umd-errors.errors.txt`:
+    //   err5.ts(3,1): error TS1315: Global module exports may only \
+    //     appear in declaration files.
+    // Top-level `export as namespace` in a `.ts` implementation
+    // file (here paired with `export var v;` so the file is unambiguously
+    // a module under TS rules) — TS1315 supersedes the TS1314 "module
+    // file" check once the .d.ts extension is missing.
+    const result = try runOneEntry(T.allocator, .{
+        .name = "globalModuleExportNotInDeclarationFile",
+        .path = "err5.ts",
+        .source =
+        \\// Illegal, may not appear in implementation files
+        \\export var v;
+        \\export as namespace C2;
+        ,
+        .expects_error = true,
+        .expected_errors = "err5.ts(3,1): error TS1315: Global module exports may only appear in declaration files.",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: exportClassWithoutName matches TS1211 baseline" {
     // Regression pin for TS1211. Upstream:
     //   exportClassWithoutName.ts(1,1): error TS1211: A class declaration \
