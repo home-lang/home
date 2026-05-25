@@ -4414,6 +4414,9 @@ pub const Parser = struct {
                     break :blk key;
                 } else blk: {
                     const name_tok = self.advance();
+                    if (name_tok.kind == .private_identifier) {
+                        try self.reportPrivateIdentifierModifierDiagnostics(mods, false);
+                    }
                     const name_id = try self.internPropertyName(name_tok, tokenSpan(name_tok));
                     break :blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
                 };
@@ -4506,6 +4509,7 @@ pub const Parser = struct {
                     if (std.mem.eql(u8, name_text, "#constructor")) {
                         try self.reportCodeAt(name_tok.span.start, name_tok.line, 18012, "'#constructor' is a reserved word.");
                     }
+                    try self.reportPrivateIdentifierModifierDiagnostics(mods, false);
                 }
                 const is_optional_member = self.match(.question);
                 // §6.A parserConstructorDeclaration8: `public constructor;`
@@ -4785,6 +4789,9 @@ pub const Parser = struct {
                     default_value = try self.parseAssignmentExpression();
                 }
                 try self.consumeClassPropertyTerminator();
+                if (name_tok.kind == .private_identifier) {
+                    try self.reportPrivateIdentifierModifierDiagnostics(mods, true);
+                }
                 // TS1031: `export` on a class member property (e.g.
                 // `export Foo;`). `declare` is permitted on properties
                 // — it tells the type system the field is initialized
@@ -5174,6 +5181,36 @@ pub const Parser = struct {
             const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier cannot appear on class elements of this kind.", .{mod_name});
             try self.reportCodeAt(bad.span.start, bad.line, 1031, msg);
         }
+    }
+
+    fn reportPrivateIdentifierModifierDiagnostics(self: *Parser, mods: ClassModifiers, is_property: bool) ParseError!void {
+        if (mods.accessibility_token) |bad| {
+            if (!self.hasDiagnosticAt(18010, bad.span.start)) {
+                try self.reportCodeAt(bad.span.start, bad.line, 18010, "An accessibility modifier cannot be used with a private identifier.");
+            }
+        }
+        if (!is_property) return;
+        if (mods.declare_token) |bad| {
+            const mod_name = self.source[bad.span.start..bad.span.end];
+            const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier cannot be used with a private identifier.", .{mod_name});
+            if (!self.hasDiagnosticAt(18019, bad.span.start)) {
+                try self.reportCodeAt(bad.span.start, bad.line, 18019, msg);
+            }
+        }
+        if (mods.abstract_token) |bad| {
+            const mod_name = self.source[bad.span.start..bad.span.end];
+            const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier cannot be used with a private identifier.", .{mod_name});
+            if (!self.hasDiagnosticAt(18019, bad.span.start)) {
+                try self.reportCodeAt(bad.span.start, bad.line, 18019, msg);
+            }
+        }
+    }
+
+    fn hasDiagnosticAt(self: *const Parser, code: u32, pos: u32) bool {
+        for (self.diagnostics.items) |d| {
+            if (d.code == code and d.pos == pos) return true;
+        }
+        return false;
     }
 
     /// Property-kind class members accept `declare` (the field is
@@ -18262,6 +18299,42 @@ test "parser: class index signature accessibility modifier reports TS1071" {
     try T.expectEqual(@as(u32, 1071), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 10), s.parser.diagnostics.items[0].pos);
     try T.expectEqualStrings("'private' modifier cannot appear on an index signature.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: accessibility modifiers cannot be used with private identifiers" {
+    var s = try newTestSetup(
+        \\class C {
+        \\  public #field = 1;
+        \\  private #method() {}
+        \\  protected get #value() { return 1; }
+        \\  protected set #value(v: number) {}
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 18010) count += 1;
+    }
+    try T.expectEqual(@as(usize, 4), count);
+}
+
+test "parser: declare and abstract property modifiers cannot be used with private identifiers" {
+    var s = try newTestSetup(
+        \\abstract class C {
+        \\  declare #field: number;
+        \\  abstract #other: number;
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 18019) count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count);
 }
 
 test "parser: empty and trailing variable declaration lists use upstream diagnostics" {
