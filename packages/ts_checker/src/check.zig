@@ -31415,6 +31415,18 @@ pub const Checker = struct {
                     self.typeNodeContainsInfer(c.true_branch) or
                     self.typeNodeContainsInfer(c.false_branch);
             },
+            .type_ref => {
+                // `Box<infer T>` carries the `infer T` placeholder
+                // inside its type-argument list. Without recursing into
+                // the args, a conditional's extends-side like `TBox
+                // extends Box<infer T>` would be treated as
+                // infer-free, so `evalConditional` runs without
+                // infer matching and the conditional never resolves.
+                for (hir_mod.typeRefArgs(self.hir, node)) |arg| {
+                    if (self.typeNodeContainsInfer(arg)) return true;
+                }
+                return false;
+            },
             else => return false,
         }
     }
@@ -31477,6 +31489,16 @@ pub const Checker = struct {
         }
         if (k == .keyof_type) {
             try self.walkAndRegisterInfer(hir_mod.keyofTypeOf(self.hir, node).operand);
+            return;
+        }
+        if (k == .type_ref) {
+            // `Box<infer T>` — register the `infer T` placeholder nested
+            // in the type-argument list so the true-branch (`T`)
+            // resolves through `lookupNarrow`. Keeps parity with the
+            // matching `.type_ref` arm in `typeNodeContainsInfer`.
+            for (hir_mod.typeRefArgs(self.hir, node)) |arg| {
+                try self.walkAndRegisterInfer(arg);
+            }
             return;
         }
         if (k == .conditional_type) {
@@ -31542,6 +31564,27 @@ pub const Checker = struct {
             const er = self.interner.signatureReturn(ext) orelse return true;
             const cr = self.interner.signatureReturn(check) orelse return true;
             return self.matchInfer(cr, er, subs);
+        }
+        if (ef.is_object_type and cf.is_object_type) {
+            // Structural object match: `Box<infer T>` lowers to the
+            // object `{ data: T }`, so matching it against a concrete
+            // `Box<{ x: string }>` (i.e. `{ data: { x: string } }`)
+            // must recurse member-by-member to bind `T -> { x: string
+            // }`. Without this, instantiating a distributive
+            // conditional like `BoxFactoryFactory<BoxTypes>` leaves the
+            // per-branch conditional unresolved and the call site
+            // wrongly reports TS2349. Each `ext` member must have a
+            // same-named `check` member whose type infer-matches.
+            // Snapshot `ext`'s members first: the recursive
+            // `objectMember` lookups can grow `object_member_pool` and
+            // invalidate the borrowed slice.
+            const ext_members = self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(ext)) catch return false;
+            defer self.gpa.free(ext_members);
+            for (ext_members) |em| {
+                const cm_t = self.interner.objectMember(check, em.name) orelse return false;
+                if (!try self.matchInfer(cm_t, em.type, subs)) return false;
+            }
+            return true;
         }
         // Default: identity.
         return check == ext;
@@ -77372,6 +77415,56 @@ test "checker: union of callables is callable, no TS2349" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.not_callable);
     }
+}
+
+test "checker: distributive conditional yielding union of callables is callable (typeParameterLeak)" {
+    // Mirrors `typeParameterLeak.ts` (no `.errors.txt` baseline →
+    // zero expected errors). `BoxFactoryFactory<BoxTypes>` is a
+    // conditional type distributed over the union `BoxTypes`,
+    // resolving `f` to a union of two anonymous call signatures.
+    // The call `f({ x: "", y: "" })` is therefore callable; we must
+    // not emit a spurious TS2349 ("This expression is not callable")
+    // — and certainly not three times.
+    const s = try newSetup(
+        \\interface Box<T> { data: T }
+        \\type BoxTypes = Box<{ x: string }> | Box<{ y: string }>;
+        \\type BoxFactoryFactory<TBox> = TBox extends Box<infer T> ? {
+        \\  (arg: T): BoxFactory<TBox> | undefined
+        \\} : never;
+        \\interface BoxFactory<A> {
+        \\  getBox(): A,
+        \\}
+        \\declare const f: BoxFactoryFactory<BoxTypes>;
+        \\const b = f({ x: "", y: "" })?.getBox();
+        \\if (b) {
+        \\  const x = b.data;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var not_callable_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.not_callable) not_callable_count += 1;
+    }
+    try T.expectEqual(@as(usize, 0), not_callable_count);
+}
+
+test "checker: genuinely non-callable value reports TS2349 exactly once" {
+    // Negative companion to the typeParameterLeak fix — a plain
+    // `number`-typed binding has no call signature, so `n()` must
+    // still produce TS2349, and exactly once (guards against the
+    // duplicate-emission regression the leak fix also addressed).
+    const s = try newSetup(
+        \\declare const n: number;
+        \\n();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var not_callable_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.not_callable) not_callable_count += 1;
+    }
+    try T.expectEqual(@as(usize, 1), not_callable_count);
 }
 
 test "checker: union with non-callable branch still flags TS2349" {
