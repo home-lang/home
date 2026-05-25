@@ -4409,6 +4409,7 @@ pub const Parser = struct {
                         try self.reportCodeAt(at.span.start, at.line, 1042, "'async' modifier cannot be used here.");
                     }
                 }
+                try self.reportAccessorModifierOnlyOnProperty(mods);
                 try self.reportInvalidClassElementModifier(mods);
                 _ = self.advance(); // consume `get` / `set`
                 const name_node = if (self.peek().kind == .open_bracket) blk: {
@@ -4731,6 +4732,7 @@ pub const Parser = struct {
                     // the same helper above. Mirrors upstream
                     // `parserConstructorDeclaration{3,4}` and
                     // `parserMemberFunctionDeclaration4`.
+                    try self.reportAccessorModifierOnlyOnProperty(mods);
                     try self.reportInvalidClassElementModifier(mods);
                     // Drop any TS2463 emitted on a body-less method
                     // overload — TS only fires it on implementation
@@ -4898,6 +4900,7 @@ pub const Parser = struct {
         is_abstract: bool = false,
         is_readonly: bool = false,
         is_accessor: bool = false,
+        accessor_token: ?Token = null,
         const_token: ?Token = null,
         invalid_class_element_modifier: ?Token = null,
         /// `declare` is valid on class *property* members (it tells the
@@ -5080,6 +5083,7 @@ pub const Parser = struct {
                             (isClassMemberNameStart(next_tok.kind) or next_tok.kind == .open_bracket))
                         {
                             mods.is_accessor = true;
+                            if (mods.accessor_token == null) mods.accessor_token = self.peek();
                         } else {
                             return mods;
                         }
@@ -5231,6 +5235,12 @@ pub const Parser = struct {
     fn reportOptionalAutoAccessor(self: *Parser, question_token: ?Token) ParseError!void {
         const bad = question_token orelse return;
         try self.reportCodeAt(bad.span.start, bad.line, 1276, "An 'accessor' property cannot be declared optional.");
+    }
+
+    fn reportAccessorModifierOnlyOnProperty(self: *Parser, mods: ClassModifiers) ParseError!void {
+        if (mods.accessor_token) |bad| {
+            try self.reportCodeAt(bad.span.start, bad.line, 1275, "'accessor' modifier can only appear on a property declaration.");
+        }
     }
 
     fn reportPrivateIdentifierModifierDiagnostics(self: *Parser, mods: ClassModifiers, is_property: bool) ParseError!void {
@@ -5511,6 +5521,7 @@ pub const Parser = struct {
                 },
             );
             is_method = true;
+            try self.reportAccessorModifierOnlyOnProperty(mods);
         } else {
             const optional_member_token: ?Token = if (self.peek().kind == .question) self.advance() else null;
             const definite_assignment_token: ?Token = if (self.peek().kind == .bang) self.advance() else null;
@@ -17705,6 +17716,21 @@ test "parser: optional auto-accessor reports TS1276" {
         }
     }
     try T.expectEqual(@as(u32, 2), count);
+}
+
+test "parser: accessor modifier on method reports TS1275" {
+    var s = try newTestSetup("class Foo { accessor m() {} accessor [\"n\"]() {} accessor get value() { return 1; } }");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var count: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1275) {
+            count += 1;
+            try T.expectEqualStrings("'accessor' modifier can only appear on a property declaration.", d.message);
+            try T.expect(std.mem.eql(u8, s.parser.source[d.pos .. d.pos + 8], "accessor"));
+        }
+    }
+    try T.expectEqual(@as(u32, 3), count);
 }
 
 // ====================================================================
