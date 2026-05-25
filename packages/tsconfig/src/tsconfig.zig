@@ -283,6 +283,10 @@ pub const TsConfig = struct {
     exclude: ?[][]const u8,
     /// `references`: project-references entries. Phase 9 fills in.
     references: [][]const u8,
+    /// Unknown keys seen inside top-level `typeAcquisition`. TypeScript
+    /// validates that object with its own option table rather than
+    /// treating these as generic unknown root keys.
+    unknown_type_acquisition_options: [][]const u8,
 
     /// Walk the resolved config and report cross-field consistency
     /// issues that the parser accepts but `tsc` would reject during
@@ -332,6 +336,16 @@ pub const TsConfig = struct {
                     .field = "files",
                 });
             }
+        }
+
+        for (self.unknown_type_acquisition_options) |option| {
+            const msg = try std.fmt.allocPrint(gpa, "Unknown type acquisition option '{s}'.", .{option});
+            try diags.append(gpa, .{
+                .code = 17010,
+                .message = msg,
+                .owns_message = true,
+                .field = "typeAcquisition",
+            });
         }
 
         const strict_null_checks_enabled = co.strict_null_checks orelse (co.strict == true);
@@ -475,6 +489,7 @@ pub fn parseString(
         .include = null,
         .exclude = null,
         .references = &.{},
+        .unknown_type_acquisition_options = &.{},
     };
 
     // extends: string or [string]
@@ -523,6 +538,11 @@ pub fn parseString(
             cfg.references = out[0..n];
         }
     }
+    if (root.get("typeAcquisition")) |ta_v| {
+        if (ta_v.asObject()) |ta| {
+            cfg.unknown_type_acquisition_options = try collectUnknownTypeAcquisitionOptions(arena, ta);
+        }
+    }
     if (root.get("compilerOptions")) |co_v| {
         if (co_v.asObject()) |co| {
             try fillCompilerOptions(arena, &cfg.compiler_options, co);
@@ -539,6 +559,31 @@ fn parseStringArray(arena: std.mem.Allocator, v: jsonc.Value) ![][]const u8 {
     for (arr) |item| {
         if (item.asString()) |s| {
             out[n] = s;
+            n += 1;
+        }
+    }
+    return out[0..n];
+}
+
+fn collectUnknownTypeAcquisitionOptions(arena: std.mem.Allocator, obj: jsonc.Value.Object) ![][]const u8 {
+    const allowed = comptime [_][]const u8{
+        "enable",
+        "include",
+        "exclude",
+        "disableFilenameBasedTypeAcquisition",
+    };
+    const out = try arena.alloc([]const u8, obj.keys.len);
+    var n: usize = 0;
+    for (obj.keys) |key| {
+        var known = false;
+        inline for (allowed) |name| {
+            if (std.mem.eql(u8, key, name)) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) {
+            out[n] = key;
             n += 1;
         }
     }
@@ -739,6 +784,9 @@ pub fn merge(arena: std.mem.Allocator, base: TsConfig, child: TsConfig) !TsConfi
     if (child.exclude) |f| merged.exclude = f;
     if (child.references.len > 0) merged.references = child.references;
     if (child.extends.len > 0) merged.extends = child.extends;
+    if (child.unknown_type_acquisition_options.len > 0) {
+        merged.unknown_type_acquisition_options = child.unknown_type_acquisition_options;
+    }
     merged.has_extends = base.has_extends or child.has_extends;
     return merged;
 }
@@ -1168,6 +1216,46 @@ test "tsconfig.validate: empty files list is allowed with references or extends"
     const ext_diags = try with_extends.validate(t.allocator);
     defer freeValidationDiagnostics(t.allocator, ext_diags);
     try t.expectEqual(@as(usize, 0), ext_diags.len);
+}
+
+test "tsconfig.validate: unknown typeAcquisition keys report TS17010" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "typeAcquisition": {
+        \\    "enableAutoDiscovy": true,
+        \\    "enable": true,
+        \\    "include": ["jquery"],
+        \\    "exclude": ["node"],
+        \\    "disableFilenameBasedTypeAcquisition": false
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), diags.len);
+    try t.expectEqual(@as(u32, 17010), diags[0].code);
+    try t.expectEqualStrings("Unknown type acquisition option 'enableAutoDiscovy'.", diags[0].message);
+    try t.expectEqualStrings("typeAcquisition", diags[0].field);
+}
+
+test "tsconfig.validate: known typeAcquisition keys are accepted" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "typeAcquisition": {
+        \\    "enable": false,
+        \\    "include": ["lodash"],
+        \\    "exclude": ["mocha"],
+        \\    "disableFilenameBasedTypeAcquisition": true
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 0), diags.len);
 }
 
 test "tsconfig.validate: dependent options report TS5052" {
