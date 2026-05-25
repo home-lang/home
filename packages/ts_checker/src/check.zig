@@ -47151,6 +47151,26 @@ pub const Checker = struct {
         return tp.constraint;
     }
 
+    /// Resolve a type parameter to its base constraint (apparent type)
+    /// for operator-operand validity checks. tsc's
+    /// `checkBinaryLikeExpression` types operands via `getApparentType`,
+    /// so a type parameter `T extends number` behaves like `number` for
+    /// the `+` validity decision — the operator is applied to the
+    /// constraint, not the bare parameter. Constraints can chain
+    /// (`<U extends T, T extends number>`), so follow the chain; a small
+    /// depth cap guards against malformed cyclic payloads. Returns the
+    /// input unchanged when `t` is not a (constrained) type parameter.
+    fn operandApparentType(self: *Checker, t: TypeId) TypeId {
+        var cur = t;
+        var depth: usize = 0;
+        while (depth < 16) : (depth += 1) {
+            const constraint = self.typeParameterConstraint(cur) orelse return cur;
+            if (constraint == cur) return cur;
+            cur = constraint;
+        }
+        return cur;
+    }
+
     /// TS2344: Type 'X' does not satisfy the constraint 'Y'.
     /// Conservative: only emit when both `arg_t` and the parameter's
     /// constraint render as simple, fully-resolved type names AND the
@@ -50763,10 +50783,19 @@ pub const Checker = struct {
                 //   - additionOperatorWithUndefinedValueAndValidOperator
                 //   - additionOperatorWithOnlyNullValueOrUndefinedValue
                 //   - additionOperatorWithNullValueAndInvalidOperator
-                const add_string_like = self.typeMaybeStringLike(lhs) or self.typeMaybeStringLike(rhs);
-                const add_any_like = self.typeIsAnyLike(lhs) or self.typeIsAnyLike(rhs);
-                var lhs_eff = lhs;
-                var rhs_eff = rhs;
+                // Type-parameter operands are typed by their apparent
+                // type for the `+` validity decision (tsc's
+                // `checkBinaryLikeExpression` uses `getApparentType`):
+                // `T extends number` concatenates/adds like `number`,
+                // `S extends string` like `string`. Resolving the base
+                // constraint here keeps a genuinely-invalid constraint
+                // (e.g. `T extends boolean`/`object`) reporting TS2365.
+                const lhs_app = self.operandApparentType(lhs);
+                const rhs_app = self.operandApparentType(rhs);
+                const add_string_like = self.typeMaybeStringLike(lhs_app) or self.typeMaybeStringLike(rhs_app);
+                const add_any_like = self.typeIsAnyLike(lhs_app) or self.typeIsAnyLike(rhs_app);
+                var lhs_eff = lhs_app;
+                var rhs_eff = rhs_app;
                 if (!add_string_like and !add_any_like and !self.checking_update_assignment_target) {
                     // After checkNonNullType, a literal null/undefined
                     // operand contributes the non-nullable variant of
@@ -50786,15 +50815,15 @@ pub const Checker = struct {
                         rhs_eff = types.Primitive.any;
                     }
                     if (self.strict_flags.strict_null_checks and
-                        lhs_eff == lhs and
-                        self.typeIsPossiblyNullishStrict(lhs))
+                        lhs_eff == lhs_app and
+                        self.typeIsPossiblyNullishStrict(lhs_app))
                     {
                         try self.reportRelationalNullishOperand(b.lhs, lhs);
                         lhs_eff = types.Primitive.any;
                     }
                     if (self.strict_flags.strict_null_checks and
-                        rhs_eff == rhs and
-                        self.typeIsPossiblyNullishStrict(rhs))
+                        rhs_eff == rhs_app and
+                        self.typeIsPossiblyNullishStrict(rhs_app))
                     {
                         try self.reportRelationalNullishOperand(b.rhs, rhs);
                         rhs_eff = types.Primitive.any;
@@ -84077,6 +84106,45 @@ test "checker: TS2365 renders type-rich form for boolean += number" {
         }
     }
     try T.expect(saw_rich);
+}
+
+test "checker: TS2365 not emitted for '+' on constraint-typed type parameters" {
+    // Mirrors `propertyAccessOnTypeParameterWithConstraints.ts`
+    // (zero baseline diagnostics): tsc types operands of `+` via
+    // their apparent type, so a type parameter resolves to its base
+    // constraint. `T extends number` adds like `number`, `S extends
+    // string` concatenates like `string`, and a chained
+    // `U extends T, T extends number` also resolves to `number`.
+    const s = try newSetup(
+        \\function f<T extends number>(x: T) { return x + 1; }
+        \\function g<S extends string>(y: S) { return y + "z"; }
+        \\function h<T extends number, U extends T>(u: U) { return u + 2; }
+        \\function k<N extends number>(a: N, b: N) { return a + b; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.operator_cannot_be_applied);
+    }
+}
+
+test "checker: TS2365 still fires for '+' on non-arithmetic constrained type parameters" {
+    // Negative guard: the apparent-type resolution must not weaken
+    // TS2365 for constraints that genuinely cannot use `+`. tsc
+    // reports `Operator '+' cannot be applied` for `T extends boolean`
+    // and `T extends object` operands (neither is string- nor
+    // number-like after resolving to the constraint).
+    const s = try newSetup(
+        \\function f<T extends boolean>(x: T) { return x + 1; }
+        \\function g<T extends object>(y: T) { return y + 1; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.operator_cannot_be_applied) count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count);
 }
 
 test "checker: TS2389 anchors on the implementation's name identifier" {
