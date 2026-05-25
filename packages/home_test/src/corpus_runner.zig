@@ -21,6 +21,16 @@ const js_process_platform = switch (builtin.os.tag) {
     else => @tagName(builtin.os.tag),
 };
 
+const js_process_arch = switch (builtin.cpu.arch) {
+    .x86_64 => "x64",
+    .aarch64 => "arm64",
+    .x86 => "ia32",
+    .arm => "arm",
+    .riscv64 => "riscv64",
+    .powerpc64, .powerpc64le => "ppc64",
+    else => @tagName(builtin.cpu.arch),
+};
+
 pub const Subset = enum {
     minimal_js,
 
@@ -172,6 +182,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/web/fetch/blob-array-fast-path.test.ts",
     "regression/issue/02368.test.ts",
     "js/web/request/request.test.ts",
+    "cli/install/architecture-match.test.ts",
     "js/web/fetch/body-async-iterator.test.ts",
     "js/web/fetch/fetch-abort-queued.test.ts",
     "js/web/fetch/fetch-abort-stream-body.test.ts",
@@ -336,6 +347,7 @@ pub const minimal_js_files = [_][]const u8{
 
 const harness_prelude =
     "globalThis.__home_process_platform = \"" ++ js_process_platform ++ "\";\n" ++
+    "globalThis.__home_process_arch = \"" ++ js_process_arch ++ "\";\n" ++
     \\const __home_real_Date = globalThis.Date;
     \\let __home_fake_timers_active = false;
     \\let __home_fake_timers_now = 0;
@@ -1731,6 +1743,7 @@ const harness_prelude =
     \\if (!process.env) process.env = {};
     \\if (!process.execPath) process.execPath = "home";
     \\if (!process.platform) process.platform = globalThis.__home_process_platform || "unknown";
+    \\if (!process.arch) process.arch = globalThis.__home_process_arch || "unknown";
     \\process.versions.bun = Bun.version;
     \\process.revision = Bun.revision;
     \\process.__home_events = process.__home_events || Object.create(null);
@@ -5881,6 +5894,20 @@ const harness_prelude =
     \\  }
     \\  return highlightRange(input);
     \\}
+    \\function __home_platform_list_match(list, current) {
+    \\  const values = Array.isArray(list) ? list : [];
+    \\  if (values.length === 0) return true;
+    \\  const currentText = String(current);
+    \\  for (const value of values) {
+    \\    const text = String(value);
+    \\    if (text.startsWith("!") && text.slice(1) === currentText) return false;
+    \\  }
+    \\  for (const value of values) {
+    \\    const text = String(value);
+    \\    if (text === "any" || text === currentText || text.startsWith("!")) return true;
+    \\  }
+    \\  return false;
+    \\}
     \\globalThis.__home_modules["bun:internal-for-testing"] = {
     \\  escapeRegExp(value) {
     \\    return __home_escape_regexp(value, false);
@@ -5893,6 +5920,12 @@ const harness_prelude =
     \\  },
     \\  highlightJavaScript(value) {
     \\    return __home_highlight_javascript(value);
+    \\  },
+    \\  isArchitectureMatch(values) {
+    \\    return __home_platform_list_match(values, process.arch);
+    \\  },
+    \\  isOperatingSystemMatch(values) {
+    \\    return __home_platform_list_match(values, process.platform);
     \\  },
     \\  getDevServerDeinitCount() {
     \\    if (typeof globalThis.__home_getDevServerDeinitCountNative !== "function") __home_unsupported("Bun Bake DevServer deinit counter native bridge is not installed");
@@ -8390,6 +8423,14 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { getDevServerDeinitCount } = globalThis.__home_import(\"bun:internal-for-testing\");",
         },
         .{
+            .needle = "import { isArchitectureMatch, isOperatingSystemMatch } from \"bun:internal-for-testing\";",
+            .replacement = "const { isArchitectureMatch, isOperatingSystemMatch } = globalThis.__home_import(\"bun:internal-for-testing\");",
+        },
+        .{
+            .needle = "import \"harness\";",
+            .replacement = "",
+        },
+        .{
             .needle = "import { fullGC } from \"bun:jsc\";",
             .replacement = "const { fullGC } = globalThis.__home_import(\"bun:jsc\");",
         },
@@ -9375,6 +9416,8 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "escapeRegExpForPackageNameMatching(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "escapePowershell(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "highlightJavaScript(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "isArchitectureMatch(values)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "isOperatingSystemMatch(values)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toUTF16AllocSentinel(input)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "getDevServerDeinitCount()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_getDevServerDeinitCountNative()") != null);

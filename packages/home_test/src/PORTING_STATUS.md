@@ -805,6 +805,11 @@ The copied `js/web/request/request.test.ts` fixture now passes as `4`
 tests through the Web Request bootstrap model. It covers undefined and
 null optional fields, cloned string bodies, stream-backed request bodies,
 and unlocked `body.locked` state before and after `request.clone()`.
+The copied `cli/install/architecture-match.test.ts` fixture now passes
+as `30` tests through the Pantry-backed platform matcher model. It
+covers Bun's `isArchitectureMatch` and `isOperatingSystemMatch`
+semantics for `any`, current CPU/OS positives, current negations, and
+non-current negation fallbacks.
 The copied `js/web/fetch/blob-cow.test.ts` fixture now passes as `1`
 test through the Web Blob bootstrap model. It covers byte-backed
 construction from typed arrays, copy-on-write `arrayBuffer()` reads,

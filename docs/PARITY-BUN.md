@@ -297,6 +297,8 @@ FormData-backed `Request` multipart serialization with unquoted
 boundary parameters,
 Web `Response.clone()` and `Request` clone construction preserving
 method, headers, body text, and unlocked stream-backed bodies,
+the Bun install `architecture-match` helper corpus through Pantry's
+Bun-compatible CPU/OS package-eligibility matcher,
 `import.meta.resolve` / `resolveSync` bad-parent throw behavior,
 `jest.resetAllMocks` / `mockReturnThis`, `node:path` isAbsolute and
 zero-length string behavior plus basename/extname/normalize/join/dirname,
@@ -337,7 +339,7 @@ register zero tests. Native ESM `bun:test` registration remains blocked
 on a narrow JSC module-loader bridge, so this is deliberately not the
 acceptance gate.
 
-Latest measured subset run: `265` files, `1,158` passed, `0` failed,
+Latest measured subset run: `266` files, `1,188` passed, `0` failed,
 `45` todo.
 
 The unfiltered command `home test packages/runtime/test/bun-corpus` now
