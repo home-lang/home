@@ -41,10 +41,7 @@ pub fn CowSliceZ(T: type, comptime sentinel: ?T) type {
         /// NOTE: `ptr` is const if data is borrowed.
         ptr: [*]T,
         flags: packed struct(usize) {
-            len: @Type(.{ .int = .{
-                .bits = @bitSizeOf(usize) - 1,
-                .signedness = .unsigned,
-            } }),
+            len: std.meta.Int(.unsigned, @bitSizeOf(usize) - 1),
             is_owned: bool,
         },
         debug: if (cow_str_assertions) ?*DebugData else void,
@@ -193,7 +190,7 @@ pub fn CowSliceZ(T: type, comptime sentinel: ?T) type {
         /// if the Cow is already owned.
         pub fn toOwned(self: *Self, allocator: Allocator) Allocator.Error!void {
             if (!self.isOwned()) {
-                self.intoOwned(allocator);
+                try self.intoOwned(allocator);
             }
         }
 
@@ -299,7 +296,7 @@ test CowSlice {
     try expect(!borrow.isOwned());
     try expectEqualStrings(borrow.slice(), "hello");
 
-    str.toOwned(allocator);
+    try str.toOwned(allocator);
     try expect(str.isOwned());
     try expectEqualStrings(str.slice(), "hello");
 

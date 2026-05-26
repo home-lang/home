@@ -521,7 +521,12 @@ pub const TagValueFalse = (OtherTag | BoolTag) | @"false";
 pub const TagValueTrue = (OtherTag | BoolTag) | @"true";
 pub const TagValueUndefined = OtherTag | UndefinedTag;
 pub const TagValueNull = OtherTag;
-pub const NotCellMask = NumberTag | OtherTag;
+// `NumberTag` is 0xfffe000000000000 (a 64-bit value) and `OtherTag`
+// is a `c_int`. Zig 0.17 stops inferring widening implicit-int from
+// the result type and falls back to `c_int` for the bitwise OR,
+// which can't represent the high bits — annotate the result as
+// `u64` so the comptime fold happens at the right width.
+pub const NotCellMask: u64 = @as(u64, NumberTag) | @as(u64, @as(c_uint, @bitCast(OtherTag)));
 pub const MAX_INT32 = 2147483648;
 pub const MAX_INT52 = 9007199254740991;
 pub const NumberTag = 0xfffe000000000000;

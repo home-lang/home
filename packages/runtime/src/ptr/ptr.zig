@@ -8,10 +8,9 @@
 //! The `ptr` module contains smart pointer types that are used throughout Bun.
 pub const Cow = @import("./Cow.zig").Cow;
 
-// TODO(phase-12.1): port CowSlice / CowSliceZ / CowString in a follow-up batch.
-// pub const CowSlice = @import("./CowSlice.zig").CowSlice;
-// pub const CowSliceZ = @import("./CowSlice.zig").CowSliceZ;
-// pub const CowString = CowSlice(u8);
+pub const CowSlice = @import("./CowSlice.zig").CowSlice;
+pub const CowSliceZ = @import("./CowSlice.zig").CowSliceZ;
+pub const CowString = CowSlice(u8);
 
 // TODO(phase-12.1): port owned / Owned / OwnedIn / DynamicOwned in a follow-up batch.
 // pub const owned = @import("./owned.zig");

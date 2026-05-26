@@ -96,6 +96,29 @@ const ResolverRealFs = struct {
     }
 };
 
+/// True if `path` names an existing regular file. Used by the explicit
+/// `--project` existence checks (TS5058 / TS5081).
+fn fileExistsOnDisk(gpa: std.mem.Allocator, path: []const u8) bool {
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+    var file = cwd.openFile(io, path, .{}) catch return false;
+    file.close(io);
+    return true;
+}
+
+/// True if `path` names an existing directory.
+fn directoryExistsOnDisk(gpa: std.mem.Allocator, path: []const u8) bool {
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+    var dir = cwd.openDir(io, path, .{}) catch return false;
+    dir.close(io);
+    return true;
+}
+
 const CheckerResolverAdapter = struct {
     resolver: *ts_resolver.Resolver,
 
@@ -139,6 +162,17 @@ pub fn main(init: std.process.Init) !void {
     };
     defer gpa.free(opts.files);
 
+    // TS5042: `--project` (or `-p`) cannot be combined with positional
+    // source files. Mirrors upstream `internal/execute/tsc.go`.
+    if (opts.project != null and opts.files.len > 0) {
+        const msg = projectMixedWithSourceFilesDiagnostic(gpa) catch {
+            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+        };
+        defer gpa.free(msg);
+        std.debug.print("{s}\n", .{msg});
+        std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+    }
+
     // Resolve tsconfig BEFORE dispatch so a discovered tsconfig
     // counts as input for the "no files" check inside dispatch.
     // Explicit `--project <path>` wins; otherwise we walk upward
@@ -148,7 +182,32 @@ pub fn main(init: std.process.Init) !void {
     var cfg_path_buf: ?[]u8 = null;
     defer if (cfg_path_buf) |b| gpa.free(b);
     var loaded_cfg: ?tsconfig_mod.TsConfig = null;
+    const explicit_project = opts.project;
     const should_load_config = opts.project != null or opts.files.len == 0 or opts.show_config;
+
+    // For an explicit `--project`, validate existence the way upstream
+    // does before resolving the config path: a path that names an
+    // existing directory must contain a `tsconfig.json` (else TS5081);
+    // a non-directory path is treated as a file and must exist (else
+    // TS5058).
+    if (explicit_project) |proj| {
+        if (directoryExistsOnDisk(gpa, proj)) {
+            const candidate = try std.fmt.allocPrint(gpa, "{s}/tsconfig.json", .{proj});
+            defer gpa.free(candidate);
+            if (!fileExistsOnDisk(gpa, candidate)) {
+                const msg = try cannotFindTsConfigAtCurrentDirectoryDiagnostic(gpa, candidate);
+                defer gpa.free(msg);
+                std.debug.print("{s}\n", .{msg});
+                std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+            }
+        } else if (!fileExistsOnDisk(gpa, proj)) {
+            const msg = try specifiedPathDoesNotExistDiagnostic(gpa, proj);
+            defer gpa.free(msg);
+            std.debug.print("{s}\n", .{msg});
+            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+        }
+    }
+
     if (should_load_config) {
         if (resolveTsConfigPath(gpa, opts.project) catch null) |path| {
             opts.project = path;
@@ -842,6 +901,40 @@ fn effectiveExcludeDiagnosticPatterns(
     return out.items;
 }
 
+/// TS5042: `--project` cannot be combined with positional source files.
+/// Faithful port of the check in upstream `internal/execute/tsc.go`.
+fn projectMixedWithSourceFilesDiagnostic(gpa: std.mem.Allocator) ![]u8 {
+    const code: u32 = 5042;
+    return try std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: Option 'project' cannot be mixed with source files on a command line.",
+        .{code},
+    );
+}
+
+/// TS5058: an explicit `--project` path (treated as a file because it
+/// isn't an existing directory) does not exist on disk.
+fn specifiedPathDoesNotExistDiagnostic(gpa: std.mem.Allocator, file_or_directory: []const u8) ![]u8 {
+    const code: u32 = 5058;
+    return try std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: The specified path does not exist: '{s}'.",
+        .{ code, file_or_directory },
+    );
+}
+
+/// TS5081: `--project` named an existing directory but it has no
+/// `tsconfig.json`. (Upstream uses the "current directory" message here
+/// with the resolved `tsconfig.json` path as the argument.)
+fn cannotFindTsConfigAtCurrentDirectoryDiagnostic(gpa: std.mem.Allocator, config_file_name: []const u8) ![]u8 {
+    const code: u32 = 5081;
+    return try std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: Cannot find a tsconfig.json file at the current directory: {s}.",
+        .{ code, config_file_name },
+    );
+}
+
 fn noInputsFoundInConfigDiagnostic(
     gpa: std.mem.Allocator,
     config_path: []const u8,
@@ -953,6 +1046,33 @@ fn resolveTsConfigPath(gpa: std.mem.Allocator, project: ?[]const u8) !?[]u8 {
         cur = new_cur;
     }
     return null;
+}
+
+test "tsc_main: TS5042 project mixed with source files diagnostic" {
+    const msg = try projectMixedWithSourceFilesDiagnostic(std.testing.allocator);
+    defer std.testing.allocator.free(msg);
+    try std.testing.expectEqualStrings(
+        "error TS5042: Option 'project' cannot be mixed with source files on a command line.",
+        msg,
+    );
+}
+
+test "tsc_main: TS5058 specified path does not exist diagnostic" {
+    const msg = try specifiedPathDoesNotExistDiagnostic(std.testing.allocator, "./missing.json");
+    defer std.testing.allocator.free(msg);
+    try std.testing.expectEqualStrings(
+        "error TS5058: The specified path does not exist: './missing.json'.",
+        msg,
+    );
+}
+
+test "tsc_main: TS5081 cannot find tsconfig at current directory diagnostic" {
+    const msg = try cannotFindTsConfigAtCurrentDirectoryDiagnostic(std.testing.allocator, "/repo/sub/tsconfig.json");
+    defer std.testing.allocator.free(msg);
+    try std.testing.expectEqualStrings(
+        "error TS5081: Cannot find a tsconfig.json file at the current directory: /repo/sub/tsconfig.json.",
+        msg,
+    );
 }
 
 test "tsc_main: TS18003 no-input config diagnostic uses include and exclude specs" {

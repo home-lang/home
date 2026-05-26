@@ -26,6 +26,10 @@ pub fn errorln(comptime fmt: []const u8, args: anytype) void {
     std.debug.print(fmt ++ "\n", args);
 }
 
+pub fn debugWarn(comptime fmt: []const u8, args: anytype) void {
+    std.debug.print(fmt ++ "\n", args);
+}
+
 pub fn flush() void {
     // The upstream `Output.flush()` reaches into an internal buffered
     // writer. `std.debug.print` is already line-buffered to stderr, so

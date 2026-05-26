@@ -35,6 +35,15 @@
 
 const std = @import("std");
 
+pub const Worker = struct {
+    pub fn onProcessExit(this: *Worker, process: anytype, status: anytype, rusage: anytype) void {
+        _ = this;
+        _ = process;
+        _ = status;
+        _ = rusage;
+    }
+};
+
 test "ParallelRunner docs facade compiles standalone" {
     // No runtime surface yet — the test exists so the file participates in
     // `zig test` and the banner comments above stay live as compile-checked

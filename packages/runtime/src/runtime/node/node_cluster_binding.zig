@@ -99,7 +99,7 @@ pub const InternalMsgHolder = struct {
     callbacks: std.AutoArrayHashMapUnmanaged(i32, jsc.Strong.Optional) = .{},
     worker: jsc.Strong.Optional = .empty,
     cb: jsc.Strong.Optional = .empty,
-    messages: std.ArrayListUnmanaged(jsc.Strong.Optional) = .{},
+    messages: std.ArrayListUnmanaged(jsc.Strong.Optional) = .empty,
 
     pub fn isReady(this: *InternalMsgHolder) bool {
         return this.worker.has() and this.cb.has();

@@ -25,10 +25,13 @@ pub const EventLoopKind = enum(u8) {
     mini,
 };
 
-/// Opaque placeholder for the JS event loop (`jsc.EventLoop`). Upstream the
+/// Sized placeholder for the JS event loop (`jsc.EventLoop`). Upstream the
 /// real type carries `virtual_machine`, `global`, `signal_handler`, and the
 /// uSockets loop — all of which re-attach with `VirtualMachine` in 12.2.
-pub const EventLoop = opaque {};
+pub const EventLoop = struct {
+    virtual_machine: *home_rt.jsc.VirtualMachine = undefined,
+    global: *home_rt.jsc.JSGlobalObject = undefined,
+};
 
 /// Opaque placeholder for the headless mini event loop (`jsc.MiniEventLoop`).
 /// Used by build / install commands when no JS runtime is around.
@@ -83,7 +86,7 @@ test "EventLoopKind tag values" {
 test "EventLoopHandle.cast returns the right pointer" {
     // We can't materialize an opaque on the stack, but a dangling `*EventLoop`
     // is enough to prove the union round-trips and `cast()` dispatches.
-    const fake: *EventLoop = @ptrFromInt(0xdead_beef);
+    const fake: *EventLoop = @ptrFromInt(0xdead_bee0);
     const h: EventLoopHandle = .{ .js = fake };
     try std.testing.expectEqual(fake, h.cast(.js));
 }

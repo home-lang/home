@@ -32,14 +32,18 @@ pub fn register(this: *ObjectURLRegistry, vm: *jsc.VirtualMachine, blob: *const 
 pub fn singleton() *ObjectURLRegistry {
     const Singleton = struct {
         pub var registry: ObjectURLRegistry = undefined;
-        pub var once = std.once(get);
+        // `std.once` was removed in Zig 0.17. `bun.once` is the
+        // home_rt-side replacement (in `bun.zig`); its `call` takes
+        // an args tuple, hence the `.{}` for the zero-arg
+        // initializer.
+        pub var once = bun.once(get);
 
         fn get() void {
             registry = .{};
         }
     };
 
-    Singleton.once.call();
+    Singleton.once.call(.{});
 
     return &Singleton.registry;
 }

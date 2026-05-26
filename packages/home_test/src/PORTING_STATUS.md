@@ -22,7 +22,9 @@ file/run result model; `runner.zig` owns the adapter-neutral
 prepared-file and file-run contracts; `adapters/jsc_bootstrap.zig` owns
 the current JSC bootstrap execution adapter plus the native host-call
 bridge used by bootstrap `Bun.spawnSync`; `corpus_runner.zig` owns the
-explicit `--bun-corpus-native-subset=minimal-js` allowlist, single-file
+explicit `--bun-corpus-native-subset=minimal-js` allowlist, the
+`--bun-corpus-native-subset=bundler-core-itbundled` bundler tranche,
+single-file
 corpus execution, source preparation, and summary aggregation. The full
 corpus gate now walks all discovered Bun test files through the Home JSC
 bootstrap and fails on real unsupported/failing files instead of the old
@@ -30,6 +32,66 @@ synthetic `native-js-test-runner-missing` blocker; delegated
 `home test <fixture>` corpus descendants also re-enter that bootstrap
 instead of Home's parser. It remains red until the native `bun:test` port
 and JSC host-call bridge close the unsupported surface.
+
+The `bundler-core-itbundled` tranche now executes all five selected
+bundler files through the bootstrap layer and passes: 295 passed, 0
+failed, 16 upstream todo on 2026-05-26. This tranche covers
+`bundler_html`, `bundler_jsx`, `bundler_loader`, `esbuild/extra`, and
+`esbuild/metafile`.
+
+The `bundler-transpiler-bootstrap` tranche currently executes fourteen
+ordinary bundler/transpiler files and passes: 137 passed, 0 failed, 0
+todo on 2026-05-26. This green evidence covers `bundler_feature_flag`,
+`plugin-error-nested-throw`, `transpiler/decorator-metadata`,
+`transpiler/es-decorators`, `transpiler/preserve-use-strict-cjs`,
+`transpiler/template-literal`, `transpiler/function-tostring-require`,
+`transpiler/export-default`, and `transpiler/scope-mismatch-panic`, plus
+`transpiler/bun-pragma`, `transpiler/property`,
+`transpiler/transpiler-stack-overflow`, `transpiler/jsx-production`, and
+`transpiler/runtime-transpiler`.
+
+Bundler corpus audit on 2026-05-26: the copied corpus has 89
+`bundler/**/*.test.{ts,js}` files. Current green evidence covers 80
+unique files: 66 unique bundler files inside `minimal-js`, 5 more in
+`bundler-core-itbundled`, and 9 more unique files from the executable
+14-file `bundler-transpiler-bootstrap` tranche. The copied Bun corpus is
+exact against upstream Bun for `.test.ts` / `.test.js` files in this
+worktree: 1720 upstream paths, 1720 copied paths, zero missing, and zero
+extras. The remaining exact 9-file frontier after the transpiler
+tranche is:
+
+| Tranche | Files | First blocker surface |
+|---|---|---|
+| Decorator transpiler semantics | `bundler/transpiler/decorators.test.ts`, `bundler/transpiler/es-decorators-esbuild.test.ts` | Legacy and standard decorator lowering; next observed blockers are unsupported module classification and parse-time syntax before execution |
+| Transpiler API and macro surface | `bundler/transpiler/macro-test.test.ts`, `bundler/transpiler/transpiler.test.js` | `Bun.Transpiler`, macro imports, and broader transpiler API behavior |
+| Resolver cache behavior | `bundler/resolver/cache-invalidation.test.ts`, `bundler/resolver/cache-node-compat.test.ts`, `bundler/resolver/cache-runtime.test.ts` | Repeated in-process `Bun.build()` / `require()` cache invalidation, filesystem mutation, Node-vs-Bun subprocess comparison |
+| CLI build surface | `bundler/cli.test.ts` | `bun build` subprocess matrix: compile/outfile/sourcemap/tsconfig override/package install paths |
+| Native plugin final | `bundler/native-plugin.test.ts` | Native plugin ABI, node-gyp build, `.node` loading, `onBeforeParse`, crash-name behavior |
+
+Next source-module work for bundler should replace the
+`__home_expect_bundled` bootstrap stub with a real `itBundled` adapter
+and wire copied Bun substrates in `packages/bundler/src/`: `options.zig`,
+`transpiler.zig`, `bundle_v2.zig`, `LinkerContext.zig`,
+`OutputFile.zig`, `HTMLImportManifest.zig`, `HTMLScanner.zig`,
+`ParseTask.zig`, `LinkerGraph.zig`, and the `linker_context/*`
+output/metafile/HTML/CSS chunk helpers currently present under
+`packages/runtime/src/bundler/linker_context/`.
+
+Runtime build audit on 2026-05-26:
+`./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false
+--summary all` now passes with 1380 / 1383 tests passed and 3 skipped.
+This is compile-frontier substrate, not JS-callable parity credit: it
+wires missing Bun/JSC aliases, parked subprocess owners,
+CowSlice/CowString exposure, Zig 0.17 compatibility shims, and test-only
+C++ extern stubs for the non-JSC build gate.
+
+Source-presence audit on 2026-05-26: `/tmp/home-bun-parity-main` is now
+source-complete against the pinned Bun checkout. The 72 previously
+missing paths were copied from upstream `src/**/*.zig` into
+`packages/runtime/src/**/*.zig`, preserving relative paths. The exact
+list lives in `docs/BUN_ZIG_SOURCE_AUDIT_2026-05-26.md`. These are raw
+source-copy backlog until Home import rewrites, Zig 0.17 cleanup, build
+wiring, and tests land.
 
 `zig build test -Dfilter=home_test_bun_tier0` now build-checks the first
 copied Bun Zig tier under pantry-provided Zig 0.17-dev:

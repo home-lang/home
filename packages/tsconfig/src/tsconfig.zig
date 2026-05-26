@@ -272,6 +272,25 @@ pub const ExtraEntry = struct {
     value: jsonc.Value,
 };
 
+/// Diagnostic captured by the parser (`fillCompilerOptions`) for an
+/// option whose *value* is malformed (wrong JSON type). Stored on the
+/// parsed `TsConfig` so `validate` can re-emit it with an owned message
+/// rather than aborting the entire parse on the first bad value — which
+/// matches `tsc`, which keeps parsing the rest of the config.
+pub const OptionParseDiagnostic = struct {
+    code: u32,
+    /// Compiler option name (`{0}`), e.g. `"target"`.
+    option: []const u8,
+    /// Expected value type rendered into the message (`{1}` for
+    /// TS5024). Empty for codes that don't use it.
+    expected_type: []const u8 = "",
+    /// For TS5064: the offending substitution string (`{0}`), the
+    /// pattern it belongs to (`{1}`), and the JSON type we got (`{2}`).
+    substitution: []const u8 = "",
+    pattern: []const u8 = "",
+    got_type: []const u8 = "",
+};
+
 pub const TsConfig = struct {
     /// The path this config came from (set by the loader; empty when
     /// parsed via `parseString`).
@@ -297,6 +316,15 @@ pub const TsConfig = struct {
     /// validates that object with its own option table rather than
     /// treating these as generic unknown root keys.
     unknown_type_acquisition_options: [][]const u8,
+    /// Diagnostics recorded during `parseString` that are best surfaced
+    /// alongside cross-field validation rather than aborting the parse.
+    /// Holds value-type mismatches (TS5024) and `paths` substitution
+    /// type errors (TS5064) so a single malformed option doesn't lose
+    /// the rest of the config. Allocated in the parse arena; `validate`
+    /// re-emits them (with arena-owned messages) so callers see them
+    /// next to the TS50xx consistency diagnostics. Empty when the
+    /// config parsed cleanly.
+    option_parse_diagnostics: []OptionParseDiagnostic = &.{},
 
     /// Walk the resolved config and report cross-field consistency
     /// issues that the parser accepts but `tsc` would reject during
@@ -320,6 +348,64 @@ pub const TsConfig = struct {
         errdefer diags.deinit(gpa);
 
         const co = self.compiler_options;
+
+        // Surface value-type diagnostics the parser captured rather than
+        // aborting on (TS5024 value-type mismatch, TS5064 paths
+        // substitution type). Done first so they read in source order
+        // ahead of the cross-field consistency checks below.
+        for (self.option_parse_diagnostics) |opt_diag| {
+            switch (opt_diag.code) {
+                5024 => {
+                    const msg = try std.fmt.allocPrint(gpa, "Compiler option '{s}' requires a value of type {s}.", .{ opt_diag.option, opt_diag.expected_type });
+                    try diags.append(gpa, .{
+                        .code = 5024,
+                        .message = msg,
+                        .owns_message = true,
+                        .field = opt_diag.option,
+                    });
+                },
+                5064 => {
+                    const msg = try std.fmt.allocPrint(gpa, "Substitution '{s}' for pattern '{s}' has incorrect type, expected 'string', got '{s}'.", .{ opt_diag.substitution, opt_diag.pattern, opt_diag.got_type });
+                    try diags.append(gpa, .{
+                        .code = 5064,
+                        .message = msg,
+                        .owns_message = true,
+                        .field = "paths",
+                    });
+                },
+                else => {},
+            }
+        }
+
+        // TS5023 / TS5025: unknown compiler option (with a spelling
+        // suggestion when one is close enough). Keys the parser couldn't
+        // map to a known option land in `extra`; report each that isn't
+        // a recognized TypeScript compiler option name.
+        for (co.extra.items) |entry| {
+            if (isKnownCompilerOptionName(entry.key)) continue;
+            const suggestion = compilerOptionSuggestion(entry.key);
+            const msg = if (suggestion) |suggested|
+                try std.fmt.allocPrint(gpa, "Unknown compiler option '{s}'. Did you mean '{s}'?", .{ entry.key, suggested })
+            else
+                try std.fmt.allocPrint(gpa, "Unknown compiler option '{s}'.", .{entry.key});
+            try diags.append(gpa, .{
+                .code = if (suggestion != null) 5025 else 5023,
+                .message = msg,
+                .owns_message = true,
+                .field = entry.key,
+            });
+        }
+
+        // TS5108 / TS5106: options removed in TypeScript 7. tsc emits
+        // these from the program/option-resolution pass; we mirror the
+        // exact set and message (with the "Use {0} instead" chain where
+        // applicable).
+        try appendRemovedOptionDiagnostics(gpa, &diags, self);
+
+        // TS5010 / TS5065: file-specification glob shapes that tsc
+        // rejects. `include` disallows a trailing recursive wildcard;
+        // `exclude` disallows a `..` segment after a `**` wildcard.
+        try appendFileSpecDiagnostics(gpa, &diags, self);
 
         // TS18051: `extends` accepts a path or path array, but each
         // path must be non-empty. TypeScript reports one diagnostic per
@@ -545,6 +631,307 @@ pub fn freeValidationDiagnostics(gpa: std.mem.Allocator, diags: []ValidationDiag
         if (d.owns_message) gpa.free(d.message);
     }
     gpa.free(diags);
+}
+
+/// All valid `compilerOptions` keys recognized by `tsc` (the
+/// `OptionsDeclarations` set: `commonOptionsWithBuild` + the
+/// compiler-specific options). Used to decide whether a key that fell
+/// through into `extra` is genuinely unknown (TS5023/TS5025) versus a
+/// real option Home simply hasn't materialized into a typed field yet.
+/// Kept in sync with upstream `internal/tsoptions/declscompiler.go`.
+const known_compiler_option_names = [_][]const u8{
+    // commonOptionsWithBuild
+    "help",
+    "watch",
+    "preserveWatchOutput",
+    "listFiles",
+    "explainFiles",
+    "listEmittedFiles",
+    "pretty",
+    "traceResolution",
+    "diagnostics",
+    "extendedDiagnostics",
+    "generateCpuProfile",
+    "generateTrace",
+    "incremental",
+    "declaration",
+    "declarationMap",
+    "emitDeclarationOnly",
+    "assumeChangesOnlyAffectDirectDependencies",
+    "locale",
+    // optionsForCompiler
+    "all",
+    "version",
+    "init",
+    "project",
+    "showConfig",
+    "listFilesOnly",
+    "target",
+    "module",
+    "lib",
+    "allowJs",
+    "checkJs",
+    "jsx",
+    "outFile",
+    "outDir",
+    "rootDir",
+    "composite",
+    "tsBuildInfoFile",
+    "removeComments",
+    "types",
+    "noEmit",
+    "importHelpers",
+    "downlevelIteration",
+    "isolatedModules",
+    "verbatimModuleSyntax",
+    "stableTypeOrdering",
+    "strict",
+    "noImplicitAny",
+    "strictNullChecks",
+    "strictFunctionTypes",
+    "strictBindCallApply",
+    "strictBuiltinIteratorReturn",
+    "strictPropertyInitialization",
+    "noImplicitThis",
+    "useUnknownInCatchVariables",
+    "alwaysStrict",
+    "noUnusedLocals",
+    "noUnusedParameters",
+    "exactOptionalPropertyTypes",
+    "noImplicitReturns",
+    "noFallthroughCasesInSwitch",
+    "noUncheckedIndexedAccess",
+    "noImplicitOverride",
+    "noPropertyAccessFromIndexSignature",
+    "moduleResolution",
+    "baseUrl",
+    "paths",
+    "rootDirs",
+    "typeRoots",
+    "allowImportingTsExtensions",
+    "resolvePackageJsonExports",
+    "resolvePackageJsonImports",
+    "customConditions",
+    "noUncheckedSideEffectImports",
+    "esModuleInterop",
+    "preserveSymlinks",
+    "allowUmdGlobalAccess",
+    "moduleSuffixes",
+    "allowArbitraryExtensions",
+    "sourceMap",
+    "inlineSourceMap",
+    "inlineSources",
+    "sourceRoot",
+    "mapRoot",
+    "declarationDir",
+    "noEmitHelpers",
+    "noEmitOnError",
+    "emitBOM",
+    "newLine",
+    "stripInternal",
+    "noResolve",
+    "disableSizeLimit",
+    "noLib",
+    "jsxFactory",
+    "jsxFragmentFactory",
+    "jsxImportSource",
+    "reactNamespace",
+    "skipDefaultLibCheck",
+    "emitDecoratorMetadata",
+    "experimentalDecorators",
+    "deduplicatePackages",
+    "noErrorTruncation",
+    "preserveConstEnums",
+    "moduleDetection",
+    "skipLibCheck",
+    "checkers",
+    "disableSourceOfProjectReferenceRedirect",
+    "disableSolutionSearching",
+    "disableReferencedProjectLoad",
+    "libReplacement",
+    "rewriteRelativeImportExtensions",
+    "resolveJsonModule",
+    "allowSyntheticDefaultImports",
+    "noCheck",
+    "erasableSyntaxOnly",
+    "isolatedDeclarations",
+    "ignoreDeprecations",
+    "useDefineForClassFields",
+    "keyofStringsOnly",
+    "maxNodeModuleJsDepth",
+    "plugins",
+    "suppressExcessPropertyErrors",
+    "suppressImplicitAnyIndexErrors",
+    "allowUnusedLabels",
+    "allowUnreachableCode",
+    "ignoreConfig",
+    "singleThreaded",
+    "quiet",
+    "pprofDir",
+};
+
+fn isKnownCompilerOptionName(name: []const u8) bool {
+    for (known_compiler_option_names) |candidate| {
+        if (std.mem.eql(u8, name, candidate)) return true;
+    }
+    return false;
+}
+
+/// Closest known compiler-option name to `option`, or null if nothing
+/// is within the edit-distance threshold. Mirrors the same
+/// suggestion heuristic used for `typeAcquisition` (TS5025).
+fn compilerOptionSuggestion(option: []const u8) ?[]const u8 {
+    var best: ?[]const u8 = null;
+    var best_distance: usize = std.math.maxInt(usize);
+    for (known_compiler_option_names) |candidate| {
+        const distance = levenshteinIcase(option, candidate);
+        if (distance < best_distance) {
+            best = candidate;
+            best_distance = distance;
+        }
+    }
+    const threshold = @max(@as(usize, 2), option.len / 4);
+    return if (best != null and best_distance <= threshold) best else null;
+}
+
+/// TS5108 / TS5106: options removed in TypeScript 7. Faithful port of
+/// `createRemovedOptionDiagnostic` calls in upstream
+/// `internal/compiler/program.go`. When `value` is non-empty the
+/// message is `Option '{0}={1}' has been removed...` (TS5108); when
+/// empty it is `Option '{0}' has been removed...` (TS5102). The optional
+/// `use_instead` adds a TS5106 "Use '{0}' instead." companion.
+fn appendRemovedOptionDiagnostics(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    cfg: TsConfig,
+) !void {
+    const co = cfg.compiler_options;
+
+    // baseUrl removed; upstream suggests an equivalent `paths` mapping
+    // computed from the config file's relative location. We only attach
+    // the "Use ... instead" chain when we have a config path (matching
+    // upstream's `configFilePath() != ""` guard); otherwise we emit the
+    // removal on its own.
+    if (co.base_url != null) {
+        const suggestion: []const u8 = if (cfg.file_path.len > 0) "\"paths\": {\"*\": [\"./*\"]}" else "";
+        try appendRemovedOption(gpa, diags, "baseUrl", "", suggestion);
+    }
+    // outFile is not a typed field — it rides in `extra`.
+    for (co.extra.items) |entry| {
+        if (std.mem.eql(u8, entry.key, "outFile")) {
+            try appendRemovedOption(gpa, diags, "outFile", "", "");
+        }
+    }
+    if (co.target) |target_value| {
+        if (target_value == .es5) try appendRemovedOption(gpa, diags, "target", "ES5", "");
+    }
+    if (co.module) |m| {
+        switch (m) {
+            .amd => try appendRemovedOption(gpa, diags, "module", "AMD", ""),
+            .system => try appendRemovedOption(gpa, diags, "module", "System", ""),
+            .umd => try appendRemovedOption(gpa, diags, "module", "UMD", ""),
+            else => {},
+        }
+    }
+    if (co.module_resolution) |mr| {
+        switch (mr) {
+            .classic => try appendRemovedOption(gpa, diags, "moduleResolution", "Classic", ""),
+            .node10 => try appendRemovedOption(gpa, diags, "moduleResolution", "node10", ""),
+            else => {},
+        }
+    }
+    if (co.always_strict == false) {
+        try appendRemovedOption(gpa, diags, "alwaysStrict", "false", "");
+    }
+    if (co.es_module_interop == false) {
+        try appendRemovedOption(gpa, diags, "esModuleInterop", "false", "");
+    }
+    if (co.allow_synthetic_default_imports == false) {
+        try appendRemovedOption(gpa, diags, "allowSyntheticDefaultImports", "false", "");
+    }
+    // downlevelIteration: removed whenever explicitly set (any value).
+    if (co.down_level_iteration != null) {
+        try appendRemovedOption(gpa, diags, "downlevelIteration", "", "");
+    }
+}
+
+fn appendRemovedOption(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    name: []const u8,
+    value: []const u8,
+    use_instead: []const u8,
+) !void {
+    if (value.len == 0) {
+        const msg = try std.fmt.allocPrint(gpa, "Option '{s}' has been removed. Please remove it from your configuration.", .{name});
+        try diags.append(gpa, .{ .code = 5102, .message = msg, .owns_message = true, .field = name });
+    } else {
+        const msg = try std.fmt.allocPrint(gpa, "Option '{s}={s}' has been removed. Please remove it from your configuration.", .{ name, value });
+        try diags.append(gpa, .{ .code = 5108, .message = msg, .owns_message = true, .field = name });
+    }
+    if (use_instead.len != 0) {
+        const chain = try std.fmt.allocPrint(gpa, "Use '{s}' instead.", .{use_instead});
+        try diags.append(gpa, .{ .code = 5106, .message = chain, .owns_message = true, .field = name });
+    }
+}
+
+/// TS5010 / TS5065: file-specification glob validation. `include`
+/// patterns may not end in a recursive directory wildcard (`**`);
+/// `exclude`/`files`-side specs may not contain a `..` parent-directory
+/// segment that appears after a `**` wildcard. Faithful port of
+/// `validateSpecs`/`specToDiagnostic` in upstream tsconfig parsing.
+fn appendFileSpecDiagnostics(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    cfg: TsConfig,
+) !void {
+    if (cfg.include) |include| {
+        for (include) |spec| {
+            if (invalidTrailingRecursion(spec)) {
+                const msg = try std.fmt.allocPrint(gpa, "File specification cannot end in a recursive directory wildcard ('**'): '{s}'.", .{spec});
+                try diags.append(gpa, .{ .code = 5010, .message = msg, .owns_message = true, .field = "include" });
+            } else if (invalidDotDotAfterRecursiveWildcard(spec)) {
+                const msg = try std.fmt.allocPrint(gpa, "File specification cannot contain a parent directory ('..') that appears after a recursive directory wildcard ('**'): '{s}'.", .{spec});
+                try diags.append(gpa, .{ .code = 5065, .message = msg, .owns_message = true, .field = "include" });
+            }
+        }
+    }
+    if (cfg.exclude) |exclude| {
+        for (exclude) |spec| {
+            if (invalidDotDotAfterRecursiveWildcard(spec)) {
+                const msg = try std.fmt.allocPrint(gpa, "File specification cannot contain a parent directory ('..') that appears after a recursive directory wildcard ('**'): '{s}'.", .{spec});
+                try diags.append(gpa, .{ .code = 5065, .message = msg, .owns_message = true, .field = "exclude" });
+            }
+        }
+    }
+}
+
+/// Matches `**`, `/**`, `**/`, and `/**/`, but not `a**b`. Mirrors
+/// upstream `invalidTrailingRecursion`.
+fn invalidTrailingRecursion(spec: []const u8) bool {
+    const s = if (spec.len > 0 and spec[spec.len - 1] == '/') spec[0 .. spec.len - 1] else spec;
+    if (std.mem.eql(u8, s, "**")) return true;
+    return std.mem.endsWith(u8, s, "/**");
+}
+
+/// Mirrors upstream `invalidDotDotAfterRecursiveWildcard`: true when a
+/// `/../` (or trailing `/..`) segment appears after a `**/` segment.
+fn invalidDotDotAfterRecursiveWildcard(s: []const u8) bool {
+    var wildcard_index: ?usize = null;
+    if (std.mem.startsWith(u8, s, "**/")) {
+        wildcard_index = 0;
+    } else {
+        wildcard_index = std.mem.indexOf(u8, s, "/**/");
+    }
+    const wi = wildcard_index orelse return false;
+    var last_dot_index: ?usize = null;
+    if (std.mem.endsWith(u8, s, "/..")) {
+        last_dot_index = s.len;
+    } else {
+        last_dot_index = std.mem.lastIndexOf(u8, s, "/../");
+    }
+    const ldi = last_dot_index orelse return false;
+    return ldi > wi;
 }
 
 fn jsxDisallowsClassicFactory(jsx: ?Jsx) ?[]const u8 {
@@ -1113,7 +1500,9 @@ pub fn parseString(
     }
     if (root.get("compilerOptions")) |co_v| {
         if (co_v.asObject()) |co| {
-            try fillCompilerOptions(arena, &cfg.compiler_options, co);
+            var opt_diags: std.ArrayListUnmanaged(OptionParseDiagnostic) = .empty;
+            try fillCompilerOptions(arena, &cfg.compiler_options, co, &opt_diags);
+            cfg.option_parse_diagnostics = try opt_diags.toOwnedSlice(arena);
         }
     }
 
@@ -1201,7 +1590,58 @@ fn levenshteinIcase(a: []const u8, b: []const u8) usize {
     return previous_buf[b.len];
 }
 
-fn fillCompilerOptions(arena: std.mem.Allocator, co: *CompilerOptions, obj: jsonc.Value.Object) !void {
+fn recordOptionTypeMismatch(
+    arena: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(OptionParseDiagnostic),
+    option: []const u8,
+    expected_type: []const u8,
+) !void {
+    try diags.append(arena, .{
+        .code = 5024,
+        .option = option,
+        .expected_type = expected_type,
+    });
+}
+
+/// JS `typeof` of a JSON value, used for TS5064's `{2}` placeholder.
+fn jsonValueTypeName(v: jsonc.Value) []const u8 {
+    return switch (v) {
+        .null_ => "object", // matches JS `typeof null === "object"`
+        .bool_ => "boolean",
+        .number => "number",
+        .string => "string",
+        .array => "object",
+        .object => "object",
+    };
+}
+
+/// Render a JSON value for TS5064's `{0}` placeholder. Mirrors how the
+/// original TS compiler coerces the substitution value into the message
+/// (it interpolates the raw JS value). The result is arena-owned.
+fn jsonValueDisplay(arena: std.mem.Allocator, v: jsonc.Value) ![]const u8 {
+    return switch (v) {
+        .null_ => "null",
+        .bool_ => |b| if (b) "true" else "false",
+        .string => |s| s,
+        .number => |n| blk: {
+            // Render integers without a trailing `.0`, matching JS's
+            // `String(n)` for whole numbers.
+            if (n == @floor(n) and std.math.isFinite(n)) {
+                break :blk try std.fmt.allocPrint(arena, "{d}", .{@as(i64, @intFromFloat(n))});
+            }
+            break :blk try std.fmt.allocPrint(arena, "{d}", .{n});
+        },
+        .array => "[object Array]",
+        .object => "[object Object]",
+    };
+}
+
+fn fillCompilerOptions(
+    arena: std.mem.Allocator,
+    co: *CompilerOptions,
+    obj: jsonc.Value.Object,
+    diags: *std.ArrayListUnmanaged(OptionParseDiagnostic),
+) !void {
     var i: usize = 0;
     while (i < obj.keys.len) : (i += 1) {
         const key = obj.keys[i];
@@ -1269,7 +1709,11 @@ fn fillCompilerOptions(arena: std.mem.Allocator, co: *CompilerOptions, obj: json
         var matched = false;
         inline for (bool_table) |entry| {
             if (std.mem.eql(u8, key, entry.name)) {
-                @field(co, entry.field) = value.asBool() orelse return error.NotAnObject;
+                if (value.asBool()) |b| {
+                    @field(co, entry.field) = b;
+                } else {
+                    try recordOptionTypeMismatch(arena, diags, entry.name, "boolean");
+                }
                 matched = true;
             }
         }
@@ -1294,70 +1738,113 @@ fn fillCompilerOptions(arena: std.mem.Allocator, co: *CompilerOptions, obj: json
         };
         inline for (str_table) |entry| {
             if (std.mem.eql(u8, key, entry.name)) {
-                @field(co, entry.field) = value.asString() orelse return error.NotAnObject;
+                if (value.asString()) |s| {
+                    @field(co, entry.field) = s;
+                } else {
+                    try recordOptionTypeMismatch(arena, diags, entry.name, "string");
+                }
                 matched = true;
             }
         }
         if (matched) continue;
 
-        // String arrays.
-        if (std.mem.eql(u8, key, "lib")) {
-            co.lib = try parseStringArray(arena, value);
-            continue;
+        // String arrays. A non-array value is a value-type mismatch
+        // (expected Array) per tsc's `list`/`listOrElement` handling.
+        const ListField = struct { name: []const u8, field: []const u8 };
+        const list_table = comptime [_]ListField{
+            .{ .name = "lib", .field = "lib" },
+            .{ .name = "rootDirs", .field = "root_dirs" },
+            .{ .name = "typeRoots", .field = "type_roots" },
+            .{ .name = "types", .field = "types" },
+            .{ .name = "customConditions", .field = "custom_conditions" },
+        };
+        inline for (list_table) |entry| {
+            if (std.mem.eql(u8, key, entry.name)) {
+                if (value.asArray() != null) {
+                    @field(co, entry.field) = try parseStringArray(arena, value);
+                } else {
+                    try recordOptionTypeMismatch(arena, diags, entry.name, "Array");
+                }
+                matched = true;
+            }
         }
-        if (std.mem.eql(u8, key, "rootDirs")) {
-            co.root_dirs = try parseStringArray(arena, value);
-            continue;
-        }
-        if (std.mem.eql(u8, key, "typeRoots")) {
-            co.type_roots = try parseStringArray(arena, value);
-            continue;
-        }
-        if (std.mem.eql(u8, key, "types")) {
-            co.types = try parseStringArray(arena, value);
-            continue;
-        }
-        if (std.mem.eql(u8, key, "customConditions")) {
-            co.custom_conditions = try parseStringArray(arena, value);
-            continue;
-        }
+        if (matched) continue;
 
-        // Enum-typed.
+        // Enum-typed. A non-string value is a value-type mismatch
+        // (TS5024); an unrecognized string value is an enum-argument
+        // error (TS6046, out of this band) — we leave the option unset
+        // and keep parsing, mirroring tsc's recovery.
         if (std.mem.eql(u8, key, "module")) {
-            const s = value.asString() orelse return error.UnknownEnumValue;
-            co.module = Module.fromString(s) orelse return error.UnknownEnumValue;
+            if (value.asString()) |s| {
+                co.module = Module.fromString(s);
+            } else {
+                try recordOptionTypeMismatch(arena, diags, "module", "string");
+            }
             continue;
         }
         if (std.mem.eql(u8, key, "moduleResolution")) {
-            const s = value.asString() orelse return error.UnknownEnumValue;
-            co.module_resolution = ModuleResolution.fromString(s) orelse return error.UnknownEnumValue;
+            if (value.asString()) |s| {
+                co.module_resolution = ModuleResolution.fromString(s);
+            } else {
+                try recordOptionTypeMismatch(arena, diags, "moduleResolution", "string");
+            }
             continue;
         }
         if (std.mem.eql(u8, key, "target")) {
-            const s = value.asString() orelse return error.UnknownEnumValue;
-            co.target = Target.fromString(s) orelse return error.UnknownEnumValue;
+            if (value.asString()) |s| {
+                co.target = Target.fromString(s);
+            } else {
+                try recordOptionTypeMismatch(arena, diags, "target", "string");
+            }
             continue;
         }
         if (std.mem.eql(u8, key, "jsx")) {
-            const s = value.asString() orelse return error.UnknownEnumValue;
-            co.jsx = Jsx.fromString(s) orelse return error.UnknownEnumValue;
+            if (value.asString()) |s| {
+                co.jsx = Jsx.fromString(s);
+            } else {
+                try recordOptionTypeMismatch(arena, diags, "jsx", "string");
+            }
             continue;
         }
 
         // `paths`.
         if (std.mem.eql(u8, key, "paths")) {
-            const obj_v = value.asObject() orelse return error.InvalidPaths;
+            const obj_v = value.asObject() orelse {
+                // `paths` itself must be an object (`object` kind in tsc).
+                try recordOptionTypeMismatch(arena, diags, "paths", "object");
+                continue;
+            };
             const npats = obj_v.keys.len;
             const patterns = try arena.alloc([]const u8, npats);
             const substitutions = try arena.alloc([]const []const u8, npats);
             for (obj_v.keys, 0..) |pk, idx| {
                 patterns[idx] = pk;
-                const arr = obj_v.values[idx].asArray() orelse return error.InvalidPaths;
-                const subs = try arena.alloc([]const u8, arr.len);
-                for (arr, 0..) |s, j| {
-                    subs[j] = s.asString() orelse return error.InvalidPaths;
+                // Each pattern maps to a string array. A non-array value
+                // is a value-type mismatch for that entry (Array); a
+                // non-string element is TS5064.
+                const arr = obj_v.values[idx].asArray() orelse {
+                    patterns[idx] = pk;
+                    substitutions[idx] = &.{};
+                    try recordOptionTypeMismatch(arena, diags, pk, "Array");
+                    continue;
+                };
+                const subs_buf = try arena.alloc([]const u8, arr.len);
+                var n: usize = 0;
+                for (arr) |s| {
+                    if (s.asString()) |str| {
+                        subs_buf[n] = str;
+                        n += 1;
+                    } else {
+                        try diags.append(arena, .{
+                            .code = 5064,
+                            .option = "",
+                            .substitution = try jsonValueDisplay(arena, s),
+                            .pattern = pk,
+                            .got_type = jsonValueTypeName(s),
+                        });
+                    }
                 }
-                substitutions[idx] = subs;
+                substitutions[idx] = subs_buf[0..n];
             }
             co.paths = .{ .patterns = patterns, .substitutions = substitutions };
             continue;
@@ -1418,6 +1905,26 @@ pub fn merge(arena: std.mem.Allocator, base: TsConfig, child: TsConfig) !TsConfi
 // =============================================================================
 
 const t = std.testing;
+
+/// Count how many validation diagnostics carry `code`. Used by tests
+/// whose fixtures unavoidably also trip a TS7 removed-option diagnostic
+/// (e.g. `target: es5`, `moduleResolution: classic`) so the assertion
+/// can stay focused on the code under test.
+fn countCode(diags: []const ValidationDiagnostic, code: u32) usize {
+    var n: usize = 0;
+    for (diags) |d| {
+        if (d.code == code) n += 1;
+    }
+    return n;
+}
+
+/// First diagnostic carrying `code`, or null.
+fn findCode(diags: []const ValidationDiagnostic, code: u32) ?ValidationDiagnostic {
+    for (diags) |d| {
+        if (d.code == code) return d;
+    }
+    return null;
+}
 
 test "tsconfig: minimal config" {
     var arena = std.heap.ArenaAllocator.init(t.allocator);
@@ -1587,12 +2094,18 @@ test "tsconfig: unknown keys preserved in extra" {
     try t.expectEqualStrings("value", extra[1].value.asString().?);
 }
 
-test "tsconfig: invalid module value rejected" {
+test "tsconfig: invalid module enum value is dropped without aborting parse" {
+    // An unrecognized enum *string* is an argument error (TS6046, out of
+    // the TS50xx config band) — tsc reports it but keeps parsing the
+    // rest of the config. We mirror the recovery: the option is left
+    // unset rather than aborting the whole parse. (A non-string value,
+    // by contrast, is a TS5024 value-type mismatch — see below.)
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
-    try t.expectError(error.UnknownEnumValue, parseString(t.allocator, arena.allocator(),
+    const cfg = try parseString(t.allocator, arena.allocator(),
         \\{ "compilerOptions": { "module": "atomic-fission" } }
-    ));
+    );
+    try t.expectEqual(@as(?Module, null), cfg.compiler_options.module);
 }
 
 test "tsconfig: real-world tsconfig.json (with comments)" {
@@ -2047,7 +2560,15 @@ test "tsconfig.validate: paths accepts non-relative substitutions when baseUrl i
     );
     const diags = try cfg.validate(t.allocator);
     defer freeValidationDiagnostics(t.allocator, diags);
-    try t.expectEqual(@as(usize, 0), diags.len);
+    // No paths-specific diagnostics should fire. (`baseUrl` itself is a
+    // removed option in TS7 and now emits TS5102; that is unrelated to
+    // the paths validation under test.)
+    try t.expectEqual(@as(usize, 0), countCode(diags, 5061));
+    try t.expectEqual(@as(usize, 0), countCode(diags, 5062));
+    try t.expectEqual(@as(usize, 0), countCode(diags, 5064));
+    try t.expectEqual(@as(usize, 0), countCode(diags, 5066));
+    try t.expectEqual(@as(usize, 0), countCode(diags, 5090));
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5102));
 }
 
 test "tsconfig.validate: ignoreDeprecations reports TS5103 for unsupported values" {
@@ -2088,15 +2609,21 @@ test "tsconfig.validate: ignoreDeprecations accepts supported values" {
 test "tsconfig.validate: isolatedModules reports TS5047 for module none below ES2015" {
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
+    // `target: es5` is the only sub-ES2015 target and is itself a
+    // removed option in TS7, so the config now also emits TS5102; the
+    // assertion focuses on the TS5047 diagnostic under test.
     const cfg = try parseString(t.allocator, arena.allocator(),
         \\{ "compilerOptions": { "isolatedModules": true, "module": "none", "target": "es5" } }
     );
     const diags = try cfg.validate(t.allocator);
     defer freeValidationDiagnostics(t.allocator, diags);
-    try t.expectEqual(@as(usize, 1), diags.len);
-    try t.expectEqual(@as(u32, 5047), diags[0].code);
-    try t.expectEqualStrings("isolatedModules", diags[0].field);
-    try t.expectEqualStrings("Option 'isolatedModules' can only be used when either option '--module' is provided or option 'target' is 'ES2015' or higher.", diags[0].message);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5047));
+    const d = findCode(diags, 5047).?;
+    try t.expectEqualStrings("isolatedModules", d.field);
+    try t.expectEqualStrings("Option 'isolatedModules' can only be used when either option '--module' is provided or option 'target' is 'ES2015' or higher.", d.message);
+    // Confirms the removed-option diagnostic for `target: ES5` rides
+    // along (TS5108 value form).
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5108));
 }
 
 test "tsconfig.validate: isolatedModules accepts module none at ES2015" {
@@ -2113,22 +2640,30 @@ test "tsconfig.validate: isolatedModules accepts module none at ES2015" {
 test "tsconfig.validate: node module kinds report TS5109 for incompatible moduleResolution" {
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
+    // `classic` is non-node (so TS5109 fires) but is a removed option in
+    // TS7, so the config also emits TS5102; the assertion stays focused
+    // on the TS5109 diagnostic under test.
     const cfg = try parseString(t.allocator, arena.allocator(),
         \\{ "compilerOptions": { "module": "node20", "moduleResolution": "classic" } }
     );
     const diags = try cfg.validate(t.allocator);
     defer freeValidationDiagnostics(t.allocator, diags);
-    try t.expectEqual(@as(usize, 1), diags.len);
-    try t.expectEqual(@as(u32, 5109), diags[0].code);
-    try t.expectEqualStrings("moduleResolution", diags[0].field);
-    try t.expectEqualStrings("Option 'moduleResolution' must be set to 'Node16' (or left unspecified) when option 'module' is set to 'Node20'.", diags[0].message);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5109));
+    const d = findCode(diags, 5109).?;
+    try t.expectEqualStrings("moduleResolution", d.field);
+    try t.expectEqualStrings("Option 'moduleResolution' must be set to 'Node16' (or left unspecified) when option 'module' is set to 'Node20'.", d.message);
+    // `moduleResolution: classic` is a removed option → TS5108 value form.
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5108));
 }
 
 test "tsconfig.validate: bundler moduleResolution reports TS5095 for incompatible module" {
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
+    // `none` is incompatible with bundler resolution but, unlike
+    // `system`/`amd`/`umd`, is not a removed option — so the assertion
+    // stays focused on TS5095.
     const cfg = try parseString(t.allocator, arena.allocator(),
-        \\{ "compilerOptions": { "module": "system", "moduleResolution": "bundler" } }
+        \\{ "compilerOptions": { "module": "none", "moduleResolution": "bundler" } }
     );
     const diags = try cfg.validate(t.allocator);
     defer freeValidationDiagnostics(t.allocator, diags);
@@ -2153,13 +2688,21 @@ test "tsconfig.validate: package-json condition options report TS5098 outside mo
     );
     const diags = try cfg.validate(t.allocator);
     defer freeValidationDiagnostics(t.allocator, diags);
-    try t.expectEqual(@as(usize, 3), diags.len);
-    try t.expectEqual(@as(u32, 5098), diags[0].code);
-    try t.expectEqualStrings("Option 'resolvePackageJsonExports' can only be used when 'moduleResolution' is set to 'node16', 'nodenext', or 'bundler'.", diags[0].message);
-    try t.expectEqual(@as(u32, 5098), diags[1].code);
-    try t.expectEqualStrings("Option 'resolvePackageJsonImports' can only be used when 'moduleResolution' is set to 'node16', 'nodenext', or 'bundler'.", diags[1].message);
-    try t.expectEqual(@as(u32, 5098), diags[2].code);
-    try t.expectEqualStrings("Option 'customConditions' can only be used when 'moduleResolution' is set to 'node16', 'nodenext', or 'bundler'.", diags[2].message);
+    // `moduleResolution: classic` is required to take this branch but is
+    // itself a removed option in TS7, so the config also emits TS5108
+    // (the `{0}={1}` value form).
+    try t.expectEqual(@as(usize, 3), countCode(diags, 5098));
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5108));
+    var saw_exports = false;
+    var saw_imports = false;
+    var saw_conditions = false;
+    for (diags) |d| {
+        if (d.code != 5098) continue;
+        if (std.mem.indexOf(u8, d.message, "resolvePackageJsonExports") != null) saw_exports = true;
+        if (std.mem.indexOf(u8, d.message, "resolvePackageJsonImports") != null) saw_imports = true;
+        if (std.mem.indexOf(u8, d.message, "customConditions") != null) saw_conditions = true;
+    }
+    try t.expect(saw_exports and saw_imports and saw_conditions);
 }
 
 test "tsconfig.validate: allowImportingTsExtensions reports TS5096 without no-emit mode" {
@@ -2507,6 +3050,289 @@ test "tsconfig.validate: invalid reactNamespace reports TS5059" {
     try t.expectEqual(@as(u32, 5059), diags[0].code);
     try t.expectEqualStrings("Invalid value for '--reactNamespace'. 'my-React-Lib' is not a valid identifier.", diags[0].message);
     try t.expectEqualStrings("reactNamespace", diags[0].field);
+}
+
+test "tsconfig.validate: unknown compiler option reports TS5023" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "totallyMadeUpOption": true } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5023));
+    const d = findCode(diags, 5023).?;
+    try t.expectEqualStrings("Unknown compiler option 'totallyMadeUpOption'.", d.message);
+    try t.expectEqualStrings("totallyMadeUpOption", d.field);
+    try t.expectEqual(@as(usize, 0), countCode(diags, 5025));
+}
+
+test "tsconfig.validate: misspelled compiler option reports TS5025 with suggestion" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "strickt": true } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5025));
+    const d = findCode(diags, 5025).?;
+    try t.expectEqualStrings("Unknown compiler option 'strickt'. Did you mean 'strict'?", d.message);
+    try t.expectEqualStrings("strickt", d.field);
+}
+
+test "tsconfig.validate: known-but-unmodeled option is not flagged unknown" {
+    // `outFile`, `noEmitOnError`, `pretty`, `listFiles` are real tsc
+    // options Home does not yet materialize into typed fields. They land
+    // in `extra` but must NOT produce TS5023. (`outFile` additionally
+    // triggers the TS5102 removed-option diagnostic.)
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "noEmitOnError": true, "pretty": true, "listFiles": true } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 0), countCode(diags, 5023));
+    try t.expectEqual(@as(usize, 0), countCode(diags, 5025));
+}
+
+test "tsconfig.validate: value-type mismatch reports TS5024" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    // `strict` expects a boolean; a string value is a value-type
+    // mismatch. The parse must not abort — `target` after it still
+    // parses cleanly.
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "strict": "yes", "target": "es2022" } }
+    );
+    try t.expectEqual(@as(?Target, .es2022), cfg.compiler_options.target);
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5024));
+    const d = findCode(diags, 5024).?;
+    try t.expectEqualStrings("Compiler option 'strict' requires a value of type boolean.", d.message);
+    try t.expectEqualStrings("strict", d.field);
+}
+
+test "tsconfig.validate: string option given non-string reports TS5024" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "outDir": 42 } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5024));
+    const d = findCode(diags, 5024).?;
+    try t.expectEqualStrings("Compiler option 'outDir' requires a value of type string.", d.message);
+}
+
+test "tsconfig.validate: enum option given non-string reports TS5024" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "target": true } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5024));
+    const d = findCode(diags, 5024).?;
+    try t.expectEqualStrings("Compiler option 'target' requires a value of type string.", d.message);
+    // The bad value leaves `target` unset.
+    try t.expectEqual(@as(?Target, null), cfg.compiler_options.target);
+}
+
+test "tsconfig.validate: list option given non-array reports TS5024" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "lib": "es2022" } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5024));
+    const d = findCode(diags, 5024).?;
+    try t.expectEqualStrings("Compiler option 'lib' requires a value of type Array.", d.message);
+}
+
+test "tsconfig.validate: paths substitution wrong type reports TS5064" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "paths": { "@/*": ["src/*", 42, true] } } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 2), countCode(diags, 5064));
+    var saw_number = false;
+    var saw_boolean = false;
+    for (diags) |d| {
+        if (d.code != 5064) continue;
+        try t.expectEqualStrings("paths", d.field);
+        try t.expect(std.mem.indexOf(u8, d.message, "for pattern '@/*'") != null);
+        if (std.mem.indexOf(u8, d.message, "got 'number'") != null) saw_number = true;
+        if (std.mem.indexOf(u8, d.message, "got 'boolean'") != null) saw_boolean = true;
+    }
+    try t.expect(saw_number and saw_boolean);
+    // The good substitution still parsed.
+    try t.expectEqual(@as(usize, 1), cfg.compiler_options.paths.?.substitutions[0].len);
+    try t.expectEqualStrings("src/*", cfg.compiler_options.paths.?.substitutions[0][0]);
+}
+
+test "tsconfig.validate: paths value non-array reports TS5024" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "paths": { "@/*": "src/*" } } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5024));
+    const d = findCode(diags, 5024).?;
+    try t.expectEqualStrings("Compiler option '@/*' requires a value of type Array.", d.message);
+}
+
+test "tsconfig.validate: removed valueless option reports TS5102 with chain" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    var cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "baseUrl": "." } }
+    );
+    cfg.file_path = "/repo/tsconfig.json";
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5102));
+    const d = findCode(diags, 5102).?;
+    try t.expectEqualStrings("Option 'baseUrl' has been removed. Please remove it from your configuration.", d.message);
+    try t.expectEqualStrings("baseUrl", d.field);
+    // The "Use ... instead" companion chain (TS5106) is attached because
+    // a config path is known.
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5106));
+    const chain = findCode(diags, 5106).?;
+    try t.expectEqualStrings("Use '\"paths\": {\"*\": [\"./*\"]}' instead.", chain.message);
+}
+
+test "tsconfig.validate: removed valueless option without config path omits chain" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "baseUrl": "." } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5102));
+    try t.expectEqual(@as(usize, 0), countCode(diags, 5106));
+}
+
+test "tsconfig.validate: removed enum value reports TS5108" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "module": "amd" } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5108));
+    const d = findCode(diags, 5108).?;
+    try t.expectEqualStrings("Option 'module=AMD' has been removed. Please remove it from your configuration.", d.message);
+    try t.expectEqualStrings("module", d.field);
+}
+
+test "tsconfig.validate: removed boolean=false options report TS5108" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "esModuleInterop": false, "allowSyntheticDefaultImports": false, "alwaysStrict": false } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 3), countCode(diags, 5108));
+    var saw_interop = false;
+    var saw_synth = false;
+    var saw_strict = false;
+    for (diags) |d| {
+        if (d.code != 5108) continue;
+        if (std.mem.eql(u8, d.message, "Option 'esModuleInterop=false' has been removed. Please remove it from your configuration.")) saw_interop = true;
+        if (std.mem.eql(u8, d.message, "Option 'allowSyntheticDefaultImports=false' has been removed. Please remove it from your configuration.")) saw_synth = true;
+        if (std.mem.eql(u8, d.message, "Option 'alwaysStrict=false' has been removed. Please remove it from your configuration.")) saw_strict = true;
+    }
+    try t.expect(saw_interop and saw_synth and saw_strict);
+}
+
+test "tsconfig.validate: downlevelIteration when set reports TS5102" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "downlevelIteration": true } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5102));
+    const d = findCode(diags, 5102).?;
+    try t.expectEqualStrings("Option 'downlevelIteration' has been removed. Please remove it from your configuration.", d.message);
+}
+
+test "tsconfig.validate: include ending in recursive wildcard reports TS5010" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "include": ["src/**", "ok/**/*"] }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5010));
+    const d = findCode(diags, 5010).?;
+    try t.expectEqualStrings("File specification cannot end in a recursive directory wildcard ('**'): 'src/**'.", d.message);
+    try t.expectEqualStrings("include", d.field);
+}
+
+test "tsconfig.validate: include trailing slash recursive wildcard reports TS5010" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "include": ["src/**/"] }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5010));
+}
+
+test "tsconfig.validate: parent dir after recursive wildcard reports TS5065" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "exclude": ["**/../foo"] }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5065));
+    const d = findCode(diags, 5065).?;
+    try t.expectEqualStrings("File specification cannot contain a parent directory ('..') that appears after a recursive directory wildcard ('**'): '**/../foo'.", d.message);
+    try t.expectEqualStrings("exclude", d.field);
+}
+
+test "tsconfig.validate: include parent dir after wildcard reports TS5065" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "include": ["src/**/../sibling/*"] }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5065));
+}
+
+test "tsconfig.validate: well-formed globs produce no file-spec diagnostics" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "include": ["src/**/*.ts", "a**b/x"], "exclude": ["node_modules", "../outside/**/*"] }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 0), countCode(diags, 5010));
+    try t.expectEqual(@as(usize, 0), countCode(diags, 5065));
 }
 
 // ============================================================================
