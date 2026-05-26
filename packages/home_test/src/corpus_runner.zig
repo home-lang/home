@@ -2885,6 +2885,12 @@ const harness_prelude =
     \\    then(resolve, reject) { return Promise.resolve(this.__home_run()).then(resolve, reject); },
     \\    __home_run() {
     \\      const dir = __home_bake_virtual_dirs[this.cwdPath] || {};
+    \\      if (this.command.includes("build:napi") && (dir["binding.gyp"] || __home_build_file_exists(__home_build_join(this.cwdPath, "binding.gyp")))) {
+    \\        if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("Bun.$ native node-gyp bridge is not installed");
+    \\        const script = "npm install --ignore-scripts && npx node-gyp configure && npx node-gyp build";
+    \\        const result = globalThis.__home_spawnSyncNative({ cmd: ["/bin/sh", "-lc", script], cwd: this.cwdPath, stdio: ["ignore", "pipe", "pipe"] });
+    \\        return __home_bake_shell_result(result && result.exitCode, result && result.stdout, result && result.stderr);
+    \\      }
     \\      if (this.command.includes(" build ") || this.command.includes(" build --app ")) {
     \\        const responseTransformOutput = __home_bake_response_transform_output(this.command);
     \\        if (responseTransformOutput !== null) return __home_bake_shell_result(0, responseTransformOutput, "");
@@ -8145,6 +8151,7 @@ const harness_prelude =
     \\  if (builtin) return builtin;
     \\  const factory = globalThis.__home_cjs_factories[resolved];
     \\  if (globalThis.require.cache[resolved]) return globalThis.require.cache[resolved].exports;
+    \\  if (!factory && /\.node$/i.test(String(resolved)) && __home_build_file_exists(resolved)) throw new Error("Native .node module loading requires the Home N-API dlopen bridge: " + String(resolved));
     \\  const module = { exports: {} };
     \\  globalThis.require.cache[resolved] = module;
     \\  const previousFilename = globalThis.__home_current_filename;

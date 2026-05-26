@@ -75,7 +75,7 @@ Fresh single-file probes on 2026-05-26 in
 |---|---|---|
 | `bundler/transpiler/transpiler.test.js` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed | Native `Bun.Transpiler.transformSync` is reached; CRLF and empty-type-parameter probes now advance, and the current bootstrap-body blocker is malformed-enum parse-error behavior |
 | `bundler/transpiler/decorators.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed | `SyntaxError: Invalid character: '@'` |
-| `bundler/native-plugin.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed, 0 unsupported | File-attribute imports, native-plugin TS annotations, and async lifecycle hooks now lower; current blocker is loading the node-gyp-built `.node` addon |
+| `bundler/native-plugin.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed, 0 unsupported | File-attribute imports, native-plugin TS annotations, async lifecycle hooks, and node-gyp addon build now run; current blocker is the Home N-API dlopen bridge for `.node` exports |
 
 Decorator helper groundwork (2026-05-26): the corpus harness now provides
 Bun's `bun:wrap` helper module for native-transpiled decorator output,
@@ -144,11 +144,12 @@ Home compatibility shims (`bun.glob.match`, `ComptimeStringMap.getWithEql`,
 `jsc.math`, `KnownGlobal.minifyGlobalConstructor`, `BSSMap`/`BSSStringList`,
 stale Zig 0.17 std API usage), but the bridge remains gated until the
 resolver/cache cone is complete. The rebuilt native-plugin single-file
-probe no longer fails at module syntax or async lifecycle hooks; it now
-reaches the native addon load path and stops at `Cannot find module:
-/tmp/home-bun-corpus-native-plugins-<id>/build/Release/<plugin>.node`.
-This is still not parity credit; the next faithful chunk is the real
-`.node`/N-API/JSC bridge, not a corpus-only mock.
+probe no longer fails at module syntax, async lifecycle hooks, or missing
+node-gyp output. The harness now runs the fixture's node-gyp build and
+reaches the native addon loader, then stops at `Native .node module
+loading requires the Home N-API dlopen bridge`. This is still not parity
+credit; the next faithful chunk is the real `.node`/N-API/JSC bridge, not
+a corpus-only mock.
 
 Next source-module work for bundler should replace the
 `__home_expect_bundled` bootstrap stub with a real `itBundled` adapter

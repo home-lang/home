@@ -250,7 +250,7 @@ Fresh single-file probes on 2026-05-26 in
 |---|---|---|
 | `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/transpiler/transpiler.test.js` | Fails before promotion: 0 passed, 1 failed | Enters `Bun.Transpiler.transformSync`; CRLF and empty-type-parameter probes now advance, and the current bootstrap-body blocker is the malformed-enum parse-error section |
 | `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/transpiler/decorators.test.ts` | Fails before promotion: 0 passed, 1 failed | `SyntaxError: Invalid character: '@'` |
-| `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts` | Fails before promotion: 0 passed, 1 failed, 0 unsupported | File-attribute imports, native-plugin TS annotations, and async lifecycle hooks now lower; current blocker is loading the node-gyp-built `.node` addon |
+| `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts` | Fails before promotion: 0 passed, 1 failed, 0 unsupported | File-attribute imports, native-plugin TS annotations, async lifecycle hooks, and node-gyp addon build now run; current blocker is the Home N-API dlopen bridge for `.node` exports |
 
 Decorator helper follow-through on 2026-05-26: the native corpus harness
 now exposes Bun's `bun:wrap` runtime helper surface for transformed output:
@@ -343,11 +343,11 @@ shims (`bun.glob.match`, `ComptimeStringMap.getWithEql`, `jsc.math`,
 cone is complete. `zig build test -Dfilter=home_test --summary all`
 rebuilds green with 296/297 tests passing and one expected skip.
 The rebuilt native-plugin single-file probe no longer fails at module
-syntax or async lifecycle hooks; it now reaches the native addon load path
-and stops at `Cannot find module:
-/tmp/home-bun-corpus-native-plugins-<id>/build/Release/<plugin>.node`.
-The generic harness unsupported blocker is gone, but this remains no
-parity credit until the real `.node` bridge is wired.
+syntax, async lifecycle hooks, or missing node-gyp output. The harness now
+runs the fixture's node-gyp build and reaches the native addon loader,
+then stops at `Native .node module loading requires the Home N-API dlopen
+bridge`. The generic harness blockers are gone, but this remains no
+parity credit until the real `.node` / N-API bridge is wired.
 
 Do not close this by adding a corpus-only `.node` mock. A faithful close
 should first compile or port the native bridge, then promote the fixture

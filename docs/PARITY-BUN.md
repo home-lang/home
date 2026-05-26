@@ -219,7 +219,7 @@ Fresh single-file evidence from `/private/tmp/home-bun-parity-main` on
 |---|---|---|
 | `bundler/transpiler/transpiler.test.js` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed | Native `Bun.Transpiler` bridge is reached; CRLF and empty-type-parameter probes now advance, and the current bootstrap-body blocker is malformed-enum parse-error behavior |
 | `bundler/transpiler/decorators.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed | Parser/lowerer path still rejects top-level legacy decorators: `SyntaxError: Invalid character: '@'` |
-| `bundler/native-plugin.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed, 0 unsupported | File-attribute imports, native-plugin TS annotations, and async lifecycle hooks now lower; current blocker is loading the node-gyp-built `.node` addon |
+| `bundler/native-plugin.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed, 0 unsupported | File-attribute imports, native-plugin TS annotations, async lifecycle hooks, and node-gyp addon build now run; current blocker is the Home N-API dlopen bridge for `.node` exports |
 
 Native plugin audit on 2026-05-26: `bundler/native-plugin.test.ts` is not
 a bootstrap-only fixture. The corpus harness now lowers the upstream
@@ -248,10 +248,11 @@ parser/printer bridge gained concrete Home compatibility shims
 `KnownGlobal.minifyGlobalConstructor`, `BSSMap`/`BSSStringList`, and stale
 Zig 0.17 std API fixes), but that bridge remains gated until the
 resolver/cache cone is complete. The rebuilt native-plugin single-file
-probe no longer fails at module syntax or async lifecycle hooks; it now
-reaches the native addon load path and stops at `Cannot find module:
-/tmp/home-bun-corpus-native-plugins-<id>/build/Release/<plugin>.node`.
-No parity credit is claimed until the real `.node` bridge is wired.
+probe no longer fails at module syntax, async lifecycle hooks, or missing
+node-gyp output. The harness now runs the fixture's node-gyp build and
+reaches the native addon loader, then stops at `Native .node module
+loading requires the Home N-API dlopen bridge`. No parity credit is
+claimed until the real `.node` / N-API bridge is wired.
 
 Native-plugin ABI bridge work on 2026-05-26 centralized Bun's public
 `bundler_plugin.h` loader/log layout in
