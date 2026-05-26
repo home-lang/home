@@ -316,6 +316,11 @@ pub const TsConfig = struct {
     /// validates that object with its own option table rather than
     /// treating these as generic unknown root keys.
     unknown_type_acquisition_options: [][]const u8,
+    /// True when the root object carried an `excludes` key. tsc special-
+    /// cases this exact misspelling at the config root with a dedicated
+    /// "Did you mean 'exclude'?" diagnostic (TS6114) rather than the
+    /// generic unknown-key handling.
+    has_excludes_root_key: bool = false,
     /// Diagnostics recorded during `parseString` that are best surfaced
     /// alongside cross-field validation rather than aborting the parse.
     /// Holds value-type mismatches (TS5024) and `paths` substitution
@@ -431,6 +436,17 @@ pub const TsConfig = struct {
                     .field = "files",
                 });
             }
+        }
+
+        // TS6114: tsc special-cases the `excludes` misspelling at the
+        // config root with a fixed "Did you mean 'exclude'?" message
+        // (the value shape is irrelevant — the key alone triggers it).
+        if (self.has_excludes_root_key) {
+            try diags.append(gpa, .{
+                .code = 6114,
+                .message = "Unknown option 'excludes'. Did you mean 'exclude'?",
+                .field = "excludes",
+            });
         }
 
         for (self.unknown_type_acquisition_options) |option| {
@@ -604,6 +620,20 @@ pub const TsConfig = struct {
                     try diags.append(gpa, .{
                         .code = 6304,
                         .message = "Composite projects may not disable declaration emit.",
+                        .field = "declaration",
+                    });
+                }
+            }
+            // TS6379-shaped: composite projects are always incremental;
+            // explicitly setting `incremental: false` is rejected. tsc
+            // emits this from the same option-resolution block as
+            // TS6304 (program.go `if options.Composite.IsTrue()`),
+            // pointing at the `declaration` option name.
+            if (co.incremental) |inc| {
+                if (!inc) {
+                    try diags.append(gpa, .{
+                        .code = 6379,
+                        .message = "Composite projects may not disable incremental compilation.",
                         .field = "declaration",
                     });
                 }
@@ -1498,6 +1528,12 @@ pub fn parseString(
             cfg.unknown_type_acquisition_options = try collectUnknownTypeAcquisitionOptions(arena, ta);
         }
     }
+    // tsc emits TS6114 for the `excludes` misspelling at the config
+    // root (it means `exclude`). `get` is sufficient — the value shape
+    // is irrelevant; the key's mere presence triggers the diagnostic.
+    if (root.get("excludes") != null) {
+        cfg.has_excludes_root_key = true;
+    }
     if (root.get("compilerOptions")) |co_v| {
         if (co_v.asObject()) |co| {
             var opt_diags: std.ArrayListUnmanaged(OptionParseDiagnostic) = .empty;
@@ -1897,6 +1933,7 @@ pub fn merge(arena: std.mem.Allocator, base: TsConfig, child: TsConfig) !TsConfi
         merged.unknown_type_acquisition_options = child.unknown_type_acquisition_options;
     }
     merged.has_extends = base.has_extends or child.has_extends;
+    merged.has_excludes_root_key = base.has_excludes_root_key or child.has_excludes_root_key;
     return merged;
 }
 
@@ -2323,6 +2360,93 @@ test "tsconfig.validate: composite without declaration reports TS6304-shaped dia
     try t.expectEqual(@as(usize, 1), diags.len);
     try t.expectEqual(@as(u32, 6304), diags[0].code);
     try t.expectEqualStrings("declaration", diags[0].field);
+}
+
+test "tsconfig.validate: composite with incremental:false reports TS6379" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "composite": true, "incremental": false } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    const d = findCode(diags, 6379) orelse return error.TestExpectedDiagnostic;
+    try t.expectEqualStrings("Composite projects may not disable incremental compilation.", d.message);
+    try t.expectEqualStrings("declaration", d.field);
+}
+
+test "tsconfig.validate: composite with incremental:true does not report TS6379" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "composite": true, "incremental": true, "declaration": true } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 0), countCode(diags, 6379));
+}
+
+test "tsconfig.validate: composite without incremental does not report TS6379" {
+    // composite implies incremental unless it is *explicitly* false.
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "composite": true } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 0), countCode(diags, 6379));
+}
+
+test "tsconfig.validate: composite with both declaration:false and incremental:false reports TS6304 and TS6379" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "composite": true, "declaration": false, "incremental": false } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 6304));
+    try t.expectEqual(@as(usize, 1), countCode(diags, 6379));
+}
+
+test "tsconfig.validate: root 'excludes' key reports TS6114" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "excludes": ["dist"] }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    const d = findCode(diags, 6114) orelse return error.TestExpectedDiagnostic;
+    try t.expectEqualStrings("Unknown option 'excludes'. Did you mean 'exclude'?", d.message);
+    try t.expectEqualStrings("excludes", d.field);
+}
+
+test "tsconfig.validate: correct 'exclude' key does not report TS6114" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "exclude": ["dist"] }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 0), countCode(diags, 6114));
+}
+
+test "tsconfig: merge propagates root 'excludes' key from child for TS6114" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const base = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "strict": true } }
+    );
+    const child = try parseString(t.allocator, arena.allocator(),
+        \\{ "excludes": ["dist"] }
+    );
+    const merged = try merge(arena.allocator(), base, child);
+    const diags = try merged.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 6114));
 }
 
 test "tsconfig.validate: empty extends string reports TS18051" {

@@ -156,9 +156,25 @@ pub fn main(init: std.process.Init) !void {
         for (all_args[1..]) |a| try argv.append(gpa, a);
     }
 
-    var opts = ts_cli.parseArgs(gpa, argv.items) catch |err| {
-        std.debug.print("error parsing args: {s}\n", .{@errorName(err)});
-        std.process.exit(2);
+    var parse_ctx: ts_cli.ParseContext = .{};
+    var opts = ts_cli.parseArgsCtx(gpa, argv.items, &parse_ctx) catch |err| {
+        switch (err) {
+            // TS6044: a non-boolean flag (e.g. `--outDir`) was the last
+            // argument with no value following it.
+            error.MissingValue => {
+                if (parse_ctx.missing_value_option.len > 0) {
+                    const msg = ts_cli.compilerOptionExpectsArgumentDiagnostic(gpa, parse_ctx.missing_value_option) catch {
+                        std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                    };
+                    defer gpa.free(msg);
+                    std.debug.print("{s}\n", .{msg});
+                } else {
+                    std.debug.print("error parsing args: {s}\n", .{@errorName(err)});
+                }
+            },
+            else => std.debug.print("error parsing args: {s}\n", .{@errorName(err)}),
+        }
+        std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
     };
     defer gpa.free(opts.files);
 
@@ -359,6 +375,38 @@ pub fn main(init: std.process.Init) !void {
 
     var program = ts_program.Program.init(gpa, &resolver);
     defer program.deinit();
+
+    // §file-add — extension gate. tsc rejects an input file whose
+    // extension it cannot process before it ever reads the file:
+    // a JavaScript file without `allowJs` is TS6504; any other
+    // unsupported extension is TS6054. (`allowNonTsExtensions` — the
+    // upstream escape hatch — has no CLI surface in Home yet, so the
+    // check always runs.)
+    const allow_js: bool = blk: {
+        if (loaded_cfg) |c| break :blk (c.compiler_options.allow_js orelse false);
+        break :blk false;
+    };
+    var extension_errors: bool = false;
+    for (input_files.items) |path| {
+        switch (classifyExtension(path)) {
+            .supported => {},
+            .javascript => {
+                if (!allow_js) {
+                    const msg = try javaScriptFileNeedsAllowJsDiagnostic(gpa, path);
+                    defer gpa.free(msg);
+                    std.debug.print("{s}\n", .{msg});
+                    extension_errors = true;
+                }
+            },
+            .unsupported => {
+                const msg = try unsupportedExtensionDiagnostic(gpa, path);
+                defer gpa.free(msg);
+                std.debug.print("{s}\n", .{msg});
+                extension_errors = true;
+            },
+        }
+    }
+    if (extension_errors) std.process.exit(1);
 
     for (input_files.items) |path| {
         const src = RealFs.read(gpa, path) catch |err| {
@@ -982,6 +1030,68 @@ fn noInputsFoundInConfigDiagnostic(
     );
 }
 
+/// The TypeScript-supported source extensions, rendered in the exact
+/// order and quoting tsc uses for the TS6054 message (`SupportedTSExt-
+/// ensionsFlat`). Home additionally accepts its native `.hm`/`.home`
+/// shapes, but those are deliberately omitted from the *diagnostic*
+/// string so the message stays byte-identical to tsc.
+const ts_supported_extensions_display = "'.ts', '.tsx', '.d.ts', '.cts', '.d.cts', '.mts', '.d.mts'";
+
+/// Classification of an input file's extension for the file-add
+/// extension checks (TS6504 / TS6054).
+const ExtensionClass = enum {
+    /// A TS/Home source extension the compiler accepts — no diagnostic.
+    supported,
+    /// A JavaScript-family extension (`.js`/`.jsx`/`.mjs`/`.cjs`).
+    /// Reported as TS6504 when `allowJs` is off.
+    javascript,
+    /// Any other recognized-but-unsupported extension. Reported as
+    /// TS6054. Extension-less paths are treated as supported (tsc only
+    /// runs the check when the path `HasExtension`).
+    unsupported,
+};
+
+fn classifyExtension(path: []const u8) ExtensionClass {
+    // Home + TS source shapes the compiler can actually process.
+    if (isTsLikeExtension(path)) return .supported;
+    if (std.mem.endsWith(u8, path, ".js") or
+        std.mem.endsWith(u8, path, ".jsx") or
+        std.mem.endsWith(u8, path, ".mjs") or
+        std.mem.endsWith(u8, path, ".cjs"))
+    {
+        return .javascript;
+    }
+    // Mirror tsc: only files that actually carry an extension are
+    // candidates for the unsupported-extension diagnostic. A path with
+    // no `.` in its basename is left alone.
+    const base = std.fs.path.basename(path);
+    if (std.mem.indexOfScalar(u8, base, '.') == null) return .supported;
+    return .unsupported;
+}
+
+/// TS6504: an input file is a JavaScript file but `allowJs` is not set.
+/// `{0}` is the file path. Caller frees.
+fn javaScriptFileNeedsAllowJsDiagnostic(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
+    const code: u32 = 6504;
+    return try std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: File '{s}' is a JavaScript file. Did you mean to enable the 'allowJs' option?",
+        .{ code, path },
+    );
+}
+
+/// TS6054: an input file has an extension the compiler does not support.
+/// `{0}` is the file path, `{1}` the supported-extension list. Caller
+/// frees.
+fn unsupportedExtensionDiagnostic(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
+    const code: u32 = 6054;
+    return try std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: File '{s}' has an unsupported extension. The only supported extensions are {s}.",
+        .{ code, path, ts_supported_extensions_display },
+    );
+}
+
 fn appendJsonStringArray(
     out: *std.ArrayListUnmanaged(u8),
     gpa: std.mem.Allocator,
@@ -1137,6 +1247,45 @@ test "tsc_main: TS18003 diagnostic uses implicit outDir exclude display" {
     const patterns = try effectiveExcludeDiagnosticPatterns(std.testing.allocator, "/repo", cfg, &out, &owned);
     try std.testing.expectEqual(@as(usize, 1), patterns.len);
     try std.testing.expectEqualStrings("/repo/dist", patterns[0]);
+}
+
+test "tsc_main: TS6504 JavaScript-file diagnostic text" {
+    const msg = try javaScriptFileNeedsAllowJsDiagnostic(std.testing.allocator, "src/app.js");
+    defer std.testing.allocator.free(msg);
+    try std.testing.expectEqualStrings(
+        "error TS6504: File 'src/app.js' is a JavaScript file. Did you mean to enable the 'allowJs' option?",
+        msg,
+    );
+}
+
+test "tsc_main: TS6054 unsupported-extension diagnostic text" {
+    const msg = try unsupportedExtensionDiagnostic(std.testing.allocator, "data/notes.txt");
+    defer std.testing.allocator.free(msg);
+    try std.testing.expectEqualStrings(
+        "error TS6054: File 'data/notes.txt' has an unsupported extension. The only supported extensions are '.ts', '.tsx', '.d.ts', '.cts', '.d.cts', '.mts', '.d.mts'.",
+        msg,
+    );
+}
+
+test "tsc_main: classifyExtension recognizes TS, Home, JS and unsupported shapes" {
+    try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("a.ts"));
+    try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("a.tsx"));
+    try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("a.d.ts"));
+    try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("a.mts"));
+    try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("a.cts"));
+    try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("a.hm"));
+    try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("a.home"));
+    // JS family -> TS6504 candidate.
+    try std.testing.expectEqual(ExtensionClass.javascript, classifyExtension("a.js"));
+    try std.testing.expectEqual(ExtensionClass.javascript, classifyExtension("a.jsx"));
+    try std.testing.expectEqual(ExtensionClass.javascript, classifyExtension("a.mjs"));
+    try std.testing.expectEqual(ExtensionClass.javascript, classifyExtension("a.cjs"));
+    // Anything else with an extension -> TS6054 candidate.
+    try std.testing.expectEqual(ExtensionClass.unsupported, classifyExtension("a.txt"));
+    try std.testing.expectEqual(ExtensionClass.unsupported, classifyExtension("a.json"));
+    // No extension -> left alone (matches tsc's HasExtension gate).
+    try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("Makefile"));
+    try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("src/noext"));
 }
 
 test "tsc_main: TS18003 diagnostic JSON-escapes control characters" {
