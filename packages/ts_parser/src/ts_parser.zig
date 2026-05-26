@@ -980,6 +980,7 @@ pub const Parser = struct {
     /// `NodeId` (currently a synthesized block).
     pub fn parseSourceFile(self: *Parser) ParseError!NodeId {
         try self.reportJSDocTypeArgumentSyntaxDiagnostics();
+        try self.reportAmdModuleNameDiagnostics();
         self.top_level_external_module_indicator = self.sourceHasTopLevelExternalModuleIndicator();
         self.top_level_module_syntax_indicator = self.sourceHasTopLevelModuleSyntaxIndicator();
         if (self.top_level_external_module_indicator) self.strict_mode = true;
@@ -1000,6 +1001,89 @@ pub const Parser = struct {
         // chain. See `validateInferTypePositions` for the algorithm.
         try self.validateInferTypePositions();
         return root;
+    }
+
+    fn reportAmdModuleNameDiagnostics(self: *Parser) ParseError!void {
+        var line_start: usize = 0;
+        var saw_name = false;
+        var in_block_comment = false;
+        while (line_start < self.source.len) {
+            const line_end = std.mem.indexOfScalarPos(u8, self.source, line_start, '\n') orelse self.source.len;
+            const line = self.source[line_start..line_end];
+            var leading_ws: usize = 0;
+            while (leading_ws < line.len and
+                (line[leading_ws] == ' ' or line[leading_ws] == '\t' or line[leading_ws] == '\r')) : (leading_ws += 1)
+            {}
+            const trimmed = line[leading_ws..];
+            if (trimmed.len != 0) {
+                if (in_block_comment) {
+                    if (std.mem.indexOf(u8, trimmed, "*/")) |close_at| {
+                        in_block_comment = false;
+                        var after_close = close_at + 2;
+                        while (after_close < trimmed.len and std.ascii.isWhitespace(trimmed[after_close])) : (after_close += 1) {}
+                        if (after_close < trimmed.len) break;
+                    }
+                } else if (std.mem.startsWith(u8, trimmed, "/*")) {
+                    if (std.mem.indexOf(u8, trimmed, "*/")) |close_at| {
+                        var after_close = close_at + 2;
+                        while (after_close < trimmed.len and std.ascii.isWhitespace(trimmed[after_close])) : (after_close += 1) {}
+                        if (after_close < trimmed.len) break;
+                    } else {
+                        in_block_comment = true;
+                    }
+                } else if (std.mem.startsWith(u8, trimmed, "//")) {
+                    if (lineHasAmdModuleNamePragma(trimmed)) {
+                        if (saw_name) {
+                            const pos: u32 = @intCast(line_start + leading_ws);
+                            try self.reportCodeAtWithSpan(
+                                pos,
+                                self.lineAt(pos),
+                                @intCast(trimmed.len),
+                                2458,
+                                "An AMD module cannot have multiple name assignments.",
+                            );
+                        }
+                        saw_name = true;
+                    }
+                } else {
+                    break;
+                }
+            }
+            if (line_end == self.source.len) break;
+            line_start = line_end + 1;
+        }
+    }
+
+    fn lineHasAmdModuleNamePragma(trimmed: []const u8) bool {
+        if (!std.mem.startsWith(u8, trimmed, "///")) return false;
+        var i: usize = 3;
+        while (i < trimmed.len and std.ascii.isWhitespace(trimmed[i])) : (i += 1) {}
+        if (i >= trimmed.len or trimmed[i] != '<') return false;
+        i += 1;
+        const tag_start = i;
+        while (i < trimmed.len and !std.ascii.isWhitespace(trimmed[i])) : (i += 1) {}
+        if (tag_start == i or !std.ascii.eqlIgnoreCase(trimmed[tag_start..i], "amd-module")) return false;
+        if (std.mem.indexOf(u8, trimmed[i..], "/>") == null) return false;
+        return xmlPragmaHasQuotedAttribute(trimmed[i..], "name");
+    }
+
+    fn xmlPragmaHasQuotedAttribute(text: []const u8, name: []const u8) bool {
+        var i: usize = 0;
+        while (i < text.len) : (i += 1) {
+            if (!std.ascii.isWhitespace(text[i])) continue;
+            const name_start = i + 1;
+            if (name_start + name.len > text.len) continue;
+            if (!std.ascii.eqlIgnoreCase(text[name_start .. name_start + name.len], name)) continue;
+            var j = name_start + name.len;
+            while (j < text.len and std.ascii.isWhitespace(text[j])) : (j += 1) {}
+            if (j >= text.len or text[j] != '=') continue;
+            j += 1;
+            while (j < text.len and std.ascii.isWhitespace(text[j])) : (j += 1) {}
+            if (j >= text.len or (text[j] != '\'' and text[j] != '"')) continue;
+            if (std.mem.indexOfScalarPos(u8, text, j + 1, text[j]) == null) continue;
+            return true;
+        }
+        return false;
     }
 
     /// Post-parse walk that emits TS1338 for every `infer N` node not
@@ -6675,7 +6759,7 @@ pub const Parser = struct {
             try self.reportCodeAt(name_tok.span.start, name_tok.line, 1035, "Only ambient modules can use quoted names.");
         }
         if (name_tok.kind == .string_literal and self.ambient_depth > 0) {
-            if (self.namespace_depth > 0) {
+            if (self.namespace_depth > 0 and !self.in_string_named_module) {
                 try self.reportCodeAtWithSpan(
                     name_tok.span.start,
                     name_tok.line,
@@ -8372,6 +8456,10 @@ pub const Parser = struct {
             return try self.builder.addBlock(.{ .start = open.span.start, .end = end_pos }, stmts.items);
         }
         const close = try self.expectMatching(.close_brace, "'}' expected.", open, "{", "}");
+        if (self.peek().kind == .equal) {
+            const eq = self.advance();
+            try self.reportCodeAt(eq.span.start, eq.line, 2809, "Declaration or statement expected. This '=' follows a block of statements, so if you intended to write a destructuring assignment, you might need to wrap the whole assignment in parentheses.");
+        }
         return try self.builder.addBlock(span(open, close), stmts.items);
     }
 
@@ -17458,6 +17546,62 @@ test "parser: single number literal expression statement" {
     try T.expectEqual(@as(f64, 42), hir_mod.literalNumberOf(&s.hir, stmts[0]));
 }
 
+test "parser: duplicate amd-module name pragmas report TS2458" {
+    var s = try newTestSetup(
+        \\///<amd-module name='FirstModuleName'/>
+        \\///<amd-module name='SecondModuleName'/>
+        \\class Foo {}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findFirstDiagnosticOfCode(&s.parser, 2458) orelse return error.ExpectedTS2458;
+    try T.expectEqual(@as(u32, 2), d.line);
+    try T.expectEqualStrings("An AMD module cannot have multiple name assignments.", d.message);
+}
+
+test "parser: single amd-module name pragma stays clean for TS2458" {
+    var s = try newTestSetup(
+        \\/// <amd-module name="OnlyModuleName"/>
+        \\class Foo {}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expect(findFirstDiagnosticOfCode(&s.parser, 2458) == null);
+}
+
+test "parser: name-like amd-module attributes stay clean for TS2458" {
+    var s = try newTestSetup(
+        \\/// <amd-module name="OnlyModuleName"/>
+        \\/// <amd-module renamed="IgnoredModuleName"/>
+        \\class Foo {}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expect(findFirstDiagnosticOfCode(&s.parser, 2458) == null);
+}
+
+test "parser: block followed by equals reports TS2809" {
+    var s = try newTestSetup(
+        \\let value = 1;
+        \\{ a: 0 } = value;
+    );
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+    const d = findFirstDiagnosticOfCode(&s.parser, 2809) orelse return error.ExpectedTS2809;
+    try T.expectEqual(@as(u32, 2), d.line);
+    try T.expectEqualStrings("Declaration or statement expected. This '=' follows a block of statements, so if you intended to write a destructuring assignment, you might need to wrap the whole assignment in parentheses.", d.message);
+}
+
+test "parser: block not followed by equals stays clean for TS2809" {
+    var s = try newTestSetup(
+        \\{ a: 0 }
+        \\value;
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expect(findFirstDiagnosticOfCode(&s.parser, 2809) == null);
+}
+
 test "parser: arithmetic precedence — 1 + 2 * 3" {
     var s = try newTestSetup("1 + 2 * 3;");
     defer destroyTestSetup(s);
@@ -20486,6 +20630,24 @@ test "parser: ambient external module names report TS2435 and TS2436" {
     }
     try T.expectEqual(@as(usize, 1), count_2435);
     try T.expectEqual(@as(usize, 2), count_2436);
+}
+
+test "parser: nested ambient external module augmentation skips TS2435" {
+    var s = try newTestSetup(
+        \\declare module "Map" {
+        \\    module "Observable" {
+        \\        interface Observable {
+        \\            foo(): void;
+        \\        }
+        \\    }
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 2435);
+    }
 }
 
 test "parser: ambient external module relative imports and exports report TS2439" {

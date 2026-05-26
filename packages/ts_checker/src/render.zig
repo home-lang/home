@@ -8,8 +8,8 @@
 //!
 //! Output mirrors how `tsc` formats types — `string`, `(a: T) => U`,
 //! `{ x: number; y: string }`, `A | B`, etc. Recursion is depth-
-//! capped so cyclic / deeply-nested types degrade to `…` rather than
-//! recursing forever.
+//! capped so cyclic / deeply-nested types surface `CyclicStructure`
+//! rather than recursing forever.
 
 const std = @import("std");
 const string_interner = @import("string_interner");
@@ -105,10 +105,7 @@ fn renderTypeIntoCtx(
     depth: u32,
     ctx: *RenderContext,
 ) RenderError!void {
-    if (depth > max_depth) {
-        try buf.appendSlice(gpa, "…");
-        return;
-    }
+    if (depth > max_depth) return error.CyclicStructure;
     const flags = ti.pool.flagsOf(id);
     const tracks_children = flags.is_object_type or flags.is_signature or flags.is_union or flags.is_intersection;
     if (tracks_children) {

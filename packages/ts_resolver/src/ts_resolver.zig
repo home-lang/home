@@ -60,6 +60,16 @@ pub const Config = struct {
     allow_ts_extensions: bool = false,
     /// True when `compilerOptions.resolveJsonModule` is on.
     resolve_json: bool = true,
+    /// `compilerOptions.outDir`. Used for package self-name imports
+    /// whose `exports` map points at not-yet-built output files.
+    out_dir: []const u8 = "",
+    /// `compilerOptions.declarationDir`. Used ahead of `outDir`, like
+    /// tsc, when remapping package self-name output paths to inputs.
+    declaration_dir: []const u8 = "",
+    /// `compilerOptions.rootDir`. Empty means infer from the importer.
+    root_dir: []const u8 = "",
+    /// True when `compilerOptions.composite` is on.
+    composite: bool = false,
 
     pub const PathEntry = struct {
         pattern: []const u8,
@@ -217,8 +227,10 @@ pub const Resolver = struct {
             return error.NotFound;
         }
 
-        // Bare specifier — paths mapping → node_modules.
+        // Bare specifier — paths mapping → package self-name →
+        // node_modules.
         if (try self.tryPathsMapping(specifier)) |r| return r;
+        if (try self.tryPackageSelfName(specifier, containing_file)) |r| return r;
         if (try self.tryNodeModules(specifier, containing_file)) |r| {
             return try self.attachExportsAlternateResult(r, specifier, containing_file);
         }
@@ -522,6 +534,165 @@ pub const Resolver = struct {
                             .is_declaration = r.is_declaration,
                         };
                     }
+                }
+            }
+        }
+        return null;
+    }
+
+    fn tryPackageSelfName(self: *Resolver, specifier: []const u8, containing_file: []const u8) ResolveError!?Resolution {
+        if (!self.exportsResolutionEnabled()) return null;
+
+        const split = packageNameSplit(specifier);
+        if (split.name.len == 0) return null;
+
+        var dir = dirname(containing_file);
+        while (true) {
+            if (pathBasenameEquals(dir, "node_modules")) return null;
+            const pkg_json = try self.joinPath(dir, "package.json");
+            if (self.fs.fileExists(pkg_json)) {
+                const bytes = self.fs.readFile(self.gpa, pkg_json) catch return null;
+                defer self.gpa.free(bytes);
+                var parsed = std.json.parseFromSlice(std.json.Value, self.gpa, bytes, .{}) catch return null;
+                defer parsed.deinit();
+                if (parsed.value != .object) return null;
+                const obj = parsed.value.object;
+                const name_v = obj.get("name") orelse return null;
+                if (name_v != .string) return null;
+                if (!std.mem.eql(u8, name_v.string, split.name)) return null;
+                if (obj.get("exports") == null) return null;
+
+                const outcome = try self.resolvePackageSelfNameSubpath(dir, obj, if (split.subpath.len == 0) "." else split.subpath, containing_file);
+                switch (outcome) {
+                    .resolved => |r| return .{
+                        .path = r.path,
+                        .source = .package_exports,
+                        .is_declaration = r.is_declaration,
+                    },
+                    .blocked, .none => return null,
+                }
+            }
+            if (dir.len == 0 or std.mem.eql(u8, dir, "/")) break;
+            const parent = dirname(dir);
+            if (std.mem.eql(u8, parent, dir)) break;
+            dir = parent;
+        }
+        return null;
+    }
+
+    fn resolvePackageSelfNameSubpath(
+        self: *Resolver,
+        pkg_dir: []const u8,
+        obj: std.json.ObjectMap,
+        subpath: []const u8,
+        containing_file: []const u8,
+    ) ResolveError!SubpathOutcome {
+        const exports_v = obj.get("exports") orelse return .none;
+        const key = if (std.mem.eql(u8, subpath, ".") or subpath.len == 0)
+            "."
+        else
+            try std.fmt.allocPrint(self.ar(), "./{s}", .{subpath});
+
+        const target = (try self.lookupExports(exports_v, key)) orelse return .none;
+        switch (target) {
+            .matched_null => return .blocked,
+            .not_matched => return .blocked,
+            .matched => |m| {
+                const joined = try self.joinPath(pkg_dir, m);
+                if (try self.tryFileWithExtensions(joined)) |r| return .{ .resolved = r };
+                if (try self.tryPackageSelfNameInputRedirect(pkg_dir, joined, containing_file)) |r| return .{ .resolved = r };
+                return .blocked;
+            },
+        }
+    }
+
+    fn tryPackageSelfNameInputRedirect(
+        self: *Resolver,
+        pkg_dir: []const u8,
+        final_path: []const u8,
+        containing_file: []const u8,
+    ) ResolveError!?Resolution {
+        if (self.config.declaration_dir.len == 0 and self.config.out_dir.len == 0) return null;
+        if (std.mem.indexOf(u8, final_path, "/node_modules/") != null) return null;
+
+        if (self.config.root_dir.len > 0) {
+            const common = try self.joinPath(pkg_dir, self.config.root_dir);
+            if (try self.tryPackageSelfNameInputRedirectFromCommonDir(pkg_dir, common, final_path)) |r| return r;
+        } else {
+            // Composite/project-reference self-name exports use the
+            // package root as the common source directory. Without an
+            // explicit root, prefer the top-most plausible source root,
+            // matching tsc's "most general" probe order.
+            if (try self.tryPackageSelfNameInputRedirectFromCommonDir(pkg_dir, pkg_dir, final_path)) |r| return r;
+
+            var common = dirname(containing_file);
+            while (common.len > 0 and !std.mem.eql(u8, common, "/")) {
+                if (try self.tryPackageSelfNameInputRedirectFromCommonDir(pkg_dir, common, final_path)) |r| return r;
+                if (std.mem.eql(u8, common, pkg_dir)) break;
+                const parent = dirname(common);
+                if (std.mem.eql(u8, parent, common)) break;
+                common = parent;
+            }
+        }
+        return null;
+    }
+
+    fn tryPackageSelfNameInputRedirectFromCommonDir(
+        self: *Resolver,
+        pkg_dir: []const u8,
+        common_dir: []const u8,
+        final_path: []const u8,
+    ) ResolveError!?Resolution {
+        if (self.config.declaration_dir.len > 0) {
+            if (try self.tryOutputDirRedirect(common_dir, self.config.declaration_dir, final_path)) |r| return r;
+            if (!std.mem.eql(u8, common_dir, pkg_dir)) {
+                if (try self.tryOutputDirRedirect(pkg_dir, self.config.declaration_dir, final_path)) |r| return r;
+            }
+        }
+        if (self.config.out_dir.len > 0 and !std.mem.eql(u8, self.config.out_dir, self.config.declaration_dir)) {
+            if (try self.tryOutputDirRedirect(common_dir, self.config.out_dir, final_path)) |r| return r;
+            if (!std.mem.eql(u8, common_dir, pkg_dir)) {
+                if (try self.tryOutputDirRedirect(pkg_dir, self.config.out_dir, final_path)) |r| return r;
+            }
+        }
+        return null;
+    }
+
+    fn tryOutputDirRedirect(
+        self: *Resolver,
+        common_dir: []const u8,
+        output_dir: []const u8,
+        final_path: []const u8,
+    ) ResolveError!?Resolution {
+        const output_root = try self.joinPath(common_dir, output_dir);
+        const fragment = pathFragmentUnder(output_root, final_path) orelse return null;
+        if (fragment.len == 0) return null;
+
+        const mappings = [_]struct {
+            output_ext: []const u8,
+            input_exts: []const []const u8,
+        }{
+            .{ .output_ext = ".d.mts", .input_exts = &.{".mts"} },
+            .{ .output_ext = ".d.cts", .input_exts = &.{".cts"} },
+            .{ .output_ext = ".d.ts", .input_exts = &.{ ".ts", ".tsx" } },
+            .{ .output_ext = ".mjs", .input_exts = &.{".mts"} },
+            .{ .output_ext = ".cjs", .input_exts = &.{".cts"} },
+            .{ .output_ext = ".js", .input_exts = &.{ ".ts", ".tsx" } },
+            .{ .output_ext = ".jsx", .input_exts = &.{".tsx"} },
+            .{ .output_ext = ".json", .input_exts = &.{".json"} },
+        };
+        for (mappings) |mapping| {
+            if (!std.mem.endsWith(u8, fragment, mapping.output_ext)) continue;
+            const stem = fragment[0 .. fragment.len - mapping.output_ext.len];
+            for (mapping.input_exts) |input_ext| {
+                const rel = try std.fmt.allocPrint(self.ar(), "{s}{s}", .{ stem, input_ext });
+                const candidate = try self.joinPath(common_dir, rel);
+                if (self.fs.fileExists(candidate)) {
+                    return .{
+                        .path = candidate,
+                        .source = .package_exports,
+                        .is_declaration = isDeclarationPath(candidate),
+                    };
                 }
             }
         }
@@ -1027,6 +1198,29 @@ pub fn dirname(path: []const u8) []const u8 {
         }
     }
     return "";
+}
+
+fn pathBasenameEquals(path: []const u8, name: []const u8) bool {
+    if (path.len == 0) return false;
+    var end = path.len;
+    while (end > 1 and (path[end - 1] == '/' or path[end - 1] == '\\')) : (end -= 1) {}
+    var start = end;
+    while (start > 0) {
+        const c = path[start - 1];
+        if (c == '/' or c == '\\') break;
+        start -= 1;
+    }
+    return std.mem.eql(u8, path[start..end], name);
+}
+
+fn pathFragmentUnder(root: []const u8, path: []const u8) ?[]const u8 {
+    var trimmed = root;
+    while (trimmed.len > 1 and trimmed[trimmed.len - 1] == '/') trimmed = trimmed[0 .. trimmed.len - 1];
+    if (trimmed.len == 0) return null;
+    if (!std.mem.startsWith(u8, path, trimmed)) return null;
+    if (path.len == trimmed.len) return "";
+    if (path[trimmed.len] != '/') return null;
+    return path[trimmed.len + 1 ..];
 }
 
 /// Remove the last `/<segment>` from a path. For "/a/b/c" returns
@@ -1584,6 +1778,59 @@ test "Resolver: package exports — root '.' resolves via conditional chain" {
     const res = try r.resolve("dep", "/a.ts");
     try T.expectEqualStrings("/node_modules/dep/dist/index.d.ts", res.path);
     try T.expect(res.is_declaration);
+}
+
+test "Resolver: package self-name redirects declarationDir export output to source input" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/package.json",
+        \\{
+        \\  "name": "@this/package",
+        \\  "type": "module",
+        \\  "exports": {
+        \\    ".": {
+        \\      "types": "./types/index.d.ts",
+        \\      "default": "./dist/index.js"
+        \\    }
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/index.ts", "export { srcthing as thing } from './src/thing.js';");
+    try vfs.addFile("/src/thing.ts", "import * as me from '@this/package'; export function srcthing() { me.thing(); }");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .strategy = .nodenext,
+        .declaration_dir = "./types",
+        .out_dir = "./dist",
+        .composite = true,
+    });
+    defer r.deinit();
+    const res = try r.resolve("@this/package", "/src/thing.ts");
+    try T.expectEqualStrings("/index.ts", res.path);
+    try T.expectEqual(Resolution.Source.package_exports, res.source);
+    try T.expect(!res.is_declaration);
+}
+
+test "Resolver: package self-name does not redirect exports output without output dirs" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/package.json",
+        \\{
+        \\  "name": "@this/package",
+        \\  "exports": {
+        \\    ".": {
+        \\      "types": "./types/index.d.ts",
+        \\      "default": "./dist/index.js"
+        \\    }
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/index.ts", "export {};");
+    try vfs.addFile("/src/thing.ts", "import '@this/package';");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .nodenext });
+    defer r.deinit();
+    try T.expectError(error.NotFound, r.resolve("@this/package", "/src/thing.ts"));
 }
 
 test "Resolver: package exports — `null` value short-circuits with no fallthrough" {

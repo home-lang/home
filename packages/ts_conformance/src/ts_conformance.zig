@@ -28,6 +28,7 @@ const ts_diagnostics = @import("ts_diagnostics");
 const ts_program = @import("ts_program");
 const ts_resolver = @import("ts_resolver");
 const ts_checker = @import("ts_checker");
+const ts_emit = @import("ts_emit");
 const hir_mod = @import("hir");
 
 /// Adapter that exposes a `ts_resolver.Resolver` through the
@@ -392,6 +393,57 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             .src_idx = @intCast(src_idx),
         });
         actual_count += 1;
+    }
+    const declaration_config_source = if (c.raw_source.len > 0) c.raw_source else c.source;
+    if (exact_mode and sourceRequestsDeclarationEmit(declaration_config_source)) {
+        var dts = ts_emit.DtsEmitter.initWithTypes(
+            gpa,
+            &compilation.hir,
+            &compilation.interner,
+            &compilation.type_interner,
+            .{},
+        );
+        defer dts.deinit();
+        try dts.emitSourceFile(compilation.root);
+        for (dts.diagnostics.items, 0..) |d, emit_idx| {
+            const diag_pos = compilation.hir.spanOf(d.node).start;
+            const pos = ts_diagnostics.positionToLineCol(c.source, diag_pos);
+            var diag_file: []const u8 = c.path;
+            var diag_line: u32 = if (pos.line > directive_offset)
+                pos.line - directive_offset
+            else
+                pos.line;
+            if (virtualMarkerForByte(virtual_markers.items, diag_pos)) |m| {
+                diag_file = if (std.mem.startsWith(u8, m.path, "./")) m.path[2..] else m.path;
+                const total_strip = m.line + m.extra_strip;
+                diag_line = if (pos.line > total_strip) pos.line - total_strip else 1;
+            }
+            const fdiag: ts_diagnostics.Diagnostic = .{
+                .file = diag_file,
+                .line = diag_line,
+                .col = pos.col,
+                .code = d.code,
+                .code_prefix = .TS,
+                .severity = .err,
+                .message = d.message,
+                .span_len = conformanceDiagnosticSpanLen(&compilation.hir, d.node, diag_pos),
+            };
+            const formatted = try ts_diagnostics.formatDefault(gpa, fdiag);
+            defer gpa.free(formatted);
+            if (exactDiagnosticShouldDedup(d.code)) {
+                const gop = try seen_keys.getOrPut(gpa, formatted);
+                if (gop.found_existing) continue;
+                gop.key_ptr.* = try gpa.dupe(u8, formatted);
+            }
+            try formatted_entries.append(gpa, .{
+                .file = diag_file,
+                .diag_line = diag_line,
+                .diag_col = pos.col,
+                .line = try gpa.dupe(u8, formatted),
+                .src_idx = @intCast(compilation.diagnostics.items.len + emit_idx),
+            });
+            actual_count += 1;
+        }
     }
 
     // Upstream tsc baselines emit the principal/entry file's
@@ -893,8 +945,13 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     // no spurious TS2307 leaks. Mirrors `APISample_*`.
     try synthesizeAbsoluteTypesStubs(gpa, virtual_files.items, &vfs);
 
+    const resolver_config_source = if (c.raw_source.len > 0) c.raw_source else c.source;
     var resolver = ts_resolver.Resolver.init(gpa, vfs.fs(), .{
         .strategy = resolverStrategyFromCase(c),
+        .out_dir = directiveValue(resolver_config_source, "outDir") orelse tsconfigStringValue(resolver_config_source, "outDir") orelse "",
+        .declaration_dir = directiveValue(resolver_config_source, "declarationDir") orelse tsconfigStringValue(resolver_config_source, "declarationDir") orelse "",
+        .root_dir = directiveValue(resolver_config_source, "rootDir") orelse tsconfigStringValue(resolver_config_source, "rootDir") orelse "",
+        .composite = (directiveBool(resolver_config_source, "composite") orelse tsconfigBoolValue(resolver_config_source, "composite")) orelse false,
     });
     defer resolver.deinit();
 
@@ -1429,6 +1486,21 @@ pub fn freeCategoryResults(gpa: std.mem.Allocator, cats: []const CategoryResult)
 
 fn run_(gpa: std.mem.Allocator, c: Case) !Result {
     return try run(gpa, c);
+}
+
+fn sourceRequestsDeclarationEmit(source: []const u8) bool {
+    if (directiveBool(source, "declaration")) |enabled| return enabled;
+    if (tsconfigBoolValue(source, "declaration")) |enabled| return enabled;
+    if (tsconfigBoolValue(source, "composite")) |enabled| return enabled;
+    return false;
+}
+
+fn conformanceDiagnosticSpanLen(hir: *const hir_mod.Hir, node: hir_mod.NodeId, pos: u32) u32 {
+    if (node == hir_mod.none_node_id) return 0;
+    const span = hir.spanOf(node);
+    if (span.end <= span.start) return 0;
+    if (pos < span.start or pos >= span.end) return 0;
+    return span.end - pos;
 }
 
 fn exactDiagnosticShouldDedup(code: u32) bool {
@@ -2645,6 +2717,7 @@ fn isNodeResolutionFullProgramFixture(name: []const u8, source: []const u8) bool
     _ = source;
     return std.mem.startsWith(u8, name, "nodeModules") or
         std.mem.startsWith(u8, name, "nodePackage") or
+        std.mem.startsWith(u8, name, "nodeNextPackage") or
         std.mem.startsWith(u8, name, "nodeAllowJsPackage") or
         std.mem.startsWith(u8, name, "esmModuleExports") or
         std.mem.startsWith(u8, name, "legacyNodeModules");
@@ -3286,7 +3359,17 @@ fn baselineLacksDiagnostic(gpa: std.mem.Allocator, baseline_path: ?[]const u8, c
 /// lines with `// `) and the raw upstream form.
 fn tsconfigStrictValue(source: []const u8) ?bool {
     const section = tsconfigVirtualSection(source) orelse return null;
-    return scanJsonStrictBool(section);
+    return scanJsonBoolValue(section, "strict");
+}
+
+fn tsconfigBoolValue(source: []const u8, option: []const u8) ?bool {
+    const section = tsconfigVirtualSection(source) orelse return null;
+    return scanJsonBoolValue(section, option);
+}
+
+fn tsconfigStringValue(source: []const u8, option: []const u8) ?[]const u8 {
+    const section = tsconfigVirtualSection(source) orelse return null;
+    return scanJsonStringValue(section, option);
 }
 
 fn tsconfigVirtualSection(source: []const u8) ?[]const u8 {
@@ -3316,8 +3399,37 @@ fn tsconfigVirtualSection(source: []const u8) ?[]const u8 {
     return null;
 }
 
-fn scanJsonStrictBool(section: []const u8) ?bool {
-    const key = "\"strict\"";
+fn scanJsonStringValue(section: []const u8, option: []const u8) ?[]const u8 {
+    var key_buf: [128]u8 = undefined;
+    const key = std.fmt.bufPrint(&key_buf, "\"{s}\"", .{option}) catch return null;
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, section, search_from, key)) |pos| {
+        var cursor = pos + key.len;
+        while (cursor < section.len and std.ascii.isWhitespace(section[cursor])) : (cursor += 1) {}
+        if (cursor >= section.len or section[cursor] != ':') {
+            search_from = pos + key.len;
+            continue;
+        }
+        cursor += 1;
+        while (cursor < section.len and std.ascii.isWhitespace(section[cursor])) : (cursor += 1) {}
+        if (cursor >= section.len or section[cursor] != '"') return null;
+        cursor += 1;
+        const start = cursor;
+        while (cursor < section.len) : (cursor += 1) {
+            if (section[cursor] == '\\') {
+                cursor += 1;
+                continue;
+            }
+            if (section[cursor] == '"') return section[start..cursor];
+        }
+        return null;
+    }
+    return null;
+}
+
+fn scanJsonBoolValue(section: []const u8, option: []const u8) ?bool {
+    var key_buf: [128]u8 = undefined;
+    const key = std.fmt.bufPrint(&key_buf, "\"{s}\"", .{option}) catch return null;
     var search_from: usize = 0;
     while (std.mem.indexOfPos(u8, section, search_from, key)) |pos| {
         var cursor = pos + key.len;
@@ -49243,6 +49355,7 @@ test "conformance: Node resolver fixtures stay in full-program harness bucket" {
         \\import "pkg";
     ;
     try T.expect(isNodeResolutionFullProgramFixture("nodeModulesPackageExports", node_source));
+    try T.expect(isNodeResolutionFullProgramFixture("nodeNextPackageSelfNameWithOutDirDeclDirCompositeNestedDirs", node_source));
     try T.expect(hasHarnessModeledExpectedError("nodeModulesPackageExports", node_source));
     try T.expect(hasHarnessModeledExpectedClean("nodeModulesPackageExports", node_source));
     try T.expect(!isNodeResolutionFullProgramFixture("nodeLikeLocalName", "const nodeModules = 1;"));
@@ -49444,6 +49557,78 @@ test "conformance: option-validation diagnostics filtered from coarse expected-c
         if (r.detail.len > 0) T.allocator.free(r.detail);
     }
     try T.expectEqual(Outcome.passed, r.outcome);
+}
+
+test "conformance: resolver config reads tsconfig emit roots" {
+    const source =
+        \\// @filename: tsconfig.json
+        \\{
+        \\  "compilerOptions": {
+        \\    "outDir": "./dist",
+        \\    "declarationDir": "./types",
+        \\    "rootDir": "./src",
+        \\    "composite": true
+        \\  }
+        \\}
+        \\// @filename: src/index.ts
+        \\export {};
+    ;
+    try T.expectEqualStrings("./dist", tsconfigStringValue(source, "outDir").?);
+    try T.expectEqualStrings("./types", tsconfigStringValue(source, "declarationDir").?);
+    try T.expectEqualStrings("./src", tsconfigStringValue(source, "rootDir").?);
+    try T.expectEqual(true, tsconfigBoolValue(source, "composite").?);
+}
+
+test "conformance: package self-name resolver uses tsconfig emit roots" {
+    const source =
+        \\// @target: es2015
+        \\// @filename: tsconfig.json
+        \\{
+        \\  "compilerOptions": {
+        \\    "module": "nodenext",
+        \\    "outDir": "./dist",
+        \\    "declarationDir": "./types",
+        \\    "composite": true
+        \\  }
+        \\}
+        \\// @filename: package.json
+        \\{
+        \\  "name": "@this/package",
+        \\  "type": "module",
+        \\  "exports": {
+        \\    ".": {
+        \\      "default": "./dist/index.js",
+        \\      "types": "./types/index.d.ts"
+        \\    }
+        \\  }
+        \\}
+        \\// @filename: index.ts
+        \\export {srcthing as thing} from "./src/thing.js";
+        \\// @filename: src/thing.ts
+        \\import * as me from "@this/package";
+        \\
+        \\me.thing();
+        \\
+        \\export function srcthing(): void {}
+    ;
+    var virtual_files = try splitVirtualFiles(T.allocator, source);
+    defer virtual_files.deinit(T.allocator);
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    for (virtual_files.items) |f| {
+        const canon = try canonicalVfsPath(T.allocator, f.path);
+        defer T.allocator.free(canon);
+        try vfs.addFile(canon, f.source);
+    }
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{
+        .strategy = .nodenext,
+        .out_dir = tsconfigStringValue(source, "outDir").?,
+        .declaration_dir = tsconfigStringValue(source, "declarationDir").?,
+        .composite = tsconfigBoolValue(source, "composite").?,
+    });
+    defer resolver.deinit();
+    const resolved = try resolver.resolve("@this/package", "/src/thing.ts");
+    try T.expectEqualStrings("/index.ts", resolved.path);
 }
 
 test "conformance: option-deprecation diagnostic alone passes coarse expected-error" {

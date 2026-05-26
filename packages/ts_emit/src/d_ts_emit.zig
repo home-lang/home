@@ -199,6 +199,10 @@ pub const Emitter = struct {
         if (t == 0) return null;
         if (!ti.pool.flagsOf(t).is_signature) return null;
         const ret = ti.signatureReturn(t) orelse return null;
+        if (self.inferredGenericReturnNeedsAnnotation(node, ret, ti)) {
+            try self.reportCyclicStructure(node, name_node);
+            return null;
+        }
         return ts_checker.renderType(self.gpa, ti, self.interner, ret) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.CyclicStructure => {
@@ -206,6 +210,113 @@ pub const Emitter = struct {
                 return null;
             },
         };
+    }
+
+    const ReturnSerializationScan = struct {
+        saw_type_param: bool = false,
+        saw_nontrivial_alias: bool = false,
+    };
+
+    fn inferredGenericReturnNeedsAnnotation(
+        self: *Emitter,
+        fn_node: NodeId,
+        ret: ts_checker.TypeId,
+        ti: *const ts_checker.Interner,
+    ) bool {
+        if (hir_mod.fnTypeParams(self.hir, fn_node).len == 0) return false;
+        var seen: std.AutoHashMapUnmanaged(ts_checker.TypeId, void) = .empty;
+        defer seen.deinit(self.gpa);
+        var scan: ReturnSerializationScan = .{};
+        self.scanReturnTypeForSerialization(ret, ti, &seen, &scan) catch return false;
+        return scan.saw_type_param and scan.saw_nontrivial_alias;
+    }
+
+    fn scanReturnTypeForSerialization(
+        self: *Emitter,
+        t: ts_checker.TypeId,
+        ti: *const ts_checker.Interner,
+        seen: *std.AutoHashMapUnmanaged(ts_checker.TypeId, void),
+        scan: *ReturnSerializationScan,
+    ) !void {
+        if (t == 0 or t == ts_checker.Primitive.none) return;
+        const gop = try seen.getOrPut(self.gpa, t);
+        if (gop.found_existing) return;
+        const flags = ti.pool.flagsOf(t);
+        if (flags.is_type_parameter) {
+            scan.saw_type_param = true;
+            return;
+        }
+        if (flags.is_conditional) {
+            scan.saw_nontrivial_alias = true;
+            const p = ti.conditionalPayload(t);
+            try self.scanReturnTypeForSerialization(p.check_type, ti, seen, scan);
+            try self.scanReturnTypeForSerialization(p.extends_type, ti, seen, scan);
+            try self.scanReturnTypeForSerialization(p.true_branch, ti, seen, scan);
+            try self.scanReturnTypeForSerialization(p.false_branch, ti, seen, scan);
+            return;
+        }
+        if (flags.is_indexed_access) {
+            scan.saw_nontrivial_alias = true;
+            const p = ti.pool.indexed_access_payloads.items[ti.pool.payloadOf(t)];
+            try self.scanReturnTypeForSerialization(p.object, ti, seen, scan);
+            try self.scanReturnTypeForSerialization(p.index, ti, seen, scan);
+            return;
+        }
+        if (flags.is_mapped) {
+            scan.saw_nontrivial_alias = true;
+            const p = ti.mappedPayload(t);
+            try self.scanReturnTypeForSerialization(p.constraint, ti, seen, scan);
+            try self.scanReturnTypeForSerialization(p.template, ti, seen, scan);
+            return;
+        }
+        if (flags.is_instantiation) {
+            const p = ti.pool.instantiation_payloads.items[ti.pool.payloadOf(t)];
+            try self.scanReturnTypeForSerialization(p.origin, ti, seen, scan);
+            const args = ti.pool.type_arg_pool.items[p.args_start .. p.args_start + p.args_len];
+            for (args) |arg| try self.scanReturnTypeForSerialization(arg, ti, seen, scan);
+            return;
+        }
+        if (flags.is_object_type) {
+            const p = ti.pool.object_type_payloads.items[ti.pool.payloadOf(t)];
+            const members = ti.pool.object_member_pool.items[p.members_start .. p.members_start + p.members_len];
+            for (members) |m| try self.scanReturnTypeForSerialization(m.type, ti, seen, scan);
+            try self.scanReturnTypeForSerialization(p.string_index_type, ti, seen, scan);
+            try self.scanReturnTypeForSerialization(p.number_index_type, ti, seen, scan);
+            try self.scanReturnTypeForSerialization(p.symbol_index_type, ti, seen, scan);
+            return;
+        }
+        if (flags.is_signature) {
+            for (ti.signatureParams(t)) |param| try self.scanReturnTypeForSerialization(param, ti, seen, scan);
+            if (ti.signatureReturn(t)) |r| try self.scanReturnTypeForSerialization(r, ti, seen, scan);
+            return;
+        }
+        if (flags.is_union) {
+            for (ti.unionMembers(t)) |member| try self.scanReturnTypeForSerialization(member, ti, seen, scan);
+            return;
+        }
+        if (flags.is_intersection) {
+            for (ti.intersectionMembers(t)) |member| try self.scanReturnTypeForSerialization(member, ti, seen, scan);
+            return;
+        }
+        if (flags.is_keyof) {
+            const p = ti.pool.keyof_payloads.items[ti.pool.payloadOf(t)];
+            try self.scanReturnTypeForSerialization(p.operand, ti, seen, scan);
+            return;
+        }
+        if (flags.is_tuple) {
+            const p = ti.pool.tuple_payloads.items[ti.pool.payloadOf(t)];
+            const elems = ti.pool.tuple_element_pool.items[p.elements_start .. p.elements_start + p.elements_len];
+            for (elems) |elem| try self.scanReturnTypeForSerialization(elem.type, ti, seen, scan);
+            return;
+        }
+        if (flags.is_string_mapping) {
+            const p = ti.stringMappingPayload(t);
+            try self.scanReturnTypeForSerialization(p.inner, ti, seen, scan);
+            return;
+        }
+        if (flags.is_template_literal) {
+            for (ti.templateLiteralTypes(t)) |part| try self.scanReturnTypeForSerialization(part, ti, seen, scan);
+        }
     }
 
     fn reportCyclicStructure(self: *Emitter, node: NodeId, name_node: NodeId) !void {
@@ -220,7 +331,7 @@ pub const Emitter = struct {
         );
         errdefer self.gpa.free(message);
         try self.diagnostics.append(self.gpa, .{
-            .node = node,
+            .node = if (name_node != hir_mod.none_node_id) name_node else node,
             .code = 5088,
             .message = message,
         });
@@ -791,6 +902,42 @@ test "d.ts: inferred cyclic return reports TS5088 instead of eliding" {
     s.hir.setType(fn_node, cyclic_sig);
     const f = hir_mod.fnDeclOf(&s.hir, fn_node);
     s.hir.setType(f.name, cyclic_sig);
+
+    var em = Emitter.initWithTypes(T.allocator, &s.hir, &s.sint, &ti, .{});
+    defer em.deinit();
+    try em.emitSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), em.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 5088), em.diagnostics.items[0].code);
+    try T.expect(std.mem.indexOf(u8, em.diagnostics.items[0].message, "The inferred type of 'foo'") != null);
+}
+
+test "d.ts: inferred generic conditional alias return reports TS5088" {
+    const s = try newSetup(
+        \\type BadFlatArray<Arr, Depth extends number> = {obj: {
+        \\    "done": Arr,
+        \\    "recur": Arr extends ReadonlyArray<infer InnerArr>
+        \\    ? BadFlatArray<InnerArr, [-1, 0, 1][Depth]>
+        \\    : Arr
+        \\}[Depth extends -1 ? "done" : "recur"]}["obj"];
+        \\
+        \\declare function flat<A, D extends number = 1>(
+        \\    arr: A,
+        \\    depth?: D
+        \\): BadFlatArray<A, D>[]
+        \\
+        \\function foo<T>(arr: T[], depth: number) {
+        \\    return flat(arr, depth);
+        \\}
+    );
+    defer destroySetup(s);
+    var ti = try ts_checker.Interner.init(T.allocator);
+    defer ti.deinit();
+    var engine = try ts_checker.Engine.init(T.allocator, &ti);
+    defer engine.deinit();
+    var checker = ts_checker.Checker.init(T.allocator, &s.hir, &ti, &s.sint, &engine);
+    defer checker.deinit();
+    checker.setStrictFlags(.{ .strict_null_checks = true });
+    try checker.checkSourceFile(s.root);
 
     var em = Emitter.initWithTypes(T.allocator, &s.hir, &s.sint, &ti, .{});
     defer em.deinit();
