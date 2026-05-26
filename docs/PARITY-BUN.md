@@ -266,20 +266,18 @@ Parallel process-pool ledger for
 |---|---|---|
 | `FileRange.zig` | Already compile-wired | Keep covered by unit/build evidence |
 | `Frame.zig` | Already compile-wired | Keep covered by unit/build evidence |
-| `Channel.zig` | Dormant integration backlog | Needs Home IPC aliases over `uws`, JSC VM, and `sys` error surfaces |
-| `Coordinator.zig` | Dormant integration backlog | Needs Home worker scheduling, abort, path, fs, and reporting surfaces |
-| `Worker.zig` | Dormant integration backlog | Needs Home `spawn`, fd/stdio, `Async`, `io`, and process-exit surfaces |
-| `aggregate.zig` | Dormant integration backlog | Needs Home `fs`, `path`, JSC/source-map, and file-write surfaces |
-| `runner.zig` | Dormant integration backlog | Namespace-visible through `ParallelRunner`; upstream entrypoints stay parked until Home test command wiring lands |
+| `Channel.zig` | Compile-wired with frame tests | Replace shimmed socket/vtable pieces with real Home IPC backend |
+| `Coordinator.zig` | Compile-wired | Wire worker scheduling, abort, path, fs, and reporting through Home test command |
+| `Worker.zig` | Compile-wired | Wire Home `spawn`, fd/stdio, `Async`, `io`, and process-exit surfaces |
+| `aggregate.zig` | Compile-wired with JUnit attr tests | Wire full JUnit/LCOV merge to Home fs/path/source-map/file-write surfaces |
+| `runner.zig` | Compile-wired | Unpark upstream entrypoints through Home test command wiring |
 
-This chunk counts as integrated only when all seven files are
-Home-import-rewritten, compile through the runtime build graph, avoid
-system Bun delegation, and pass focused evidence for IPC frames, worker
-spawn/reap, result aggregation, fragment merge handling, and a multi-file
-`home test --parallel` corpus smoke. Until then, `Channel`, `Coordinator`,
-`Worker`, `aggregate`, and `runner` remain dormant backlog even though
-their source files are present and tracked through the gated
-`home_rt.runtime.cli.test_.parallel` source map.
+This chunk is compile-frontier integrated: all seven files enter the
+runtime build graph through `home_rt.runtime.cli.test_.parallel`, with
+focused evidence for channel frame ingestion and aggregate JUnit parsing.
+It becomes behavioral `home test --parallel` parity only after the real
+IPC, worker spawn/reap, result aggregation, fragment merge handling, and
+multi-file corpus smoke run without system Bun delegation.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
 --bun-corpus-native-subset=minimal-js` executes four hundred eighteen allowlisted JS

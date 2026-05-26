@@ -286,3 +286,16 @@ const jsc = bun.jsc;
 const CoverageFraction = bun.SourceMap.coverage.Fraction;
 const TestRunner = jsc.Jest.TestRunner;
 const CoverageReportText = bun.SourceMap.coverage.Report.Text;
+
+test "aggregate.attrValue parses JUnit header counts" {
+    const head = "<testsuites name=\"bun test\" tests=\"12\" failures=\"3\" skipped=\"2\" time=\"0.1\">";
+    try std.testing.expectEqual(@as(u32, 12), attrValue(head, "tests"));
+    try std.testing.expectEqual(@as(u32, 3), attrValue(head, "failures"));
+    try std.testing.expectEqual(@as(u32, 2), attrValue(head, "skipped"));
+    try std.testing.expectEqual(@as(u32, 0), attrValue(head, "missing"));
+}
+
+test "aggregate.attrValue treats malformed values as zero" {
+    try std.testing.expectEqual(@as(u32, 0), attrValue("<testsuites tests=\"NaN\">", "tests"));
+    try std.testing.expectEqual(@as(u32, 0), attrValue("<testsuites tests=\"123", "tests"));
+}

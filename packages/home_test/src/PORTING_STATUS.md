@@ -79,11 +79,15 @@ output/metafile/HTML/CSS chunk helpers currently present under
 
 Runtime build audit on 2026-05-26:
 `./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false
---summary all` now passes with 1380 / 1383 tests passed and 3 skipped.
+--summary all` now passes with 1385 / 1388 tests passed and 3 skipped.
 This is compile-frontier substrate, not JS-callable parity credit: it
 wires missing Bun/JSC aliases, parked subprocess owners,
 CowSlice/CowString exposure, Zig 0.17 compatibility shims, and test-only
-C++ extern stubs for the non-JSC build gate.
+C++ extern stubs for the non-JSC build gate. The newest increment wires
+the copied `runtime/cli/test/parallel` subtree through the `home_rt`
+namespace and covers channel frame ingestion plus aggregate JUnit
+attribute parsing; full `home test --parallel` behavior still requires
+real IPC, worker lifecycle, and test-command integration.
 
 Source-presence audit on 2026-05-26: `/tmp/home-bun-parity-main` is now
 source-complete against the pinned Bun checkout. The 72 previously

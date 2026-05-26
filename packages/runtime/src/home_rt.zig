@@ -894,9 +894,57 @@ pub const io = struct {
 pub const Async = io;
 
 pub const uws = struct {
+    pub const us_socket_t = opaque {};
+    pub const SocketGroup = struct {
+        vtable: ?*const anyopaque = null,
+    };
+    pub const vtable = struct {
+        pub fn make(comptime Handlers: type) *const anyopaque {
+            // Zig 0.17/Home parity shim: enough of Bun's usockets vtable
+            // surface for copied test-parallel channel types to compile.
+            _ = Handlers;
+            return undefined;
+        }
+    };
+
     pub fn NewSocketHandler(comptime ssl: bool) type {
         _ = ssl;
         return struct {
+            fd: FD = invalid_fd,
+
+            pub const detached: @This() = .{};
+
+            pub fn fromFd(
+                group: *SocketGroup,
+                kind: anytype,
+                fd: FD,
+                comptime Self: type,
+                self: *Self,
+                socket: ?*anyopaque,
+                close_on_fail: bool,
+            ) ?@This() {
+                _ = group;
+                _ = kind;
+                _ = self;
+                _ = socket;
+                _ = close_on_fail;
+                return .{ .fd = fd };
+            }
+
+            pub fn isDetached(this: @This()) bool {
+                return this.fd == invalid_fd;
+            }
+
+            pub fn setTimeout(this: @This(), timeout: u32) void {
+                _ = this;
+                _ = timeout;
+            }
+
+            pub fn close(this: *@This(), code: anytype) void {
+                _ = code;
+                this.fd = invalid_fd;
+            }
+
             pub fn write(this: @This(), data: []const u8) i32 {
                 _ = this;
                 return @intCast(data.len);
@@ -1440,8 +1488,13 @@ pub const runtime = struct {
         pub const test_ = struct {
             pub const ParallelRunner = @import("runtime/cli/test/ParallelRunner.zig");
             pub const parallel = struct {
+                pub const Channel = @import("runtime/cli/test/parallel/Channel.zig");
+                pub const Coordinator = @import("runtime/cli/test/parallel/Coordinator.zig");
                 pub const FileRange = @import("runtime/cli/test/parallel/FileRange.zig").FileRange;
                 pub const Frame = @import("runtime/cli/test/parallel/Frame.zig");
+                pub const Worker = @import("runtime/cli/test/parallel/Worker.zig");
+                pub const aggregate = @import("runtime/cli/test/parallel/aggregate.zig");
+                pub const runner = @import("runtime/cli/test/parallel/runner.zig");
             };
         };
     };
@@ -2576,8 +2629,13 @@ test {
     _ = @import("runtime/cli/ci_info.zig");
     _ = @import("runtime/cli/discord_command.zig");
     _ = @import("runtime/cli/test/ParallelRunner.zig");
+    _ = @import("runtime/cli/test/parallel/Channel.zig");
+    _ = @import("runtime/cli/test/parallel/Coordinator.zig");
     _ = @import("runtime/cli/test/parallel/FileRange.zig");
     _ = @import("runtime/cli/test/parallel/Frame.zig");
+    _ = @import("runtime/cli/test/parallel/Worker.zig");
+    _ = @import("runtime/cli/test/parallel/aggregate.zig");
+    _ = @import("runtime/cli/test/parallel/runner.zig");
     _ = @import("bun/node_url_query_assert_util_encoding.zig");
     _ = @import("picohttp_sys/picohttpparser.zig");
     _ = @import("wyhash/wyhash.zig");

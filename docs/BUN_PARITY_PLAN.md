@@ -258,12 +258,14 @@ git diff --check -- docs/BUN_PARITY_PLAN.md docs/PARITY-BUN.md packages/home_tes
 
 Runtime compile frontier: the current non-JSC runtime gate is green.
 `./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false
---summary all` now passes on 2026-05-26 with **1380 / 1383 tests passed**
+--summary all` now passes on 2026-05-26 with **1385 / 1388 tests passed**
 and **3 skipped**. The bridge layer that made this green is
 still compile-frontier substrate, not JS-callable parity credit: it adds
 missing Bun/JSC aliases, Zig 0.17 compatibility shims, parked subprocess
 owners, CowSlice/CowString exposure, and test-only C++ extern stubs for
-the non-JSC build gate.
+the non-JSC build gate. The latest runtime slice also compiles the copied
+`runtime/cli/test/parallel` subtree through `home_rt` and adds focused
+frame-ingest plus aggregate JUnit parsing tests.
 
 Bundler tranche exit criteria:
 
@@ -395,34 +397,35 @@ dependency chain in the PR description before editing.
    Home import rewrites, Zig 0.17 cleanup, build wiring, and tests by
    dependency weight across SQL JSC, Valkey JSC, HTTP/WebSocket JSC, DNS
    JSC, then the smaller CSS/sys/parser/semver/URL/AST/patch leaves.
-3. **Parallel test-runner process pool.** Integrate the
-   `runtime/cli/test/parallel` subtree as one chunk. Treat this as an
-   integration backlog, not raw source-copy work: `FileRange.zig` and
-   `Frame.zig` are already compile-wired leaves, while `Channel.zig`,
-   `Coordinator.zig`, `Worker.zig`, `aggregate.zig`, and `runner.zig`
-   are now source-present backlog.
+3. **Parallel test-runner process pool.** The full
+   `runtime/cli/test/parallel` subtree is now compile-wired through
+   `home_rt.runtime.cli.test_.parallel` as one chunk. Treat this as
+   compile-frontier integration, not complete behavioral parity:
+   `FileRange.zig`, `Frame.zig`, `Channel.zig`, `Coordinator.zig`,
+   `Worker.zig`, `aggregate.zig`, and `runner.zig` all enter the runtime
+   build graph, with narrow Home `uws` compatibility aliases and focused
+   tests for channel frame ingestion plus aggregate JUnit parsing.
 
    | File | Current status | Next integration work |
    |---|---|---|
    | `FileRange.zig` | Compile-wired leaf | Keep counted as integrated only with its unit tests/build edge |
    | `Frame.zig` | Compile-wired leaf | Keep counted as integrated only with its unit tests/build edge |
-   | `Channel.zig` | Dormant integration backlog | Source-visible; wire IPC backend over Home `uws`/sys surfaces |
-   | `Coordinator.zig` | Dormant integration backlog | Source-visible; wire worker lifecycle, scheduler, reporting, and abort handling |
-   | `Worker.zig` | Dormant integration backlog | Source-visible; wire process spawn, stdio capture, IPC adoption, and exit accounting |
-   | `aggregate.zig` | Dormant integration backlog | Source-visible; wire JUnit/LCOV merge to Home fs/path/source-map surfaces |
-   | `runner.zig` | Dormant integration backlog | Source-visible; unpark `ParallelRunner` entrypoints through Home's test command path |
+   | `Channel.zig` | Compile-wired with frame tests | Replace shimmed socket/vtable pieces with real Home IPC backend |
+   | `Coordinator.zig` | Compile-wired | Wire worker lifecycle, scheduler, reporting, and abort handling through Home test command |
+   | `Worker.zig` | Compile-wired | Wire process spawn, stdio capture, IPC adoption, and exit accounting |
+   | `aggregate.zig` | Compile-wired with JUnit attr tests | Wire full JUnit/LCOV merge to Home fs/path/source-map surfaces |
+   | `runner.zig` | Compile-wired | Unpark `ParallelRunner` entrypoints through Home's test command path |
 
-   Known blockers for the five dormant files: Home-compatible aliases for Bun
-   globals and allocators, `PathString`, `MimallocArena`, `Async`,
+   Known remaining blockers: replacing compatibility aliases with real
+   Home surfaces for `PathString`, `MimallocArena`, `Async`,
    `io.BufferedReader`, `uws`, `windows.libuv`, `c`, `fs.FileSystem`,
    `O`, `SourceMap`, `selfExePath`, `start_time`, `timespec`,
    `spawn`/process surfaces, `sys` error and file APIs, `fs` and `path`
    helpers, socket-pair or pipe adoption, and the JSC
    `VirtualMachine`/test-runner surfaces used by the worker loop. Count
-   the chunk as integrated only when `ParallelRunner` exposes
+   the chunk as behaviorally complete only when `ParallelRunner` exposes
    `runAsCoordinator`, `runAsWorker`, `workerEmitTestDone`, and `Worker`,
-   all seven files compile through the runtime build graph, the Home
-   `ParallelRunner` path avoids system Bun delegation, and focused tests
+   the Home `ParallelRunner` path avoids system Bun delegation, and tests
    cover frame IPC, worker spawn/reap, result aggregation, coverage or
    JUnit fragment handling, and at least one multi-file `home test
    --parallel` corpus smoke.

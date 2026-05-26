@@ -60,7 +60,9 @@ pub fn Channel(comptime Owner: type, comptime owner_field: []const u8) type {
         const WindowsBackend = struct {
             pipe: ?*uv.Pipe = null,
             /// Read scratch — libuv asks us to allocate before each read.
-            read_chunk: [16 * 1024]u8 = [_]u8{0} ** (16 * 1024),
+            // Zig 0.17 compat: avoid parsing the array-repeat `**` as a
+            // whitespace-sensitive pair of `*` tokens.
+            read_chunk: [16 * 1024]u8 = @splat(0),
             /// Payload owned by the in-flight uv_write; must stay stable until
             /// the callback. New writes go to `out` until this completes, then
             /// the buffers swap.
@@ -263,7 +265,7 @@ pub fn Channel(comptime Owner: type, comptime owner_field: []const u8) type {
                     return;
                 }
                 if (self.in.items.len - head < @as(usize, 5) + len) break;
-                const kind = std.meta.intToEnum(Frame.Kind, self.in.items[head + 4]) catch {
+                const kind = std.enums.fromInt(Frame.Kind, self.in.items[head + 4]) orelse {
                     head += @as(usize, 5) + len;
                     continue;
                 };
@@ -344,3 +346,102 @@ const bun = @import("bun");
 const Environment = bun.Environment;
 const jsc = bun.jsc;
 const uws = bun.uws;
+
+test "Channel.ingest decodes partial frames and preserves remainder" {
+    const Owner = struct {
+        channel: Channel(@This(), "channel") = .{},
+        seen_kind: ?Frame.Kind = null,
+        seen_value: u32 = 0,
+        seen_text: []const u8 = "",
+        done_count: u32 = 0,
+
+        pub fn onChannelFrame(self: *@This(), kind: Frame.Kind, rd: *Frame.Reader) void {
+            self.seen_kind = kind;
+            self.seen_value = rd.u32_();
+            self.seen_text = rd.str();
+        }
+
+        pub fn onChannelDone(self: *@This()) void {
+            self.done_count += 1;
+        }
+    };
+
+    var owner = Owner{};
+    defer owner.channel.deinit();
+
+    var frame: Frame = .{};
+    defer frame.deinit();
+    frame.begin(.run);
+    frame.u32_(123);
+    frame.str("test-file.home");
+    const bytes = frame.finish();
+
+    owner.channel.ingest(bytes[0..3]);
+    try std.testing.expect(owner.seen_kind == null);
+    try std.testing.expectEqual(@as(usize, 3), owner.channel.in.items.len);
+
+    owner.channel.ingest(bytes[3..]);
+    try std.testing.expectEqual(Frame.Kind.run, owner.seen_kind.?);
+    try std.testing.expectEqual(@as(u32, 123), owner.seen_value);
+    try std.testing.expectEqualStrings("test-file.home", owner.seen_text);
+    try std.testing.expectEqual(@as(usize, 0), owner.channel.in.items.len);
+    try std.testing.expectEqual(@as(u32, 0), owner.done_count);
+}
+
+test "Channel.ingest drops unknown frame kinds and continues" {
+    const Owner = struct {
+        channel: Channel(@This(), "channel") = .{},
+        seen: u32 = 0,
+
+        pub fn onChannelFrame(self: *@This(), kind: Frame.Kind, rd: *Frame.Reader) void {
+            _ = rd;
+            if (kind == .ready) self.seen += 1;
+        }
+
+        pub fn onChannelDone(self: *@This()) void {
+            _ = self;
+        }
+    };
+
+    var owner = Owner{};
+    defer owner.channel.deinit();
+
+    const invalid = [_]u8{ 0, 0, 0, 0, 99 };
+
+    var valid: Frame = .{};
+    defer valid.deinit();
+    valid.begin(.ready);
+    const valid_bytes = valid.finish();
+
+    owner.channel.ingest(&invalid);
+    owner.channel.ingest(valid_bytes);
+    try std.testing.expectEqual(@as(u32, 1), owner.seen);
+}
+
+test "Channel.ingest marks done on oversized payload" {
+    const Owner = struct {
+        channel: Channel(@This(), "channel") = .{},
+        done_count: u32 = 0,
+
+        pub fn onChannelFrame(self: *@This(), kind: Frame.Kind, rd: *Frame.Reader) void {
+            _ = self;
+            _ = kind;
+            _ = rd;
+        }
+
+        pub fn onChannelDone(self: *@This()) void {
+            self.done_count += 1;
+        }
+    };
+
+    var owner = Owner{};
+    defer owner.channel.deinit();
+
+    var header: [5]u8 = undefined;
+    std.mem.writeInt(u32, header[0..4], Frame.max_payload + 1, .little);
+    header[4] = @intFromEnum(Frame.Kind.run);
+
+    owner.channel.ingest(&header);
+    try std.testing.expect(owner.channel.done);
+    try std.testing.expectEqual(@as(u32, 1), owner.done_count);
+}

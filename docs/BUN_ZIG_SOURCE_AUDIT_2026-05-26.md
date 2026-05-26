@@ -22,6 +22,47 @@ Pinned upstream:
   Current green evidence covers 80 unique files, leaving the exact
   9-file frontier listed in `docs/BUN_PARITY_PLAN.md`.
 
+## SQL / Valkey / DNS JSC Integration Audit
+
+- Fidelity check against `/Users/chrisbreuer/Code/bun/src`:
+  `packages/runtime/src/sql_jsc/**` and
+  `packages/runtime/src/runtime/dns_jsc/**` Zig files are byte-identical to
+  their Bun upstream counterparts; only Bun's sibling Rust/Cargo files are
+  absent from Home.
+- `packages/runtime/src/runtime/valkey_jsc/**` is byte-identical for copied
+  Zig files except `ValkeyContext.zig`, which already carries a local
+  provenance comment plus a no-op unit test around the upstream empty
+  `deinit`.
+- Current build wiring has the standalone Valkey context reachable via
+  `home_rt.runtime.valkey.Context` and pulled into the `home_rt` test root.
+  The remaining SQL JSC, DNS JSC, and Valkey JSC leaves immediately reach
+  larger unported surfaces (`jsc.Codegen`, DNS/c-ares bridges, socket groups,
+  crypto, and protocol/runtime back-edges), so they should be integrated as
+  follow-up chunks after narrow compatibility aliases are identified per leaf.
+- Focused gate run on 2026-05-26:
+  `/Users/chrisbreuer/Code/Home/lang/pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false --summary failures`
+  exits 0 with the current worktree. During this audit it briefly stopped
+  before the SQL/Valkey/DNS JSC chunk on an unrelated concurrent
+  `runtime/cli/test/parallel/Channel.zig` Zig 0.17 whitespace parse issue;
+  that file is outside the SQL/Valkey/DNS JSC ownership slice.
+
+## Parallel Test Runner Integration Audit
+
+- The copied `runtime/cli/test/parallel/{Channel,Coordinator,Worker,aggregate,runner}.zig`
+  files are now namespace-visible through
+  `home_rt.runtime.cli.test_.parallel` alongside the previously wired
+  `FileRange.zig` and `Frame.zig` leaves.
+- Home adds only narrow compatibility around the copied source: a minimal
+  `uws` socket/vtable shim in `home_rt.zig`, Zig 0.17 syntax cleanup for
+  `Channel`'s scratch buffer, and the upstream-compatible enum decode
+  replacement for `std.meta.intToEnum`.
+- Focused evidence currently covers channel frame ingestion/remainder
+  handling, unknown-frame recovery, oversized-payload termination, and
+  aggregate JUnit attribute parsing. This is compile-frontier integration,
+  not full `home test --parallel` behavior; worker process spawning,
+  coordinator scheduling, and end-to-end parallel corpus execution remain
+  the next behavioral gates.
+
 ## Closed Source Presence Gap
 
 Copied paths grouped by top-level upstream source directory:
