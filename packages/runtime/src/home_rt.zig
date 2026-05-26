@@ -321,6 +321,12 @@ pub const cpp = struct {
         @panic("home_rt.cpp.BunString__fromJS needs the C++ FFI bridge (Phase 12.2)");
     }
 
+    pub fn BunString__fromLatin1(bytes: [*]const u8, len: usize) String {
+        _ = bytes;
+        _ = len;
+        return .dead;
+    }
+
     pub fn BunString__fromLatin1Unitialized(len: usize) String {
         _ = len;
         return .dead;
@@ -538,6 +544,7 @@ pub fn ComptimeEnumMap(comptime T: type) type {
 const identity_context = @import("collections/identity_context.zig");
 pub const IdentityContext = identity_context.IdentityContext;
 pub const ArrayIdentityContext = identity_context.ArrayIdentityContext;
+pub const ArenaAllocator = std.heap.ArenaAllocator;
 
 pub const bit_set = @import("collections/bit_set.zig");
 pub const AutoBitSet = bit_set.AutoBitSet;
@@ -795,6 +802,10 @@ pub const jsc = struct {
     pub const MAX_SAFE_INTEGER = 9007199254740991;
     pub const MIN_SAFE_INTEGER = -9007199254740991;
 
+    pub fn initialize(eval_mode: bool) void {
+        _ = eval_mode;
+    }
+
     /// Calling convention used by Bun JSC host functions.
     pub const conv: std.builtin.CallingConvention = if (Environment.isWindows and Environment.isX64)
         .{ .x86_64_sysv = .{} }
@@ -960,6 +971,9 @@ pub const jsc = struct {
         allocator: std.mem.Allocator = default_allocator,
         rare_data: RareData = .{},
         timer: TimerState = .{},
+        transpiler: RuntimeTranspiler = .{},
+        jsc_vm: *VirtualMachine = undefined,
+        global: *JSGlobalObject = undefined,
         channel_ref: Ref = .{},
         channel_ref_overridden: bool = false,
         channel_ref_should_ignore_one_disconnect_event_listener: bool = false,
@@ -969,8 +983,70 @@ pub const jsc = struct {
         };
         pub threadlocal var default_vm: VirtualMachine = .{};
 
+        pub const RuntimeTranspiler = struct {
+            pub fn configureDefines(this: *RuntimeTranspiler) !void {
+                _ = this;
+            }
+        };
+
         pub fn isLoaded() bool {
             return false;
+        }
+
+        pub fn init(opts: anytype) !*VirtualMachine {
+            _ = opts;
+            return &default_vm;
+        }
+
+        pub fn enableMacroMode(this: *VirtualMachine) void {
+            _ = this;
+        }
+
+        pub fn disableMacroMode(this: *VirtualMachine) void {
+            _ = this;
+        }
+
+        pub fn eventLoop(this: *VirtualMachine) *VirtualMachine {
+            return this;
+        }
+
+        pub fn ensureWaker(this: *VirtualMachine) void {
+            _ = this;
+        }
+
+        pub const LoadedMacroResult = struct {
+            pub const Unwrapped = union(enum) {
+                rejected: JSValue,
+                fulfilled: void,
+            };
+
+            pub fn unwrap(this: LoadedMacroResult, vm: anytype, mode: anytype) Unwrapped {
+                _ = this;
+                _ = vm;
+                _ = mode;
+                return .{ .fulfilled = {} };
+            }
+
+            pub fn toJS(this: LoadedMacroResult) JSValue {
+                _ = this;
+                return .zero;
+            }
+        };
+
+        pub fn loadMacroEntryPoint(this: *VirtualMachine, input_specifier: []const u8, function_name: []const u8, specifier: []const u8, macro_hash: i32) !LoadedMacroResult {
+            _ = this;
+            _ = input_specifier;
+            _ = function_name;
+            _ = specifier;
+            _ = macro_hash;
+            return .{};
+        }
+
+        pub fn unhandledRejection(this: *VirtualMachine, global_object: *JSGlobalObject, result: JSValue, value: JSValue) void {
+            _ = this;
+            _ = global_object;
+            _ = result;
+            _ = value;
         }
 
         pub const TimerState = struct {
@@ -1386,6 +1462,7 @@ pub const http = struct {
     pub const InitError = @import("http/InitError.zig").InitError;
     pub const CertificateInfo = @import("http/CertificateInfo.zig");
     pub const HeaderValueIterator = @import("http/HeaderValueIterator.zig");
+    pub const MimeType = @import("http_types/MimeType.zig");
     pub const Signals = @import("http/Signals.zig");
     pub const H2FrameParser = @import("http/H2FrameParser.zig");
     // Fourth-wave port batch (2026-05-17):
@@ -2417,6 +2494,8 @@ pub const allocators = struct {
             return r.index.index != Unassigned.index;
         }
     };
+
+    pub const Result = BSSResult;
 
     const BSSIndexMapContext = struct {
         pub fn hash(_: @This(), key: u64) u64 {

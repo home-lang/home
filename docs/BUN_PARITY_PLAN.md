@@ -291,6 +291,14 @@ printer/analyze cone: `ArrayHashMap` context return widths, remaining
 missing `bun.strings` WTF-8 helpers, `commonjs_named_exports` iteration,
 `std.Io.GenericWriter`, and `bun.ArenaAllocator`.
 
+Follow-up parser probe in the clean integration worktree reduced that
+frontier to four compile blockers: the macro runner still needs the real
+`VirtualMachine.runWithAPILock` surface, `RuntimeTranspilerCache` needs the
+Zig 0.17 filesystem API port (`std.fs.cwd` replacement), resolver still
+needs `std.fs.openDirAbsoluteZ` compatibility, and `bun.path.joinAbsStringBuf`
+must be exported through the Home path namespace. Keep the adapter gated
+until those are copied faithfully from Bun's Zig source.
+
 Next-work ledger for the three-file frontier:
 
 | Work item | Faithful implementation target | Promotion evidence required |

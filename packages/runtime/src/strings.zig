@@ -10,8 +10,16 @@ const std = @import("std");
 pub const string = []const u8;
 
 pub const CodepointIterator = @import("string/immutable.zig").CodepointIterator;
+pub const Encoding = @import("string/immutable.zig").Encoding;
+pub const EncodingNonAscii = @import("string/immutable.zig").EncodingNonAscii;
 pub const UnsignedCodepointIterator = @import("string/immutable.zig").UnsignedCodepointIterator;
 pub const decodeWTF8RuneTMultibyte = @import("string/immutable.zig").decodeWTF8RuneTMultibyte;
+pub const containsNonBmpCodePointOrIsInvalidIdentifier = @import("string/immutable.zig").containsNonBmpCodePointOrIsInvalidIdentifier;
+pub const decodeWTF8RuneT = @import("string/immutable.zig").decodeWTF8RuneT;
+pub const encodeWTF8Rune = @import("string/immutable.zig").encodeWTF8Rune;
+pub const encodeWTF8RuneT = @import("string/immutable.zig").encodeWTF8RuneT;
+pub const indexOfNeedsEscapeForJavaScriptString = @import("string/immutable.zig").indexOfNeedsEscapeForJavaScriptString;
+pub const charIsAnySlash = @import("string/immutable.zig").charIsAnySlash;
 pub const hasPrefixComptime = @import("string/immutable.zig").hasPrefixComptime;
 pub const eqlComptimeUTF16 = @import("string/immutable.zig").eqlComptimeUTF16;
 pub const hasPrefixWithWordBoundary = @import("string/immutable.zig").hasPrefixWithWordBoundary;
@@ -87,6 +95,39 @@ pub fn hasPrefix(slice: []const u8, prefix: []const u8) bool {
 
 pub fn endsWith(slice: []const u8, suffix: []const u8) bool {
     return std.mem.endsWith(u8, slice, suffix);
+}
+
+pub fn withoutTrailingSlash(input: []const u8) []const u8 {
+    var path = input;
+    while (path.len > 1 and (path[path.len - 1] == '/' or path[path.len - 1] == '\\')) {
+        path.len -= 1;
+    }
+    return path;
+}
+
+pub fn withoutTrailingSlashWindowsPath(input: []const u8) []const u8 {
+    if (input.len < 3 or input[1] != ':') return withoutTrailingSlash(input);
+
+    var root_len: usize = 3;
+    if (input.len >= 2 and input[0] == '\\' and input[1] == '\\') {
+        var slash_count: usize = 0;
+        root_len = input.len;
+        for (input, 0..) |char, input_index| {
+            if (char == '\\' or char == '/') {
+                slash_count += 1;
+                if (slash_count == 4) {
+                    root_len = input_index + 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    var path = input;
+    while (path.len > root_len and (path[path.len - 1] == '/' or path[path.len - 1] == '\\')) {
+        path.len -= 1;
+    }
+    return path;
 }
 
 /// Comptime-known suffix match. Mirrors `bun.strings.endsWithComptime`.

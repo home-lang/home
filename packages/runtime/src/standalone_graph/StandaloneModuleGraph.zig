@@ -65,6 +65,20 @@ pub fn isBunStandaloneFilePathCanonicalized(str: []const u8) bool {
     return false;
 }
 
+pub fn isBunStandaloneFilePath(str: []const u8) bool {
+    return isBunStandaloneFilePathCanonicalized(str);
+}
+
+pub const File = struct {
+    name: []const u8 = "",
+};
+
+pub fn findAssumeStandalonePath(this: *const @This(), name: []const u8) ?*const File {
+    _ = this;
+    _ = name;
+    return null;
+}
+
 /// Server-side bundles (Node + Bun process) vs client-side bundles (sent to
 /// the browser). The bundler emits two output streams and the runtime
 /// dispatches to one or the other based on whether the request came from a

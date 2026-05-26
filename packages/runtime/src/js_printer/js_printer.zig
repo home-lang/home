@@ -34,8 +34,16 @@ pub fn canPrintWithoutEscape(comptime CodePointType: type, c: CodePointType, com
     }
 }
 
-const indentation_space_buf = [_]u8{' '} * *128;
-const indentation_tab_buf = [_]u8{'\t'} * *128;
+const indentation_space_buf = brk: {
+    var buf: [128]u8 = undefined;
+    @memset(&buf, ' ');
+    break :brk buf;
+};
+const indentation_tab_buf = brk: {
+    var buf: [128]u8 = undefined;
+    @memset(&buf, '\t');
+    break :brk buf;
+};
 
 pub fn bestQuoteCharForString(comptime Type: type, str: []const Type, allow_backtick: bool) u8 {
     var single_cost: usize = 0;
@@ -190,12 +198,12 @@ pub fn writePreQuotedString(text_in: []const u8, comptime Writer: type, writer: 
                 .ascii, .utf8 => {
                     if (strings.indexOfNeedsEscapeForJavaScriptString(remain, quote_char)) |j| {
                         const text_chunk = text[i .. i + clamped_width];
-                        try writer.writeAll(text_chunk);
+                        _ = try writer.writeAll(text_chunk);
                         i += clamped_width;
-                        try writer.writeAll(remain[0..j]);
+                        _ = try writer.writeAll(remain[0..j]);
                         i += j;
                     } else {
-                        try writer.writeAll(text[i..]);
+                        _ = try writer.writeAll(text[i..]);
                         i = n;
                         break;
                     }
@@ -203,7 +211,7 @@ pub fn writePreQuotedString(text_in: []const u8, comptime Writer: type, writer: 
                 .latin1, .utf16 => {
                     var codepoint_bytes: [4]u8 = undefined;
                     const codepoint_len = strings.encodeWTF8Rune(codepoint_bytes[0..4], c);
-                    try writer.writeAll(codepoint_bytes[0..codepoint_len]);
+                    _ = try writer.writeAll(codepoint_bytes[0..codepoint_len]);
                     i += clamped_width;
                 },
             }
@@ -211,60 +219,60 @@ pub fn writePreQuotedString(text_in: []const u8, comptime Writer: type, writer: 
         }
         switch (c) {
             0x07 => {
-                try writer.writeAll("\\x07");
+                _ = try writer.writeAll("\\x07");
                 i += 1;
             },
             0x08 => {
-                try writer.writeAll("\\b");
+                _ = try writer.writeAll("\\b");
                 i += 1;
             },
             0x0C => {
-                try writer.writeAll("\\f");
+                _ = try writer.writeAll("\\f");
                 i += 1;
             },
             '\n' => {
                 if (quote_char == '`') {
-                    try writer.writeAll("\n");
+                    _ = try writer.writeAll("\n");
                 } else {
-                    try writer.writeAll("\\n");
+                    _ = try writer.writeAll("\\n");
                 }
                 i += 1;
             },
             std.ascii.control_code.cr => {
-                try writer.writeAll("\\r");
+                _ = try writer.writeAll("\\r");
                 i += 1;
             },
             // \v
             std.ascii.control_code.vt => {
-                try writer.writeAll("\\v");
+                _ = try writer.writeAll("\\v");
                 i += 1;
             },
             // "\\"
             '\\' => {
-                try writer.writeAll("\\\\");
+                _ = try writer.writeAll("\\\\");
                 i += 1;
             },
             '"' => {
                 if (quote_char == '"') {
-                    try writer.writeAll("\\\"");
+                    _ = try writer.writeAll("\\\"");
                 } else {
-                    try writer.writeAll("\"");
+                    _ = try writer.writeAll("\"");
                 }
                 i += 1;
             },
             '\'' => {
                 if (quote_char == '\'') {
-                    try writer.writeAll("\\'");
+                    _ = try writer.writeAll("\\'");
                 } else {
-                    try writer.writeAll("'");
+                    _ = try writer.writeAll("'");
                 }
                 i += 1;
             },
             '`' => {
                 if (quote_char == '`') {
-                    try writer.writeAll("\\`");
+                    _ = try writer.writeAll("\\`");
                 } else {
-                    try writer.writeAll("`");
+                    _ = try writer.writeAll("`");
                 }
                 i += 1;
             },
@@ -272,21 +280,21 @@ pub fn writePreQuotedString(text_in: []const u8, comptime Writer: type, writer: 
                 if (quote_char == '`') {
                     const remain = text[i + clamped_width ..];
                     if (remain.len > 0 and remain[0] == '{') {
-                        try writer.writeAll("\\$");
+                        _ = try writer.writeAll("\\$");
                     } else {
-                        try writer.writeAll("$");
+                        _ = try writer.writeAll("$");
                     }
                 } else {
-                    try writer.writeAll("$");
+                    _ = try writer.writeAll("$");
                 }
                 i += 1;
             },
 
             '\t' => {
                 if (quote_char == '`') {
-                    try writer.writeAll("\t");
+                    _ = try writer.writeAll("\t");
                 } else {
-                    try writer.writeAll("\\t");
+                    _ = try writer.writeAll("\\t");
                 }
                 i += 1;
             },
@@ -297,7 +305,7 @@ pub fn writePreQuotedString(text_in: []const u8, comptime Writer: type, writer: 
                 if (c <= 0xFF and !json) {
                     const k = @as(usize, @intCast(c));
 
-                    try writer.writeAll(&[_]u8{
+                    _ = try writer.writeAll(&[_]u8{
                         '\\',
                         'x',
                         hex_chars[(k >> 4) & 0xF],
@@ -306,7 +314,7 @@ pub fn writePreQuotedString(text_in: []const u8, comptime Writer: type, writer: 
                 } else if (c <= 0xFFFF) {
                     const k = @as(usize, @intCast(c));
 
-                    try writer.writeAll(&[_]u8{
+                    _ = try writer.writeAll(&[_]u8{
                         '\\',
                         'u',
                         hex_chars[(k >> 12) & 0xF],
@@ -319,7 +327,7 @@ pub fn writePreQuotedString(text_in: []const u8, comptime Writer: type, writer: 
                     const lo = @as(usize, @intCast(first_high_surrogate + ((k >> 10) & 0x3FF)));
                     const hi = @as(usize, @intCast(first_low_surrogate + (k & 0x3FF)));
 
-                    try writer.writeAll(&[_]u8{
+                    _ = try writer.writeAll(&[_]u8{
                         '\\',
                         'u',
                         hex_chars[lo >> 12],
@@ -348,9 +356,9 @@ pub fn quoteForJSON(text: []const u8, bytes: *MutableString, comptime ascii_only
 }
 
 pub fn writeJSONString(input: []const u8, comptime Writer: type, writer: Writer, comptime encoding: strings.Encoding) !void {
-    try writer.writeAll("\"");
+    _ = try writer.writeAll("\"");
     try writePreQuotedString(input, Writer, writer, '"', false, true, encoding);
-    try writer.writeAll("\"");
+    _ = try writer.writeAll("\"");
 }
 
 pub const SourceMapHandler = struct {
@@ -1247,7 +1255,7 @@ fn NewPrinter(
                     {
                         // Reset the temporary bindings array early on
                         var temp_bindings = p.temporary_bindings;
-                        p.temporary_bindings = .{};
+                        p.temporary_bindings = .empty;
                         defer {
                             if (p.temporary_bindings.capacity > 0) {
                                 temp_bindings.deinit(bun.default_allocator);
@@ -2200,7 +2208,10 @@ fn NewPrinter(
                     p.printSpaceBeforeIdentifier();
                     p.addSourceMapping(expr.loc);
 
-                    for (p.options.commonjs_named_exports.keys(), p.options.commonjs_named_exports.values()) |key, value| {
+                    var commonjs_named_exports_iter = p.options.commonjs_named_exports.iterator();
+                    while (commonjs_named_exports_iter.next()) |entry| {
+                        const key = entry.key_ptr.*;
+                        const value = entry.value_ptr.*;
                         if (value.loc_ref.ref.?.eql(id.ref)) {
                             if (p.options.commonjs_named_exports_deoptimized or value.needs_decl) {
                                 if (p.options.commonjs_module_exports_assigned_deoptimized and
@@ -5609,6 +5620,28 @@ pub const WriteResult = struct {
     end_off: u32,
 };
 
+const ArrayListSerializationWriter = struct {
+    list: *std.ArrayList(u8),
+
+    pub fn writeAll(this: *ArrayListSerializationWriter, bytes: []const u8) !void {
+        try this.list.appendSlice(bun.default_allocator, bytes);
+    }
+
+    pub fn writeByte(this: *ArrayListSerializationWriter, byte: u8) !void {
+        try this.list.append(bun.default_allocator, byte);
+    }
+
+    pub fn writeByteNTimes(this: *ArrayListSerializationWriter, byte: u8, count: usize) !void {
+        try this.list.appendNTimes(bun.default_allocator, byte, count);
+    }
+
+    pub fn writeInt(this: *ArrayListSerializationWriter, comptime T: type, value: T, endian: std.builtin.Endian) !void {
+        var buf: [@sizeOf(T)]u8 = undefined;
+        std.mem.writeInt(T, &buf, value, endian);
+        try this.writeAll(&buf);
+    }
+};
+
 pub fn NewWriter(
     comptime ContextType: type,
     comptime writeByte: fn (ctx: *ContextType, char: u8) anyerror!usize,
@@ -5634,12 +5667,17 @@ pub fn NewWriter(
             };
         }
 
-        pub fn stdWriter(self: *Self) std.Io.GenericWriter(*Self, error{}, stdWriterWrite) {
-            return .{ .context = self };
-        }
-        pub fn stdWriterWrite(self: *Self, bytes: []const u8) error{}!usize {
-            self.print([]const u8, bytes);
-            return bytes.len;
+        pub const StdWriter = struct {
+            parent: *Self,
+
+            pub fn writeAll(writer: @This(), bytes: anytype) error{}!usize {
+                writer.parent.print(@TypeOf(bytes), bytes);
+                return bytes.len;
+            }
+        };
+
+        pub fn stdWriter(self: *Self) StdWriter {
+            return .{ .parent = self };
         }
 
         pub fn isCopyFileRangeSupported() bool {
@@ -6101,9 +6139,12 @@ pub fn printAst(
     defer if (source_maps_chunk) |*chunk| chunk.deinit();
 
     if (opts.runtime_transpiler_cache) |cache| {
-        var srlz_res = std.array_list.Managed(u8).init(bun.default_allocator);
-        defer srlz_res.deinit();
-        if (have_module_info) try opts.module_info.?.asDeserialized().serialize(srlz_res.writer());
+        var srlz_res: std.ArrayList(u8) = .empty;
+        defer srlz_res.deinit(bun.default_allocator);
+        if (have_module_info) {
+            var srlz_writer = ArrayListSerializationWriter{ .list = &srlz_res };
+            try opts.module_info.?.asDeserialized().serialize(&srlz_writer);
+        }
         cache.put(printer.writer.ctx.getWritten(), if (source_maps_chunk) |chunk| chunk.buffer.list.items else "", srlz_res.items);
     }
 

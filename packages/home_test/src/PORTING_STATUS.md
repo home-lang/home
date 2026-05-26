@@ -110,6 +110,12 @@ hash-map context adaptation, stale `std.AutoArrayHashMap`, remaining
 CommonJS export-map iteration, `std.Io.GenericWriter`, and
 `bun.ArenaAllocator`.
 
+Second clean-worktree parser probe reduced the compile frontier to four
+items: macro `runWithAPILock`, RuntimeTranspilerCache filesystem cwd
+compatibility, resolver `openDirAbsoluteZ` compatibility, and
+`bun.path.joinAbsStringBuf` export. The adapter remains gated on the
+normalization fallback until those are copied faithfully.
+
 Next implementation ledger:
 
 | Work item | Required shape |

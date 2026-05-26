@@ -15,6 +15,7 @@ pub const isSepAny = @import("paths/resolve_path.zig").isSepAny;
 pub const isSepAnyT = @import("paths/resolve_path.zig").isSepAnyT;
 pub const lastIndexOfSep = @import("paths/resolve_path.zig").lastIndexOfSep;
 pub const lastIndexOfSepT = @import("paths/resolve_path.zig").lastIndexOfSepT;
+pub const PosixToWinNormalizer = @import("paths/resolve_path.zig").PosixToWinNormalizer;
 
 pub fn join(parts: []const []const u8, sep: std.fs.path.Style) []const u8 {
     _ = sep;
