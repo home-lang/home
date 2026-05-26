@@ -14,6 +14,13 @@ const builtin = @import("builtin");
 
 pub const upstream_sha = "fd0b6f1a271fca0b8124b69f230b100f4d636af6";
 pub const callconv_inline: std.builtin.CallingConvention = if (builtin.mode == .Debug) .auto else .@"inline";
+pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .Debug) .auto else .always_inline;
+
+// Faithful Bun-source import surface for the Node URL/querystring/assert/util
+// and Web text-encoding parity slice. This namespace points at copied Bun Zig
+// modules only; it does not provide JS fallback behavior.
+pub const bun_node_web_parity = @import("bun/node_url_query_assert_util_encoding.zig");
+pub const bun_cli_spawn_process_fs_file = @import("bun/cli_spawn_process_fs_file.zig");
 
 // ---- Foundational primitives ------------------------------------------
 // These are Home-original implementations of the small Bun stdlib subset
@@ -32,6 +39,9 @@ pub const env_var = @import("env_var.zig");
 // `bun.OOM` namespace).
 pub const assert = Global.assert;
 pub const OOM = Global.OOM;
+pub const JSError = error{ JSError, OutOfMemory, JSTerminated };
+pub const JSTerminated = error{JSTerminated};
+pub const JSOOM = OOM || JSError;
 pub const handleOom = Global.handleOom;
 pub const default_allocator: std.mem.Allocator = std.heap.smp_allocator;
 
@@ -175,6 +185,16 @@ pub const cli = struct {
 // JSC engine is brought up (Phase 12.2). The leaves we copy now establish
 // the public-facing namespace so callers can spell things correctly.
 pub const jsc = struct {
+    /// Calling convention used by Bun JSC host functions.
+    pub const conv: std.builtin.CallingConvention = if (Environment.isWindows and Environment.isX64)
+        .{ .x86_64_sysv = .{} }
+    else
+        .c;
+
+    pub const JSValue = @import("jsc/JSValue.zig").JSValue;
+    pub const CallFrame = @import("jsc/CallFrame.zig").CallFrame;
+    pub const JSGlobalObject = @import("jsc/JSGlobalObject.zig").JSGlobalObject;
+    pub const ConsoleObject = @import("jsc/ConsoleObject.zig");
     pub const JSPromiseRejectionOperation = @import("jsc/JSPromiseRejectionOperation.zig").JSPromiseRejectionOperation;
     pub const ScriptExecutionStatus = @import("jsc/ScriptExecutionStatus.zig").ScriptExecutionStatus;
     pub const SourceType = @import("jsc/SourceType.zig").SourceType;
@@ -295,6 +315,17 @@ pub const jsc = struct {
     pub const promise = @import("jsc/promise.zig");
     pub const iterator = @import("jsc/iterator.zig");
     pub const global = @import("jsc/global.zig");
+    pub const host_fn = @import("jsc/host_fn.zig");
+    pub const JSHostFn = host_fn.JSHostFn;
+    pub const JSHostFnZig = host_fn.JSHostFnZig;
+    pub const JSHostFnZigWithContext = host_fn.JSHostFnZigWithContext;
+    pub const JSHostFunctionTypeWithContext = host_fn.JSHostFunctionTypeWithContext;
+    pub const toJSHostFn = host_fn.toJSHostFn;
+    pub const toJSHostFnResult = host_fn.toJSHostFnResult;
+    pub const toJSHostFnWithContext = host_fn.toJSHostFnWithContext;
+    pub const toJSHostCall = host_fn.toJSHostCall;
+    pub const fromJSHostCall = host_fn.fromJSHostCall;
+    pub const fromJSHostCallGeneric = host_fn.fromJSHostCallGeneric;
 };
 
 // ---- src/io/ -----------------------------------------------------------
@@ -377,6 +408,8 @@ pub const options_types = struct {
 // ---- src/meta/ ---------------------------------------------------------
 // Type-classifier + bitfield helpers. Pure leaves (no `home_rt` deps).
 pub const meta = struct {
+    pub const typeBaseName = @import("meta/meta.zig").typeBaseName;
+    pub const typeBaseNameT = @import("meta/meta.zig").typeBaseNameT;
     pub const bits = @import("meta/bits.zig");
     pub const traits = @import("meta/traits.zig");
 };
@@ -456,11 +489,17 @@ pub const install = struct {
 pub const ptr = struct {
     pub const meta = @import("ptr/meta.zig");
     pub const Cow = @import("ptr/Cow.zig").Cow;
+    pub const RefCount = @import("ptr/ref_count.zig").RefCount;
+    pub const ThreadSafeRefCount = @import("ptr/ref_count.zig").ThreadSafeRefCount;
+    pub const TaggedPointer = @import("ptr/tagged_pointer.zig").TaggedPointer;
+    pub const TaggedPointerUnion = @import("ptr/tagged_pointer.zig").TaggedPointerUnion;
     // Wave-15 Tier-1 grinder (2026-05-18):
     pub const WeakPtr = @import("ptr/weak_ptr.zig").WeakPtr;
     pub const WeakPtrData = @import("ptr/weak_ptr.zig").WeakPtrData;
     pub const ExternalShared = @import("ptr/external_shared.zig").ExternalShared;
 };
+pub const TaggedPointer = ptr.TaggedPointer;
+pub const TaggedPointerUnion = ptr.TaggedPointerUnion;
 
 // ---- src/uws_sys/ ------------------------------------------------------
 // Opaque bindings to the `us_*` C ABI in `packages/bun-usockets`.
@@ -596,6 +635,7 @@ pub const runtime = struct {
     // Eighth-wave port batch (2026-05-18). First runtime/api/ leaves —
     // pure-Zig helpers and small JSC bridges with stubbed JSC surfaces.
     pub const api = struct {
+        pub const Subprocess = @import("runtime/api/bun/subprocess.zig");
         pub const lolhtml_jsc = @import("runtime/api/lolhtml_jsc.zig");
         pub const cron_parser = @import("runtime/api/cron_parser.zig");
         pub const bun = struct {
@@ -608,7 +648,7 @@ pub const runtime = struct {
         pub const RefCountedStr = @import("runtime/shell/RefCountedStr.zig");
     };
 };
-
+pub const api = runtime.api;
 // ---- src/string/ -------------------------------------------------------
 // Wave-15 Tier-1 grinder (2026-05-18). Pure-Zig string helpers.
 // JSC-bridge surface (`jsEscapeRegExp`, JSC PathString conversion) parks
@@ -1534,6 +1574,7 @@ test {
     _ = s3_signing;
     _ = cares_sys;
     _ = libarchive_sys;
+    _ = @import("bun/cli_spawn_process_fs_file.zig");
     // Pull nested module tests through their actual file imports so
     // the home_rt test runner exercises every copied leaf.
     _ = @import("event_loop/DeferredTaskQueue.zig");
@@ -1620,6 +1661,7 @@ test {
     _ = @import("runtime/cli/test/ParallelRunner.zig");
     _ = @import("runtime/cli/test/parallel/FileRange.zig");
     _ = @import("runtime/cli/test/parallel/Frame.zig");
+    _ = @import("bun/node_url_query_assert_util_encoding.zig");
     _ = @import("picohttp_sys/picohttpparser.zig");
     _ = @import("wyhash/wyhash.zig");
     _ = @import("glob/glob.zig");

@@ -378,7 +378,7 @@ pub fn parse(
 
             while (strings.hasPrefixComptime(
                 remain,
-                comptime [_]u8{';'} ** (@sizeOf(usize) / 2),
+                comptime [_]u8{';'}**(@sizeOf(usize) / 2),
             )) {
                 generated.lines = generated.lines.addScalar(@sizeOf(usize) / 2);
                 remain = remain[@sizeOf(usize) / 2 ..];

@@ -15,8 +15,8 @@ Home runtime packages, and make Zig 0.17-dev changes as narrowly as possible.
 ## Inventory
 
 - Aggregator: `../webcore.zig`
-- Source files: 29 `.zig` files copied from Bun `src/runtime/webcore/`
-- Total copied Zig source: 20,765 lines, including the aggregator
+- Source files: 42 `.zig` files copied from Bun `src/runtime/webcore/`
+- Total copied Zig source: 28,980 lines, including the aggregator
 
 ## Current State
 

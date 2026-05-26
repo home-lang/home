@@ -30,6 +30,7 @@ pub const enable_fuzzilli = false; // Fuzzilli REPRL — re-attaches in a future
 pub const isDebug = builtin.mode == .Debug;
 pub const isRelease = !isDebug;
 pub const allow_assert = isDebug;
+pub const is_canary = false;
 pub const ci_assert = false;
 
 // Wave-20 Tier-2 substrate (2026-05-19). Mirrors upstream

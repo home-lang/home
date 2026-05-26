@@ -449,12 +449,13 @@ pub fn build(b: *std.Build) void {
     const image_pkg = createPackage(b, "packages/image/src/image.zig", target, optimize, zig_test_framework);
 
     // Home Runtime (Phase 12 substrate — Bun source copy in progress)
-    // home_rt imports itself: copied-from-Bun source uses
-    // `@import("home_rt")` (rewritten from `@import("bun")` at copy time)
-    // to reach the aggregator. The self-import lets nested submodules
-    // resolve `home_rt` symbolically rather than via relative paths.
+    // home_rt imports itself: copied-from-Bun source uses both
+    // `@import("home_rt")` (older copied files rewritten at copy time) and
+    // `@import("bun")` (verbatim copied files). Both aliases resolve to the
+    // Home aggregator while preserving upstream provenance in source files.
     const home_rt_pkg = createPackage(b, "packages/runtime/src/home_rt.zig", target, optimize, zig_test_framework);
     home_rt_pkg.addImport("home_rt", home_rt_pkg);
+    home_rt_pkg.addImport("bun", home_rt_pkg);
     home_test_pkg.addImport("home_rt", home_rt_pkg);
 
     // Game development packages (order matters for dependencies)

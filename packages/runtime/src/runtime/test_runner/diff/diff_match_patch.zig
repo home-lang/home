@@ -2522,8 +2522,8 @@ pub fn DMP(comptime Unit: type) type {
 
             // Increase the text lengths by 1024 times to ensure a timeout.
             {
-                const a = "`Twas brillig, and the slithy toves\nDid gyre and gimble in the wabe:\nAll mimsy were the borogoves,\nAnd the mome raths outgrabe.\n" ** 1024;
-                const b = "I am the very model of a modern major general,\nI've information vegetable, animal, and mineral,\nI know the kings of England, and I quote the fights historical,\nFrom Marathon to Waterloo, in order categorical.\n" ** 1024;
+                const a = "`Twas brillig, and the slithy toves\nDid gyre and gimble in the wabe:\nAll mimsy were the borogoves,\nAnd the mome raths outgrabe.\n"**1024;
+                const b = "I am the very model of a modern major general,\nI've information vegetable, animal, and mineral,\nI know the kings of England, and I quote the fights historical,\nFrom Marathon to Waterloo, in order categorical.\n"**1024;
 
                 const with_timout: DiffMatchPatch = .{
                     .config = .{ .diff_timeout = 100 }, // 100ms
@@ -2974,13 +2974,11 @@ pub fn DMP(comptime Unit: type) type {
             }
 
             // remove the first tuple field (`std.mem.Allocator`)
-            var extra_args_tuple_info = @typeInfo(ArgsTuple);
-            var extra_args_fields = extra_args_tuple_info.@"struct".fields[1..].*;
-            for (&extra_args_fields, 0..) |*extra_field, i| {
-                extra_field.name = fn_args_fields[i].name;
+            var extra_arg_types: [fn_args_fields.len - 1]type = undefined;
+            for (&extra_arg_types, fn_args_fields[1..]) |*extra_arg_type, field| {
+                extra_arg_type.* = field.type;
             }
-            extra_args_tuple_info.@"struct".fields = &extra_args_fields;
-            const ExtraArgsTuple = @Type(extra_args_tuple_info);
+            const ExtraArgsTuple = @Tuple(&extra_arg_types);
 
             return .{
                 .ArgsTuple = ArgsTuple,

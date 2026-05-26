@@ -1750,7 +1750,7 @@ pub const Formatter = struct {
         };
     }
 
-    const indentation_buf = [_]u8{' '} ** 64;
+    const indentation_buf = [_]u8{' '}**64;
     pub fn writeIndent(
         this: *ConsoleObject.Formatter,
         comptime Writer: type,

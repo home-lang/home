@@ -1,46 +1,3 @@
-// Copied from bun/src/jsc/CallFrame.zig at upstream
-// SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-//
-// Structural port. The opaque `CallFrame` type round-trips between Zig and
-// the JSC interpreter; we keep its public surface (`arguments`, `this`,
-// `callee`, `iterate`, ...) so callers compile against the same API.
-//
-// The `Bun__CallFrame__*` externs go through C++ and are kept verbatim per
-// the porting rules. The `VM` / `JSGlobalObject` parameters are stubbed
-// locally as opaque pointers; they re-attach when the JSC bridge lands in
-// Phase 12.2.
-//
-// `bun.String`, `bun.ArenaAllocator`, `bun.bit_set.IntegerBitSet`, and
-// `jsc.VirtualMachine` are not yet on the `home_rt` allow-list. The
-// `ArgumentsSlice` sub-struct that depends on all four is omitted; callers
-// reaching for it should switch to `argumentsAsArray` per the upstream
-// migration note ("Do not use this function").
-
-const std = @import("std");
-
-// JSC bridge stubs — re-attach in Phase 12.2.
-const JSGlobalObject = opaque {};
-const VM = opaque {};
-
-// `bun.String` C ABI stub — re-attaches in Phase 12.2. Real layout is
-// `{tag: u8, _padding: 7 bytes, impl: *anyopaque}`.
-const String = extern struct {
-    tag: u8 = 0,
-    _padding: [7]u8 = @splat(0),
-    impl: ?*anyopaque = null,
-
-    pub const empty: String = .{};
-};
-
-/// Stand-in for `bun.jsc.JSValue`. Real type is an `enum(i64)` with sentinel
-/// tags (`.zero`, `.js_undefined`, ...); only `zero` and `js_undefined` are
-/// used at the boundaries this file touches.
-pub const JSValue = enum(i64) {
-    zero = 0,
-    js_undefined = 0xa,
-    _,
-};
-
 /// Call Frame for JavaScript -> Native function calls. In Bun, it is
 /// preferred to use the bindings generator instead of directly decoding
 /// arguments. See `docs/project/bindgen.md`
@@ -60,7 +17,7 @@ pub const CallFrame = opaque {
     }
 
     /// This function protects out-of-bounds access by returning undefined
-    pub fn argument(self: *const CallFrame, i: usize) JSValue {
+    pub fn argument(self: *const CallFrame, i: usize) jsc.JSValue {
         return if (self.argumentsCount() > i) self.arguments()[i] else .js_undefined;
     }
 
@@ -70,12 +27,12 @@ pub const CallFrame = opaque {
 
     /// When this CallFrame belongs to a constructor, this value is not the `this`
     /// value, but instead the value of `new.target`.
-    pub fn this(self: *const CallFrame) JSValue {
+    pub fn this(self: *const CallFrame) jsc.JSValue {
         return self.asUnsafeJSValueArray()[offset_this_argument];
     }
 
     /// `JSValue` for the current function being called.
-    pub fn callee(self: *const CallFrame) JSValue {
+    pub fn callee(self: *const CallFrame) jsc.JSValue {
         return self.asUnsafeJSValueArray()[offset_callee];
     }
 
@@ -115,7 +72,7 @@ pub const CallFrame = opaque {
     ///   |          ......            |
     ///
     /// The proper return type of this should be []Register, but
-    inline fn asUnsafeJSValueArray(self: *const CallFrame) [*]const JSValue {
+    inline fn asUnsafeJSValueArray(self: *const CallFrame) [*]const jsc.JSValue {
         return @ptrCast(@alignCast(self));
     }
 
@@ -154,17 +111,73 @@ pub const CallFrame = opaque {
         return @intCast(registers[offset_argument_count_including_this].encoded_value.as_bits.payload);
     }
 
+    fn Arguments(comptime max: usize) type {
+        return struct {
+            ptr: [max]jsc.JSValue,
+            len: usize,
+
+            pub inline fn init(comptime i: usize, ptr: [*]const jsc.JSValue) @This() {
+                var args: [max]jsc.JSValue = std.mem.zeroes([max]jsc.JSValue);
+                args[0..i].* = ptr[0..i].*;
+
+                return @This(){
+                    .ptr = args,
+                    .len = i,
+                };
+            }
+
+            pub inline fn initUndef(comptime i: usize, ptr: [*]const jsc.JSValue) @This() {
+                var args: [max]jsc.JSValue = @splat(.js_undefined);
+                args[0..i].* = ptr[0..i].*;
+                return @This(){ .ptr = args, .len = i };
+            }
+
+            pub inline fn slice(self: *const @This()) []const JSValue {
+                return self.ptr[0..self.len];
+            }
+
+            pub inline fn mut(self: *@This()) []JSValue {
+                return self.ptr[0..];
+            }
+        };
+    }
+
+    /// Do not use this function. Migration path:
+    /// arguments(n).ptr[k] -> argumentsAsArray(n)[k]
+    /// arguments(n).slice() -> arguments()
+    /// arguments(n).mut() -> `var args = argumentsAsArray(n); &args`
+    pub fn arguments_old(self: *const CallFrame, comptime max: usize) Arguments(max) {
+        const slice = self.arguments();
+        comptime bun.assert(max <= 15);
+        return switch (@as(u4, @min(slice.len, max))) {
+            0 => .{ .ptr = @splat(.zero), .len = 0 },
+            inline 1...15 => |count| Arguments(max).init(comptime @min(count, max), slice.ptr),
+        };
+    }
+
+    /// Do not use this function. Migration path:
+    /// argumentsAsArray(n)
+    pub fn argumentsUndef(self: *const CallFrame, comptime max: usize) Arguments(max) {
+        const slice = self.arguments();
+        comptime bun.assert(max <= 9);
+        return switch (@as(u4, @min(slice.len, max))) {
+            0 => .{ .ptr = @splat(.js_undefined), .len = 0 },
+            inline 1...9 => |count| Arguments(max).initUndef(@min(count, max), slice.ptr),
+            else => unreachable,
+        };
+    }
+
     extern fn Bun__CallFrame__isFromBunMain(*const CallFrame, *const VM) bool;
     pub const isFromBunMain = Bun__CallFrame__isFromBunMain;
 
-    extern fn Bun__CallFrame__getCallerSrcLoc(*const CallFrame, *JSGlobalObject, *String, *c_uint, *c_uint) void;
+    extern fn Bun__CallFrame__getCallerSrcLoc(*const CallFrame, *JSGlobalObject, *bun.String, *c_uint, *c_uint) void;
     pub const CallerSrcLoc = struct {
-        str: String,
+        str: bun.String,
         line: c_uint,
         column: c_uint,
     };
     pub fn getCallerSrcLoc(call_frame: *const CallFrame, globalThis: *JSGlobalObject) CallerSrcLoc {
-        var str: String = undefined;
+        var str: bun.String = undefined;
         var line: c_uint = undefined;
         var column: c_uint = undefined;
         Bun__CallFrame__getCallerSrcLoc(call_frame, globalThis, &str, &line, &column);
@@ -190,28 +203,102 @@ pub const CallFrame = opaque {
         }
     };
 
-    // `ArgumentsSlice` was upstream's pre-bindgen argument iterator. It pulls
-    // in `bun.ArenaAllocator`, `bun.bit_set.IntegerBitSet`, and
-    // `jsc.VirtualMachine` — none of which are on the `home_rt` allow-list
-    // yet. Callers should reach for `argumentsAsArray` per the migration
-    // note in upstream. The sub-struct re-lands with `jsc.VirtualMachine`.
+    /// This is an advanced iterator struct which is used by various APIs. In
+    /// Node.fs, `will_be_async` is set to true which allows string/path APIs to
+    /// know if they have to do threadsafe clones.
+    ///
+    /// Prefer `Iterator` for a simpler iterator.
+    pub const ArgumentsSlice = struct {
+        remaining: []const jsc.JSValue,
+        vm: *jsc.VirtualMachine,
+        arena: bun.ArenaAllocator = bun.ArenaAllocator.init(bun.default_allocator),
+        all: []const jsc.JSValue,
+        threw: bool = false,
+        protected: bun.bit_set.IntegerBitSet(32) = bun.bit_set.IntegerBitSet(32).initEmpty(),
+        will_be_async: bool = false,
+
+        pub fn unprotect(slice: *ArgumentsSlice) void {
+            var iter = slice.protected.iterator(.{});
+            while (iter.next()) |i| {
+                slice.all[i].unprotect();
+            }
+            slice.protected = bun.bit_set.IntegerBitSet(32).initEmpty();
+        }
+
+        pub fn deinit(slice: *ArgumentsSlice) void {
+            slice.unprotect();
+            slice.arena.deinit();
+        }
+
+        pub fn protectEat(slice: *ArgumentsSlice) void {
+            if (slice.remaining.len == 0) return;
+            const index = slice.all.len - slice.remaining.len;
+            slice.protected.set(index);
+            slice.all[index].protect();
+            slice.eat();
+        }
+
+        pub fn protectEatNext(slice: *ArgumentsSlice) ?jsc.JSValue {
+            if (slice.remaining.len == 0) return null;
+            return slice.nextEat();
+        }
+
+        pub fn from(vm: *jsc.VirtualMachine, slice: []const jsc.JSValueRef) ArgumentsSlice {
+            return init(vm, @as([*]const jsc.JSValue, @ptrCast(slice.ptr))[0..slice.len]);
+        }
+        pub fn init(vm: *jsc.VirtualMachine, slice: []const jsc.JSValue) ArgumentsSlice {
+            return ArgumentsSlice{
+                .remaining = slice,
+                .vm = vm,
+                .all = slice,
+                .arena = bun.ArenaAllocator.init(vm.allocator),
+            };
+        }
+
+        pub fn initAsync(vm: *jsc.VirtualMachine, slice: []const jsc.JSValue) ArgumentsSlice {
+            return ArgumentsSlice{
+                .remaining = bun.default_allocator.dupe(jsc.JSValue, slice),
+                .vm = vm,
+                .all = slice,
+                .arena = bun.ArenaAllocator.init(bun.default_allocator),
+            };
+        }
+
+        pub inline fn len(slice: *const ArgumentsSlice) u16 {
+            return @as(u16, @truncate(slice.remaining.len));
+        }
+
+        pub fn eat(slice: *ArgumentsSlice) void {
+            if (slice.remaining.len == 0) {
+                return;
+            }
+
+            slice.remaining = slice.remaining[1..];
+        }
+
+        /// Peek the next argument without eating it
+        pub fn next(slice: *ArgumentsSlice) ?jsc.JSValue {
+            if (slice.remaining.len == 0) {
+                return null;
+            }
+
+            return slice.remaining[0];
+        }
+
+        pub fn nextEat(slice: *ArgumentsSlice) ?jsc.JSValue {
+            if (slice.remaining.len == 0) {
+                return null;
+            }
+            defer slice.eat();
+            return slice.remaining[0];
+        }
+    };
 };
 
-test "CallFrame.Iterator drains the slice in order" {
-    var slice = [_]JSValue{ @enumFromInt(7), @enumFromInt(8), @enumFromInt(9) };
-    var it: CallFrame.Iterator = .{ .rest = slice[0..] };
-    try std.testing.expectEqual(@as(?JSValue, @enumFromInt(7)), it.next());
-    try std.testing.expectEqual(@as(?JSValue, @enumFromInt(8)), it.next());
-    try std.testing.expectEqual(@as(?JSValue, @enumFromInt(9)), it.next());
-    try std.testing.expectEqual(@as(?JSValue, null), it.next());
-}
+const bun = @import("bun");
+const std = @import("std");
+const VM = @import("./VM.zig").VM;
 
-test "CallFrame.CallerSrcLoc carries str/line/column" {
-    const loc: CallFrame.CallerSrcLoc = .{ .str = .empty, .line = 1, .column = 2 };
-    try std.testing.expectEqual(@as(c_uint, 1), loc.line);
-    try std.testing.expectEqual(@as(c_uint, 2), loc.column);
-}
-
-test "CallFrame is an opaque pointer-only type" {
-    try std.testing.expect(@sizeOf(*CallFrame) == @sizeOf(usize));
-}
+const jsc = bun.jsc;
+const JSGlobalObject = jsc.JSGlobalObject;
+const JSValue = jsc.JSValue;

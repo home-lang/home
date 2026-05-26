@@ -982,21 +982,21 @@ pub const Stringifier = struct {
 
     fn writeIndent(writer: *std.Io.Writer, indent: *const u32) std.Io.Writer.Error!void {
         for (0..indent.*) |_| {
-            try writer.writeAll(" " ** indent_scalar);
+            try writer.writeAll(" "**indent_scalar);
         }
     }
 
     fn incIndent(writer: *std.Io.Writer, indent: *u32) std.Io.Writer.Error!void {
         indent.* += 1;
         for (0..indent.*) |_| {
-            try writer.writeAll(" " ** indent_scalar);
+            try writer.writeAll(" "**indent_scalar);
         }
     }
 
     fn decIndent(writer: *std.Io.Writer, indent: *u32) std.Io.Writer.Error!void {
         indent.* -= 1;
         for (0..indent.*) |_| {
-            try writer.writeAll(" " ** indent_scalar);
+            try writer.writeAll(" "**indent_scalar);
         }
     }
 };

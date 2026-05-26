@@ -34,8 +34,8 @@ pub fn canPrintWithoutEscape(comptime CodePointType: type, c: CodePointType, com
     }
 }
 
-const indentation_space_buf = [_]u8{' '} ** 128;
-const indentation_tab_buf = [_]u8{'\t'} ** 128;
+const indentation_space_buf = [_]u8{' '}**128;
+const indentation_tab_buf = [_]u8{'\t'}**128;
 
 pub fn bestQuoteCharForString(comptime Type: type, str: []const Type, allow_backtick: bool) u8 {
     var single_cost: usize = 0;
@@ -1930,7 +1930,7 @@ fn NewPrinter(
             return printClauseItemAs(p, item, .export_from);
         }
 
-        fn printClauseItemAs(p: *Printer, item: js_ast.ClauseItem, comptime as: @Type(.enum_literal)) void {
+        fn printClauseItemAs(p: *Printer, item: js_ast.ClauseItem, comptime as: @TypeOf(.enum_literal)) void {
             const name = p.renamer.nameForSymbol(item.name.ref.?);
 
             if (comptime as == .import) {

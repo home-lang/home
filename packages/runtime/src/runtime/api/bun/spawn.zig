@@ -13,21 +13,8 @@
 //   - std.c.POSIX_SPAWN packed flags               → bit-cast helpers for
 //     Zig 0.17's Darwin libc declarations
 //
-// Aggressive skeleton:
-//   - `BunSpawn.Action` (extern struct), `Actions`, `Attr` ports verbatim;
-//     these are pure-Zig POSIX helpers around a list of file actions and
-//     `posix_spawnattr_t` flags. Used by the `posix_spawn_bun` shim that
-//     Bun's C++ side ships — Home will need its own copy of that shim
-//     before the spawn surface goes live, but the type layout that the
-//     shim consumes is here.
-//   - `PosixSpawn.WaitPidResult`, `PosixSpawnAttr`, and
-//     `PosixSpawnActions` are copied from Bun's POSIX substrate with local
-//     fd/path rewrites.
-//   - `PosixSpawn.spawnZ`, `waitpid`, `wait4`, and `BunSpawnRequest` are
-//     PARKED. They depend on `bun.sys.syslog`, `bun.sys.Error.Int`,
-//     `bun.c.POSIX_SPAWN_*`, and `process.zig` (not yet ported).
-//     Re-attach in Phase 12.3 once `home_rt.sys.Error`/`process` land.
-//   - `Stdio` import is parked (`./spawn/stdio.zig`); not yet ported.
+// This file keeps Bun's POSIX spawn action/attribute layout and exposes the
+// copied process/stdin/stdout/stderr leaves through the same public names.
 
 const std = @import("std");
 
@@ -333,11 +320,18 @@ pub const PosixSpawn = struct {
     pub const Attr = BunSpawn.Attr;
 };
 
-// ---- Parked: PosixSpawn execution glue ------------------------------
-//
-// `PosixSpawn.spawnZ`, `BunSpawnRequest`, `waitpid`, and `wait4` still
-// depend on `home_rt.sys.Error` + a `posix_spawn_bun` C shim that Bun
-// ships in `src/runtime/bun.js/bindings/bun-spawn.cpp`. Phase 12.3.
+pub const process = @import("./process.zig");
+pub const Process = process.Process;
+pub const SpawnOptions = process.SpawnOptions;
+pub const Status = process.Status;
+pub const sync = process.sync;
+pub const spawnProcess = process.spawnProcess;
+pub const WindowsSpawnResult = process.WindowsSpawnResult;
+pub const PosixSpawnResult = process.PosixSpawnResult;
+pub const SpawnProcessResult = process.SpawnProcessResult;
+pub const WindowsSpawnOptions = process.WindowsSpawnOptions;
+pub const Rusage = process.Rusage;
+pub const Stdio = @import("./spawn/stdio.zig").Stdio;
 
 test "spawn: BunSpawn.Action default kind is .none" {
     const a = try BunSpawn.Action.init();
