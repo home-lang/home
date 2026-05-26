@@ -19,8 +19,8 @@ Pinned upstream:
   files: upstream Bun and Home both have 1720 paths, with zero missing
   and zero extra copied test files.
 - The copied bundler corpus has 89 `bundler/**/*.test.{ts,js}` files.
-  Current green evidence covers 80 unique files, leaving the exact
-  9-file frontier listed in `docs/BUN_PARITY_PLAN.md`.
+  Current green evidence covers 81 unique files, leaving the exact
+  8-file frontier listed in `docs/BUN_PARITY_PLAN.md`.
 
 ## SQL / Valkey / DNS JSC Integration Audit
 

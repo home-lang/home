@@ -197,11 +197,11 @@ status). The Zig-side surface compiles; what's missing is the JS
 API for `Bun.build`. CLI entrypoint (`home bundle`) is in progress.
 
 Corpus audit on 2026-05-26: the copied Bun corpus has **89**
-`bundler/**/*.test.{ts,js}` files. Current green evidence covers **80
+`bundler/**/*.test.{ts,js}` files. Current green evidence covers **81
 unique files**: 66 unique bundler files inside `minimal-js`, 5 more in
-`bundler-core-itbundled` (`295` passed, `0` failed, `16` todo), and 9
+`bundler-core-itbundled` (`295` passed, `0` failed, `16` todo), and 10
 more unique files from the executable `bundler-transpiler-bootstrap`
-subset (`137` passed, `0` failed, `0` todo across 14 files). The copied
+subset (`147` passed, `0` failed, `0` todo across 15 files). The copied
 corpus itself is exact against upstream Bun for `.test.ts` / `.test.js`
 files, with 1720 upstream paths, 1720 copied paths, zero missing, and
 zero extras. The remaining bundler file frontier is:
@@ -209,7 +209,7 @@ zero extras. The remaining bundler file frontier is:
 | Tranche | Files |
 |---|---|
 | Decorator transpiler semantics | `bundler/transpiler/decorators.test.ts`, `bundler/transpiler/es-decorators-esbuild.test.ts` |
-| Transpiler API and macro surface | `bundler/transpiler/macro-test.test.ts`, `bundler/transpiler/transpiler.test.js` |
+| Transpiler API surface | `bundler/transpiler/transpiler.test.js` |
 | Resolver cache behavior | `bundler/resolver/cache-invalidation.test.ts`, `bundler/resolver/cache-node-compat.test.ts`, `bundler/resolver/cache-runtime.test.ts` |
 | CLI build surface | `bundler/cli.test.ts` |
 | Native plugin final | `bundler/native-plugin.test.ts` |

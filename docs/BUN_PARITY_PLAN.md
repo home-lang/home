@@ -173,10 +173,10 @@ Current corpus scale for the next ratchet:
 
 Next large slice: **bundler corpus completion**. A local audit on
 2026-05-26 finds **89** copied `bundler/**/*.test.{ts,js}` files. The
-current green evidence covers **80 unique files**: 66 unique bundler
-files inside `minimal-js`, 5 more in `bundler-core-itbundled`, and 9
-more from the executable 14-file `bundler-transpiler-bootstrap`
-subset. Promote the remaining exact **9** files into native Home corpus
+current green evidence covers **81 unique files**: 66 unique bundler
+files inside `minimal-js`, 5 more in `bundler-core-itbundled`, and 10
+more from the executable 15-file `bundler-transpiler-bootstrap`
+subset. Promote the remaining exact **8** files into native Home corpus
 gates before expanding into more Bake or server-heavy tests. Keep
 `bundler/native-plugin.test.ts` last because upstream handles it as a
 special native-plugin case, so it should not mask ordinary bundler
@@ -206,8 +206,8 @@ closed the TypeScript/non-null lowering blocker for the first ordinary
 Second agent-sized chunk: **bundler transpiler bootstrap tranche**.
 `bundler_transpiler_bootstrap` now exists and is accepted by
 `home test --bun-corpus-native-subset=bundler-transpiler-bootstrap`.
-It runs fourteen additional bundler/transpiler files and passes:
-**137 passed, 0 failed, 0 todo** on 2026-05-26.
+It runs fifteen additional bundler/transpiler files and passes:
+**147 passed, 0 failed, 0 todo** on 2026-05-26.
 
 Files in the tranche:
 
@@ -225,14 +225,15 @@ Files in the tranche:
 - `bundler/transpiler/transpiler-stack-overflow.test.ts`
 - `bundler/transpiler/jsx-production.test.ts`
 - `bundler/transpiler/runtime-transpiler.test.ts`
+- `bundler/transpiler/macro-test.test.ts`
 
-Remaining bundler file frontier after the 14-file transpiler tranche,
+Remaining bundler file frontier after the 15-file transpiler tranche,
 classified by next faithful work batch:
 
 | Tranche | Files | Primary blocker from local corpus |
 |---|---|---|
 | A. Decorator transpiler semantics | `bundler/transpiler/decorators.test.ts`, `bundler/transpiler/es-decorators-esbuild.test.ts` | Legacy and standard decorator syntax lowering; latest probes fail at bootstrap classification / parse-time syntax before execution |
-| B. Transpiler API and macro surface | `bundler/transpiler/macro-test.test.ts`, `bundler/transpiler/transpiler.test.js` | `Bun.Transpiler`, macro imports, loader validation, transform APIs, and macro callback behavior |
+| B. Transpiler API surface | `bundler/transpiler/transpiler.test.js` | `Bun.Transpiler`, loader validation, transform APIs, and callback behavior |
 | C. Resolver cache behavior | `bundler/resolver/cache-invalidation.test.ts`, `bundler/resolver/cache-node-compat.test.ts`, `bundler/resolver/cache-runtime.test.ts` | Repeated in-process `Bun.build()` / `require()` cache invalidation, filesystem mutation, Node-vs-Bun subprocess comparison |
 | D. CLI build surface | `bundler/cli.test.ts` | `bun build` CLI subprocess matrix: compile/outfile/sourcemap/tsconfig override/package install paths |
 | E. Native plugin final | `bundler/native-plugin.test.ts` | Native plugin ABI, node-gyp build, `.node` loading, `onBeforeParse`, crash-name behavior |
@@ -377,12 +378,11 @@ dependency chain in the PR description before editing.
 
 ## Next Bulk Tranches
 
-1. **Bundler corpus completion.** Promote the remaining exact 9
+1. **Bundler corpus completion.** Promote the remaining exact 8
    unallowlisted upstream Bun `bundler/` corpus files as the next large
    test slice before moving into Bake/server-heavy tests. The files are
    `bundler/transpiler/decorators.test.ts`,
    `bundler/transpiler/es-decorators-esbuild.test.ts`,
-   `bundler/transpiler/macro-test.test.ts`,
    `bundler/transpiler/transpiler.test.js`,
    `bundler/resolver/cache-invalidation.test.ts`,
    `bundler/resolver/cache-node-compat.test.ts`,

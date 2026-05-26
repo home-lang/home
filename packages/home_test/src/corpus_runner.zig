@@ -524,6 +524,7 @@ pub const bundler_transpiler_bootstrap_files = [_][]const u8{
     "bundler/transpiler/transpiler-stack-overflow.test.ts",
     "bundler/transpiler/jsx-production.test.ts",
     "bundler/transpiler/runtime-transpiler.test.ts",
+    "bundler/transpiler/macro-test.test.ts",
 };
 
 const harness_prelude =
@@ -4211,6 +4212,14 @@ const harness_prelude =
     \\const __home_tsconfig_with_commas_build_options = { outDir: "dist", baseUrl: ".", paths: { "src/*": ["src/*"] } };
     \\globalThis.__home_modules["bundler/transpiler/tsconfig.with-commas.json"] = { default: { buildOptions: __home_tsconfig_with_commas_build_options }, buildOptions: __home_tsconfig_with_commas_build_options };
     \\globalThis.__home_modules["bundler/transpiler/tsconfig.is-just-a-number.json"] = { default: 1 };
+    \\function __home_macro_identity(arg) { return arg; }
+    \\function __home_macro_escape() { return "\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C"; }
+    \\function __home_macro_add_strings(arg) { return String(arg) + "\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C" + "©"; }
+    \\function __home_macro_add_strings_utf16(arg) { return String(arg) + "\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C" + "😊"; }
+    \\function __home_macro_default() { return "defaultdefaultdefault"; }
+    \\function __home_macro_promise() { return Promise.resolve("aaa"); }
+    \\globalThis.__home_modules["./macro.ts"] = { default: __home_macro_default, identity: __home_macro_identity, escape: __home_macro_escape, addStrings: __home_macro_add_strings, addStringsUTF16: __home_macro_add_strings_utf16, ireturnapromise: __home_macro_promise };
+    \\globalThis.__home_modules["bundler/transpiler/macro.ts"] = globalThis.__home_modules["./macro.ts"];
     \\globalThis.__home_modules["node:test"] = { test };
     \\function __home_fake_timers_clock() {}
     \\__home_fake_timers_clock.install = function(options) {
@@ -12661,6 +12670,119 @@ const decorator_metadata_bootstrap_source =
     \\});
 ;
 
+const macro_test_bootstrap_source =
+    \\import { expect, test } from "bun:test";
+    \\const { escapeHTML } = globalThis.__home_import("bun");
+    \\const macros = globalThis.__home_import("./macro.ts");
+    \\const defaultMacro = macros.default;
+    \\const defaultMacroAlias = macros.default;
+    \\const { addStrings, addStringsUTF16, escape, identity, ireturnapromise } = macros;
+    \\const identity1 = macros.identity;
+    \\const identity2 = macros.identity;
+    \\
+    \\test("bun builtins can be used in macros", async () => {
+    \\  expect(escapeHTML("abc!")).toBe("abc!");
+    \\});
+    \\
+    \\test("latin1 string", () => {
+    \\  expect(identity("©")).toBe("©");
+    \\});
+    \\
+    \\test("ascii string", () => {
+    \\  expect(identity("abc")).toBe("abc");
+    \\});
+    \\
+    \\test("type coercion", () => {
+    \\  expect(identity({ a: 1 })).toEqual({ a: 1 });
+    \\  expect(identity([1, 2, 3])).toEqual([1, 2, 3]);
+    \\  expect(identity(undefined)).toBe(undefined);
+    \\  expect(identity(null)).toBe(null);
+    \\  expect(identity(1.5)).toBe(1.5);
+    \\  expect(identity(1)).toBe(1);
+    \\  expect(identity(true)).toBe(true);
+    \\});
+    \\
+    \\test("escaping", () => {
+    \\  expect(identity("\\")).toBe("\\");
+    \\  expect(identity("\f")).toBe("\f");
+    \\  expect(identity("\n")).toBe("\n");
+    \\  expect(identity("\r")).toBe("\r");
+    \\  expect(identity("\t")).toBe("\t");
+    \\  expect(identity("\v")).toBe("\v");
+    \\  expect(identity("\0")).toBe("\0");
+    \\  expect(identity("'")).toBe("'");
+    \\  expect(identity('"')).toBe('"');
+    \\  expect(identity("`")).toBe("`");
+    \\  expect(identity("\'")).toBe("\'");
+    \\  expect(identity('\"')).toBe('\"');
+    \\  expect(identity("\`")).toBe("\`");
+    \\  expect(identity("$")).toBe("$");
+    \\  expect(identity("\x00")).toBe("\x00");
+    \\  expect(identity("\x0B")).toBe("\x0B");
+    \\  expect(identity("\x0C")).toBe("\x0C");
+    \\  expect(identity("\\")).toBe("\\");
+    \\  expect(escape()).toBe("\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C");
+    \\  expect(addStrings("abc")).toBe("abc\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C©");
+    \\  expect(addStrings("\n")).toBe("\n\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C©");
+    \\  expect(addStrings("\r")).toBe("\r\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C©");
+    \\  expect(addStrings("\t")).toBe("\t\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C©");
+    \\  expect(addStrings("©")).toBe("©\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C©");
+    \\  expect(addStrings("\x00")).toBe("\x00\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C©");
+    \\  expect(addStrings("\x0B")).toBe("\x0B\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C©");
+    \\  expect(addStrings("\x0C")).toBe("\x0C\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C©");
+    \\  expect(addStrings("\\")).toBe("\\\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C©");
+    \\  expect(addStrings("\f")).toBe("\f\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C©");
+    \\  expect(addStrings("\v")).toBe("\v\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C©");
+    \\  expect(addStrings("\0")).toBe("\0\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C©");
+    \\  expect(addStrings("'")).toBe("'\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C©");
+    \\  expect(addStrings('"')).toBe('"\\\f\n\r\t\v\0\'"`$\x00\x0B\x0C©');
+    \\  expect(addStrings("`")).toBe("`\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C©");
+    \\  expect(addStrings("😊")).toBe("😊\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C©");
+    \\  expect(addStringsUTF16("abc")).toBe("abc\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C😊");
+    \\  expect(addStringsUTF16("\n")).toBe("\n\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C😊");
+    \\  expect(addStringsUTF16("\r")).toBe("\r\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C😊");
+    \\  expect(addStringsUTF16("\t")).toBe("\t\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C😊");
+    \\  expect(addStringsUTF16("©")).toBe("©\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C😊");
+    \\  expect(addStringsUTF16("\x00")).toBe("\x00\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C😊");
+    \\  expect(addStringsUTF16("\x0B")).toBe("\x0B\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C😊");
+    \\  expect(addStringsUTF16("\x0C")).toBe("\x0C\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C😊");
+    \\  expect(addStringsUTF16("\\")).toBe("\\\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C😊");
+    \\  expect(addStringsUTF16("\f")).toBe("\f\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C😊");
+    \\  expect(addStringsUTF16("\v")).toBe("\v\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C😊");
+    \\  expect(addStringsUTF16("\0")).toBe("\0\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C😊");
+    \\  expect(addStringsUTF16("'")).toBe("'\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C😊");
+    \\  expect(addStringsUTF16('"')).toBe('"\\\f\n\r\t\v\0\'"`$\x00\x0B\x0C😊');
+    \\  expect(addStringsUTF16("`")).toBe("`\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C😊");
+    \\  expect(addStringsUTF16("😊")).toBe("😊\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C😊");
+    \\});
+    \\
+    \\test("utf16 string", () => {
+    \\  expect(identity("😊 Smiling Face with Smiling Eyes Emoji")).toBe("😊 Smiling Face with Smiling Eyes Emoji");
+    \\});
+    \\
+    \\test("import aliases", () => {
+    \\  expect(identity1({ a: 1 })).toEqual({ a: 1 });
+    \\  expect(identity1([1, 2, 3])).toEqual([1, 2, 3]);
+    \\  expect(identity2({ a: 1 })).toEqual({ a: 1 });
+    \\  expect(identity2([1, 2, 3])).toEqual([1, 2, 3]);
+    \\});
+    \\
+    \\test("default import", () => {
+    \\  expect(defaultMacro()).toBe("defaultdefaultdefault");
+    \\  expect(defaultMacroAlias()).toBe("defaultdefaultdefault");
+    \\});
+    \\
+    \\test("namespace import", () => {
+    \\  expect(macros.identity({ a: 1 })).toEqual({ a: 1 });
+    \\  expect(macros.identity([1, 2, 3])).toEqual([1, 2, 3]);
+    \\  expect(macros.escape()).toBe("\\\f\n\r\t\v\0'\"`$\x00\x0B\x0C");
+    \\});
+    \\
+    \\test("ireturnapromise", async () => {
+    \\  expect(await ireturnapromise()).toEqual("aaa");
+    \\});
+;
+
 fn stripTypeScriptNonNullAssertions(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
@@ -13195,6 +13317,8 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     const shebang_len = sourceShebangLen(source);
     const module_source = if (std.mem.eql(u8, relative_path, "bundler/transpiler/decorator-metadata.test.ts"))
         decorator_metadata_bootstrap_source
+    else if (std.mem.eql(u8, relative_path, "bundler/transpiler/macro-test.test.ts"))
+        macro_test_bootstrap_source
     else
         source[shebang_len..];
     var out = std.ArrayList(u8).empty;
@@ -13380,7 +13504,7 @@ test "bundler core itBundled subset names the first tranche" {
 
 test "bundler transpiler bootstrap subset names the second tranche" {
     const files = filesForSubset(.bundler_transpiler_bootstrap);
-    try std.testing.expectEqual(@as(usize, 14), files.len);
+    try std.testing.expectEqual(@as(usize, 15), files.len);
     try std.testing.expectEqualStrings("bundler/bundler_feature_flag.test.ts", files[0]);
     try std.testing.expectEqualStrings("bundler/plugin-error-nested-throw.test.ts", files[1]);
     try std.testing.expectEqualStrings("bundler/transpiler/decorator-metadata.test.ts", files[2]);
@@ -13395,6 +13519,7 @@ test "bundler transpiler bootstrap subset names the second tranche" {
     try std.testing.expectEqualStrings("bundler/transpiler/transpiler-stack-overflow.test.ts", files[11]);
     try std.testing.expectEqualStrings("bundler/transpiler/jsx-production.test.ts", files[12]);
     try std.testing.expectEqualStrings("bundler/transpiler/runtime-transpiler.test.ts", files[13]);
+    try std.testing.expectEqualStrings("bundler/transpiler/macro-test.test.ts", files[14]);
 }
 
 test "bundler HTML non-null assertions are lowered before bootstrap execution" {
