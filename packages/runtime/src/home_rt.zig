@@ -44,8 +44,76 @@ pub const JSTerminated = error{JSTerminated};
 pub const JSOOM = OOM || JSError;
 pub const handleOom = Global.handleOom;
 pub const default_allocator: std.mem.Allocator = std.heap.smp_allocator;
+pub const StackOverflow = error{StackOverflow};
+
+pub inline fn unreachablePanic(comptime fmts: []const u8, args: anytype) noreturn {
+    std.debug.panic(fmts, args);
+}
+
+pub noinline fn throwStackOverflow() StackOverflow!void {
+    @branchHint(.cold);
+    return error.StackOverflow;
+}
+
+pub fn ThreadlocalBuffers(comptime T: type) type {
+    return struct {
+        threadlocal var instance: T = .{};
+
+        pub inline fn get() *T {
+            return &instance;
+        }
+    };
+}
+
+pub fn DebugOnlyDisabler(comptime Type: type) type {
+    return struct {
+        threadlocal var disable_create_in_debug: if (Environment.isDebug) usize else u0 = 0;
+
+        pub inline fn disable() void {
+            if (comptime !Environment.isDebug) return;
+            disable_create_in_debug += 1;
+        }
+
+        pub inline fn enable() void {
+            if (comptime !Environment.isDebug) return;
+            disable_create_in_debug -= 1;
+        }
+
+        pub inline fn assert() void {
+            if (comptime !Environment.isDebug) return;
+            if (disable_create_in_debug > 0) {
+                Output.panic(comptime "[" ++ @typeName(Type) ++ "] called while disabled (did you forget to call enable?)", .{});
+            }
+        }
+    };
+}
+
+pub const StackCheck = struct {
+    cached_stack_end: usize = 0,
+
+    pub fn configureThread() void {}
+
+    pub fn init() StackCheck {
+        return .{ .cached_stack_end = 0 };
+    }
+
+    pub fn update(this: *StackCheck) void {
+        this.cached_stack_end = 0;
+    }
+
+    pub fn isSafeToRecurse(_: StackCheck) bool {
+        return true;
+    }
+};
+
+pub fn parseDouble(input: []const u8) !f64 {
+    return std.fmt.parseFloat(f64, input);
+}
 
 pub const String = @import("string/string.zig").String;
+pub const CodePoint = @import("string/immutable.zig").CodePoint;
+pub const MutableString = @import("string/MutableString.zig");
+pub const PathString = @import("string/PathString.zig").PathString;
 
 // Bun native transpiler parity surface. These are direct re-exports of
 // copied upstream files so home_test can move off JS string shims and into
@@ -62,6 +130,13 @@ pub const bundle_v2 = @import("bundler/bundle_v2.zig");
 pub const Loader = bundle_v2.Loader;
 pub const SourceMap = @import("sourcemap/sourcemap.zig");
 pub const ast = @import("js_parser/js_parser.zig");
+pub const ImportRecord = @import("options_types/import_record.zig").ImportRecord;
+pub const ImportKind = @import("options_types/import_record.zig").ImportKind;
+pub const schema = @import("options_types/schema.zig");
+pub const bake = struct {
+    pub const Framework = struct {};
+};
+pub const fs = @import("resolver/fs.zig");
 
 pub const timespec = extern struct {
     sec: i64,
@@ -330,6 +405,12 @@ pub fn new(comptime Type: type, value: Type) *Type {
     return created;
 }
 
+pub fn create(allocator: std.mem.Allocator, comptime Type: type, value: Type) *Type {
+    const created = handleOom(allocator.create(Type));
+    created.* = value;
+    return created;
+}
+
 pub inline fn assertf(ok: bool, comptime format: []const u8, args: anytype) void {
     if (!ok) {
         std.debug.panic(format, args);
@@ -410,11 +491,11 @@ pub const StringHashMapContext = struct {
 };
 
 pub fn StringArrayHashMap(comptime Type: type) type {
-    return std.StringArrayHashMap(Type);
+    return StringHashMap(Type);
 }
 
 pub fn StringArrayHashMapUnmanaged(comptime Type: type) type {
-    return std.StringArrayHashMapUnmanaged(Type);
+    return StringHashMapUnmanaged(Type);
 }
 
 pub fn StringHashMap(comptime Type: type) type {
@@ -424,6 +505,98 @@ pub fn StringHashMap(comptime Type: type) type {
 pub fn StringHashMapUnmanaged(comptime Type: type) type {
     return std.StringHashMapUnmanaged(Type);
 }
+
+pub const StringSet = struct {
+    map: Map,
+    ordered_keys: std.ArrayList([]const u8) = .empty,
+
+    pub const Map = StringArrayHashMap(void);
+
+    pub fn clone(self: *const StringSet) !StringSet {
+        var new_map = Map.init(self.map.allocator);
+        var new_keys: std.ArrayList([]const u8) = .empty;
+        errdefer new_keys.deinit(self.map.allocator);
+        try new_map.ensureTotalCapacity(self.map.count());
+        try new_keys.ensureTotalCapacityPrecise(self.map.allocator, self.ordered_keys.items.len);
+        for (self.ordered_keys.items) |key| {
+            const duped = try self.map.allocator.dupe(u8, key);
+            errdefer self.map.allocator.free(duped);
+            new_map.putAssumeCapacity(duped, {});
+            new_keys.appendAssumeCapacity(duped);
+        }
+        return StringSet{
+            .map = new_map,
+            .ordered_keys = new_keys,
+        };
+    }
+
+    pub fn init(allocator: std.mem.Allocator) StringSet {
+        return StringSet{
+            .map = Map.init(allocator),
+            .ordered_keys = .empty,
+        };
+    }
+
+    pub fn initComptime() StringSet {
+        return StringSet{
+            .map = Map.initContext(undefined, .{}),
+            .ordered_keys = .empty,
+        };
+    }
+
+    pub fn isEmpty(self: *const StringSet) bool {
+        return self.count() == 0;
+    }
+
+    pub fn count(self: *const StringSet) usize {
+        return self.map.count();
+    }
+
+    pub fn keys(self: *const StringSet) []const []const u8 {
+        return self.ordered_keys.items;
+    }
+
+    pub fn insert(self: *StringSet, key: []const u8) !void {
+        const entry = try self.map.getOrPut(key);
+        if (!entry.found_existing) {
+            entry.key_ptr.* = try self.map.allocator.dupe(u8, key);
+            try self.ordered_keys.append(self.map.allocator, entry.key_ptr.*);
+        }
+    }
+
+    pub fn contains(self: *StringSet, key: []const u8) bool {
+        return self.map.contains(key);
+    }
+
+    pub fn swapRemove(self: *StringSet, key: []const u8) bool {
+        if (self.map.contains(key)) {
+            for (self.ordered_keys.items, 0..) |existing, i| {
+                if (std.mem.eql(u8, existing, key)) {
+                    _ = self.ordered_keys.swapRemove(i);
+                    break;
+                }
+            }
+        }
+        return self.map.swapRemove(key);
+    }
+
+    pub fn clearAndFree(self: *StringSet) void {
+        for (self.ordered_keys.items) |key| {
+            self.map.allocator.free(key);
+        }
+        self.ordered_keys.clearAndFree(self.map.allocator);
+        self.map.clearAndFree();
+    }
+
+    pub fn deinit(self: *StringSet) void {
+        for (self.ordered_keys.items) |key| {
+            self.map.allocator.free(key);
+        }
+
+        self.ordered_keys.deinit(self.map.allocator);
+        self.map.deinit();
+    }
+};
 
 const baby_list = @import("collections/baby_list.zig");
 pub const BabyList = baby_list.BabyList;
@@ -512,6 +685,7 @@ pub const jsc = struct {
     pub const comptime_string_map_jsc = @import("jsc/comptime_string_map_jsc.zig");
     // Fifth-wave port batch (2026-05-18):
     pub const CachedBytecode = @import("jsc/CachedBytecode.zig").CachedBytecode;
+    pub const RuntimeTranspilerCache = @import("jsc/RuntimeTranspilerCache.zig").RuntimeTranspilerCache;
     pub const JSMap = @import("jsc/JSMap.zig").JSMap;
     pub const JSBigInt = @import("jsc/JSBigInt.zig").JSBigInt;
     pub const JSArray = @import("jsc/JSArray.zig").JSArray;
@@ -1087,6 +1261,15 @@ pub const meta = struct {
     pub const bits = @import("meta/bits.zig");
     pub const traits = @import("meta/traits.zig");
 
+    pub fn ReturnOf(comptime function: anytype) type {
+        return ReturnOfType(@TypeOf(function));
+    }
+
+    pub fn ReturnOfType(comptime Type: type) type {
+        const typeinfo: std.builtin.Type.Fn = @typeInfo(Type).@"fn";
+        return typeinfo.return_type orelse void;
+    }
+
     pub fn banFieldType(comptime Type: type, comptime FieldType: type) void {
         _ = Type;
         _ = FieldType;
@@ -1102,6 +1285,17 @@ pub const crash_handler = struct {
     pub const StoredTrace = @import("crash_handler/StoredTrace.zig").StoredTrace;
     // Wave-16 Tier-1 grinder (2026-05-18):
     pub const CPUFeatures = @import("crash_handler/CPUFeatures.zig");
+
+    pub const Action = union(enum) {
+        parse: []const u8,
+        visit: []const u8,
+        print: []const u8,
+        bundle_generate_chunk: void,
+        resolver: void,
+        dlopen: []const u8,
+    };
+
+    pub threadlocal var current_action: ?Action = null;
 };
 
 // ---- src/core/ -----------------------------------------------------
@@ -1909,6 +2103,11 @@ pub const perf = struct {
     // which 0.17.0-dev.263 removed. Parked until a thin `std.Io.Clock`
     // adapter lands.
     pub const generated_perf_trace_events = @import("perf/generated_perf_trace_events.zig");
+    pub fn trace(_: []const u8) struct {
+        pub fn end(_: @This()) void {}
+    } {
+        return .{};
+    }
     // Wave-19 unmined-corner port (2026-05-19). Unbarriered TSC reader from
     // `bun/src/perf/hw_timer.zig`. Adds `Environment.isAarch64` /
     // `Environment.isX64` to the substrate so the asm-volatile paths gate

@@ -32,9 +32,21 @@ pub fn assert(ok: bool) void {
 /// fatal — most copied paths can't recover from OOM. Returns the
 /// success value unchanged so call sites read as
 /// `const ptr = home_rt.handleOom(allocator.create(T));`.
-pub fn handleOom(result: anytype) @typeInfo(@TypeOf(result)).error_union.payload {
-    return result catch {
-        @panic("home_rt: out of memory");
+fn HandleOomReturn(comptime T: type) type {
+    return switch (@typeInfo(T)) {
+        .error_union => |info| info.payload,
+        .error_set => noreturn,
+        else => T,
+    };
+}
+
+pub fn handleOom(result: anytype) HandleOomReturn(@TypeOf(result)) {
+    return switch (@typeInfo(@TypeOf(result))) {
+        .error_union => result catch {
+            @panic("home_rt: out of memory");
+        },
+        .error_set => @panic("home_rt: out of memory"),
+        else => result,
     };
 }
 

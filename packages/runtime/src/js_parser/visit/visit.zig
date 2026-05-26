@@ -21,7 +21,7 @@ pub fn Visit(
             }
 
             p.temp_refs_to_declare.deinit(p.allocator);
-            p.temp_refs_to_declare = @TypeOf(p.temp_refs_to_declare){};
+            p.temp_refs_to_declare = @TypeOf(p.temp_refs_to_declare).empty;
             p.temp_ref_count = 0;
 
             try p.visitStmts(stmts, opts.kind);
@@ -730,7 +730,7 @@ pub fn Visit(
                                             // Copy the argument name symbol to prevent the class field declaration from being renamed
                                             // but not the constructor argument.
                                             const field_symbol_ref = p.declareSymbol(.other, arg.binding.loc, name) catch id.ref;
-                                            field_symbol_ref.getSymbol(p.symbols.items).must_not_be_renamed = true;
+                                            p.symbols.items[field_symbol_ref.innerIndex()].must_not_be_renamed = true;
                                             const field_ident = p.newExpr(E.Identifier{ .ref = field_symbol_ref }, arg.binding.loc);
                                             class_body.items[j] = G.Property{ .key = field_ident };
                                             j += 1;
@@ -794,7 +794,7 @@ pub fn Visit(
                 //
                 // The TypeScript compiler itself contains code with this pattern, so
                 // it's important to implement this optimization.
-                var preprocessed_enums: std.ArrayListUnmanaged([]Stmt) = .{};
+                var preprocessed_enums: std.ArrayListUnmanaged([]Stmt) = .empty;
                 defer preprocessed_enums.deinit(p.allocator);
                 if (p.scopes_in_order_for_enum.count() > 0) {
                     var found: usize = 0;

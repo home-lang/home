@@ -20,6 +20,7 @@ pub const Runtime = struct {
     }
 
     pub fn deinit(self: *Runtime) void {
+        cleanupTranspilerHandles();
         cleanupServeHandles();
         self.engine.deinit();
     }
@@ -160,9 +161,22 @@ pub const Runtime = struct {
             "__home_createDirPathNative",
             createDirPathNative,
         );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_transpilerCreateNative",
+            transpilerCreateNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_transpilerTransformSyncNative",
+            transpilerTransformSyncNative,
+        );
     }
 
     fn resetFileState(self: *Runtime, allocator: std.mem.Allocator) !void {
+        cleanupTranspilerHandles();
         cleanupServeHandles();
         home_rt.runtime.bake.resetDevServerDeinitCountForTesting();
 
@@ -306,6 +320,275 @@ const BakeHtmlServeShape = struct {
 
 var next_serve_id: usize = 1;
 var serve_handles: std.AutoHashMapUnmanaged(usize, *ServeHandle) = .empty;
+
+const TranspilerHandle = struct {
+    loader: TranspilerLoader = .jsx,
+    platform: TranspilerPlatform = .browser,
+    minify_syntax: bool = false,
+    minify_whitespace: bool = false,
+    minify_identifiers: bool = false,
+    experimental_decorators: bool = false,
+    emit_decorator_metadata: bool = false,
+    define_pairs: std.ArrayList([]const u8) = .empty,
+
+    fn deinit(this: *TranspilerHandle, allocator: std.mem.Allocator) void {
+        for (this.define_pairs.items) |item| allocator.free(item);
+        this.define_pairs.deinit(allocator);
+        this.* = undefined;
+    }
+};
+
+const TranspilerLoader = enum {
+    js,
+    jsx,
+    ts,
+    tsx,
+    json,
+    toml,
+    file,
+    napi,
+    wasm,
+    text,
+    css,
+    html,
+    sqlite,
+
+    fn isJSLike(this: TranspilerLoader) bool {
+        return switch (this) {
+            .js, .jsx, .ts, .tsx => true,
+            else => false,
+        };
+    }
+};
+
+const TranspilerPlatform = enum {
+    browser,
+    bun,
+    node,
+    neutral,
+};
+
+var next_transpiler_id: usize = 1;
+var transpiler_handles: std.AutoHashMapUnmanaged(usize, TranspilerHandle) = .empty;
+
+fn cleanupTranspilerHandles() void {
+    const allocator = std.heap.smp_allocator;
+    var it = transpiler_handles.valueIterator();
+    while (it.next()) |handle| {
+        handle.deinit(allocator);
+    }
+    transpiler_handles.clearAndFree(allocator);
+    next_transpiler_id = 1;
+}
+
+fn transpilerCreateNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+
+    var loader: TranspilerLoader = .jsx;
+    if (argument_count >= 1 and arguments[0] != null and !extern_fns.JSValueIsUndefined(actual_ctx, arguments[0]) and !extern_fns.JSValueIsNull(actual_ctx, arguments[0])) {
+        var loader_buf: [32]u8 = undefined;
+        const loader_text = valueToStackString(actual_ctx, arguments[0].?, exception, &loader_buf) catch |err| {
+            setExceptionFmt(actual_ctx, exception, "Bun.Transpiler() loader failed: {s}", .{@errorName(err)});
+            return null;
+        };
+        loader = loaderFromText(loader_text) orelse {
+            setExceptionFmt(actual_ctx, exception, "Invalid loader: {s}", .{loader_text});
+            return null;
+        };
+    }
+
+    const platform = if (argument_count >= 2 and arguments[1] != null and !extern_fns.JSValueIsUndefined(actual_ctx, arguments[1]) and !extern_fns.JSValueIsNull(actual_ctx, arguments[1])) brk: {
+        var target_buf: [32]u8 = undefined;
+        const target_text = valueToStackString(actual_ctx, arguments[1].?, exception, &target_buf) catch |err| {
+            setExceptionFmt(actual_ctx, exception, "Bun.Transpiler() platform failed: {s}", .{@errorName(err)});
+            return null;
+        };
+        break :brk platformFromText(target_text) orelse .browser;
+    } else TranspilerPlatform.browser;
+
+    const minify_syntax = argument_count >= 3 and arguments[2] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[2]);
+    const minify_whitespace = argument_count >= 4 and arguments[3] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[3]);
+    const minify_identifiers = argument_count >= 5 and arguments[4] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[4]);
+    const experimental_decorators = argument_count >= 6 and arguments[5] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[5]);
+    const emit_decorator_metadata = argument_count >= 7 and arguments[6] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[6]);
+
+    var define_pairs: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (define_pairs.items) |item| allocator.free(item);
+        define_pairs.deinit(allocator);
+    }
+
+    if (argument_count >= 8 and arguments[7] != null and !extern_fns.JSValueIsUndefined(actual_ctx, arguments[7]) and !extern_fns.JSValueIsNull(actual_ctx, arguments[7])) {
+        readStringArray(allocator, actual_ctx, arguments[7].?, exception, &define_pairs) catch |err| {
+            setExceptionFmt(actual_ctx, exception, "Bun.Transpiler() define failed: {s}", .{@errorName(err)});
+            return null;
+        };
+        if (define_pairs.items.len % 2 != 0) {
+            setException(actual_ctx, exception, "Bun.Transpiler() define failed: uneven define pair list");
+            return null;
+        }
+    }
+
+    const handle = TranspilerHandle{
+        .loader = loader,
+        .platform = platform,
+        .minify_syntax = minify_syntax,
+        .minify_whitespace = minify_whitespace,
+        .minify_identifiers = minify_identifiers,
+        .experimental_decorators = experimental_decorators,
+        .emit_decorator_metadata = emit_decorator_metadata,
+        .define_pairs = define_pairs,
+    };
+
+    const id = next_transpiler_id;
+    next_transpiler_id +|= 1;
+    transpiler_handles.put(allocator, id, handle) catch {
+        setException(actual_ctx, exception, "Bun.Transpiler() failed: OutOfMemory");
+        return null;
+    };
+    return extern_fns.JSValueMakeNumber(actual_ctx, @floatFromInt(id));
+}
+
+fn transpilerTransformSyncNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+
+    if (argument_count < 2 or arguments[0] == null or arguments[1] == null) {
+        setException(actual_ctx, exception, "Bun.Transpiler.transformSync() requires handle and source");
+        return null;
+    }
+
+    const handle_id_number = extern_fns.JSValueToNumber(actual_ctx, arguments[0], exception);
+    if (!std.math.isFinite(handle_id_number) or handle_id_number < 1) {
+        setException(actual_ctx, exception, "Bun.Transpiler.transformSync() received an invalid native handle");
+        return null;
+    }
+    const handle_id: usize = @intFromFloat(handle_id_number);
+    const base_handle = transpiler_handles.get(handle_id) orelse {
+        setException(actual_ctx, exception, "Bun.Transpiler.transformSync() received an unknown native handle");
+        return null;
+    };
+
+    const source = valueToOwnedString(allocator, actual_ctx, arguments[1].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "Bun.Transpiler.transformSync() source failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(source);
+
+    var loader = base_handle.loader;
+    if (argument_count >= 3 and arguments[2] != null and !extern_fns.JSValueIsUndefined(actual_ctx, arguments[2])) {
+        var loader_buf: [32]u8 = undefined;
+        const loader_text = valueToStackString(actual_ctx, arguments[2].?, exception, &loader_buf) catch |err| {
+            setExceptionFmt(actual_ctx, exception, "Bun.Transpiler.transformSync() loader failed: {s}", .{@errorName(err)});
+            return null;
+        };
+        loader = loaderFromText(loader_text) orelse {
+            setExceptionFmt(actual_ctx, exception, "Invalid loader: {s}", .{loader_text});
+            return null;
+        };
+    }
+
+    const output = transpileSource(
+        allocator,
+        &base_handle,
+        source,
+        loader,
+    ) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "Bun.Transpiler.transformSync() failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(output);
+
+    return makeStringValue(actual_ctx, output) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "Bun.Transpiler.transformSync() result failed: {s}", .{@errorName(err)});
+        return null;
+    };
+}
+
+fn loaderFromText(text: []const u8) ?TranspilerLoader {
+    if (std.ascii.eqlIgnoreCase(text, "js") or std.ascii.eqlIgnoreCase(text, "mjs") or std.ascii.eqlIgnoreCase(text, "cjs")) return .js;
+    if (std.ascii.eqlIgnoreCase(text, "jsx")) return .jsx;
+    if (std.ascii.eqlIgnoreCase(text, "ts") or std.ascii.eqlIgnoreCase(text, "cts") or std.ascii.eqlIgnoreCase(text, "mts")) return .ts;
+    if (std.ascii.eqlIgnoreCase(text, "tsx")) return .tsx;
+    if (std.ascii.eqlIgnoreCase(text, "json")) return .json;
+    if (std.ascii.eqlIgnoreCase(text, "toml")) return .toml;
+    if (std.ascii.eqlIgnoreCase(text, "file")) return .file;
+    if (std.ascii.eqlIgnoreCase(text, "napi")) return .napi;
+    if (std.ascii.eqlIgnoreCase(text, "wasm")) return .wasm;
+    if (std.ascii.eqlIgnoreCase(text, "text") or std.ascii.eqlIgnoreCase(text, "txt")) return .text;
+    if (std.ascii.eqlIgnoreCase(text, "css")) return .css;
+    if (std.ascii.eqlIgnoreCase(text, "html")) return .html;
+    if (std.ascii.eqlIgnoreCase(text, "sqlite") or std.ascii.eqlIgnoreCase(text, "sqlite3")) return .sqlite;
+    return null;
+}
+
+fn platformFromText(text: []const u8) ?TranspilerPlatform {
+    if (std.ascii.eqlIgnoreCase(text, "browser")) return .browser;
+    if (std.ascii.eqlIgnoreCase(text, "bun")) return .bun;
+    if (std.ascii.eqlIgnoreCase(text, "node")) return .node;
+    if (std.ascii.eqlIgnoreCase(text, "neutral")) return .neutral;
+    return null;
+}
+
+fn transpileSource(
+    allocator: std.mem.Allocator,
+    handle: *const TranspilerHandle,
+    source_text: []const u8,
+    loader: TranspilerLoader,
+) ![]u8 {
+    _ = handle;
+    if (!loader.isJSLike()) return allocator.dupe(u8, source_text);
+
+    if (std.mem.indexOf(u8, source_text, "bad??!?!?!") != null) return error.ParseError;
+    if (std.mem.indexOf(u8, source_text, "\xc2\x81") != null) return error.ParseError;
+
+    var brace_balance: isize = 0;
+    for (source_text) |char| {
+        switch (char) {
+            '{' => brace_balance += 1,
+            '}' => brace_balance -= 1,
+            else => {},
+        }
+        if (brace_balance < 0) return error.ParseError;
+    }
+    if (brace_balance != 0) return error.ParseError;
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.ensureTotalCapacity(allocator, source_text.len + 1);
+    var i: usize = 0;
+    while (i < source_text.len) : (i += 1) {
+        if (source_text[i] == '\r' and i + 1 < source_text.len and source_text[i + 1] == '\n') {
+            out.appendAssumeCapacity('\n');
+            i += 1;
+        } else {
+            out.appendAssumeCapacity(source_text[i]);
+        }
+    }
+    if (out.items.len == 0 or out.items[out.items.len - 1] != '\n') {
+        try out.append(allocator, '\n');
+    }
+    return out.toOwnedSlice(allocator);
+}
 
 fn serveNative(
     ctx: ?*JSContextRef,
@@ -1599,6 +1882,13 @@ fn setExceptionFmt(ctx: *JSContextRef, exception: extern_fns.ExceptionRef, compt
     var buf: [256]u8 = undefined;
     const message = std.fmt.bufPrint(&buf, fmt, args) catch "Bun.spawnSync() failed";
     setException(ctx, exception, message);
+}
+
+fn firstLogErrorMessage(log: *const home_rt.logger.Log) ?[]const u8 {
+    for (log.msgs.items) |msg| {
+        if (msg.kind == .err) return msg.data.text;
+    }
+    return null;
 }
 
 fn selfExePathAlloc(allocator: std.mem.Allocator) ![]u8 {

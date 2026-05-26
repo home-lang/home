@@ -51,6 +51,25 @@ pub fn hexIntUpper(value: anytype) HexIntFormatter {
     return .{ .value = @intCast(value), .upper = true };
 }
 
+pub fn truncatedHash32(int: u64) std.fmt.Alt(u64, truncatedHash32Impl) {
+    return .{ .data = int };
+}
+
+fn truncatedHash32Impl(int: u64, writer: *std.Io.Writer) !void {
+    const in_bytes = std.mem.asBytes(&int);
+    const chars = "0123456789abcdefghjkmnpqrstvwxyz";
+    try writer.writeAll(&.{
+        chars[in_bytes[0] & 31],
+        chars[in_bytes[1] & 31],
+        chars[in_bytes[2] & 31],
+        chars[in_bytes[3] & 31],
+        chars[in_bytes[4] & 31],
+        chars[in_bytes[5] & 31],
+        chars[in_bytes[6] & 31],
+        chars[in_bytes[7] & 31],
+    });
+}
+
 test "hexIntLower prints lowercase hex" {
     var buf: [32]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);

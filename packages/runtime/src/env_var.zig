@@ -87,6 +87,16 @@ pub const BUN_POSTGRES_SOCKET_MONITOR_WRITER = struct {
     }
 };
 
+pub const BUN_DEBUG_ENABLE_RESTORE_FROM_TRANSPILER_CACHE = struct {
+    pub fn get() bool {
+        const raw = rawGet("BUN_DEBUG_ENABLE_RESTORE_FROM_TRANSPILER_CACHE") orelse return false;
+        if (raw.len == 0) return false;
+        if (std.mem.eql(u8, raw, "0")) return false;
+        if (std.mem.eql(u8, raw, "false")) return false;
+        return true;
+    }
+};
+
 test "CI.get reads from the environment" {
     // We can't assume any specific env value is set, so just check
     // the call doesn't crash and the result is a valid optional bool.

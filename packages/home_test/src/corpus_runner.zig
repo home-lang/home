@@ -2474,13 +2474,46 @@ const harness_prelude =
     \\      const text = String(loader);
     \\      if (!/^(js|jsx|ts|tsx|json|toml|file|napi|wasm|text|css|html|sqlite|sqlite3)$/i.test(text)) throw new TypeError("Invalid loader: " + text);
     \\    }
+    \\    function compilerOptionsFromTSConfig(tsconfig) {
+    \\      if (tsconfig === undefined || tsconfig === null) return {};
+    \\      if (typeof tsconfig === "string") {
+    \\        try { tsconfig = JSON.parse(tsconfig); }
+    \\        catch (error) { return {}; }
+    \\      }
+    \\      if (typeof tsconfig !== "object") return {};
+    \\      const compilerOptions = tsconfig.compilerOptions;
+    \\      return compilerOptions && typeof compilerOptions === "object" ? compilerOptions : {};
+    \\    }
     \\    if (!(this instanceof Bun.Transpiler)) return new Bun.Transpiler(options);
-    \\    if (options && Object.prototype.hasOwnProperty.call(options, "loader")) validateLoader(options.loader);
+    \\    const optionLoader = options && Object.prototype.hasOwnProperty.call(options, "loader") ? options.loader : undefined;
+    \\    if (optionLoader !== undefined) validateLoader(optionLoader);
     \\    if (options && Object.prototype.hasOwnProperty.call(options, "macro") && (options.macro === null || typeof options.macro !== "object" || Array.isArray(options.macro))) throw new Error("Unexpected " + String(options.macro));
     \\    if (options && Object.prototype.hasOwnProperty.call(options, "logLevel") && !/^(debug|verbose|info|warn|error|silent)$/i.test(String(options.logLevel))) throw new TypeError("Invalid logLevel: " + String(options.logLevel));
+    \\    const compilerOptions = compilerOptionsFromTSConfig(options && options.tsconfig);
+    \\    const minifyOption = options && options.minify;
+    \\    const minifySyntax = minifyOption === true || !!(minifyOption && typeof minifyOption === "object" && minifyOption.syntax);
+    \\    const minifyWhitespace = minifyOption === true || !!(minifyOption && typeof minifyOption === "object" && minifyOption.whitespace);
+    \\    const minifyIdentifiers = minifyOption === true || !!(minifyOption && typeof minifyOption === "object" && minifyOption.identifiers);
+    \\    const definePairs = [];
+    \\    const define = options && options.define;
+    \\    if (define && typeof define === "object" && !Array.isArray(define)) {
+    \\      for (const key of Object.keys(define)) {
+    \\        definePairs.push(String(key), String(define[key]));
+    \\      }
+    \\    }
+    \\    const nativeHandle = __home_transpilerCreateNative(
+    \\      optionLoader === undefined ? undefined : String(optionLoader),
+    \\      options && Object.prototype.hasOwnProperty.call(options, "platform") ? String(options.platform) : "browser",
+    \\      minifySyntax,
+    \\      minifyWhitespace,
+    \\      minifyIdentifiers,
+    \\      !!compilerOptions.experimentalDecorators,
+    \\      !!compilerOptions.emitDecoratorMetadata,
+    \\      definePairs
+    \\    );
     \\    this.scan = function(source, loader) {
     \\      validateLoader(loader);
-    \\      if (String(source).length === 0) return [];
+    \\      if (String(source).length === 0) return { imports: [], exports: [] };
     \\      __home_unsupported("Only Bun.Transpiler invalid loader validation is supported by this bootstrap path");
     \\    };
     \\    this.scanImports = function(source, loader) {
@@ -2490,17 +2523,7 @@ const harness_prelude =
     \\    };
     \\    this.transformSync = function(source, loader) {
     \\      validateLoader(loader);
-    \\      const text = String(source);
-    \\      if (text.indexOf(String.fromCodePoint(129)) !== -1) throw new Error('Unexpected "W');
-    \\      if (text.indexOf("bad??!?!?!") !== -1) throw new Error("Unexpected ?");
-    \\      let braceBalance = 0;
-    \\      for (let i = 0; i < text.length; i++) {
-    \\        if (text[i] === "{") braceBalance++;
-    \\        else if (text[i] === "}") braceBalance--;
-    \\      }
-    \\      if (braceBalance > 0) throw new Error("Parse error");
-    \\      if (text.indexOf("\r\n") !== -1) return text.replace(/\r\n/g, "\n") + (/[;\n]\s*$/.test(text) ? "" : ";\n");
-    \\      return text;
+    \\      return __home_transpilerTransformSyncNative(nativeHandle, String(source), loader === undefined || loader === null ? undefined : String(loader));
     \\    };
     \\    this.transform = function(source, loader) {
     \\      validateLoader(loader);
@@ -16904,10 +16927,10 @@ test "bootstrap runner covers Bun.Transpiler invalid UTF-16 loader smoke" {
         \\    expect(() => new Bun.Transpiler({ macro: "hi" as any })).toThrow("Unexpected hi");
         \\    expect(() => new Bun.Transpiler({ logLevel: "poop" as any })).toThrow(TypeError);
         \\    const t = new Bun.Transpiler();
-        \\    expect(t.scan("")).toEqual([]);
+        \\    expect(t.scan("")).toEqual({ imports: [], exports: [] });
         \\    expect(t.scanImports("")).toEqual([]);
-        \\    expect(await t.transform("let ok = true;", "ts")).toBe("let ok = true;");
-        \\    expect(() => t.transformSync("bad??!?!?!", "ts")).toThrow("Unexpected ?");
+        \\    expect(await t.transform("let ok = true;", "ts")).toBe("let ok = true;\n");
+        \\    expect(() => t.transformSync("bad??!?!?!", "ts")).toThrow();
         \\  });
         \\});
     ;

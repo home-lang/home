@@ -7,12 +7,48 @@
 
 const std = @import("std");
 
+pub const string = []const u8;
+
+pub const CodepointIterator = @import("string/immutable.zig").CodepointIterator;
+pub const UnsignedCodepointIterator = @import("string/immutable.zig").UnsignedCodepointIterator;
+pub const decodeWTF8RuneTMultibyte = @import("string/immutable.zig").decodeWTF8RuneTMultibyte;
+pub const hasPrefixComptime = @import("string/immutable.zig").hasPrefixComptime;
+pub const eqlComptimeUTF16 = @import("string/immutable.zig").eqlComptimeUTF16;
+pub const hasPrefixWithWordBoundary = @import("string/immutable.zig").hasPrefixWithWordBoundary;
+pub const hasSuffixComptime = @import("string/immutable.zig").hasSuffixComptime;
+pub const toUTF8AllocWithType = toUTF8Alloc;
+pub const u3_fast = @import("string/immutable.zig").u3_fast;
+pub const unicode_replacement = @import("string/immutable.zig").unicode_replacement;
+pub const wtf8ByteSequenceLengthWithInvalid = @import("string/immutable.zig").wtf8ByteSequenceLengthWithInvalid;
+
 pub fn indexOfChar(slice: []const u8, char: u8) ?usize {
     return std.mem.indexOfScalar(u8, slice, char);
 }
 
+pub fn lastIndexOfChar(slice: []const u8, char: u8) ?usize {
+    return std.mem.lastIndexOfScalar(u8, slice, char);
+}
+
 pub fn indexOf(haystack: []const u8, needle: []const u8) ?usize {
     return std.mem.indexOf(u8, haystack, needle);
+}
+
+pub fn index(haystack: []const u8, needle: []const u8) i32 {
+    return @intCast(indexOf(haystack, needle) orelse return -1);
+}
+
+pub fn lastIndex(haystack: []const u8, needle: []const u8) ?usize {
+    return std.mem.lastIndexOf(u8, haystack, needle);
+}
+
+pub const lastIndexOf = lastIndex;
+
+pub fn countChar(slice: []const u8, char: u8) usize {
+    var count: usize = 0;
+    for (slice) |value| {
+        if (value == char) count += 1;
+    }
+    return count;
 }
 
 /// Find the first index in `slice` containing any byte from `needles`.
@@ -20,6 +56,22 @@ pub fn indexOf(haystack: []const u8, needle: []const u8) ?usize {
 /// scanner helpers.
 pub fn indexOfAny(slice: []const u8, comptime needles: []const u8) ?usize {
     return std.mem.indexOfAny(u8, slice, needles);
+}
+
+pub fn indexEqualAny(in: anytype, target: []const u8) ?usize {
+    for (in, 0..) |value, i| {
+        if (eqlLong(value, target, true)) return i;
+    }
+    return null;
+}
+
+pub fn indexOfSpaceOrNewlineOrNonASCII(slice: []const u8, offset: u32) ?u32 {
+    var i: usize = offset;
+    while (i < slice.len) : (i += 1) {
+        const c = slice[i];
+        if (c > 127 or c == ' ' or c == '\r' or c == '\n') return @intCast(i);
+    }
+    return null;
 }
 
 pub fn startsWith(slice: []const u8, prefix: []const u8) bool {
@@ -46,8 +98,37 @@ pub fn containsChar(slice: []const u8, char: u8) bool {
     return std.mem.indexOfScalar(u8, slice, char) != null;
 }
 
+pub fn contains(slice: []const u8, needle: []const u8) bool {
+    return indexOf(slice, needle) != null;
+}
+
+pub const includes = contains;
+
+pub fn containsComptime(slice: []const u8, comptime needle: []const u8) bool {
+    if (comptime needle.len == 0) @compileError("containsComptime requires a non-empty needle");
+    return std.mem.indexOf(u8, slice, needle) != null;
+}
+
 pub fn eql(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
+}
+
+pub fn eqlLong(a: []const u8, b: []const u8, comptime check_len: bool) bool {
+    if (comptime check_len) {
+        if (a.len != b.len) return false;
+    } else if (b.len > a.len) {
+        return false;
+    }
+    return std.mem.eql(u8, a[0..b.len], b);
+}
+
+pub fn eqlLongT(comptime T: type, a: []const T, b: []const T, comptime check_len: bool) bool {
+    if (comptime check_len) {
+        if (a.len != b.len) return false;
+    } else if (b.len > a.len) {
+        return false;
+    }
+    return std.mem.eql(T, a[0..b.len], b);
 }
 
 /// Comptime-aware equality check that asserts the comptime length
@@ -90,6 +171,248 @@ pub fn eqlComptimeIgnoreLen(a: anytype, comptime b: []const u8) bool {
         if (lower_ac != lower_b) return false;
     }
     return true;
+}
+
+pub fn isAllASCII(slice: []const u8) bool {
+    return firstNonASCII(slice) == null;
+}
+
+pub fn firstNonASCII(slice: []const u8) ?u32 {
+    for (slice, 0..) |value, i| {
+        if (value > 127) return @intCast(i);
+    }
+    return null;
+}
+
+pub fn firstNonASCII16(slice: []const u16) ?u32 {
+    for (slice, 0..) |value, i| {
+        if (value > 127) return @intCast(i);
+    }
+    return null;
+}
+
+pub fn copyU16IntoU8(output: []u8, input: []align(1) const u16) void {
+    const count = @min(output.len, input.len);
+    for (input[0..count], output[0..count]) |from, *to| {
+        to.* = @truncate(from);
+    }
+}
+
+pub fn utf16EqlString(text: []const u16, expected: []const u8) bool {
+    var encoded = [4]u8{ 0, 0, 0, 0 };
+    var byte_index: usize = 0;
+    var unit_index: usize = 0;
+
+    while (unit_index < text.len) : (unit_index += 1) {
+        var code_point: u32 = text[unit_index];
+        if (code_point >= 0xD800 and code_point <= 0xDBFF and unit_index + 1 < text.len) {
+            const low: u32 = text[unit_index + 1];
+            if (low >= 0xDC00 and low <= 0xDFFF) {
+                code_point = 0x10000 + ((code_point - 0xD800) << 10) + (low - 0xDC00);
+                unit_index += 1;
+            }
+        } else if (code_point >= 0xDC00 and code_point <= 0xDFFF) {
+            code_point = 0xFFFD;
+        }
+
+        const width = encodeUTF8(&encoded, code_point);
+        if (byte_index + width > expected.len) return false;
+        if (!std.mem.eql(u8, encoded[0..width], expected[byte_index..][0..width])) return false;
+        byte_index += width;
+    }
+
+    return byte_index == expected.len;
+}
+
+fn encodeUTF8(out: *[4]u8, code_point: u32) u3 {
+    if (code_point <= 0x7F) {
+        out[0] = @intCast(code_point);
+        return 1;
+    }
+    if (code_point <= 0x7FF) {
+        out[0] = 0xC0 | @as(u8, @intCast(code_point >> 6));
+        out[1] = 0x80 | @as(u8, @intCast(code_point & 0x3F));
+        return 2;
+    }
+    if (code_point <= 0xFFFF) {
+        out[0] = 0xE0 | @as(u8, @intCast(code_point >> 12));
+        out[1] = 0x80 | @as(u8, @intCast((code_point >> 6) & 0x3F));
+        out[2] = 0x80 | @as(u8, @intCast(code_point & 0x3F));
+        return 3;
+    }
+
+    out[0] = 0xF0 | @as(u8, @intCast(code_point >> 18));
+    out[1] = 0x80 | @as(u8, @intCast((code_point >> 12) & 0x3F));
+    out[2] = 0x80 | @as(u8, @intCast((code_point >> 6) & 0x3F));
+    out[3] = 0x80 | @as(u8, @intCast(code_point & 0x3F));
+    return 4;
+}
+
+pub fn append(allocator: std.mem.Allocator, first: []const u8, second: []const u8) std.mem.Allocator.Error![]u8 {
+    return cat(allocator, first, second);
+}
+
+pub fn cat(allocator: std.mem.Allocator, first: []const u8, second: []const u8) std.mem.Allocator.Error![]u8 {
+    const out = try allocator.alloc(u8, first.len + second.len);
+    @memcpy(out[0..first.len], first);
+    @memcpy(out[first.len..], second);
+    return out;
+}
+
+pub fn concat(allocator: std.mem.Allocator, args: []const []const u8) std.mem.Allocator.Error![]u8 {
+    var total_length: usize = 0;
+    for (args) |arg| total_length += arg.len;
+
+    const out = try allocator.alloc(u8, total_length);
+    copyJoined(out, args);
+    return out;
+}
+
+pub fn concatIfNeeded(
+    allocator: std.mem.Allocator,
+    dest: *[]const u8,
+    args: []const []const u8,
+    interned_strings_to_check: []const []const u8,
+) std.mem.Allocator.Error!void {
+    var total_length: usize = 0;
+    for (args) |arg| total_length += arg.len;
+
+    if (total_length == 0) {
+        dest.* = "";
+        return;
+    }
+
+    for (interned_strings_to_check) |interned| {
+        if (joinedEql(args, interned)) {
+            dest.* = interned;
+            return;
+        }
+    }
+
+    if (joinedEql(args, dest.*)) return;
+
+    const out = try allocator.alloc(u8, total_length);
+    copyJoined(out, args);
+    dest.* = out;
+}
+
+fn joinedEql(args: []const []const u8, candidate: []const u8) bool {
+    var total_length: usize = 0;
+    for (args) |arg| total_length += arg.len;
+    if (candidate.len != total_length) return false;
+
+    var offset: usize = 0;
+    for (args) |arg| {
+        if (!std.mem.eql(u8, candidate[offset..][0..arg.len], arg)) return false;
+        offset += arg.len;
+    }
+    return true;
+}
+
+fn copyJoined(out: []u8, args: []const []const u8) void {
+    var offset: usize = 0;
+    for (args) |arg| {
+        @memcpy(out[offset..][0..arg.len], arg);
+        offset += arg.len;
+    }
+}
+
+pub fn toUTF8AllocWithTypeWithoutInvalidSurrogatePairs(
+    allocator: std.mem.Allocator,
+    utf16: []const u16,
+) std.mem.Allocator.Error![]u8 {
+    return toUTF8Alloc(allocator, utf16);
+}
+
+pub fn toUTF16AllocForReal(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    comptime fail_if_invalid: bool,
+    comptime sentinel: bool,
+) !if (sentinel) [:0]u16 else []u16 {
+    var out: std.ArrayList(u16) = .empty;
+    errdefer out.deinit(allocator);
+    try out.ensureTotalCapacity(allocator, bytes.len + if (sentinel) 1 else 0);
+
+    var i: usize = 0;
+    while (i < bytes.len) {
+        const first = bytes[i];
+        if (first < 0x80) {
+            out.appendAssumeCapacity(first);
+            i += 1;
+            continue;
+        }
+
+        const decoded = decodeUTF8Codepoint(bytes[i..]) catch |err| {
+            if (comptime fail_if_invalid) return err;
+            out.appendAssumeCapacity(0xFFFD);
+            i += 1;
+            continue;
+        };
+        i += decoded.len;
+
+        if (decoded.code_point <= 0xFFFF) {
+            out.appendAssumeCapacity(@intCast(decoded.code_point));
+        } else {
+            const scalar = decoded.code_point - 0x10000;
+            out.appendAssumeCapacity(@intCast(0xD800 + (scalar >> 10)));
+            out.appendAssumeCapacity(@intCast(0xDC00 + (scalar & 0x3FF)));
+        }
+    }
+
+    if (comptime sentinel) {
+        out.appendAssumeCapacity(0);
+        const owned = try out.toOwnedSlice(allocator);
+        return owned[0 .. owned.len - 1 :0];
+    }
+
+    return out.toOwnedSlice(allocator);
+}
+
+const DecodedCodepoint = struct {
+    code_point: u32,
+    len: u3,
+};
+
+fn decodeUTF8Codepoint(bytes: []const u8) error{InvalidByteSequence}!DecodedCodepoint {
+    if (bytes.len == 0) return error.InvalidByteSequence;
+
+    const first = bytes[0];
+    if (first < 0x80) return .{ .code_point = first, .len = 1 };
+
+    const len: u3 = if (first >= 0xC2 and first <= 0xDF)
+        2
+    else if (first >= 0xE0 and first <= 0xEF)
+        3
+    else if (first >= 0xF0 and first <= 0xF4)
+        4
+    else
+        return error.InvalidByteSequence;
+
+    if (bytes.len < len) return error.InvalidByteSequence;
+
+    var code_point: u32 = first & switch (len) {
+        2 => @as(u8, 0x1F),
+        3 => @as(u8, 0x0F),
+        4 => @as(u8, 0x07),
+        else => unreachable,
+    };
+
+    for (bytes[1..len]) |byte| {
+        if ((byte & 0xC0) != 0x80) return error.InvalidByteSequence;
+        code_point = (code_point << 6) | (byte & 0x3F);
+    }
+
+    if ((len == 2 and code_point < 0x80) or
+        (len == 3 and code_point < 0x800) or
+        (len == 4 and code_point < 0x10000) or
+        (code_point >= 0xD800 and code_point <= 0xDFFF) or
+        code_point > 0x10FFFF)
+    {
+        return error.InvalidByteSequence;
+    }
+
+    return .{ .code_point = code_point, .len = len };
 }
 
 /// Convert a UTF-16 (Little Endian) code-unit slice to an owned

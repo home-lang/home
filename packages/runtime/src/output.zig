@@ -7,6 +7,42 @@
 
 const std = @import("std");
 
+pub var enable_ansi_colors_stderr = false;
+pub var enable_ansi_colors_stdout = false;
+
+const CSI = "\x1b[";
+
+pub const color_map = struct {
+    const Entry = struct {
+        key: []const u8,
+        value: []const u8,
+    };
+
+    const entries = [_]Entry{
+        .{ .key = "b", .value = CSI ++ "1m" },
+        .{ .key = "d", .value = CSI ++ "2m" },
+        .{ .key = "i", .value = CSI ++ "3m" },
+        .{ .key = "u", .value = CSI ++ "4m" },
+        .{ .key = "black", .value = CSI ++ "30m" },
+        .{ .key = "red", .value = CSI ++ "31m" },
+        .{ .key = "green", .value = CSI ++ "32m" },
+        .{ .key = "yellow", .value = CSI ++ "33m" },
+        .{ .key = "blue", .value = CSI ++ "34m" },
+        .{ .key = "magenta", .value = CSI ++ "35m" },
+        .{ .key = "cyan", .value = CSI ++ "36m" },
+        .{ .key = "white", .value = CSI ++ "37m" },
+        .{ .key = "bgred", .value = CSI ++ "41m" },
+        .{ .key = "bggreen", .value = CSI ++ "42m" },
+    };
+
+    pub fn get(key: []const u8) ?[]const u8 {
+        inline for (entries) |entry| {
+            if (std.mem.eql(u8, key, entry.key)) return entry.value;
+        }
+        return null;
+    }
+};
+
 pub fn print(comptime fmt: []const u8, args: anytype) void {
     std.debug.print(fmt, args);
 }
@@ -20,6 +56,10 @@ pub fn prettyln(comptime fmt: []const u8, args: anytype) void {
 
 pub fn prettyErrorln(comptime fmt: []const u8, args: anytype) void {
     std.debug.print(fmt ++ "\n", args);
+}
+
+pub fn prettyFmt(comptime fmt: []const u8, comptime _: bool) []const u8 {
+    return fmt;
 }
 
 pub fn errorln(comptime fmt: []const u8, args: anytype) void {

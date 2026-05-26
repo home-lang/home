@@ -82,9 +82,14 @@ exposes the copied Bun parser/printer/transpiler modules (`logger`,
 namespace expected by copied sources. The parser aggregators now resolve
 Home's already-copied AST and parser submodules instead of the stale
 `js_parser/ast/*` CamelCase paths from older Bun copies. This is still
-substrate only: `Bun.Transpiler` in the corpus harness must next acquire
-native JSC callbacks and handles before `decorators.test.ts` or
-`transpiler.test.js` can be promoted.
+substrate only, but the corpus harness now has the first native
+`Bun.Transpiler` bridge: native JSC callbacks allocate handles, validate
+loader/platform/define option shapes, store per-instance option state,
+reset with the runtime, and route `transformSync`/`transform` through the
+host callback boundary. The callback body still uses the bootstrap
+normalization transform so the suite stays green; `decorators.test.ts`
+and `transpiler.test.js` still need the copied Bun parser/lowerer/printer
+path before promotion.
 
 Native plugin audit note (2026-05-26): the copied fixture currently stops
 at corpus preprocessing with `unsupported module syntax`, but its true
@@ -107,8 +112,8 @@ output/metafile/HTML/CSS chunk helpers currently present under
 `packages/runtime/src/bundler/linker_context/`.
 
 Runtime build audit on 2026-05-26:
-`./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false
---summary all` now passes with 1385 / 1388 tests passed and 3 skipped.
+`./pantry/.bin/zig build test -Dfilter=home_rt --summary all` now passes
+with 1388 / 1388 tests passed.
 This is compile-frontier substrate, not JS-callable parity credit: it
 wires missing Bun/JSC aliases, parked subprocess owners,
 CowSlice/CowString exposure, Zig 0.17 compatibility shims, and test-only

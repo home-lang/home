@@ -239,8 +239,13 @@ parser/printer/transpiler substrate (`logger`, `js_lexer`, `js_parser`,
 `js_printer`, `ast`, `options`, `transpiler`, `Transpiler`,
 `bundle_v2`, and `SourceMap`). The copied parser aggregators were
 remapped to Home's existing `src/ast` and `js_parser/*` module layout, so
-the next faithful parity step is a native `Bun.Transpiler` host-callback
-bridge in the corpus JSC adapter rather than more JS string rewrites.
+the corpus JSC adapter now enters a native `Bun.Transpiler`
+host-callback bridge instead of constructing the whole API in JS. That
+bridge owns handle lifetime plus loader/platform/define validation and
+routes `transformSync`/`transform` through native callbacks. The transform
+body is still the bootstrap-normalization body; the next parity close is
+to swap in the copied Bun `Parser.init -> parse -> js_printer.printAst`
+path and then promote `bundler/transpiler/transpiler.test.js`.
 
 The source module follow-through for these bundler gates is to replace
 the `__home_expect_bundled` bootstrap stub with a real `itBundled`

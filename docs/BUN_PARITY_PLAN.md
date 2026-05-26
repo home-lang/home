@@ -259,9 +259,19 @@ exposes the copied Bun parser/printer/transpiler surface through the flat
 `src/ast`, `js_parser/parse`, `js_parser/scan`, `js_parser/lower`, and
 `js_parser/visit` files instead of stale `js_parser/ast/*` CamelCase
 paths from older Bun copies. This is a compile substrate, not corpus
-credit; the next chunk is the `jsc_bootstrap.zig` native
-`Bun.Transpiler` handle/callback bridge modeled on
-`runtime/api/JSTranspiler.zig`.
+credit.
+
+Native transpiler bridge follow-through on 2026-05-26: the corpus JSC
+adapter now creates native `Bun.Transpiler` handles through registered
+host callbacks, validates loader/platform/define option shapes on the
+native side, stores per-instance option state, resets handles with the
+runtime, and routes `transformSync`/`transform` through the native
+callback boundary. The current transform body intentionally stays at the
+bootstrap-normalization level so `main` remains green while the copied
+Bun parser/printer dependency cone is finished. The next faithful chunk
+is to replace that body with the real parser-to-printer path
+(`Parser.init`, `parse`, `js_printer.printAst`), including `define`,
+scan/scanImports, and decorator lowering.
 
 Native plugin audit on 2026-05-26: `bundler/native-plugin.test.ts`
 still reports `unsupported module syntax` at the corpus preprocessor, but
@@ -318,9 +328,8 @@ git diff --check -- docs/BUN_PARITY_PLAN.md docs/PARITY-BUN.md packages/home_tes
 ```
 
 Runtime compile frontier: the current non-JSC runtime gate is green.
-`./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false
---summary all` now passes on 2026-05-26 with **1385 / 1388 tests passed**
-and **3 skipped**. The bridge layer that made this green is
+`./pantry/.bin/zig build test -Dfilter=home_rt --summary all` now passes
+on 2026-05-26 with **1388 / 1388 tests passed**. The bridge layer that made this green is
 still compile-frontier substrate, not JS-callable parity credit: it adds
 missing Bun/JSC aliases, Zig 0.17 compatibility shims, parked subprocess
 owners, CowSlice/CowString exposure, and test-only C++ extern stubs for

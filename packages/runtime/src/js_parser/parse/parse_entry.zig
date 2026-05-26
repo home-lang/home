@@ -352,24 +352,17 @@ pub const Parser = struct {
 
         defer p.lexer.deinit();
 
-        var binary_expression_stack_heap = std.heap.stackFallback(42 * @sizeOf(ParserType.BinaryExpressionVisitor), bun.default_allocator);
         p.binary_expression_stack = std.array_list.Managed(ParserType.BinaryExpressionVisitor).initCapacity(
-            binary_expression_stack_heap.get(),
+            bun.default_allocator,
             41, // one less in case of unlikely alignment between the stack buffer and reality
         ) catch unreachable; // stack allocation cannot fail
         defer p.binary_expression_stack.clearAndFree();
 
-        var binary_expression_simplify_stack_heap = std.heap.stackFallback(48 * @sizeOf(SideEffects.BinaryExpressionSimplifyVisitor), bun.default_allocator);
         p.binary_expression_simplify_stack = std.array_list.Managed(SideEffects.BinaryExpressionSimplifyVisitor).initCapacity(
-            binary_expression_simplify_stack_heap.get(),
+            bun.default_allocator,
             47,
         ) catch unreachable; // stack allocation cannot fail
         defer p.binary_expression_simplify_stack.clearAndFree();
-
-        if (Environment.allow_assert) {
-            bun.assert(binary_expression_stack_heap.fixed_buffer_allocator.ownsPtr(@ptrCast(p.binary_expression_stack.items)));
-            bun.assert(binary_expression_simplify_stack_heap.fixed_buffer_allocator.ownsPtr(@ptrCast(p.binary_expression_simplify_stack.items)));
-        }
 
         // defer {
         //     if (p.allocated_names_pool) |pool| {
@@ -532,7 +525,7 @@ pub const Parser = struct {
             // The TypeScript compiler itself contains code with this pattern, so
             // it's important to implement this optimization.
 
-            var preprocessed_enums: std.ArrayListUnmanaged([]js_ast.Part) = .{};
+            var preprocessed_enums: std.ArrayListUnmanaged([]js_ast.Part) = .empty;
             var preprocessed_enum_i: usize = 0;
             if (p.scopes_in_order_for_enum.count() > 0) {
                 for (stmts) |*stmt| {
@@ -606,7 +599,7 @@ pub const Parser = struct {
                         try p.appendPart(&parts, sliced.items);
 
                         if (should_move) {
-                            before.append(parts.getLast()) catch unreachable;
+                            before.append(parts.getLast().?) catch unreachable;
                             parts.items.len -= 1;
                         }
                     },
@@ -621,7 +614,7 @@ pub const Parser = struct {
                         try p.appendPart(&parts, sliced.items);
 
                         if (should_move) {
-                            before.append(parts.getLast()) catch unreachable;
+                            before.append(parts.getLast().?) catch unreachable;
                             parts.items.len -= 1;
                         }
                     },
@@ -747,13 +740,15 @@ pub const Parser = struct {
             }
 
             if (p.commonjs_named_exports.count() > 0) {
-                const export_refs = p.commonjs_named_exports.values();
-                const export_names = p.commonjs_named_exports.keys();
+                const export_count = p.commonjs_named_exports.count();
+                var first_export_loc_ref: ?js_ast.LocRef = null;
 
                 break_optimize: {
                     if (!p.commonjs_named_exports_deoptimized) {
                         var needs_decl_count: usize = 0;
-                        for (export_refs) |*export_ref| {
+                        var export_refs = p.commonjs_named_exports.valueIterator();
+                        while (export_refs.next()) |export_ref| {
+                            if (first_export_loc_ref == null) first_export_loc_ref = export_ref.loc_ref;
                             needs_decl_count += @as(usize, @intFromBool(export_ref.needs_decl));
                         }
                         // This is a workaround for packages which have broken ESM checks
@@ -763,21 +758,21 @@ pub const Parser = struct {
                         // We should just say
                         // You're ESM and lying about it.
                         if (p.options.module_type == .esm or p.has_es_module_syntax) {
-                            if (needs_decl_count == export_names.len) {
+                            if (needs_decl_count == export_count) {
                                 force_esm = true;
                                 break :break_optimize;
                             }
                         }
 
                         if (needs_decl_count > 0) {
-                            p.symbols.items[p.exports_ref.innerIndex()].use_count_estimate += @as(u32, @truncate(export_refs.len));
+                            p.symbols.items[p.exports_ref.innerIndex()].use_count_estimate += @as(u32, @truncate(export_count));
                             p.deoptimizeCommonJSNamedExports();
                         }
                     }
                 }
 
                 if (!p.commonjs_named_exports_deoptimized and p.esm_export_keyword.len == 0) {
-                    p.esm_export_keyword.loc = export_refs[0].loc_ref.loc;
+                    p.esm_export_keyword.loc = first_export_loc_ref.?.loc;
                     p.esm_export_keyword.len = 5;
                 }
             }

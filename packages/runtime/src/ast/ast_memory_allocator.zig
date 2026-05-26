@@ -1,18 +1,10 @@
-const SFA = std.heap.StackFallbackAllocator(@min(8192, std.heap.page_size_min));
-
-stack_allocator: SFA = undefined,
 bump_allocator: std.mem.Allocator = undefined,
 allocator: std.mem.Allocator,
 previous: ?*ASTMemoryAllocator = null,
 
 pub fn enter(this: *ASTMemoryAllocator, allocator: std.mem.Allocator) ASTMemoryAllocator.Scope {
     this.allocator = allocator;
-    this.stack_allocator = SFA{
-        .buffer = undefined,
-        .fallback_allocator = allocator,
-        .fixed_buffer_allocator = undefined,
-    };
-    this.bump_allocator = this.stack_allocator.get();
+    this.bump_allocator = allocator;
     this.previous = null;
     var ast_scope = ASTMemoryAllocator.Scope{
         .current = this,
@@ -48,12 +40,7 @@ pub const Scope = struct {
 };
 
 pub fn reset(this: *ASTMemoryAllocator) void {
-    this.stack_allocator = SFA{
-        .buffer = undefined,
-        .fallback_allocator = this.allocator,
-        .fixed_buffer_allocator = undefined,
-    };
-    this.bump_allocator = this.stack_allocator.get();
+    this.bump_allocator = this.allocator;
 }
 
 pub fn push(this: *ASTMemoryAllocator) void {
@@ -77,12 +64,7 @@ pub fn append(this: *ASTMemoryAllocator, comptime ValueType: type, value: anytyp
 
 /// Initialize ASTMemoryAllocator as `undefined`, and call this.
 pub fn initWithoutStack(this: *ASTMemoryAllocator, arena: std.mem.Allocator) void {
-    this.stack_allocator = SFA{
-        .buffer = undefined,
-        .fallback_allocator = arena,
-        .fixed_buffer_allocator = .init(&.{}),
-    };
-    this.bump_allocator = this.stack_allocator.get();
+    this.bump_allocator = arena;
 }
 
 const bun = @import("bun");
