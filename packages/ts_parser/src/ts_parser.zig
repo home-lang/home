@@ -11588,6 +11588,9 @@ pub const Parser = struct {
         try self.reportRegexPatternModifierDiagnostics(start_tok, end);
         try self.reportRegexQuantifierDiagnostics(start_tok, end);
         try self.reportRegexEscapeAndClassDiagnostics(start_tok, end);
+        try self.reportRegexGroupAndBackrefDiagnostics(start_tok, end);
+        try self.reportRegexUnicodePropertyDiagnostics(start_tok, end);
+        try self.reportRegexClassSetExpressionDiagnostics(start_tok, end);
         try self.reportInvalidRegexFlags(start_tok.span.start, start_tok.line, end);
         // The scanner committed to `.slash` (vs. `regex_literal`) based
         // on the preceding token, but the parser now knows this span is
@@ -12287,6 +12290,624 @@ pub const Parser = struct {
         if (group_depth > 0) {
             try self.reportCodeAt(@intCast(i), start_tok.line, 1005, "')' expected.");
         }
+    }
+
+    // ====================================================================
+    // Capturing-group / backreference resolution (ports the bookkeeping of
+    // tsc's `regExpParser` in typescript-go's scanner/regexp.go).
+    //
+    // tsc collects, during a single pass over the body:
+    //   - the number of (named + unnamed) capturing groups,
+    //   - the set of named-group specifiers (with per-alternation-branch
+    //     scopes so duplicate names in *mutually exclusive* branches are
+    //     allowed),
+    //   - every `\k<name>` named reference,
+    //   - every `\1`..`\NN` decimal escape.
+    // After the pass it reports:
+    //   - TS1514 Expected a capturing group name. (empty `(?<>`/`\k<>`)
+    //   - TS1515 Named capturing groups with the same name must be
+    //            mutually exclusive to each other.
+    //   - TS1532 There is no capturing group named '{0}' ... (dangling ref)
+    //   - TS1533 ... only {0} capturing groups ... (decimal escape > count)
+    //   - TS1534 ... no capturing groups ... (decimal escape, count == 0)
+    // ====================================================================
+
+    const RegexGroupRef = struct {
+        pos: usize,
+        len: usize,
+        name: []const u8,
+    };
+    const RegexDecimalEscape = struct {
+        pos: usize,
+        len: usize,
+        value: u64,
+    };
+
+    /// A flat representation of the group-name scope stack. Each named
+    /// definition records the alternation-branch path (a sequence of
+    /// disjunction-instance ids) under which it was declared. Two names
+    /// collide (TS1515) only when one path is a prefix of the other —
+    /// i.e. they are reachable on the same alternation path. Names in
+    /// sibling `|` branches diverge at some level and never collide.
+    const RegexNamedDef = struct {
+        name: []const u8,
+        path: []const u32,
+    };
+
+    fn reportRegexGroupAndBackrefDiagnostics(self: *Parser, start_tok: Token, end: u32) ParseError!void {
+        const start_i: usize = @intCast(start_tok.span.start);
+        const end_i: usize = @intCast(end);
+        if (start_i >= self.source.len or self.source[start_i] != '/') return;
+        const close_at = self.regexLiteralClose(start_i, end_i) orelse return;
+        const unicode_mode = self.regexLiteralHasFlag(close_at + 1, end_i, 'u') or
+            self.regexLiteralHasFlag(close_at + 1, end_i, 'v');
+        const named_capture_groups = self.regexLiteralHasNamedCaptureGroup(start_i + 1, close_at);
+        const allow_named_refs = unicode_mode or named_capture_groups;
+
+        var arena = std.heap.ArenaAllocator.init(self.gpa);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        var defs: std.ArrayListUnmanaged(RegexNamedDef) = .empty;
+        var refs: std.ArrayListUnmanaged(RegexGroupRef) = .empty;
+        var decimals: std.ArrayListUnmanaged(RegexDecimalEscape) = .empty;
+        var group_count: u64 = 0;
+
+        // Branch path stack: each `(`-opened disjunction pushes a fresh
+        // branch counter; a `|` at the current depth advances the counter
+        // so siblings diverge. The path is the running prefix.
+        var path: std.ArrayListUnmanaged(u32) = .empty;
+        try path.append(a, 0);
+
+        var i = start_i + 1;
+        var in_class = false;
+        while (i < close_at and i < self.source.len) {
+            const ch = self.source[i];
+            if (ch == '\\') {
+                // Escapes: handle named refs and decimal escapes outside
+                // a character class. Inside a class, decimal escapes are
+                // handled by the class diagnostics (TS1536/1537) and do
+                // not contribute backreferences.
+                if (!in_class and i + 1 < close_at) {
+                    const e = self.source[i + 1];
+                    if (e == 'k' and allow_named_refs and i + 2 < close_at and self.source[i + 2] == '<') {
+                        const name_start = i + 3;
+                        var p = name_start;
+                        while (p < close_at and self.source[p] != '>') : (p += 1) {}
+                        const name = self.source[name_start..@min(p, close_at)];
+                        if (name.len == 0) {
+                            try self.reportCodeAtWithSpan(@intCast(name_start), start_tok.line, 0, 1514, "Expected a capturing group name.");
+                        } else {
+                            try refs.append(a, .{ .pos = name_start, .len = name.len, .name = name });
+                        }
+                        i = if (p < close_at) p + 1 else p;
+                        continue;
+                    }
+                    if (e >= '1' and e <= '9') {
+                        const ds = i + 1;
+                        var p = ds;
+                        while (p < close_at and std.ascii.isDigit(self.source[p])) : (p += 1) {}
+                        var value: u64 = 0;
+                        var overflow = false;
+                        for (self.source[ds..p]) |d| {
+                            value = std.math.mul(u64, value, 10) catch blk: {
+                                overflow = true;
+                                break :blk std.math.maxInt(u64);
+                            };
+                            value = std.math.add(u64, value, d - '0') catch blk: {
+                                overflow = true;
+                                break :blk std.math.maxInt(u64);
+                            };
+                        }
+                        if (overflow) value = std.math.maxInt(u64);
+                        try decimals.append(a, .{ .pos = i, .len = p - i, .value = value });
+                        i = p;
+                        continue;
+                    }
+                }
+                // Skip the escaped char (2 bytes), or a lone trailing `\`.
+                i += if (i + 1 < close_at) 2 else 1;
+                continue;
+            }
+            if (ch == '[') {
+                in_class = true;
+                i += 1;
+                continue;
+            }
+            if (ch == ']' and in_class) {
+                in_class = false;
+                i += 1;
+                continue;
+            }
+            if (in_class) {
+                i += 1;
+                continue;
+            }
+            if (ch == '|') {
+                // Advance the current branch counter so the names declared
+                // after the `|` live in a divergent path.
+                path.items[path.items.len - 1] += 1;
+                i += 1;
+                continue;
+            }
+            if (ch == '(') {
+                if (i + 1 < close_at and self.source[i + 1] == '?') {
+                    // (?:  (?=  (?!  (?<=  (?<!  (?<name>  (?flags...:
+                    if (i + 2 < close_at and self.source[i + 2] == '<' and
+                        (i + 3 >= close_at or (self.source[i + 3] != '=' and self.source[i + 3] != '!')))
+                    {
+                        // Named capturing group `(?<name>`.
+                        group_count += 1;
+                        const name_start = i + 3;
+                        var p = name_start;
+                        while (p < close_at and self.source[p] != '>') : (p += 1) {}
+                        const name = self.source[name_start..@min(p, close_at)];
+                        if (name.len == 0) {
+                            try self.reportCodeAtWithSpan(@intCast(name_start), start_tok.line, 0, 1514, "Expected a capturing group name.");
+                        } else {
+                            // TS1515: duplicate name on a shared path.
+                            var collides = false;
+                            for (defs.items) |d| {
+                                if (std.mem.eql(u8, d.name, name) and regexPathsShareAlternation(d.path, path.items)) {
+                                    collides = true;
+                                    break;
+                                }
+                            }
+                            if (collides) {
+                                try self.reportCodeAtWithSpan(@intCast(name_start), start_tok.line, @intCast(name.len), 1515, "Named capturing groups with the same name must be mutually exclusive to each other.");
+                            } else {
+                                const path_copy = try a.dupe(u32, path.items);
+                                try defs.append(a, .{ .name = name, .path = path_copy });
+                            }
+                        }
+                        // Enter a new disjunction scope inside this group.
+                        try path.append(a, 0);
+                        i = if (p < close_at) p + 1 else p;
+                        continue;
+                    }
+                    // Non-capturing group / lookaround / modifier group:
+                    // still opens a disjunction scope.
+                    try path.append(a, 0);
+                    i += 2;
+                    continue;
+                }
+                // Plain capturing group.
+                group_count += 1;
+                try path.append(a, 0);
+                i += 1;
+                continue;
+            }
+            if (ch == ')') {
+                if (path.items.len > 1) _ = path.pop();
+                i += 1;
+                continue;
+            }
+            i += 1;
+        }
+
+        // Resolve named references (TS1532).
+        for (refs.items) |ref| {
+            var found = false;
+            for (defs.items) |d| {
+                if (std.mem.eql(u8, d.name, ref.name)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "There is no capturing group named '{s}' in this regular expression.",
+                    .{ref.name},
+                );
+                try self.reportCodeAtWithSpan(@intCast(ref.pos), start_tok.line, @intCast(ref.len), 1532, msg);
+            }
+        }
+
+        // Resolve numeric backreferences (TS1533 / TS1534). tsc reports a
+        // decimal escape whose value exceeds the number of capturing
+        // groups even though Annex B would otherwise treat it as a legacy
+        // octal/identity escape.
+        for (decimals.items) |de| {
+            if (de.value > group_count) {
+                if (group_count > 0) {
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "This backreference refers to a group that does not exist. There are only {d} capturing groups in this regular expression.",
+                        .{group_count},
+                    );
+                    try self.reportCodeAtWithSpan(@intCast(de.pos), start_tok.line, @intCast(de.len), 1533, msg);
+                } else {
+                    try self.reportCodeAtWithSpan(@intCast(de.pos), start_tok.line, @intCast(de.len), 1534, "This backreference refers to a group that does not exist. There are no capturing groups in this regular expression.");
+                }
+            }
+        }
+    }
+
+    /// Two branch paths share an alternation path (and therefore their
+    /// named groups collide for TS1515) when neither diverges from the
+    /// other before its end: one must be a prefix of the other. Mirrors
+    /// tsc's `namedCapturingGroupsContains`, which only consults scopes on
+    /// the stack at the time a group is declared.
+    fn regexPathsShareAlternation(a: []const u32, b: []const u32) bool {
+        const n = @min(a.len, b.len);
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            if (a[i] != b[i]) return false;
+        }
+        return true;
+    }
+
+    // ====================================================================
+    // Unicode property value expression validation (`\p{...}` / `\P{...}`).
+    // Ports tsc's `scanCharacterClassEscape` property arm + the property
+    // tables from typescript-go's scanner/unicodeproperties.go:
+    //   - TS1523 Expected a Unicode property name. (`\p{=value}`)
+    //   - TS1524 Unknown Unicode property name.
+    //   - TS1525 Expected a Unicode property value. (`\p{name=}`)
+    //   - TS1526 Unknown Unicode property value.
+    //   - TS1527 Expected a Unicode property name or value. (`\p{}`)
+    //   - TS1528 Any Unicode property that would possibly match more than a
+    //            single character ... (string-prop without v flag)
+    //   - TS1529 Unknown Unicode property name or value.
+    //   - TS1530 Unicode property value expressions are only available when
+    //            the Unicode (u) flag or the Unicode Sets (v) flag is set.
+    //   - TS1531 '\p'/'\P' must be followed by a Unicode property value
+    //            expression enclosed in braces.
+    // ====================================================================
+
+    fn reportRegexUnicodePropertyDiagnostics(self: *Parser, start_tok: Token, end: u32) ParseError!void {
+        const start_i: usize = @intCast(start_tok.span.start);
+        const end_i: usize = @intCast(end);
+        if (start_i >= self.source.len or self.source[start_i] != '/') return;
+        const close_at = self.regexLiteralClose(start_i, end_i) orelse return;
+        const unicode_sets_mode = self.regexLiteralHasFlag(close_at + 1, end_i, 'v');
+        const unicode_mode = self.regexLiteralHasFlag(close_at + 1, end_i, 'u') or unicode_sets_mode;
+        const named_capture_groups = self.regexLiteralHasNamedCaptureGroup(start_i + 1, close_at);
+        // `anyUnicodeModeOrNonAnnexB`: tsc treats a regex with named
+        // capture groups as non-AnnexB even without the u/v flag.
+        const any_unicode_or_non_annexb = unicode_mode or named_capture_groups;
+
+        var i = start_i + 1;
+        var in_negated_class = false;
+        var class_depth: u32 = 0;
+        while (i < close_at and i < self.source.len) {
+            const ch = self.source[i];
+            if (ch == '[') {
+                // Track whether we are inside a negated class (`[^...]`)
+                // for the TS1518 mayContainStrings check.
+                const negated = i + 1 < close_at and self.source[i + 1] == '^';
+                if (class_depth == 0) in_negated_class = negated;
+                class_depth += 1;
+                i += if (negated) 2 else 1;
+                continue;
+            }
+            if (ch == ']' and class_depth > 0) {
+                class_depth -= 1;
+                if (class_depth == 0) in_negated_class = false;
+                i += 1;
+                continue;
+            }
+            if (ch != '\\' or i + 1 >= close_at) {
+                i += 1;
+                continue;
+            }
+            const e = self.source[i + 1];
+            if (e != 'p' and e != 'P') {
+                // Skip the escaped char.
+                i += 2;
+                continue;
+            }
+            const is_complement = e == 'P';
+            const prop_escape_start = i;
+            i += 2; // past `\p`
+            if (i >= close_at or self.source[i] != '{') {
+                // `\p` not followed by `{`.
+                if (any_unicode_or_non_annexb) {
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "'\\{c}' must be followed by a Unicode property value expression enclosed in braces.",
+                        .{e},
+                    );
+                    try self.reportCodeAtWithSpan(@intCast(prop_escape_start), start_tok.line, 2, 1531, msg);
+                }
+                continue;
+            }
+            i += 1; // past `{`
+            const name_or_value_start = i;
+            while (i < close_at and isRegexWordCharacter(self.source[i])) : (i += 1) {}
+            const name_or_value = self.source[name_or_value_start..i];
+            if (i < close_at and self.source[i] == '=') {
+                // Property name = value form.
+                if (name_or_value.len == 0) {
+                    try self.reportCodeAtWithSpan(@intCast(i), start_tok.line, 0, 1523, "Expected a Unicode property name.");
+                } else if (canonicalNonBinaryUnicodeProperty(name_or_value) == null) {
+                    try self.reportCodeAtWithSpan(@intCast(name_or_value_start), start_tok.line, @intCast(name_or_value.len), 1524, "Unknown Unicode property name.");
+                }
+                const canonical = canonicalNonBinaryUnicodeProperty(name_or_value);
+                i += 1; // past `=`
+                const value_start = i;
+                while (i < close_at and isRegexWordCharacter(self.source[i])) : (i += 1) {}
+                const value = self.source[value_start..i];
+                if (value.len == 0) {
+                    try self.reportCodeAtWithSpan(@intCast(i), start_tok.line, 0, 1525, "Expected a Unicode property value.");
+                } else if (canonical) |prop| {
+                    if (!nonBinaryUnicodePropertyValueIsValid(prop, value)) {
+                        try self.reportCodeAtWithSpan(@intCast(value_start), start_tok.line, @intCast(value.len), 1526, "Unknown Unicode property value.");
+                    }
+                }
+            } else {
+                // Lone property name-or-value form.
+                if (name_or_value.len == 0) {
+                    try self.reportCodeAtWithSpan(@intCast(i), start_tok.line, 0, 1527, "Expected a Unicode property name or value.");
+                } else if (isBinaryUnicodePropertyOfStrings(name_or_value)) {
+                    if (!unicode_sets_mode) {
+                        try self.reportCodeAtWithSpan(@intCast(name_or_value_start), start_tok.line, @intCast(name_or_value.len), 1528, "Any Unicode property that would possibly match more than a single character is only available when the Unicode Sets (v) flag is set.");
+                    } else if (is_complement or in_negated_class) {
+                        try self.reportCodeAtWithSpan(@intCast(name_or_value_start), start_tok.line, @intCast(name_or_value.len), 1518, "Anything that would possibly match more than a single character is invalid inside a negated character class.");
+                    }
+                } else if (!nonBinaryUnicodePropertyValueIsValid("General_Category", name_or_value) and
+                    !isBinaryUnicodeProperty(name_or_value))
+                {
+                    try self.reportCodeAtWithSpan(@intCast(name_or_value_start), start_tok.line, @intCast(name_or_value.len), 1529, "Unknown Unicode property name or value.");
+                }
+            }
+            // Consume the closing `}`.
+            if (i < close_at and self.source[i] == '}') i += 1;
+            // TS1530: property expressions need the u/v flag.
+            if (!unicode_mode) {
+                try self.reportCodeAtWithSpan(@intCast(prop_escape_start), start_tok.line, @intCast(i - prop_escape_start), 1530, "Unicode property value expressions are only available when the Unicode (u) flag or the Unicode Sets (v) flag is set.");
+            }
+        }
+    }
+
+    fn isRegexWordCharacter(c: u8) bool {
+        return std.ascii.isAlphanumeric(c) or c == '_';
+    }
+
+    // ====================================================================
+    // ClassSetExpression grammar (the `v`-flag character-class syntax).
+    // Ports the structural diagnostics of tsc's `scanClassSetExpression`,
+    // `scanClassSetSubExpression`, `scanClassSetOperand`, and
+    // `scanClassSetCharacter`:
+    //   - TS1516 A character class range must not be bounded by another
+    //            character class.
+    //   - TS1519 Operators must not be mixed within a character class.
+    //   - TS1520 Expected a class set operand.
+    //   - TS1521 '\q' must be followed by string alternatives enclosed in
+    //            braces.
+    //   - TS1522 A character class must not contain a reserved double
+    //            punctuator. Did you mean to escape it with backslash?
+    // (TS1518 negated-class "may contain strings" lives in the property
+    // pass; TS1517 range-order already lives in the class-range pass.)
+    // ====================================================================
+
+    fn reportRegexClassSetExpressionDiagnostics(self: *Parser, start_tok: Token, end: u32) ParseError!void {
+        const start_i: usize = @intCast(start_tok.span.start);
+        const end_i: usize = @intCast(end);
+        if (start_i >= self.source.len or self.source[start_i] != '/') return;
+        const close_at = self.regexLiteralClose(start_i, end_i) orelse return;
+        // The ClassSetExpression grammar only applies under the `v` flag.
+        if (!self.regexLiteralHasFlag(close_at + 1, end_i, 'v')) return;
+
+        var i = start_i + 1;
+        while (i < close_at and i < self.source.len) {
+            const ch = self.source[i];
+            if (ch == '\\') {
+                // Skip an escaped atom outside a class.
+                i += if (i + 1 < close_at) 2 else 1;
+                continue;
+            }
+            if (ch == '[') {
+                i = try self.scanRegexClassSet(i + 1, close_at, start_tok.line);
+                continue;
+            }
+            i += 1;
+        }
+    }
+
+    const RegexClassSetOp = enum { union_op, intersection, subtraction };
+
+    /// Scan a single (possibly nested) `[...]` class-set body for v-flag
+    /// grammar diagnostics. `body_start` points just past the opening `[`.
+    /// Returns the index just past the matching `]` (or close_at). Mirrors
+    /// the two-phase structure of tsc's `scanClassSetExpression`: scan the
+    /// first operand, decide the expression type from the first operator,
+    /// then loop requiring that operator.
+    fn scanRegexClassSet(self: *Parser, body_start: usize, close_at: usize, line: u32) ParseError!usize {
+        var i = body_start;
+        if (i < close_at and self.source[i] == '^') i += 1;
+        if (i >= close_at or i >= self.source.len or self.source[i] == ']') {
+            return if (i < close_at and self.source[i] == ']') i + 1 else i;
+        }
+
+        // Empty leading operator (`[&&...]` / `[--...]`) — TS1520.
+        if (self.twoCharOpAt(i, close_at)) |_| {
+            try self.reportCodeAtWithSpan(@intCast(i), line, 0, 1520, "Expected a class set operand.");
+        } else {
+            i = try self.scanRegexClassSetRangeOrOperand(i, close_at, line, true);
+        }
+
+        // Determine the expression operator from the first operator we see.
+        if (i >= close_at or i >= self.source.len) return i;
+        const expr_op: RegexClassSetOp = blk: {
+            if (self.twoCharOpAt(i, close_at)) |op| break :blk op;
+            break :blk .union_op;
+        };
+
+        while (i < close_at and i < self.source.len) {
+            const ch = self.source[i];
+            if (ch == ']') return i + 1;
+
+            if (self.twoCharOpAt(i, close_at)) |op| {
+                // Operator mixing (TS1519): a `--`/`&&` that differs from
+                // the operator that defines this expression, or any
+                // operator after a plain union of operands.
+                if (op != expr_op or expr_op == .union_op) {
+                    try self.reportCodeAtWithSpan(@intCast(i), line, 2, 1519, "Operators must not be mixed within a character class. Wrap it in a nested class instead.");
+                }
+                i += 2;
+                if (i >= close_at or i >= self.source.len or self.source[i] == ']') {
+                    try self.reportCodeAtWithSpan(@intCast(i), line, 0, 1520, "Expected a class set operand.");
+                    if (i < close_at and self.source[i] == ']') return i + 1;
+                    return i;
+                }
+                i = try self.scanRegexClassSetRangeOrOperand(i, close_at, line, false);
+                continue;
+            }
+
+            // Single `-` (range) belongs to a union; in an
+            // intersection/subtraction context a bare `-` operand is a
+            // ClassSetCharacter handled by the operand scanner.
+            i = try self.scanRegexClassSetRangeOrOperand(i, close_at, line, false);
+        }
+        return i;
+    }
+
+    /// If `[i, i+2)` is a class-set operator (`&&` or `--`), return it.
+    fn twoCharOpAt(self: *Parser, i: usize, close_at: usize) ?RegexClassSetOp {
+        if (i + 1 >= close_at or i + 1 >= self.source.len) return null;
+        const a = self.source[i];
+        const b = self.source[i + 1];
+        if (a == '&' and b == '&') return .intersection;
+        if (a == '-' and b == '-') return .subtraction;
+        return null;
+    }
+
+    /// Scan one operand, including a possible `-`-delimited range, and emit
+    /// the reserved-double-punctuator (TS1522) and class-bounded-range
+    /// (TS1516) diagnostics. `is_first` allows the caller to distinguish
+    /// the leading operand (unused for now but mirrors the reference's
+    /// dedicated first-operand handling).
+    fn scanRegexClassSetRangeOrOperand(self: *Parser, start: usize, close_at: usize, line: u32, is_first: bool) ParseError!usize {
+        _ = is_first;
+        // Reserved double punctuator (TS1522): two identical reserved
+        // punctuators that are not the `&&`/`--` operators.
+        if (start + 1 < close_at and self.source[start + 1] == self.source[start] and
+            isReservedDoublePunctuator(self.source[start]))
+        {
+            try self.reportCodeAtWithSpan(@intCast(start), line, 2, 1522, "A character class must not contain a reserved double punctuator. Did you mean to escape it with backslash?");
+            return start + 2;
+        }
+
+        const min_is_class = self.classSetOperandIsClass(start, close_at);
+        var i = try self.scanRegexClassSetOperand(start, close_at, line);
+
+        // Range `min-max`.
+        if (i < close_at and i < self.source.len and self.source[i] == '-' and
+            (i + 1 >= close_at or self.source[i + 1] != '-'))
+        {
+            // A trailing `-` right before `]` is a literal dash, not a range.
+            if (i + 1 < close_at and self.source[i + 1] != ']') {
+                i += 1; // past `-`
+                // TS1516: a range bound must be a single character, not a
+                // class (`\d`, `\w`, `\p{...}`, or a nested `[...]`).
+                if (min_is_class) {
+                    try self.reportCodeAtWithSpan(@intCast(start), line, @intCast(i - 1 - start), 1516, "A character class range must not be bounded by another character class.");
+                }
+                if (self.classSetOperandIsClass(i, close_at)) {
+                    try self.reportCodeAtWithSpan(@intCast(i), line, 1, 1516, "A character class range must not be bounded by another character class.");
+                }
+                i = try self.scanRegexClassSetOperand(i, close_at, line);
+            }
+        }
+        return i;
+    }
+
+    /// True if the operand starting at `pos` is a class (a nested `[...]`
+    /// or a `\d`/`\w`/`\p{...}` shorthand) rather than a single character.
+    fn classSetOperandIsClass(self: *Parser, pos: usize, close_at: usize) bool {
+        if (pos >= close_at or pos >= self.source.len) return false;
+        const ch = self.source[pos];
+        if (ch == '[') return true;
+        if (ch == '\\' and pos + 1 < close_at and isRegexClassShorthand(self.source[pos + 1])) return true;
+        return false;
+    }
+
+    /// Scan one ClassSetOperand: a nested `[...]`, a `\`-escape (including
+    /// `\q{...}` string disjunctions), or a single ClassSetCharacter.
+    /// Returns the index past the operand.
+    fn scanRegexClassSetOperand(self: *Parser, start: usize, close_at: usize, line: u32) ParseError!usize {
+        if (start >= close_at or start >= self.source.len) return start;
+        const ch = self.source[start];
+        if (ch == '[') {
+            return try self.scanRegexClassSet(start + 1, close_at, line);
+        }
+        if (ch == '\\') {
+            if (start + 1 >= close_at) return start + 1;
+            const e = self.source[start + 1];
+            if (e == 'q') {
+                if (start + 2 < close_at and self.source[start + 2] == '{') {
+                    // `\q{...}` string disjunction — skip to closing `}`.
+                    var p = start + 3;
+                    while (p < close_at and self.source[p] != '}') {
+                        if (self.source[p] == '\\' and p + 1 < close_at) p += 2 else p += 1;
+                    }
+                    return if (p < close_at) p + 1 else p;
+                }
+                // `\q` not followed by `{`.
+                try self.reportCodeAtWithSpan(@intCast(start), line, 2, 1521, "'\\q' must be followed by string alternatives enclosed in braces.");
+                return start + 2;
+            }
+            // `\u{...}` and `\p{...}` escapes consume their braces.
+            if ((e == 'u' or e == 'p' or e == 'P') and start + 2 < close_at and self.source[start + 2] == '{') {
+                var p = start + 3;
+                while (p < close_at and self.source[p] != '}') : (p += 1) {}
+                return if (p < close_at) p + 1 else p;
+            }
+            return start + 2;
+        }
+        return start + 1;
+    }
+
+    fn isRegexClassShorthand(c: u8) bool {
+        return switch (c) {
+            'd', 'D', 's', 'S', 'w', 'W', 'p', 'P' => true,
+            else => false,
+        };
+    }
+
+    fn isReservedDoublePunctuator(c: u8) bool {
+        return switch (c) {
+            '&', '!', '#', '%', '*', '+', ',', '.', ':', ';', '<', '=', '>', '?', '@', '`', '~' => true,
+            else => false,
+        };
+    }
+
+    // --- Unicode property database (ports unicodeproperties.go tables) ---
+
+    fn regexSetHas(set: []const []const u8, key: []const u8) bool {
+        for (set) |s| {
+            if (std.mem.eql(u8, s, key)) return true;
+        }
+        return false;
+    }
+
+    /// Table 66: non-binary Unicode property aliases → canonical name.
+    fn canonicalNonBinaryUnicodeProperty(name: []const u8) ?[]const u8 {
+        if (std.mem.eql(u8, name, "General_Category") or std.mem.eql(u8, name, "gc")) return "General_Category";
+        if (std.mem.eql(u8, name, "Script") or std.mem.eql(u8, name, "sc")) return "Script";
+        if (std.mem.eql(u8, name, "Script_Extensions") or std.mem.eql(u8, name, "scx")) return "Script_Extensions";
+        return null;
+    }
+
+    fn nonBinaryUnicodePropertyValueIsValid(canonical: []const u8, value: []const u8) bool {
+        if (std.mem.eql(u8, canonical, "General_Category")) {
+            return regexSetHas(&general_category_values, value);
+        }
+        // Script and Script_Extensions share the script value set.
+        if (std.mem.eql(u8, canonical, "Script") or std.mem.eql(u8, canonical, "Script_Extensions")) {
+            return regexSetHas(&script_values, value);
+        }
+        return false;
+    }
+
+    fn isBinaryUnicodeProperty(name: []const u8) bool {
+        return regexSetHas(&binary_unicode_properties, name);
+    }
+
+    fn isBinaryUnicodePropertyOfStrings(name: []const u8) bool {
+        return regexSetHas(&binary_unicode_properties_of_strings, name);
     }
 
     /// Skip a balanced (), [], or {} starting at `start`. Returns
@@ -15454,6 +16075,151 @@ pub const Parser = struct {
             else => false,
         };
     }
+};
+
+// ====================================================================
+// Unicode property tables for regex `\p{...}` validation. Ported
+// verbatim from typescript-go's internal/scanner/unicodeproperties.go
+// (Unicode 15.1). Used by the TS1523-TS1529 diagnostics.
+// ====================================================================
+
+/// Table 67: Binary Unicode property aliases and their canonical names.
+const binary_unicode_properties = [_][]const u8{
+    "ASCII",                "ASCII_Hex_Digit", "AHex",                        "Alphabetic", "Alpha", "Any", "Assigned",
+    "Bidi_Control",         "Bidi_C",          "Bidi_Mirrored",              "Bidi_M",
+    "Case_Ignorable",       "CI",              "Cased",
+    "Changes_When_Casefolded", "CWCF",         "Changes_When_Casemapped",     "CWCM",
+    "Changes_When_Lowercased", "CWL",          "Changes_When_NFKC_Casefolded", "CWKCF",
+    "Changes_When_Titlecased", "CWT",          "Changes_When_Uppercased",     "CWU",
+    "Dash",                 "Default_Ignorable_Code_Point", "DI",            "Deprecated", "Dep",
+    "Diacritic",            "Dia",
+    "Emoji",                "Emoji_Component", "EComp",                       "Emoji_Modifier", "EMod",
+    "Emoji_Modifier_Base",  "EBase",           "Emoji_Presentation",          "EPres",
+    "Extended_Pictographic", "ExtPict",        "Extender",                    "Ext",
+    "Grapheme_Base",        "Gr_Base",         "Grapheme_Extend",             "Gr_Ext",
+    "Hex_Digit",            "Hex",
+    "IDS_Binary_Operator",  "IDSB",            "IDS_Trinary_Operator",        "IDST",
+    "ID_Continue",          "IDC",             "ID_Start",                    "IDS",
+    "Ideographic",          "Ideo",
+    "Join_Control",         "Join_C",
+    "Logical_Order_Exception", "LOE",
+    "Lowercase",            "Lower",           "Math",
+    "Noncharacter_Code_Point", "NChar",
+    "Pattern_Syntax",       "Pat_Syn",         "Pattern_White_Space",         "Pat_WS",
+    "Quotation_Mark",       "QMark",
+    "Radical",
+    "Regional_Indicator",   "RI",
+    "Sentence_Terminal",    "STerm",
+    "Soft_Dotted",          "SD",
+    "Terminal_Punctuation", "Term",
+    "Unified_Ideograph",    "UIdeo",
+    "Uppercase",            "Upper",
+    "Variation_Selector",   "VS",
+    "White_Space",          "space",
+    "XID_Continue",         "XIDC",            "XID_Start",                   "XIDS",
+};
+
+/// Table 68: Binary Unicode properties of strings.
+const binary_unicode_properties_of_strings = [_][]const u8{
+    "Basic_Emoji",          "Emoji_Keycap_Sequence", "RGI_Emoji_Modifier_Sequence",
+    "RGI_Emoji_Flag_Sequence", "RGI_Emoji_Tag_Sequence",
+    "RGI_Emoji_ZWJ_Sequence", "RGI_Emoji",
+};
+
+/// General_Category property values (and aliases).
+const general_category_values = [_][]const u8{
+    "C",   "Other",            "Cc",  "Control",            "cntrl", "Cf", "Format", "Cn", "Unassigned",
+    "Co",  "Private_Use",      "Cs",  "Surrogate",
+    "L",   "Letter",           "LC",  "Cased_Letter",       "Ll", "Lowercase_Letter", "Lm", "Modifier_Letter",
+    "Lo",  "Other_Letter",     "Lt",  "Titlecase_Letter",   "Lu", "Uppercase_Letter",
+    "M",   "Mark",             "Combining_Mark",            "Mc", "Spacing_Mark", "Me", "Enclosing_Mark",
+    "Mn",  "Nonspacing_Mark",
+    "N",   "Number",           "Nd",  "Decimal_Number",     "digit", "Nl", "Letter_Number", "No", "Other_Number",
+    "P",   "Punctuation",      "punct", "Pc", "Connector_Punctuation", "Pd", "Dash_Punctuation",
+    "Pe",  "Close_Punctuation", "Pf", "Final_Punctuation",  "Pi", "Initial_Punctuation",
+    "Po",  "Other_Punctuation", "Ps", "Open_Punctuation",
+    "S",   "Symbol",           "Sc",  "Currency_Symbol",    "Sk", "Modifier_Symbol",
+    "Sm",  "Math_Symbol",      "So",  "Other_Symbol",
+    "Z",   "Separator",        "Zl",  "Line_Separator",     "Zp", "Paragraph_Separator",
+    "Zs",  "Space_Separator",
+};
+
+/// Script / Script_Extensions property values (Unicode 15.1).
+const script_values = [_][]const u8{
+    "Adlm", "Adlam", "Aghb", "Caucasian_Albanian", "Ahom", "Arab", "Arabic",
+    "Armi", "Imperial_Aramaic", "Armn", "Armenian", "Avst", "Avestan",
+    "Bali", "Balinese", "Bamu", "Bamum", "Bass", "Bassa_Vah", "Batk", "Batak",
+    "Beng", "Bengali", "Bhks", "Bhaiksuki", "Bopo", "Bopomofo", "Brah", "Brahmi",
+    "Brai", "Braille", "Bugi", "Buginese", "Buhd", "Buhid",
+    "Cakm", "Chakma", "Cans", "Canadian_Aboriginal", "Cari", "Carian",
+    "Cham", "Cher", "Cherokee", "Chrs", "Chorasmian",
+    "Copt", "Coptic", "Qaac", "Cpmn", "Cypro_Minoan", "Cprt", "Cypriot",
+    "Cyrl", "Cyrillic",
+    "Deva", "Devanagari", "Diak", "Dives_Akuru", "Dogr", "Dogra",
+    "Dsrt", "Deseret", "Dupl", "Duployan",
+    "Egyp", "Egyptian_Hieroglyphs", "Elba", "Elbasan", "Elym", "Elymaic",
+    "Ethi", "Ethiopic",
+    "Geor", "Georgian", "Glag", "Glagolitic",
+    "Gong", "Gunjala_Gondi", "Gonm", "Masaram_Gondi",
+    "Goth", "Gothic", "Gran", "Grantha", "Grek", "Greek",
+    "Gujr", "Gujarati", "Guru", "Gurmukhi",
+    "Hang", "Hangul", "Hani", "Han", "Hano", "Hanunoo",
+    "Hatr", "Hatran", "Hebr", "Hebrew",
+    "Hira", "Hiragana", "Hluw", "Anatolian_Hieroglyphs",
+    "Hmng", "Pahawh_Hmong", "Hmnp", "Nyiakeng_Puachue_Hmong",
+    "Hrkt", "Katakana_Or_Hiragana",
+    "Hung", "Old_Hungarian",
+    "Ital", "Old_Italic",
+    "Java", "Javanese",
+    "Kali", "Kayah_Li", "Kana", "Katakana", "Kawi",
+    "Khar", "Kharoshthi", "Khmr", "Khmer", "Khoj", "Khojki",
+    "Kits", "Khitan_Small_Script", "Knda", "Kannada", "Kthi", "Kaithi",
+    "Lana", "Tai_Tham", "Laoo", "Lao", "Latn", "Latin",
+    "Lepc", "Lepcha", "Limb", "Limbu",
+    "Lina", "Linear_A", "Linb", "Linear_B", "Lisu",
+    "Lyci", "Lycian", "Lydi", "Lydian",
+    "Mahj", "Mahajani", "Maka", "Makasar",
+    "Mand", "Mandaic", "Mani", "Manichaean", "Marc", "Marchen",
+    "Medf", "Medefaidrin", "Mend", "Mende_Kikakui",
+    "Merc", "Meroitic_Cursive", "Mero", "Meroitic_Hieroglyphs",
+    "Mlym", "Malayalam", "Modi", "Mong", "Mongolian",
+    "Mroo", "Mro", "Mtei", "Meetei_Mayek", "Mult", "Multani",
+    "Mymr", "Myanmar",
+    "Nagm", "Nag_Mundari", "Nand", "Nandinagari",
+    "Narb", "Old_North_Arabian", "Nbat", "Nabataean",
+    "Newa", "Nkoo", "Nko", "Nshu", "Nushu",
+    "Ogam", "Ogham", "Olck", "Ol_Chiki",
+    "Orkh", "Old_Turkic", "Orya", "Oriya",
+    "Osge", "Osage", "Osma", "Osmanya", "Ougr", "Old_Uyghur",
+    "Palm", "Palmyrene", "Pauc", "Pau_Cin_Hau",
+    "Perm", "Old_Permic", "Phag", "Phags_Pa",
+    "Phli", "Inscriptional_Pahlavi", "Phlp", "Psalter_Pahlavi",
+    "Phnx", "Phoenician", "Plrd", "Miao",
+    "Prti", "Inscriptional_Parthian",
+    "Rjng", "Rejang", "Rohg", "Hanifi_Rohingya",
+    "Runr", "Runic",
+    "Samr", "Samaritan", "Sarb", "Old_South_Arabian",
+    "Saur", "Saurashtra", "Sgnw", "SignWriting",
+    "Shaw", "Shavian", "Shrd", "Sharada",
+    "Sidd", "Siddham", "Sind", "Khudawadi", "Sinh", "Sinhala",
+    "Sogd", "Sogdian", "Sogo", "Old_Sogdian",
+    "Sora", "Sora_Sompeng", "Soyo", "Soyombo",
+    "Sund", "Sundanese", "Sylo", "Syloti_Nagri", "Syrc", "Syriac",
+    "Tagb", "Tagbanwa", "Takr", "Takri",
+    "Tale", "Tai_Le", "Talu", "New_Tai_Lue",
+    "Taml", "Tamil", "Tang", "Tangut", "Tavt", "Tai_Viet",
+    "Telu", "Telugu", "Tfng", "Tifinagh",
+    "Tglg", "Tagalog", "Thaa", "Thaana", "Thai", "Tibt", "Tibetan",
+    "Tirh", "Tirhuta", "Tnsa", "Tangsa", "Toto",
+    "Ugar", "Ugaritic",
+    "Vaii", "Vai", "Vith", "Vithkuqi",
+    "Wara", "Warang_Citi", "Wcho", "Wancho",
+    "Xpeo", "Old_Persian", "Xsux", "Cuneiform",
+    "Yezi", "Yezidi", "Yiii", "Yi",
+    "Zanb", "Zanabazar_Square",
+    "Zinh", "Inherited", "Qaai",
+    "Zyyy", "Common",
+    "Zzzz", "Unknown",
 };
 
 /// Result for `findJSDocParamName` (TS8032 scan support).
@@ -21035,6 +21801,217 @@ test "parser: numeric and string object property names stay clean of TS1539" {
     _ = try s.parser.parseSourceFile();
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1539);
+    }
+}
+
+fn countDiagCode(s: *TestSetup, code: u32) usize {
+    var n: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == code) n += 1;
+    }
+    return n;
+}
+
+fn firstDiagCode(s: *TestSetup, code: u32) ?Diagnostic {
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == code) return d;
+    }
+    return null;
+}
+
+test "parser: dangling numeric backreference reports TS1533/TS1534" {
+    // `\1` with one capturing group is in range (clean). `\2` exceeds
+    // the single group (TS1533). `\1` with zero groups is TS1534.
+    var s = try newTestSetup("let a = /(x)\\1/; let b = /(x)\\2/; let c = /x\\1/;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    try T.expectEqual(@as(usize, 1), countDiagCode(s, 1533));
+    try T.expectEqual(@as(usize, 1), countDiagCode(s, 1534));
+    const d1533 = firstDiagCode(s, 1533).?;
+    try T.expectEqualStrings(
+        "This backreference refers to a group that does not exist. There are only 1 capturing groups in this regular expression.",
+        d1533.message,
+    );
+    const d1534 = firstDiagCode(s, 1534).?;
+    try T.expectEqualStrings(
+        "This backreference refers to a group that does not exist. There are no capturing groups in this regular expression.",
+        d1534.message,
+    );
+}
+
+test "parser: in-range numeric backreferences stay clean" {
+    // Two groups, both `\1`/`\2` in range — no TS1533/1534.
+    var s = try newTestSetup("let r = /(a)(b)\\1\\2/;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), countDiagCode(s, 1533));
+    try T.expectEqual(@as(usize, 0), countDiagCode(s, 1534));
+}
+
+test "parser: dangling named backreference reports TS1532" {
+    // `\k<missing>` references a group that does not exist (named groups
+    // present, so `\k` is treated as a reference).
+    var s = try newTestSetup("let r = /(?<a>x)\\k<b>/;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), countDiagCode(s, 1532));
+    const d = firstDiagCode(s, 1532).?;
+    try T.expectEqualStrings("There is no capturing group named 'b' in this regular expression.", d.message);
+}
+
+test "parser: resolved named backreference stays clean" {
+    var s = try newTestSetup("let r = /(?<a>x)\\k<a>/;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), countDiagCode(s, 1532));
+}
+
+test "parser: duplicate named capture group on same path reports TS1515" {
+    // Two groups named `a` in the same alternative are not mutually
+    // exclusive — TS1515.
+    var s = try newTestSetup("let r = /(?<a>x)(?<a>y)/;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), countDiagCode(s, 1515));
+    const d = firstDiagCode(s, 1515).?;
+    try T.expectEqualStrings("Named capturing groups with the same name must be mutually exclusive to each other.", d.message);
+}
+
+test "parser: same group name in mutually-exclusive branches stays clean" {
+    // `(?<a>x)|(?<a>y)` — the two `a` groups are in distinct alternation
+    // branches and are mutually exclusive, so no TS1515.
+    var s = try newTestSetup("let r = /(?<a>x)|(?<a>y)/;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), countDiagCode(s, 1515));
+}
+
+test "parser: empty capturing group name reports TS1514" {
+    var s = try newTestSetup("let r = /(?<>x)/;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), countDiagCode(s, 1514));
+    const d = firstDiagCode(s, 1514).?;
+    try T.expectEqualStrings("Expected a capturing group name.", d.message);
+}
+
+test "parser: unknown unicode property name-or-value reports TS1529" {
+    var s = try newTestSetup("let r = /\\p{Bogus_Prop}/u;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), countDiagCode(s, 1529));
+    const d = firstDiagCode(s, 1529).?;
+    try T.expectEqualStrings("Unknown Unicode property name or value.", d.message);
+}
+
+test "parser: known unicode property values stay clean" {
+    // Valid lone general-category value, valid binary property, and
+    // valid name=value pairs must not report any TS1523-1530.
+    var s = try newTestSetup("let r = /\\p{Lu}\\p{Alphabetic}\\p{Script=Greek}\\p{General_Category=Letter}/u;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    for ([_]u32{ 1523, 1524, 1525, 1526, 1527, 1528, 1529, 1530 }) |code| {
+        try T.expectEqual(@as(usize, 0), countDiagCode(s, code));
+    }
+}
+
+test "parser: unknown unicode property name reports TS1524" {
+    var s = try newTestSetup("let r = /\\p{Bogus=Greek}/u;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), countDiagCode(s, 1524));
+    try T.expectEqualStrings("Unknown Unicode property name.", firstDiagCode(s, 1524).?.message);
+}
+
+test "parser: unknown unicode property value reports TS1526" {
+    var s = try newTestSetup("let r = /\\p{Script=Klingon}/u;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), countDiagCode(s, 1526));
+    try T.expectEqualStrings("Unknown Unicode property value.", firstDiagCode(s, 1526).?.message);
+}
+
+test "parser: unicode property without u/v flag reports TS1530" {
+    var s = try newTestSetup("let r = /\\p{Lu}/;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), countDiagCode(s, 1530));
+    try T.expectEqualStrings("Unicode property value expressions are only available when the Unicode (u) flag or the Unicode Sets (v) flag is set.", firstDiagCode(s, 1530).?.message);
+}
+
+test "parser: bare \\p without braces reports TS1531" {
+    var s = try newTestSetup("let r = /\\pL/u;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), countDiagCode(s, 1531));
+    try T.expectEqualStrings("'\\p' must be followed by a Unicode property value expression enclosed in braces.", firstDiagCode(s, 1531).?.message);
+}
+
+test "parser: string-property without v flag reports TS1528" {
+    var s = try newTestSetup("let r = /\\p{RGI_Emoji}/u;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), countDiagCode(s, 1528));
+    try T.expectEqualStrings("Any Unicode property that would possibly match more than a single character is only available when the Unicode Sets (v) flag is set.", firstDiagCode(s, 1528).?.message);
+}
+
+test "parser: v-flag class reserved double punctuator reports TS1522" {
+    var s = try newTestSetup("let r = /[a~~b]/v;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), countDiagCode(s, 1522));
+    try T.expectEqualStrings("A character class must not contain a reserved double punctuator. Did you mean to escape it with backslash?", firstDiagCode(s, 1522).?.message);
+}
+
+test "parser: v-flag mixed class operators report TS1519" {
+    // `[\w&&\d--a]` mixes intersection and subtraction operators.
+    var s = try newTestSetup("let r = /[\\w&&\\d--a]/v;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expect(countDiagCode(s, 1519) >= 1);
+    try T.expectEqualStrings("Operators must not be mixed within a character class. Wrap it in a nested class instead.", firstDiagCode(s, 1519).?.message);
+}
+
+test "parser: v-flag empty class set operand reports TS1520" {
+    // `[\w&&]` — the intersection has no right operand.
+    var s = try newTestSetup("let r = /[\\w&&]/v;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expect(countDiagCode(s, 1520) >= 1);
+    try T.expectEqualStrings("Expected a class set operand.", firstDiagCode(s, 1520).?.message);
+}
+
+test "parser: v-flag \\q without braces reports TS1521" {
+    var s = try newTestSetup("let r = /[\\qa]/v;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), countDiagCode(s, 1521));
+    try T.expectEqualStrings("'\\q' must be followed by string alternatives enclosed in braces.", firstDiagCode(s, 1521).?.message);
+}
+
+test "parser: valid v-flag class set expressions stay clean" {
+    // A union, an intersection, a subtraction, a nested class, a valid
+    // `\q{...}` string disjunction, and a range — none should report any
+    // of TS1516/1518/1519/1520/1521/1522.
+    var s = try newTestSetup(
+        "let a = /[\\w--\\d]/v; let b = /[\\w&&[a-z]]/v; let c = /[abc]/v; let d = /[\\q{ab|cd}]/v; let e = /[a-z]/v;",
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    for ([_]u32{ 1516, 1518, 1519, 1520, 1521, 1522 }) |code| {
+        try T.expectEqual(@as(usize, 0), countDiagCode(s, code));
+    }
+}
+
+test "parser: valid named/numbered groups and references stay clean" {
+    // A realistic regex with named + numbered groups and valid back/named
+    // references must not trip any of the new diagnostics.
+    var s = try newTestSetup("let r = /(?<year>\\d{4})-(?<month>\\d{2})\\k<year>(\\w)\\1/u;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    for ([_]u32{ 1514, 1515, 1532, 1533, 1534 }) |code| {
+        try T.expectEqual(@as(usize, 0), countDiagCode(s, code));
     }
 }
 
