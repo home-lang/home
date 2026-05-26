@@ -395,7 +395,7 @@ pub fn withoutLeadingSlash(this: string) []const u8 {
 }
 
 pub fn withoutLeadingPathSeparator(this: string) []const u8 {
-    return std.mem.trimLeft(u8, this, &.{std.fs.path.sep});
+    return std.mem.trimStart(u8, this, &.{std.fs.path.sep});
 }
 
 pub fn removeLeadingDotSlash(slice: []const u8) callconv(bun.callconv_inline) []const u8 {

@@ -25,10 +25,36 @@ const JSGlobalObject = opaque {};
 // JSC bridge JSValue stubbed — re-attaches in Phase 12.2.
 pub const JSValue = enum(i64) {
     zero = 0,
+    js_undefined = -1,
     _,
 
     pub fn attachAsyncStackFromPromise(self: JSValue, _: *JSGlobalObject, _: *Promise) void {
         _ = self;
+    }
+
+    pub fn isUndefined(self: JSValue) bool {
+        return self == .js_undefined or self == .zero;
+    }
+
+    pub fn isUndefinedOrNull(self: JSValue) bool {
+        return self.isUndefined();
+    }
+
+    pub fn isError(self: JSValue) bool {
+        _ = self;
+        return false;
+    }
+
+    pub fn isAggregateError(self: JSValue, globalThis: anytype) bool {
+        _ = self;
+        _ = globalThis;
+        return false;
+    }
+
+    pub fn isException(self: JSValue, vm: anytype) bool {
+        _ = self;
+        _ = vm;
+        return false;
     }
 };
 

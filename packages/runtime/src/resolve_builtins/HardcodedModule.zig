@@ -412,16 +412,30 @@ pub const HardcodedModule = enum {
         }
 
         pub fn get(name: []const u8, target: anytype, cfg: Cfg) ?Alias {
-            if (target.isBun()) {
+            if (targetIsBun(target)) {
                 if (cfg.rewrite_jest_for_tests) {
                     return bun_test_aliases.get(name);
                 } else {
                     return bun_aliases.get(name);
                 }
-            } else if (target.isNode()) {
+            } else if (targetIsNode(target)) {
                 return node_aliases.get(name);
             }
             return null;
+        }
+
+        fn targetIsBun(target: anytype) bool {
+            return switch (@typeInfo(@TypeOf(target))) {
+                .enum_literal => target == .bun,
+                else => target.isBun(),
+            };
+        }
+
+        fn targetIsNode(target: anytype) bool {
+            return switch (@typeInfo(@TypeOf(target))) {
+                .enum_literal => target == .node,
+                else => target.isNode(),
+            };
         }
     };
 };

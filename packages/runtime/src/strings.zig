@@ -12,6 +12,7 @@ pub const string = []const u8;
 pub const CodepointIterator = @import("string/immutable.zig").CodepointIterator;
 pub const Encoding = @import("string/immutable.zig").Encoding;
 pub const EncodingNonAscii = @import("string/immutable.zig").EncodingNonAscii;
+pub const AsciiStatus = @import("string/immutable.zig").AsciiStatus;
 pub const UnsignedCodepointIterator = @import("string/immutable.zig").UnsignedCodepointIterator;
 pub const decodeWTF8RuneTMultibyte = @import("string/immutable.zig").decodeWTF8RuneTMultibyte;
 pub const containsNonBmpCodePointOrIsInvalidIdentifier = @import("string/immutable.zig").containsNonBmpCodePointOrIsInvalidIdentifier;
@@ -30,6 +31,18 @@ pub const u3_fast = @import("string/immutable.zig").u3_fast;
 pub const sortDesc = @import("string/immutable.zig").sortDesc;
 pub const unicode_replacement = @import("string/immutable.zig").unicode_replacement;
 pub const wtf8ByteSequenceLengthWithInvalid = @import("string/immutable.zig").wtf8ByteSequenceLengthWithInvalid;
+pub const copyLowercase = @import("string/immutable.zig").copyLowercase;
+pub const copyLowercaseIfNeeded = @import("string/immutable.zig").copyLowercaseIfNeeded;
+pub const startsWithChar = @import("string/immutable.zig").startsWithChar;
+pub const endsWithChar = @import("string/immutable.zig").endsWithChar;
+pub const endsWithCharOrIsZeroLength = @import("string/immutable.zig").endsWithCharOrIsZeroLength;
+pub const indexAnyComptime = @import("string/immutable.zig").indexAnyComptime;
+pub const indexAnyComptimeT = @import("string/immutable.zig").indexAnyComptimeT;
+pub const indexOfCharNeg = @import("string/immutable.zig").indexOfCharNeg;
+pub const withoutLeadingPathSeparator = @import("string/immutable.zig").withoutLeadingPathSeparator;
+pub const isNPMPackageName = @import("string/immutable.zig").isNPMPackageName;
+pub const isNPMPackageNameIgnoreLength = @import("string/immutable.zig").isNPMPackageNameIgnoreLength;
+pub const endsWithAnyComptime = @import("string/immutable.zig").endsWithAnyComptime;
 
 pub fn indexOfChar(slice: []const u8, char: u8) ?usize {
     return std.mem.indexOfScalar(u8, slice, char);

@@ -632,6 +632,9 @@ const harness_prelude =
     \\  globalThis.__home_scopes = [globalThis.__home_root_scope];
     \\  globalThis.__home_registered_tests = [];
     \\  globalThis.__home_current_finished_callbacks = null;
+    \\  globalThis.__home_current_snapshot_name = null;
+    \\  globalThis.__home_snapshot_values = Object.create(null);
+    \\  globalThis.__home_snapshot_counts = Object.create(null);
     \\  globalThis.__home_mocked_modules = Object.create(null);
     \\  globalThis.__home_mocks = [];
     \\};
@@ -3237,6 +3240,24 @@ const harness_prelude =
     \\  if (!Number.isFinite(indent)) indent = 0;
     \\  return lines.map(line => line.slice(indent)).join("\n");
     \\}
+    \\function __home_load_snapshots(source) {
+    \\  const values = Object.create(null);
+    \\  if (!source) return values;
+    \\  const pattern = /exports\[`([^`]+)`\]\s*=\s*`([\s\S]*?)`\s*;/g;
+    \\  let match;
+    \\  while ((match = pattern.exec(String(source))) !== null) {
+    \\    values[match[1]] = __home_dedent_snapshot(match[2]);
+    \\  }
+    \\  return values;
+    \\}
+    \\function __home_test_full_name(parsed) {
+    \\  const names = [];
+    \\  for (let scope = parsed && parsed.scope; scope; scope = scope.parent) {
+    \\    if (scope.name) names.unshift(String(scope.name));
+    \\  }
+    \\  if (parsed && parsed.name !== undefined) names.push(String(parsed.name));
+    \\  return names.join(" ");
+    \\}
     \\function __home_format_snapshot(value) {
     \\  if (value && value.__home_error_event === true) return __home_format_error_event_snapshot(value);
     \\  if (typeof value === "string") return value.startsWith("\"") && value.endsWith("\"") ? value : "\"" + value.replace(/\\/g, "\\\\") + "\"";
@@ -3534,11 +3555,14 @@ const harness_prelude =
     \\  const chain = __home_scope_chain(scope);
     \\  const afterAllLengths = chain.map(item => item.afterAll.length);
     \\  const previousCallbacks = globalThis.__home_current_finished_callbacks;
+    \\  const previousSnapshotName = globalThis.__home_current_snapshot_name;
     \\  globalThis.__home_current_finished_callbacks = [];
+    \\  globalThis.__home_current_snapshot_name = __home_test_full_name(parsed);
     \\  let callbacks = null;
     \\  const cleanup = () => {
     \\    callbacks = globalThis.__home_current_finished_callbacks;
     \\    globalThis.__home_current_finished_callbacks = previousCallbacks;
+    \\    globalThis.__home_current_snapshot_name = previousSnapshotName;
     \\    let cleanupChain = __home_run_finished_callbacks(callbacks);
     \\    for (let i = chain.length - 1; i >= 0; i--) {
     \\      const item = chain[i];
@@ -3730,6 +3754,7 @@ const harness_prelude =
     \\  const parent = globalThis.__home_current_scope;
     \\  const scope = {
     \\    parent,
+    \\    name: String(name),
     \\    beforeAll: [],
     \\    beforeEach: [],
     \\    afterEach: [],
@@ -4148,7 +4173,18 @@ const harness_prelude =
     \\      __home_assert(actual === snapshot, isNot, "Expected inline snapshot" + (isNot ? " not" : "") + " to match\nactual:\n" + actual + "\nexpected:\n" + snapshot);
     \\    },
     \\    toMatchSnapshot(name) {
-    \\      __home_assert(true, isNot, "Expected snapshot" + (isNot ? " not" : "") + " to match");
+    \\      const baseName = String(globalThis.__home_current_snapshot_name || "");
+    \\      const snapshotName = arguments.length > 0 && name !== undefined && name !== null ? baseName + " " + String(name) : baseName;
+    \\      if (!snapshotName) __home_fail("toMatchSnapshot() must be called while a test is running");
+    \\      const counts = globalThis.__home_snapshot_counts || (globalThis.__home_snapshot_counts = Object.create(null));
+    \\      const count = (counts[snapshotName] || 0) + 1;
+    \\      counts[snapshotName] = count;
+    \\      const key = snapshotName + " " + String(count);
+    \\      const snapshots = globalThis.__home_snapshot_values || Object.create(null);
+    \\      if (!Object.prototype.hasOwnProperty.call(snapshots, key)) __home_fail("Missing snapshot: " + key);
+    \\      const actual = __home_format_snapshot(value);
+    \\      const snapshot = snapshots[key];
+    \\      __home_assert(actual === snapshot, isNot, "Expected snapshot" + (isNot ? " not" : "") + " to match\nkey:\n" + key + "\nactual:\n" + actual + "\nexpected:\n" + snapshot);
     \\    },
     \\    toEqualIgnoringWhitespace(expected) {
     \\      if (arguments.length < 1) __home_fail("toEqualIgnoringWhitespace() requires 1 argument");
@@ -11776,6 +11812,34 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     }
 }
 
+fn appendSnapshotPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator, relative_path: []const u8) !void {
+    const dirname = std.fs.path.dirname(relative_path) orelse ".";
+    const basename = std.fs.path.basename(relative_path);
+    const snapshot_basename = try std.fmt.allocPrint(allocator, "{s}.snap", .{basename});
+    defer allocator.free(snapshot_basename);
+    const snapshot_path = try std.fs.path.join(allocator, &.{
+        "packages/runtime/test/bun-corpus",
+        dirname,
+        "__snapshots__",
+        snapshot_basename,
+    });
+    defer allocator.free(snapshot_path);
+
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const snapshot_source = Io.Dir.cwd().readFileAlloc(io, snapshot_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => return,
+        error.NotDir => return,
+        else => return err,
+    };
+    defer allocator.free(snapshot_source);
+
+    try out.appendSlice(allocator, "globalThis.__home_snapshot_values = __home_load_snapshots(");
+    try appendJsStringLiteral(out, allocator, snapshot_source);
+    try out.appendSlice(allocator, ");\nglobalThis.__home_snapshot_counts = Object.create(null);\n");
+}
+
 fn sourceShebangLen(source: []const u8) usize {
     if (!std.mem.startsWith(u8, source, "#!")) return 0;
     const newline = std.mem.indexOfScalar(u8, source, '\n') orelse return source.len;
@@ -14051,6 +14115,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     try out.appendSlice(allocator, source[0..shebang_len]);
     try out.appendSlice(allocator, "(function() {\n");
     try appendFileMetadataPrelude(&out, allocator, relative_path);
+    try appendSnapshotPrelude(&out, allocator, relative_path);
     try appendSourceWithBunTestImportRewrites(&out, allocator, module_source);
     try out.appendSlice(allocator, "\n})();\n");
     try out.appendSlice(allocator, "\n//# sourceURL=");
@@ -14615,6 +14680,9 @@ test "harness prelude installs Bun test globals once" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toHaveBeenCalledTimes(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toHaveReturnedWith(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toMatchInlineSnapshot(expected)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_load_snapshots(source)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_test_full_name(parsed)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Missing snapshot:") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_format_snapshot(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeGreaterThan(expected)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toBeLessThan(expected)") != null);
@@ -14807,6 +14875,22 @@ test "Bun test import rewrite lowers to the virtual test module" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "globalThis.__home_current_filename = __filename") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "it(\"works\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "\n//# sourceURL=js/node/example.test.js\n") != null);
+}
+
+test "Bun test import rewrite embeds copied snapshot files" {
+    const source =
+        \\import { describe, expect, test } from "bun:test";
+        \\describe("Bun.Transpiler", () => {
+        \\  test("using statements work right", () => {
+        \\    expect("let __bun_temp_ref_1$ = [];\ntry {\nconst x = __using(__bun_temp_ref_1$, a, 0);\n} catch (__bun_temp_ref_2$) {\nvar __bun_temp_ref_3$ = __bun_temp_ref_2$, __bun_temp_ref_4$ = 1;\n} finally {\n__callDispose(__bun_temp_ref_1$, __bun_temp_ref_3$, __bun_temp_ref_4$);\n}").toMatchSnapshot();
+        \\  });
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "bundler/transpiler/transpiler.test.js");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "globalThis.__home_snapshot_values = __home_load_snapshots(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Bun.Transpiler using statements work right 1") != null);
 }
 
 test "Bun test import rewrite lowers single test binding" {

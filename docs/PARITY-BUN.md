@@ -220,7 +220,7 @@ paths, zero missing, and zero extras. The remaining bundler file frontier is:
 | Legacy decorator transpiler semantics | `bundler/transpiler/decorators.test.ts` |
 | Transpiler API surface | `bundler/transpiler/transpiler.test.js` |
 
-Fresh single-file evidence from `/private/tmp/home-bun-parity-main` on
+Fresh single-file evidence from `/private/tmp/home-bun-parser-latest` on
 2026-05-26 keeps the two remaining files out of the passing ledger:
 
 | File | Result | Current blocker |
@@ -289,12 +289,14 @@ field helper emission, and the already-present `bun:wrap` helpers. The
 native-plugin fixture has crossed its node-gyp / `.node` / Node-API gate;
 keep broader N-API parity separate from the bundler ledger.
 
-Latest native-parser probe evidence on 2026-05-26: the macro/JSC facade
-shim tranche and first resolver/install/string cone now let the
-temporary parser switch compile to a smaller frontier: `bun.json`,
-`std.fs.File` drift in the Home FD shim, `AnyPromise.JSValue.isUndefined`,
-`sys.openA`, `StringHashMapUnowned`, `bun.concat`, `bun.pathLiteral`, and
-`strings.AsciiStatus`. The switch is still off in committed code.
+Latest native-parser probe evidence on 2026-05-26: parser namespace
+shims, snapshot loading, resolver string helpers, FD/open-dir
+compatibility, and ZigString ownership/data-URL helpers now let the
+temporary parser switch compile to a three-item frontier:
+`bun.install.PackageInstall` / install task aliases, the copied
+`ThreadPool.Task` surface, and the `bun.sys.File` adapter shape
+(`from`, `getEndPos`, `readAll`). The switch is still off in committed
+code.
 
 The source module follow-through for these bundler gates is to replace
 the `__home_expect_bundled` bootstrap stub with a real `itBundled`
@@ -305,7 +307,7 @@ adapter and wire the copied Bun substrates in `packages/bundler/src/`:
 `linker_context/*` output/metafile/HTML/CSS chunk helpers that are
 currently present under `packages/runtime/src/bundler/linker_context/`.
 
-Current source-presence gap: **closed** in `/tmp/home-bun-parity-main`.
+Current source-presence gap: **closed** in `/private/tmp/home-bun-parser-latest`.
 The 72 previously missing upstream Zig paths are now copied into
 `packages/runtime/src/` preserving relative paths. They remain
 integration backlog only; they do not affect the integrated 552 / 1193

@@ -11,7 +11,19 @@ pub fn clone(self: *MutableString) Allocator.Error!MutableString {
     return MutableString.initCopy(self.allocator, self.list.items);
 }
 
-pub const Writer = std.Io.GenericWriter(*@This(), Allocator.Error, MutableString.writeAll);
+pub const Writer = struct {
+    context: *MutableString,
+
+    pub fn writeAll(this: Writer, bytes: string) Allocator.Error!usize {
+        return this.context.writeAll(bytes);
+    }
+
+    pub fn print(this: Writer, comptime fmt: []const u8, args: anytype) Allocator.Error!void {
+        const formatted = try std.fmt.allocPrint(this.context.allocator, fmt, args);
+        defer this.context.allocator.free(formatted);
+        _ = try this.writeAll(formatted);
+    }
+};
 pub fn writer(self: *MutableString) Writer {
     return Writer{
         .context = self,
@@ -319,7 +331,20 @@ pub const BufferedWriter = struct {
 
     const max = 2048;
 
-    pub const Writer = std.Io.GenericWriter(*BufferedWriter, Allocator.Error, BufferedWriter.writeAll);
+    pub const Writer = struct {
+        context: *BufferedWriter,
+
+        pub fn writeAll(this: @This(), bytes: []const u8) Allocator.Error!usize {
+            return this.context.writeAll(bytes);
+        }
+
+        pub fn print(this: @This(), comptime fmt: []const u8, args: anytype) Allocator.Error!void {
+            const allocator = this.context.context.allocator;
+            const formatted = try std.fmt.allocPrint(allocator, fmt, args);
+            defer allocator.free(formatted);
+            _ = try this.writeAll(formatted);
+        }
+    };
 
     inline fn remain(this: *BufferedWriter) []u8 {
         return this.buffer[this.pos..];

@@ -38,6 +38,9 @@ pub const is_canary = false;
 pub const ci_assert = false;
 pub const enableSIMD = false;
 pub const show_crash_trace = false;
+/// Bun build flag used by generated-runtime call sites. Home's temporary
+/// native parser probe reads source files from disk instead of embedding them.
+pub const codegen_embed = false;
 
 // Wave-20 Tier-2 substrate (2026-05-19). Mirrors upstream
 // `bun.Environment.os`, an `Os` enum used by comptime branches in copied

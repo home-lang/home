@@ -92,7 +92,7 @@ Large-agent handoff for the current bundler frontier:
    after `Bun.Transpiler` and macro import behavior exist in Home.
 
 Fresh single-file probes on 2026-05-26 in
-`/private/tmp/home-bun-parity-main`:
+`/private/tmp/home-bun-parser-latest`:
 
 | File | Result | Current blocker |
 |---|---|---|
@@ -144,12 +144,13 @@ shim, `jsc.AnyPromise`/`JSObject`, allocator
 `BSSList`/`appendLowerCase`, and `jsc.Node.Encoding`. The adapter remains
 gated on the normalization fallback until those are copied faithfully.
 
-Latest clean-worktree parser probe on 2026-05-26: the macro/JSC facade
-tranche and first resolver/install/string cone now compile with the
-temporary native parser switch. The next frontier is `bun.json`,
-`std.fs.File` drift in the Home FD shim, `AnyPromise.JSValue.isUndefined`,
-`sys.openA`, `StringHashMapUnowned`, `bun.concat`, `bun.pathLiteral`, and
-`strings.AsciiStatus`. The probe switch remains uncommitted.
+Latest clean-worktree parser probe on 2026-05-26: parser namespace
+shims, snapshot loading, resolver string helpers, FD/open-dir
+compatibility, and ZigString ownership/data-URL helpers now compile with
+the temporary native parser switch. The next frontier is
+`bun.install.PackageInstall` / install task aliases, the copied
+`ThreadPool.Task` surface, and the `bun.sys.File` adapter shape
+(`from`, `getEndPos`, `readAll`). The probe switch remains committed off.
 
 Next implementation ledger:
 
@@ -198,7 +199,7 @@ namespace and covers channel frame ingestion plus aggregate JUnit
 attribute parsing; full `home test --parallel` behavior still requires
 real IPC, worker lifecycle, and test-command integration.
 
-Source-presence audit on 2026-05-26: `/tmp/home-bun-parity-main` is now
+Source-presence audit on 2026-05-26: `/private/tmp/home-bun-parser-latest` is now
 source-complete against the pinned Bun checkout. The 72 previously
 missing paths were copied from upstream `src/**/*.zig` into
 `packages/runtime/src/**/*.zig`, preserving relative paths. The exact

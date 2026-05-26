@@ -1096,7 +1096,7 @@ pub const Resolver = struct {
                         if (!query.entry.cache.fd.isValid() and store_fd) {
                             buf[out.len] = 0;
                             const span = buf[0..out.len :0];
-                            var file: bun.FD = .fromStdFile(try std.fs.openFileAbsoluteZ(span, .{ .mode = .read_only }));
+                            var file: bun.FD = .fromStdFile(try bun.openFileForPath(span));
                             query.entry.cache.fd = file;
                             Fs.FileSystem.setMaxFd(file.native());
                         }
@@ -1105,7 +1105,7 @@ pub const Resolver = struct {
                             if (r.fs.fs.needToCloseFiles()) {
                                 if (query.entry.cache.fd.isValid()) {
                                     var file = query.entry.cache.fd.stdFile();
-                                    file.close();
+                                    file.close(std.Io.Threaded.global_single_threaded.io());
                                     query.entry.cache.fd = .invalid;
                                 }
                             }
@@ -3297,7 +3297,7 @@ pub const Resolver = struct {
 
             var index_path: string = "";
             {
-                var parts = [_]string{ std.mem.trimRight(u8, path_to_check, std.fs.path.sep_str), std.fs.path.sep_str ++ "index" };
+                var parts = [_]string{ std.mem.trimEnd(u8, path_to_check, std.fs.path.sep_str), std.fs.path.sep_str ++ "index" };
                 index_path = ResolvePath.joinStringBuf(bufs(.tsconfig_base_url), &parts, .auto);
             }
 

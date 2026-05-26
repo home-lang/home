@@ -90,11 +90,14 @@ pub const String = extern struct {
 
     fn toOwnedSliceImpl(this: String, allocator: std.mem.Allocator) !struct { []u8, AsciiStatus } {
         return switch (this.tag) {
-            .ZigString => .{ try this.value.ZigString.toOwnedSlice(allocator), .unknown },
+            .ZigString => blk: {
+                const slice = this.value.ZigString.toSlice(allocator);
+                if (slice.isAllocated()) break :blk .{ slice.mut(), .unknown };
+                break :blk .{ try allocator.dupe(u8, slice.slice()), .unknown };
+            },
             .WTFStringImpl => blk: {
-                const utf8_slice = this.value.WTFStringImpl.toUTF8WithoutRef(allocator);
+                var utf8_slice = this.value.WTFStringImpl.toUTF8WithoutRef(allocator);
                 // `utf8_slice.allocator` is either null, or `allocator`.
-                errdefer utf8_slice.deinit();
 
                 const ascii_status: AsciiStatus = if (utf8_slice.allocator.isNull())
                     .all_ascii // no allocation means the string was 8-bit and all ascii
@@ -103,12 +106,16 @@ pub const String = extern struct {
                 else
                     .unknown; // string was 16-bit; may or may not be all ascii
 
-                const owned_slice = try utf8_slice.cloneIfBorrowed(allocator);
-                // `owned_slice.allocator` is guaranteed to be `allocator`.
-                break :blk .{ owned_slice.mut(), ascii_status };
+                if (!utf8_slice.isAllocated()) {
+                    utf8_slice = ZigString.Slice.init(allocator, try allocator.dupe(u8, utf8_slice.slice()));
+                }
+                // `utf8_slice.allocator` is guaranteed to be `allocator`.
+                break :blk .{ utf8_slice.mut(), ascii_status };
             },
-            .StaticZigString => .{
-                try this.value.StaticZigString.toOwnedSlice(allocator), .unknown,
+            .StaticZigString => blk: {
+                const slice = this.value.StaticZigString.toSlice(allocator);
+                if (slice.isAllocated()) break :blk .{ slice.mut(), .unknown };
+                break :blk .{ try allocator.dupe(u8, slice.slice()), .unknown };
             },
             else => return .{ &.{}, .all_ascii }, // trivially all ascii
         };

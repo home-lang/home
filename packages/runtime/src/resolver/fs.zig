@@ -629,7 +629,7 @@ pub const FileSystem = struct {
                         handle.stdDir(),
 
                         void,
-                        void{},
+                        {},
                     ) catch |err| {
                         existing.entries.data.clearAndFree(bun.default_allocator);
                         return this.readDirectoryError(existing.entries.dir, err) catch unreachable;
@@ -1078,13 +1078,13 @@ pub const FileSystem = struct {
                 }
             }
 
-            var handle = maybe_handle orelse (fs.openDir(dir) catch |err| {
+            const handle = maybe_handle orelse (fs.openDir(dir) catch |err| {
                 return try fs.readDirectoryError(dir, err);
             });
 
             defer {
                 if (maybe_handle == null and (!store_fd or fs.needToCloseFiles())) {
-                    handle.close();
+                    handle.close(std.Io.Threaded.global_single_threaded.io());
                 }
             }
 
@@ -1162,7 +1162,7 @@ pub const FileSystem = struct {
             allocator: std.mem.Allocator,
             path: string,
             size_hint: ?usize,
-            std_file: std.fs.File,
+            std_file: std.Io.File,
             comptime use_shared_buffer: bool,
             shared_buffer: *MutableString,
             comptime stream: bool,
@@ -1456,7 +1456,7 @@ pub const FileSystem = struct {
                 var file: bun.FD = if (existing_fd.unwrapValid()) |valid|
                     valid
                 else if (store_fd)
-                    .fromStdFile(try std.fs.openFileAbsoluteZ(absolute_path_c, .{ .mode = .read_only }))
+                    .fromStdFile(try bun.openFileForPath(absolute_path_c))
                 else
                     .fromStdFile(try bun.openFileForPath(absolute_path_c));
                 setMaxFd(file.native());
@@ -1468,7 +1468,7 @@ pub const FileSystem = struct {
                         cache.fd = file;
                     }
                 }
-                const file_stat = try file.stdFile().stat();
+                const file_stat = try file.stdFile().stat(std.Io.Threaded.global_single_threaded.io());
                 symlink = try file.getFdPath(&outpath);
                 file_kind = file_stat.kind;
             }

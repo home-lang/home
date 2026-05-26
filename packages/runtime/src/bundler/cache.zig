@@ -154,28 +154,23 @@ pub const Fs = struct {
     ) !Entry {
         var rfs = _fs.fs;
 
-        var file_handle: std.fs.File = if (_file_handle) |__file| __file.stdFile() else undefined;
+        var file_handle: std.Io.File = if (_file_handle) |__file| __file.stdFile() else undefined;
 
         if (_file_handle == null) {
             if (FeatureFlags.store_file_descriptors and dirname_fd.isValid()) {
-                file_handle = (bun.sys.openatA(dirname_fd, std.fs.path.basename(path), bun.O.RDONLY, 0).unwrap() catch |err| brk: {
-                    switch (err) {
-                        error.ENOENT => {
-                            const handle = try bun.openFile(path, .{ .mode = .read_only });
-                            Output.prettyErrorln(
-                                "<r><d>Internal error: directory mismatch for directory \"{s}\", fd {f}<r>. You don't need to do anything, but this indicates a bug.",
-                                .{ path, dirname_fd },
-                            );
-                            break :brk bun.FD.fromStdFile(handle);
-                        },
-                        else => return err,
-                    }
+                file_handle = (bun.sys.openatA(dirname_fd, std.fs.path.basename(path), bun.O.RDONLY, 0).unwrap() catch brk: {
+                    const handle = try bun.openFile(path, .{ .mode = .read_only });
+                    Output.prettyErrorln(
+                        "<r><d>Internal error: directory mismatch for directory \"{s}\", fd {f}<r>. You don't need to do anything, but this indicates a bug.",
+                        .{ path, dirname_fd },
+                    );
+                    break :brk bun.FD.fromStdFile(handle);
                 }).stdFile();
             } else {
                 file_handle = try bun.openFile(path, .{ .mode = .read_only });
             }
         } else {
-            try file_handle.seekTo(0);
+            if (std.c.lseek(file_handle.handle, 0, std.c.SEEK.SET) < 0) return error.Unexpected;
         }
 
         if (comptime !Environment.isWindows) // skip on Windows because NTCreateFile will do it.
@@ -185,7 +180,7 @@ pub const Fs = struct {
         defer {
             if (will_close) {
                 debug("readFileWithAllocator close({f})", .{bun.fs.printHandle(file_handle.handle)});
-                file_handle.close();
+                file_handle.close(std.Io.Threaded.global_single_threaded.io());
             }
         }
 

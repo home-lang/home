@@ -3,6 +3,7 @@ const home_rt = @import("home_rt");
 const runner = @import("../runner.zig");
 
 const Io = std.Io;
+const use_bun_parser_probe = false;
 const NativePluginABI = home_rt.bundler.NativePluginABI;
 const NapiStatus = enum(c_uint) {
     ok = 0,
@@ -721,8 +722,8 @@ fn transpileSource(
     source_text: []const u8,
     loader: TranspilerLoader,
 ) ![]u8 {
-    _ = handle;
     if (!loader.isJSLike()) return allocator.dupe(u8, source_text);
+    if (use_bun_parser_probe) return transpileSourceWithBunParser(allocator, handle, source_text, loader);
 
     if (std.mem.indexOf(u8, source_text, "bad??!?!?!") != null) return error.ParseError;
     if (std.mem.indexOf(u8, source_text, "\xc2\x81") != null) return error.ParseError;

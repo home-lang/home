@@ -34,6 +34,14 @@ pub const fmt = @import("fmt.zig");
 pub const Generation = u16;
 pub const Wyhash11 = std.hash.Wyhash;
 pub const StandaloneModuleGraph = @import("standalone_graph/StandaloneModuleGraph.zig");
+pub const json = struct {
+    pub fn parseForMacro(source: *const logger.Source, log: *logger.Log, allocator: std.mem.Allocator) !ast.Expr {
+        _ = source;
+        _ = log;
+        _ = allocator;
+        return error.MacroFailed;
+    }
+};
 
 fn assertNoHasherPointers(comptime T: type) void {
     switch (@typeInfo(T)) {
@@ -445,6 +453,14 @@ pub inline fn copy(comptime T: type, dest: []T, src: []const T) void {
     @memcpy(dest[0..src.len], src);
 }
 
+pub fn concat(comptime T: type, dest: []T, src: []const []const T) void {
+    var remaining = dest;
+    for (src) |group| {
+        copy(T, remaining[0..group.len], group);
+        remaining = remaining[group.len..];
+    }
+}
+
 /// Memory is typically not decommitted immediately when freed. Zero the slice
 /// before returning it to the allocator, matching Bun's sensitive-free helper.
 pub fn freeSensitive(allocator: std.mem.Allocator, slice: anytype) void {
@@ -458,6 +474,63 @@ pub fn freeSensitive(allocator: std.mem.Allocator, slice: anytype) void {
 pub fn hash(content: []const u8) u64 {
     return std.hash.Wyhash.hash(0, content);
 }
+
+pub const StringHashMapUnowned = struct {
+    pub const Key = struct {
+        hash: u64,
+        len: usize,
+
+        pub fn init(str: []const u8) Key {
+            return .{
+                .hash = std.hash.Wyhash.hash(0, str),
+                .len = str.len,
+            };
+        }
+    };
+
+    pub const Adapter = struct {
+        pub fn eql(_: @This(), a: Key, b: Key) bool {
+            return a.hash == b.hash and a.len == b.len;
+        }
+
+        pub fn hash(_: @This(), key: Key) u64 {
+            return key.hash;
+        }
+    };
+};
+
+pub inline fn pathLiteral(comptime literal: anytype) *const [literal.len:0]u8 {
+    if (!Environment.isWindows) return @ptrCast(literal);
+    return comptime {
+        var buf: [literal.len:0]u8 = undefined;
+        for (literal, 0..) |char, i| {
+            buf[i] = if (char == '/') '\\' else char;
+            assert(buf[i] != 0 and buf[i] < 128);
+        }
+        buf[buf.len] = 0;
+        const final = buf[0..buf.len :0].*;
+        return &final;
+    };
+}
+
+pub const RuntimeEmbedRoot = enum {
+    codegen,
+    codegen_eager,
+    src,
+    src_eager,
+};
+
+pub fn runtimeEmbedFile(comptime root: RuntimeEmbedRoot, comptime sub_path: []const u8) [:0]const u8 {
+    _ = root;
+    _ = sub_path;
+    return "";
+}
+
+pub const HTTPThread = struct {
+    pub fn init(opts: anytype) void {
+        _ = opts;
+    }
+};
 
 fn ReinterpretSliceType(comptime T: type, comptime Slice: type) type {
     const is_const = @typeInfo(Slice).pointer.is_const;
@@ -1321,7 +1394,7 @@ pub const jsc = struct {
             function(ctx);
         }
 
-        pub fn unhandledRejection(this: *VirtualMachine, global_object: *JSGlobalObject, result: JSValue, value: JSValue) void {
+        pub fn unhandledRejection(this: *VirtualMachine, global_object: *JSGlobalObject, result: anytype, value: anytype) void {
             _ = this;
             _ = global_object;
             _ = result;
@@ -1934,6 +2007,8 @@ pub const install = struct {
     pub const VersionedURLType = versioned_url.VersionedURLType;
     pub const padding_checker = @import("install/padding_checker.zig");
     pub const ConfigVersion = @import("install/ConfigVersion.zig").ConfigVersion;
+    pub const PackageManager = @import("install/PackageManager.zig");
+    pub const Task = @import("install/PackageManagerTask.zig");
     pub const LifecycleScriptSubprocess = struct {
         pub fn onProcessExit(this: *LifecycleScriptSubprocess, process: anytype, status: anytype, rusage: anytype) void {
             _ = this;
@@ -2510,7 +2585,7 @@ pub const FD = packed struct(fd_t) {
         return .{ .value = value };
     }
 
-    pub fn fromStdFile(file: std.fs.File) FD {
+    pub fn fromStdFile(file: anytype) FD {
         return .fromNative(file.handle);
     }
 
@@ -2541,12 +2616,24 @@ pub const FD = packed struct(fd_t) {
     pub const cast = native;
     pub const uv = native;
 
-    pub fn stdFile(fd: FD) std.fs.File {
-        return .{ .handle = fd.native() };
+    pub fn stdFile(fd: FD) std.Io.File {
+        return .{ .handle = fd.native(), .flags = .{ .nonblocking = false } };
     }
 
     pub fn stdDir(fd: FD) std.Io.Dir {
         return .{ .handle = fd.native() };
+    }
+
+    pub fn getFdPath(fd: FD, buf: *PathBuffer) ![]u8 {
+        return @import("home_rt").getFdPath(fd, buf);
+    }
+
+    pub fn getFdPathZ(fd: FD, buf: *PathBuffer) ![:0]u8 {
+        return @import("home_rt").getFdPathZ(fd, buf);
+    }
+
+    pub fn getFdPathW(fd: FD, buf: *WPathBuffer) ![]u16 {
+        return @import("home_rt").getFdPathW(fd, buf);
     }
 
     pub fn isValid(fd: FD) bool {
@@ -2675,6 +2762,77 @@ pub const O = switch (Environment.os) {
         pub const toPacked = toPackedO;
     },
 };
+
+pub fn openDir(dir: std.Io.Dir, path_: [:0]const u8) !std.Io.Dir {
+    return try openDirA(.fromStdDir(dir), path_);
+}
+
+pub fn openDirA(dir: FD, path_: []const u8) !std.Io.Dir {
+    return (try openDirForIteration(dir, path_).unwrap()).stdDir();
+}
+
+pub fn openDirForIteration(dir: FD, path_: []const u8) sys.Maybe(FD) {
+    return sys.openatA(dir, path_, O.DIRECTORY | O.CLOEXEC | O.RDONLY, 0);
+}
+
+pub fn openDirForIterationOSPath(dir: FD, path_: []const OSPathChar) sys.Maybe(FD) {
+    return openDirForIteration(dir, path_);
+}
+
+pub fn openDirAbsolute(path_: []const u8) !std.Io.Dir {
+    return (try sys.openA(path_, O.DIRECTORY | O.CLOEXEC | O.RDONLY, 0).unwrap()).stdDir();
+}
+
+pub fn openFileForPath(file_path: [:0]const u8) !std.Io.File {
+    const flags: u32 = O.CLOEXEC | O.RDONLY;
+    return (try sys.openA(file_path, flags, 0).unwrap()).stdFile();
+}
+
+pub fn openFile(path_: []const u8, open_flags: anytype) !std.Io.File {
+    _ = open_flags;
+    return (try sys.openA(path_, O.CLOEXEC | O.RDONLY, 0).unwrap()).stdFile();
+}
+
+pub fn getFdPath(fd: FD, buf: *PathBuffer) ![]u8 {
+    if (comptime Environment.isWindows) {
+        return error.Unsupported;
+    } else if (comptime Environment.isMac) {
+        @memset(buf[0..], 0);
+        while (true) {
+            switch (std.c.errno(std.c.fcntl(fd.native(), std.c.F.GETPATH, buf))) {
+                .SUCCESS => break,
+                .INTR => continue,
+                .ACCES => return error.AccessDenied,
+                .BADF => return error.FileNotFound,
+                .NOENT => return error.FileNotFound,
+                .NOMEM => return error.SystemResources,
+                .NOSPC => return error.NameTooLong,
+                .RANGE => return error.NameTooLong,
+                else => return error.Unexpected,
+            }
+        }
+        const len = std.mem.indexOfScalar(u8, buf, 0) orelse buf.len;
+        return buf[0..len];
+    } else {
+        var proc_buf: ["/proc/self/fd/-2147483648".len + 1:0]u8 = undefined;
+        const proc_path = std.fmt.bufPrintZ(&proc_buf, "/proc/self/fd/{d}", .{fd.native()}) catch unreachable;
+        const rc = std.c.readlink(proc_path.ptr, buf.ptr, buf.len);
+        if (rc < 0) return error.Unexpected;
+        return buf[0..@intCast(rc)];
+    }
+}
+
+pub fn getFdPathZ(fd: FD, buf: *PathBuffer) ![:0]u8 {
+    const fd_path = try getFdPath(fd, buf);
+    buf[fd_path.len] = 0;
+    return buf[0..fd_path.len :0];
+}
+
+pub fn getFdPathW(fd: FD, buf: *WPathBuffer) ![]u16 {
+    _ = fd;
+    _ = buf;
+    return error.Unsupported;
+}
 
 pub const PlatformIOVecConst = std.posix.iovec_const;
 
@@ -3258,6 +3416,8 @@ pub const threading = struct {
     pub const DebugGuarded = guarded.Debug;
     pub const UnboundedQueue = @import("threading/unbounded_queue.zig").UnboundedQueue;
 };
+pub const UnboundedQueue = threading.UnboundedQueue;
+pub const DotEnv = @import("dotenv/env_loader.zig");
 
 // ---- src/sys/ ----------------------------------------------------------
 // Fifth-wave port batch (2026-05-18). Pure-data sys leaves; the
@@ -3318,6 +3478,35 @@ pub const sys = struct {
         return .{ .result = .fromNative(fd) };
     }
 
+    pub fn openatA(dir: FD, path_: anytype, flags: i32, mode: Mode) Maybe(FD) {
+        const path_z = std.posix.toPosixPath(pathBytes(path_)) catch {
+            return .{ .err = .{
+                .errno = @intFromEnum(E.NAMETOOLONG),
+                .syscall = .open,
+            } };
+        };
+        return openat(dir, &path_z, flags, mode);
+    }
+
+    pub fn openA(path_: anytype, flags: i32, mode: Mode) Maybe(FD) {
+        return openatA(.cwd(), path_, flags, mode);
+    }
+
+    fn pathBytes(path_: anytype) []const u8 {
+        const PathType = @TypeOf(path_);
+        return switch (@typeInfo(PathType)) {
+            .pointer => |pointer_info| switch (pointer_info.size) {
+                .one => switch (@typeInfo(pointer_info.child)) {
+                    .array => path_[0..path_.len],
+                    else => @compileError("unsupported bun.sys.openA path type: " ++ @typeName(PathType)),
+                },
+                .slice => path_,
+                .many, .c => std.mem.span(path_),
+            },
+            else => path_,
+        };
+    }
+
     pub fn pwritev(fd: FD, buffers: []const PlatformIOVecConst, position: isize) Maybe(usize) {
         var total: usize = 0;
         var offset = position;
@@ -3339,6 +3528,12 @@ pub const sys = struct {
     pub fn unlinkat(dir: FD, path_: anytype) Maybe(void) {
         if (std.c.errno(std.c.unlinkat(dir.native(), path_.ptr, 0)) != .SUCCESS) return .{ .err = unexpected(.unlink).withFd(dir) };
         return .success;
+    }
+
+    pub fn getFdPath(fd: FD, out_buffer: *PathBuffer) Maybe([]u8) {
+        return .{ .result = @import("home_rt").getFdPath(fd, out_buffer) catch |err| {
+            return .{ .err = errnoFromPosix(.readlink, err).withFd(fd) };
+        } };
     }
 
     pub fn preallocate_file(_: fd_t, _: usize, _: usize) !void {}
@@ -3363,9 +3558,14 @@ pub const sys = struct {
         }
 
         pub fn writeAll(this: File, bytes: []const u8) Maybe(void) {
-            this.handle.stdFile().writeAll(bytes) catch |err| {
-                return .{ .err = errnoFromPosix(.write, err).withFd(this.handle) };
-            };
+            var remaining = bytes;
+            while (remaining.len > 0) {
+                const written = std.posix.write(this.handle.native(), remaining) catch |err| {
+                    return .{ .err = errnoFromPosix(.write, err).withFd(this.handle) };
+                };
+                if (written == 0) return .{ .err = unexpected(.write).withFd(this.handle) };
+                remaining = remaining[written..];
+            }
             return .success;
         }
     };
@@ -3677,6 +3877,26 @@ pub const s3_signing = struct {
     pub const ACL = @import("s3_signing/acl.zig").ACL;
     pub const StorageClass = @import("s3_signing/storage_class.zig").StorageClass;
     pub const sign_error = @import("s3_signing/error.zig");
+    pub const credentials = @import("s3_signing/credentials.zig");
+};
+
+pub const S3 = struct {
+    pub const ACL = s3_signing.ACL;
+    pub const StorageClass = s3_signing.StorageClass;
+    pub const S3Error = s3_signing.sign_error.S3Error;
+    pub const S3Credentials = s3_signing.credentials.S3Credentials;
+    pub const S3CredentialsWithOptions = s3_signing.credentials.S3CredentialsWithOptions;
+    pub const MultiPartUploadOptions = @import("runtime/webcore/s3/multipart_options.zig").MultiPartUploadOptions;
+
+    pub const S3DownloadResult = union(enum) { success: []const u8, failure: S3Error };
+    pub const S3UploadResult = union(enum) { success: void, failure: S3Error };
+    pub const S3DeleteResult = union(enum) { success: void, failure: S3Error };
+    pub const S3StatResult = union(enum) { success: void, failure: S3Error };
+    pub const S3ListObjectsResult = union(enum) { success: void, failure: S3Error };
+    pub const S3ListObjectsOptions = struct {};
+    pub const MultiPartUpload = opaque {};
+    pub const S3HttpDownloadStreamingTask = opaque {};
+    pub const S3HttpSimpleTask = opaque {};
 };
 
 // ---- src/errno/ --------------------------------------------------------

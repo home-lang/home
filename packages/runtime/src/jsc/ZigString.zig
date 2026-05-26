@@ -220,6 +220,38 @@ pub const ZigString = extern struct {
         return this.slice();
     }
 
+    pub fn toOwnedSlice(this: ZigString, allocator: std.mem.Allocator) home_rt.OOM![]u8 {
+        if (this.isUTF8()) {
+            return allocator.dupe(u8, this.slice());
+        }
+
+        if (this.is16Bit()) {
+            return home_rt.strings.toUTF8Alloc(allocator, this.utf16SliceAligned());
+        }
+
+        return home_rt.strings.allocateLatin1IntoUTF8(allocator, this.slice());
+    }
+
+    pub fn toOwnedSliceZ(this: ZigString, allocator: std.mem.Allocator) home_rt.OOM![:0]u8 {
+        const owned = try this.toOwnedSlice(allocator);
+        errdefer allocator.free(owned);
+
+        const out = try allocator.allocSentinel(u8, owned.len, 0);
+        @memcpy(out[0..owned.len], owned);
+        allocator.free(owned);
+        return out;
+    }
+
+    pub fn toBase64DataURL(this: ZigString, allocator: std.mem.Allocator) home_rt.OOM![]u8 {
+        const bytes = this.byteSlice();
+        const prefix = "data:application/octet-stream;base64,";
+        const encoded_len = std.base64.standard.Encoder.calcSize(bytes.len);
+        const out = try allocator.alloc(u8, prefix.len + encoded_len);
+        @memcpy(out[0..prefix.len], prefix);
+        _ = std.base64.standard.Encoder.encode(out[prefix.len..], bytes);
+        return out;
+    }
+
     /// Materialize this ZigString as a UTF-8 `Slice`. For Latin-1
     /// / UTF-8 contents the inner bytes are borrowed (no allocation,
     /// no free); for UTF-16 contents the code units are converted

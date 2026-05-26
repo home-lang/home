@@ -486,7 +486,7 @@ pub const Runner = struct {
                         return error.MacroFailed;
                     }
                     this.is_top_level = false;
-                    const result = try this.run(promise_result);
+                    const result = try this.run(@enumFromInt(@intFromEnum(promise_result)));
 
                     this.visited.put(this.allocator, value, result) catch unreachable;
                     return result;

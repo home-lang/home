@@ -1,4 +1,4 @@
-cache_directory_: ?std.fs.Dir = null,
+cache_directory_: ?std.Io.Dir = null,
 cache_directory_path: stringZ = "",
 root_dir: *Fs.FileSystem.DirEntry,
 allocator: std.mem.Allocator,
@@ -31,7 +31,7 @@ update_requests: []UpdateRequest = &[_]UpdateRequest{},
 /// Only set in `bun pm`
 root_package_json_name_at_time_of_init: []const u8 = "",
 
-root_package_json_file: std.fs.File,
+root_package_json_file: std.Io.File,
 
 /// The package id corresponding to the workspace the install is happening in. Could be root, or
 /// could be any of the workspaces.
@@ -91,8 +91,8 @@ options: Options,
 preinstall_state: std.ArrayListUnmanaged(PreinstallState) = .{},
 postinstall_optimizer: PostinstallOptimizer.List = .{},
 
-global_link_dir: ?std.fs.Dir = null,
-global_dir: ?std.fs.Dir = null,
+global_link_dir: ?std.Io.Dir = null,
+global_dir: ?std.Io.Dir = null,
 global_link_dir_path: string = "",
 
 onWake: WakeHandler = .{},

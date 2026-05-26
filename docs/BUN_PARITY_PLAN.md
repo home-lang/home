@@ -24,7 +24,7 @@ The upstream pin is consistent today:
 
 Cheap live recount from `scripts/measure-parity.sh --values` on
 2026-05-26 in `/private/tmp/home-bun-parser-latest` after commit
-`fc27874d`:
+`bbaf1d10`:
 
 | Measurement | Value | What it means |
 |---|---:|---|
@@ -299,7 +299,7 @@ Agent handoff order for the remaining bundler work:
    promote `bundler/transpiler/transpiler.test.js`.
 
 Fresh single-file probes on 2026-05-26 in
-`/private/tmp/home-bun-parity-main`:
+`/private/tmp/home-bun-parser-latest`:
 
 | Command | Result | Current blocker |
 |---|---|---|
@@ -365,13 +365,13 @@ conversion, JSArrayIterator/JSValue enum bridging, `ConsoleObject`
 `jsc.Node.Encoding`. Keep the adapter gated until those are copied
 faithfully from Bun's Zig source.
 
-Latest clean-worktree probe on 2026-05-26: the macro/JSC facade tranche
-and first resolver/install/string cone now compile through the temporary
-native parser switch. The next compile frontier is smaller and more
-specific: `bun.json`, `std.fs.File` drift in the Home FD shim,
-`AnyPromise.JSValue.isUndefined`, `sys.openA`, `StringHashMapUnowned`,
-`bun.concat`, `bun.pathLiteral`, and `strings.AsciiStatus`. The probe
-switch remains uncommitted.
+Latest clean-worktree probe on 2026-05-26: the parser namespace shims,
+snapshot loading, resolver string helpers, FD/open-dir compatibility, and
+ZigString ownership/data-URL helpers now compile through the temporary
+native parser switch. The next compile frontier is three items:
+`bun.install.PackageInstall` / install task aliases, the copied
+`ThreadPool.Task` surface, and the `bun.sys.File` adapter shape
+(`from`, `getEndPos`, `readAll`). The probe switch remains committed off.
 
 Next-work ledger for the two-file frontier:
 
