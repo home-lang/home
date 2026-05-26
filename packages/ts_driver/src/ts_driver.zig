@@ -26,6 +26,17 @@ pub const StrictFlags = ts_checker.StrictFlags;
 pub const ExternalResolver = ts_checker.ExternalResolver;
 pub const ScriptObjectExpando = ts_checker.ScriptObjectExpando;
 
+/// One nested elaboration entry under a unified diagnostic, mirroring
+/// tsc's `messageChain`. `message` and any `children` array are
+/// `gpa`-owned (deep-copied from the checker's arena during conversion)
+/// and freed by `Compilation.deinit` via `freeDiagnosticChain`.
+pub const DiagnosticChainEntry = struct {
+    code: u32 = 0,
+    code_prefix: Diagnostic.CodePrefix = .TS,
+    message: []const u8,
+    children: []const DiagnosticChainEntry = &.{},
+};
+
 /// One unified diagnostic across all phases.
 pub const Diagnostic = struct {
     pub const Phase = enum { lex, parse, bind, emit };
@@ -46,7 +57,53 @@ pub const Diagnostic = struct {
     /// tsc's default formatter.
     is_global: bool = false,
     message: []const u8,
+    /// Optional nested elaboration chain (tsc `messageChain`). Empty by
+    /// default. `gpa`-owned; freed by `Compilation.deinit`.
+    chain: []const DiagnosticChainEntry = &.{},
 };
+
+/// Recursively free a `gpa`-owned diagnostic chain (each entry's
+/// `message` plus its `children` array).
+fn freeDiagnosticChain(gpa: std.mem.Allocator, chain: []const DiagnosticChainEntry) void {
+    for (chain) |entry| {
+        gpa.free(entry.message);
+        freeDiagnosticChain(gpa, entry.children);
+    }
+    if (chain.len > 0) gpa.free(chain);
+}
+
+/// Deep-copy a checker chain (arena-borrowed) into a `gpa`-owned
+/// driver chain so it outlives the checker. Returns an empty slice for
+/// an empty input (no allocation).
+fn dupeCheckerChain(
+    gpa: std.mem.Allocator,
+    chain: []const ts_checker.DiagnosticChainEntry,
+) error{OutOfMemory}![]const DiagnosticChainEntry {
+    if (chain.len == 0) return &.{};
+    const out = try gpa.alloc(DiagnosticChainEntry, chain.len);
+    errdefer gpa.free(out);
+    var filled: usize = 0;
+    errdefer for (out[0..filled]) |e| {
+        gpa.free(e.message);
+        freeDiagnosticChain(gpa, e.children);
+    };
+    for (chain, 0..) |entry, i| {
+        const msg = try gpa.dupe(u8, entry.message);
+        errdefer gpa.free(msg);
+        const children = try dupeCheckerChain(gpa, entry.children);
+        out[i] = .{
+            .code = entry.code,
+            .code_prefix = switch (entry.code_prefix) {
+                .TS => .TS,
+                .HM => .HM,
+            },
+            .message = msg,
+            .children = children,
+        };
+        filled = i + 1;
+    }
+    return out;
+}
 
 /// Result of compiling a single source string. The caller takes
 /// ownership of `js` (the emitted JavaScript) and `diagnostics`. The
@@ -80,7 +137,10 @@ pub const Compilation = struct {
 
     pub fn deinit(self: *Compilation) void {
         self.gpa.free(self.js);
-        for (self.diagnostics.items) |d| self.gpa.free(d.message);
+        for (self.diagnostics.items) |d| {
+            self.gpa.free(d.message);
+            freeDiagnosticChain(self.gpa, d.chain);
+        }
         self.diagnostics.deinit(self.gpa);
         self.module.deinit();
         self.gpa.destroy(self.module);
@@ -1292,6 +1352,7 @@ pub fn compileSource(
                 const existing = c.diagnostics.items[pi];
                 if (existing.code == 2300 and existing.pos == diag_pos) {
                     gpa.free(existing.message);
+                    freeDiagnosticChain(gpa, existing.chain);
                     _ = c.diagnostics.orderedRemove(pi);
                     continue;
                 }
@@ -1310,6 +1371,7 @@ pub fn compileSource(
                 .HM => .HM,
             },
             .message = try gpa.dupe(u8, d.message),
+            .chain = try dupeCheckerChain(gpa, d.chain),
         });
         c.has_errors = true;
     }
