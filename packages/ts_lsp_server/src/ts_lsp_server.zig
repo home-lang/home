@@ -142,6 +142,7 @@ pub const Method = enum {
     inlay_hint_resolve,
     text_document_document_highlight,
     text_document_formatting,
+    text_document_range_formatting,
     text_document_on_type_formatting,
     text_document_code_lens,
     code_lens_resolve,
@@ -208,6 +209,7 @@ pub const Method = enum {
             .{ "inlayHint/resolve", Method.inlay_hint_resolve },
             .{ "textDocument/documentHighlight", Method.text_document_document_highlight },
             .{ "textDocument/formatting", Method.text_document_formatting },
+            .{ "textDocument/rangeFormatting", Method.text_document_range_formatting },
             .{ "textDocument/onTypeFormatting", Method.text_document_on_type_formatting },
             .{ "textDocument/codeLens", Method.text_document_code_lens },
             .{ "codeLens/resolve", Method.code_lens_resolve },
@@ -279,6 +281,7 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     "textDocument/inlayHint",
     "textDocument/documentHighlight",
     "textDocument/formatting",
+    "textDocument/rangeFormatting",
     "textDocument/onTypeFormatting",
     "textDocument/rename",
     "textDocument/prepareRename",
@@ -3051,6 +3054,70 @@ pub fn handleFormatting(
     return encodeResponse(gpa, request_id, buf.items);
 }
 
+/// Handle a `textDocument/rangeFormatting` JSON-RPC request: format the
+/// entire document via `Service.formatDocument` and then filter the
+/// returned TextEdits to those that intersect the requested range. Per
+/// LSP spec the server is allowed to compute over the whole document
+/// but must only return edits inside the range — running the full
+/// formatter and post-filtering is the simplest faithful path until
+/// the formatter learns a real range-scoped pass.
+///
+/// `range` is `{start: {line, character}, end: {line, character}}` —
+/// both endpoints 0-based. Defaults: start at (0,0), end at the source
+/// extreme (so a malformed/missing range yields the full-doc edits).
+pub fn handleRangeFormatting(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const path = uriToPath(uri);
+
+    var range_start_line: i64 = 0;
+    var range_start_char: i64 = 0;
+    var range_end_line: i64 = std.math.maxInt(i64);
+    var range_end_char: i64 = std.math.maxInt(i64);
+    if (findJsonRawField(params_json, "range")) |range_raw| {
+        if (std.mem.indexOf(u8, range_raw, "\"start\":")) |sp| {
+            const sub = range_raw[sp..];
+            range_start_line = findJsonIntField(sub, "line") orelse 0;
+            range_start_char = findJsonIntField(sub, "character") orelse 0;
+        }
+        if (std.mem.indexOf(u8, range_raw, "\"end\":")) |ep| {
+            const sub = range_raw[ep..];
+            range_end_line = findJsonIntField(sub, "line") orelse std.math.maxInt(i64);
+            range_end_char = findJsonIntField(sub, "character") orelse std.math.maxInt(i64);
+        }
+    }
+
+    const edits = try service.formatDocument(gpa, path);
+    defer gpa.free(edits);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.append(gpa, '[');
+    var emitted: usize = 0;
+    for (edits) |e| {
+        // An edit lies inside the requested range when it neither ends
+        // before the range starts nor starts after the range ends.
+        const e_end_line: i64 = @intCast(e.end_line);
+        const e_end_col: i64 = @intCast(e.end_col);
+        const e_start_line: i64 = @intCast(e.start_line);
+        const e_start_col: i64 = @intCast(e.start_col);
+        const ends_before = e_end_line < range_start_line or
+            (e_end_line == range_start_line and e_end_col < range_start_char);
+        const starts_after = e_start_line > range_end_line or
+            (e_start_line == range_end_line and e_start_col > range_end_char);
+        if (ends_before or starts_after) continue;
+        if (emitted > 0) try buf.append(gpa, ',');
+        try writeTextEdit(&buf, gpa, e);
+        emitted += 1;
+    }
+    try buf.append(gpa, ']');
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
 /// Handle a `textDocument/onTypeFormatting` JSON-RPC request: extract
 /// the URI, position, trigger character, and `FormattingOptions`,
 /// route to `Service.onTypeFormatting`, and emit an LSP `TextEdit[]`
@@ -3696,6 +3763,10 @@ pub fn dispatchRequest(
         .text_document_formatting => {
             if (is_notification) return &.{};
             return try handleFormatting(service, gpa, id, params);
+        },
+        .text_document_range_formatting => {
+            if (is_notification) return &.{};
+            return try handleRangeFormatting(service, gpa, id, params);
         },
         .text_document_on_type_formatting => {
             if (is_notification) return &.{};
@@ -5116,6 +5187,56 @@ test "handleFormatting: returns TextEdit array (no-op)" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "\"id\":141") != null);
     // Service stub returns [] (already-formatted).
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":[]") != null);
+}
+
+test "handleRangeFormatting: returns TextEdit array for a clean file" {
+    // Service formatter is a v0 stub returning [] on already-clean
+    // sources, so the range-filter pass also yields []. The wire shape
+    // is what matters here: the request must parse cleanly with a
+    // `range` object and the response must carry the matching id.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x = 1;");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":142,"method":"textDocument/rangeFormatting","params":{"textDocument":{"uri":"file:///main.ts"},"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":10}},"options":{"tabSize":2,"insertSpaces":true}}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    const out = try handleRangeFormatting(&svc, T.allocator, .{ .integer = 142 }, params);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":142") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":[]") != null);
+}
+
+test "handleRangeFormatting: missing range falls back to full-document edits" {
+    // When the `range` field is missing, the handler should default
+    // to the full source extent and return whatever full-document
+    // formatting would. Today that's still [] on the v0 stub.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x = 1;");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":143,"method":"textDocument/rangeFormatting","params":{"textDocument":{"uri":"file:///main.ts"},"options":{"tabSize":2,"insertSpaces":true}}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    const out = try handleRangeFormatting(&svc, T.allocator, .{ .integer = 143 }, params);
+    defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "\"result\":[]") != null);
 }
 
