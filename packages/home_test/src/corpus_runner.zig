@@ -14107,7 +14107,7 @@ test "Bun module import rewrite lowers runtime transpiler dynamic fixtures" {
         \\  expect(value).toBe(42);
         \\  expect(hbs).toBeString();
         \\});
-        \\test("json", async () => {
+        \\test("import(*.json)", async () => {
         \\  const { default: num } = await import("./tsconfig.is-just-a-number.json");
         \\  expect(num).toBe(1);
         \\});
@@ -14119,7 +14119,7 @@ test "Bun module import rewrite lowers runtime transpiler dynamic fixtures" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import(\"./async-transpiler-entry\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import(\"./tsconfig.is-just-a-number.json\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test(\"async transpiler\", () => {") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test(\"json\", async () => {") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test(\"import(*.json)\", () => {") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await import(\"./async-transpiler-entry\")") == null);
 }
 

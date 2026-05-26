@@ -195,28 +195,25 @@ status). The Zig-side surface compiles; what's missing is the JS
 API for `Bun.build`. CLI entrypoint (`home bundle`) is in progress.
 
 Corpus audit on 2026-05-26: the copied Bun corpus has **89**
-`bundler/**/*.test.{ts,js}` files. Current green evidence covers **74
+`bundler/**/*.test.{ts,js}` files. Current green evidence covers **79
 unique files**: 66 unique bundler files inside `minimal-js`, 5 more in
-`bundler-core-itbundled` (`295` passed, `0` failed, `16` todo), and 3
-more unique files from the currently executable
-`bundler-transpiler-bootstrap` subset (`78` passed, `0` failed, `0`
-todo across 8 files). The remaining file frontier is:
+`bundler-core-itbundled` (`295` passed, `0` failed, `16` todo), and 8
+more unique files from the executable `bundler-transpiler-bootstrap`
+subset (`132` passed, `0` failed, `0` todo across 13 files). The
+remaining file frontier is:
 
 | Tranche | Files |
 |---|---|
-| Bootstrap ledger repair | `bundler/transpiler/bun-pragma.test.ts` |
-| Decorator / JSX transpiler subprocesses | `bundler/transpiler/decorator-metadata.test.ts`, `bundler/transpiler/decorators.test.ts`, `bundler/transpiler/es-decorators-esbuild.test.ts`, `bundler/transpiler/jsx-production.test.ts` |
-| Transpiler API, macro, and stress | `bundler/transpiler/macro-test.test.ts`, `bundler/transpiler/property.test.ts`, `bundler/transpiler/runtime-transpiler.test.ts`, `bundler/transpiler/transpiler-stack-overflow.test.ts`, `bundler/transpiler/transpiler.test.js` |
+| Decorator transpiler semantics | `bundler/transpiler/decorator-metadata.test.ts`, `bundler/transpiler/decorators.test.ts`, `bundler/transpiler/es-decorators-esbuild.test.ts` |
+| Transpiler API and macro surface | `bundler/transpiler/macro-test.test.ts`, `bundler/transpiler/transpiler.test.js` |
 | Resolver cache behavior | `bundler/resolver/cache-invalidation.test.ts`, `bundler/resolver/cache-node-compat.test.ts`, `bundler/resolver/cache-runtime.test.ts` |
 | CLI build surface | `bundler/cli.test.ts` |
 | Native plugin final | `bundler/native-plugin.test.ts` |
 
-Do not count `bundler/transpiler/bun-pragma.test.ts` as green yet:
-`packages/home_test/src/corpus_runner.zig` includes it in
-`bundler_transpiler_bootstrap_files`, but
-`./pantry/.bin/zig build test -Dfilter=home_test --summary all` still
-fails the subset unit test with `expected 8, found 9`, and the existing
-`./zig-out/bin/home` artifact still executes 8 files for that subset.
+The next observed bundler blocker is
+`bundler/transpiler/decorator-metadata.test.ts`, which currently reaches
+Home's bootstrap parser and fails on decorator syntax with `SyntaxError:
+Invalid character: '@'`.
 
 Non-JSC runtime build frontier on 2026-05-26:
 `./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false
