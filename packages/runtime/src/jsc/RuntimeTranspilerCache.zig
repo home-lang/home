@@ -610,9 +610,7 @@ pub const RuntimeTranspilerCache = struct {
 
         const cache_dir_fd = brk: {
             if (std.fs.path.dirname(cache_file_path)) |dirname| {
-                var dir = try std.fs.cwd().makeOpenPath(dirname, .{ .access_sub_paths = true });
-                errdefer dir.close();
-                break :brk try bun.FD.fromStdDir(dir).makeLibUVOwned();
+                break :brk try makeOpenPathCompat(dirname);
             }
 
             break :brk bun.FD.cwd();
@@ -711,3 +709,51 @@ const std = @import("std");
 
 const bun = @import("bun");
 const Output = bun.Output;
+
+fn makeOpenPathCompat(dirname: []const u8) !bun.FD {
+    if (comptime bun.Environment.isWindows) {
+        @panic("TODO(phase-12.2-M3): port RuntimeTranspilerCache makeOpenPathCompat for Windows");
+    }
+
+    try makeDirPathAbsoluteCompat(dirname);
+    const flags: std.posix.O = .{
+        .ACCMODE = .RDONLY,
+        .DIRECTORY = true,
+        .CLOEXEC = true,
+    };
+    return try bun.FD.fromNative(try std.posix.openat(std.Io.Dir.cwd().handle, dirname, flags, 0)).makeLibUVOwned();
+}
+
+fn makeDirPathAbsoluteCompat(dirname: []const u8) !void {
+    if (dirname.len == 0) return;
+    if (dirname.len >= bun.MAX_PATH_BYTES) return error.NameTooLong;
+
+    var buf: bun.PathBuffer = undefined;
+    @memcpy(buf[0..dirname.len], dirname);
+    buf[dirname.len] = 0;
+
+    var index: usize = if (dirname[0] == std.fs.path.sep) 1 else 0;
+    while (index <= dirname.len) : (index += 1) {
+        if (index < dirname.len and dirname[index] != std.fs.path.sep) continue;
+        if (index == 0) continue;
+
+        const prev = buf[index];
+        buf[index] = 0;
+        const rc = std.c.mkdir(buf[0..index :0].ptr, 0o755);
+        buf[index] = prev;
+
+        if (rc == 0) continue;
+        switch (@as(std.c.E, @enumFromInt(std.c._errno().*))) {
+            .EXIST => continue,
+            .ACCES => return error.AccessDenied,
+            .NAMETOOLONG => return error.NameTooLong,
+            .NOENT => return error.FileNotFound,
+            .NOTDIR => return error.NotDir,
+            .PERM => return error.PermissionDenied,
+            .ROFS => return error.AccessDenied,
+            .LOOP => return error.SymLinkLoop,
+            .NOSPC => return error.NoSpaceLeft,
+            else => return error.Unexpected,
+        }
+    }
+}

@@ -2875,11 +2875,7 @@ pub const Resolver = struct {
                 const sentinel = path.ptr[0..queue_top.unsafe_path.len :0];
 
                 const open_req = if (comptime Environment.isPosix) open_req: {
-                    const dir_result = std.fs.openDirAbsoluteZ(
-                        sentinel,
-                        .{ .no_follow = !follow_symlinks, .iterate = true },
-                    ) catch |err| break :open_req err;
-                    break :open_req FD.fromStdDir(dir_result);
+                    break :open_req openDirAbsoluteZCompat(sentinel, follow_symlinks) catch |err| err;
                 } else if (comptime Environment.isWindows) open_req: {
                     const dirfd_result = bun.sys.openDirAtWindowsA(bun.invalid_fd, sentinel, .{
                         .iterable = true,
@@ -4386,3 +4382,14 @@ const strings = bun.strings;
 
 const logger = bun.logger;
 const Msg = logger.Msg;
+
+fn openDirAbsoluteZCompat(path: [:0]const u8, follow_symlinks: bool) !FD {
+    if (comptime !Environment.isPosix) @compileError("openDirAbsoluteZCompat is only for POSIX resolver paths");
+    const flags: std.posix.O = .{
+        .ACCMODE = .RDONLY,
+        .DIRECTORY = true,
+        .CLOEXEC = true,
+        .NOFOLLOW = !follow_symlinks,
+    };
+    return FD.fromNative(try std.posix.openatZ(std.Io.Dir.cwd().handle, path.ptr, flags, 0));
+}
