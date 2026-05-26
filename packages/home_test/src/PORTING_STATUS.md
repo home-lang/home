@@ -53,20 +53,20 @@ ordinary bundler/transpiler/CLI/resolver files and passes: 320 passed, 0 failed,
 `bundler/cli`, and the three resolver cache files.
 
 Bundler corpus audit on 2026-05-26: the copied corpus has 89
-`bundler/**/*.test.{ts,js}` files. Current green evidence covers 86
+`bundler/**/*.test.{ts,js}` files. Current green evidence covers 87
 unique files: 66 unique bundler files inside `minimal-js`, 5 more in
 `bundler-core-itbundled`, and 15 more unique files from the executable
-20-file `bundler-transpiler-bootstrap` tranche. The copied Bun corpus is
-exact against upstream Bun for `.test.ts` / `.test.js` files in this
-worktree: 1720 upstream paths, 1720 copied paths, zero missing, and zero
-extras. The remaining exact 3-file frontier after the transpiler/CLI/resolver
-tranche is:
+20-file `bundler-transpiler-bootstrap` tranche, plus
+`bundler/native-plugin.test.ts` promoted through the real native bridge.
+The copied Bun corpus is exact against upstream Bun for `.test.ts` /
+`.test.js` files in this worktree: 1720 upstream paths, 1720 copied
+paths, zero missing, and zero extras. The remaining exact 2-file frontier
+after the transpiler/CLI/resolver tranche and native-plugin promotion is:
 
 | Tranche | Files | First blocker surface |
 |---|---|---|
 | Legacy decorator transpiler semantics | `bundler/transpiler/decorators.test.ts` | Top-level legacy decorator lowering; next observed blocker is `SyntaxError: Invalid character: '@'` after import/type erasure |
 | Transpiler API surface | `bundler/transpiler/transpiler.test.js` | `Bun.Transpiler` and broader transpiler API behavior |
-| Native plugin final | `bundler/native-plugin.test.ts` | Promoted on 2026-05-26: real node-gyp build, `.node` dlopen/N-API registration, `onBeforeParse`, and external counters pass |
 
 Read-only corpus inventory on 2026-05-26, counted from
 `packages/runtime/test/bun-corpus` using `*.test.{ts,js,mjs,cjs}` and
@@ -77,7 +77,7 @@ Read-only corpus inventory on 2026-05-26, counted from
 | `js/` | 998 | General runtime/API surface after the JS-callable bridge matures |
 | `regression/` | 384 | Bug-regression ratchet after core API ladders are stable |
 | `cli/` | 150 | Subprocess matrix; Pantry/package-manager divergences must stay explicit |
-| `bundler/` | 89 | Active ratchet: 86 unique green, 3-file frontier left |
+| `bundler/` | 89 | Active ratchet: 87 unique green, 2-file frontier left |
 | `napi/` | 59 | Native addon/libuv/N-API tranche after native plugin gate |
 | `bake/` | 24 | Server-heavy tranche after bundler completion |
 | `integration/` | 20 | Cross-surface follow-up tranche |
@@ -90,9 +90,6 @@ Large-agent handoff for the current bundler frontier:
    after parser/transpiler decorator lowering is faithful.
 2. Transpiler and macro API: promote `bundler/transpiler/transpiler.test.js`
    after `Bun.Transpiler` and macro import behavior exist in Home.
-3. Native plugin final: close `native-plugin.test.ts` last with real
-   `.node` loading, plugin symbol registration, `onBeforeParse`, and
-   crash-name evidence.
 
 Fresh single-file probes on 2026-05-26 in
 `/private/tmp/home-bun-parity-main`:
@@ -136,11 +133,16 @@ hash-map context adaptation, stale `std.AutoArrayHashMap`, remaining
 CommonJS export-map iteration, `std.Io.GenericWriter`, and
 `bun.ArenaAllocator`.
 
-Second clean-worktree parser probe reduced the compile frontier to four
-items: macro `runWithAPILock`, RuntimeTranspilerCache filesystem cwd
+Second clean-worktree parser probes addressed the former four-item
+frontier: macro `runWithAPILock`, RuntimeTranspilerCache filesystem cwd
 compatibility, resolver `openDirAbsoluteZ` compatibility, and
-`bun.path.joinAbsStringBuf` export. The adapter remains gated on the
-normalization fallback until those are copied faithfully.
+`bun.path.joinAbsStringBuf` export. The current temporary enablement now
+reaches the macro/JSC facade frontier: VM `uncaughtException`/console
+state, Response blob conversion, JSArrayIterator/JSValue enum bridging,
+`ConsoleObject` `std.time.Timer` drift, the JSC JSValue isCallable C++
+shim, `jsc.AnyPromise`/`JSObject`, allocator
+`BSSList`/`appendLowerCase`, and `jsc.Node.Encoding`. The adapter remains
+gated on the normalization fallback until those are copied faithfully.
 
 Next implementation ledger:
 
@@ -151,7 +153,7 @@ Next implementation ledger:
 | Decorators | Run `.ts` / `.tsx` through Bun-compatible decorator lowering with legacy TypeScript decorators, metadata options, class/private-field helpers, and existing `bun:wrap` helper imports |
 | Native plugin bridge | Port or compile Bun's JSC/C++ bridge for `.node` loading metadata, private N-API external validation, `BUN_PLUGIN_NAME` lookup, and `build.onBeforeParse` argument/result handoff |
 
-Promotion rule: the three remaining bundler files only leave this ledger
+Promotion rule: the two remaining bundler files only leave this ledger
 after their exact copied corpus file passes through `home-debug` without
 corpus-only semantic mocks. Bootstrap normalization and metadata probes
 are allowed as scaffolding, but they must stay documented as no-credit

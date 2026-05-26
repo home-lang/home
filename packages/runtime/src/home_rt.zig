@@ -57,6 +57,7 @@ pub const env_var = @import("env_var.zig");
 // `home_rt.OOM` etc. directly (mirrors Bun's flat `bun.assert` /
 // `bun.OOM` namespace).
 pub const assert = Global.assert;
+pub const unsafeAssert = Global.assert;
 pub const OOM = Global.OOM;
 pub const JSError = error{ JSError, OutOfMemory, JSTerminated };
 pub const JSTerminated = error{JSTerminated};
@@ -656,6 +657,10 @@ pub const StringHashMapContext = struct {
         pub fn eql(_: @This(), a: []const u8, b: []const u8) bool {
             return strings.eqlCaseInsensitiveASCIIICheckLength(a, b);
         }
+
+        pub fn deinit(this: *const PrehashedCaseInsensitive, allocator: std.mem.Allocator) void {
+            allocator.free(this.input);
+        }
     };
 };
 
@@ -958,17 +963,27 @@ pub const jsc = struct {
     pub const WTF = @import("jsc/WTF.zig");
     pub const Weak = @import("jsc/Weak.zig");
     pub const javascript_core_c_api = @import("jsc/javascript_core_c_api.zig");
+    pub const C = javascript_core_c_api;
     pub const DOMURL = @import("jsc/DOMURL.zig").DOMURL;
     pub const JSArrayIterator = @import("jsc/JSArrayIterator.zig").JSArrayIterator;
     // Eighth-wave port batch (2026-05-18):
     pub const JSUint8Array = @import("jsc/JSUint8Array.zig").JSUint8Array;
     pub const VM = @import("jsc/VM.zig").VM;
     pub const JSRef = @import("jsc/JSRef.zig").JSRef;
+    pub const ZigException = @import("jsc/ZigException.zig").ZigException;
+    pub const Node = struct {
+        pub const Dirent = struct {
+            pub const Kind = std.Io.File.Kind;
+        };
+    };
     pub const Task = struct {
         callback: ?*const fn (*Task) void = null,
     };
     pub const VirtualMachine = struct {
+        pub const MacroMap = std.AutoHashMap(i32, javascript_core_c_api.JSObjectRef);
+
         allocator: std.mem.Allocator = default_allocator,
+        macros: MacroMap = MacroMap.init(default_allocator),
         rare_data: RareData = .{},
         timer: TimerState = .{},
         transpiler: RuntimeTranspiler = .{},
@@ -2138,12 +2153,12 @@ pub const FD = packed struct(fd_t) {
         return .fromNative(file.handle);
     }
 
-    pub fn fromStdDir(dir: std.fs.Dir) FD {
-        return .fromNative(dir.fd);
+    pub fn fromStdDir(dir: std.Io.Dir) FD {
+        return .fromNative(dir.handle);
     }
 
     pub fn cwd() FD {
-        return .fromStdDir(std.fs.cwd());
+        return .fromNative(std.Io.Dir.cwd().handle);
     }
 
     pub fn stdin() FD {
@@ -2169,8 +2184,8 @@ pub const FD = packed struct(fd_t) {
         return .{ .handle = fd.native() };
     }
 
-    pub fn stdDir(fd: FD) std.fs.Dir {
-        return .{ .fd = fd.native() };
+    pub fn stdDir(fd: FD) std.Io.Dir {
+        return .{ .handle = fd.native() };
     }
 
     pub fn isValid(fd: FD) bool {
@@ -2187,14 +2202,14 @@ pub const FD = packed struct(fd_t) {
 
     pub fn closeAllowingBadFileDescriptor(fd: FD, _: ?usize) ?sys.Error {
         if (!fd.isValid() or fd.value <= 2) return null;
-        std.posix.close(fd.native());
+        _ = std.c.close(fd.native());
         return null;
     }
 
     pub fn closeAllowingStandardIo(fd: FD, return_address: ?usize) ?sys.Error {
         _ = return_address;
         if (!fd.isValid()) return null;
-        std.posix.close(fd.native());
+        _ = std.c.close(fd.native());
         return null;
     }
 
@@ -2534,7 +2549,25 @@ pub const allocators = struct {
             }
 
             pub fn append(self: *Self, comptime AppendType: type, value: AppendType) OOM![]const u8 {
-                return try self.allocator.dupe(u8, value);
+                switch (@typeInfo(AppendType)) {
+                    .array => |array| {
+                        if (array.child == u8) return try self.allocator.dupe(u8, value[0..]);
+                        if (array.child == []const u8) {
+                            var total: usize = 0;
+                            for (value) |part| total += part.len;
+                            const out = try self.allocator.alloc(u8, total);
+                            var offset: usize = 0;
+                            for (value) |part| {
+                                @memcpy(out[offset..][0..part.len], part);
+                                offset += part.len;
+                            }
+                            return out;
+                        }
+                        @compileError("unsupported BSSStringList append array type");
+                    },
+                    .pointer => return try self.allocator.dupe(u8, value),
+                    else => @compileError("unsupported BSSStringList append type"),
+                }
             }
 
             pub fn appendMutable(self: *Self, comptime AppendType: type, value: AppendType) OOM![]u8 {
@@ -2803,7 +2836,9 @@ pub const sys = struct {
     // every syscall wrapper. `kindFromMode` and a Zig-0.17-compat
     // `FileKind` enum tag along for the ride.
     pub const maybe = @import("sys/maybe.zig");
-    pub const Maybe = maybe.Maybe;
+    pub fn Maybe(comptime ReturnTypeT: type) type {
+        return maybe.Maybe(ReturnTypeT, Error);
+    }
     pub const FileKind = maybe.FileKind;
     pub const kindFromMode = maybe.kindFromMode;
     // Wave-20 Tier-2 substrate (2026-05-19). `SystemErrno` proxies the
@@ -2821,8 +2856,7 @@ pub const sys = struct {
         return .{ .errno = @intFromEnum(E.INVAL), .syscall = tag };
     }
 
-    fn errnoFromPosix(comptime tag: Tag, err: anyerror) Error {
-        _ = err;
+    fn errnoFromPosix(comptime tag: Tag, _: anyerror) Error {
         return unexpected(tag);
     }
 
@@ -2838,14 +2872,12 @@ pub const sys = struct {
         var offset = position;
         for (buffers) |buffer| {
             const bytes = buffer.base[0..buffer.len];
-            const written = if (offset >= 0)
-                std.posix.pwrite(fd.native(), bytes, @intCast(offset)) catch |err| {
-                    return .{ .err = errnoFromPosix(.pwritev, err).withFd(fd) };
-                }
+            const rc = if (offset >= 0)
+                std.c.pwrite(fd.native(), bytes.ptr, bytes.len, @intCast(offset))
             else
-                std.posix.write(fd.native(), bytes) catch |err| {
-                    return .{ .err = errnoFromPosix(.pwritev, err).withFd(fd) };
-                };
+                std.c.write(fd.native(), bytes.ptr, bytes.len);
+            if (std.c.errno(rc) != .SUCCESS) return .{ .err = unexpected(.pwritev).withFd(fd) };
+            const written: usize = @intCast(rc);
             total += written;
             if (offset >= 0) offset += @intCast(written);
             if (written != bytes.len) break;
@@ -2854,15 +2886,15 @@ pub const sys = struct {
     }
 
     pub fn unlinkat(dir: FD, path_: anytype) Maybe(void) {
-        dir.stdDir().deleteFileZ(path_) catch |err| {
-            return .{ .err = errnoFromPosix(.unlink, err).withFd(dir) };
-        };
+        if (std.c.errno(std.c.unlinkat(dir.native(), path_.ptr, 0)) != .SUCCESS) return .{ .err = unexpected(.unlink).withFd(dir) };
         return .success;
     }
 
+    pub fn preallocate_file(_: fd_t, _: usize, _: usize) !void {}
+
     pub fn moveFileZWithHandle(fd: FD, from_dir: FD, filename: [:0]const u8, to_dir: FD, destination: [:0]const u8) !void {
         _ = fd;
-        try std.posix.renameatZ(from_dir.native(), filename, to_dir.native(), destination);
+        if (std.c.errno(std.c.renameat(from_dir.native(), filename.ptr, to_dir.native(), destination.ptr)) != .SUCCESS) return error.Unexpected;
     }
 
     pub const File = struct {
@@ -2887,6 +2919,12 @@ pub const sys = struct {
         }
     };
 };
+
+pub const DirIterator = @import("runtime/node/dir_iterator.zig");
+
+pub fn iterateDir(dir: FD) DirIterator.Iterator {
+    return DirIterator.iterate(dir, .u8).iter;
+}
 
 // ---- src/paths/ --------------------------------------------------------
 // Fifth-wave port batch (2026-05-18). `home_rt.path` (singular) is

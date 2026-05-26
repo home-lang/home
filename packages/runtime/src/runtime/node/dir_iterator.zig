@@ -88,7 +88,7 @@ pub fn NewIterator(comptime use_windows_ospath: bool) type {
                                 return Result{ .result = null };
                             }
 
-                            if (Result.errnoSys(rc, .getdirentries64)) |err| {
+                            if (Result.errnoSys(rc, .getdirentries64, std.posix.errno)) |err| {
                                 return err;
                             }
                         }
@@ -140,7 +140,7 @@ pub fn NewIterator(comptime use_windows_ospath: bool) type {
                 start_over: while (true) {
                     if (self.index >= self.end_index) {
                         const rc = posix.system.getdents(self.dir.cast(), &self.buf, self.buf.len);
-                        if (Result.errnoSys(rc, .getdents64)) |err| {
+                        if (Result.errnoSys(rc, .getdents64, std.posix.errno)) |err| {
                             // FreeBSD reports ENOENT when iterating an unlinked
                             // but still-open directory.
                             if (err.getErrno() == .NOENT) return .{ .result = null };
@@ -192,7 +192,7 @@ pub fn NewIterator(comptime use_windows_ospath: bool) type {
                 start_over: while (true) {
                     if (self.index >= self.end_index) {
                         const rc = linux.getdents64(self.dir.cast(), &self.buf, self.buf.len);
-                        if (Result.errnoSys(rc, .getdents64)) |err| return err;
+                        if (Result.errnoSys(rc, .getdents64, std.posix.errno)) |err| return err;
                         if (rc == 0) return .{ .result = null };
                         self.index = 0;
                         self.end_index = rc;

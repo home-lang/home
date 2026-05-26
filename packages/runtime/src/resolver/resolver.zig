@@ -903,7 +903,7 @@ pub const Resolver = struct {
                 break :brk Fs.FileSystem.instance.top_level_dir;
             }
 
-            break :brk source_dir_resolver.resolveCWD(source_dir) catch @panic("Failed to query CWD");
+            break :brk source_dir_resolver.resolveCWD(source_dir);
         };
 
         // r.mutex.lock();

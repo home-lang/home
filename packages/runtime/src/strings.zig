@@ -24,6 +24,7 @@ pub const hasPrefixComptime = @import("string/immutable.zig").hasPrefixComptime;
 pub const eqlComptimeUTF16 = @import("string/immutable.zig").eqlComptimeUTF16;
 pub const hasPrefixWithWordBoundary = @import("string/immutable.zig").hasPrefixWithWordBoundary;
 pub const hasSuffixComptime = @import("string/immutable.zig").hasSuffixComptime;
+pub const StringOrTinyString = @import("string/immutable.zig").StringOrTinyString;
 pub const toUTF8AllocWithType = toUTF8Alloc;
 pub const u3_fast = @import("string/immutable.zig").u3_fast;
 pub const sortDesc = @import("string/immutable.zig").sortDesc;
@@ -417,6 +418,16 @@ pub fn toUTF16AllocForReal(
     }
 
     return out.toOwnedSlice(allocator);
+}
+
+pub fn toUTF16Alloc(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    comptime fail_if_invalid: bool,
+    comptime sentinel: bool,
+) !if (sentinel) ?[:0]u16 else ?[]u16 {
+    if (firstNonASCII(bytes) == null) return null;
+    return try toUTF16AllocForReal(allocator, bytes, fail_if_invalid, sentinel);
 }
 
 const DecodedCodepoint = struct {

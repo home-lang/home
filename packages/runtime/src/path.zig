@@ -11,6 +11,7 @@ pub const basename = std.fs.path.basename;
 pub const dirname = std.fs.path.dirname;
 pub const extension = std.fs.path.extension;
 pub const stem = std.fs.path.stem;
+pub const Platform = @import("paths/resolve_path.zig").Platform;
 pub const isSepAny = @import("paths/resolve_path.zig").isSepAny;
 pub const isSepAnyT = @import("paths/resolve_path.zig").isSepAnyT;
 pub const joinAbsStringBuf = @import("paths/resolve_path.zig").joinAbsStringBuf;

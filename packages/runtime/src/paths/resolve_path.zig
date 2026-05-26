@@ -607,26 +607,72 @@ pub fn joinStringBufT(comptime T: type, buf: []T, parts: anytype, comptime platf
 }
 
 pub fn joinAbsStringBuf(cwd: []const u8, buf: []u8, _parts: anytype, comptime platform: Platform) []const u8 {
-    const parts = _parts[0..];
-    if (parts.len == 0) return normalizeBuf(cwd, buf, platform);
+    const parts_len = partsLen(_parts);
+    if (parts_len == 0) return normalizeBuf(cwd, buf, platform);
 
     var absolute_index: ?usize = null;
-    for (parts, 0..) |part, index| {
+    var index: usize = 0;
+    while (index < parts_len) : (index += 1) {
+        const part = partAt(_parts, index);
         if (part.len > 0 and platform.isAbsolute(part)) absolute_index = index;
     }
-    if (absolute_index) |index| {
-        return joinStringBuf(buf, parts[index..], platform);
+    if (absolute_index) |abs_index| {
+        var temp_abs_parts_buf: [64][]const u8 = undefined;
+        var count: usize = 0;
+        var part_index = abs_index;
+        while (part_index < parts_len) : (part_index += 1) {
+            temp_abs_parts_buf[count] = partAt(_parts, part_index);
+            count += 1;
+        }
+        return joinStringBuf(buf, temp_abs_parts_buf[0..count], platform);
     }
 
     var temp_parts_buf: [64][]const u8 = undefined;
     var count: usize = 0;
     temp_parts_buf[count] = cwd;
     count += 1;
-    for (parts) |part| {
-        temp_parts_buf[count] = part;
+    index = 0;
+    while (index < parts_len) : (index += 1) {
+        temp_parts_buf[count] = partAt(_parts, index);
         count += 1;
     }
     return joinStringBuf(buf, temp_parts_buf[0..count], platform);
+}
+
+fn partsLen(parts: anytype) usize {
+    const Parts = @TypeOf(parts);
+    return switch (@typeInfo(Parts)) {
+        .pointer => |ptr| switch (ptr.size) {
+            .one => switch (@typeInfo(ptr.child)) {
+                .array => parts.*.len,
+                .@"struct" => |info| info.fields.len,
+                else => @compileError("unsupported path parts pointer"),
+            },
+            .slice => parts.len,
+            else => @compileError("unsupported path parts pointer"),
+        },
+        .array => parts.len,
+        else => @compileError("unsupported path parts type"),
+    };
+}
+
+fn partAt(parts: anytype, index: usize) []const u8 {
+    const Parts = @TypeOf(parts);
+    return switch (@typeInfo(Parts)) {
+        .pointer => |ptr| switch (ptr.size) {
+            .one => switch (@typeInfo(ptr.child)) {
+                .array => parts.*[index],
+                .@"struct" => |info| inline for (info.fields, 0..) |field, field_index| {
+                    if (index == field_index) return @field(parts.*, field.name);
+                } else unreachable,
+                else => @compileError("unsupported path parts pointer"),
+            },
+            .slice => parts[index],
+            else => @compileError("unsupported path parts pointer"),
+        },
+        .array => parts[index],
+        else => @compileError("unsupported path parts type"),
+    };
 }
 
 pub fn joinAbsStringBufChecked(cwd: []const u8, buf: []u8, parts: []const []const u8, comptime platform: Platform) ?[]const u8 {

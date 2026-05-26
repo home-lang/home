@@ -48,11 +48,12 @@ pub const FileSystem = struct {
 
     var tmpname_id_number = std.atomic.Value(u32).init(0);
     pub fn tmpname(extname: string, buf: []u8, hash: u64) std.fmt.BufPrintError![:0]u8 {
-        const hex_value = @as(u64, @truncate(@as(u128, @intCast(hash)) | @as(u128, @intCast(std.time.nanoTimestamp()))));
+        const serial = tmpname_id_number.fetchAdd(1, .monotonic);
+        const hex_value = hash ^ @as(u64, serial);
 
         return try std.fmt.bufPrintZ(buf, ".{f}-{f}.{s}", .{
             bun.fmt.hexIntLower(hex_value),
-            bun.fmt.hexIntUpper(tmpname_id_number.fetchAdd(1, .monotonic)),
+            bun.fmt.hexIntUpper(serial),
             extname,
         });
     }
@@ -152,8 +153,7 @@ pub const FileSystem = struct {
 
             const stored = try brk: {
                 if (prev_map) |map| {
-                    var stack_fallback = std.heap.stackFallback(512, allocator);
-                    const stack = stack_fallback.get();
+                    const stack = allocator;
                     const prehashed = bun.StringHashMapContext.PrehashedCaseInsensitive.init(stack, name_slice);
                     defer prehashed.deinit(stack);
                     if (map.getAdapted(name_slice, prehashed)) |existing| {

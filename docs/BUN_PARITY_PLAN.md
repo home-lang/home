@@ -115,11 +115,11 @@ Porting rules for source agents:
 pinned `/Users/chrisbreuer/Code/bun` Zig checkout, but integrated runtime
 parity remains at the last audited **552 / 1193 (~46.3%)** until a fresh
 integration audit moves it. The executable corpus ratchet is focused on
-the remaining 3-file bundler frontier after `minimal-js`,
-`bundler-core-itbundled`, and `bundler-transpiler-bootstrap` established
-green Home-run bootstrap slices. The next work is intentionally split
-across big independent agent chunks: decorator semantics,
-`Bun.Transpiler` and macro surface, native plugin ABI, then
+the remaining 2-file bundler frontier after `minimal-js`,
+`bundler-core-itbundled`, `bundler-transpiler-bootstrap`, and the native
+plugin corpus file established green Home-run bootstrap slices. The next
+work is intentionally split across big independent agent chunks:
+decorator semantics, `Bun.Transpiler` and macro surface, then
 Bake/server-heavy corpus.
 
 ### Phase 0 - Measurement And Audit Hygiene
@@ -209,7 +209,7 @@ Current corpus scale for the next ratchet:
 | `js/` test files | 998 | Largest remaining general-runtime corpus bucket |
 | `regression/` test files | 384 | Broad bug/regression frontier after API ladders mature |
 | `cli/` test files | 150 | CLI/run/install/test subprocess behavior; Pantry divergence must be documented |
-| `bundler/` test files | 89 | Current active corpus ratchet; 86 unique green and 3 files left |
+| `bundler/` test files | 89 | Current active corpus ratchet; 87 unique green and 2 files left |
 | `napi/` test files | 59 | Native addon / libuv / N-API gate after native plugin bridge |
 | `bake/` test files | 24 | Next server-heavy tranche after bundler |
 | `integration/` test files | 20 | Cross-surface integration frontier |
@@ -221,14 +221,12 @@ Current corpus scale for the next ratchet:
 
 Next large slice: **bundler corpus completion**. A local audit on
 2026-05-26 finds **89** copied `bundler/**/*.test.{ts,js}` files. The
-current green evidence covers **86 unique files**: 66 unique bundler
+current green evidence covers **87 unique files**: 66 unique bundler
 files inside `minimal-js`, 5 more in `bundler-core-itbundled`, and 15
 more from the executable 20-file `bundler-transpiler-bootstrap`
-subset. Promote the remaining exact **3** files into native Home corpus
-gates before expanding into more Bake or server-heavy tests. Keep
-`bundler/native-plugin.test.ts` last because upstream handles it as a
-special native-plugin case, so it should not mask ordinary bundler
-coverage.
+subset, plus `bundler/native-plugin.test.ts`. Promote the remaining
+exact **2** files into native Home corpus gates before expanding into
+more Bake or server-heavy tests.
 
 First agent-sized chunk: **ordinary `itBundled` execution tranche**.
 Start with these broad, high-value files because they mostly exercise
@@ -282,14 +280,13 @@ Files in the tranche:
 - `bundler/resolver/cache-node-compat.test.ts`
 - `bundler/resolver/cache-runtime.test.ts`
 
-Remaining bundler file frontier after the 20-file transpiler/CLI/resolver tranche,
-classified by next faithful work batch:
+Remaining bundler file frontier after the 20-file transpiler/CLI/resolver tranche
+and native-plugin promotion, classified by next faithful work batch:
 
 | Tranche | Files | Primary blocker from local corpus |
 |---|---|---|
 | A. Legacy decorator transpiler semantics | `bundler/transpiler/decorators.test.ts` | Top-level legacy decorator lowering; latest probe reaches the real parser blocker, `SyntaxError: Invalid character: '@'` |
 | B. Transpiler API surface | `bundler/transpiler/transpiler.test.js` | `Bun.Transpiler`, loader validation, transform APIs, and callback behavior |
-| C. Native plugin final | `bundler/native-plugin.test.ts` | Promoted on 2026-05-26: real node-gyp build, `.node` dlopen/N-API registration, `onBeforeParse`, and external counters pass the copied file |
 
 Agent handoff order for the remaining bundler work:
 
@@ -299,10 +296,6 @@ Agent handoff order for the remaining bundler work:
 2. **Transpiler/macro agent:** wire `Bun.Transpiler`, macro import
    resolution, macro execution, and the wider transpiler API enough to
    promote `bundler/transpiler/transpiler.test.js`.
-3. **Native plugin agent:** keep `bundler/native-plugin.test.ts` last
-   and close it only with real native addon build, `.node` load,
-   N-API/plugin symbol registration, `onBeforeParse`, and crash-name
-   evidence.
 
 Fresh single-file probes on 2026-05-26 in
 `/private/tmp/home-bun-parity-main`:
@@ -359,13 +352,17 @@ printer/analyze cone: `ArrayHashMap` context return widths, remaining
 missing `bun.strings` WTF-8 helpers, `commonjs_named_exports` iteration,
 `std.Io.GenericWriter`, and `bun.ArenaAllocator`.
 
-Follow-up parser probe in the clean integration worktree reduced that
-frontier to four compile blockers: the macro runner still needs the real
-`VirtualMachine.runWithAPILock` surface, `RuntimeTranspilerCache` needs the
-Zig 0.17 filesystem API port (`std.fs.cwd` replacement), resolver still
-needs `std.fs.openDirAbsoluteZ` compatibility, and `bun.path.joinAbsStringBuf`
-must be exported through the Home path namespace. Keep the adapter gated
-until those are copied faithfully from Bun's Zig source.
+Follow-up parser probes in clean integration worktrees addressed the
+former four blockers: `VirtualMachine.runWithAPILock`,
+`RuntimeTranspilerCache` filesystem open/mkdir compatibility, resolver
+`openDirAbsoluteZ` compatibility, and the `bun.path.joinAbsStringBuf*`
+exports. The current temporary enablement now reaches the macro/JSC
+facade frontier: VM `uncaughtException`/console state, Response blob
+conversion, JSArrayIterator/JSValue enum bridging, `ConsoleObject`
+`std.time.Timer` drift, the JSC JSValue isCallable C++ shim,
+`jsc.AnyPromise`/`JSObject`, allocator `BSSList`/`appendLowerCase`, and
+`jsc.Node.Encoding`. Keep the adapter gated until those are copied
+faithfully from Bun's Zig source.
 
 Next-work ledger for the three-file frontier:
 

@@ -199,7 +199,7 @@ pub fn Maybe(comptime ReturnTypeT: type, comptime ErrorTypeT: type) type {
         /// `bun.sys.getErrno`, which delegates to libc's `errno` global on
         /// POSIX or NTSTATUS translation on Windows. Until those land,
         /// callers pass in whichever variant is appropriate.
-        pub fn errnoSys(rc: anytype, syscall: anytype, getErrnoFn: *const fn (anytype) posix.E) ?@This() {
+        pub fn errnoSys(rc: anytype, syscall: anytype, comptime getErrnoFn: anytype) ?@This() {
             return switch (getErrnoFn(rc)) {
                 .SUCCESS => null,
                 else => |e| @This(){
