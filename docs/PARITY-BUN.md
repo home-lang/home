@@ -4,17 +4,18 @@ Detailed per-API status for Home's Bun-compatible runtime
 (`packages/runtime/`). This is the drill-down view; the at-a-glance
 row is in the
 [README parity status](../README.md#bun-runtime-port-packagesruntime)
-section.
+section. Execution planning, source/test gates, and agent-sized
+workstreams live in [`BUN_PARITY_PLAN.md`](./BUN_PARITY_PLAN.md).
 
 > **Status:** Substrate + JSC M6 landed. `packages/runtime/src/`
-> currently contains 1,289 Zig source files. Of the audited 1,193-file
+> currently contains 1,393 Zig source files. Of the audited 1,193-file
 > Bun baseline, 552 files are integrated into Home (~46.3%): rewritten
 > for Home imports, Zig 0.17-clean, build-wired, and tested. The remaining
 > staged Bun files are an integration backlog, not parity credit; the
 > runtime is not yet JavaScript-callable end-to-end, but Phase 12.2
 > (JSC bring-up) has reached the M6
 > milestone — JSON + Promise + Iterator + Global helpers — across
-> 128 files in `packages/runtime/src/jsc/`, including a live
+> 130 files in `packages/runtime/src/jsc/`, including a live
 > `JSEvaluateScript` smoke and the public JavaScriptCore
 > `JSObjectMakeDeferredPromise` deferred-promise constructor bridge.
 > Bun's WebCore runtime source is now copied verbatim from
@@ -35,7 +36,7 @@ Legend:
 | Sub-phase | Source under `~/Code/bun/src/` | Destination | Status |
 |---|---|---|---|
 | 12.1 | `cli/` | `src/cli/` | 🟡 scaffold landed (CLI flag parsing partial) |
-| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone + native eval smoke landed (128 files: JSON + Promise + Iterator + Global helpers + `JSEvaluateScript` + `JSObjectMakeDeferredPromise`) |
+| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone + native eval smoke landed (130 files: JSON + Promise + Iterator + Global helpers + `JSEvaluateScript` + `JSObjectMakeDeferredPromise`) |
 | 12.3 | `event_loop/`, `io/`, `async/` | `src/event_loop/` | 🟡 substrate landing (~30+ leaves ported) |
 | 12.4 | `resolver/`, `module_loader.zig` | `src/module_loader/` | 🔴 blocked on 12.2 |
 | 12.5 | `runtime/webcore*.zig`, `http/`, `csrf/`, `dns/` | `src/runtime/webcore*.zig`, `src/http/` | 🟡 WebCore source snapshot copied; wiring blocked on 12.2/12.3 |
@@ -186,12 +187,45 @@ these as real APIs.
 
 ## Bundler (`packages/bundler/`)
 
-🟡 **Substantial.** Home's bundler IS Bun's bundler — vendored under
-MIT to `packages/bundler/` with the Tier-0 compatibility shim at
+🟡 **Substantial.** Home's bundler is based on Bun's Zig bundler source,
+copied under MIT to `packages/bundler/` with the Tier-0 compatibility shim at
 [`packages/compat/`](../packages/compat/) (see
 [PARITY-BUN-COMPAT.md](./PARITY-BUN-COMPAT.md) for the per-symbol
 status). The Zig-side surface compiles; what's missing is the JS
 API for `Bun.build`. CLI entrypoint (`home bundle`) is in progress.
+
+Corpus audit on 2026-05-26: the copied Bun corpus has **89**
+`bundler/**/*.test.{ts,js}` files. Current green evidence covers **79
+unique files**: 66 unique bundler files inside `minimal-js`, 5 more in
+`bundler-core-itbundled` (`295` passed, `0` failed, `16` todo), and 8
+more unique files from the executable `bundler-transpiler-bootstrap`
+subset (`132` passed, `0` failed, `0` todo across 13 files). The
+remaining file frontier is:
+
+| Tranche | Files |
+|---|---|
+| Decorator transpiler semantics | `bundler/transpiler/decorator-metadata.test.ts`, `bundler/transpiler/decorators.test.ts`, `bundler/transpiler/es-decorators-esbuild.test.ts` |
+| Transpiler API and macro surface | `bundler/transpiler/macro-test.test.ts`, `bundler/transpiler/transpiler.test.js` |
+| Resolver cache behavior | `bundler/resolver/cache-invalidation.test.ts`, `bundler/resolver/cache-node-compat.test.ts`, `bundler/resolver/cache-runtime.test.ts` |
+| CLI build surface | `bundler/cli.test.ts` |
+| Native plugin final | `bundler/native-plugin.test.ts` |
+
+The next observed bundler blocker is
+`bundler/transpiler/decorator-metadata.test.ts`, which currently reaches
+Home's bootstrap parser and fails on decorator syntax with `SyntaxError:
+Invalid character: '@'`.
+
+Non-JSC runtime build frontier on 2026-05-26:
+`./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false
+--summary failures` fails with **22 compile errors** after the shallow
+alias pass. The default macOS JSC-enabled command fails with **25 compile
+errors** because it analyzes a few more JSC paths. The remaining front is
+parked event-loop/WebCore work (`EventLoopHandle.loop()`/`bunVM()`,
+`Async.Loop`, `AutoFlusher.VirtualMachine`), unported API roots
+(`api.dns`, `api.HTTPServer`, `schema`, `URL`), missing runtime helpers
+(`sys.openatA`, `sys.stat`, `sys.getErrno`, `Buffer.fromTypedArray`,
+`Method.fromJS`), disabled generated stream-source wrappers, and Zig
+0.17 stdlib drift (`std.io.fixedBufferStream`, `std.os.getFdPath`).
 
 ## Pantry (package management)
 
@@ -209,6 +243,28 @@ manager.
 [`packages/runtime/README.md`](../packages/runtime/README.md): once
 feature-complete, Home must pass **100% of Bun's test suite with no
 skips**.
+
+Parallel process-pool ledger for
+`packages/runtime/src/runtime/cli/test/parallel/`:
+
+| File | Status | Integration blocker |
+|---|---|---|
+| `FileRange.zig` | Already compile-wired | Keep covered by unit/build evidence |
+| `Frame.zig` | Already compile-wired | Keep covered by unit/build evidence |
+| `Channel.zig` | Dormant integration backlog | Needs Home IPC aliases over `uws`, JSC VM, and `sys` error surfaces |
+| `Coordinator.zig` | Dormant integration backlog | Needs Home worker scheduling, abort, path, fs, and reporting surfaces |
+| `Worker.zig` | Dormant integration backlog | Needs Home `spawn`, fd/stdio, `Async`, `io`, and process-exit surfaces |
+| `aggregate.zig` | Dormant integration backlog | Needs Home `fs`, `path`, JSC/source-map, and file-write surfaces |
+| `runner.zig` | Dormant integration backlog | Namespace-visible through `ParallelRunner`; upstream entrypoints stay parked until Home test command wiring lands |
+
+This chunk counts as integrated only when all seven files are
+Home-import-rewritten, compile through the runtime build graph, avoid
+system Bun delegation, and pass focused evidence for IPC frames, worker
+spawn/reap, result aggregation, fragment merge handling, and a multi-file
+`home test --parallel` corpus smoke. Until then, `Channel`, `Coordinator`,
+`Worker`, `aggregate`, and `runner` remain dormant backlog even though
+their source files are present and tracked through the gated
+`home_rt.runtime.cli.test_.parallel` source map.
 
 Bootstrap smoke: `home test packages/runtime/test/bun-corpus
 --bun-corpus-native-subset=minimal-js` executes four hundred eighteen allowlisted JS
@@ -1514,12 +1570,12 @@ until they are exported or compiled through Home.
 | Metric | Count | Notes |
 |---|---|---|
 | Bun upstream files (excluding test/codegen/jsc/macros) | 1,193 | pinned at `fd0b6f1a` |
-| Runtime Zig files present in `packages/runtime/src/` | 1,289 | live `find packages/runtime/src -type f -name '*.zig'` count |
+| Runtime Zig files present in `packages/runtime/src/` | 1,393 | live `find packages/runtime/src -type f -name '*.zig'` count |
 | Audited Bun baseline files present in `packages/runtime/src/` | 1,193 / 1,193 | existing Home ports plus staged integration backlog |
 | Files integrated into Home | 552 | ~46.3% |
-| Staged Bun Zig files awaiting integration | 768 | copied in `ba157c27`, see `packages/runtime/DORMANT_BUN_ZIG_IMPORT_2026-05-21.txt`; not counted as ported |
+| Staged Bun Zig files awaiting integration | 856 | see `packages/runtime/DORMANT_BUN_ZIG_IMPORT_2026-05-21.txt` and `packages/runtime/DORMANT_BUN_ZIG_IMPORT_2026-05-26.txt`; not counted as ported |
 | Files remaining to integrate | 641 | ~53.7%; excludes raw copy-only files that duplicate already-integrated Home paths |
-| JSC bring-up (`packages/runtime/src/jsc/`) | 128 files | Phase 12.2 M6 milestone + native eval smoke |
+| JSC bring-up (`packages/runtime/src/jsc/`) | 130 files | Phase 12.2 M6 milestone + native eval smoke |
 | Node namespace (`packages/runtime/src/node/`) | 28 files | Phase 12.7 round-15 |
 | Bake lifetime carrier (`packages/runtime/src/runtime/bake/`) | 5 files | DevServer/HmrSocket deinit substrate, JS surface pending |
 | Server lifecycle carrier (`packages/runtime/src/runtime/server/server.zig`) | 1 file | DevServer detach/deinit gate, JS surface pending |

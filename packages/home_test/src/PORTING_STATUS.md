@@ -22,7 +22,9 @@ file/run result model; `runner.zig` owns the adapter-neutral
 prepared-file and file-run contracts; `adapters/jsc_bootstrap.zig` owns
 the current JSC bootstrap execution adapter plus the native host-call
 bridge used by bootstrap `Bun.spawnSync`; `corpus_runner.zig` owns the
-explicit `--bun-corpus-native-subset=minimal-js` allowlist, single-file
+explicit `--bun-corpus-native-subset=minimal-js` allowlist, the
+`--bun-corpus-native-subset=bundler-core-itbundled` bundler tranche,
+single-file
 corpus execution, source preparation, and summary aggregation. The full
 corpus gate now walks all discovered Bun test files through the Home JSC
 bootstrap and fails on real unsupported/failing files instead of the old
@@ -30,6 +32,47 @@ synthetic `native-js-test-runner-missing` blocker; delegated
 `home test <fixture>` corpus descendants also re-enter that bootstrap
 instead of Home's parser. It remains red until the native `bun:test` port
 and JSC host-call bridge close the unsupported surface.
+
+The `bundler-core-itbundled` tranche now executes all five selected
+bundler files through the bootstrap layer and passes: 295 passed, 0
+failed, 16 upstream todo on 2026-05-26. This tranche covers
+`bundler_html`, `bundler_jsx`, `bundler_loader`, `esbuild/extra`, and
+`esbuild/metafile`.
+
+The `bundler-transpiler-bootstrap` tranche currently executes thirteen
+ordinary bundler/transpiler files and passes: 132 passed, 0 failed, 0
+todo on 2026-05-26. This green evidence covers `bundler_feature_flag`,
+`plugin-error-nested-throw`, `transpiler/es-decorators`,
+`transpiler/preserve-use-strict-cjs`, `transpiler/template-literal`,
+`transpiler/function-tostring-require`, `transpiler/export-default`, and
+`transpiler/scope-mismatch-panic`, plus `transpiler/bun-pragma`,
+`transpiler/property`, `transpiler/transpiler-stack-overflow`,
+`transpiler/jsx-production`, and `transpiler/runtime-transpiler`.
+
+Bundler corpus audit on 2026-05-26: the copied corpus has 89
+`bundler/**/*.test.{ts,js}` files. Current green evidence covers 79
+unique files: 66 unique bundler files inside `minimal-js`, 5 more in
+`bundler-core-itbundled`, and 8 more unique files from the executable
+13-file `bundler-transpiler-bootstrap` tranche. The remaining 10-file
+frontier is:
+
+| Tranche | Files | First blocker surface |
+|---|---|---|
+| Decorator transpiler semantics | `bundler/transpiler/decorator-metadata.test.ts`, `bundler/transpiler/decorators.test.ts`, `bundler/transpiler/es-decorators-esbuild.test.ts` | Decorator metadata / legacy and standard decorator lowering; next observed blocker is parse-time `SyntaxError: Invalid character: '@'` in `decorator-metadata.test.ts` |
+| Transpiler API and macro surface | `bundler/transpiler/macro-test.test.ts`, `bundler/transpiler/transpiler.test.js` | `Bun.Transpiler`, macro imports, and broader transpiler API behavior |
+| Resolver cache behavior | `bundler/resolver/cache-invalidation.test.ts`, `bundler/resolver/cache-node-compat.test.ts`, `bundler/resolver/cache-runtime.test.ts` | Repeated in-process `Bun.build()` / `require()` cache invalidation, filesystem mutation, Node-vs-Bun subprocess comparison |
+| CLI build surface | `bundler/cli.test.ts` | `bun build` subprocess matrix: compile/outfile/sourcemap/tsconfig override/package install paths |
+| Native plugin final | `bundler/native-plugin.test.ts` | Native plugin ABI, node-gyp build, `.node` loading, `onBeforeParse`, crash-name behavior |
+
+Runtime build audit on 2026-05-26:
+`./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false
+--summary failures` fails with 22 compile errors after the shallow alias
+pass. The default macOS JSC-enabled command fails with 25 compile errors.
+The remaining frontier is parked event-loop/WebCore work, unported API
+roots (`api.dns`, `api.HTTPServer`, `schema`, `URL`), missing runtime
+helpers (`sys.openatA`, `sys.stat`, `sys.getErrno`,
+`Buffer.fromTypedArray`, `Method.fromJS`), disabled generated
+stream-source wrappers, and Zig 0.17 stdlib drift.
 
 `zig build test -Dfilter=home_test_bun_tier0` now build-checks the first
 copied Bun Zig tier under pantry-provided Zig 0.17-dev:

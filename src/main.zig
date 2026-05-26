@@ -3019,7 +3019,7 @@ fn failBunCorpusSubsetArg(reason: []const u8, value: []const u8) noreturn {
     std.debug.print("{s}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
     std.debug.print("reason: {s}\n", .{reason});
     if (value.len != 0) std.debug.print("value: {s}\n", .{value});
-    std.debug.print("supported subsets: minimal-js\n\n", .{});
+    std.debug.print("supported subsets: minimal-js, bundler-core-itbundled, bundler-transpiler-bootstrap\n\n", .{});
     std.process.exit(1);
 }
 
@@ -3081,6 +3081,22 @@ test "bun corpus subset parser accepts minimal js" {
     const args = [_][:0]const u8{ "packages/runtime/test/bun-corpus", "--bun-corpus-native-subset=minimal-js" };
     switch (argBunCorpusSubset(&args)) {
         .ok => |subset| try std.testing.expectEqual(home_test.corpus_runner.Subset.minimal_js, subset),
+        else => return error.ExpectedSubset,
+    }
+}
+
+test "bun corpus subset parser accepts bundler core itBundled" {
+    const args = [_][:0]const u8{ "packages/runtime/test/bun-corpus", "--bun-corpus-native-subset=bundler-core-itbundled" };
+    switch (argBunCorpusSubset(&args)) {
+        .ok => |subset| try std.testing.expectEqual(home_test.corpus_runner.Subset.bundler_core_itbundled, subset),
+        else => return error.ExpectedSubset,
+    }
+}
+
+test "bun corpus subset parser accepts bundler transpiler bootstrap" {
+    const args = [_][:0]const u8{ "packages/runtime/test/bun-corpus", "--bun-corpus-native-subset=bundler-transpiler-bootstrap" };
+    switch (argBunCorpusSubset(&args)) {
+        .ok => |subset| try std.testing.expectEqual(home_test.corpus_runner.Subset.bundler_transpiler_bootstrap, subset),
         else => return error.ExpectedSubset,
     }
 }
