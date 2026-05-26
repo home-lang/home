@@ -1036,7 +1036,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS4022 | err | emitted | packages/ts_checker/src/check.zig:17946<br>packages/ts_checker/src/check.zig:97551<br>packages/ts_checker/src/check.zig:97624 | extends_clause_of_exported_interface_0_has_or_is_using_private_name_1_4022 |
 | TS4023 | err | catalog-only |  | Exported_variable_0_has_or_is_using_name_1_from_external_module_2_but_cannot_be_named_4023 |
 | TS4024 | err | catalog-only |  | Exported_variable_0_has_or_is_using_name_1_from_private_module_2_4024 |
-| TS4025 | err | catalog-only |  | Exported_variable_0_has_or_is_using_private_name_1_4025 |
+| TS4025 | err | emitted | packages/ts_checker/src/check.zig:18010<br>packages/ts_checker/src/check.zig:97695 | Exported_variable_0_has_or_is_using_private_name_1_4025 |
 | TS4026 | err | catalog-only |  | Public_static_property_0_of_exported_class_has_or_is_using_name_1_from_external_module_2_but_cannot__4026 |
 | TS4027 | err | catalog-only |  | Public_static_property_0_of_exported_class_has_or_is_using_name_1_from_private_module_2_4027 |
 | TS4028 | err | catalog-only |  | Public_static_property_0_of_exported_class_has_or_is_using_private_name_1_4028 |
