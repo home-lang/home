@@ -11342,6 +11342,7 @@ pub const Parser = struct {
             return try self.builder.addLiteralRegex(.{ .start = start_tok.span.start, .end = recovery_end });
         };
         try self.reportUnbalancedRegexGroup(start_tok, end);
+        try self.reportRegexPatternModifierDiagnostics(start_tok, end);
         try self.reportRegexQuantifierDiagnostics(start_tok, end);
         try self.reportRegexEscapeAndClassDiagnostics(start_tok, end);
         try self.reportInvalidRegexFlags(start_tok.span.start, start_tok.line, end);
@@ -11455,12 +11456,24 @@ pub const Parser = struct {
                         const max_start = j;
                         while (j < close_at and std.ascii.isDigit(self.source[j])) : (j += 1) {}
                         const max_end = j;
-                        if (min_len == 0 and !unicode_mode) {
-                            previous_quantifiable = true;
-                            i = quant_start + 1;
-                            continue;
-                        }
-                        if (max_end > max_start and decimalStringGreater(self.source[min_start..min_end], self.source[max_start..max_end]) and
+                        if (min_len == 0) {
+                            if (max_end > max_start or (j < close_at and self.source[j] == '}')) {
+                                try self.reportCodeAtWithSpan(
+                                    @intCast(min_start),
+                                    start_tok.line,
+                                    0,
+                                    1505,
+                                    "Incomplete quantifier. Digit expected.",
+                                );
+                                recognized = true;
+                            } else if (unicode_mode) {
+                                recognized = true;
+                            } else {
+                                previous_quantifiable = true;
+                                i = quant_start + 1;
+                                continue;
+                            }
+                        } else if (max_end > max_start and decimalStringGreater(self.source[min_start..min_end], self.source[max_start..max_end]) and
                             (unicode_mode or (j < close_at and self.source[j] == '}')))
                         {
                             try self.reportCodeAtWithSpan(
@@ -11471,7 +11484,7 @@ pub const Parser = struct {
                                 "Numbers out of order in quantifier.",
                             );
                         }
-                        recognized = min_len > 0 or unicode_mode;
+                        if (min_len > 0 or unicode_mode) recognized = true;
                     } else if (min_len > 0) {
                         recognized = true;
                     } else if (!unicode_mode) {
@@ -11504,6 +11517,111 @@ pub const Parser = struct {
                 },
             }
         }
+    }
+
+    fn reportRegexPatternModifierDiagnostics(self: *Parser, start_tok: Token, end: u32) ParseError!void {
+        const start_i: usize = @intCast(start_tok.span.start);
+        const end_i: usize = @intCast(end);
+        if (start_i >= self.source.len or self.source[start_i] != '/') return;
+        const close_at = self.regexLiteralClose(start_i, end_i) orelse return;
+
+        var i = start_i + 1;
+        var escaped = false;
+        var in_class = false;
+        while (i < close_at and i < self.source.len) : (i += 1) {
+            const ch = self.source[i];
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (ch == '[') {
+                in_class = true;
+                continue;
+            }
+            if (ch == ']' and in_class) {
+                in_class = false;
+                continue;
+            }
+            if (in_class) continue;
+            if (ch != '(' or i + 1 >= close_at or self.source[i + 1] != '?') continue;
+            if (i + 2 < close_at) {
+                switch (self.source[i + 2]) {
+                    '=', '!', '<' => continue,
+                    else => {},
+                }
+            }
+
+            const flags_start = i + 2;
+            var pos = flags_start;
+            var set_flags: u8 = 0;
+            pos = try self.scanRegexPatternModifiers(pos, close_at, start_tok.line, set_flags);
+            set_flags = self.regexPatternModifierMask(flags_start, pos);
+            if (pos < close_at and self.source[pos] == '-') {
+                pos += 1;
+                _ = try self.scanRegexPatternModifiers(pos, close_at, start_tok.line, set_flags);
+                if (pos == flags_start + 1) {
+                    try self.reportCodeAtWithSpan(
+                        @intCast(flags_start),
+                        start_tok.line,
+                        @intCast(pos - flags_start),
+                        1504,
+                        "Subpattern flags must be present when there is a minus sign.",
+                    );
+                }
+            }
+        }
+    }
+
+    fn scanRegexPatternModifiers(self: *Parser, start: usize, close_at: usize, line: u32, initial_flags: u8) ParseError!usize {
+        var pos = start;
+        var seen_flags = initial_flags;
+        while (pos < close_at and pos < self.source.len and isRegexFlagByte(self.source[pos])) : (pos += 1) {
+            const fc = self.source[pos];
+            const flag_bit: u8 = switch (fc) {
+                'd' => 1 << 0,
+                'g' => 1 << 1,
+                'i' => 1 << 2,
+                'm' => 1 << 3,
+                's' => 1 << 4,
+                'u' => 1 << 5,
+                'v' => 1 << 6,
+                'y' => 1 << 7,
+                else => 0,
+            };
+            if (flag_bit == 0) {
+                try self.reportCodeAtWithSpan(@intCast(pos), line, 1, 1499, "Unknown regular expression flag.");
+            } else if ((seen_flags & flag_bit) != 0) {
+                try self.reportCodeAtWithSpan(@intCast(pos), line, 1, 1500, "Duplicate regular expression flag.");
+            } else if ((flag_bit & ((1 << 2) | (1 << 3) | (1 << 4))) == 0) {
+                try self.reportCodeAtWithSpan(@intCast(pos), line, 1, 1509, "This regular expression flag cannot be toggled within a subpattern.");
+            } else {
+                seen_flags |= flag_bit;
+            }
+        }
+        return pos;
+    }
+
+    fn regexPatternModifierMask(self: *Parser, start: usize, end: usize) u8 {
+        var mask: u8 = 0;
+        var i = start;
+        while (i < end and i < self.source.len) : (i += 1) {
+            mask |= switch (self.source[i]) {
+                'd' => 1 << 0,
+                'g' => 1 << 1,
+                'i' => 1 << 2,
+                'm' => 1 << 3,
+                's' => 1 << 4,
+                'u' => 1 << 5,
+                'v' => 1 << 6,
+                'y' => 1 << 7,
+                else => 0,
+            };
+        }
+        return mask;
     }
 
     fn regexLiteralClose(self: *Parser, start_i: usize, end_i: usize) ?usize {
@@ -19972,6 +20090,70 @@ test "parser: regex literal reports repetition after non-quantifiable assertion"
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1507), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: regex literal reports incomplete quantifier digit" {
+    const cases = [_][]const u8{
+        "let x = /a{,256}/;",
+        "let x = /a{,}/;",
+        "let x = /a{,256}/u;",
+    };
+    for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+
+        _ = try s.parser.parseSourceFile();
+        var found = false;
+        for (s.parser.diagnostics.items) |d| {
+            if (d.code == 1505) {
+                found = true;
+                try T.expectEqualStrings("Incomplete quantifier. Digit expected.", d.message);
+                try T.expectEqual(@as(u32, 0), d.span_len);
+            }
+        }
+        try T.expect(found);
+    }
+}
+
+test "parser: regex pattern modifiers report invalid toggled flags" {
+    var s = try newTestSetup("let x = /(?med-ium:bar)/;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count_1509: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1509) {
+            count_1509 += 1;
+            try T.expectEqualStrings("This regular expression flag cannot be toggled within a subpattern.", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 2), count_1509);
+}
+
+test "parser: regex pattern modifiers require set flags before minus" {
+    var s = try newTestSetup("let x = /(?-i:bar)/;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1504) {
+            found = true;
+            try T.expectEqualStrings("Subpattern flags must be present when there is a minus sign.", d.message);
+        }
+    }
+    try T.expect(found);
+}
+
+test "parser: regex pattern modifiers allow ims toggles" {
+    var s = try newTestSetup("let x = /(?ims-i:bar)/;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1504);
+        try T.expect(d.code != 1509);
+    }
 }
 
 test "parser: regex literal treats valid quantified term as clean" {

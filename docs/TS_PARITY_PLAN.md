@@ -1857,6 +1857,9 @@ The runner and a 56-case canon corpus are landed. Per-feature triage against the
 143. **2026-05-26 — Diagnostic-ledger binary-file marker sweep.**
     Ported upstream scanner handling for U+FFFD replacement characters as the non-text-file marker. The lexer now emits a single `File appears to be binary.` diagnostic anchored at absolute position 0 / line 1 and advances to EOF, matching TypeScript's `NonTextFileMarkerTrivia` recovery instead of treating replacement-character bytes as an identifier or invalid punctuation. Driver normalization maps that scanner diagnostic to TS1490, and the regenerated ledger now reports **719 emitted / 1 declared / 0 tested-only / 1356 catalog-only** across **2076** upstream codes. Verification: `ts_lexer` **76/76**, `ts_driver` **104/104**, regenerated `docs/TS_DIAGNOSTIC_CODE_STATUS.md`.
 
+144. **2026-05-26 — Diagnostic-ledger regex pattern-modifier sweep.**
+    Continued the parser-side regex validator toward upstream `scanRegularExpressionWorker` parity. Regex literals now report TS1505 for `{,n}` / `{,}` incomplete quantifiers at the zero-width missing-minimum digit span, and pattern modifier groups now validate the subpattern-only flag set: `i`, `m`, and `s` can be toggled, while `d`, `g`, `u`, `v`, and `y` produce TS1509 and a bare minus such as `(?-i:...)` produces TS1504. The regenerated diagnostic ledger now reports **722 emitted / 1 declared / 0 tested-only / 1353 catalog-only** across **2076** upstream codes. Verification: `ts_parser` **613/613**, regenerated `docs/TS_DIAGNOSTIC_CODE_STATUS.md`.
+
 7. **`fourslash` editor scenarios.** ~40 000 cases in tsgo's `internal/fourslash/tests/`. Adapter to drive `home-lsp` through the same scenarios. *Effort: 2 weeks for the adapter; ratchet from there.*
 
 ### §8.A · Phase 8 — LSP punch list
