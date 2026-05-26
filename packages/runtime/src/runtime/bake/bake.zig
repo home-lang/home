@@ -11,6 +11,7 @@ const DevServerModule = @import("DevServer.zig");
 const std = @import("std");
 
 pub const DevServer = DevServerModule.DevServer;
+pub const Framework = struct {};
 pub const resetDevServerDeinitCountForTesting = DevServerModule.resetDeinitCountForTesting;
 pub const getDevServerDeinitCountForTesting = DevServerModule.getDeinitCountForTesting;
 pub const HmrSocket = @import("DevServer/HmrSocket.zig").HmrSocket;

@@ -9,6 +9,7 @@ const std = @import("std");
 
 pub const u3_fast = u3;
 pub const unicode_replacement: u21 = 0xFFFD;
+pub const StringOrTinyString = @import("string/immutable.zig").StringOrTinyString;
 
 pub const AsciiStatus = enum {
     unknown,

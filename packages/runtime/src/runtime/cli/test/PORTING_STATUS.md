@@ -33,8 +33,8 @@ the first helper blockers: `strings.convertUTF16ToUTF8Append`,
 `strings.split`, `bun.O`, `bun.sys.{write,writeNonblocking,sendNonBlock,
 isPollable}`, `Output.printError*`, `jsc.PlatformEventLoop`, `jsc.Task`,
 and the current `Buffer.fromArrayBuffer(ctx, value)` signature. The
-current front is 5 compile errors after the runtime bridge peel. The
-remaining blockers are `std.fs.Dir` drift in bundler options and parked
-router AST stores (`home_rt.ast.Expr`/`Stmt`); resolving them belongs
-with the parked EventLoopHandle/WebCore bridge work, outside this
-shallow alias pass.
+current front is 1 compile error after the runtime bridge peel. The
+remaining blocker is the parked EventLoop bridge:
+`jsc/VirtualMachine.zig` embeds the opaque `jsc.EventLoopHandle.EventLoop`
+by value. The previous `std.fs.Dir` bundler-options drift and router AST
+store blockers are now wired far enough for the next frontier.

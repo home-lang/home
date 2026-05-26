@@ -23,6 +23,7 @@ pub const isWasm = switch (builtin.cpu.arch) {
     .wasm32, .wasm64 => true,
     else => false,
 };
+pub const isBrowser = false;
 // Wave-19 unmined-corner port (2026-05-19). CPU-arch flags pulled in to
 // satisfy `bun/src/perf/hw_timer.zig`'s `Environment.isAarch64` /
 // `Environment.isX64` predicates. Mirrors upstream `Environment.isAarch64`.

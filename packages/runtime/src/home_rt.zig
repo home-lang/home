@@ -59,12 +59,25 @@ pub const ImportKind = @import("options_types/import_record.zig").ImportKind;
 pub const FD = @import("sys/fd.zig").FD;
 pub const invalid_fd: FD = .invalid;
 pub const Stat = @import("sys/PosixStat.zig").PosixStat;
+pub const Generation = u16;
 pub const WTF = struct {
     pub const StringImpl = string.WTFStringImpl;
     pub const _StringImplStruct = string.WTFStringImplStruct;
 };
 
+pub fn getcwd(buf: []u8) ![]u8 {
+    if (std.c.getcwd(buf.ptr, buf.len) == null) return error.Unexpected;
+    return buf[0 .. std.mem.indexOfScalar(u8, buf, 0) orelse return error.Unexpected];
+}
+
+pub fn getcwdAlloc(allocator: std.mem.Allocator) ![:0]u8 {
+    var temp: PathBuffer = undefined;
+    const temp_slice = try getcwd(&temp);
+    return allocator.dupeZ(u8, temp_slice);
+}
+
 pub const String = @import("string/string.zig").String;
+pub const MutableString = @import("string/MutableString.zig");
 pub const StringJoiner = @import("string/StringJoiner.zig");
 pub const SliceWithUnderlyingString = @import("string/string.zig").SliceWithUnderlyingString;
 pub const PathString = @import("string/PathString.zig").PathString;
@@ -792,7 +805,9 @@ pub const jsc = struct {
     const log = Output.scoped(.JSC, .hidden);
     pub const hot_reloader = struct {
         pub const HotReloader = opaque {};
-        pub const ImportWatcher = opaque {};
+        pub const ImportWatcher = union(enum) {
+            none: void,
+        };
     };
     pub const EventLoop = @import("jsc/EventLoopHandle.zig").EventLoop;
     pub const EventLoopHandle = @import("jsc/EventLoopHandle.zig").EventLoopHandle;
@@ -902,6 +917,7 @@ pub const http_types = struct {
     pub const URLPath = @import("http_types/URLPath.zig");
 };
 pub const options_types = struct {
+    pub const Loader = @import("bundler/options.zig").Loader;
     pub const OfflineMode = @import("options_types/OfflineMode.zig").OfflineMode;
     pub const OfflineModePrefer = @import("options_types/OfflineMode.zig").Prefer;
     // Third-wave port batch (2026-05-17):
@@ -910,6 +926,7 @@ pub const options_types = struct {
     pub const CodeCoverageReporters = @import("options_types/CodeCoverageOptions.zig").Reporters;
     pub const CodeCoverageFraction = @import("options_types/CodeCoverageOptions.zig").Fraction;
 };
+pub const options = options_types;
 
 // ---- src/meta/ ---------------------------------------------------------
 // Type-classifier + bitfield helpers. Pure leaves (no `home_rt` deps).
@@ -1329,6 +1346,7 @@ pub const runtime = struct {
         pub const ShellSubprocess = opaque {};
     };
 };
+pub const bake = runtime.bake;
 pub const api = runtime.api;
 pub const shell = runtime.shell;
 // ---- src/string/ -------------------------------------------------------
@@ -1516,6 +1534,9 @@ pub const allocators = struct {
     pub const BufferFallbackAllocator = @import("bun_alloc/BufferFallbackAllocator.zig");
     pub const MaybeOwned = @import("bun_alloc/maybe_owned.zig").MaybeOwned;
     pub const allocation_scope = @import("bun_alloc/allocation_scope.zig");
+    pub const BSSList = @import("bun_alloc/bun_alloc.zig").BSSList;
+    pub const BSSStringList = @import("bun_alloc/bun_alloc.zig").BSSStringList;
+    pub const BSSMap = @import("bun_alloc/bun_alloc.zig").BSSMap;
 
     pub fn isDefault(allocator: std.mem.Allocator) bool {
         return allocator.vtable == @This().c_allocator.vtable;
@@ -1909,6 +1930,20 @@ pub const ast = struct {
     pub const RefCtx = @import("ast/base.zig").RefCtx;
     pub const Macro = struct {
         pub const MacroContext = struct {};
+    };
+    pub const Expr = struct {
+        pub const Data = struct {
+            pub const Store = struct {
+                pub fn create(_: std.mem.Allocator) void {}
+            };
+        };
+    };
+    pub const Stmt = struct {
+        pub const Data = struct {
+            pub const Store = struct {
+                pub fn create(_: std.mem.Allocator) void {}
+            };
+        };
     };
     pub const UseDirective = @import("ast/use_directive.zig").UseDirective;
     pub const ServerComponentBoundary = @import("ast/server_component_boundary.zig");

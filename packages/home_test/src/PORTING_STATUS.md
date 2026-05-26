@@ -66,11 +66,11 @@ frontier is:
 
 Runtime build audit on 2026-05-26:
 `./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false
---summary failures` fails with 5 compile errors after the runtime bridge
-peel. The remaining frontier is Zig 0.17 `std.fs.Dir` drift in bundler
-options and parked router AST stores (`home_rt.ast.Expr`/`Stmt`). The
-earlier event-loop/WebCore/API/sys/io shallow aliases are now wired far
-enough for the next frontier.
+--summary failures` fails with 1 compile error after the runtime bridge
+peel. The remaining frontier is the parked `jsc.EventLoopHandle.EventLoop`
+bridge: `jsc/VirtualMachine.zig` still embeds the opaque event loop by
+value. The previous Zig 0.17 `std.fs.Dir` bundler-options drift and
+router AST-store blockers are now wired far enough for the next frontier.
 
 `zig build test -Dfilter=home_test_bun_tier0` now build-checks the first
 copied Bun Zig tier under pantry-provided Zig 0.17-dev:

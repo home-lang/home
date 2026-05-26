@@ -217,12 +217,14 @@ Invalid character: '@'`.
 
 Non-JSC runtime build frontier on 2026-05-26:
 `./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false
---summary failures` fails with **5 compile errors** after the runtime
-bridge peel. The remaining front is now concentrated in Zig 0.17 std API
-drift (`std.fs.Dir`) and the parked router AST stores
-(`home_rt.ast.Expr`/`Stmt`). Earlier shallow aliases for event loop,
+--summary failures` fails with **1 compile error** after the runtime
+bridge peel. The remaining front is the parked EventLoop bridge:
+`jsc/VirtualMachine.zig` still embeds the opaque
+`jsc.EventLoopHandle.EventLoop` by value. The previous Zig 0.17
+`std.fs.Dir` drift and router AST-store blockers are now wired far enough
+for the next frontier, alongside the earlier shallow aliases for
 WebCore stream state, API shells, `StringSet`, `StringHashMap`, and
-runtime sys/io helpers are now wired far enough for the next frontier.
+runtime sys/io helpers.
 
 ## Pantry (package management)
 

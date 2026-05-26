@@ -1,6 +1,7 @@
 /// This file is mostly the API schema but with all the options normalized.
 /// Normalization is necessary because most fields in the API schema are optional
 const std = @import("std");
+const zig_builtin = @import("builtin");
 
 pub const defines = @import("./defines.zig");
 pub const Define = defines.Define;
@@ -1599,7 +1600,7 @@ pub fn loadersFromTransformOptions(allocator: std.mem.Allocator, _loaders: ?api.
     return loaders;
 }
 
-const Dir = std.fs.Dir;
+const Dir = std.Io.Dir;
 
 pub const SourceMapOption = enum {
     none,
@@ -2090,19 +2091,12 @@ pub const BundleOptions = struct {
     }
 };
 
-pub fn openOutputDir(output_dir: string) !std.fs.Dir {
-    return std.fs.cwd().openDir(output_dir, .{}) catch brk: {
-        std.fs.cwd().makeDir(output_dir) catch |err| {
-            Output.printErrorln("error: Unable to mkdir \"{s}\": \"{s}\"", .{ output_dir, @errorName(err) });
-            Global.crash();
-        };
-
-        const handle = std.fs.cwd().openDir(output_dir, .{}) catch |err2| {
-            Output.printErrorln("error: Unable to open \"{s}\": \"{s}\"", .{ output_dir, @errorName(err2) });
-            Global.crash();
-        };
-        break :brk handle;
-    };
+pub fn openOutputDir(output_dir: string) !Dir {
+    const io = if (zig_builtin.is_test)
+        std.testing.io
+    else
+        @panic("TODO(phase-12.2-M3): wire production std.Io through bundler output dirs");
+    return Dir.cwd().createDirPathOpen(io, output_dir, .{});
 }
 
 pub const TransformOptions = struct {
@@ -2165,7 +2159,7 @@ pub const TransformResult = struct {
     warnings: []logger.Msg = &([_]logger.Msg{}),
     output_files: []OutputFile = &([_]OutputFile{}),
     outbase: string,
-    root_dir: ?std.fs.Dir = null,
+    root_dir: ?Dir = null,
     pub fn init(
         outbase: string,
         output_files: []OutputFile,

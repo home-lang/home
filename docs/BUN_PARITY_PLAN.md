@@ -245,15 +245,16 @@ Verification target:
 
 Runtime compile frontier: the current non-JSC runtime gate is red.
 `./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false
---summary failures` fails at compile time with **5 errors** on 2026-05-26
+--summary failures` fails at compile time with **1 error** on 2026-05-26
 after the runtime bridge peel. The default macOS JSC-enabled command
 still needs a fresh pass after the non-JSC frontier closes.
-Classify those before source work:
+Classify the current blocker before source work:
 
 | Bucket | Representative errors |
 |---|---|
-| Zig 0.17 std drift | `bundler/options.zig` still names `std.fs.Dir` instead of the `std.Io.Dir` surface |
-| Parked AST/router surface | `router/router.zig` test helpers still reach `home_rt.ast.Expr`/`Stmt` stores that are not exported yet |
+| Parked EventLoop bridge | `jsc/VirtualMachine.zig` embeds the opaque `jsc.EventLoopHandle.EventLoop` by value |
+| Recently closed Zig 0.17 std drift | `bundler/options.zig` now uses the `std.Io.Dir` surface |
+| Recently closed AST/router surface | `home_rt.ast.Expr`/`Stmt` store stubs and reduced router test constructors now keep the non-JSC build moving |
 | Recently closed shallow aliases | `sys.open`/`read`/`recvNonBlock`, `io.Poll`/`Action`/`Request`, `jsc.WorkTask`, WebCore stream state, `StringSet`, `StringHashMap`, `HashedString` |
 | Zig 0.17 stdlib drift | `std.io.fixedBufferStream`, `std.os.getFdPath` |
 
