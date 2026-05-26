@@ -187,6 +187,7 @@ pub fn arrayProto(
     const undef_t = types.Primitive.undefined_t;
     const void_t = types.Primitive.void_t;
     const any_t = types.Primitive.any;
+    const unknown_t = types.Primitive.unknown;
     const optional_number_t = try ti.internUnion(&[_]TypeId{ number_t, undef_t });
 
     // `T[]` itself — used as both receiver and return type for
@@ -200,8 +201,11 @@ pub fn arrayProto(
     // Callback signatures.
     // `(x: T) => any`  — used by map.
     const cb_t_any = try ti.internSignature(&[_]TypeId{elem}, any_t, false);
-    // `(x: T) => boolean` — used by filter / find.
+    // `(x: T) => boolean` — used by every / some.
     const cb_t_bool = try ti.internSignature(&[_]TypeId{elem}, boolean_t, false);
+    // `(x: T) => unknown` — used by filter / find, matching lib.d.ts
+    // predicate overloads that accept truthy non-boolean returns.
+    const cb_t_unknown = try ti.internSignature(&[_]TypeId{elem}, unknown_t, false);
     // `(x: T) => void` — used by forEach.
     const cb_t_void = try ti.internSignature(&[_]TypeId{elem}, void_t, false);
     // `(a: T, b: T) => number` — used by sort.
@@ -212,7 +216,7 @@ pub fn arrayProto(
     const sig_pop = try ti.internSignature(&[_]TypeId{}, t_or_undef, false);
     const sig_map = try ti.internSignature(&[_]TypeId{cb_t_any}, any_arr, false);
     const sig_flatMap = try ti.internSignature(&[_]TypeId{cb_t_any}, any_arr, false);
-    const sig_filter = try ti.internSignature(&[_]TypeId{cb_t_bool}, arr_t, false);
+    const sig_filter = try ti.internSignature(&[_]TypeId{cb_t_unknown}, arr_t, false);
     const sig_forEach = try ti.internSignature(&[_]TypeId{cb_t_void}, void_t, false);
     const sig_every = try ti.internSignature(&[_]TypeId{cb_t_bool}, boolean_t, false);
     const sig_some = try ti.internSignature(&[_]TypeId{cb_t_bool}, boolean_t, false);
@@ -220,7 +224,7 @@ pub fn arrayProto(
     const sig_indexOf = try ti.internSignature(&[_]TypeId{elem}, number_t, false);
     const sig_slice = try ti.internSignature(&[_]TypeId{ optional_number_t, optional_number_t }, arr_t, false);
     const sig_join = try ti.internSignature(&[_]TypeId{string_t}, string_t, false);
-    const sig_find = try ti.internSignature(&[_]TypeId{cb_t_bool}, t_or_undef, false);
+    const sig_find = try ti.internSignature(&[_]TypeId{cb_t_unknown}, t_or_undef, false);
     const sig_concat = try ti.internSignature(&[_]TypeId{arr_t}, arr_t, false);
     const sig_reverse = try ti.internSignature(&[_]TypeId{}, arr_t, false);
     const sig_sort = try ti.internSignature(&[_]TypeId{cb_tt_num}, arr_t, false);

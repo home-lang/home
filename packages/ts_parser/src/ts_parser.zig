@@ -6965,6 +6965,37 @@ pub const Parser = struct {
 
         // export default <expr>;
         if (self.match(.kw_default)) {
+            if (self.peek().kind == .at) {
+                const dec_start = self.peek();
+                const dec_expr = try self.parseDecoratorExpression();
+                const dec = try self.builder.addDecorator(
+                    .{ .start = dec_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                    dec_expr,
+                );
+                if (self.peek().kind == .kw_class or
+                    (self.peek().kind == .kw_abstract and self.peekAt(1).kind == .kw_class))
+                {
+                    const class_decl = try self.parseClassDeclaration();
+                    try self.pending_statements.append(self.gpa, class_decl);
+                    return try self.builder.addExport(
+                        .{ .start = start.span.start, .end = self.hir.spanOf(class_decl).end },
+                        dec,
+                        &.{},
+                        empty_string,
+                        is_type_only,
+                        true,
+                    );
+                }
+                try self.report("decorators are not valid here", "");
+                return try self.builder.addExport(
+                    .{ .start = start.span.start, .end = self.hir.spanOf(dec).end },
+                    dec,
+                    &.{},
+                    empty_string,
+                    is_type_only,
+                    true,
+                );
+            }
             const default_starts_declaration = switch (self.peek().kind) {
                 .kw_class, .kw_function, .kw_interface => true,
                 .kw_async => self.peekAt(1).kind == .kw_function,
@@ -17832,6 +17863,19 @@ test "parser: export default" {
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     try T.expectEqual(hir_mod.NodeKind.export_decl, s.hir.kindOf(top));
     try T.expect(hir_mod.exportOf(&s.hir, top).is_default);
+}
+
+test "parser: export default decorated class preserves decorator sibling" {
+    var s = try newTestSetup("export default @dec class C {}");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 2), stmts.len);
+    try T.expectEqual(hir_mod.NodeKind.export_decl, s.hir.kindOf(stmts[0]));
+    const ex = hir_mod.exportOf(&s.hir, stmts[0]);
+    try T.expect(ex.is_default);
+    try T.expectEqual(hir_mod.NodeKind.decorator, s.hir.kindOf(ex.decl));
+    try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(stmts[1]));
 }
 
 test "parser: export named" {
