@@ -126,6 +126,8 @@ pub const CompileOptions = struct {
     /// True when the parser should apply ES2015+ contextual-reserved
     /// word rules such as rejecting `yield` as a binding/function name.
     syntax_target_es2015: bool = false,
+    /// True when parser diagnostics gated at ES2016+ should surface.
+    syntax_target_es2016: bool = false,
     /// True when syntax features gated at ES2018 or newer should parse
     /// without downlevel availability diagnostics.
     syntax_target_es2018: bool = false,
@@ -886,6 +888,10 @@ pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
             .es3, .es5 => false,
             else => true,
         };
+        opts.syntax_target_es2016 = switch (t) {
+            .es3, .es5, .es2015 => false,
+            else => true,
+        };
         opts.syntax_target_es2018 = switch (t) {
             .es3, .es5, .es2015, .es2016, .es2017 => false,
             else => true,
@@ -1117,6 +1123,7 @@ pub fn compileSource(
     parser.setJavaScriptFile(pathIsJsLike(options.importer_path));
     parser.setStrictMode(options.always_strict);
     parser.setTargetEs2015OrLater(options.syntax_target_es2015);
+    parser.setTargetEs2016OrLater(options.syntax_target_es2016);
     parser.setTargetEs2018OrLater(options.syntax_target_es2018);
     defer parser.deinit();
 
@@ -3388,6 +3395,27 @@ test "driver: ES2018 target gates regex named capture availability" {
     for (es2018.diagnostics.items) |d| {
         try T.expect(d.code != 1503);
     }
+}
+
+test "driver: ES2016 target surfaces use strict non-simple related diagnostics" {
+    var c = try compileSource(
+        T.allocator,
+        "function f(a = 1) { \"use strict\"; }",
+        .{ .no_emit = true, .syntax_target_es2016 = true, .emit = .{ .es_target = .es2016 } },
+    );
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var saw_param = false;
+    var saw_directive = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 1348) saw_param = true;
+        if (d.code == 1349) saw_directive = true;
+    }
+    try T.expect(saw_param);
+    try T.expect(saw_directive);
 }
 
 test "driver: noEmit suppresses downlevel private-name WeakMap collisions" {

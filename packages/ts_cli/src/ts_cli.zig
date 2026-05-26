@@ -83,7 +83,7 @@ pub const Options = struct {
     build_force: bool = false,
     build_verbose: bool = false,
     build_stop_on_errors: bool = false,
-    parse_diagnostics: [8]CliDiagnostic = undefined,
+    parse_diagnostics: [16]CliDiagnostic = undefined,
     parse_diagnostic_count: u8 = 0,
 };
 
@@ -190,46 +190,67 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8) ParseError!Op
             opts.strict = true;
         } else if (std.mem.eql(u8, a, "--project") or std.mem.eql(u8, a, "-p")) {
             i += 1;
-            if (i >= args.len) return error.MissingValue;
-            opts.project = args[i];
+            if (i >= args.len) {
+                appendCliDiagnostic(&opts, .{ .code = 6044, .option = "project" });
+            } else {
+                opts.project = args[i];
+            }
         } else if (parseEqFlag(a, "--project=")) |v| {
             opts.project = v;
         } else if (std.mem.eql(u8, a, "--target")) {
             i += 1;
-            if (i >= args.len) return error.MissingValue;
-            opts.target = args[i];
+            if (i >= args.len) {
+                appendCliDiagnostic(&opts, .{ .code = 6044, .option = "target" });
+            } else {
+                opts.target = args[i];
+            }
         } else if (parseEqFlag(a, "--target=")) |v| {
             opts.target = v;
         } else if (parseEqFlag(a, "--outDir=")) |v| {
             opts.out_dir = v;
         } else if (std.mem.eql(u8, a, "--outDir")) {
             i += 1;
-            if (i >= args.len) return error.MissingValue;
-            opts.out_dir = args[i];
+            if (i >= args.len) {
+                appendCliDiagnostic(&opts, .{ .code = 6044, .option = "outDir" });
+            } else {
+                opts.out_dir = args[i];
+            }
         } else if (parseEqFlag(a, "--outFile=")) |v| {
             opts.out_file = v;
         } else if (std.mem.eql(u8, a, "--outFile")) {
             i += 1;
-            if (i >= args.len) return error.MissingValue;
-            opts.out_file = args[i];
+            if (i >= args.len) {
+                appendCliDiagnostic(&opts, .{ .code = 6044, .option = "outFile" });
+            } else {
+                opts.out_file = args[i];
+            }
         } else if (parseEqFlag(a, "--tsBuildInfoFile=")) |v| {
             opts.ts_buildinfo_file = v;
         } else if (std.mem.eql(u8, a, "--tsBuildInfoFile")) {
             i += 1;
-            if (i >= args.len) return error.MissingValue;
-            opts.ts_buildinfo_file = args[i];
+            if (i >= args.len) {
+                appendCliDiagnostic(&opts, .{ .code = 6044, .option = "tsBuildInfoFile" });
+            } else {
+                opts.ts_buildinfo_file = args[i];
+            }
         } else if (parseEqFlag(a, "--module=")) |v| {
             opts.module = v;
         } else if (std.mem.eql(u8, a, "--module")) {
             i += 1;
-            if (i >= args.len) return error.MissingValue;
-            opts.module = args[i];
+            if (i >= args.len) {
+                appendCliDiagnostic(&opts, .{ .code = 6044, .option = "module" });
+            } else {
+                opts.module = args[i];
+            }
         } else if (parseEqFlag(a, "--jsx=")) |v| {
             opts.jsx = v;
         } else if (std.mem.eql(u8, a, "--jsx")) {
             i += 1;
-            if (i >= args.len) return error.MissingValue;
-            opts.jsx = args[i];
+            if (i >= args.len) {
+                appendCliDiagnostic(&opts, .{ .code = 6044, .option = "jsx" });
+            } else {
+                opts.jsx = args[i];
+            }
         } else if (std.mem.eql(u8, a, "--declaration") or std.mem.eql(u8, a, "-d")) {
             opts.declaration = true;
         } else if (std.mem.eql(u8, a, "--no-declaration")) {
@@ -248,15 +269,11 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8) ParseError!Op
             opts.incremental = false;
         } else if (tsConfigOnlyOptionName(a)) |config_only| {
             i = parseTsConfigOnlyOption(args, i, &opts, config_only);
-        } else if (a.len > 0 and a[0] == '-') {
-            // Unknown flag — silently accept for forward-compat per
-            // TS_PARITY_PLAN. A future cycle promotes selected
-            // unknown flags to errors.
-            // Skip a value if `--flag value` style.
-            if (i + 1 < args.len and args[i + 1].len > 0 and args[i + 1][0] != '-') {
-                // Heuristic: assume it consumes the next arg.
-                // Real impl will use a flag-arity table.
-                i += 1;
+        } else if (unknownDashedOptionName(a)) |name| {
+            if (compilerOptionSuggestion(name)) |suggestion| {
+                appendCliDiagnostic(&opts, .{ .code = 5025, .option = name, .suggestion = suggestion });
+            } else {
+                appendCliDiagnostic(&opts, .{ .code = 5023, .option = name });
             }
         } else {
             try files.append(gpa, a);
@@ -400,7 +417,7 @@ fn maybeSkipOptionValue(args: []const []const u8, i: usize) usize {
 }
 
 fn buildOptionSuggestion(name: []const u8) ?[]const u8 {
-    const candidates = comptime [_][]const u8{
+    const candidates = [_][]const u8{
         "build",
         "clean",
         "dry",
@@ -414,7 +431,149 @@ fn buildOptionSuggestion(name: []const u8) ?[]const u8 {
     };
     var best: ?[]const u8 = null;
     var best_distance: usize = std.math.maxInt(usize);
-    inline for (candidates) |candidate| {
+    for (candidates) |candidate| {
+        const distance = levenshteinIcase(name, candidate);
+        if (distance < best_distance) {
+            best = candidate;
+            best_distance = distance;
+        }
+    }
+    const threshold = name.len * 4 / 10 + 1;
+    return if (best != null and best_distance < threshold) best else null;
+}
+
+fn compilerOptionSuggestion(name: []const u8) ?[]const u8 {
+    const candidates = [_][]const u8{
+        "help",
+        "watch",
+        "preserveWatchOutput",
+        "listFiles",
+        "explainFiles",
+        "listEmittedFiles",
+        "pretty",
+        "traceResolution",
+        "diagnostics",
+        "extendedDiagnostics",
+        "generateCpuProfile",
+        "generateTrace",
+        "incremental",
+        "declaration",
+        "declarationMap",
+        "emitDeclarationOnly",
+        "sourceMap",
+        "inlineSourceMap",
+        "noCheck",
+        "noEmit",
+        "locale",
+        "target",
+        "module",
+        "all",
+        "version",
+        "init",
+        "project",
+        "showConfig",
+        "listFilesOnly",
+        "ignoreConfig",
+        "lib",
+        "allowJs",
+        "checkJs",
+        "jsx",
+        "outFile",
+        "outDir",
+        "rootDir",
+        "composite",
+        "tsBuildInfoFile",
+        "removeComments",
+        "importHelpers",
+        "importsNotUsedAsValues",
+        "downlevelIteration",
+        "isolatedModules",
+        "verbatimModuleSyntax",
+        "isolatedDeclarations",
+        "strict",
+        "noImplicitAny",
+        "strictNullChecks",
+        "strictFunctionTypes",
+        "strictBindCallApply",
+        "strictPropertyInitialization",
+        "noImplicitThis",
+        "useUnknownInCatchVariables",
+        "alwaysStrict",
+        "noUnusedLocals",
+        "noUnusedParameters",
+        "exactOptionalPropertyTypes",
+        "noImplicitReturns",
+        "noFallthroughCasesInSwitch",
+        "noUncheckedIndexedAccess",
+        "noImplicitOverride",
+        "noPropertyAccessFromIndexSignature",
+        "moduleResolution",
+        "baseUrl",
+        "paths",
+        "rootDirs",
+        "typeRoots",
+        "types",
+        "allowSyntheticDefaultImports",
+        "esModuleInterop",
+        "preserveSymlinks",
+        "allowUmdGlobalAccess",
+        "moduleSuffixes",
+        "allowImportingTsExtensions",
+        "rewriteRelativeImportExtensions",
+        "resolvePackageJsonExports",
+        "resolvePackageJsonImports",
+        "customConditions",
+        "noUncheckedSideEffectImports",
+        "sourceRoot",
+        "mapRoot",
+        "inlineSources",
+        "experimentalDecorators",
+        "emitDecoratorMetadata",
+        "jsxFactory",
+        "jsxFragmentFactory",
+        "jsxImportSource",
+        "resolveJsonModule",
+        "allowArbitraryExtensions",
+        "out",
+        "reactNamespace",
+        "skipDefaultLibCheck",
+        "charset",
+        "emitBOM",
+        "newLine",
+        "noErrorTruncation",
+        "noLib",
+        "noResolve",
+        "stripInternal",
+        "disableSizeLimit",
+        "disableSourceOfProjectReferenceRedirect",
+        "disableSolutionSearching",
+        "disableReferencedProjectLoad",
+        "noImplicitUseStrict",
+        "noEmitHelpers",
+        "noEmitOnError",
+        "preserveConstEnums",
+        "declarationDir",
+        "skipLibCheck",
+        "allowUnusedLabels",
+        "allowUnreachableCode",
+        "suppressExcessPropertyErrors",
+        "suppressImplicitAnyIndexErrors",
+        "forceConsistentCasingInFileNames",
+        "maxNodeModuleJsDepth",
+        "noStrictGenericChecks",
+        "useDefineForClassFields",
+        "preserveValueImports",
+        "keyofStringsOnly",
+        "plugins",
+        "moduleDetection",
+        "ignoreDeprecations",
+    };
+    var best: ?[]const u8 = null;
+    var best_distance: usize = std.math.maxInt(usize);
+    for (candidates) |candidate| {
+        const max_len_diff = @max(@as(usize, 2), name.len * 34 / 100);
+        const len_diff = if (name.len > candidate.len) name.len - candidate.len else candidate.len - name.len;
+        if (len_diff > max_len_diff) continue;
         const distance = levenshteinIcase(name, candidate);
         if (distance < best_distance) {
             best = candidate;
@@ -450,8 +609,11 @@ fn levenshteinIcase(a: []const u8, b: []const u8) usize {
 
 pub fn formatCliDiagnostic(gpa: std.mem.Allocator, diag: CliDiagnostic) ![]const u8 {
     return switch (diag.code) {
+        5023 => try std.fmt.allocPrint(gpa, "error TS5023: Unknown compiler option '{s}'.", .{diag.option}),
+        5025 => try std.fmt.allocPrint(gpa, "error TS5025: Unknown compiler option '{s}'. Did you mean '{s}'?", .{ diag.option, diag.suggestion.? }),
         6064 => try std.fmt.allocPrint(gpa, "error TS6064: Option '{s}' can only be specified in 'tsconfig.json' file or set to 'null' on command line.", .{diag.option}),
         6230 => try std.fmt.allocPrint(gpa, "error TS6230: Option '{s}' can only be specified in 'tsconfig.json' file or set to 'false' or 'null' on command line.", .{diag.option}),
+        6044 => try std.fmt.allocPrint(gpa, "error TS6044: Compiler option '{s}' expects an argument.", .{diag.option}),
         5072 => try std.fmt.allocPrint(gpa, "error TS5072: Unknown build option '{s}'.", .{diag.option}),
         5073 => try std.fmt.allocPrint(gpa, "error TS5073: Build option '{s}' requires a value of type {s}.", .{ diag.option, diag.expected }),
         5077 => try std.fmt.allocPrint(gpa, "error TS5077: Unknown build option '{s}'. Did you mean '{s}'?", .{ diag.option, diag.suggestion.? }),
@@ -860,6 +1022,57 @@ test "parseArgs: tsconfig-only options on command line report TS6064 and TS6230"
         const text = try formatCliDiagnostic(T.allocator, opts.parse_diagnostics[1]);
         defer T.allocator.free(text);
         try T.expectEqualStrings("error TS6064: Option 'paths' can only be specified in 'tsconfig.json' file or set to 'null' on command line.", text);
+    }
+}
+
+test "parseArgs: missing string compiler option values report TS6044" {
+    const cases = [_]struct { flag: []const u8, option: []const u8 }{
+        .{ .flag = "--project", .option = "project" },
+        .{ .flag = "-p", .option = "project" },
+        .{ .flag = "--target", .option = "target" },
+        .{ .flag = "--outDir", .option = "outDir" },
+        .{ .flag = "--outFile", .option = "outFile" },
+        .{ .flag = "--tsBuildInfoFile", .option = "tsBuildInfoFile" },
+        .{ .flag = "--module", .option = "module" },
+        .{ .flag = "--jsx", .option = "jsx" },
+    };
+    for (cases) |entry| {
+        const argv = [_][]const u8{entry.flag};
+        const opts = try parseArgs(T.allocator, &argv);
+        defer T.allocator.free(opts.files);
+        try T.expectEqual(@as(u8, 1), opts.parse_diagnostic_count);
+        try T.expectEqual(@as(u32, 6044), opts.parse_diagnostics[0].code);
+        try T.expectEqualStrings(entry.option, opts.parse_diagnostics[0].option);
+
+        const text = try formatCliDiagnostic(T.allocator, opts.parse_diagnostics[0]);
+        defer T.allocator.free(text);
+        var expected_buf: [96]u8 = undefined;
+        const expected = try std.fmt.bufPrint(&expected_buf, "error TS6044: Compiler option '{s}' expects an argument.", .{entry.option});
+        try T.expectEqualStrings(expected, text);
+    }
+}
+
+test "parseArgs: unknown compiler options report TS5023 and TS5025" {
+    const argv = [_][]const u8{ "--modul", "--totallyUnknown" };
+    const opts = try parseArgs(T.allocator, &argv);
+    defer T.allocator.free(opts.files);
+    try T.expectEqual(@as(u8, 2), opts.parse_diagnostic_count);
+
+    try T.expectEqual(@as(u32, 5025), opts.parse_diagnostics[0].code);
+    try T.expectEqualStrings("modul", opts.parse_diagnostics[0].option);
+    try T.expectEqualStrings("module", opts.parse_diagnostics[0].suggestion.?);
+    {
+        const text = try formatCliDiagnostic(T.allocator, opts.parse_diagnostics[0]);
+        defer T.allocator.free(text);
+        try T.expectEqualStrings("error TS5025: Unknown compiler option 'modul'. Did you mean 'module'?", text);
+    }
+
+    try T.expectEqual(@as(u32, 5023), opts.parse_diagnostics[1].code);
+    try T.expectEqualStrings("totallyUnknown", opts.parse_diagnostics[1].option);
+    {
+        const text = try formatCliDiagnostic(T.allocator, opts.parse_diagnostics[1]);
+        defer T.allocator.free(text);
+        try T.expectEqualStrings("error TS5023: Unknown compiler option 'totallyUnknown'.", text);
     }
 }
 

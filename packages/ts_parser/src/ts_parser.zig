@@ -171,6 +171,7 @@ pub const Parser = struct {
     in_string_named_module: bool,
     strict_mode: bool,
     target_es2015_or_later: bool,
+    target_es2016_or_later: bool,
     target_es2018_or_later: bool,
     suppress_strict_param_names: bool,
     allow_parameter_list_arrow_recovery: bool,
@@ -290,6 +291,7 @@ pub const Parser = struct {
             .in_string_named_module = false,
             .strict_mode = false,
             .target_es2015_or_later = false,
+            .target_es2016_or_later = false,
             .target_es2018_or_later = false,
             .suppress_strict_param_names = false,
             .allow_parameter_list_arrow_recovery = false,
@@ -334,8 +336,14 @@ pub const Parser = struct {
         self.target_es2015_or_later = enabled;
     }
 
+    pub fn setTargetEs2016OrLater(self: *Parser, enabled: bool) void {
+        self.target_es2016_or_later = enabled;
+        if (enabled) self.target_es2015_or_later = true;
+    }
+
     pub fn setTargetEs2018OrLater(self: *Parser, enabled: bool) void {
         self.target_es2018_or_later = enabled;
+        if (enabled) self.setTargetEs2016OrLater(true);
     }
 
     pub fn deinit(self: *Parser) void {
@@ -2415,6 +2423,45 @@ pub const Parser = struct {
         return std.mem.eql(u8, raw, "\"use strict\"") or std.mem.eql(u8, raw, "'use strict'");
     }
 
+    fn firstUseStrictDirectiveInUpcomingBlock(self: *const Parser) ?Token {
+        if (self.peek().kind != .open_brace) return null;
+        var idx: usize = @intCast(self.cursor + 1);
+        while (idx < self.tokens.len) {
+            const tok = self.tokens[idx];
+            if (tok.kind != .string_literal) return null;
+            if (self.isUseStrictDirective(tok)) return tok;
+            idx += 1;
+            if (idx < self.tokens.len and self.tokens[idx].kind == .semicolon) idx += 1;
+        }
+        return null;
+    }
+
+    fn firstNonSimpleParameter(self: *const Parser, params: []const NodeId) ?NodeId {
+        for (params) |param| {
+            if (param == hir_mod.none_node_id or self.hir.kindOf(param) != .parameter) continue;
+            const p = hir_mod.parameterOf(self.hir, param);
+            if (p.flags.is_rest or p.default_value != hir_mod.none_node_id) return param;
+            if (p.name != hir_mod.none_node_id) {
+                const name_kind = self.hir.kindOf(p.name);
+                if (name_kind == .object_pattern or name_kind == .array_pattern) return param;
+            }
+        }
+        return null;
+    }
+
+    fn reportUseStrictNonSimpleRelatedDiagnostics(
+        self: *Parser,
+        params: []const NodeId,
+        use_strict: ?Token,
+    ) ParseError!void {
+        if (!self.target_es2016_or_later) return;
+        const directive = use_strict orelse return;
+        const param = self.firstNonSimpleParameter(params) orelse return;
+        const param_span = self.hir.spanOf(param);
+        try self.reportCodeAt(param_span.start, self.lineAt(param_span.start), 1348, "Non-simple parameter declared here.");
+        try self.reportCodeAt(directive.span.start, directive.line, 1349, "'use strict' directive used here.");
+    }
+
     fn isRestrictedStrictName(self: *const Parser, tok: Token) bool {
         const raw = self.source[tok.span.start..tok.span.end];
         return std.mem.eql(u8, raw, "eval") or std.mem.eql(u8, raw, "arguments");
@@ -3638,6 +3685,8 @@ pub const Parser = struct {
             // upstream tsc on `parserFunctionDeclaration2.d.ts(1,14)`
             // / `parserFunctionDeclaration2.ts(1,24)`.
             const open_brace_tok = self.peek();
+            const use_strict = self.firstUseStrictDirectiveInUpcomingBlock();
+            try self.reportUseStrictNonSimpleRelatedDiagnostics(params, use_strict);
             if (self.isAmbientContextAt(open_brace_tok.span.start)) {
                 try self.reportCodeAt(open_brace_tok.span.start, open_brace_tok.line, 1183, "An implementation cannot be declared in ambient contexts.");
             }
@@ -4306,7 +4355,7 @@ pub const Parser = struct {
                 const elem_start = self.peek();
                 var flags: hir_mod.ParamFlags = .{};
                 if (self.match(.dot_dot_dot)) flags.is_rest = true;
-                const name_node = if (is_object and !flags.is_rest) blk: {
+                var name_node = if (is_object and !flags.is_rest) blk: {
                     if (self.match(.open_bracket)) {
                         const key_start = self.tokens[self.cursor - 1];
                         const key_expr = try self.parseExpression();
@@ -4359,6 +4408,18 @@ pub const Parser = struct {
                     const name_id = try self.internToken(key_tok);
                     break :blk try self.builder.addIdentifier(tokenSpan(key_tok), name_id);
                 } else try self.parseBindingTarget();
+                if (flags.is_rest and is_object and self.peek().kind == .colon) {
+                    _ = self.advance();
+                    name_node = try self.parseBindingTarget();
+                    const name_span = self.hir.spanOf(name_node);
+                    try self.reportCodeAt(name_span.start, self.lineAt(name_span.start), 2566, "A rest element cannot have a property name.");
+                } else if (flags.is_rest and is_object) {
+                    const name_kind = self.hir.kindOf(name_node);
+                    if (name_kind == .object_pattern or name_kind == .array_pattern) {
+                        const name_span = self.hir.spanOf(name_node);
+                        try self.reportCodeAt(name_span.start, self.lineAt(name_span.start), 2501, "A rest element cannot contain a binding pattern.");
+                    }
+                }
                 // `{ h? }` — TS doesn't accept `?` on object-binding
                 // shorthand elements (the binding-element grammar
                 // disallows the `?` optional marker). tsc emits
@@ -5123,6 +5184,8 @@ pub const Parser = struct {
                             self.function_depth -= 1;
                             if (mods.is_async) self.async_function_depth -= 1;
                         }
+                        const use_strict = self.firstUseStrictDirectiveInUpcomingBlock();
+                        try self.reportUseStrictNonSimpleRelatedDiagnostics(params, use_strict);
                         body = try self.parseBlockStatement();
                         try self.reportAmbientClassImplementationAt(body_start.span.start, body_start.line);
                         // TS1183 also fires when the method itself carries
@@ -11306,6 +11369,8 @@ pub const Parser = struct {
                 self.function_depth -= 1;
                 if (is_async) self.async_function_depth -= 1;
             }
+            const use_strict = self.firstUseStrictDirectiveInUpcomingBlock();
+            try self.reportUseStrictNonSimpleRelatedDiagnostics(&.{param}, use_strict);
             const body = try self.parseArrowBody();
             const sp: Span = .{ .start = start_tok.span.start, .end = self.hir.spanOf(body).end };
             return try self.builder.addFnDecl(
@@ -11458,6 +11523,8 @@ pub const Parser = struct {
             self.function_depth -= 1;
             if (is_async) self.async_function_depth -= 1;
         }
+        const use_strict = self.firstUseStrictDirectiveInUpcomingBlock();
+        try self.reportUseStrictNonSimpleRelatedDiagnostics(params, use_strict);
         const body = try self.parseArrowBody();
         // TS parity (parserArrowFunctionExpression8/9/10/11/12): when
         // we're inside the `true` branch of a conditional expression
@@ -11527,6 +11594,8 @@ pub const Parser = struct {
             self.function_depth -= 1;
             if (is_async) self.async_function_depth -= 1;
         }
+        const use_strict = self.firstUseStrictDirectiveInUpcomingBlock();
+        try self.reportUseStrictNonSimpleRelatedDiagnostics(params, use_strict);
         const body = try self.parseArrowBody();
         const close = self.peek();
         try self.reportCodeAt(close.span.start, close.line, 1005, "')' expected.");
@@ -15917,6 +15986,8 @@ pub const Parser = struct {
                         self.generator_depth = prev_generator_depth;
                         self.function_depth -= 1;
                     }
+                    const use_strict = self.firstUseStrictDirectiveInUpcomingBlock();
+                    try self.reportUseStrictNonSimpleRelatedDiagnostics(params, use_strict);
                     body = try self.parseBlockStatement();
                 }
                 const value = try self.builder.addFnDeclGeneric(
@@ -16107,6 +16178,8 @@ pub const Parser = struct {
                         self.function_depth -= 1;
                         if (method_is_async) self.async_function_depth -= 1;
                     }
+                    const use_strict = self.firstUseStrictDirectiveInUpcomingBlock();
+                    try self.reportUseStrictNonSimpleRelatedDiagnostics(params, use_strict);
                     body = try self.parseBlockStatement();
                 }
                 value = try self.builder.addFnDeclGeneric(
@@ -18143,6 +18216,33 @@ test "parser: array binding pattern supports nested rest target" {
     try T.expect(hir_mod.parameterOf(&s.hir, elems[1]).flags.is_rest);
 }
 
+test "parser: object rest binding element cannot contain binding pattern" {
+    var s = try newTestSetup("const { ...{} } = obj;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    const d = findFirstDiagnosticOfCode(&s.parser, 2501) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("A rest element cannot contain a binding pattern.", d.message);
+}
+
+test "parser: array rest binding pattern can contain binding pattern" {
+    var s = try newTestSetup("const [...[a, b]] = items;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    try T.expect(findFirstDiagnosticOfCode(&s.parser, 2501) == null);
+}
+
+test "parser: object rest binding element cannot have property name" {
+    var s = try newTestSetup("const { ...rest: alias } = obj;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+
+    const d = findFirstDiagnosticOfCode(&s.parser, 2566) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("A rest element cannot have a property name.", d.message);
+    try T.expectEqual(@as(u32, 17), d.pos);
+}
+
 test "parser: rest binding element before another element reports TS2462" {
     var s = try newTestSetup("const [...rest, tail] = items;");
     defer destroyTestSetup(s);
@@ -18176,6 +18276,35 @@ test "parser: rest parameter trailing comma reports TS1013 outside ambient conte
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1013), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: use strict with non-simple parameters reports related diagnostics under ES2016" {
+    var s = try newTestSetup(
+        \\function f(a = 1) {
+        \\  "use strict";
+        \\}
+        \\const g = ({ x }) => {
+        \\  "use strict";
+        \\};
+    );
+    defer destroyTestSetup(s);
+    s.parser.setTargetEs2016OrLater(true);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_param: usize = 0;
+    var saw_directive: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1348) {
+            saw_param += 1;
+            try T.expectEqualStrings("Non-simple parameter declared here.", d.message);
+        }
+        if (d.code == 1349) {
+            saw_directive += 1;
+            try T.expectEqualStrings("'use strict' directive used here.", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 2), saw_param);
+    try T.expectEqual(@as(usize, 2), saw_directive);
 }
 
 test "parser: object binding pattern supports literal and computed keys" {
