@@ -5234,7 +5234,12 @@ pub const Parser = struct {
                     }
                     default_value = try self.parseAssignmentExpression();
                 }
-                try self.reportInvalidDefiniteAssignmentAssertion(definite_assignment_token, type_anno, default_value);
+                try self.reportInvalidDefiniteAssignmentAssertion(
+                    definite_assignment_token,
+                    type_anno,
+                    default_value,
+                    self.classPropertyDefiniteAssignmentAssertionDisallowed(mods, member_start),
+                );
                 if (mods.is_accessor) {
                     try self.reportOptionalAutoAccessor(optional_member_token);
                 }
@@ -5660,13 +5665,23 @@ pub const Parser = struct {
         bang_token: ?Token,
         type_annotation: NodeId,
         initializer: NodeId,
+        disallowed_context: bool,
     ) ParseError!void {
         const bad = bang_token orelse return;
         if (initializer != hir_mod.none_node_id) {
             try self.reportCodeAt(bad.span.start, bad.line, 1263, "Declarations with initializers cannot also have definite assignment assertions.");
         } else if (type_annotation == hir_mod.none_node_id) {
             try self.reportCodeAt(bad.span.start, bad.line, 1264, "Declarations with definite assignment assertions must also have type annotations.");
+        } else if (disallowed_context) {
+            try self.reportCodeAt(bad.span.start, bad.line, 1255, "A definite assignment assertion '!' is not permitted in this context.");
         }
+    }
+
+    fn classPropertyDefiniteAssignmentAssertionDisallowed(self: *const Parser, mods: ClassModifiers, member_start: Token) bool {
+        return self.isAmbientContextAt(member_start.span.start) or
+            mods.declare_token != null or
+            mods.is_static or
+            mods.is_abstract;
     }
 
     fn reportOptionalAutoAccessor(self: *Parser, question_token: ?Token) ParseError!void {
@@ -6020,7 +6035,12 @@ pub const Parser = struct {
                 _ = self.match(.bang);
             }
             if (self.match(.equal)) value = try self.parseAssignmentExpression();
-            try self.reportInvalidDefiniteAssignmentAssertion(definite_assignment_token, type_anno, value);
+            try self.reportInvalidDefiniteAssignmentAssertion(
+                definite_assignment_token,
+                type_anno,
+                value,
+                self.classPropertyDefiniteAssignmentAssertionDisallowed(mods, member_start),
+            );
             if (mods.is_accessor) {
                 try self.reportOptionalAutoAccessor(optional_member_token);
             }
@@ -7663,7 +7683,12 @@ pub const Parser = struct {
         if (self.match(.equal)) {
             init_node = try self.parseAssignmentExpression();
         }
-        try self.reportInvalidDefiniteAssignmentAssertion(definite_assignment_token, type_annotation, init_node);
+        try self.reportInvalidDefiniteAssignmentAssertion(
+            definite_assignment_token,
+            type_annotation,
+            init_node,
+            self.isAmbientContextAt(start.span.start),
+        );
         try self.recoverRegexVariableDeclarationTail(init_node);
         if (self.peek().kind == .number_literal and
             self.cursor > 0 and
@@ -7714,7 +7739,12 @@ pub const Parser = struct {
             if (self.match(.colon)) extra_type = try self.parseTypeAnnotation();
             var extra_init: NodeId = hir_mod.none_node_id;
             if (self.match(.equal)) extra_init = try self.parseAssignmentExpression();
-            try self.reportInvalidDefiniteAssignmentAssertion(extra_definite_assignment_token, extra_type, extra_init);
+            try self.reportInvalidDefiniteAssignmentAssertion(
+                extra_definite_assignment_token,
+                extra_type,
+                extra_init,
+                self.isAmbientContextAt(start.span.start),
+            );
             try self.recoverRegexVariableDeclarationTail(extra_init);
             if (decl_kind == .const_decl and extra_init == hir_mod.none_node_id and !is_ambient_decl) {
                 const extra_kind = self.hir.kindOf(extra_name);
@@ -15593,6 +15623,10 @@ pub const Parser = struct {
                 const question_tok = self.advance();
                 try self.reportCodeAt(question_tok.span.start, question_tok.line, 1162, "An object member cannot be declared optional.");
             }
+            if (self.peek().kind == .bang) {
+                const bang_tok = self.advance();
+                try self.reportCodeAt(bang_tok.span.start, bang_tok.line, 1255, "A definite assignment assertion '!' is not permitted in this context.");
+            }
             var recovered_missing_colon_value = false;
             if (method_is_generator and self.peek().kind != .less_than and self.peek().kind != .open_paren) {
                 const key_span_for_error = self.hir.spanOf(key);
@@ -16787,6 +16821,48 @@ test "parser: class property definite-assignment assertion reports TS1263 and TS
     }
     try T.expectEqual(@as(u32, 2), saw_1263);
     try T.expectEqual(@as(u32, 1), saw_1264);
+}
+
+test "parser: definite-assignment assertion reports TS1255 in disallowed declaration contexts" {
+    var s = try newTestSetup(
+        \\declare let ambientVar!: number;
+        \\declare namespace ns {
+        \\  var nestedAmbientVar!: string;
+        \\}
+        \\declare class AmbientClass {
+        \\  prop!: number;
+        \\}
+        \\abstract class AbstractClass {
+        \\  abstract prop!: number;
+        \\}
+        \\class C {
+        \\  static prop!: number;
+        \\  declare prop!: number;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var saw_1255: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1255) {
+            saw_1255 += 1;
+            try T.expectEqualStrings("A definite assignment assertion '!' is not permitted in this context.", d.message);
+        }
+    }
+    try T.expectEqual(@as(u32, 6), saw_1255);
+}
+
+test "parser: object literal definite-assignment assertion reports TS1255 and recovers" {
+    var s = try newTestSetup("const a = 1; const o = { a!, b!: 1, c!() {} };");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 2), stmts.len);
+    var saw_1255: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1255) saw_1255 += 1;
+    }
+    try T.expectEqual(@as(u32, 3), saw_1255);
 }
 
 test "parser: numeric literal — hex/oct/bin/exponent" {

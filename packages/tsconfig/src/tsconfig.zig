@@ -710,6 +710,8 @@ pub const FileIncludeReasonKind = enum {
     import,
     reference_file,
     type_reference_directive,
+    automatic_type_directive_file,
+    lib_file,
     lib_reference_directive,
 };
 
@@ -733,6 +735,8 @@ pub const ImportFileReason = struct {
 };
 
 pub const RootFileReason = union(enum) {
+    specified_for_compilation,
+    default_include_pattern,
     files_list,
     include_pattern: struct {
         pattern: []const u8,
@@ -745,6 +749,18 @@ pub const ProjectReferenceReason = struct {
     option: []const u8 = "--out",
 };
 
+pub const AutomaticTypeDirectiveFileReason = struct {
+    type_reference: []const u8,
+    package_id: ?[]const u8 = null,
+    implicit: bool = false,
+};
+
+pub const LibFileReason = union(enum) {
+    specified: []const u8,
+    default_library,
+    default_library_for_target: []const u8,
+};
+
 pub const FileIncludeReason = union(FileIncludeReasonKind) {
     root_file: RootFileReason,
     source_from_project_reference: ProjectReferenceReason,
@@ -752,6 +768,8 @@ pub const FileIncludeReason = union(FileIncludeReasonKind) {
     import: ImportFileReason,
     reference_file: ReferencedFileReason,
     type_reference_directive: ReferencedFileReason,
+    automatic_type_directive_file: AutomaticTypeDirectiveFileReason,
+    lib_file: LibFileReason,
     lib_reference_directive: ReferencedFileReason,
 };
 
@@ -802,6 +820,14 @@ pub fn fileIncludeReasonToDiagnostic(gpa: std.mem.Allocator, reason: FileInclude
             .related_message = "File is included via library reference here.",
         },
         .root_file => |root| switch (root) {
+            .specified_for_compilation => .{
+                .code = 1427,
+                .message = "Root file specified for compilation",
+            },
+            .default_include_pattern => .{
+                .code = 1457,
+                .message = "Matched by default include pattern '**/*'",
+            },
             .files_list => .{
                 .code = 1409,
                 .message = "Part of 'files' list in tsconfig.json",
@@ -814,6 +840,27 @@ pub fn fileIncludeReasonToDiagnostic(gpa: std.mem.Allocator, reason: FileInclude
                 .owns_message = true,
                 .related_code = 1408,
                 .related_message = "File is matched by include pattern specified here.",
+            },
+        },
+        .automatic_type_directive_file => |type_directive| automaticTypeDirectiveFileReasonToDiagnostic(gpa, type_directive),
+        .lib_file => |lib| switch (lib) {
+            .specified => |name| .{
+                .code = 1422,
+                .message = try std.fmt.allocPrint(gpa, "Library '{s}' specified in compilerOptions", .{name}),
+                .owns_message = true,
+                .related_code = 1423,
+                .related_message = "File is library specified here.",
+            },
+            .default_library => .{
+                .code = 1424,
+                .message = "Default library",
+            },
+            .default_library_for_target => |target| .{
+                .code = 1425,
+                .message = try std.fmt.allocPrint(gpa, "Default library for target '{s}'", .{target}),
+                .owns_message = true,
+                .related_code = 1426,
+                .related_message = "File is default library for target specified here.",
             },
         },
         .output_from_project_reference => |project| if (std.mem.eql(u8, project.option, "--module=none")) .{
@@ -842,6 +889,85 @@ pub fn fileIncludeReasonToDiagnostic(gpa: std.mem.Allocator, reason: FileInclude
             .related_code = 1416,
             .related_message = "File is source from referenced project specified here.",
         },
+    };
+}
+
+pub fn fileRedirectDiagnostic(gpa: std.mem.Allocator, target: []const u8) !FileIncludeDiagnostic {
+    return .{
+        .code = 1429,
+        .message = try std.fmt.allocPrint(gpa, "File redirects to file '{s}'", .{target}),
+        .owns_message = true,
+    };
+}
+
+pub fn projectReferenceSourceOutputDiagnostic(gpa: std.mem.Allocator, source: []const u8) !FileIncludeDiagnostic {
+    return .{
+        .code = 1428,
+        .message = try std.fmt.allocPrint(gpa, "File is output of project reference source '{s}'", .{source}),
+        .owns_message = true,
+    };
+}
+
+pub fn fileProgramReasonHeaderDiagnostic() FileIncludeDiagnostic {
+    return .{
+        .code = 1430,
+        .message = "The file is in the program because:",
+    };
+}
+
+pub fn fileNameCasingDiagnostic(
+    gpa: std.mem.Allocator,
+    file_name: []const u8,
+    existing_file_name: []const u8,
+    has_existing_reference_reason: bool,
+) !ValidationDiagnostic {
+    if (has_existing_reference_reason) {
+        return .{
+            .code = 1261,
+            .message = try std.fmt.allocPrint(gpa, "Already included file name '{s}' differs from file name '{s}' only in casing.", .{ existing_file_name, file_name }),
+            .owns_message = true,
+            .field = "forceConsistentCasingInFileNames",
+        };
+    }
+    return .{
+        .code = 1149,
+        .message = try std.fmt.allocPrint(gpa, "File name '{s}' differs from already included file name '{s}' only in casing.", .{ file_name, existing_file_name }),
+        .owns_message = true,
+        .field = "forceConsistentCasingInFileNames",
+    };
+}
+
+fn automaticTypeDirectiveFileReasonToDiagnostic(gpa: std.mem.Allocator, ref: AutomaticTypeDirectiveFileReason) !FileIncludeDiagnostic {
+    if (ref.implicit) {
+        if (ref.package_id) |package_id| {
+            return .{
+                .code = 1421,
+                .message = try std.fmt.allocPrint(gpa, "Entry point for implicit type library '{s}' with packageId '{s}'", .{ ref.type_reference, package_id }),
+                .owns_message = true,
+            };
+        }
+        return .{
+            .code = 1420,
+            .message = try std.fmt.allocPrint(gpa, "Entry point for implicit type library '{s}'", .{ref.type_reference}),
+            .owns_message = true,
+        };
+    }
+
+    if (ref.package_id) |package_id| {
+        return .{
+            .code = 1418,
+            .message = try std.fmt.allocPrint(gpa, "Entry point of type library '{s}' specified in compilerOptions with packageId '{s}'", .{ ref.type_reference, package_id }),
+            .owns_message = true,
+            .related_code = 1419,
+            .related_message = "File is entry point of type library specified here.",
+        };
+    }
+    return .{
+        .code = 1417,
+        .message = try std.fmt.allocPrint(gpa, "Entry point of type library '{s}' specified in compilerOptions", .{ref.type_reference}),
+        .owns_message = true,
+        .related_code = 1419,
+        .related_message = "File is entry point of type library specified here.",
     };
 }
 
@@ -2694,6 +2820,130 @@ test "tsconfig: file include diagnostics cover type, lib, root, and project reas
         defer freeFileIncludeDiagnostic(t.allocator, diag);
         try t.expectEqual(@as(u32, 1415), diag.code);
         try t.expectEqual(@as(?u32, 1416), diag.related_code);
+    }
+}
+
+test "tsconfig: file include diagnostics cover type-library and library entry points" {
+    {
+        const diag = try fileIncludeReasonToDiagnostic(t.allocator, .{
+            .automatic_type_directive_file = .{
+                .type_reference = "node",
+            },
+        });
+        defer freeFileIncludeDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1417), diag.code);
+        try t.expectEqualStrings("Entry point of type library 'node' specified in compilerOptions", diag.message);
+        try t.expectEqual(@as(?u32, 1419), diag.related_code);
+    }
+    {
+        const diag = try fileIncludeReasonToDiagnostic(t.allocator, .{
+            .automatic_type_directive_file = .{
+                .type_reference = "node",
+                .package_id = "@types/node/index.d.ts@20.0.0",
+            },
+        });
+        defer freeFileIncludeDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1418), diag.code);
+        try t.expectEqualStrings("Entry point of type library 'node' specified in compilerOptions with packageId '@types/node/index.d.ts@20.0.0'", diag.message);
+        try t.expectEqual(@as(?u32, 1419), diag.related_code);
+        try t.expectEqualStrings("File is entry point of type library specified here.", diag.related_message.?);
+    }
+    {
+        const diag = try fileIncludeReasonToDiagnostic(t.allocator, .{
+            .automatic_type_directive_file = .{
+                .type_reference = "jest",
+                .implicit = true,
+            },
+        });
+        defer freeFileIncludeDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1420), diag.code);
+        try t.expectEqualStrings("Entry point for implicit type library 'jest'", diag.message);
+    }
+    {
+        const diag = try fileIncludeReasonToDiagnostic(t.allocator, .{
+            .automatic_type_directive_file = .{
+                .type_reference = "react",
+                .package_id = "@types/react/index.d.ts@18.2.0",
+                .implicit = true,
+            },
+        });
+        defer freeFileIncludeDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1421), diag.code);
+        try t.expectEqualStrings("Entry point for implicit type library 'react' with packageId '@types/react/index.d.ts@18.2.0'", diag.message);
+    }
+    {
+        const diag = try fileIncludeReasonToDiagnostic(t.allocator, .{
+            .lib_file = .{ .specified = "dom" },
+        });
+        defer freeFileIncludeDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1422), diag.code);
+        try t.expectEqualStrings("Library 'dom' specified in compilerOptions", diag.message);
+        try t.expectEqual(@as(?u32, 1423), diag.related_code);
+    }
+}
+
+test "tsconfig: file include diagnostics cover default roots, redirects, and casing" {
+    {
+        const diag = try fileIncludeReasonToDiagnostic(t.allocator, .{
+            .root_file = .specified_for_compilation,
+        });
+        defer freeFileIncludeDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1427), diag.code);
+        try t.expectEqualStrings("Root file specified for compilation", diag.message);
+    }
+    {
+        const diag = try fileIncludeReasonToDiagnostic(t.allocator, .{
+            .root_file = .default_include_pattern,
+        });
+        defer freeFileIncludeDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1457), diag.code);
+        try t.expectEqualStrings("Matched by default include pattern '**/*'", diag.message);
+    }
+    {
+        const diag = try fileIncludeReasonToDiagnostic(t.allocator, .{
+            .lib_file = .default_library,
+        });
+        defer freeFileIncludeDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1424), diag.code);
+        try t.expectEqualStrings("Default library", diag.message);
+    }
+    {
+        const diag = try fileIncludeReasonToDiagnostic(t.allocator, .{
+            .lib_file = .{ .default_library_for_target = "es2024" },
+        });
+        defer freeFileIncludeDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1425), diag.code);
+        try t.expectEqualStrings("Default library for target 'es2024'", diag.message);
+        try t.expectEqual(@as(?u32, 1426), diag.related_code);
+    }
+    {
+        const diag = try projectReferenceSourceOutputDiagnostic(t.allocator, "/repo/src/main.ts");
+        defer freeFileIncludeDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1428), diag.code);
+        try t.expectEqualStrings("File is output of project reference source '/repo/src/main.ts'", diag.message);
+    }
+    {
+        const diag = try fileRedirectDiagnostic(t.allocator, "/repo/dist/main.d.ts");
+        defer freeFileIncludeDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1429), diag.code);
+        try t.expectEqualStrings("File redirects to file '/repo/dist/main.d.ts'", diag.message);
+    }
+    {
+        const diag = fileProgramReasonHeaderDiagnostic();
+        try t.expectEqual(@as(u32, 1430), diag.code);
+        try t.expectEqualStrings("The file is in the program because:", diag.message);
+    }
+    {
+        const diag = try fileNameCasingDiagnostic(t.allocator, "/repo/src/foo.ts", "/repo/src/Foo.ts", false);
+        defer if (diag.owns_message) t.allocator.free(diag.message);
+        try t.expectEqual(@as(u32, 1149), diag.code);
+        try t.expectEqualStrings("File name '/repo/src/foo.ts' differs from already included file name '/repo/src/Foo.ts' only in casing.", diag.message);
+    }
+    {
+        const diag = try fileNameCasingDiagnostic(t.allocator, "/repo/src/foo.ts", "/repo/src/Foo.ts", true);
+        defer if (diag.owns_message) t.allocator.free(diag.message);
+        try t.expectEqual(@as(u32, 1261), diag.code);
+        try t.expectEqualStrings("Already included file name '/repo/src/Foo.ts' differs from file name '/repo/src/foo.ts' only in casing.", diag.message);
     }
 }
 
