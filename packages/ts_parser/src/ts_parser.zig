@@ -11231,6 +11231,7 @@ pub const Parser = struct {
             return try self.builder.addLiteralRegex(.{ .start = start_tok.span.start, .end = recovery_end });
         };
         try self.reportUnbalancedRegexGroup(start_tok, end);
+        try self.reportRegexQuantifierDiagnostics(start_tok, end);
         try self.reportInvalidRegexFlags(start_tok.span.start, start_tok.line, end);
         // The scanner committed to `.slash` (vs. `regex_literal`) based
         // on the preceding token, but the parser now knows this span is
@@ -11254,6 +11255,187 @@ pub const Parser = struct {
         if (next == self.cursor) next += 1;
         self.cursor = next;
         return try self.builder.addLiteralRegex(.{ .start = start_tok.span.start, .end = end });
+    }
+
+    fn reportRegexQuantifierDiagnostics(self: *Parser, start_tok: Token, end: u32) ParseError!void {
+        const start_i: usize = @intCast(start_tok.span.start);
+        const end_i: usize = @intCast(end);
+        if (start_i >= self.source.len or self.source[start_i] != '/') return;
+        const close_at = self.regexLiteralClose(start_i, end_i) orelse return;
+        const unicode_mode = self.regexLiteralHasFlag(close_at + 1, end_i, 'u') or
+            self.regexLiteralHasFlag(close_at + 1, end_i, 'v');
+
+        var i = start_i + 1;
+        var previous_quantifiable = false;
+        while (i < close_at and i < self.source.len) {
+            const ch = self.source[i];
+            switch (ch) {
+                '\\' => {
+                    if (i + 1 < close_at and (self.source[i + 1] == 'b' or self.source[i + 1] == 'B')) {
+                        i += 2;
+                        previous_quantifiable = false;
+                    } else {
+                        i += if (i + 1 < close_at) 2 else 1;
+                        previous_quantifiable = true;
+                    }
+                },
+                '[' => {
+                    i += 1;
+                    var escaped = false;
+                    while (i < close_at and i < self.source.len) : (i += 1) {
+                        const cc = self.source[i];
+                        if (escaped) {
+                            escaped = false;
+                            continue;
+                        }
+                        if (cc == '\\') {
+                            escaped = true;
+                            continue;
+                        }
+                        if (cc == ']') {
+                            i += 1;
+                            break;
+                        }
+                    }
+                    previous_quantifiable = true;
+                },
+                '(' => {
+                    i += 1;
+                    previous_quantifiable = false;
+                },
+                ')' => {
+                    i += 1;
+                    previous_quantifiable = true;
+                },
+                '|' => {
+                    i += 1;
+                    previous_quantifiable = false;
+                },
+                '^', '$' => {
+                    i += 1;
+                    previous_quantifiable = false;
+                },
+                '*', '+', '?' => {
+                    const quant_start = i;
+                    i += 1;
+                    if (i < close_at and self.source[i] == '?') i += 1;
+                    if (!previous_quantifiable) {
+                        try self.reportCodeAtWithSpan(
+                            @intCast(quant_start),
+                            start_tok.line,
+                            @intCast(i - quant_start),
+                            1507,
+                            "There is nothing available for repetition.",
+                        );
+                    }
+                    previous_quantifiable = false;
+                },
+                '{' => {
+                    const quant_start = i;
+                    var j = i + 1;
+                    const min_start = j;
+                    while (j < close_at and std.ascii.isDigit(self.source[j])) : (j += 1) {}
+                    const min_end = j;
+                    const min_len = min_end - min_start;
+                    var recognized = false;
+                    if (j < close_at and self.source[j] == ',') {
+                        j += 1;
+                        const max_start = j;
+                        while (j < close_at and std.ascii.isDigit(self.source[j])) : (j += 1) {}
+                        const max_end = j;
+                        if (min_len == 0 and !unicode_mode) {
+                            previous_quantifiable = true;
+                            i = quant_start + 1;
+                            continue;
+                        }
+                        if (max_end > max_start and decimalStringGreater(self.source[min_start..min_end], self.source[max_start..max_end]) and
+                            (unicode_mode or (j < close_at and self.source[j] == '}')))
+                        {
+                            try self.reportCodeAtWithSpan(
+                                @intCast(min_start),
+                                start_tok.line,
+                                @intCast(max_end - min_start),
+                                1506,
+                                "Numbers out of order in quantifier.",
+                            );
+                        }
+                        recognized = min_len > 0 or unicode_mode;
+                    } else if (min_len > 0) {
+                        recognized = true;
+                    } else if (!unicode_mode) {
+                        previous_quantifiable = true;
+                        i = quant_start + 1;
+                        continue;
+                    }
+                    if (recognized and j < close_at and self.source[j] == '}') {
+                        j += 1;
+                        if (j < close_at and self.source[j] == '?') j += 1;
+                        if (!previous_quantifiable) {
+                            try self.reportCodeAtWithSpan(
+                                @intCast(quant_start),
+                                start_tok.line,
+                                @intCast(j - quant_start),
+                                1507,
+                                "There is nothing available for repetition.",
+                            );
+                        }
+                        previous_quantifiable = false;
+                        i = j;
+                    } else {
+                        previous_quantifiable = true;
+                        i = quant_start + 1;
+                    }
+                },
+                else => {
+                    i += 1;
+                    previous_quantifiable = true;
+                },
+            }
+        }
+    }
+
+    fn regexLiteralClose(self: *Parser, start_i: usize, end_i: usize) ?usize {
+        var i = start_i + 1;
+        var escaped = false;
+        var in_class = false;
+        while (i < end_i and i < self.source.len) : (i += 1) {
+            const c = self.source[i];
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (c == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (c == '[') {
+                in_class = true;
+                continue;
+            }
+            if (c == ']' and in_class) {
+                in_class = false;
+                continue;
+            }
+            if (c == '/' and !in_class) return i;
+        }
+        return null;
+    }
+
+    fn regexLiteralHasFlag(self: *Parser, flag_start: usize, end_i: usize, flag: u8) bool {
+        var i = flag_start;
+        while (i < end_i and i < self.source.len) : (i += 1) {
+            if (self.source[i] == flag) return true;
+        }
+        return false;
+    }
+
+    fn decimalStringGreater(a_raw: []const u8, b_raw: []const u8) bool {
+        var a = a_raw;
+        var b = b_raw;
+        while (a.len > 0 and a[0] == '0') a = a[1..];
+        while (b.len > 0 and b[0] == '0') b = b[1..];
+        if (a.len != b.len) return a.len > b.len;
+        return std.mem.order(u8, a, b) == .gt;
     }
 
     fn reportUnbalancedRegexGroup(self: *Parser, start_tok: Token, end: u32) ParseError!void {
@@ -19385,6 +19567,46 @@ test "parser: regex literal reports duplicate and incompatible unicode flags" {
     try T.expectEqual(@as(u32, 16), s.parser.diagnostics.items[1].pos);
     try T.expectEqual(@as(u32, 1), s.parser.diagnostics.items[1].span_len);
     try T.expectEqualStrings("The Unicode (u) flag and the Unicode Sets (v) flag cannot be set simultaneously.", s.parser.diagnostics.items[1].message);
+}
+
+test "parser: regex literal reports out-of-order quantifier bounds" {
+    var s = try newTestSetup("let x = /a{8,7}/;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1506), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Numbers out of order in quantifier.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: regex literal reports repetition without previous term" {
+    var s = try newTestSetup("let x = /+?/;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1507), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("There is nothing available for repetition.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: regex literal reports repetition after non-quantifiable assertion" {
+    var s = try newTestSetup("let x = /\\b+/;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1507), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: regex literal treats valid quantified term as clean" {
+    var s = try newTestSetup("let x = /a{1,2}?/;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1506);
+        try T.expect(d.code != 1507);
+    }
 }
 
 test "parser: unterminated regex literal recovers as call argument" {
