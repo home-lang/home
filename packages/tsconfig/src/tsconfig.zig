@@ -226,6 +226,10 @@ pub const CompilerOptions = struct {
     preserve_value_imports: ?bool = null,
     module_detection: ?[]const u8 = null,
     ignore_deprecations: ?[]const u8 = null,
+    preserve_symlinks: ?bool = null,
+    allow_umd_global_access: ?bool = null,
+    allow_arbitrary_extensions: ?bool = null,
+    no_unchecked_side_effect_imports: ?bool = null,
 
     // -- Emit --
     target: ?Target = null,
@@ -263,6 +267,18 @@ pub const CompilerOptions = struct {
     inline_source_map: ?bool = null,
     inline_sources: ?bool = null,
     charset: ?[]const u8 = null,
+    no_check: ?bool = null,
+    erasable_syntax_only: ?bool = null,
+    lib_replacement: ?bool = null,
+    strict_builtin_iterator_return: ?bool = null,
+    stable_type_ordering: ?bool = null,
+    no_error_truncation: ?bool = null,
+    no_resolve: ?bool = null,
+    strip_internal: ?bool = null,
+    emit_bom: ?bool = null,
+    no_emit_on_error: ?bool = null,
+    allow_unused_labels: ?bool = null,
+    allow_unreachable_code: ?bool = null,
 
     // -- JS support --
     allow_js: ?bool = null,
@@ -2534,6 +2550,33 @@ pub fn referencedBuildInfoOverwriteDiagnostic(gpa: std.mem.Allocator, build_info
     };
 }
 
+pub fn arbitraryExtensionImportDiagnostic(gpa: std.mem.Allocator, module_name: []const u8, resolved_file: []const u8) !ValidationDiagnostic {
+    return .{
+        .code = 6263,
+        .message = try std.fmt.allocPrint(gpa, "Module '{s}' was resolved to '{s}', but '--allowArbitraryExtensions' is not set.", .{ module_name, resolved_file }),
+        .owns_message = true,
+        .field = "allowArbitraryExtensions",
+    };
+}
+
+pub fn projectReferenceCycleDiagnostic(gpa: std.mem.Allocator, cycle: []const u8) !ValidationDiagnostic {
+    return .{
+        .code = 6202,
+        .message = try std.fmt.allocPrint(gpa, "Project references may not form a circular graph. Cycle detected: {s}", .{cycle}),
+        .owns_message = true,
+        .field = "references",
+    };
+}
+
+pub fn projectReferenceRedirectDiagnostic(gpa: std.mem.Allocator, project: []const u8) !ValidationDiagnostic {
+    return .{
+        .code = 6215,
+        .message = try std.fmt.allocPrint(gpa, "Using compiler options of project reference redirect '{s}'.", .{project}),
+        .owns_message = true,
+        .field = "references",
+    };
+}
+
 fn parseStringArray(arena: std.mem.Allocator, v: jsonc.Value) ![][]const u8 {
     const arr = v.asArray() orelse return &.{};
     const out = try arena.alloc([]const u8, arr.len);
@@ -2654,6 +2697,10 @@ fn fillCompilerOptions(arena: std.mem.Allocator, co: *CompilerOptions, obj: json
             .{ .name = "noStrictGenericChecks", .field = "no_strict_generic_checks" },
             .{ .name = "allowSyntheticDefaultImports", .field = "allow_synthetic_default_imports" },
             .{ .name = "preserveValueImports", .field = "preserve_value_imports" },
+            .{ .name = "preserveSymlinks", .field = "preserve_symlinks" },
+            .{ .name = "allowUmdGlobalAccess", .field = "allow_umd_global_access" },
+            .{ .name = "allowArbitraryExtensions", .field = "allow_arbitrary_extensions" },
+            .{ .name = "noUncheckedSideEffectImports", .field = "no_unchecked_side_effect_imports" },
             .{ .name = "useDefineForClassFields", .field = "use_define_for_class_fields" },
             .{ .name = "resolveJsonModule", .field = "resolve_json_module" },
             .{ .name = "resolvePackageJsonExports", .field = "resolve_package_json_exports" },
@@ -2683,6 +2730,18 @@ fn fillCompilerOptions(arena: std.mem.Allocator, co: *CompilerOptions, obj: json
             .{ .name = "sourceMap", .field = "source_map" },
             .{ .name = "inlineSourceMap", .field = "inline_source_map" },
             .{ .name = "inlineSources", .field = "inline_sources" },
+            .{ .name = "noCheck", .field = "no_check" },
+            .{ .name = "erasableSyntaxOnly", .field = "erasable_syntax_only" },
+            .{ .name = "libReplacement", .field = "lib_replacement" },
+            .{ .name = "strictBuiltinIteratorReturn", .field = "strict_builtin_iterator_return" },
+            .{ .name = "stableTypeOrdering", .field = "stable_type_ordering" },
+            .{ .name = "noErrorTruncation", .field = "no_error_truncation" },
+            .{ .name = "noResolve", .field = "no_resolve" },
+            .{ .name = "stripInternal", .field = "strip_internal" },
+            .{ .name = "emitBOM", .field = "emit_bom" },
+            .{ .name = "noEmitOnError", .field = "no_emit_on_error" },
+            .{ .name = "allowUnusedLabels", .field = "allow_unused_labels" },
+            .{ .name = "allowUnreachableCode", .field = "allow_unreachable_code" },
             .{ .name = "allowJs", .field = "allow_js" },
             .{ .name = "checkJs", .field = "check_js" },
         };
@@ -3161,7 +3220,23 @@ test "tsconfig: newly-added bool fields parse" {
         \\    "skipLibCheck": true,
         \\    "isolatedModules": true,
         \\    "useDefineForClassFields": true,
-        \\    "verbatimModuleSyntax": true
+        \\    "verbatimModuleSyntax": true,
+        \\    "allowArbitraryExtensions": true,
+        \\    "noUncheckedSideEffectImports": true,
+        \\    "preserveSymlinks": true,
+        \\    "allowUmdGlobalAccess": true,
+        \\    "noCheck": true,
+        \\    "erasableSyntaxOnly": true,
+        \\    "libReplacement": true,
+        \\    "strictBuiltinIteratorReturn": true,
+        \\    "stableTypeOrdering": true,
+        \\    "noErrorTruncation": true,
+        \\    "noResolve": true,
+        \\    "stripInternal": true,
+        \\    "emitBOM": true,
+        \\    "noEmitOnError": true,
+        \\    "allowUnusedLabels": true,
+        \\    "allowUnreachableCode": true
         \\  }
         \\}
     );
@@ -3174,6 +3249,22 @@ test "tsconfig: newly-added bool fields parse" {
     try t.expectEqual(@as(?bool, true), co.isolated_modules);
     try t.expectEqual(@as(?bool, true), co.use_define_for_class_fields);
     try t.expectEqual(@as(?bool, true), co.verbatim_module_syntax);
+    try t.expectEqual(@as(?bool, true), co.allow_arbitrary_extensions);
+    try t.expectEqual(@as(?bool, true), co.no_unchecked_side_effect_imports);
+    try t.expectEqual(@as(?bool, true), co.preserve_symlinks);
+    try t.expectEqual(@as(?bool, true), co.allow_umd_global_access);
+    try t.expectEqual(@as(?bool, true), co.no_check);
+    try t.expectEqual(@as(?bool, true), co.erasable_syntax_only);
+    try t.expectEqual(@as(?bool, true), co.lib_replacement);
+    try t.expectEqual(@as(?bool, true), co.strict_builtin_iterator_return);
+    try t.expectEqual(@as(?bool, true), co.stable_type_ordering);
+    try t.expectEqual(@as(?bool, true), co.no_error_truncation);
+    try t.expectEqual(@as(?bool, true), co.no_resolve);
+    try t.expectEqual(@as(?bool, true), co.strip_internal);
+    try t.expectEqual(@as(?bool, true), co.emit_bom);
+    try t.expectEqual(@as(?bool, true), co.no_emit_on_error);
+    try t.expectEqual(@as(?bool, true), co.allow_unused_labels);
+    try t.expectEqual(@as(?bool, true), co.allow_unreachable_code);
     // None of these landed in the pass-through bag.
     try t.expectEqual(@as(usize, 0), co.extra.items.len);
 }
@@ -4754,6 +4845,24 @@ test "tsconfig diagnostics: no-input and project-reference helpers mirror upstre
     try t.expectEqual(@as(u32, 6310), no_emit.code);
     try t.expectEqualStrings("Referenced project '/repo/pkg-b' may not disable emit.", no_emit.message);
     try t.expectEqualStrings("references", no_emit.field);
+
+    const arbitrary = try arbitraryExtensionImportDiagnostic(t.allocator, "./component.html", "component.d.html.ts");
+    defer if (arbitrary.owns_message) t.allocator.free(arbitrary.message);
+    try t.expectEqual(@as(u32, 6263), arbitrary.code);
+    try t.expectEqualStrings("Module './component.html' was resolved to 'component.d.html.ts', but '--allowArbitraryExtensions' is not set.", arbitrary.message);
+    try t.expectEqualStrings("allowArbitraryExtensions", arbitrary.field);
+
+    const cycle = try projectReferenceCycleDiagnostic(t.allocator, "/repo/a -> /repo/b -> /repo/a");
+    defer if (cycle.owns_message) t.allocator.free(cycle.message);
+    try t.expectEqual(@as(u32, 6202), cycle.code);
+    try t.expectEqualStrings("Project references may not form a circular graph. Cycle detected: /repo/a -> /repo/b -> /repo/a", cycle.message);
+    try t.expectEqualStrings("references", cycle.field);
+
+    const redirect = try projectReferenceRedirectDiagnostic(t.allocator, "/repo/pkg-c");
+    defer if (redirect.owns_message) t.allocator.free(redirect.message);
+    try t.expectEqual(@as(u32, 6215), redirect.code);
+    try t.expectEqualStrings("Using compiler options of project reference redirect '/repo/pkg-c'.", redirect.message);
+    try t.expectEqualStrings("references", redirect.field);
 }
 
 test "tsconfig diagnostics: emit and project graph helpers mirror upstream messages" {

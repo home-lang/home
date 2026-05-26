@@ -46,6 +46,11 @@ pub const Options = struct {
     list_files_only: bool = false,
     /// `--explainFiles`.
     explain_files: bool = false,
+    list_emitted_files: bool = false,
+    preserve_watch_output: bool = false,
+    trace_resolution: bool = false,
+    diagnostics: bool = false,
+    extended_diagnostics: bool = false,
     /// `--showConfig`.
     show_config: bool = false,
     /// `--init`.
@@ -59,6 +64,11 @@ pub const Options = struct {
     strict: ?bool = null,
     /// `--target=esXXXX`.
     target: ?[]const u8 = null,
+    module_resolution: ?[]const u8 = null,
+    base_url: ?[]const u8 = null,
+    locale: ?[]const u8 = null,
+    generate_cpu_profile: ?[]const u8 = null,
+    generate_trace: ?[]const u8 = null,
     /// `--outDir=PATH`.
     out_dir: ?[]const u8 = null,
     /// `--module=…`.
@@ -73,6 +83,13 @@ pub const Options = struct {
     /// emit a `.d.ts.map` (or `.d.hm.map`) alongside each `.d.ts` /
     /// `.d.hm`. Implies `--declaration` at emit time.
     declaration_map: ?bool = null,
+    emit_declaration_only: ?bool = null,
+    inline_source_map: ?bool = null,
+    no_check: ?bool = null,
+    allow_arbitrary_extensions: ?bool = null,
+    allow_importing_ts_extensions: ?bool = null,
+    rewrite_relative_import_extensions: ?bool = null,
+    assume_changes_only_affect_direct_dependencies: ?bool = null,
     incremental: ?bool = null,
     out_file: ?[]const u8 = null,
     ts_buildinfo_file: ?[]const u8 = null,
@@ -131,29 +148,101 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8) ParseError!Op
     while (i < args.len) : (i += 1) {
         const a = args[i];
         if (std.mem.eql(u8, a, "--noEmit")) {
-            opts.no_emit = true;
+            if (opts.build) {
+                i = applyBuildBoolCompilerOption(args, i, &opts, "noEmit");
+            } else {
+                opts.no_emit = true;
+            }
         } else if (std.mem.eql(u8, a, "--watch") or std.mem.eql(u8, a, "-w")) {
-            opts.watch = true;
+            if (opts.build) {
+                const parsed = parseOptionalBoolValue(args, i);
+                opts.watch = parsed.value orelse false;
+                i = parsed.next_index;
+            } else {
+                opts.watch = true;
+            }
         } else if (std.mem.eql(u8, a, "--pretty")) {
-            opts.pretty = true;
+            if (opts.build) {
+                i = applyBuildBoolCompilerOption(args, i, &opts, "pretty");
+            } else {
+                opts.pretty = true;
+            }
         } else if (std.mem.eql(u8, a, "--no-pretty")) {
             opts.pretty = false;
         } else if (std.mem.eql(u8, a, "--listFiles")) {
-            opts.list_files = true;
+            if (opts.build) {
+                i = applyBuildBoolCompilerOption(args, i, &opts, "listFiles");
+            } else {
+                opts.list_files = true;
+            }
         } else if (std.mem.eql(u8, a, "--listFilesOnly")) {
-            opts.list_files_only = true;
+            if (opts.build) {
+                appendCliDiagnostic(&opts, .{ .code = 5094, .option = "listFilesOnly" });
+            } else {
+                opts.list_files_only = true;
+            }
         } else if (std.mem.eql(u8, a, "--explainFiles")) {
-            opts.explain_files = true;
+            if (opts.build) {
+                i = applyBuildBoolCompilerOption(args, i, &opts, "explainFiles");
+            } else {
+                opts.explain_files = true;
+            }
+        } else if (std.mem.eql(u8, a, "--listEmittedFiles")) {
+            if (opts.build) {
+                i = applyBuildBoolCompilerOption(args, i, &opts, "listEmittedFiles");
+            } else {
+                opts.list_emitted_files = true;
+            }
+        } else if (std.mem.eql(u8, a, "--preserveWatchOutput")) {
+            if (opts.build) {
+                i = applyBuildBoolCompilerOption(args, i, &opts, "preserveWatchOutput");
+            } else {
+                opts.preserve_watch_output = true;
+            }
+        } else if (std.mem.eql(u8, a, "--traceResolution")) {
+            if (opts.build) {
+                i = applyBuildBoolCompilerOption(args, i, &opts, "traceResolution");
+            } else {
+                opts.trace_resolution = true;
+            }
+        } else if (std.mem.eql(u8, a, "--diagnostics")) {
+            if (opts.build) {
+                i = applyBuildBoolCompilerOption(args, i, &opts, "diagnostics");
+            } else {
+                opts.diagnostics = true;
+            }
+        } else if (std.mem.eql(u8, a, "--extendedDiagnostics")) {
+            if (opts.build) {
+                i = applyBuildBoolCompilerOption(args, i, &opts, "extendedDiagnostics");
+            } else {
+                opts.extended_diagnostics = true;
+            }
         } else if (std.mem.eql(u8, a, "--showConfig")) {
-            opts.show_config = true;
+            if (opts.build) {
+                appendCliDiagnostic(&opts, .{ .code = 5094, .option = "showConfig" });
+            } else {
+                opts.show_config = true;
+            }
         } else if (std.mem.eql(u8, a, "--init")) {
-            opts.init_config = true;
+            if (opts.build) {
+                appendCliDiagnostic(&opts, .{ .code = 5094, .option = "init" });
+            } else {
+                opts.init_config = true;
+            }
         } else if (std.mem.eql(u8, a, "--version") or (std.mem.eql(u8, a, "-v") and !opts.build)) {
-            opts.show_version = true;
+            if (opts.build and std.mem.eql(u8, a, "--version")) {
+                appendCliDiagnostic(&opts, .{ .code = 5094, .option = "version" });
+            } else {
+                opts.show_version = true;
+            }
         } else if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h") or std.mem.eql(u8, a, "-?")) {
             opts.show_help = true;
         } else if (std.mem.eql(u8, a, "--all")) {
-            opts.show_all_help = true;
+            if (opts.build) {
+                appendCliDiagnostic(&opts, .{ .code = 5094, .option = "all" });
+            } else {
+                opts.show_all_help = true;
+            }
         } else if (std.mem.eql(u8, a, "--build") or std.mem.eql(u8, a, "-b")) {
             if (i == 0) {
                 opts.build = true;
@@ -169,12 +258,22 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8) ParseError!Op
         } else if (opts.build) {
             if (buildModeCompilerOnlyOption(a)) |name| {
                 appendCliDiagnostic(&opts, .{ .code = 5094, .option = name });
-                i = maybeSkipOptionValue(args, i);
             } else if (buildStringOptionName(a)) |name| {
                 if (i + 1 >= args.len or (args[i + 1].len > 0 and args[i + 1][0] == '-')) {
                     appendCliDiagnostic(&opts, .{ .code = 5073, .option = name, .expected = "string" });
                 } else {
                     i += 1;
+                    if (std.mem.eql(u8, name, "generateCpuProfile")) opts.generate_cpu_profile = args[i];
+                    if (std.mem.eql(u8, name, "generateTrace")) opts.generate_trace = args[i];
+                }
+            } else if (buildBoolCompilerOptionName(a)) |name| {
+                i = applyBuildBoolCompilerOption(args, i, &opts, name);
+            } else if (buildStringCompilerOptionName(a)) |name| {
+                if (i + 1 < args.len and (args[i + 1].len == 0 or args[i + 1][0] != '-')) {
+                    i += 1;
+                    applyBuildStringCompilerOption(&opts, name, args[i]);
+                } else {
+                    appendCliDiagnostic(&opts, .{ .code = 5073, .option = name, .expected = "string" });
                 }
             } else if (unknownDashedOptionName(a)) |name| {
                 if (buildOptionSuggestion(name)) |suggestion| {
@@ -182,7 +281,6 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8) ParseError!Op
                 } else {
                     appendCliDiagnostic(&opts, .{ .code = 5072, .option = a });
                 }
-                i = maybeSkipOptionValue(args, i);
             } else {
                 try files.append(gpa, a);
             }
@@ -206,6 +304,51 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8) ParseError!Op
             }
         } else if (parseEqFlag(a, "--target=")) |v| {
             opts.target = v;
+        } else if (std.mem.eql(u8, a, "--moduleResolution")) {
+            i += 1;
+            if (i >= args.len) {
+                appendCliDiagnostic(&opts, .{ .code = 6044, .option = "moduleResolution" });
+            } else {
+                opts.module_resolution = args[i];
+            }
+        } else if (parseEqFlag(a, "--moduleResolution=")) |v| {
+            opts.module_resolution = v;
+        } else if (std.mem.eql(u8, a, "--baseUrl")) {
+            i += 1;
+            if (i >= args.len) {
+                appendCliDiagnostic(&opts, .{ .code = 6044, .option = "baseUrl" });
+            } else {
+                opts.base_url = args[i];
+            }
+        } else if (parseEqFlag(a, "--baseUrl=")) |v| {
+            opts.base_url = v;
+        } else if (std.mem.eql(u8, a, "--locale")) {
+            i += 1;
+            if (i >= args.len) {
+                appendCliDiagnostic(&opts, .{ .code = 6044, .option = "locale" });
+            } else {
+                opts.locale = args[i];
+            }
+        } else if (parseEqFlag(a, "--locale=")) |v| {
+            opts.locale = v;
+        } else if (std.mem.eql(u8, a, "--generateCpuProfile")) {
+            i += 1;
+            if (i >= args.len) {
+                appendCliDiagnostic(&opts, .{ .code = 6044, .option = "generateCpuProfile" });
+            } else {
+                opts.generate_cpu_profile = args[i];
+            }
+        } else if (parseEqFlag(a, "--generateCpuProfile=")) |v| {
+            opts.generate_cpu_profile = v;
+        } else if (std.mem.eql(u8, a, "--generateTrace")) {
+            i += 1;
+            if (i >= args.len) {
+                appendCliDiagnostic(&opts, .{ .code = 6044, .option = "generateTrace" });
+            } else {
+                opts.generate_trace = args[i];
+            }
+        } else if (parseEqFlag(a, "--generateTrace=")) |v| {
+            opts.generate_trace = v;
         } else if (parseEqFlag(a, "--outDir=")) |v| {
             opts.out_dir = v;
         } else if (std.mem.eql(u8, a, "--outDir")) {
@@ -263,6 +406,34 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8) ParseError!Op
             opts.declaration_map = true;
         } else if (std.mem.eql(u8, a, "--no-declarationMap")) {
             opts.declaration_map = false;
+        } else if (std.mem.eql(u8, a, "--emitDeclarationOnly")) {
+            opts.emit_declaration_only = true;
+        } else if (std.mem.eql(u8, a, "--no-emitDeclarationOnly")) {
+            opts.emit_declaration_only = false;
+        } else if (std.mem.eql(u8, a, "--inlineSourceMap")) {
+            opts.inline_source_map = true;
+        } else if (std.mem.eql(u8, a, "--no-inlineSourceMap")) {
+            opts.inline_source_map = false;
+        } else if (std.mem.eql(u8, a, "--noCheck")) {
+            opts.no_check = true;
+        } else if (std.mem.eql(u8, a, "--no-noCheck")) {
+            opts.no_check = false;
+        } else if (std.mem.eql(u8, a, "--allowArbitraryExtensions")) {
+            opts.allow_arbitrary_extensions = true;
+        } else if (std.mem.eql(u8, a, "--no-allowArbitraryExtensions")) {
+            opts.allow_arbitrary_extensions = false;
+        } else if (std.mem.eql(u8, a, "--allowImportingTsExtensions")) {
+            opts.allow_importing_ts_extensions = true;
+        } else if (std.mem.eql(u8, a, "--no-allowImportingTsExtensions")) {
+            opts.allow_importing_ts_extensions = false;
+        } else if (std.mem.eql(u8, a, "--rewriteRelativeImportExtensions")) {
+            opts.rewrite_relative_import_extensions = true;
+        } else if (std.mem.eql(u8, a, "--no-rewriteRelativeImportExtensions")) {
+            opts.rewrite_relative_import_extensions = false;
+        } else if (std.mem.eql(u8, a, "--assumeChangesOnlyAffectDirectDependencies")) {
+            opts.assume_changes_only_affect_direct_dependencies = true;
+        } else if (std.mem.eql(u8, a, "--no-assumeChangesOnlyAffectDirectDependencies")) {
+            opts.assume_changes_only_affect_direct_dependencies = false;
         } else if (std.mem.eql(u8, a, "--incremental")) {
             opts.incremental = true;
         } else if (std.mem.eql(u8, a, "--no-incremental")) {
@@ -280,6 +451,9 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8) ParseError!Op
         }
     }
     appendBuildCombinationDiagnostics(&opts);
+    if (opts.build and files.items.len == 0) {
+        try files.append(gpa, ".");
+    }
     opts.files = try files.toOwnedSlice(gpa);
     return opts;
 }
@@ -380,25 +554,115 @@ fn buildStringOptionName(arg: []const u8) ?[]const u8 {
 fn buildModeCompilerOnlyOption(arg: []const u8) ?[]const u8 {
     const name = unknownDashedOptionName(arg) orelse return null;
     const compiler_only = comptime [_][]const u8{
+        "all",
+        "version",
+        "init",
+        "project",
+        "showConfig",
+        "listFilesOnly",
         "strict",
         "target",
         "module",
+        "moduleResolution",
+        "baseUrl",
         "jsx",
         "outDir",
         "outFile",
         "tsBuildInfoFile",
         "composite",
-        "declaration",
-        "emitDeclarationOnly",
         "isolatedDeclarations",
         "paths",
         "rootDirs",
         "plugins",
+        "allowArbitraryExtensions",
+        "allowImportingTsExtensions",
+        "rewriteRelativeImportExtensions",
     };
     inline for (compiler_only) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return candidate;
     }
     return null;
+}
+
+fn buildBoolCompilerOptionName(arg: []const u8) ?[]const u8 {
+    const name = unknownDashedOptionName(arg) orelse return null;
+    const accepted = comptime [_][]const u8{
+        "incremental",
+        "declaration",
+        "declarationMap",
+        "emitDeclarationOnly",
+        "sourceMap",
+        "inlineSourceMap",
+        "noCheck",
+        "noEmit",
+        "assumeChangesOnlyAffectDirectDependencies",
+        "preserveWatchOutput",
+        "listFiles",
+        "explainFiles",
+        "listEmittedFiles",
+        "pretty",
+        "traceResolution",
+        "diagnostics",
+        "extendedDiagnostics",
+    };
+    inline for (accepted) |candidate| {
+        if (std.mem.eql(u8, name, candidate)) return candidate;
+    }
+    return null;
+}
+
+fn buildStringCompilerOptionName(arg: []const u8) ?[]const u8 {
+    const name = unknownDashedOptionName(arg) orelse return null;
+    const accepted = comptime [_][]const u8{
+        "locale",
+    };
+    inline for (accepted) |candidate| {
+        if (std.mem.eql(u8, name, candidate)) return candidate;
+    }
+    return null;
+}
+
+fn applyBuildBoolCompilerOption(args: []const []const u8, i: usize, opts: *Options, name: []const u8) usize {
+    const parsed = parseOptionalBoolValue(args, i);
+    const value = parsed.value orelse false;
+
+    if (std.mem.eql(u8, name, "incremental")) opts.incremental = value;
+    if (std.mem.eql(u8, name, "declaration")) opts.declaration = value;
+    if (std.mem.eql(u8, name, "declarationMap")) opts.declaration_map = value;
+    if (std.mem.eql(u8, name, "emitDeclarationOnly")) opts.emit_declaration_only = value;
+    if (std.mem.eql(u8, name, "sourceMap")) opts.source_map = value;
+    if (std.mem.eql(u8, name, "inlineSourceMap")) opts.inline_source_map = value;
+    if (std.mem.eql(u8, name, "noCheck")) opts.no_check = value;
+    if (std.mem.eql(u8, name, "noEmit")) opts.no_emit = value;
+    if (std.mem.eql(u8, name, "assumeChangesOnlyAffectDirectDependencies")) opts.assume_changes_only_affect_direct_dependencies = value;
+    if (std.mem.eql(u8, name, "preserveWatchOutput")) opts.preserve_watch_output = value;
+    if (std.mem.eql(u8, name, "listFiles")) opts.list_files = value;
+    if (std.mem.eql(u8, name, "explainFiles")) opts.explain_files = value;
+    if (std.mem.eql(u8, name, "listEmittedFiles")) opts.list_emitted_files = value;
+    if (std.mem.eql(u8, name, "pretty")) opts.pretty = value;
+    if (std.mem.eql(u8, name, "traceResolution")) opts.trace_resolution = value;
+    if (std.mem.eql(u8, name, "diagnostics")) opts.diagnostics = value;
+    if (std.mem.eql(u8, name, "extendedDiagnostics")) opts.extended_diagnostics = value;
+    return parsed.next_index;
+}
+
+fn applyBuildStringCompilerOption(opts: *Options, name: []const u8, value: []const u8) void {
+    if (std.mem.eql(u8, name, "locale")) opts.locale = value;
+}
+
+const BoolValueParse = struct {
+    value: ?bool,
+    next_index: usize,
+};
+
+fn parseOptionalBoolValue(args: []const []const u8, i: usize) BoolValueParse {
+    if (i + 1 < args.len) {
+        const next = args[i + 1];
+        if (std.mem.eql(u8, next, "true")) return .{ .value = true, .next_index = i + 1 };
+        if (std.mem.eql(u8, next, "false")) return .{ .value = false, .next_index = i + 1 };
+        if (std.mem.eql(u8, next, "null")) return .{ .value = null, .next_index = i + 1 };
+    }
+    return .{ .value = true, .next_index = i };
 }
 
 fn unknownDashedOptionName(arg: []const u8) ?[]const u8 {
@@ -408,12 +672,6 @@ fn unknownDashedOptionName(arg: []const u8) ?[]const u8 {
     const body = arg[start..];
     if (std.mem.indexOfScalar(u8, body, '=')) |eq| return body[0..eq];
     return body;
-}
-
-fn maybeSkipOptionValue(args: []const []const u8, i: usize) usize {
-    if (std.mem.indexOfScalar(u8, args[i], '=') != null) return i;
-    if (i + 1 < args.len and (args[i + 1].len == 0 or args[i + 1][0] != '-')) return i + 1;
-    return i;
 }
 
 fn buildOptionSuggestion(name: []const u8) ?[]const u8 {
@@ -727,6 +985,9 @@ pub fn dispatch(opts: Options) RunResult {
     if (opts.module) |module| {
         if (tsconfig_mod.Module.fromString(module) == null) return invalidCustomTypeOption("--module", moduleValuesText);
     }
+    if (opts.module_resolution) |module_resolution| {
+        if (tsconfig_mod.ModuleResolution.fromString(module_resolution) == null) return invalidCustomTypeOption("--moduleResolution", moduleResolutionValuesText);
+    }
     if (opts.jsx) |jsx| {
         if (tsconfig_mod.Jsx.fromString(jsx) == null) return invalidCustomTypeOption("--jsx", jsxValuesText);
     }
@@ -761,6 +1022,7 @@ pub fn dispatch(opts: Options) RunResult {
 
 const targetValuesText = "'es3', 'es5', 'es6', 'es2015', 'es2016', 'es2017', 'es2018', 'es2019', 'es2020', 'es2021', 'es2022', 'es2023', 'es2024', 'esnext'";
 const moduleValuesText = "'none', 'commonjs', 'amd', 'umd', 'system', 'es6', 'es2015', 'es2020', 'es2022', 'esnext', 'node16', 'node18', 'node20', 'nodenext', 'preserve'";
+const moduleResolutionValuesText = "'classic', 'node10', 'node16', 'nodenext', 'bundler'";
 const jsxValuesText = "'preserve', 'react', 'react-jsx', 'react-jsxdev', 'react-native'";
 
 fn invalidCustomTypeOption(comptime option: []const u8, comptime values: []const u8) RunResult {
@@ -824,12 +1086,14 @@ test "parseArgs: --project path (separate value)" {
     try T.expectEqualStrings("tsconfig.json", opts.project.?);
 }
 
-test "parseArgs: --target / --module / --outDir / --jsx" {
-    const argv = [_][]const u8{ "--target=es2022", "--module=esnext", "--outDir=dist", "--jsx=react-jsx" };
+test "parseArgs: --target / --module / --moduleResolution / --outDir / --jsx" {
+    const argv = [_][]const u8{ "--target=es2022", "--module=esnext", "--moduleResolution=bundler", "--baseUrl=.", "--outDir=dist", "--jsx=react-jsx" };
     const opts = try parseArgs(T.allocator, &argv);
     defer T.allocator.free(opts.files);
     try T.expectEqualStrings("es2022", opts.target.?);
     try T.expectEqualStrings("esnext", opts.module.?);
+    try T.expectEqualStrings("bundler", opts.module_resolution.?);
+    try T.expectEqualStrings(".", opts.base_url.?);
     try T.expectEqualStrings("dist", opts.out_dir.?);
     try T.expectEqualStrings("react-jsx", opts.jsx.?);
 }
@@ -841,6 +1105,28 @@ test "parseArgs: incremental output options" {
     try T.expectEqual(@as(?bool, true), opts.incremental);
     try T.expectEqualStrings("bundle.js", opts.out_file.?);
     try T.expectEqualStrings(".cache/build.tsbuildinfo", opts.ts_buildinfo_file.?);
+}
+
+test "parseArgs: modern module-resolution booleans are accepted on the command line" {
+    const argv = [_][]const u8{
+        "--allowArbitraryExtensions",
+        "--allowImportingTsExtensions",
+        "--rewriteRelativeImportExtensions",
+        "--noCheck",
+        "--emitDeclarationOnly",
+        "--inlineSourceMap",
+        "--assumeChangesOnlyAffectDirectDependencies",
+    };
+    const opts = try parseArgs(T.allocator, &argv);
+    defer T.allocator.free(opts.files);
+    try T.expectEqual(@as(u8, 0), opts.parse_diagnostic_count);
+    try T.expectEqual(@as(?bool, true), opts.allow_arbitrary_extensions);
+    try T.expectEqual(@as(?bool, true), opts.allow_importing_ts_extensions);
+    try T.expectEqual(@as(?bool, true), opts.rewrite_relative_import_extensions);
+    try T.expectEqual(@as(?bool, true), opts.no_check);
+    try T.expectEqual(@as(?bool, true), opts.emit_declaration_only);
+    try T.expectEqual(@as(?bool, true), opts.inline_source_map);
+    try T.expectEqual(@as(?bool, true), opts.assume_changes_only_affect_direct_dependencies);
 }
 
 test "parseArgs: --pretty and --no-pretty" {
@@ -1004,6 +1290,45 @@ test "parseArgs: build mode reports TS6370 for nonsensical option pairs" {
     try T.expectEqualStrings("error TS6370: Options 'clean' and 'force' cannot be combined.", text);
 }
 
+test "parseArgs: build mode defaults project and accepts common build compiler options" {
+    const argv = [_][]const u8{
+        "--build",
+        "--listEmittedFiles",
+        "--diagnostics",
+        "--extendedDiagnostics",
+        "--traceResolution",
+        "--preserveWatchOutput",
+        "--noEmit",
+        "false",
+        "--emitDeclarationOnly",
+        "--inlineSourceMap",
+        "--noCheck",
+        "--assumeChangesOnlyAffectDirectDependencies",
+        "--locale",
+        "en-us",
+        "--generateTrace",
+        ".trace",
+    };
+    const opts = try parseArgs(T.allocator, &argv);
+    defer T.allocator.free(opts.files);
+    try T.expect(opts.build);
+    try T.expectEqual(@as(u8, 0), opts.parse_diagnostic_count);
+    try T.expectEqual(@as(usize, 1), opts.files.len);
+    try T.expectEqualStrings(".", opts.files[0]);
+    try T.expect(opts.list_emitted_files);
+    try T.expect(opts.diagnostics);
+    try T.expect(opts.extended_diagnostics);
+    try T.expect(opts.trace_resolution);
+    try T.expect(opts.preserve_watch_output);
+    try T.expect(!opts.no_emit);
+    try T.expectEqual(@as(?bool, true), opts.emit_declaration_only);
+    try T.expectEqual(@as(?bool, true), opts.inline_source_map);
+    try T.expectEqual(@as(?bool, true), opts.no_check);
+    try T.expectEqual(@as(?bool, true), opts.assume_changes_only_affect_direct_dependencies);
+    try T.expectEqualStrings("en-us", opts.locale.?);
+    try T.expectEqualStrings(".trace", opts.generate_trace.?);
+}
+
 test "parseArgs: tsconfig-only options on command line report TS6064 and TS6230" {
     const argv = [_][]const u8{ "--composite", "--paths", "src/*", "--rootDirs=null", "--disableSolutionSearching", "false" };
     const opts = try parseArgs(T.allocator, &argv);
@@ -1030,6 +1355,11 @@ test "parseArgs: missing string compiler option values report TS6044" {
         .{ .flag = "--project", .option = "project" },
         .{ .flag = "-p", .option = "project" },
         .{ .flag = "--target", .option = "target" },
+        .{ .flag = "--moduleResolution", .option = "moduleResolution" },
+        .{ .flag = "--baseUrl", .option = "baseUrl" },
+        .{ .flag = "--locale", .option = "locale" },
+        .{ .flag = "--generateCpuProfile", .option = "generateCpuProfile" },
+        .{ .flag = "--generateTrace", .option = "generateTrace" },
         .{ .flag = "--outDir", .option = "outDir" },
         .{ .flag = "--outFile", .option = "outFile" },
         .{ .flag = "--tsBuildInfoFile", .option = "tsBuildInfoFile" },
@@ -1088,6 +1418,23 @@ test "parseArgs: build mode reports TS5073 and TS5094 option mismatches" {
     try T.expectEqualStrings("tsBuildInfoFile", opts.parse_diagnostics[1].option);
     try T.expectEqual(@as(u32, 5094), opts.parse_diagnostics[2].code);
     try T.expectEqualStrings("strict", opts.parse_diagnostics[2].option);
+    try T.expectEqual(@as(usize, 1), opts.files.len);
+    try T.expectEqualStrings("cache.tsbuildinfo", opts.files[0]);
+}
+
+test "parseArgs: build mode rejects command-line-only and module-resolution-only options" {
+    const argv = [_][]const u8{ "--build", "--project", "tsconfig.json", "--showConfig", "--init", "--version", "--all", "--moduleResolution", "bundler", "--allowArbitraryExtensions" };
+    const opts = try parseArgs(T.allocator, &argv);
+    defer T.allocator.free(opts.files);
+    try T.expectEqual(@as(u8, 7), opts.parse_diagnostic_count);
+    const expected = [_][]const u8{ "project", "showConfig", "init", "version", "all", "moduleResolution", "allowArbitraryExtensions" };
+    for (expected, 0..) |name, i| {
+        try T.expectEqual(@as(u32, 5094), opts.parse_diagnostics[i].code);
+        try T.expectEqualStrings(name, opts.parse_diagnostics[i].option);
+    }
+    try T.expectEqual(@as(usize, 2), opts.files.len);
+    try T.expectEqualStrings("tsconfig.json", opts.files[0]);
+    try T.expectEqualStrings("bundler", opts.files[1]);
 }
 
 test "parseArgs: build mode accepts build bool options and projects" {
@@ -1230,6 +1577,14 @@ test "dispatch: invalid custom-type option values report TS6046" {
         try T.expectEqual(ExitCode.config_error, r.code);
         try T.expect(std.mem.indexOf(u8, r.stderr_text, "Argument for '--module' option must be") != null);
         try T.expect(std.mem.indexOf(u8, r.stderr_text, "'nodenext'") != null);
+    }
+    {
+        var opts: Options = .{ .files = &.{"src/main.ts"} };
+        opts.module_resolution = "telepathy";
+        const r = dispatch(opts);
+        try T.expectEqual(ExitCode.config_error, r.code);
+        try T.expect(std.mem.indexOf(u8, r.stderr_text, "Argument for '--moduleResolution' option must be") != null);
+        try T.expect(std.mem.indexOf(u8, r.stderr_text, "'bundler'") != null);
     }
     {
         var opts: Options = .{ .files = &.{"src/main.ts"} };

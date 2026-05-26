@@ -11025,6 +11025,67 @@ pub const Parser = struct {
         return try args.toOwnedSlice(self.gpa);
     }
 
+    fn reportTypeImportAssertionDiagnostics(self: *Parser) ParseError!void {
+        var i = self.cursor;
+        if (i >= self.tokens.len or self.tokens[i].kind != .open_brace) return;
+        i += 1;
+        if (i >= self.tokens.len) return;
+
+        const assertion_key = self.tokens[i];
+        if (assertion_key.kind != .identifier or !self.tokenTextEquals(assertion_key, "assert")) return;
+        i += 1;
+        if (i >= self.tokens.len or self.tokens[i].kind != .colon) return;
+        i += 1;
+        if (i >= self.tokens.len or self.tokens[i].kind != .open_brace) return;
+
+        const inner_open = self.tokens[i];
+        i += 1;
+        var depth: i32 = 1;
+        var attr_count: u32 = 0;
+        var first_key: ?Token = null;
+        while (i < self.tokens.len and depth > 0) : (i += 1) {
+            const tok = self.tokens[i];
+            if (tok.kind == .open_brace) {
+                depth += 1;
+                continue;
+            }
+            if (tok.kind == .close_brace) {
+                depth -= 1;
+                continue;
+            }
+            if (depth == 1 and i + 1 < self.tokens.len and self.tokens[i + 1].kind == .colon and
+                (tok.kind == .string_literal or tok.kind == .identifier or tok.kind.isKeyword()))
+            {
+                attr_count += 1;
+                if (first_key == null) first_key = tok;
+            }
+        }
+
+        if (attr_count != 1) {
+            try self.reportCodeAtWithSpan(
+                inner_open.span.start,
+                inner_open.line,
+                2,
+                1456,
+                "Type import assertions should have exactly one key - `resolution-mode` - with value `import` or `require`.",
+            );
+            return;
+        }
+
+        const key = first_key orelse return;
+        if (key.kind == .string_literal and !std.mem.eql(u8, self.stringLiteralContent(key), "resolution-mode")) {
+            const content_pos = key.span.start + 1;
+            const content_len: u32 = if (key.span.end > content_pos + 1) key.span.end - content_pos - 1 else 0;
+            try self.reportCodeAtWithSpan(
+                content_pos,
+                key.line,
+                content_len,
+                1455,
+                "`resolution-mode` is the only valid key for type import assertions.",
+            );
+        }
+    }
+
     /// `Foo`, `Foo.Bar`, `Foo<T, U>`. The lexer hands us the `<` only
     /// when it can tell from context — in type position it's always
     /// generic args, never a comparison.
@@ -11060,6 +11121,7 @@ pub const Parser = struct {
             _ = self.advance();
         }
         if (self.match(.comma)) {
+            try self.reportTypeImportAssertionDiagnostics();
             var depth: i32 = 0;
             while (self.peek().kind != .eof) {
                 if (depth == 0 and self.peek().kind == .close_paren) break;
@@ -15159,7 +15221,7 @@ pub const Parser = struct {
     // The parser diagnoses these and continues.
 
     fn parseJsx(self: *Parser) ParseError!NodeId {
-        return try self.parseJsxElementOrFragment();
+        return try self.parseJsxElementOrFragment(true);
     }
 
     fn jsxTagText(self: *const Parser, tag: NodeId) []const u8 {
@@ -15223,7 +15285,7 @@ pub const Parser = struct {
         };
     }
 
-    fn parseJsxElementOrFragment(self: *Parser) ParseError!NodeId {
+    fn parseJsxElementOrFragment(self: *Parser, in_expression_context: bool) ParseError!NodeId {
         const open = try self.expect(.less_than, "'<' to start JSX element");
         // Fragment: `<>...</>`
         if (self.peek().kind == .greater_than) {
@@ -15342,7 +15404,9 @@ pub const Parser = struct {
                 return try self.builder.addJsxFragment(.{ .start = open.span.start, .end = lt_tok.span.end }, children.items);
             }
             const close = self.advance();
-            return try self.builder.addJsxFragment(.{ .start = open.span.start, .end = close.span.end }, children.items);
+            const result = try self.builder.addJsxFragment(.{ .start = open.span.start, .end = close.span.end }, children.items);
+            try self.reportAdjacentJsxRootIfNeeded(result, in_expression_context);
+            return result;
         }
 
         // Tag identifier — accept identifier, keyword-like intrinsic names,
@@ -15447,13 +15511,15 @@ pub const Parser = struct {
         // Self-closing `/>`.
         if (self.match(.slash)) {
             const close = try self.expect(.greater_than, "'>' to close self-closing JSX element");
-            return try self.builder.addJsxElement(
+            const result = try self.builder.addJsxElement(
                 .{ .start = open.span.start, .end = close.span.end },
                 tag,
                 attrs.items,
                 &.{},
                 true,
             );
+            try self.reportAdjacentJsxRootIfNeeded(result, in_expression_context);
+            return result;
         }
         // Self-closing `/>` whose tokens were swallowed into a
         // `regex_literal` by the slash-starts-regex heuristic.
@@ -15476,13 +15542,15 @@ pub const Parser = struct {
                 if (after.kind == .eof or after.kind == .close_brace or after.flags.preceded_by_newline) break;
                 _ = self.advance();
             }
-            return try self.builder.addJsxElement(
+            const result = try self.builder.addJsxElement(
                 .{ .start = open.span.start, .end = close_end },
                 tag,
                 attrs.items,
                 &.{},
                 true,
             );
+            try self.reportAdjacentJsxRootIfNeeded(result, in_expression_context);
+            return result;
         }
         const open_close = try self.expect(.greater_than, "'>' to close JSX opening tag");
 
@@ -15544,12 +15612,33 @@ pub const Parser = struct {
             }
         }
         const close = try self.expect(.greater_than, "'>' to close JSX closing tag");
-        return try self.builder.addJsxElement(
+        const result = try self.builder.addJsxElement(
             .{ .start = open.span.start, .end = close.span.end },
             tag,
             attrs.items,
             children.items,
             false,
+        );
+        try self.reportAdjacentJsxRootIfNeeded(result, in_expression_context);
+        return result;
+    }
+
+    fn reportAdjacentJsxRootIfNeeded(self: *Parser, result: NodeId, in_expression_context: bool) ParseError!void {
+        if (!in_expression_context) return;
+        if (self.peek().kind != .less_than) return;
+        if (self.peekAt(1).kind == .slash) return;
+        if (self.peekAt(1).kind != .greater_than and !isJsxNamePart(self.peekAt(1).kind)) return;
+
+        const start = self.hir.spanOf(result).start;
+        const invalid = try self.parseJsxElementOrFragment(true);
+        const end = self.hir.spanOf(invalid).end;
+        const span_len: u32 = if (end > start) end - start else 0;
+        try self.reportCodeAtWithSpan(
+            start,
+            self.lineForPos(start),
+            span_len,
+            2657,
+            "JSX expressions must have one parent element.",
         );
     }
 
@@ -15679,7 +15768,7 @@ pub const Parser = struct {
             switch (t.kind) {
                 .less_than => {
                     if (self.peekAt(1).kind == .slash) return; // `</Foo>`
-                    const child = try self.parseJsxElementOrFragment();
+                    const child = try self.parseJsxElementOrFragment(false);
                     try out.append(self.gpa, child);
                     last_child_end = self.hir.spanOf(child).end;
                 },
@@ -19750,6 +19839,27 @@ test "parser: import type alias reports diagnostic" {
     try T.expectEqual(@as(u32, 1392), s.parser.diagnostics.items[0].code);
 }
 
+test "parser: type import assertion grammar reports TS1455 and TS1456" {
+    var s = try newTestSetup(
+        \\type BadKey = import("pkg", { assert: {"bad": "require"} }).RequireInterface;
+        \\type Empty = import("pkg", { assert: {} }).RequireInterface;
+        \\type Valid = import("pkg", { assert: {"resolution-mode": "require"} }).RequireInterface;
+    );
+    defer destroyTestSetup(s);
+
+    _ = s.parser.parseSourceFile() catch {};
+    const bad_key = findDiag(s, 1455) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("`resolution-mode` is the only valid key for type import assertions.", bad_key.message);
+    try T.expectEqual(@as(u32, 3), bad_key.span_len);
+
+    const empty = findDiag(s, 1456) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Type import assertions should have exactly one key - `resolution-mode` - with value `import` or `require`.", empty.message);
+    try T.expectEqual(@as(u32, 2), empty.span_len);
+
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1455));
+    try T.expectEqual(@as(u32, 1), countDiag(s, 1456));
+}
+
 test "parser: type-only default import accepts contextual from binding" {
     var s = try newTestSetup(
         \\import type from from "./a";
@@ -20618,6 +20728,21 @@ test "parser: jsx grammar diagnostics report duplicate attrs comma expressions a
     try T.expectEqual(@as(usize, 1), ts17002_count);
     try T.expectEqual(@as(usize, 1), ts17008_count);
     try T.expectEqual(@as(usize, 2), ts18007_count);
+}
+
+test "parser: adjacent JSX roots in expression context report TS2657" {
+    var s = try newTsxTestSetup("let v = <div></div><span></span>;");
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+
+    const d = findDiag(s, 2657) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("JSX expressions must have one parent element.", d.message);
+    try T.expect(d.span_len > 0);
+
+    var nested = try newTsxTestSetup("let v = <Outer><A /><B /></Outer>;");
+    defer destroyTestSetup(nested);
+    _ = nested.parser.parseSourceFile() catch {};
+    try T.expectEqual(@as(u32, 0), countDiag(nested, 2657));
 }
 
 test "parser: jsx text reports raw brace and greater-than escape suggestions" {
