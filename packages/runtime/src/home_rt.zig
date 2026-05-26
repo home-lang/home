@@ -47,6 +47,37 @@ pub const default_allocator: std.mem.Allocator = std.heap.smp_allocator;
 
 pub const String = @import("string/string.zig").String;
 
+/// Top-level RFC 4122 UUID type, re-exported from the JSC subtree so
+/// upstream Bun call sites that spell `bun.UUID` (e.g.
+/// `runtime/webcore/ObjectURLRegistry.zig:175`,
+/// `runtime/node/node_crypto_binding.zig:805`) resolve against the
+/// already-ported v4 / v5 / v7 implementation in `jsc/uuid.zig`. Also
+/// reachable as `home_rt.jsc.uuid` for callers that prefer the
+/// JSC-namespaced path.
+pub const UUID = @import("jsc/uuid.zig");
+
+/// Top-level `Mutex` alias, re-exported from `home_rt.threading.Mutex`
+/// so upstream Bun call sites that spell `bun.Mutex` (notably
+/// `runtime/webcore/ObjectURLRegistry.zig:3`) resolve without a
+/// namespace traversal. The implementation is the same — a thin
+/// spinlock wrapper that mirrors `std.Thread.Mutex`'s API.
+pub const Mutex = @import("threading/Mutex.zig");
+
+/// Compile-time equality assertion. Mirrors upstream
+/// `bun.assert_eql(@sizeOf(bun.String), 24)` shape — both arguments
+/// must be evaluable at comptime; mismatches surface as a
+/// `@compileError` referencing the actual and expected values.
+/// Used by `string/string.zig:1131` to lock the WTF::String FFI
+/// struct size down to 24 bytes (matching the C++ side).
+pub inline fn assert_eql(comptime actual: anytype, comptime expected: anytype) void {
+    if (actual != expected) {
+        @compileError(std.fmt.comptimePrint(
+            "assert_eql failed: actual={any} expected={any}",
+            .{ actual, expected },
+        ));
+    }
+}
+
 pub inline fn copy(comptime T: type, dest: []T, src: []const T) void {
     @memcpy(dest[0..src.len], src);
 }
