@@ -301,6 +301,17 @@ pub const jsc = struct {
     pub const toJSHostCall = host_fn.toJSHostCall;
     pub const fromJSHostCall = host_fn.fromJSHostCall;
     pub const fromJSHostCallGeneric = host_fn.fromJSHostCallGeneric;
+
+    /// Mark the call site of a C++ binding. In upstream Bun this is a
+    /// debug-mode tracepoint that gates per-binding invariants
+    /// (`Bun__hasCalled` counter + JSC source-mapper hooks). Home's
+    /// JSC bridge isn't yet wired to the C++ side, so this is a
+    /// no-op stub — the call sites still compile and the source
+    /// location is available for future use. Mirrors the upstream
+    /// signature `markBinding(src: std.builtin.SourceLocation)`.
+    pub fn markBinding(src: std.builtin.SourceLocation) void {
+        _ = src;
+    }
 };
 
 // ---- src/io/ -----------------------------------------------------------
