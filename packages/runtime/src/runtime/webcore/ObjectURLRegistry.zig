@@ -31,15 +31,8 @@ pub fn register(this: *ObjectURLRegistry, vm: *jsc.VirtualMachine, blob: *const 
 
 pub fn singleton() *ObjectURLRegistry {
     const Singleton = struct {
-        pub var registry: ObjectURLRegistry = undefined;
-        pub var once = std.once(get);
-
-        fn get() void {
-            registry = .{};
-        }
+        pub var registry: ObjectURLRegistry = .{};
     };
-
-    Singleton.once.call();
 
     return &Singleton.registry;
 }

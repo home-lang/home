@@ -1,84 +1,38 @@
-// Copied from bun/src/jsc/Strong.zig at upstream SHA
-// fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-//
-// JSC bridge types (`JSGlobalObject`, `JSValue`, `markBinding`, `DecodedJSValue`)
-// are not yet wired into the canonical `home_rt.jsc.*` namespace. Local
-// opaque/enum stubs preserve the public surface and the C ABI for the
-// `Bun__StrongRef__*` externs — the real JSC bridge re-attaches in Phase 12.2
-// once `JSValue` (with `.zero`, `.js_undefined`) and `JSGlobalObject` exist.
-//
 //! Holds a strong reference to a JS value, protecting it from garbage
 //! collection. This type implies there is always a valid value held.
 //! For a strong that may be empty (to reuse allocation), use `Strong.Optional`.
 
-const std = @import("std");
-const home_rt = @import("home_rt");
-
 const Strong = @This();
-
-// ── local stubs ─────────────────────────────────────────────────────────────
-// JSC bridge JSGlobalObject stubbed — re-attaches in Phase 12.2.
-const JSGlobalObject = opaque {};
-
-// JSC bridge JSValue stubbed — re-attaches in Phase 12.2. Carries the same
-// shape upstream code expects: an `i64`-backed enum with `.zero` and
-// `.js_undefined` sentinels.
-pub const JSValue = enum(i64) {
-    zero = 0,
-    js_undefined = 0xa, // matches JSC::JSValue::ValueUndefined sentinel
-    _,
-
-    pub fn ensureStillAlive(self: JSValue) void {
-        std.mem.doNotOptimizeAway(self);
-    }
-
-    pub fn call(self: JSValue, global: *JSGlobalObject, args: []const JSValue) JSValue {
-        _ = self;
-        _ = global;
-        _ = args;
-        return .zero;
-    }
-};
-
-inline fn markBinding(src: std.builtin.SourceLocation) void {
-    _ = src;
-}
-
-inline fn allow_assert() bool {
-    return home_rt.Environment.allow_assert;
-}
-
-// ── Strong ──────────────────────────────────────────────────────────────────
 
 impl: *Impl,
 
 /// Hold a strong reference to a JavaScript value. Release with `deinit` or `clear`
-pub fn create(value: JSValue, global: *JSGlobalObject) Strong {
-    if (allow_assert()) home_rt.assert(value != .zero);
+pub fn create(value: jsc.JSValue, global: *jsc.JSGlobalObject) Strong {
+    if (bun.Environment.allow_assert) bun.assert(value != .zero);
     return .{ .impl = .init(global, value) };
 }
 
 /// Release the strong reference.
 pub fn deinit(strong: *Strong) void {
     strong.impl.deinit();
-    if (home_rt.Environment.isDebug)
+    if (bun.Environment.isDebug)
         strong.* = undefined;
 }
 
-pub fn get(strong: *const Strong) JSValue {
+pub fn get(strong: *const Strong) jsc.JSValue {
     const result = strong.impl.get();
-    if (allow_assert()) home_rt.assert(result != .zero);
+    if (bun.Environment.allow_assert) bun.assert(result != .zero);
     return result;
 }
 
 /// Set a new value for the strong reference.
-pub fn set(strong: *Strong, global: *JSGlobalObject, new_value: JSValue) void {
-    if (allow_assert()) home_rt.assert(new_value != .zero);
+pub fn set(strong: *Strong, global: *jsc.JSGlobalObject, new_value: jsc.JSValue) void {
+    if (bun.Environment.allow_assert) bun.assert(new_value != .zero);
     strong.impl.set(global, new_value);
 }
 
 /// Swap a new value for the strong reference.
-pub fn swap(strong: *Strong, global: *JSGlobalObject, new_value: JSValue) JSValue {
+pub fn swap(strong: *Strong, global: *jsc.JSGlobalObject, new_value: jsc.JSValue) jsc.JSValue {
     const result = strong.impl.get();
     strong.set(global, new_value);
     return result;
@@ -92,7 +46,7 @@ pub const Optional = struct {
     pub const empty: Optional = .{ .impl = null };
 
     /// Hold a strong reference to a JavaScript value. Release with `deinit` or `clear`
-    pub fn create(value: JSValue, global: *JSGlobalObject) Optional {
+    pub fn create(value: jsc.JSValue, global: *jsc.JSGlobalObject) Optional {
         return if (value != .zero)
             .{ .impl = .init(global, value) }
         else
@@ -112,12 +66,12 @@ pub const Optional = struct {
         ref.clear();
     }
 
-    pub fn call(this: *Optional, global: *JSGlobalObject, args: []const JSValue) JSValue {
+    pub fn call(this: *Optional, global: *jsc.JSGlobalObject, args: []const jsc.JSValue) jsc.JSValue {
         const function = this.trySwap() orelse return .zero;
         return function.call(global, args);
     }
 
-    pub fn get(this: *const Optional) ?JSValue {
+    pub fn get(this: *const Optional) ?jsc.JSValue {
         const impl = this.impl orelse return null;
         const result = impl.get();
         if (result == .zero) {
@@ -126,7 +80,7 @@ pub const Optional = struct {
         return result;
     }
 
-    pub fn swap(strong: *Optional) JSValue {
+    pub fn swap(strong: *Optional) jsc.JSValue {
         const impl = strong.impl orelse return .zero;
         const result = impl.get();
         if (result == .zero) {
@@ -141,7 +95,7 @@ pub const Optional = struct {
         return ref.get() != .zero;
     }
 
-    pub fn trySwap(this: *Optional) ?JSValue {
+    pub fn trySwap(this: *Optional) ?jsc.JSValue {
         const result = this.swap();
         if (result == .zero) {
             return null;
@@ -150,7 +104,7 @@ pub const Optional = struct {
         return result;
     }
 
-    pub fn set(strong: *Optional, global: *JSGlobalObject, value: JSValue) void {
+    pub fn set(strong: *Optional, global: *jsc.JSGlobalObject, value: jsc.JSValue) void {
         const ref: *Impl = strong.impl orelse {
             if (value == .zero) return;
             strong.impl = Impl.init(global, value);
@@ -160,77 +114,40 @@ pub const Optional = struct {
     }
 };
 
-// Test-only weak stubs so that the four `Bun__StrongRef__*` externs link
-// when this file is run as a test root. The real symbols live in C++;
-// these only resolve in `zig test` builds.
-const builtin = @import("builtin");
-comptime {
-    if (builtin.is_test) {
-        @export(&struct {
-            fn delete(_: *Impl) callconv(.c) void {}
-        }.delete, .{ .name = "Bun__StrongRef__delete", .linkage = .weak });
-        @export(&struct {
-            fn new(_: *JSGlobalObject, _: JSValue) callconv(.c) *Impl {
-                return @ptrFromInt(@alignOf(usize));
-            }
-        }.new, .{ .name = "Bun__StrongRef__new", .linkage = .weak });
-        @export(&struct {
-            fn set(_: *Impl, _: *JSGlobalObject, _: JSValue) callconv(.c) void {}
-        }.set, .{ .name = "Bun__StrongRef__set", .linkage = .weak });
-        @export(&struct {
-            fn clear(_: *Impl) callconv(.c) void {}
-        }.clear, .{ .name = "Bun__StrongRef__clear", .linkage = .weak });
-    }
-}
-
 pub const Impl = opaque {
-    pub fn init(global: *JSGlobalObject, value: JSValue) *Impl {
-        markBinding(@src());
+    pub fn init(global: *jsc.JSGlobalObject, value: jsc.JSValue) *Impl {
+        jsc.markBinding(@src());
         return Bun__StrongRef__new(global, value);
     }
 
-    pub fn get(this: *Impl) JSValue {
+    pub fn get(this: *Impl) jsc.JSValue {
         // `this` is actually a pointer to a `JSC::JSValue`; see Strong.cpp.
-        // The upstream port decodes via `DecodedJSValue`; we round-trip via
-        // the raw `i64` tag while the DecodedJSValue.encode shim stays parked.
-        const js_value: *align(@alignOf(JSValue)) i64 = @ptrCast(@alignCast(this));
-        return @enumFromInt(js_value.*);
+        const js_value: *jsc.DecodedJSValue = @ptrCast(@alignCast(this));
+        return js_value.encode();
     }
 
-    pub fn set(this: *Impl, global: *JSGlobalObject, value: JSValue) void {
-        markBinding(@src());
+    pub fn set(this: *Impl, global: *jsc.JSGlobalObject, value: jsc.JSValue) void {
+        jsc.markBinding(@src());
         Bun__StrongRef__set(this, global, value);
     }
 
     pub fn clear(this: *Impl) void {
-        markBinding(@src());
+        jsc.markBinding(@src());
         Bun__StrongRef__clear(this);
     }
 
     pub fn deinit(this: *Impl) void {
-        markBinding(@src());
+        jsc.markBinding(@src());
         Bun__StrongRef__delete(this);
     }
 
     extern fn Bun__StrongRef__delete(this: *Impl) void;
-    extern fn Bun__StrongRef__new(*JSGlobalObject, JSValue) *Impl;
-    extern fn Bun__StrongRef__set(this: *Impl, *JSGlobalObject, JSValue) void;
+    extern fn Bun__StrongRef__new(*jsc.JSGlobalObject, jsc.JSValue) *Impl;
+    extern fn Bun__StrongRef__set(this: *Impl, *jsc.JSGlobalObject, jsc.JSValue) void;
     extern fn Bun__StrongRef__clear(this: *Impl) void;
 };
 
-// `pub const Deprecated = @import("./DeprecatedStrong.zig");` is intentionally
-// omitted — the Deprecated namespace re-exports through
-// `home_rt.jsc.Strong.Deprecated` directly. Reintroducing the import here
-// trips `file exists in modules 'root' and 'home_rt'` when this file is
-// run as a test root.
+pub const Deprecated = @import("./DeprecatedStrong.zig");
 
-test "Strong.Optional.empty starts null" {
-    const opt: Optional = .empty;
-    try std.testing.expect(opt.impl == null);
-    try std.testing.expect(!opt.has());
-}
-
-test "JSValue sentinels" {
-    try std.testing.expect(JSValue.zero != JSValue.js_undefined);
-    try std.testing.expectEqual(@as(i64, 0), @intFromEnum(JSValue.zero));
-}
+const bun = @import("bun");
+const jsc = bun.jsc;

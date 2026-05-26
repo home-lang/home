@@ -15,7 +15,7 @@ pub const copy_file = @import("./blob/copy_file.zig");
 
 pub fn new(blob: Blob) *Blob {
     const result = bun.new(Blob, blob);
-    result.#ref_count = .init(1);
+    result.@"#ref_count" = .init(1);
     return result;
 }
 
@@ -41,7 +41,7 @@ is_jsdom_file: bool = false,
 
 /// Reference count, for use with `bun.ptr.ExternalShared`. If the reference count is 0, that means
 /// this blob is *not* heap-allocated, and will not be freed in `deinit`.
-#ref_count: bun.ptr.RawRefCount(u32, .single_threaded) = .init(0),
+@"#ref_count": bun.ptr.RawRefCount(u32, .single_threaded) = .init(0),
 
 globalThis: *JSGlobalObject = undefined,
 
@@ -342,7 +342,7 @@ const FormDataContext = struct {
                         blob.resolveSize();
                     }
                     switch (store.data) {
-                        .s3 => |_| {
+                        .s3 => {
                             // TODO: s3
                             // we need to make this async and use download/downloadSlice
                         },
@@ -371,7 +371,7 @@ const FormDataContext = struct {
                                 },
                             }
                         },
-                        .bytes => |_| {
+                        .bytes => {
                             joiner.pushStatic(blob.sharedView());
                         },
                     }
@@ -721,7 +721,7 @@ pub fn fromDOMFormData(
 ) Blob {
     var arena = bun.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    var stack_allocator = std.heap.stackFallback(1024, arena.allocator());
+    var stack_allocator = bun.stackFallback(1024, arena.allocator());
     const stack_mem_all = stack_allocator.get();
 
     var hex_buf: [70]u8 = undefined;
@@ -3901,7 +3901,7 @@ pub fn toJSONWithBytes(this: *Blob, global: *JSGlobalObject, raw_bytes: []const 
     defer if (comptime lifetime == .temporary) bun.default_allocator.free(raw_bytes);
 
     if (could_be_all_ascii == null or !could_be_all_ascii.?) {
-        var stack_fallback = std.heap.stackFallback(4096, bun.default_allocator);
+        var stack_fallback = bun.stackFallback(4096, bun.default_allocator);
         const allocator = stack_fallback.get();
         // if toUTF16Alloc returns null, it means there are no non-ASCII characters
         if (strings.toUTF16Alloc(allocator, buf, false, false) catch null) |external| {
@@ -4214,7 +4214,7 @@ fn fromJSWithoutDeferGC(
         }
     }
 
-    var stack_allocator = std.heap.stackFallback(1024, bun.default_allocator);
+    var stack_allocator = bun.stackFallback(1024, bun.default_allocator);
     const stack_mem_all = stack_allocator.get();
     var stack: std.array_list.Managed(JSValue) = std.array_list.Managed(JSValue).init(stack_mem_all);
     var joiner = StringJoiner{ .allocator = stack_mem_all };
@@ -5090,11 +5090,11 @@ pub fn takeOwnership(self: *Blob) Blob {
 }
 
 pub fn isHeapAllocated(self: *const Blob) bool {
-    return self.#ref_count.raw_value != 0;
+    return self.@"#ref_count".raw_value != 0;
 }
 
 fn setNotHeapAllocated(self: *Blob) void {
-    self.#ref_count = .init(0);
+    self.@"#ref_count" = .init(0);
 }
 
 pub const external_shared_descriptor = struct {
@@ -5104,13 +5104,13 @@ pub const external_shared_descriptor = struct {
 
 export fn Blob__ref(self: *Blob) void {
     bun.assertf(self.isHeapAllocated(), "cannot ref: this Blob is not heap-allocated", .{});
-    self.#ref_count.increment();
+    self.@"#ref_count".increment();
 }
 
 export fn Blob__deref(self: *Blob) void {
     bun.assertf(self.isHeapAllocated(), "cannot deref: this Blob is not heap-allocated", .{});
-    if (self.#ref_count.decrement() == .should_destroy) {
-        self.#ref_count.increment(); // deinit has its own isHeapAllocated() guard around bun.destroy(this), so this is needed to ensure that returns true.
+    if (self.@"#ref_count".decrement() == .should_destroy) {
+        self.@"#ref_count".increment(); // deinit has its own isHeapAllocated() guard around bun.destroy(this), so this is needed to ensure that returns true.
         self.deinit();
     }
 }

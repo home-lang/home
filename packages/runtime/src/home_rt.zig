@@ -44,11 +44,140 @@ pub const JSTerminated = error{JSTerminated};
 pub const JSOOM = OOM || JSError;
 pub const handleOom = Global.handleOom;
 pub const default_allocator: std.mem.Allocator = std.heap.smp_allocator;
+pub const ArenaAllocator = std.heap.ArenaAllocator;
+pub const ImportKind = @import("options_types/import_record.zig").ImportKind;
+pub const FD = @import("sys/fd.zig").FD;
+pub const invalid_fd: FD = .invalid;
+pub const WTF = struct {
+    pub const StringImpl = string.WTFStringImpl;
+    pub const _StringImplStruct = string.WTFStringImplStruct;
+};
 
 pub const String = @import("string/string.zig").String;
+pub const UUID = @import("jsc/uuid.zig");
+pub const spawn = @import("runtime/api/bun/spawn.zig").PosixSpawn;
+pub const webcore = runtime.webcore;
+pub const NullableAllocator = allocators.NullableAllocator;
+pub const mimalloc = mimalloc_sys.mimalloc;
+pub const Mutex = threading.Mutex;
+
+pub inline fn assert_eql(a: anytype, b: anytype) void {
+    if (a == b) return;
+    if (@inComptime()) @compileError(std.fmt.comptimePrint("Assertion failure: {f} != {f}", .{ a, b }));
+    assert(false);
+}
+
+pub inline fn assertf(condition: bool, comptime _: []const u8, _: anytype) void {
+    assert(condition);
+}
+
+pub const cpp = struct {
+    const WTFStringImplStruct = @import("string/wtf.zig").WTFStringImplStruct;
+
+    pub extern fn WTFStringImpl__isThreadSafe(*WTFStringImplStruct) bool;
+    pub extern fn Bun__WTFStringImpl__deref(*WTFStringImplStruct) void;
+    pub extern fn Bun__WTFStringImpl__ref(*WTFStringImplStruct) void;
+    pub extern fn Bun__WTFStringImpl__ensureHash(*WTFStringImplStruct) void;
+    pub extern fn Bun__WTFStringImpl__hasPrefix(*WTFStringImplStruct, [*]const u8, usize) bool;
+    pub extern fn BunString__fromJS(*jsc.JSGlobalObject, jsc.JSValue, *String) bool;
+    pub extern fn BunString__toJSON(*jsc.JSGlobalObject, *String) jsc.JSValue;
+    pub extern fn BunString__createUTF8ForJS(*jsc.JSGlobalObject, [*]const u8, usize) jsc.JSValue;
+    pub extern fn Bun__parseDate(*jsc.JSGlobalObject, *String) JSError!f64;
+};
 
 pub inline fn copy(comptime T: type, dest: []T, src: []const T) void {
     @memcpy(dest[0..src.len], src);
+}
+
+pub inline fn tryNew(comptime T: type, init: T) OOM!*T {
+    const pointer = try default_allocator.create(T);
+    pointer.* = init;
+    return pointer;
+}
+
+pub inline fn new(comptime T: type, init: T) *T {
+    return handleOom(tryNew(T, init));
+}
+
+pub inline fn destroy(pointer: anytype) void {
+    default_allocator.destroy(pointer);
+}
+
+pub fn TrivialNew(comptime T: type) fn (T) *T {
+    return struct {
+        pub fn new_(t: T) *T {
+            return new(T, t);
+        }
+    }.new_;
+}
+
+pub fn stackFallback(comptime size: usize, fallback_allocator: std.mem.Allocator) StackFallbackAllocator(size) {
+    return .{
+        .buffer = undefined,
+        .fallback_allocator = fallback_allocator,
+        .fixed_buffer_allocator = undefined,
+    };
+}
+
+pub fn StackFallbackAllocator(comptime size: usize) type {
+    return struct {
+        const Self = @This();
+
+        buffer: [size]u8,
+        fallback_allocator: std.mem.Allocator,
+        fixed_buffer_allocator: std.heap.FixedBufferAllocator,
+        get_called: if (std.debug.runtime_safety) bool else void =
+            if (std.debug.runtime_safety) false else {},
+
+        pub fn get(self: *Self) std.mem.Allocator {
+            if (std.debug.runtime_safety) {
+                assert(!self.get_called);
+                self.get_called = true;
+            }
+            self.fixed_buffer_allocator = std.heap.FixedBufferAllocator.init(self.buffer[0..]);
+            return .{
+                .ptr = self,
+                .vtable = &.{
+                    .alloc = Self.alloc,
+                    .resize = Self.resize,
+                    .remap = Self.remap,
+                    .free = Self.free,
+                },
+            };
+        }
+
+        pub const allocator = @compileError("use 'const allocator = stackFallback(N, fallback).get();' instead");
+
+        fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            return std.heap.FixedBufferAllocator.alloc(&self.fixed_buffer_allocator, len, alignment, ra) orelse
+                self.fallback_allocator.rawAlloc(len, alignment, ra);
+        }
+
+        fn resize(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) bool {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            if (self.fixed_buffer_allocator.ownsPtr(buf.ptr)) {
+                return std.heap.FixedBufferAllocator.resize(&self.fixed_buffer_allocator, buf, alignment, new_len, ra);
+            }
+            return self.fallback_allocator.rawResize(buf, alignment, new_len, ra);
+        }
+
+        fn remap(ctx: *anyopaque, mem: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            if (self.fixed_buffer_allocator.ownsPtr(mem.ptr)) {
+                return std.heap.FixedBufferAllocator.remap(&self.fixed_buffer_allocator, mem, alignment, new_len, ra);
+            }
+            return self.fallback_allocator.rawRemap(mem, alignment, new_len, ra);
+        }
+
+        fn free(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, ra: usize) void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            if (self.fixed_buffer_allocator.ownsPtr(buf.ptr)) {
+                return std.heap.FixedBufferAllocator.free(&self.fixed_buffer_allocator, buf, alignment, ra);
+            }
+            return self.fallback_allocator.rawFree(buf, alignment, ra);
+        }
+    };
 }
 
 /// Memory is typically not decommitted immediately when freed. Zero the slice
@@ -79,14 +208,6 @@ pub inline fn cast(comptime To: type, value: anytype) To {
     }
 
     return @ptrCast(@alignCast(value));
-}
-
-/// Wave-15 Tier-1 grinder stub — Bun's `bun.destroy(ptr)` is the
-/// allocator-aware mirror of `allocator.destroy`. Skips heap-breakdown +
-/// RefCount sanity checks (`bun.heap_breakdown` / `bun.ptr.ref_count` not
-/// yet ported).
-pub inline fn destroy(pointer: anytype) void {
-    default_allocator.destroy(pointer);
 }
 
 // Comptime string map (copied from Bun, JSC methods stripped — they'll
@@ -164,6 +285,8 @@ pub const jsc = struct {
         .c;
 
     pub const JSValue = @import("jsc/JSValue.zig").JSValue;
+    pub const array_buffer = @import("jsc/array_buffer.zig");
+    pub const ArrayBuffer = array_buffer.ArrayBuffer;
     pub const CallFrame = @import("jsc/CallFrame.zig").CallFrame;
     pub const JSGlobalObject = @import("jsc/JSGlobalObject.zig").JSGlobalObject;
     pub const ConsoleObject = @import("jsc/ConsoleObject.zig");
@@ -175,7 +298,7 @@ pub const jsc = struct {
     pub const GetterSetter = @import("jsc/GetterSetter.zig").GetterSetter;
     pub const StaticExport = @import("jsc/static_export.zig");
     pub const ErrorCode = @import("jsc/ErrorCode.zig").ErrorCode;
-    pub const Error = anyerror;
+    pub const Error = @import("ErrorCode.zig").Error;
     pub const CommonAbortReason = @import("jsc/CommonAbortReason.zig").CommonAbortReason;
     // Fourth-wave port batch (2026-05-17, 8-agent parallel dispatch):
     pub const Exception = @import("jsc/Exception.zig").Exception;
@@ -195,9 +318,8 @@ pub const jsc = struct {
     pub const ErrorableString = Errorable(String);
     pub const DeferredError = @import("jsc/DeferredError.zig").DeferredError;
     pub const DecodedJSValue = @import("jsc/DecodedJSValue.zig").DecodedJSValue;
-    pub const Strong = struct {
-        pub const Deprecated = @import("jsc/DeprecatedStrong.zig");
-    };
+    pub const Strong = @import("jsc/Strong.zig");
+    pub const DeprecatedStrong = Strong.Deprecated;
     pub const CPUProfiler = @import("jsc/BunCPUProfiler.zig").CPUProfiler;
     pub const CPUProfilerConfig = @import("jsc/BunCPUProfiler.zig").CPUProfilerConfig;
     pub const HeapProfiler = @import("jsc/BunHeapProfiler.zig").HeapProfiler;
@@ -213,6 +335,8 @@ pub const jsc = struct {
     // Seventh-wave port batch (2026-05-18):
     pub const AbortSignal = @import("jsc/AbortSignal.zig").AbortSignal;
     pub const JSString = @import("jsc/JSString.zig");
+    pub const JSRef = @import("jsc/JSRef.zig").JSRef;
+    pub const JSPromise = @import("jsc/JSPromise.zig").JSPromise;
     pub const RefString = @import("jsc/RefString.zig").RefString;
     pub const StringBuilder = @import("jsc/StringBuilder.zig").StringBuilder;
     pub const ZigString = @import("jsc/ZigString.zig").ZigString;
@@ -246,6 +370,7 @@ pub const jsc = struct {
     // placeholders until each downstream subsystem (api/webcore/jsc)
     // lands its real type.
     pub const generated_classes_list = @import("jsc/generated_classes_list.zig");
+    pub const GeneratedClassesList = generated_classes_list.Classes;
     // Phase 12.2 M1 (2026-05-19) — stub-runnable bridge scaffold per
     // `JSC_BRIDGE_SCOPE_2026-05-19.md` §M1. The `opaques` aggregator
     // names the ~10 core JSC opaque types (JSValue, JSGlobalObject,
@@ -261,6 +386,7 @@ pub const jsc = struct {
     // TODO(phase-12.2-M3) until the C++ engine wiring lands.
     pub const engine = @import("jsc/engine.zig");
     pub const evaluate = @import("jsc/evaluate.zig");
+    pub const VirtualMachine = @import("jsc/VirtualMachine.zig");
     // Phase 12.2 M4 (2026-05-19) — exception + coerce + array helpers
     // per `JSC_BRIDGE_SCOPE_2026-05-19.md` §M4. Each namespace exposes
     // a uniform Zig-shaped surface on top of the M1 extern fn set;
@@ -290,6 +416,12 @@ pub const jsc = struct {
     pub const iterator = @import("jsc/iterator.zig");
     pub const global = @import("jsc/global.zig");
     pub const WebCore = @import("home_rt").runtime.webcore;
+    pub const API = @import("home_rt").api;
+    pub const Node = API.node;
+    pub const ZigStackFrame = @import("jsc/ZigStackFrame.zig").ZigStackFrame;
+    pub const JSInternalPromise = @import("jsc/JSInternalPromise.zig").JSInternalPromise;
+    pub const FetchHeaders = @import("jsc/FetchHeaders.zig").FetchHeaders;
+    pub const Codegen = @import("ZigGeneratedClasses");
     pub const host_fn = @import("jsc/host_fn.zig");
     pub const JSHostFn = host_fn.JSHostFn;
     pub const JSHostFnZig = host_fn.JSHostFnZig;
@@ -301,6 +433,20 @@ pub const jsc = struct {
     pub const toJSHostCall = host_fn.toJSHostCall;
     pub const fromJSHostCall = host_fn.fromJSHostCall;
     pub const fromJSHostCallGeneric = host_fn.fromJSHostCallGeneric;
+
+    const log = Output.scoped(.JSC, .hidden);
+    pub inline fn markBinding(src: std.builtin.SourceLocation) void {
+        log("{s} ({s}:{d})", .{ src.fn_name, src.file, src.line });
+    }
+
+    pub inline fn markMemberBinding(comptime class: anytype, src: std.builtin.SourceLocation) void {
+        if (!Environment.enable_logs) return;
+        const classname = switch (@typeInfo(@TypeOf(class))) {
+            .pointer => class,
+            else => @typeName(class),
+        };
+        log("{s}.{s} ({s}:{d})", .{ classname, src.fn_name, src.file, src.line });
+    }
 };
 
 // ---- src/io/ -----------------------------------------------------------
@@ -323,6 +469,8 @@ pub const io = struct {
 // HTTP value types (encoding tags, cert structs, header parsing). Pure
 // data; no JSC dependency. The full HTTP stack lands in Phase 12.5.
 pub const http = struct {
+    pub const Method = @import("http_types/Method.zig").Method;
+    pub const MimeType = @import("http_types/MimeType.zig").MimeType;
     pub const HTTPCertError = @import("http/HTTPCertError.zig");
     pub const InitError = @import("http/InitError.zig").InitError;
     pub const CertificateInfo = @import("http/CertificateInfo.zig");
@@ -468,6 +616,7 @@ pub const ptr = struct {
     pub const ThreadSafeRefCount = @import("ptr/ref_count.zig").ThreadSafeRefCount;
     pub const TaggedPointer = @import("ptr/tagged_pointer.zig").TaggedPointer;
     pub const TaggedPointerUnion = @import("ptr/tagged_pointer.zig").TaggedPointerUnion;
+    pub const RawRefCount = @import("ptr/raw_ref_count.zig").RawRefCount;
     // Wave-15 Tier-1 grinder (2026-05-18):
     pub const WeakPtr = @import("ptr/weak_ptr.zig").WeakPtr;
     pub const WeakPtrData = @import("ptr/weak_ptr.zig").WeakPtrData;
@@ -574,6 +723,16 @@ pub const runtime = struct {
         // leaves — the JSC-bridged `Body`/`PendingValue`/`Mixin` /
         // `AsyncFormData` / registry are parked until JSC lands.
         pub const Body = @import("runtime/webcore/Body.zig");
+        pub const Blob = @import("runtime/webcore/Blob.zig");
+        pub const Response = @import("runtime/webcore/Response.zig");
+        pub const FileSink = @import("runtime/webcore/FileSink.zig");
+        pub const ByteBlobLoader = @import("runtime/webcore/ByteBlobLoader.zig");
+        pub const ReadableStream = @import("runtime/webcore/ReadableStream.zig").ReadableStream;
+        pub const AbortSignal = @import("jsc/AbortSignal.zig").AbortSignal;
+        pub const streams = @import("runtime/webcore/streams.zig");
+        pub const DrainResult = @import("runtime/webcore/streams.zig").DrainResult;
+        pub const encoding = @import("runtime/webcore/encoding.zig");
+        pub const FetchHeaders = @import("jsc/FetchHeaders.zig").FetchHeaders;
         pub const FormData = @import("runtime/webcore/FormData.zig").FormData;
         pub const ObjectURLRegistry = @import("runtime/webcore/ObjectURLRegistry.zig");
         pub const Sink = @import("runtime/webcore/Sink.zig");
@@ -610,6 +769,7 @@ pub const runtime = struct {
     // Eighth-wave port batch (2026-05-18). First runtime/api/ leaves —
     // pure-Zig helpers and small JSC bridges with stubbed JSC surfaces.
     pub const api = struct {
+        pub const ResolveMessage = @import("jsc/ResolveMessage.zig").ResolveMessage;
         pub const Subprocess = @import("runtime/api/bun/subprocess.zig");
         pub const lolhtml_jsc = @import("runtime/api/lolhtml_jsc.zig");
         pub const cron_parser = @import("runtime/api/cron_parser.zig");
@@ -630,6 +790,9 @@ pub const api = runtime.api;
 // behind Phase 12.2.
 pub const string = struct {
     pub const HashedString = @import("string/HashedString.zig");
+    pub const WTFString = @import("string/wtf.zig").WTFString;
+    pub const WTFStringImpl = @import("string/wtf.zig").WTFStringImpl;
+    pub const WTFStringImplStruct = @import("string/wtf.zig").WTFStringImplStruct;
     pub const escapeRegExp = @import("string/escapeRegExp.zig").escapeRegExp;
     pub const escapeRegExpForPackageNameMatching = @import("string/escapeRegExp.zig").escapeRegExpForPackageNameMatching;
 };
@@ -826,7 +989,7 @@ pub const allocators = struct {
 
     pub fn Nullable(comptime Allocator: type) type {
         return if (comptime Allocator == std.mem.Allocator)
-            NullableAllocator
+            @This().NullableAllocator
         else if (comptime @hasDecl(Allocator, "Nullable"))
             Allocator.Nullable
         else
@@ -918,9 +1081,12 @@ pub const sys = struct {
     // every syscall wrapper. `kindFromMode` and a Zig-0.17-compat
     // `FileKind` enum tag along for the ride.
     pub const maybe = @import("sys/maybe.zig");
-    pub const Maybe = maybe.Maybe;
     pub const FileKind = maybe.FileKind;
     pub const kindFromMode = maybe.kindFromMode;
+    pub const Error = @import("sys/Error.zig");
+    pub fn Maybe(comptime ReturnTypeT: type) type {
+        return maybe.Maybe(ReturnTypeT, Error);
+    }
     // Wave-20 Tier-2 substrate (2026-05-19). `SystemErrno` proxies the
     // per-platform dispatcher in `errno/errno.zig` so copied source can
     // spell `home_rt.sys.SystemErrno` (mirrors upstream `bun.sys.SystemErrno`).
@@ -930,6 +1096,10 @@ pub const sys = struct {
     pub const SystemErrno = @import("errno/errno.zig").SystemErrno;
     pub const libuv_error_map = @import("sys/libuv_error_map.zig").libuv_error_map;
     pub const coreutils_error_map = @import("sys/coreutils_error_map.zig").coreutils_error_map;
+    pub fn munmap(memory_: []align(std.heap.page_size_min) const u8) Maybe(void) {
+        std.posix.munmap(memory_);
+        return Maybe(void).success;
+    }
 };
 
 // ---- src/paths/ --------------------------------------------------------

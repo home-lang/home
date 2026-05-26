@@ -238,7 +238,7 @@ pub fn OpaqueWrap(comptime Context: type, comptime Function: fn (this: *Context)
     }.callback;
 }
 
-pub const Error = @import("ErrorCode").Error;
+pub const Error = @import("../ErrorCode.zig").Error;
 
 /// According to https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date,
 /// maximum Date in JavaScript is less than Number.MAX_SAFE_INTEGER (u52).

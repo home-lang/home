@@ -25,8 +25,7 @@ const home_rt = @import("home_rt");
 const Environment = home_rt.Environment;
 const Exception = home_rt.jsc.Exception;
 
-// JSC bridge stubs — re-attach in Phase 12.2.
-const JSGlobalObject = opaque {};
+const JSGlobalObject = home_rt.jsc.JSGlobalObject;
 
 // Upstream gates on `Environment.allow_assert or enable_asan` /
 // `ci_assert`. Home's `Environment` only exports `allow_assert`

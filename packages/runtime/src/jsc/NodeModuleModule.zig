@@ -6,7 +6,7 @@ fn findPath(
     request_bun_str: bun.String,
     paths_maybe: ?*jsc.JSArray,
 ) bun.JSError!JSValue {
-    var stack_buf = std.heap.stackFallback(8192, bun.default_allocator);
+    var stack_buf = bun.stackFallback(8192, bun.default_allocator);
     const alloc = stack_buf.get();
 
     const request_slice = request_bun_str.toUTF8(alloc);
@@ -160,7 +160,7 @@ fn onRequireExtensionModifyBinding(
     loader: bun.schema.api.Loader,
     value: jsc.JSValue,
 ) callconv(.c) void {
-    var sfa_state = std.heap.stackFallback(8192, bun.default_allocator);
+    var sfa_state = bun.stackFallback(8192, bun.default_allocator);
     const alloc = sfa_state.get();
     const str_slice = str.toUTF8(alloc);
     defer str_slice.deinit();
@@ -173,7 +173,7 @@ fn onRequireExtensionModifyNonFunctionBinding(
     global: *jsc.JSGlobalObject,
     str: *const bun.String,
 ) callconv(.c) void {
-    var sfa_state = std.heap.stackFallback(8192, bun.default_allocator);
+    var sfa_state = bun.stackFallback(8192, bun.default_allocator);
     const alloc = sfa_state.get();
     const str_slice = str.toUTF8(alloc);
     defer str_slice.deinit();

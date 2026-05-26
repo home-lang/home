@@ -521,10 +521,10 @@ pub const TagValueFalse = (OtherTag | BoolTag) | @"false";
 pub const TagValueTrue = (OtherTag | BoolTag) | @"true";
 pub const TagValueUndefined = OtherTag | UndefinedTag;
 pub const TagValueNull = OtherTag;
-pub const NotCellMask = NumberTag | OtherTag;
+pub const NotCellMask = NumberTag | @as(u64, OtherTag);
 pub const MAX_INT32 = 2147483648;
 pub const MAX_INT52 = 9007199254740991;
-pub const NumberTag = 0xfffe000000000000;
+pub const NumberTag: u64 = 0xfffe000000000000;
 
 const bun = @import("bun");
 const jsc = bun.jsc;

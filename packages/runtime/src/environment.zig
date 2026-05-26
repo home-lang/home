@@ -6,8 +6,11 @@
 // based on `Environment.isWindows`, etc.).
 
 const builtin = @import("builtin");
+const build_options = @import("build_options");
 
 pub const isWindows = builtin.os.tag == .windows;
+pub const isTest = builtin.is_test;
+pub const export_cpp_apis = builtin.output_mode == .Obj or isTest;
 pub const isMac = switch (builtin.os.tag) {
     .macos, .ios, .tvos, .watchos, .visionos => true,
     else => false,
@@ -29,9 +32,13 @@ pub const isAndroid = false; // Home does not currently target Android.
 pub const enable_fuzzilli = false; // Fuzzilli REPRL — re-attaches in a future phase.
 pub const isDebug = builtin.mode == .Debug;
 pub const isRelease = !isDebug;
-pub const allow_assert = isDebug;
+pub const allow_assert = isDebug or isTest;
 pub const is_canary = false;
 pub const ci_assert = false;
+pub const enable_logs = build_options.debug_logging;
+pub const enable_asan = build_options.enable_sanitize_address;
+pub const baseline = false;
+pub const reported_nodejs_version = "22.0.0";
 
 // Wave-20 Tier-2 substrate (2026-05-19). Mirrors upstream
 // `bun.Environment.os`, an `Os` enum used by comptime branches in copied

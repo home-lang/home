@@ -454,8 +454,12 @@ pub fn build(b: *std.Build) void {
     // `@import("bun")` (verbatim copied files). Both aliases resolve to the
     // Home aggregator while preserving upstream provenance in source files.
     const home_rt_pkg = createPackage(b, "packages/runtime/src/home_rt.zig", target, optimize, zig_test_framework);
+    const zig_generated_classes_pkg = createPackage(b, "packages/runtime/src/jsc/ZigGeneratedClasses.zig", target, optimize, null);
     home_rt_pkg.addImport("home_rt", home_rt_pkg);
     home_rt_pkg.addImport("bun", home_rt_pkg);
+    home_rt_pkg.addImport("ZigGeneratedClasses", zig_generated_classes_pkg);
+    zig_generated_classes_pkg.addImport("home_rt", home_rt_pkg);
+    zig_generated_classes_pkg.addImport("bun", home_rt_pkg);
     home_test_pkg.addImport("home_rt", home_rt_pkg);
 
     // Game development packages (order matters for dependencies)

@@ -7,6 +7,19 @@
 
 const std = @import("std");
 
+pub const u3_fast = u3;
+pub const unicode_replacement: u21 = 0xFFFD;
+
+pub const AsciiStatus = enum {
+    unknown,
+    all_ascii,
+    non_ascii,
+
+    pub fn fromBool(is_all_ascii: ?bool) AsciiStatus {
+        return if (is_all_ascii orelse return .unknown) .all_ascii else .non_ascii;
+    }
+};
+
 pub fn indexOfChar(slice: []const u8, char: u8) ?usize {
     return std.mem.indexOfScalar(u8, slice, char);
 }
@@ -90,6 +103,90 @@ pub fn eqlComptimeIgnoreLen(a: anytype, comptime b: []const u8) bool {
         if (lower_ac != lower_b) return false;
     }
     return true;
+}
+
+pub fn isAllASCII(slice: []const u8) bool {
+    for (slice) |byte| {
+        if (byte > 0x7f) return false;
+    }
+    return true;
+}
+
+pub fn eqlComptimeUTF16(self: []const u16, comptime alt: []const u8) bool {
+    if (self.len != alt.len) return false;
+    inline for (alt, 0..) |c, i| {
+        if (self[i] != c) return false;
+    }
+    return true;
+}
+
+pub fn elementLengthUTF16IntoUTF8(utf16: []const u16) usize {
+    var len: usize = 0;
+    var i: usize = 0;
+    while (i < utf16.len) {
+        const cp = std.unicode.utf16DecodeSurrogatePair(utf16[i..]) catch blk: {
+            const value: u21 = utf16[i];
+            i += 1;
+            break :blk value;
+        };
+        if (cp > 0xFFFF) i += 2;
+        len += std.unicode.utf8CodepointSequenceLength(cp) catch 3;
+    }
+    return len;
+}
+
+pub fn toUTF8ListWithType(list_: std.array_list.Managed(u8), utf16: []const u16) !std.array_list.Managed(u8) {
+    var list = list_;
+    try list.ensureUnusedCapacity(elementLengthUTF16IntoUTF8(utf16));
+    var i: usize = 0;
+    while (i < utf16.len) {
+        const cp = std.unicode.utf16DecodeSurrogatePair(utf16[i..]) catch blk: {
+            const value: u21 = utf16[i];
+            i += 1;
+            break :blk value;
+        };
+        if (cp > 0xFFFF) i += 2;
+        var buf: [4]u8 = undefined;
+        const width = std.unicode.utf8Encode(cp, &buf) catch std.unicode.utf8Encode(unicode_replacement, &buf) catch unreachable;
+        list.appendSliceAssumeCapacity(buf[0..width]);
+    }
+    return list;
+}
+
+pub fn allocateLatin1IntoUTF8WithList(list_: std.array_list.Managed(u8), offset_into_list: usize, latin1: []const u8) !std.array_list.Managed(u8) {
+    var list = list_;
+    try list.ensureTotalCapacity(offset_into_list + latin1.len * 2);
+    if (list.items.len < offset_into_list) list.items.len = offset_into_list;
+    for (latin1) |byte| {
+        if (byte < 0x80) {
+            list.appendAssumeCapacity(byte);
+        } else {
+            list.appendAssumeCapacity(0xC0 | @as(u8, @intCast(byte >> 6)));
+            list.appendAssumeCapacity(0x80 | (byte & 0x3F));
+        }
+    }
+    return list;
+}
+
+pub fn toUTF8FromLatin1(allocator: std.mem.Allocator, latin1: []const u8) !?std.array_list.Managed(u8) {
+    if (isAllASCII(latin1)) return null;
+    return try allocateLatin1IntoUTF8WithList(std.array_list.Managed(u8).init(allocator), 0, latin1);
+}
+
+pub fn toUTF8FromLatin1Z(allocator: std.mem.Allocator, latin1: []const u8) !?std.array_list.Managed(u8) {
+    var list = (try toUTF8FromLatin1(allocator, latin1)) orelse return null;
+    try list.append(0);
+    return list;
+}
+
+pub fn toUTF8Alloc(allocator: std.mem.Allocator, utf16: []const u16) ![]u8 {
+    var list = try toUTF8ListWithType(std.array_list.Managed(u8).init(allocator), utf16);
+    return try list.toOwnedSlice();
+}
+
+pub fn toUTF8AllocZ(allocator: std.mem.Allocator, utf16: []const u16) ![:0]u8 {
+    var list = try toUTF8ListWithType(std.array_list.Managed(u8).init(allocator), utf16);
+    return try list.toOwnedSliceSentinel(0);
 }
 
 test "indexOfChar finds the first occurrence" {
