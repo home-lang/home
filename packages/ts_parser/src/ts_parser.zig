@@ -11976,6 +11976,7 @@ pub const Parser = struct {
                     );
                 }
                 try self.reportInvalidControlEscapeIfNeeded(i, close_at, start_tok.line, unicode_mode);
+                try self.reportRegexAtomEscapeDiagnostics(i, close_at, start_tok.line, unicode_mode);
                 i += if (i + 1 < close_at) 2 else 1;
                 continue;
             }
@@ -11985,6 +11986,77 @@ pub const Parser = struct {
             }
             i += 1;
         }
+    }
+
+    /// Diagnostics for a single `\`-escape that appears OUTSIDE a
+    /// character class (an "atom escape"). Ports the relevant arms of
+    /// tsc's `scanCharacterEscape`/`scanEscapeSequence`:
+    ///   - TS1538 `Unicode escape sequences are only available when the
+    ///     Unicode (u) flag or the Unicode Sets (v) flag is set.` — an
+    ///     extended `\u{...}` escape used without the u/v flag.
+    ///   - TS1535 `This character cannot be escaped in a regular
+    ///     expression.` — an identity escape of an identifier-part
+    ///     character that is not a recognized escape, only diagnosed in
+    ///     Unicode mode (mirrors the non-AnnexB default arm).
+    /// `slash_pos` points at the `\`. (tsc's TS1513 "Undetermined
+    /// character escape" arm fires only for a trailing `\` at the body
+    /// end, which Home's recovery instead reports as an unterminated
+    /// regex literal, so it is not reachable here.)
+    fn reportRegexAtomEscapeDiagnostics(
+        self: *Parser,
+        slash_pos: usize,
+        limit: usize,
+        line: u32,
+        unicode_mode: bool,
+    ) ParseError!void {
+        if (slash_pos + 1 >= limit or slash_pos + 1 >= self.source.len) return;
+        const esc = self.source[slash_pos + 1];
+        // Extended `\u{...}` escapes require Unicode mode.
+        if (esc == 'u' and slash_pos + 2 < limit and self.source[slash_pos + 2] == '{' and !unicode_mode) {
+            var p = slash_pos + 3;
+            while (p < limit and self.source[p] != '}') : (p += 1) {}
+            const span_end = if (p < limit and self.source[p] == '}') p + 1 else p;
+            try self.reportCodeAtWithSpan(
+                @intCast(slash_pos),
+                line,
+                @intCast(span_end - slash_pos),
+                1538,
+                "Unicode escape sequences are only available when the Unicode (u) flag or the Unicode Sets (v) flag is set.",
+            );
+            return;
+        }
+        if (!unicode_mode) return;
+        // In Unicode mode, only the recognized escape set is valid. An
+        // identity escape of an identifier-part character that is not a
+        // recognized class/character escape is an error. Mirrors the
+        // `IdentifierPart` default arm of tsc's scanner.
+        if (isRegexValidIdentityOrKnownEscape(esc)) return;
+        if (isRegexIdentifierPart(esc)) {
+            try self.reportCodeAtWithSpan(@intCast(slash_pos), line, 2, 1535, "This character cannot be escaped in a regular expression.");
+        }
+    }
+
+    /// The set of characters that form a recognized escape in a regular
+    /// expression body (control/character-class escapes, hex/unicode
+    /// escapes, the syntax-character identity escapes, and back/named
+    /// references). Anything outside this set that is an identifier
+    /// part triggers TS1535 in Unicode mode.
+    fn isRegexValidIdentityOrKnownEscape(c: u8) bool {
+        return switch (c) {
+            // Control + character-class escapes.
+            'b', 'B', 'd', 'D', 's', 'S', 'w', 'W', 'f', 'n', 'r', 't', 'v', '0' => true,
+            // Hex / unicode / control-letter / property / named-ref.
+            'x', 'u', 'c', 'p', 'P', 'k' => true,
+            // Syntax-character identity escapes.
+            '^', '$', '/', '\\', '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '-' => true,
+            else => false,
+        };
+    }
+
+    /// Approximation of tsc's `IsIdentifierPart` restricted to the ASCII
+    /// range relevant for regex identity escapes (`\q`, `\m`, etc.).
+    fn isRegexIdentifierPart(c: u8) bool {
+        return std.ascii.isAlphanumeric(c) or c == '_' or c == '$';
     }
 
     fn reportInvalidControlEscapeIfNeeded(
@@ -12078,6 +12150,45 @@ pub const Parser = struct {
             'v' => return .{ .start = start, .end = start + 2, .value = 0x0b },
             'b' => return .{ .start = start, .end = start + 2, .value = 0x08 },
             'd', 'D', 's', 'S', 'w', 'W' => return .{ .start = start, .end = start + 2, .value = null },
+            // Octal escape sequences inside a character class.
+            // TS1536: `\1`..`\7` (and `\0` followed by another octal
+            // digit) are not allowed in a character class. `\0` alone
+            // is the NUL byte and stays legal. Mirrors tsc's
+            // `scanEscapeSequence` octal arm with the AtomEscape flag
+            // cleared (the character-class context).
+            '0'...'7' => {
+                var p = start + 1;
+                // `\0` not followed by a digit is the NUL character.
+                if (esc == '0' and (p + 1 >= limit or !std.ascii.isDigit(self.source[p + 1]))) {
+                    return .{ .start = start, .end = start + 2, .value = 0 };
+                }
+                // Consume the octal run: leading digit + up to two more
+                // octal digits (three total for a leading 0-3, two for
+                // 4-7). Match tsc's longest-octal-run shape.
+                p += 1;
+                const max_digits: usize = if (esc <= '3') 2 else 1;
+                var consumed: usize = 0;
+                while (consumed < max_digits and p < limit and p < self.source.len and
+                    self.source[p] >= '0' and self.source[p] <= '7') : (p += 1)
+                {
+                    consumed += 1;
+                }
+                var code: u21 = 0;
+                for (self.source[start + 1 .. p]) |d| code = code * 8 + (d - '0');
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Octal escape sequences and backreferences are not allowed in a character class. If this was intended as an escape sequence, use the syntax '\\x{x:0>2}' instead.",
+                    .{code},
+                );
+                try self.reportCodeWithSpanAt(@intCast(start), line, 1536, @intCast(p - start), msg);
+                return .{ .start = start, .end = p, .value = code };
+            },
+            // TS1537: decimal escapes `\8`/`\9` are not allowed in a
+            // character class.
+            '8', '9' => {
+                try self.reportCodeWithSpanAt(@intCast(start), line, 1537, 2, "Decimal escape sequences and backreferences are not allowed in a character class.");
+                return .{ .start = start, .end = start + 2, .value = esc };
+            },
             'x' => {
                 if (start + 3 < limit) {
                     if (hexValue(self.source[start + 2])) |hi| {
@@ -12099,6 +12210,12 @@ pub const Parser = struct {
                         value = (value << 4) | hv;
                     }
                     if (saw_digit and p < limit and self.source[p] == '}') {
+                        // TS1538: extended `\u{...}` escapes are only
+                        // valid with the u/v flag. Mirrors tsc's
+                        // `AllowExtendedUnicodeEscape` gate.
+                        if (!unicode_mode) {
+                            try self.reportCodeWithSpanAt(@intCast(start), line, 1538, @intCast(p + 1 - start), "Unicode escape sequences are only available when the Unicode (u) flag or the Unicode Sets (v) flag is set.");
+                        }
                         return .{ .start = start, .end = p + 1, .value = value };
                     }
                 } else if (start + 5 < limit) {
@@ -12112,7 +12229,15 @@ pub const Parser = struct {
                 }
                 return .{ .start = start, .end = start + 2, .value = null };
             },
-            else => return .{ .start = start, .end = start + 2, .value = esc },
+            else => {
+                // TS1535: in Unicode mode, an identity escape of an
+                // identifier-part character that is not a recognized
+                // escape is invalid (e.g. `[\q]` under the `u` flag).
+                if (unicode_mode and !isRegexValidIdentityOrKnownEscape(esc) and isRegexIdentifierPart(esc)) {
+                    try self.reportCodeWithSpanAt(@intCast(start), line, 1535, 2, "This character cannot be escaped in a regular expression.");
+                }
+                return .{ .start = start, .end = start + 2, .value = esc };
+            },
         }
     }
 
@@ -15077,6 +15202,20 @@ pub const Parser = struct {
                 // `privateNameInObjectLiteral-1`.
                 if (key_tok.kind == .private_identifier) {
                     try self.reportCodeAt(key_tok.span.start, key_tok.line, 18016, "Private identifiers are not allowed outside class bodies.");
+                }
+                // TS1539: a `bigint` literal (e.g. `1n`) cannot be used
+                // as a property name. tsc's grammar check fires this at
+                // the literal token for object-literal property
+                // assignments. Mirrors upstream
+                // `checkGrammarObjectLiteralExpression`.
+                if (key_tok.kind == .bigint_literal) {
+                    try self.reportCodeAtWithSpan(
+                        key_span.start,
+                        key_tok.line,
+                        key_span.end - key_span.start,
+                        1539,
+                        "A 'bigint' literal cannot be used as a property name.",
+                    );
                 }
                 if (key_tok.kind == .number_literal and self.peek().kind == .dot and self.peekAt(1).kind == .colon) {
                     const dot_tok = self.advance();
@@ -20770,6 +20909,132 @@ test "parser: regex character class accepts ordered and class-escape ranges" {
     _ = try s.parser.parseSourceFile();
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1517);
+    }
+}
+
+test "parser: unicode regex reports uncescapable identity escape (TS1535)" {
+    // `\q` is not a recognized escape; in Unicode mode the identity
+    // escape of an identifier-part char is invalid. Non-unicode mode
+    // (Annex B) must stay clean.
+    var s = try newTestSetup("let x = /\\q/u; let y = /\\m/v; let z = /\\q/;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1535) {
+            count += 1;
+            try T.expectEqualStrings("This character cannot be escaped in a regular expression.", d.message);
+            try T.expectEqual(@as(u32, 2), d.span_len);
+        }
+    }
+    try T.expectEqual(@as(usize, 2), count);
+}
+
+test "parser: unicode regex stays clean for recognized identity escapes" {
+    // Syntax-character identity escapes and known class escapes must
+    // never trip TS1535 in Unicode mode.
+    var s = try newTestSetup("let x = /\\.\\*\\+\\?\\(\\)\\[\\]\\{\\}\\|\\^\\$\\/\\\\\\d\\w\\s/u;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1535);
+    }
+}
+
+test "parser: regex character class rejects octal escape (TS1536)" {
+    // `\1`..`\7` (and `\0` followed by an octal digit) are not allowed
+    // in a character class. The hint uses the `\xNN` syntax.
+    var s = try newTestSetup("let x = /[\\1]/;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1536) {
+            found = true;
+            try T.expectEqualStrings(
+                "Octal escape sequences and backreferences are not allowed in a character class. If this was intended as an escape sequence, use the syntax '\\x01' instead.",
+                d.message,
+            );
+        }
+    }
+    try T.expect(found);
+}
+
+test "parser: regex character class allows bare NUL escape" {
+    // `\0` not followed by an octal digit is the NUL character and is
+    // legal inside a character class.
+    var s = try newTestSetup("let x = /[\\0]/;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1536);
+    }
+}
+
+test "parser: regex character class rejects decimal escape (TS1537)" {
+    // `\8` / `\9` are decimal escapes, invalid inside a character class.
+    var s = try newTestSetup("let x = /[\\8]/;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1537) {
+            found = true;
+            try T.expectEqualStrings("Decimal escape sequences and backreferences are not allowed in a character class.", d.message);
+            try T.expectEqual(@as(u32, 2), d.span_len);
+        }
+    }
+    try T.expect(found);
+}
+
+test "parser: regex extended unicode escape requires u/v flag (TS1538)" {
+    // `\u{...}` is only valid under the u/v flag. Both the atom and
+    // class-atom contexts are covered; the unicode-mode case stays
+    // clean.
+    var s = try newTestSetup("let x = /\\u{41}/; let y = /[\\u{42}]/; let z = /\\u{43}/u;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1538) {
+            count += 1;
+            try T.expectEqualStrings("Unicode escape sequences are only available when the Unicode (u) flag or the Unicode Sets (v) flag is set.", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 2), count);
+}
+
+test "parser: bigint literal as object property name reports TS1539" {
+    // Mirrors tsc's `checkGrammarObjectLiteralExpression`: a `bigint`
+    // literal key (`1n`) is rejected with TS1539.
+    var s = try newTestSetup("let o = { 1n: 2 };");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1539) {
+            found = true;
+            try T.expectEqualStrings("A 'bigint' literal cannot be used as a property name.", d.message);
+            try T.expectEqual(@as(u32, 2), d.span_len);
+        }
+    }
+    try T.expect(found);
+}
+
+test "parser: numeric and string object property names stay clean of TS1539" {
+    var s = try newTestSetup("let o = { 1: 2, \"x\": 3, y: 4 };");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1539);
     }
 }
 
