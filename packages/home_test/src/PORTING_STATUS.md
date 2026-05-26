@@ -950,9 +950,14 @@ supporting Bun/Jest mock promise helpers on both `mock()` functions and
 `spyOn()` wrappers.
 The copied `js/web/fetch/utf8-bom.test.ts`,
 `js/web/fetch/form-data-boundary-crash.test.ts`,
+`js/web/fetch/response.test.ts`,
+`js/web/html/FormData.test.ts`,
 `js/bun/http/bun-serve-fetch-invalid-args.test.ts`, and
 `js/bun/http/getIfPropertyExists.test.ts` fixtures now pass as `30`
-tests through Body BOM stripping, malformed multipart rejection,
+tests plus `14` Web Response tests and `111` full Web FormData tests
+through Body BOM stripping, malformed multipart rejection,
+Response/FileRef inspection, stream clone/body teeing, multipart
+serialization/parsing, Blob/File preservation, File-backed FormData,
 `server.fetch` invalid-argument parity, module-option rewrites, and
 Bun-style `Request` option getter behavior.
 The copied `bundler/bundler_bun.test.ts` fixture now passes as `6` tests

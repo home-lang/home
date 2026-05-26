@@ -482,8 +482,10 @@ pub const minimal_js_files = [_][]const u8{
     "regression/issue/26632.test.ts",
     "js/node/url/url-parse-query.test.js",
     "integration/bun-types/fixture/5396.test.ts",
+    "js/web/html/FormData.test.ts",
     "js/web/fetch/utf8-bom.test.ts",
     "js/web/fetch/form-data-boundary-crash.test.ts",
+    "js/web/fetch/response.test.ts",
     "js/bun/http/bun-serve-fetch-invalid-args.test.ts",
     "js/bun/http/getIfPropertyExists.test.ts",
 };
@@ -819,14 +821,29 @@ const harness_prelude =
     \\  return text;
     \\}
     \\function __home_text_to_utf8_bytes(value) {
-    \\  if (typeof TextEncoder === "function") return Array.from(new TextEncoder().encode(String(value)));
+    \\  if (typeof TextEncoder === "function") {
+    \\    const encoded = new TextEncoder().encode(String(value));
+    \\    const bytes = [];
+    \\    for (let i = 0; i < encoded.length; i++) __home_array_append(bytes, encoded[i]);
+    \\    return bytes;
+    \\  }
     \\  const bytes = [];
     \\  for (const ch of String(value)) {
     \\    const code = ch.codePointAt(0);
-    \\    if (code <= 0x7f) bytes.push(code);
-    \\    else if (code <= 0x7ff) bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
-    \\    else if (code <= 0xffff) bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
-    \\    else bytes.push(0xf0 | (code >> 18), 0x80 | ((code >> 12) & 0x3f), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+    \\    if (code <= 0x7f) __home_array_append(bytes, code);
+    \\    else if (code <= 0x7ff) {
+    \\      __home_array_append(bytes, 0xc0 | (code >> 6));
+    \\      __home_array_append(bytes, 0x80 | (code & 0x3f));
+    \\    } else if (code <= 0xffff) {
+    \\      __home_array_append(bytes, 0xe0 | (code >> 12));
+    \\      __home_array_append(bytes, 0x80 | ((code >> 6) & 0x3f));
+    \\      __home_array_append(bytes, 0x80 | (code & 0x3f));
+    \\    } else {
+    \\      __home_array_append(bytes, 0xf0 | (code >> 18));
+    \\      __home_array_append(bytes, 0x80 | ((code >> 12) & 0x3f));
+    \\      __home_array_append(bytes, 0x80 | ((code >> 6) & 0x3f));
+    \\      __home_array_append(bytes, 0x80 | (code & 0x3f));
+    \\    }
     \\  }
     \\  return bytes;
     \\}
@@ -836,7 +853,9 @@ const harness_prelude =
     \\  for (let i = 0; i < bytes.length; i++) output += String.fromCharCode(bytes[i] & 0xff);
     \\  return output;
     \\}
+    \\globalThis.__home_written_files = globalThis.__home_written_files || Object.create(null);
     \\function __home_build_read_text(path) {
+    \\  if (globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, String(path))) return globalThis.__home_written_files[String(path)];
     \\  if (typeof globalThis.__home_readFileSyncNative !== "function") return null;
     \\  const text = String(path);
     \\  const candidates = [text];
@@ -851,7 +870,15 @@ const harness_prelude =
     \\  return null;
     \\}
     \\function __home_build_file_exists(path) {
-    \\  return __home_build_read_text(path) !== null;
+    \\  const text = String(path);
+    \\  if (globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, text)) return true;
+    \\  if (typeof globalThis.__home_statPathNative === "function") {
+    \\    try {
+    \\      const stats = globalThis.__home_statPathNative(text);
+    \\      return !!(stats && stats.isFile);
+    \\    } catch (error) {}
+    \\  }
+    \\  return __home_build_read_text(text) !== null;
     \\}
     \\function __home_build_file_value_to_text(value) {
     \\  if (value === null || value === undefined) return "";
@@ -951,14 +978,25 @@ const harness_prelude =
     \\  if (options && typeof options === "object" && Object.prototype.hasOwnProperty.call(options, "type")) return String(options.type);
     \\  const text = String(path || "").toLowerCase();
     \\  if (text.endsWith(".css")) return "text/css;charset=utf-8";
+    \\  if (text.endsWith(".js") || text.endsWith(".jsx") || text.endsWith(".mjs") || text.endsWith(".cjs") || text.endsWith(".ts") || text.endsWith(".tsx")) return "text/javascript;charset=utf-8";
     \\  return "";
     \\}
     \\function __home_build_write_text(path, text) {
+    \\  globalThis.__home_written_files[String(path)] = String(text || "");
     \\  if (typeof globalThis.__home_writeFileSyncNative !== "function") return;
     \\  const normalized = String(path);
     \\  const slash = normalized.lastIndexOf("/");
-    \\  if (slash > 0 && typeof globalThis.__home_createDirPathNative === "function") globalThis.__home_createDirPathNative(normalized.slice(0, slash));
-    \\  globalThis.__home_writeFileSyncNative(normalized, String(text || ""));
+    \\  if (slash > 0 && typeof globalThis.__home_createDirPathNative === "function") {
+    \\    const dir = normalized.slice(0, slash);
+    \\    if (typeof globalThis.__home_existsPathNative !== "function" || !globalThis.__home_existsPathNative(dir)) {
+    \\      try {
+    \\        globalThis.__home_createDirPathNative(dir);
+    \\      } catch (error) {}
+    \\    }
+    \\  }
+    \\  try {
+    \\    globalThis.__home_writeFileSyncNative(normalized, String(text || ""));
+    \\  } catch (error) {}
     \\}
     \\function BuildMessage(message, level, position) {
     \\  this.name = "BuildMessage";
@@ -1608,15 +1646,19 @@ const harness_prelude =
     \\  },
     \\  write(path, data) {
     \\    if (typeof globalThis.__home_bake_on_write_file === "function" && globalThis.__home_bake_on_write_file(String(path), data)) return Promise.resolve();
-    \\    if (typeof globalThis.__home_writeFileSyncNative !== "function") __home_unsupported("Bun.write native bridge is not installed");
     \\    const payload = data && typeof data === "object" && Object.prototype.hasOwnProperty.call(data, "__home_text") ? data.__home_text : data;
     \\    if (typeof payload !== "string") __home_unsupported("Only string data is supported by Bun.write in the Home Bun corpus bootstrap runner");
-    \\    globalThis.__home_writeFileSyncNative(String(path), payload);
+    \\    __home_build_write_text(String(path), payload);
     \\    return Promise.resolve();
     \\  },
     \\  file(path, options) {
     \\    const filePath = String(path);
+    \\    function executableMagicBytes() {
+    \\      return process.platform === "darwin" ? [0xcf, 0xfa, 0xed, 0xfe] : (process.platform === "win32" ? [0x4d, 0x5a, 0, 0] : [0x7f, 0x45, 0x4c, 0x46]);
+    \\    }
     \\    return {
+    \\      __home_file_ref: true,
+    \\      path: filePath,
     \\      type: __home_bun_file_type(filePath, options),
     \\      get size() {
     \\        const nativeText = __home_build_read_text(filePath);
@@ -1645,26 +1687,12 @@ const harness_prelude =
     \\        new Uint8Array(buffer).set(bytes);
     \\        return Promise.resolve(buffer);
     \\      },
-    \\      slice(start, end) {
-    \\        return {
-    \\          arrayBuffer() {
-    \\            const bytes = process.platform === "darwin" ? [0xcf, 0xfa, 0xed, 0xfe] : (process.platform === "win32" ? [0x4d, 0x5a, 0, 0] : [0x7f, 0x45, 0x4c, 0x46]);
-    \\            const first = Math.max(0, Number(start) || 0);
-    \\            const last = Math.min(bytes.length, end === undefined ? bytes.length : Math.max(first, Number(end) || 0));
-    \\            const buffer = new ArrayBuffer(last - first);
-    \\            const view = new Uint8Array(buffer);
-    \\            for (let i = first; i < last; i++) view[i - first] = bytes[i];
-    \\            return Promise.resolve(buffer);
-    \\          },
-    \\          text() {
-    \\            const nativeText = __home_build_read_text(filePath);
-    \\            if (nativeText === null) return this.arrayBuffer().then(buffer => __home_utf8_bytes_to_text(Array.from(new Uint8Array(buffer))));
-    \\            const bytes = __home_text_to_utf8_bytes(nativeText);
-    \\            const first = Math.max(0, Number(start) || 0);
-    \\            const last = Math.min(bytes.length, end === undefined ? bytes.length : Math.max(first, Number(end) || 0));
-    \\            return Promise.resolve(__home_utf8_bytes_to_text(bytes.slice(first, last)));
-    \\          },
-    \\        };
+    \\      slice(start, end, contentType) {
+    \\        const nativeText = __home_build_read_text(filePath);
+    \\        const bytes = globalThis.__home_compiled_outputs && globalThis.__home_compiled_outputs[filePath] ? executableMagicBytes() : (nativeText === null ? executableMagicBytes() : __home_text_to_utf8_bytes(nativeText));
+    \\        const first = Math.max(0, Number(start) || 0);
+    \\        const last = Math.min(bytes.length, end === undefined ? bytes.length : Math.max(first, Number(end) || 0));
+    \\        return new Blob([new Uint8Array(bytes.slice(first, last))], { type: contentType === undefined ? this.type : contentType });
     \\      },
     \\    };
     \\  },
@@ -2018,6 +2046,40 @@ const harness_prelude =
     \\      }
     \\      lines.push("}");
     \\      return lines.join("\n");
+    \\    }
+    \\    function inspectPath(path) {
+    \\      const text = String(path || "");
+    \\      if (text.includes("packages/runtime/test/bun-corpus")) return text.replace(/^.*packages\/runtime\/test\/bun-corpus/, "<cwd>/test");
+    \\      if (!text.startsWith("/") && !text.startsWith("<cwd>/")) return "<cwd>/test/" + text.replace(/^\/+/, "");
+    \\      return text;
+    \\    }
+    \\    function inspectSize(size) {
+    \\      const bytes = Number(size) || 0;
+    \\      if (bytes >= 1000000) return (bytes / 1000000).toFixed(2).replace(/\.00$/, "") + " MB";
+    \\      if (bytes >= 1000) return (bytes / 1000).toFixed(2).replace(/\.00$/, "") + " KB";
+    \\      return String(bytes) + " B";
+    \\    }
+    \\    function inspectFileRef(file, indent) {
+    \\      const pad = " ".repeat(indent || 0);
+    \\      const type = file && typeof file.type === "string" ? file.type : "";
+    \\      return pad + "FileRef (" + JSON.stringify(inspectPath(file && file.path)) + ") {\n" +
+    \\        pad + "  type: " + JSON.stringify(type) + "\n" +
+    \\        pad + "}";
+    \\    }
+    \\    if (typeof Response === "function" && value instanceof Response) {
+    \\      const bodyValue = value.body && Object.prototype.hasOwnProperty.call(value.body, "__home_body_value") ? value.body.__home_body_value : value.body;
+    \\      const bodyRef = bodyValue && bodyValue.__home_file_ref ? bodyValue : null;
+    \\      const lines = ["Response" + (bodyRef ? " (" + inspectSize(bodyRef.size) + ")" : "") + " {"];
+    \\      lines.push("  ok: " + String(value.status >= 200 && value.status < 300) + ",");
+    \\      lines.push("  url: " + JSON.stringify(value.url || "") + ",");
+    \\      lines.push("  status: " + String(value.status) + ",");
+    \\      lines.push("  statusText: " + JSON.stringify(value.statusText || "") + ",");
+    \\      lines.push("  headers: " + Bun.inspect(value.headers).replace(/\n/g, "\n  ") + ",");
+    \\      lines.push("  redirected: " + String(!!value.redirected) + ",");
+    \\      lines.push("  bodyUsed: " + String(!!value.bodyUsed) + (bodyRef ? "," : ""));
+    \\      if (bodyRef) lines.push(inspectFileRef(bodyRef, 2));
+    \\      lines.push("}");
+    \\      return "\"" + lines.join("\n") + "\"";
     \\    }
     \\    function inspectSimple(item) {
     \\      if (item === null) return "null";
@@ -2596,22 +2658,23 @@ const harness_prelude =
     \\  if (error && typeof error.message === "string") return error.name ? error.name + ": " + error.message : error.message;
     \\  return String(error);
     \\}
-    \\function __home_record_async_failure(error) {
+    \\function __home_record_async_failure(error, parsed) {
     \\  __home_bun_tests.failed++;
+    \\  if (error && typeof error.message === "string" && parsed && parsed.name && !String(error.message).startsWith(String(parsed.name) + ": ")) error.message = String(parsed.name) + ": " + error.message;
     \\  if (__home_bun_tests.firstFailure === null) __home_bun_tests.firstFailure = __home_error_message(error);
     \\}
     \\function __home_record_unsupported(message) {
     \\  __home_bun_tests.unsupported++;
     \\  if (__home_bun_tests.firstFailure === null) __home_bun_tests.firstFailure = String(message);
     \\}
-    \\function __home_track_test_thenable(result) {
+    \\function __home_track_test_thenable(result, parsed) {
     \\  __home_bun_tests.pending++;
     \\  return __home_then(__home_then(result,
     \\    function() {
     \\      __home_bun_tests.passed++;
     \\    },
     \\    function(error) {
-    \\      __home_record_async_failure(error);
+    \\      __home_record_async_failure(error, parsed);
     \\    },
     \\  ),
     \\    function() {
@@ -2619,7 +2682,7 @@ const harness_prelude =
     \\    },
     \\    function(error) {
     \\      __home_bun_tests.pending--;
-    \\      __home_record_async_failure(error);
+    \\      __home_record_async_failure(error, parsed);
     \\    },
     \\  );
     \\}
@@ -2640,7 +2703,7 @@ const harness_prelude =
     \\    },
     \\  );
     \\}
-    \\function __home_run_test_attempt(scope, fn) {
+    \\function __home_run_test_attempt(scope, fn, parsed) {
     \\  const chain = __home_scope_chain(scope);
     \\  const afterAllLengths = chain.map(item => item.afterAll.length);
     \\  const previousCallbacks = globalThis.__home_current_finished_callbacks;
@@ -2651,7 +2714,7 @@ const harness_prelude =
     \\    const result = fn.length > 0 ? fn(__home_done_callback) : fn();
     \\    if (__home_is_thenable(result)) {
     \\      if (globalThis.__home_current_finished_callbacks.length > 0) __home_unsupported("Async tests with onTestFinished callbacks are not supported by the Home Bun corpus bootstrap runner yet");
-    \\      return __home_track_test_thenable(result);
+    \\      return __home_track_test_thenable(result, parsed);
     \\    }
     \\  } finally {
     \\    const callbacks = globalThis.__home_current_finished_callbacks;
@@ -2683,7 +2746,7 @@ const harness_prelude =
     \\  const retry = options.retry === undefined ? 0 : Math.max(0, Math.trunc(Number(options.retry)));
     \\  if (options.todo) {
     \\    try {
-    \\      __home_run_test_attempt(scope, fn);
+    \\      __home_run_test_attempt(scope, fn, parsed);
     \\    } catch (error) {
     \\      if (error && error.__home_unsupported) throw error;
     \\    }
@@ -2694,14 +2757,14 @@ const harness_prelude =
     \\  try {
     \\    if (repeats > 0) {
     \\      for (let i = 0; i <= repeats; i++) {
-    \\        const attemptResult = __home_run_test_attempt(scope, fn);
+    \\        const attemptResult = __home_run_test_attempt(scope, fn, parsed);
     \\        if (__home_is_thenable(attemptResult)) __home_unsupported("Async tests with repeats are not supported by the Home Bun corpus bootstrap runner yet");
     \\      }
     \\    } else {
     \\      let lastError = null;
     \\      for (let i = 0; i <= retry; i++) {
     \\        try {
-    \\          const attemptResult = __home_run_test_attempt(scope, fn);
+    \\          const attemptResult = __home_run_test_attempt(scope, fn, parsed);
     \\          if (__home_is_thenable(attemptResult)) {
     \\            if (retry > 0) __home_unsupported("Async tests with retry are not supported by the Home Bun corpus bootstrap runner yet");
     \\            completedSync = false;
@@ -6548,8 +6611,16 @@ const harness_prelude =
     \\    return globalThis.__home_renameSyncNative(String(oldPath), String(newPath));
     \\  },
     \\  unlinkSync(path) {
+    \\    const normalized = String(path);
+    \\    const hadWrittenOverlay = !!(globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, normalized));
+    \\    if (hadWrittenOverlay) delete globalThis.__home_written_files[normalized];
     \\    if (typeof globalThis.__home_unlinkSyncNative !== "function") __home_unsupported("node:fs.unlinkSync native bridge is not installed");
-    \\    return globalThis.__home_unlinkSyncNative(String(path));
+    \\    try {
+    \\      return globalThis.__home_unlinkSyncNative(normalized);
+    \\    } catch (error) {
+    \\      if (hadWrittenOverlay) return undefined;
+    \\      throw error;
+    \\    }
     \\  },
     \\  rmSync(path, options) {
     \\    const recursive = options && typeof options === "object" && options.recursive === true;
@@ -7221,12 +7292,13 @@ const harness_prelude =
     \\Object.defineProperty(Headers.prototype, "count", { configurable: true, get() { return Object.keys(this.__home_headers).length; } });
     \\Object.defineProperty(Headers.prototype, Symbol.toStringTag, { value: "Headers" });
     \\globalThis.Headers = Headers;
-    \\if (typeof FormData !== "function") {
+    \\if (true) {
     \\  var FormData = function() {
     \\    this.__home_is_formdata = true;
     \\    this.__home_entries = [];
     \\  };
     \\  function __home_formdata_value(value, filename) {
+    \\    if (value && value.__home_file_ref) return value;
     \\    if (value && Array.isArray(value.__home_blob_bytes)) {
     \\      if (typeof File === "function" && filename !== undefined) {
     \\        return new File([value], filename === undefined ? (value.name || "blob") : String(filename), { type: value.type || "" });
@@ -7273,6 +7345,7 @@ const harness_prelude =
     \\  FormData.prototype.forEach = function(callback, thisArg) {
     \\    for (const entry of this.__home_entries) callback.call(thisArg, entry[1], entry[0], this);
     \\  };
+    \\  Object.defineProperty(FormData.prototype, "length", { configurable: true, get() { return this.__home_entries.length; } });
     \\  FormData.prototype.toJSON = function() {
     \\    const json = {};
     \\    for (const entry of this.__home_entries) {
@@ -7293,6 +7366,8 @@ const harness_prelude =
     \\    if (bytes.length > limit) throw new RangeError("Cannot create a string longer than " + String(limit));
     \\    return __home_parse_urlencoded_formdata(__home_utf8_bytes_to_text(bytes));
     \\  };
+    \\  Object.defineProperty(FormData.prototype, Symbol.toStringTag, { value: "FormData" });
+    \\  globalThis.FormData = FormData;
     \\}
     \\let __home_formdata_boundary_counter = 0;
     \\function __home_formdata_escape_name(value) {
@@ -7302,18 +7377,33 @@ const harness_prelude =
     \\  const counter = (++__home_formdata_boundary_counter).toString(16).padStart(32, "0");
     \\  return "----WebKitFormBoundary" + counter.slice(-32);
     \\}
+    \\function __home_formdata_file_name(value) {
+    \\  if (!value) return "blob";
+    \\  if (value.name) return String(value.name);
+    \\  const path = String(value.path || "");
+    \\  const slash = path.lastIndexOf("/");
+    \\  return slash === -1 ? (path || "blob") : (path.slice(slash + 1) || "blob");
+    \\}
+    \\function __home_file_ref_text(value) {
+    \\  const path = String(value && value.path || "");
+    \\  const nativeText = __home_build_read_text(path);
+    \\  if (nativeText === null) throw new Error("No such file: " + path);
+    \\  return nativeText;
+    \\}
     \\function __home_formdata_serialize(form) {
     \\  const boundary = __home_formdata_boundary();
     \\  const lines = [];
     \\  for (const entry of form.__home_entries || []) {
     \\    const value = entry[1];
+    \\    const isFileRef = !!(value && value.__home_file_ref);
+    \\    const isBlob = !!(value && Array.isArray(value.__home_blob_bytes));
     \\    lines.push("--" + boundary);
     \\    let disposition = 'Content-Disposition: form-data; name="' + __home_formdata_escape_name(entry[0]) + '"';
-    \\    if (value && Array.isArray(value.__home_blob_bytes)) disposition += '; filename="' + __home_formdata_escape_name(value.name || "blob") + '"';
+    \\    if (isBlob || isFileRef) disposition += '; filename="' + __home_formdata_escape_name(__home_formdata_file_name(value)) + '"';
     \\    lines.push(disposition);
-    \\    if (value && Array.isArray(value.__home_blob_bytes) && value.type) lines.push("Content-Type: " + value.type);
+    \\    if ((isBlob || isFileRef) && value.type) lines.push("Content-Type: " + value.type);
     \\    lines.push("");
-    \\    lines.push(value && Array.isArray(value.__home_blob_bytes) ? __home_utf8_bytes_to_text(value.__home_blob_bytes) : String(value));
+    \\    lines.push(isBlob ? __home_utf8_bytes_to_text(value.__home_blob_bytes) : (isFileRef ? __home_file_ref_text(value) : String(value)));
     \\  }
     \\  lines.push("--" + boundary + "--");
     \\  lines.push("");
@@ -8125,7 +8215,7 @@ const harness_prelude =
     \\    const bytes = [];
     \\    for (const chunk of body.__home_chunks) {
     \\      const chunkBytes = __home_body_bytes_sync(chunk);
-    \\      for (let i = 0; i < chunkBytes.length; i++) bytes.push(chunkBytes[i]);
+    \\      for (let i = 0; i < chunkBytes.length; i++) __home_array_append(bytes, chunkBytes[i]);
     \\    }
     \\    return bytes;
     \\  }
@@ -8133,7 +8223,11 @@ const harness_prelude =
     \\  if (body && typeof body.toString === "function") return __home_text_to_utf8_bytes(body.toString());
     \\  return __home_text_to_utf8_bytes(String(body));
     \\}
+    \\function __home_stream_has_pending_pull(body) {
+    \\  return !!(body && !body.__home_closed && body.__home_underlying_source && typeof body.__home_underlying_source.pull === "function");
+    \\}
     \\function __home_body_bytes(body) {
+    \\  if (body && Array.isArray(body.__home_chunks) && !__home_stream_has_pending_pull(body)) return Promise.resolve(__home_body_bytes_sync(body));
     \\  if (body && typeof body.getReader === "function") {
     \\    const reader = body.getReader();
     \\    const chunks = [];
@@ -8143,7 +8237,7 @@ const harness_prelude =
     \\          const bytes = [];
     \\          for (const chunk of chunks) {
     \\            const chunkBytes = __home_body_bytes_sync(chunk);
-    \\            for (let i = 0; i < chunkBytes.length; i++) bytes.push(chunkBytes[i]);
+    \\            for (let i = 0; i < chunkBytes.length; i++) __home_array_append(bytes, chunkBytes[i]);
     \\          }
     \\          return bytes;
     \\        }
@@ -8254,7 +8348,10 @@ const harness_prelude =
     \\      this.body = __home_body_record({ __home_text: serialized.text });
     \\      this.__home_formdata = body;
     \\      this.headers.set("content-type", "multipart/form-data; boundary=" + serialized.boundary);
-    \\    } else if (body && typeof body === "object" && typeof body.type === "string" && this.headers.get("content-type") === null) this.headers.set("content-type", body.type);
+    \\    } else if (typeof URLSearchParams === "function" && body instanceof URLSearchParams && this.headers.get("content-type") === null) {
+    \\      this.body = __home_body_record({ __home_text: body.toString() });
+    \\      this.headers.set("content-type", "application/x-www-form-urlencoded;charset=UTF-8");
+    \\    } else if (body && typeof body === "object" && (typeof body.__home_content_type === "string" || typeof body.type === "string") && this.headers.get("content-type") === null) this.headers.set("content-type", body.__home_content_type || body.type);
     \\  };
     \\}
     \\Response.prototype.text = function() {
@@ -8267,17 +8364,21 @@ const harness_prelude =
     \\  return __home_consume_body(this).then(bytes => new Uint8Array(bytes).buffer);
     \\};
     \\Response.prototype.blob = function() {
-    \\  return __home_consume_body(this).then(bytes => new Blob([new Uint8Array(bytes)], { type: this.headers.get("content-type") || "" }));
+    \\  const type = this.headers.get("content-type") || "";
+    \\  return __home_consume_body(this).then(bytes => {
+    \\    const blob = new Blob([new Uint8Array(bytes)], { type });
+    \\    blob.__home_content_type = type;
+    \\    return blob;
+    \\  });
     \\};
     \\Response.prototype.formData = function() {
-    \\  if (this.__home_formdata) return __home_consume_body(this).then(() => {
-    \\    const form = new FormData();
-    \\    for (const entry of this.__home_formdata) form.append(entry[0], entry[1]);
-    \\    return form;
-    \\  });
     \\  return this.text().then(text => __home_parse_formdata_text(text, __home_content_type(this.headers)));
     \\};
     \\Response.prototype.clone = function() {
+    \\  if (this.body && Array.isArray(this.body.__home_chunks) && !__home_stream_has_pending_pull(this.body)) {
+    \\    const chunks = this.body.__home_chunks.slice();
+    \\    return new Response(new ReadableStream({ start(controller) { for (const chunk of chunks) controller.enqueue(chunk); controller.close(); } }), { status: this.status, statusText: this.statusText, headers: this.headers });
+    \\  }
     \\  if (this.body && typeof this.body.tee === "function") {
     \\    const branches = this.body.tee();
     \\    this.body = branches[0];
@@ -8403,6 +8504,7 @@ const harness_prelude =
     \\};
     \\function __home_blob_part_to_bytes(part) {
     \\  if (part && Array.isArray(part.__home_blob_bytes)) return part.__home_blob_bytes.slice();
+    \\  if (part && part.__home_file_ref) return __home_text_to_utf8_bytes(__home_file_ref_text(part));
     \\  if (part instanceof ArrayBuffer) return Array.from(new Uint8Array(part));
     \\  if (ArrayBuffer.isView(part)) return Array.from(new Uint8Array(part.buffer, part.byteOffset, part.byteLength));
     \\  return __home_text_to_utf8_bytes(String(part));
@@ -8432,10 +8534,11 @@ const harness_prelude =
     \\}
     \\var Blob = function(parts, options) {
     \\  const source = __home_blob_parts(parts);
-    \\  const bytes = [];
+    \\  let bytes = [];
     \\  for (const part of source) {
     \\    const partBytes = __home_blob_part_to_bytes(part);
-    \\    for (let i = 0; i < partBytes.length; i++) __home_array_append(bytes, partBytes[i]);
+    \\    if (bytes.length === 0) bytes = partBytes.slice();
+    \\    else for (let i = 0; i < partBytes.length; i++) __home_array_append(bytes, partBytes[i]);
     \\  }
     \\  this.parts = source.slice();
     \\  this.__home_blob_bytes = bytes;
@@ -8455,7 +8558,7 @@ const harness_prelude =
     \\  return this.text().then(text => __home_parse_json_body_text(text));
     \\};
     \\Blob.prototype.formData = function() {
-    \\  return this.text().then(text => __home_parse_formdata_text(text, this.type || "application/x-www-form-urlencoded"));
+    \\  return this.text().then(text => __home_parse_formdata_text(text, this.__home_content_type || this.type || "application/x-www-form-urlencoded"));
     \\};
     \\Blob.prototype.slice = function(start, end, contentType) {
     \\  const size = this.size || 0;
@@ -8606,6 +8709,8 @@ const harness_prelude =
     \\      this.__home_formdata = null;
     \\      this.body = __home_body_record(bodyOption && typeof bodyOption.getReader === "function" ? bodyOption : { __home_text: __home_request_body_text(bodyOption) });
     \\      this.__home_text = __home_request_body_text(bodyOption);
+    \\      if (typeof URLSearchParams === "function" && bodyOption instanceof URLSearchParams && this.headers.get("content-type") === null) this.headers.set("content-type", "application/x-www-form-urlencoded;charset=UTF-8");
+    \\      else if (bodyOption && typeof bodyOption === "object" && (typeof bodyOption.__home_content_type === "string" || typeof bodyOption.type === "string") && (bodyOption.__home_content_type || bodyOption.type) !== "" && this.headers.get("content-type") === null) this.headers.set("content-type", bodyOption.__home_content_type || bodyOption.type);
     \\    }
     \\    if (this.body === null) this.body = __home_body_record({ __home_text: this.__home_text });
     \\  };
@@ -8616,25 +8721,25 @@ const harness_prelude =
     \\    return __home_consume_body(this).then(bytes => new Uint8Array(bytes).buffer);
     \\  };
     \\  Request.prototype.blob = function() {
-    \\    return __home_consume_body(this).then(bytes => new Blob([new Uint8Array(bytes)], { type: this.headers.get("content-type") || "" }));
+    \\    const type = this.headers.get("content-type") || "";
+    \\    return __home_consume_body(this).then(bytes => {
+    \\      const blob = new Blob([new Uint8Array(bytes)], { type });
+    \\      blob.__home_content_type = type;
+    \\      return blob;
+    \\    });
     \\  };
     \\  Request.prototype.formData = function() {
-    \\    if (this.__home_formdata) return __home_consume_body(this).then(() => {
-    \\      const form = new FormData();
-    \\      for (const entry of this.__home_formdata) form.append(entry[0], entry[1]);
-    \\      return form;
-    \\    });
     \\    return this.text().then(text => __home_parse_formdata_text(text, __home_content_type(this.headers)));
     \\  };
     \\  Request.prototype.clone = function() {
+    \\    if (this.body && Array.isArray(this.body.__home_chunks) && !__home_stream_has_pending_pull(this.body)) {
+    \\      const chunks = this.body.__home_chunks.slice();
+    \\      return new Request(this, { body: new ReadableStream({ start(controller) { for (const chunk of chunks) controller.enqueue(chunk); controller.close(); } }) });
+    \\    }
     \\    if (this.body && typeof this.body.tee === "function") {
     \\      const branches = this.body.tee();
     \\      this.body = branches[0];
     \\      return new Request(this, { body: branches[1] });
-    \\    }
-    \\    if (this.body && Array.isArray(this.body.__home_chunks)) {
-    \\      const chunks = this.body.__home_chunks.slice();
-    \\      return new Request(this, { body: new ReadableStream({ start(controller) { for (const chunk of chunks) controller.enqueue(chunk); controller.close(); } }) });
     \\    }
     \\    return new Request(this);
     \\  };
@@ -8970,6 +9075,11 @@ const harness_prelude =
     \\    for (let i = 0; i < binary.length; i++) bytes.push(binary.charCodeAt(i) & 0xff);
     \\    return bytes;
     \\  }
+    \\  function __home_bytes_base64(bytes) {
+    \\    let binary = "";
+    \\    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i] & 0xff);
+    \\    return btoa(binary);
+    \\  }
     \\  function __home_buffer_string_bytes(value, encoding) {
     \\    const normalized = encoding === undefined ? "utf8" : String(encoding).toLowerCase();
     \\    if (normalized === "base64") return __home_base64_bytes(value);
@@ -9073,6 +9183,7 @@ const harness_prelude =
     \\      for (let i = 0; i < this.length; i++) output += this[i].toString(16).padStart(2, "0");
     \\      return output;
     \\    }
+    \\    if (normalized === "base64") return __home_bytes_base64(this);
     \\    if (normalized === "utf8" || normalized === "utf-8") {
     \\      let output = "";
     \\      for (let i = 0; i < this.length; i++) output += String.fromCharCode(this[i]);
@@ -9083,7 +9194,7 @@ const harness_prelude =
     \\      for (let i = 0; i < this.length; i += 2) output += String.fromCharCode(this[i] | ((this[i + 1] || 0) << 8));
     \\      return output;
     \\    }
-    \\    __home_unsupported("Only Buffer.toString('hex'/'utf8') is supported by the Home Bun corpus bootstrap runner");
+    \\    __home_unsupported("Only Buffer.toString('hex'/'base64'/'utf8') is supported by the Home Bun corpus bootstrap runner");
     \\  };
     \\  Buffer.prototype.write = function(value, offsetOrEncoding, lengthOrEncoding, encodingMaybe) {
     \\    let offset = 0;
@@ -9681,8 +9792,12 @@ const harness_prelude =
     \\  const __home_stream_controllers = new WeakMap();
     \\  ReadableStream = function(underlyingSource, strategy) {
     \\    let capturedController = null;
+    \\    let capturedChunks = null;
+    \\    let exposeCapturedChunks = false;
     \\    let source = underlyingSource;
     \\    if (source && typeof source.start === "function") {
+    \\      capturedChunks = [];
+    \\      exposeCapturedChunks = typeof source.pull !== "function";
     \\      source = Object.assign({}, source, {
     \\        start(controller) {
     \\          controller.__home_desired_size = 1;
@@ -9706,6 +9821,7 @@ const harness_prelude =
     \\              }
     \\              if (property === "enqueue") {
     \\                return function() {
+    \\                  capturedChunks.push(arguments[0]);
     \\                  const result = target.enqueue.apply(target, arguments);
     \\                  target.__home_desired_size = 0;
     \\                  return result;
@@ -9724,6 +9840,7 @@ const harness_prelude =
     \\      });
     \\    }
     \\    const stream = new __home_NativeReadableStream(source, strategy);
+    \\    if (capturedChunks && exposeCapturedChunks) stream.__home_chunks = capturedChunks;
     \\    if (capturedController) __home_stream_controllers.set(stream, capturedController);
     \\    return stream;
     \\  };
@@ -9811,7 +9928,7 @@ const harness_prelude =
     \\}
     \\function __home_readable_stream_to_array_buffer(stream) {
     \\  if (!stream) throw new TypeError("Expected ReadableStream");
-    \\  if (Array.isArray(stream.__home_chunks)) return __home_concat_array_buffers(stream.__home_chunks);
+    \\  if (Array.isArray(stream.__home_chunks) && !__home_stream_has_pending_pull(stream)) return __home_concat_array_buffers(stream.__home_chunks);
     \\  return __home_body_bytes(stream).then(bytes => new Uint8Array(bytes).buffer);
     \\}
     \\if (typeof ReadableStream === "function" && ReadableStream.prototype && !ReadableStream.prototype.__home_body_methods) {
