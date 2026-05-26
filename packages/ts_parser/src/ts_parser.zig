@@ -5154,7 +5154,7 @@ pub const Parser = struct {
                     }
                     default_value = try self.parseAssignmentExpression();
                 }
-                try self.reportInvalidDefiniteAssignmentAssertion(definite_assignment_token, type_anno, default_value);
+                try self.reportClassPropertyDefiniteAssignment(definite_assignment_token, type_anno, default_value, mods, member_start.span.start);
                 if (mods.is_accessor) {
                     try self.reportOptionalAutoAccessor(optional_member_token);
                 }
@@ -5586,6 +5586,69 @@ pub const Parser = struct {
             try self.reportCodeAt(bad.span.start, bad.line, 1263, "Declarations with initializers cannot also have definite assignment assertions.");
         } else if (type_annotation == hir_mod.none_node_id) {
             try self.reportCodeAt(bad.span.start, bad.line, 1264, "Declarations with definite assignment assertions must also have type annotations.");
+        }
+    }
+
+    /// Class-property variant of the definite-assignment grammar check.
+    /// Mirrors upstream tsgo `checkGrammarProperty` (grammarchecks.go
+    /// ~L1928): when a property bears a `!` postfix token it cascades
+    /// TS1263 (has initializer) → TS1264 (no type annotation) → TS1255
+    /// for the remaining "not permitted in this context" case. The
+    /// TS1255 default fires when the `!` carries a type and no
+    /// initializer but the property is NOT a plain instance field of a
+    /// concrete class — i.e. it sits in an ambient context (`declare`),
+    /// or is `static`, or is `abstract`. Anchored at the `!` token to
+    /// match tsc's `grammarErrorOnNode(postfixToken, …)` span.
+    fn reportClassPropertyDefiniteAssignment(
+        self: *Parser,
+        bang_token: ?Token,
+        type_annotation: NodeId,
+        initializer: NodeId,
+        mods: ClassModifiers,
+        member_start: u32,
+    ) ParseError!void {
+        const bad = bang_token orelse return;
+        if (initializer != hir_mod.none_node_id) {
+            try self.reportCodeAt(bad.span.start, bad.line, 1263, "Declarations with initializers cannot also have definite assignment assertions.");
+            return;
+        }
+        if (type_annotation == hir_mod.none_node_id) {
+            try self.reportCodeAt(bad.span.start, bad.line, 1264, "Declarations with definite assignment assertions must also have type annotations.");
+            return;
+        }
+        const is_ambient = self.isAmbientContextAt(member_start) or mods.declare_token != null;
+        if (is_ambient or mods.is_static or mods.is_abstract) {
+            try self.reportCodeAt(bad.span.start, bad.line, 1255, "A definite assignment assertion '!' is not permitted in this context.");
+        }
+    }
+
+    /// Variable-declaration variant of the definite-assignment grammar
+    /// check. Mirrors upstream `checkGrammarVariableDeclaration`
+    /// (grammarchecks.go ~L1587): a `!` postfix cascades TS1263 (has
+    /// initializer) → TS1264 (no type annotation) → TS1255 for the
+    /// "not permitted in this context" remainder. The TS1255 case is
+    /// reached when the binding bears a type and no initializer but the
+    /// declaration sits in an ambient context (`declare let v!: T;`) —
+    /// matching tsc's `nodeFlags & Ambient` arm of the default branch.
+    /// A plain `let x!: T;` in a normal variable statement stays clean.
+    fn reportVariableDefiniteAssignment(
+        self: *Parser,
+        bang_token: ?Token,
+        type_annotation: NodeId,
+        initializer: NodeId,
+        is_ambient: bool,
+    ) ParseError!void {
+        const bad = bang_token orelse return;
+        if (initializer != hir_mod.none_node_id) {
+            try self.reportCodeAt(bad.span.start, bad.line, 1263, "Declarations with initializers cannot also have definite assignment assertions.");
+            return;
+        }
+        if (type_annotation == hir_mod.none_node_id) {
+            try self.reportCodeAt(bad.span.start, bad.line, 1264, "Declarations with definite assignment assertions must also have type annotations.");
+            return;
+        }
+        if (is_ambient) {
+            try self.reportCodeAt(bad.span.start, bad.line, 1255, "A definite assignment assertion '!' is not permitted in this context.");
         }
     }
 
@@ -7583,7 +7646,8 @@ pub const Parser = struct {
         if (self.match(.equal)) {
             init_node = try self.parseAssignmentExpression();
         }
-        try self.reportInvalidDefiniteAssignmentAssertion(definite_assignment_token, type_annotation, init_node);
+        const is_ambient_decl = self.isAmbientContextAt(start.span.start);
+        try self.reportVariableDefiniteAssignment(definite_assignment_token, type_annotation, init_node, is_ambient_decl);
         try self.recoverRegexVariableDeclarationTail(init_node);
         if (self.peek().kind == .number_literal and
             self.cursor > 0 and
@@ -7593,7 +7657,6 @@ pub const Parser = struct {
             const bad = self.advance();
             try self.reportCodeAt(bad.span.start, bad.line, 1005, "',' expected.");
         }
-        const is_ambient_decl = self.isAmbientContextAt(start.span.start);
         if (decl_kind == .const_decl and init_node == hir_mod.none_node_id and !is_ambient_decl and !name_list_was_empty) {
             // `const {}` and `const []` already raise TS1182
             // ("A destructuring declaration must have an
@@ -7634,7 +7697,7 @@ pub const Parser = struct {
             if (self.match(.colon)) extra_type = try self.parseTypeAnnotation();
             var extra_init: NodeId = hir_mod.none_node_id;
             if (self.match(.equal)) extra_init = try self.parseAssignmentExpression();
-            try self.reportInvalidDefiniteAssignmentAssertion(extra_definite_assignment_token, extra_type, extra_init);
+            try self.reportVariableDefiniteAssignment(extra_definite_assignment_token, extra_type, extra_init, is_ambient_decl);
             try self.recoverRegexVariableDeclarationTail(extra_init);
             if (decl_kind == .const_decl and extra_init == hir_mod.none_node_id and !is_ambient_decl) {
                 const extra_kind = self.hir.kindOf(extra_name);
@@ -16144,6 +16207,106 @@ test "parser: class property definite-assignment assertion reports TS1263 and TS
     }
     try T.expectEqual(@as(u32, 2), saw_1263);
     try T.expectEqual(@as(u32, 1), saw_1264);
+}
+
+test "parser: TS1255 fires for definite-assignment on ambient class property" {
+    // Mirrors upstream tsgo `checkGrammarProperty` (grammarchecks.go
+    // ~L1934): a `!` definite-assignment assertion on a property that
+    // carries a type and no initializer is "not permitted in this
+    // context" when the property is ambient/static/abstract. Here the
+    // `declare class` puts the body in an ambient context.
+    var s = try newTestSetup(
+        \\declare class C4 {
+        \\  a!: number;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findDiag(s, 1255) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("A definite assignment assertion '!' is not permitted in this context.", d.message);
+    // The TS1263/TS1264 siblings must NOT also fire for the same member.
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1263));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1264));
+}
+
+test "parser: TS1255 fires for definite-assignment on static class property" {
+    // `static c!: number;` — static fields are externally assigned so
+    // the definite-assignment assertion is disallowed (grammarchecks.go
+    // `ast.IsStatic(node)` arm).
+    var s = try newTestSetup(
+        \\class C {
+        \\  static c!: number;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findDiag(s, 1255) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("A definite assignment assertion '!' is not permitted in this context.", d.message);
+}
+
+test "parser: TS1255 fires for definite-assignment on abstract class property" {
+    // `abstract a!: number;` — abstract fields are implemented by
+    // subclasses so the definite-assignment assertion is disallowed
+    // (grammarchecks.go `ast.HasAbstractModifier(node)` arm).
+    var s = try newTestSetup(
+        \\abstract class C5 {
+        \\  abstract a!: number;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findDiag(s, 1255) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("A definite assignment assertion '!' is not permitted in this context.", d.message);
+}
+
+test "parser: TS1255 stays clean for a plain instance-field definite-assignment" {
+    // `a!: number;` on a concrete, non-static instance field is the
+    // canonical VALID use of the definite-assignment assertion and must
+    // not draw TS1255 (nor TS1263/TS1264).
+    var s = try newTestSetup(
+        \\class C {
+        \\  a!: number;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1255));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1263));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1264));
+}
+
+test "parser: TS1255 fires for definite-assignment on ambient variable" {
+    // `declare let v1!: number;` — the binding has a type and no
+    // initializer but is ambient, so upstream's
+    // `checkGrammarVariableDeclaration` default branch
+    // (`nodeFlags & Ambient`) surfaces TS1255.
+    var s = try newTestSetup("declare let v1!: number;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findDiag(s, 1255) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("A definite assignment assertion '!' is not permitted in this context.", d.message);
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1263));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1264));
+}
+
+test "parser: TS1255 fires for definite-assignment on ambient var" {
+    var s = try newTestSetup("declare var v2!: number;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findDiag(s, 1255) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("A definite assignment assertion '!' is not permitted in this context.", d.message);
+}
+
+test "parser: TS1255 stays clean for a non-ambient variable definite-assignment" {
+    // `let x!: number;` in a normal variable statement is valid — the
+    // parent.parent IS a VariableStatement and the file is not ambient,
+    // so no TS1255/TS1263/TS1264.
+    var s = try newTestSetup("let x!: number;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1255));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1263));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1264));
 }
 
 test "parser: numeric literal — hex/oct/bin/exponent" {
