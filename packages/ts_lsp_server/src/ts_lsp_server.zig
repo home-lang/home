@@ -151,11 +151,14 @@ pub const Method = enum {
     text_document_selection_range,
     text_document_linked_editing_range,
     workspace_will_rename_files,
+    workspace_will_create_files,
+    workspace_will_delete_files,
     workspace_did_rename_files,
     workspace_did_create_files,
     workspace_did_delete_files,
     workspace_did_change_watched_files,
     workspace_execute_command,
+    cancel_request,
     text_document_moniker,
     text_document_inline_value,
     text_document_inline_completion,
@@ -214,11 +217,14 @@ pub const Method = enum {
             .{ "textDocument/selectionRange", Method.text_document_selection_range },
             .{ "textDocument/linkedEditingRange", Method.text_document_linked_editing_range },
             .{ "workspace/willRenameFiles", Method.workspace_will_rename_files },
+            .{ "workspace/willCreateFiles", Method.workspace_will_create_files },
+            .{ "workspace/willDeleteFiles", Method.workspace_will_delete_files },
             .{ "workspace/didRenameFiles", Method.workspace_did_rename_files },
             .{ "workspace/didCreateFiles", Method.workspace_did_create_files },
             .{ "workspace/didDeleteFiles", Method.workspace_did_delete_files },
             .{ "workspace/didChangeWatchedFiles", Method.workspace_did_change_watched_files },
             .{ "workspace/executeCommand", Method.workspace_execute_command },
+            .{ "$/cancelRequest", Method.cancel_request },
             .{ "textDocument/moniker", Method.text_document_moniker },
             .{ "textDocument/inlineValue", Method.text_document_inline_value },
             .{ "textDocument/inlineCompletion", Method.text_document_inline_completion },
@@ -298,11 +304,14 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     "workspace/symbol",
     "workspace/diagnostic",
     "workspace/willRenameFiles",
+    "workspace/willCreateFiles",
+    "workspace/willDeleteFiles",
     "workspace/didRenameFiles",
     "workspace/didCreateFiles",
     "workspace/didDeleteFiles",
     "workspace/didChangeWatchedFiles",
     "workspace/executeCommand",
+    "$/cancelRequest",
     // Call hierarchy.
     "callHierarchy/incomingCalls",
     "callHierarchy/outgoingCalls",
@@ -2772,6 +2781,58 @@ pub fn handleWillRenameFiles(
     return encodeResponse(gpa, request_id, buf.items);
 }
 
+/// Handle a `workspace/willCreateFiles` request: the editor is about
+/// to create the listed files and gives the server a chance to
+/// return a `WorkspaceEdit` to apply alongside (e.g. add new imports
+/// in sibling files that should reference the new module). Home's
+/// service doesn't yet model file-creation rewrites, so respond with
+/// `null` (the spec-compliant "no edits" reply). Mirrors how
+/// `willRenameFiles` returns an empty `{"changes":{}}` shape today.
+pub fn handleWillCreateFiles(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    _ = service;
+    _ = findJsonRawField(params_json, "files") orelse return error.MissingFiles;
+    return encodeResponse(gpa, request_id, "null");
+}
+
+/// Handle a `workspace/willDeleteFiles` request: editor is about to
+/// delete the listed files; the server may return a `WorkspaceEdit`
+/// to apply alongside (e.g. drop dangling imports). Home doesn't yet
+/// compute the cascading edits — return `null` (spec-compliant "no
+/// edits") so the rename committee proceeds.
+pub fn handleWillDeleteFiles(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    _ = service;
+    _ = findJsonRawField(params_json, "files") orelse return error.MissingFiles;
+    return encodeResponse(gpa, request_id, "null");
+}
+
+/// Handle a `$/cancelRequest` notification: a previously-issued
+/// request is being cancelled. Per JSON-RPC the notification carries
+/// the cancelled request's `id` (which can be string or integer).
+/// Home's checker pipeline isn't currently cancellable — requests
+/// always run to completion — so this is a no-op acknowledgement;
+/// surface as recognized rather than as `Method not found` (-32601).
+/// A future enhancement would set a cancellation token on the
+/// in-flight Service operation.
+pub fn handleCancelRequest(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    params_json: []const u8,
+) !void {
+    _ = service;
+    _ = gpa;
+    _ = params_json;
+}
+
 /// Handle a `workspace/didRenameFiles` notification: editor has
 /// committed a rename. The paired `willRenameFiles` request returns
 /// WorkspaceEdits the server wants applied alongside the rename;
@@ -3672,6 +3733,14 @@ pub fn dispatchRequest(
             if (is_notification) return &.{};
             return try handleWillRenameFiles(service, gpa, id, params);
         },
+        .workspace_will_create_files => {
+            if (is_notification) return &.{};
+            return try handleWillCreateFiles(service, gpa, id, params);
+        },
+        .workspace_will_delete_files => {
+            if (is_notification) return &.{};
+            return try handleWillDeleteFiles(service, gpa, id, params);
+        },
         .workspace_did_rename_files => {
             try handleDidRenameFiles(service, gpa, params);
             return &.{};
@@ -3691,6 +3760,10 @@ pub fn dispatchRequest(
         .workspace_execute_command => {
             if (is_notification) return &.{};
             return try handleExecuteCommand(service, gpa, id, params);
+        },
+        .cancel_request => {
+            try handleCancelRequest(service, gpa, params);
+            return &.{};
         },
         .text_document_moniker => {
             if (is_notification) return &.{};
@@ -4113,6 +4186,58 @@ test "handleDidSave: accepts notification without text payload" {
 
     const id = program.lookupPath("/main.ts") orelse return error.TestUnexpectedResult;
     try T.expectEqualStrings("let x = 1;", program.fileById(id).source);
+}
+
+test "handleWillCreateFiles: returns null WorkspaceEdit" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+    const body =
+        \\{"jsonrpc":"2.0","id":1,"method":"workspace/willCreateFiles","params":{"files":[{"uri":"file:///new.ts"}]}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    const out = try handleWillCreateFiles(&svc, T.allocator, RequestId{ .integer = 1 }, params);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":null") != null);
+}
+
+test "handleWillDeleteFiles: returns null WorkspaceEdit" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+    const body =
+        \\{"jsonrpc":"2.0","id":2,"method":"workspace/willDeleteFiles","params":{"files":[{"uri":"file:///gone.ts"}]}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    const out = try handleWillDeleteFiles(&svc, T.allocator, RequestId{ .integer = 2 }, params);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":null") != null);
+}
+
+test "handleCancelRequest: accepts notification (no-op)" {
+    // `$/cancelRequest` is a JSON-RPC notification; Home's request
+    // pipeline isn't currently cancellable, so this is a no-op
+    // acknowledgement rather than `Method not found`.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+    const body =
+        \\{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":42}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    try handleCancelRequest(&svc, T.allocator, params);
 }
 
 test "handleDidRenameFiles: accepts notification (no-op)" {
