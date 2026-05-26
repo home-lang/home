@@ -200,6 +200,8 @@ pub const CompilerOptions = struct {
     keyof_strings_only: ?bool = null,
     suppress_excess_property_errors: ?bool = null,
     suppress_implicit_any_index_errors: ?bool = null,
+    no_implicit_use_strict: ?bool = null,
+    no_strict_generic_checks: ?bool = null,
 
     // -- Modules --
     module: ?Module = null,
@@ -220,6 +222,8 @@ pub const CompilerOptions = struct {
     isolated_declarations: ?bool = null,
     verbatim_module_syntax: ?bool = null,
     allow_synthetic_default_imports: ?bool = null,
+    imports_not_used_as_values: ?[]const u8 = null,
+    preserve_value_imports: ?bool = null,
     module_detection: ?[]const u8 = null,
     ignore_deprecations: ?[]const u8 = null,
 
@@ -233,6 +237,7 @@ pub const CompilerOptions = struct {
     jsx_import_source: ?[]const u8 = null,
     react_namespace: ?[]const u8 = null,
     out_file: ?[]const u8 = null,
+    out: ?[]const u8 = null,
     out_dir: ?[]const u8 = null,
     root_dir: ?[]const u8 = null,
     declaration: ?bool = null,
@@ -257,6 +262,7 @@ pub const CompilerOptions = struct {
     source_map: ?bool = null,
     inline_source_map: ?bool = null,
     inline_sources: ?bool = null,
+    charset: ?[]const u8 = null,
 
     // -- JS support --
     allow_js: ?bool = null,
@@ -412,6 +418,55 @@ pub const TsConfig = struct {
                     .field = "ignoreDeprecations",
                 });
             }
+        }
+        if (co.module_detection) |module_detection| {
+            if (!std.ascii.eqlIgnoreCase(module_detection, "auto") and
+                !std.ascii.eqlIgnoreCase(module_detection, "legacy") and
+                !std.ascii.eqlIgnoreCase(module_detection, "force"))
+            {
+                try appendTs6046(gpa, &diags, "moduleDetection", "'auto', 'legacy', 'force'");
+            }
+        }
+        if (co.imports_not_used_as_values) |imports_not_used_as_values| {
+            if (!std.ascii.eqlIgnoreCase(imports_not_used_as_values, "remove") and
+                !std.ascii.eqlIgnoreCase(imports_not_used_as_values, "preserve") and
+                !std.ascii.eqlIgnoreCase(imports_not_used_as_values, "error"))
+            {
+                try appendTs6046(gpa, &diags, "importsNotUsedAsValues", "'remove', 'preserve', 'error'");
+            }
+        }
+
+        // TypeScript 6.0 has crossed the 5.5 removal line for this
+        // legacy option family from `verifyDeprecatedCompilerOptions`.
+        if (co.target == .es3) {
+            try appendTs5108(gpa, &diags, "target", "ES3");
+        }
+        if (co.no_implicit_use_strict == true) {
+            try appendTs5102(gpa, &diags, "noImplicitUseStrict");
+        }
+        if (co.keyof_strings_only == true) {
+            try appendTs5102(gpa, &diags, "keyofStringsOnly");
+        }
+        if (co.suppress_excess_property_errors == true) {
+            try appendTs5102(gpa, &diags, "suppressExcessPropertyErrors");
+        }
+        if (co.suppress_implicit_any_index_errors == true) {
+            try appendTs5102(gpa, &diags, "suppressImplicitAnyIndexErrors");
+        }
+        if (co.no_strict_generic_checks == true) {
+            try appendTs5102(gpa, &diags, "noStrictGenericChecks");
+        }
+        if (co.charset != null) {
+            try appendTs5102(gpa, &diags, "charset");
+        }
+        if (co.out != null) {
+            try appendTs5102(gpa, &diags, "out");
+        }
+        if (co.imports_not_used_as_values != null) {
+            try appendTs5102(gpa, &diags, "importsNotUsedAsValues");
+        }
+        if (co.preserve_value_imports == true) {
+            try appendTs5102(gpa, &diags, "preserveValueImports");
         }
 
         if (co.isolated_modules == true and co.module == .none and !targetAtLeastES2015(co.target)) {
@@ -1047,6 +1102,50 @@ fn appendTs6082(
     const msg = try std.fmt.allocPrint(gpa, "Only 'amd' and 'system' modules are supported alongside --{s}.", .{option});
     try diags.append(gpa, .{
         .code = 6082,
+        .message = msg,
+        .owns_message = true,
+        .field = option,
+    });
+}
+
+fn appendTs5102(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    option: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(gpa, "Option '{s}' has been removed. Please remove it from your configuration.", .{option});
+    try diags.append(gpa, .{
+        .code = 5102,
+        .message = msg,
+        .owns_message = true,
+        .field = option,
+    });
+}
+
+fn appendTs5108(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    option: []const u8,
+    value: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(gpa, "Option '{s}={s}' has been removed. Please remove it from your configuration.", .{ option, value });
+    try diags.append(gpa, .{
+        .code = 5108,
+        .message = msg,
+        .owns_message = true,
+        .field = option,
+    });
+}
+
+fn appendTs6046(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    option: []const u8,
+    values: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(gpa, "Argument for '--{s}' option must be: {s}.", .{ option, values });
+    try diags.append(gpa, .{
+        .code = 6046,
         .message = msg,
         .owns_message = true,
         .field = option,
@@ -1716,7 +1815,10 @@ fn fillCompilerOptions(arena: std.mem.Allocator, co: *CompilerOptions, obj: json
             .{ .name = "keyofStringsOnly", .field = "keyof_strings_only" },
             .{ .name = "suppressExcessPropertyErrors", .field = "suppress_excess_property_errors" },
             .{ .name = "suppressImplicitAnyIndexErrors", .field = "suppress_implicit_any_index_errors" },
+            .{ .name = "noImplicitUseStrict", .field = "no_implicit_use_strict" },
+            .{ .name = "noStrictGenericChecks", .field = "no_strict_generic_checks" },
             .{ .name = "allowSyntheticDefaultImports", .field = "allow_synthetic_default_imports" },
+            .{ .name = "preserveValueImports", .field = "preserve_value_imports" },
             .{ .name = "useDefineForClassFields", .field = "use_define_for_class_fields" },
             .{ .name = "resolveJsonModule", .field = "resolve_json_module" },
             .{ .name = "resolvePackageJsonExports", .field = "resolve_package_json_exports" },
@@ -1763,6 +1865,7 @@ fn fillCompilerOptions(arena: std.mem.Allocator, co: *CompilerOptions, obj: json
         const str_table = comptime [_]Str{
             .{ .name = "baseUrl", .field = "base_url" },
             .{ .name = "outFile", .field = "out_file" },
+            .{ .name = "out", .field = "out" },
             .{ .name = "outDir", .field = "out_dir" },
             .{ .name = "rootDir", .field = "root_dir" },
             .{ .name = "declarationDir", .field = "declaration_dir" },
@@ -1773,8 +1876,10 @@ fn fillCompilerOptions(arena: std.mem.Allocator, co: *CompilerOptions, obj: json
             .{ .name = "jsxFragmentFactory", .field = "jsx_fragment_factory" },
             .{ .name = "jsxImportSource", .field = "jsx_import_source" },
             .{ .name = "reactNamespace", .field = "react_namespace" },
+            .{ .name = "importsNotUsedAsValues", .field = "imports_not_used_as_values" },
             .{ .name = "moduleDetection", .field = "module_detection" },
             .{ .name = "ignoreDeprecations", .field = "ignore_deprecations" },
+            .{ .name = "charset", .field = "charset" },
         };
         inline for (str_table) |entry| {
             if (std.mem.eql(u8, key, entry.name)) {
@@ -2272,7 +2377,13 @@ test "tsconfig: emit-helper / decorator / suppress bool fields parse" {
         \\    "emitDecoratorMetadata": true,
         \\    "keyofStringsOnly": true,
         \\    "suppressExcessPropertyErrors": true,
-        \\    "suppressImplicitAnyIndexErrors": true
+        \\    "suppressImplicitAnyIndexErrors": true,
+        \\    "noImplicitUseStrict": true,
+        \\    "noStrictGenericChecks": true,
+        \\    "preserveValueImports": true,
+        \\    "importsNotUsedAsValues": "preserve",
+        \\    "charset": "utf8",
+        \\    "out": "legacy.js"
         \\  }
         \\}
     );
@@ -2285,6 +2396,12 @@ test "tsconfig: emit-helper / decorator / suppress bool fields parse" {
     try t.expectEqual(@as(?bool, true), co.keyof_strings_only);
     try t.expectEqual(@as(?bool, true), co.suppress_excess_property_errors);
     try t.expectEqual(@as(?bool, true), co.suppress_implicit_any_index_errors);
+    try t.expectEqual(@as(?bool, true), co.no_implicit_use_strict);
+    try t.expectEqual(@as(?bool, true), co.no_strict_generic_checks);
+    try t.expectEqual(@as(?bool, true), co.preserve_value_imports);
+    try t.expectEqualStrings("preserve", co.imports_not_used_as_values.?);
+    try t.expectEqualStrings("utf8", co.charset.?);
+    try t.expectEqualStrings("legacy.js", co.out.?);
     try t.expectEqual(@as(usize, 0), co.extra.items.len);
 }
 
@@ -2696,6 +2813,72 @@ test "tsconfig.validate: ignoreDeprecations accepts supported values" {
     defer freeValidationDiagnostics(t.allocator, next_diags);
     try t.expectEqual(@as(usize, 0), next_diags.len);
     try t.expectEqualStrings("6.0", next.compiler_options.ignore_deprecations.?);
+}
+
+test "tsconfig.validate: TS6 removed compiler options report TS5102 and TS5108" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "target": "es3",
+        \\    "noImplicitUseStrict": true,
+        \\    "keyofStringsOnly": true,
+        \\    "suppressExcessPropertyErrors": true,
+        \\    "suppressImplicitAnyIndexErrors": true,
+        \\    "noStrictGenericChecks": true,
+        \\    "charset": "utf8",
+        \\    "out": "legacy.js",
+        \\    "importsNotUsedAsValues": "preserve",
+        \\    "preserveValueImports": true
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 10), diags.len);
+    try t.expectEqual(@as(u32, 5108), diags[0].code);
+    try t.expectEqualStrings("target", diags[0].field);
+    try t.expectEqualStrings("Option 'target=ES3' has been removed. Please remove it from your configuration.", diags[0].message);
+    const expected_fields = [_][]const u8{
+        "noImplicitUseStrict",
+        "keyofStringsOnly",
+        "suppressExcessPropertyErrors",
+        "suppressImplicitAnyIndexErrors",
+        "noStrictGenericChecks",
+        "charset",
+        "out",
+        "importsNotUsedAsValues",
+        "preserveValueImports",
+    };
+    for (expected_fields, 1..) |field, i| {
+        try t.expectEqual(@as(u32, 5102), diags[i].code);
+        try t.expectEqualStrings(field, diags[i].field);
+    }
+}
+
+test "tsconfig.validate: custom string options report TS6046 for unsupported values" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "moduleDetection": "maybe",
+        \\    "importsNotUsedAsValues": "panic"
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 3), diags.len);
+    try t.expectEqual(@as(u32, 6046), diags[0].code);
+    try t.expectEqualStrings("moduleDetection", diags[0].field);
+    try t.expectEqualStrings("Argument for '--moduleDetection' option must be: 'auto', 'legacy', 'force'.", diags[0].message);
+    try t.expectEqual(@as(u32, 6046), diags[1].code);
+    try t.expectEqualStrings("importsNotUsedAsValues", diags[1].field);
+    try t.expectEqualStrings("Argument for '--importsNotUsedAsValues' option must be: 'remove', 'preserve', 'error'.", diags[1].message);
+    try t.expectEqual(@as(u32, 5102), diags[2].code);
+    try t.expectEqualStrings("importsNotUsedAsValues", diags[2].field);
 }
 
 test "tsconfig.validate: isolatedModules reports TS5047 for module none below ES2015" {
