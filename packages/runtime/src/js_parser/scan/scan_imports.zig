@@ -213,8 +213,10 @@ pub fn scan(
                     if (st.star_name_loc != null and existing_items.count() > 0) {
                         const sorted = try allocator.alloc(string, existing_items.count());
                         defer allocator.free(sorted);
-                        for (sorted, existing_items.keys()) |*result, alias| {
-                            result.* = alias;
+                        var key_iter = existing_items.keyIterator();
+                        var sorted_i: usize = 0;
+                        while (key_iter.next()) |alias| : (sorted_i += 1) {
+                            sorted[sorted_i] = alias.*;
                         }
                         strings.sortDesc(sorted);
                         bun.handleOom(p.named_imports.ensureUnusedCapacity(p.allocator, sorted.len));

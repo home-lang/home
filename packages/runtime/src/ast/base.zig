@@ -7,11 +7,10 @@
 //   - `bun.Environment.allow_assert` -> `home_rt.Environment.allow_assert`
 //   - `bun.hash(...)` -> local `wyhashU64` wrapper around the Home wyhash.
 //
-// **Symbol-dependent surface dropped**: `Ref.dump`, `Ref.getSymbol`, and the
-// `DumpImplData`/`dumpImpl` helpers all require `ast.Symbol`, which is part
-// of `symbol.zig` and pulls in the full AST node tree. They re-attach when
-// the rest of `src/ast/` is ported. The remaining Ref/Index API is pure data
-// and is what the rest of the runtime actually needs first.
+// **Symbol-dependent surface dropped**: `Ref.dump` and the
+// `DumpImplData`/`dumpImpl` helpers require the full pretty-printer path and
+// remain parked. `Ref.getSymbol` is restored now that the parser/printer
+// bridge compiles against Home's copied `ast.Symbol` graph.
 
 pub const RefHashCtx = struct {
     pub fn hash(_: @This(), key: Ref) u32 {
@@ -206,6 +205,19 @@ pub const Ref = packed struct(u64) {
 
     pub fn jsonStringify(self: *const Ref, writer: anytype) !void {
         return try writer.write([2]u32{ self.sourceIndex(), self.innerIndex() });
+    }
+
+    pub fn getSymbol(ref: Ref, symbol_table: anytype) *home_rt.ast.Symbol {
+        const resolved_symbol_table = switch (@TypeOf(symbol_table)) {
+            *const std.array_list.Managed(home_rt.ast.Symbol) => symbol_table.items,
+            *std.array_list.Managed(home_rt.ast.Symbol) => symbol_table.items,
+            []home_rt.ast.Symbol => symbol_table,
+            []const home_rt.ast.Symbol => @constCast(symbol_table),
+            *home_rt.ast.Symbol.Map => return symbol_table.get(ref) orelse unreachable,
+            *const home_rt.ast.Symbol.Map => return @constCast(symbol_table.getConst(ref) orelse unreachable),
+            else => |T| @compileError("Unsupported type to Ref.getSymbol: " ++ @typeName(T)),
+        };
+        return &resolved_symbol_table[ref.innerIndex()];
     }
 };
 

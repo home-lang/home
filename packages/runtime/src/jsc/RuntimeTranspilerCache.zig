@@ -543,14 +543,13 @@ pub const RuntimeTranspilerCache = struct {
         esm_record_allocator: std.mem.Allocator,
     ) !Entry {
         var metadata_bytes_buf: [Metadata.size * 2]u8 = undefined;
-        const cache_fd = try bun.sys.open(cache_file_path.sliceAssumeZ(), bun.O.RDONLY, 0).unwrap();
-        defer cache_fd.close();
+        const file = try std.Io.Dir.openFileAbsolute(std.options.debug_io, cache_file_path.slice(), .{ .mode = .read_only });
+        defer file.close();
         errdefer {
             // On any error, we delete the cache file
-            _ = bun.sys.unlink(cache_file_path.sliceAssumeZ());
+            std.Io.Dir.deleteFileAbsolute(std.options.debug_io, cache_file_path.slice()) catch {};
         }
 
-        const file = cache_fd.stdFile();
         const metadata_bytes = try file.preadAll(&metadata_bytes_buf, 0);
         if (comptime bun.Environment.isWindows) try file.seekTo(0);
         var metadata_stream = std.io.fixedBufferStream(metadata_bytes_buf[0..metadata_bytes]);

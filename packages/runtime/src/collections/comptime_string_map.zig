@@ -113,6 +113,17 @@ pub fn ComptimeStringMapWithKeyType(comptime KeyType: type, comptime V: type, co
             return null;
         }
 
+        pub fn getWithEql(str: []const KeyType, eql: anytype) ?V {
+            if (str.len < precomputed.min_len or str.len > precomputed.max_len)
+                return null;
+            const start = len_indexes[str.len];
+            var i = start;
+            while (i < kvs.len and kvs[i].key.len == str.len) : (i += 1) {
+                if (eql(str, kvs[i].key)) return kvs[i].value;
+            }
+            return null;
+        }
+
         /// Returns the index of the key in the sorted list of keys.
         pub fn indexOf(str: []const KeyType) ?usize {
             if (str.len < precomputed.min_len or str.len > precomputed.max_len)

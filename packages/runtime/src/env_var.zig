@@ -46,6 +46,12 @@ pub const HOME = struct {
     }
 };
 
+pub const XDG_CACHE_HOME = struct {
+    pub fn get() ?[]const u8 {
+        return rawGet("XDG_CACHE_HOME");
+    }
+};
+
 /// `DO_NOT_TRACK=1` (per https://consoledonottrack.com/) opts callers out
 /// of any telemetry / crash-reporter wakeups. Bun reads this through
 /// `bun.env_var.DO_NOT_TRACK.get()` which returns a bool — the only call
@@ -94,6 +100,12 @@ pub const BUN_DEBUG_ENABLE_RESTORE_FROM_TRANSPILER_CACHE = struct {
         if (std.mem.eql(u8, raw, "0")) return false;
         if (std.mem.eql(u8, raw, "false")) return false;
         return true;
+    }
+};
+
+pub const BUN_RUNTIME_TRANSPILER_CACHE_PATH = struct {
+    pub fn get() ?[]const u8 {
+        return rawGet("BUN_RUNTIME_TRANSPILER_CACHE_PATH");
     }
 };
 

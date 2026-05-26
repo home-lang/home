@@ -276,7 +276,7 @@ pub const Data = struct {
 
         if (this.location) |*location| {
             if (location.line_text) |line_text_| {
-                const line_text_right_trimmed = std.mem.trimRight(u8, line_text_, " \r\n\t");
+                const line_text_right_trimmed = std.mem.trimEnd(u8, line_text_, " \r\n\t");
                 const line_text = std.mem.trimStart(u8, line_text_right_trimmed, "\n\r");
                 if (location.column > 0 and line_text.len > 0) {
                     var line_offset_for_second_line: usize = @intCast(location.column - 1);

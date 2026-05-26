@@ -66,12 +66,12 @@ pub fn init(allocator: Allocator, capacity: usize) Allocator.Error!MutableString
         .list = if (capacity > 0)
             try std.ArrayListUnmanaged(u8).initCapacity(allocator, capacity)
         else
-            std.ArrayListUnmanaged(u8){},
+            .empty,
     };
 }
 
 pub fn initEmpty(allocator: Allocator) MutableString {
-    return MutableString{ .allocator = allocator, .list = .{} };
+    return MutableString{ .allocator = allocator, .list = .empty };
 }
 
 pub const ensureUnusedCapacity = growIfNeeded;

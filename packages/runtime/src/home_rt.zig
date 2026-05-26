@@ -31,6 +31,22 @@ pub const Output = @import("output.zig");
 pub const Global = @import("global.zig");
 pub const Environment = @import("environment.zig");
 pub const fmt = @import("fmt.zig");
+
+fn assertNoHasherPointers(comptime T: type) void {
+    switch (@typeInfo(T)) {
+        .pointer => @compileError("no pointers in writeAnyToHasher input"),
+        inline .@"struct", .@"union" => |info| for (info.fields) |field| {
+            assertNoHasherPointers(field.type);
+        },
+        .array => |array| assertNoHasherPointers(array.child),
+        else => {},
+    }
+}
+
+pub inline fn writeAnyToHasher(hasher: anytype, thing: anytype) void {
+    comptime assertNoHasherPointers(@TypeOf(thing));
+    hasher.update(std.mem.asBytes(&thing));
+}
 pub const path = @import("path.zig");
 pub const env_var = @import("env_var.zig");
 
@@ -271,6 +287,10 @@ pub fn Once(comptime f: anytype) type {
 /// side lands, replace each panic with the corresponding
 /// `pub extern fn` declaration.
 pub const cpp = struct {
+    pub fn JSC__jsToNumber(bytes_ptr: [*]const u8, len: usize) f64 {
+        return std.fmt.parseFloat(f64, bytes_ptr[0..len]) catch std.math.nan(f64);
+    }
+
     pub fn Bun__WTFStringImpl__deref(self: anytype) void {
         _ = self;
         @panic("home_rt.cpp.Bun__WTFStringImpl__deref needs the C++ FFI bridge (Phase 12.2)");
@@ -375,6 +395,18 @@ pub fn freeSensitive(allocator: std.mem.Allocator, slice: anytype) void {
 /// hash32, fastRandom) when those land.
 pub fn hash(content: []const u8) u64 {
     return std.hash.Wyhash.hash(0, content);
+}
+
+fn ReinterpretSliceType(comptime T: type, comptime Slice: type) type {
+    const is_const = @typeInfo(Slice).pointer.is_const;
+    return if (is_const) []const T else []T;
+}
+
+pub fn reinterpretSlice(comptime T: type, slice: anytype) ReinterpretSliceType(T, @TypeOf(slice)) {
+    const is_const = @typeInfo(@TypeOf(slice)).pointer.is_const;
+    const bytes = std.mem.sliceAsBytes(slice);
+    const new_ptr = @as(if (is_const) [*]const T else [*]T, @ptrCast(@alignCast(bytes.ptr)));
+    return new_ptr[0..@divTrunc(bytes.len, @sizeOf(T))];
 }
 
 /// Wave-15 Tier-1 grinder stub — Bun's `bun.debugAssert` is a debug-only
@@ -744,6 +776,9 @@ pub const cli = struct {
 // JSC engine is brought up (Phase 12.2). The leaves we copy now establish
 // the public-facing namespace so callers can spell things correctly.
 pub const jsc = struct {
+    pub const MAX_SAFE_INTEGER = 9007199254740991;
+    pub const MIN_SAFE_INTEGER = -9007199254740991;
+
     /// Calling convention used by Bun JSC host functions.
     pub const conv: std.builtin.CallingConvention = if (Environment.isWindows and Environment.isX64)
         .{ .x86_64_sysv = .{} }
@@ -810,6 +845,11 @@ pub const jsc = struct {
     pub const CachedBytecode = @import("jsc/CachedBytecode.zig").CachedBytecode;
     pub const RuntimeTranspilerCache = @import("jsc/RuntimeTranspilerCache.zig").RuntimeTranspilerCache;
     pub const JSMap = @import("jsc/JSMap.zig").JSMap;
+    pub const math = struct {
+        pub fn pow(base: f64, exponent: f64) f64 {
+            return std.math.pow(f64, base, exponent);
+        }
+    };
     pub const JSBigInt = @import("jsc/JSBigInt.zig").JSBigInt;
     pub const JSArray = @import("jsc/JSArray.zig").JSArray;
     pub const JSFunction = @import("jsc/JSFunction.zig").JSFunction;
@@ -2114,9 +2154,154 @@ pub const alloc = struct {
 };
 pub const memory = @import("bun_alloc/memory.zig");
 pub const allocators = struct {
+    pub const IndexType = packed struct(u32) {
+        index: u31,
+        is_overflow: bool = false,
+    };
+
+    pub const NotFound = IndexType{ .index = std.math.maxInt(u31) };
+    pub const Unassigned = IndexType{ .index = std.math.maxInt(u31) - 1 };
+
+    pub const ItemStatus = enum(u3) {
+        unknown,
+        exists,
+        not_found,
+    };
+
+    pub const BSSResult = struct {
+        hash: u64,
+        index: IndexType,
+        status: ItemStatus,
+
+        pub fn hasCheckedIfExists(r: *const BSSResult) bool {
+            return r.index.index != Unassigned.index;
+        }
+    };
+
+    const BSSIndexMapContext = struct {
+        pub fn hash(_: @This(), key: u64) u64 {
+            return key;
+        }
+
+        pub fn eql(_: @This(), a: u64, b: u64) bool {
+            return a == b;
+        }
+    };
+
     pub const c_allocator = std.heap.c_allocator;
     pub const z_allocator = @import("bun_alloc/fallback/z.zig").allocator;
     pub const freeWithoutSize = @import("bun_alloc/fallback.zig").freeWithoutSize;
+
+    pub fn BSSStringList(comptime _: usize, comptime _: usize) type {
+        return struct {
+            const Self = @This();
+
+            allocator: std.mem.Allocator,
+            pub var instance: *Self = undefined;
+
+            pub fn init(allocator: std.mem.Allocator) *Self {
+                instance = allocator.create(Self) catch outOfMemory();
+                instance.* = .{ .allocator = allocator };
+                return instance;
+            }
+
+            pub fn deinit(self: *Self) void {
+                self.allocator.destroy(self);
+            }
+
+            pub fn append(self: *Self, comptime AppendType: type, value: AppendType) OOM![]const u8 {
+                return try self.allocator.dupe(u8, value);
+            }
+
+            pub fn appendMutable(self: *Self, comptime AppendType: type, value: AppendType) OOM![]u8 {
+                return @constCast(try self.append(AppendType, value));
+            }
+
+            pub fn exists(_: *const Self, _: []const u8) bool {
+                return false;
+            }
+        };
+    }
+
+    pub fn BSSMap(
+        comptime ValueType: type,
+        comptime _: anytype,
+        comptime _: bool,
+        comptime _: usize,
+        comptime remove_trailing_slashes: bool,
+    ) type {
+        return struct {
+            const Self = @This();
+
+            allocator: std.mem.Allocator,
+            index: std.HashMapUnmanaged(u64, IndexType, BSSIndexMapContext, 80) = .{},
+            values: std.ArrayListUnmanaged(ValueType) = .empty,
+
+            pub fn init(allocator: std.mem.Allocator) *Self {
+                const self = allocator.create(Self) catch outOfMemory();
+                self.* = .{ .allocator = allocator };
+                return self;
+            }
+
+            pub fn deinit(self: *Self) void {
+                self.index.deinit(self.allocator);
+                self.values.deinit(self.allocator);
+                self.allocator.destroy(self);
+            }
+
+            fn keyFor(denormalized_key: []const u8) []const u8 {
+                return if (comptime remove_trailing_slashes)
+                    std.mem.trimEnd(u8, denormalized_key, std.fs.path.sep_str)
+                else
+                    denormalized_key;
+            }
+
+            pub fn getOrPut(self: *Self, denormalized_key: []const u8) !BSSResult {
+                const h = hash(keyFor(denormalized_key));
+                const entry = try self.index.getOrPut(self.allocator, h);
+                if (entry.found_existing) {
+                    return .{
+                        .hash = h,
+                        .index = entry.value_ptr.*,
+                        .status = switch (entry.value_ptr.index) {
+                            NotFound.index => .not_found,
+                            Unassigned.index => .unknown,
+                            else => .exists,
+                        },
+                    };
+                }
+                entry.value_ptr.* = Unassigned;
+                return .{ .hash = h, .index = Unassigned, .status = .unknown };
+            }
+
+            pub fn get(self: *Self, denormalized_key: []const u8) ?*ValueType {
+                const index = self.index.get(hash(keyFor(denormalized_key))) orelse return null;
+                return self.atIndex(index);
+            }
+
+            pub fn markNotFound(self: *Self, result: BSSResult) void {
+                self.index.put(self.allocator, result.hash, NotFound) catch outOfMemory();
+            }
+
+            pub fn atIndex(self: *Self, index: IndexType) ?*ValueType {
+                if (index.index == NotFound.index or index.index == Unassigned.index) return null;
+                if (index.index >= self.values.items.len) return null;
+                return &self.values.items[index.index];
+            }
+
+            pub fn put(self: *Self, result: *BSSResult, value: ValueType) !*ValueType {
+                if (result.index.index == NotFound.index or result.index.index == Unassigned.index) {
+                    result.index = .{ .index = @intCast(self.values.items.len) };
+                    try self.values.append(self.allocator, value);
+                } else {
+                    self.values.items[result.index.index] = value;
+                }
+                try self.index.put(self.allocator, result.hash, result.index);
+                return &self.values.items[result.index.index];
+            }
+        };
+    }
+
     pub const allocation_scope = struct {
         pub const Extra = struct {
             ptr: *anyopaque = undefined,
@@ -2365,6 +2550,47 @@ pub const wyhash = struct {
 // matcher + walker re-attach with bun.sys + bun.path normalizer.
 pub const glob = struct {
     pub const detectGlobSyntax = @import("glob/glob.zig").detectGlobSyntax;
+
+    pub const Match = struct {
+        matched: bool,
+
+        pub fn matches(this: Match) bool {
+            return this.matched;
+        }
+    };
+
+    pub fn match(pattern: []const u8, input: []const u8) Match {
+        return .{ .matched = globMatch(pattern, input) };
+    }
+
+    fn globMatch(pattern: []const u8, input: []const u8) bool {
+        var pattern_index: usize = 0;
+        var input_index: usize = 0;
+        var star_index: ?usize = null;
+        var retry_index: usize = 0;
+
+        while (input_index < input.len) {
+            if (pattern_index < pattern.len and (pattern[pattern_index] == '?' or pattern[pattern_index] == input[input_index])) {
+                pattern_index += 1;
+                input_index += 1;
+            } else if (pattern_index < pattern.len and pattern[pattern_index] == '*') {
+                star_index = pattern_index;
+                retry_index = input_index;
+                pattern_index += 1;
+            } else if (star_index) |star| {
+                pattern_index = star + 1;
+                retry_index += 1;
+                input_index = retry_index;
+            } else {
+                return false;
+            }
+        }
+
+        while (pattern_index < pattern.len and pattern[pattern_index] == '*') {
+            pattern_index += 1;
+        }
+        return pattern_index == pattern.len;
+    }
 };
 
 // ---- src/highway/ ------------------------------------------------------

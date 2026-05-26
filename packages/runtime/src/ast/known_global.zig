@@ -33,8 +33,13 @@ pub const KnownGlobal = enum {
     RegExp,
 
     pub const map = ComptimeEnumMap(KnownGlobal);
+
+    pub fn minifyGlobalConstructor(_: anytype, _: anytype, _: anytype, _: anytype, _: anytype) ?bun.ast.Expr {
+        return null;
+    }
 };
 
+const bun = @import("home_rt");
 const std = @import("std");
 
 fn ComptimeEnumMap(comptime T: type) type {

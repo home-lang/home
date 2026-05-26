@@ -423,9 +423,7 @@ pub fn AstMaybe(
                             return p.newExpr(E.String.init(p.source.path.text), name_loc);
                         } else if (strings.eqlComptime(name, "url")) {
                             // Inline import.meta.url as file:// URL
-                            const bunstr = bun.String.fromBytes(p.source.path.text);
-                            defer bunstr.deref();
-                            const url = std.fmt.allocPrint(p.allocator, "{f}", .{jsc.URL.fileURLFromString(bunstr)}) catch unreachable;
+                            const url = std.fmt.allocPrint(p.allocator, "file://{s}", .{p.source.path.text}) catch unreachable;
                             return p.newExpr(E.String.init(url), name_loc);
                         }
                     }
@@ -697,7 +695,6 @@ const Environment = bun.Environment;
 const FeatureFlags = bun.FeatureFlags;
 const assert = bun.assert;
 const js_lexer = bun.js_lexer;
-const jsc = bun.jsc;
 const logger = bun.logger;
 const strings = bun.strings;
 

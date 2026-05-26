@@ -250,7 +250,7 @@ Fresh single-file probes on 2026-05-26 in
 |---|---|---|
 | `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/transpiler/transpiler.test.js` | Fails before promotion: 0 passed, 1 failed | Enters `Bun.Transpiler.transformSync`; CRLF and empty-type-parameter probes now advance, and the current bootstrap-body blocker is the malformed-enum parse-error section |
 | `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/transpiler/decorators.test.ts` | Fails before promotion: 0 passed, 1 failed | `SyntaxError: Invalid character: '@'` |
-| `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts` | Fails before promotion: 0 passed, 1 failed, 1 unsupported | Corpus preprocessing still reports `unsupported module syntax`; true closure still needs native-plugin ABI work |
+| `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts` | Fails before promotion: 0 passed, 1 failed, 1 unsupported | File-attribute imports and native-plugin TS annotations now lower; current harness blocker is async lifecycle hooks before native-plugin ABI execution |
 
 Decorator helper follow-through on 2026-05-26: the native corpus harness
 now exposes Bun's `bun:wrap` runtime helper surface for transformed output:
@@ -292,8 +292,10 @@ Next-work ledger for the three-file frontier:
 | Native plugin bridge | Port or compile Bun's JSC/C++ native plugin bridge and wire it to copied `ParseTask.zig`, N-API external validation, `.node` loading metadata, and `onBeforeParse` result handoff | `bundler/native-plugin.test.ts` single-file run passes after node-gyp builds the fixture addon |
 
 Native plugin audit on 2026-05-26: `bundler/native-plugin.test.ts`
-still reports `unsupported module syntax` at the corpus preprocessor, but
-that is only the first guardrail. The real parity surface is Bun's native
+has a corpus-preprocessor shim for the upstream file-attribute imports
+and `harness.makeTree`, so the next rebuilt runner should get past the
+plain module-syntax guardrail without mocking `.node` loading. This is
+not parity credit. The real parity surface is Bun's native
 bundler plugin ABI:
 
 - The copied fixture builds `native_plugin.cc` and `not_native_plugin.cc`
@@ -312,8 +314,9 @@ bundler plugin ABI:
   `packages/runtime/src/jsc/NodeModuleModule.zig`,
   `packages/runtime/src/runtime/napi/napi.zig`, and
   `packages/runtime/upstream/packages/bun-native-bundler-plugin-api/bundler_plugin.h`.
-  The audited Zig/header files compared byte-for-byte with
-  `/Users/chrisbreuer/Code/bun` for the relevant paths.
+  The audited header and native-plugin fixture files compared
+  byte-for-byte with `/Users/chrisbreuer/Code/bun`, and Home already has
+  copied C++ bridge sources under `packages/runtime/upstream/src/jsc/bindings/`.
 - The missing integration is the native/JSC bridge, especially
   `src/jsc/bindings/JSBundlerPlugin.cpp`,
   `src/jsc/bindings/napi.cpp`, and
@@ -321,6 +324,22 @@ bundler plugin ABI:
   exposes those host functions to Home's JSC-enabled runtime and lets
   node-gyp-built addons attach the private dlopen handle used by
   `onBeforeParse`.
+
+Worker evidence on 2026-05-26 after commit `f6ab6eaa`: no additional
+isolated Zig/header files were found missing for this frontier. The
+owned harness change is intentionally limited to lowering
+`import ... with { type: "file" }` for `bundler_plugin.h`,
+`native_plugin.cc`, and `not_native_plugin.cc`, plus adding
+`harness.makeTree`. `bunx --bun pickier` passed for the parity ledgers.
+The native parser/printer bridge also gained concrete Home compatibility
+shims (`bun.glob.match`, `ComptimeStringMap.getWithEql`, `jsc.math`,
+`KnownGlobal.minifyGlobalConstructor`, `BSSMap`/`BSSStringList`, and Zig
+0.17 std API fixes), and the bridge is kept gated until the resolver/cache
+cone is complete. `zig build test -Dfilter=home_test --summary all`
+rebuilds green with 296/297 tests passing and one expected skip.
+The rebuilt native-plugin single-file probe no longer fails at module
+syntax; it now stops at `Async lifecycle hooks are not supported by the
+Home Bun corpus bootstrap runner yet`, before the `.node` ABI path can run.
 
 Do not close this by adding a corpus-only `.node` mock. A faithful close
 should first compile or port the native bridge, then promote the fixture

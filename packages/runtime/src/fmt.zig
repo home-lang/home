@@ -53,6 +53,25 @@ pub fn hexIntUpper(value: anytype) HexIntFormatter {
     return .{ .value = @intCast(value), .upper = true };
 }
 
+pub const QuickAndDirtyJavaScriptSyntaxHighlighter = struct {
+    text: []const u8,
+    opts: Options,
+
+    pub const Options = struct {
+        enable_colors: bool = false,
+        redact_sensitive_information: bool = false,
+    };
+
+    pub fn format(self: QuickAndDirtyJavaScriptSyntaxHighlighter, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        _ = self.opts;
+        try writer.writeAll(self.text);
+    }
+};
+
+pub fn fmtJavaScript(text: []const u8, opts: QuickAndDirtyJavaScriptSyntaxHighlighter.Options) QuickAndDirtyJavaScriptSyntaxHighlighter {
+    return .{ .text = text, .opts = opts };
+}
+
 pub fn truncatedHash32(int: u64) std.fmt.Alt(u64, truncatedHash32Impl) {
     return .{ .data = int };
 }

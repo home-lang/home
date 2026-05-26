@@ -27,7 +27,28 @@ fn NewTimer() type {
         };
     }
 
-    return std.time.Timer;
+    return struct {
+        started: i128,
+
+        pub fn start() !@This() {
+            return .{ .started = std.time.nanoTimestamp() };
+        }
+
+        pub fn read(self: @This()) u64 {
+            return @intCast(@max(std.time.nanoTimestamp() - self.started, 0));
+        }
+
+        pub fn lap(self: *@This()) u64 {
+            const now = std.time.nanoTimestamp();
+            const elapsed = @max(now - self.started, 0);
+            self.started = now;
+            return @intCast(elapsed);
+        }
+
+        pub fn reset(self: *@This()) void {
+            self.started = std.time.nanoTimestamp();
+        }
+    };
 }
 pub const Timer = NewTimer();
 

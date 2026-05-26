@@ -703,7 +703,7 @@ pub fn VisitExpr(
                 switch (e_.op) {
                     .un_typeof => {
                         const id_before = e_.value.data == .e_identifier;
-                        e_.value = p.visitExprInOut(e_.value, ExprIn{ .assign_target = e_.op.unaryAssignTarget() });
+                        e_.value = p.visitExprInOut(e_.value, ExprIn{ .assign_target = @enumFromInt(@intFromEnum(e_.op.unaryAssignTarget())) });
                         const id_after = e_.value.data == .e_identifier;
 
                         // The expression "typeof (0, x)" must not become "typeof x" if "x"
@@ -729,7 +729,7 @@ pub fn VisitExpr(
                         e_.value = p.visitExprInOut(e_.value, ExprIn{ .has_chain_parent = true });
                     },
                     else => {
-                        e_.value = p.visitExprInOut(e_.value, ExprIn{ .assign_target = e_.op.unaryAssignTarget() });
+                        e_.value = p.visitExprInOut(e_.value, ExprIn{ .assign_target = @enumFromInt(@intFromEnum(e_.op.unaryAssignTarget())) });
 
                         // Post-process the unary expression
                         switch (e_.op) {

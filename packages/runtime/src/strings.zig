@@ -18,6 +18,7 @@ pub const hasPrefixWithWordBoundary = @import("string/immutable.zig").hasPrefixW
 pub const hasSuffixComptime = @import("string/immutable.zig").hasSuffixComptime;
 pub const toUTF8AllocWithType = toUTF8Alloc;
 pub const u3_fast = @import("string/immutable.zig").u3_fast;
+pub const sortDesc = @import("string/immutable.zig").sortDesc;
 pub const unicode_replacement = @import("string/immutable.zig").unicode_replacement;
 pub const wtf8ByteSequenceLengthWithInvalid = @import("string/immutable.zig").wtf8ByteSequenceLengthWithInvalid;
 

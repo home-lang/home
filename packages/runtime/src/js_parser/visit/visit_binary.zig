@@ -564,7 +564,7 @@ pub fn CreateBinaryExpressionVisitor(
                 v.is_stmt_expr = p.stmt_expr_value == .e_binary and p.stmt_expr_value.e_binary == e_;
 
                 v.left_in = ExprIn{
-                    .assign_target = e_.op.binaryAssignTarget(),
+                    .assign_target = @enumFromInt(@intFromEnum(e_.op.binaryAssignTarget())),
                 };
 
                 return null;

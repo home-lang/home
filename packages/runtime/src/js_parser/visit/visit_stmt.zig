@@ -716,7 +716,7 @@ pub fn VisitStmt(
                 // Local statements do not end the const local prefix
                 p.current_scope.is_after_const_local_prefix = was_after_after_const_local_prefix;
 
-                const decls_len = if (!(data.is_export and p.options.features.replace_exports.entries.len > 0))
+                const decls_len = if (!(data.is_export and p.options.features.replace_exports.count() > 0))
                     p.visitDecls(data.decls.slice(), data.kind == .k_const, false)
                 else
                     p.visitDecls(data.decls.slice(), data.kind == .k_const, true);
@@ -846,7 +846,13 @@ pub fn VisitStmt(
                                 convert: {
                                     const bin: *E.Binary = data.value.data.e_binary;
                                     if (bin.op == .bin_assign and bin.left.data == .e_commonjs_export_identifier) {
-                                        var last = &p.commonjs_named_exports.values()[to_convert];
+                                        var iter = p.commonjs_named_exports.iterator();
+                                        var last_entry = iter.next().?;
+                                        var export_i: u32 = 0;
+                                        while (export_i < to_convert) : (export_i += 1) {
+                                            last_entry = iter.next().?;
+                                        }
+                                        var last = last_entry.value_ptr;
                                         if (!last.needs_decl) break :convert;
                                         last.needs_decl = false;
 
@@ -867,7 +873,7 @@ pub fn VisitStmt(
                                         var clause_items = p.allocator.alloc(js_ast.ClauseItem, 1) catch unreachable;
                                         clause_items[0] = js_ast.ClauseItem{
                                             // We want the generated name to not conflict
-                                            .alias = p.commonjs_named_exports.keys()[to_convert],
+                                            .alias = last_entry.key_ptr.*,
                                             .alias_loc = bin.left.loc,
                                             .name = .{
                                                 .ref = ref,

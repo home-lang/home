@@ -6,7 +6,7 @@ pub fn isMacroPath(str: string) bool {
 }
 
 pub const MacroContext = struct {
-    pub const MacroMap = std.AutoArrayHashMap(i32, Macro);
+    pub const MacroMap = std.AutoHashMap(i32, Macro);
 
     resolver: *Resolver,
     env: *DotEnv.Loader,
@@ -15,7 +15,7 @@ pub const MacroContext = struct {
     javascript_object: jsc.JSValue = jsc.JSValue.zero,
 
     pub fn getRemap(this: MacroContext, path: string) ?MacroRemapEntry {
-        if (this.remap.entries.len == 0) return null;
+        if (this.remap.count() == 0) return null;
         return this.remap.get(path);
     }
 
@@ -51,10 +51,6 @@ pub const MacroContext = struct {
         bun.assert(!isMacroPath(import_record_path_without_macro_prefix));
 
         const input_specifier = brk: {
-            if (jsc.ModuleLoader.HardcodedModule.Alias.get(import_record_path, .bun, .{})) |replacement| {
-                break :brk replacement.path;
-            }
-
             const resolve_result = this.resolver.resolve(source_dir, import_record_path_without_macro_prefix, .stmt) catch |err| {
                 switch (err) {
                     error.ModuleNotFound => {

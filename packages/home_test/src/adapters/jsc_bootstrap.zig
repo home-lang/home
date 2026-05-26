@@ -668,6 +668,120 @@ fn transpileSource(
     return out.toOwnedSlice(allocator);
 }
 
+// Prepared real Bun parser/printer path. Keep it uncalled until the copied
+// resolver/cache cone under home_rt compiles without expanding this adapter's
+// bootstrap surface; the compatibility shims it needs now build green.
+fn transpileSourceWithBunParser(
+    allocator: std.mem.Allocator,
+    handle: *const TranspilerHandle,
+    source_text: []const u8,
+    loader: TranspilerLoader,
+) ![]u8 {
+    home_rt.ast.Expr.Data.Store.create();
+    home_rt.ast.Stmt.Data.Store.create();
+    defer home_rt.ast.Expr.Data.Store.reset();
+    defer home_rt.ast.Stmt.Data.Store.reset();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const ast_allocator = arena.allocator();
+
+    var ast_memory_allocator: home_rt.ast.ASTMemoryAllocator = undefined;
+    ast_memory_allocator.initWithoutStack(ast_allocator);
+    var ast_scope = ast_memory_allocator.enter(ast_allocator);
+    defer ast_scope.exit();
+
+    var log = home_rt.logger.Log.init(ast_allocator);
+    var source = home_rt.logger.Source.initPathString(runtimeLoaderName(loader), source_text);
+    const define = try home_rt.defines.Define.init(ast_allocator, null, null, false, false);
+    defer define.deinit();
+
+    const runtime_loader = runtimeLoader(loader) orelse return error.UnsupportedNativeTranspile;
+    var parser_options = home_rt.js_parser.Parser.Options.init(.{}, runtime_loader);
+    parser_options.transform_only = true;
+    parser_options.tree_shaking = true;
+    parser_options.warn_about_unbundled_modules = handle.platform != .bun;
+    parser_options.features.emit_decorator_metadata = handle.emit_decorator_metadata;
+    parser_options.features.standard_decorators = !runtime_loader.isTypeScript() or !(handle.experimental_decorators or handle.emit_decorator_metadata);
+    parser_options.features.trim_unused_imports = runtime_loader.isTypeScript();
+    parser_options.features.no_macros = true;
+    parser_options.features.top_level_await = true;
+    parser_options.features.minify_syntax = handle.minify_syntax;
+    parser_options.features.minify_identifiers = handle.minify_identifiers;
+    parser_options.features.dead_code_elimination = handle.minify_syntax;
+
+    var parser = try home_rt.js_parser.Parser.init(
+        parser_options,
+        &log,
+        &source,
+        define,
+        ast_allocator,
+    );
+
+    const parse_result = parser.parse() catch return error.ParseError;
+    if (parse_result != .ast or log.errors > 0) return error.ParseError;
+    const ast = parse_result.ast;
+
+    const buffer_writer = home_rt.js_printer.BufferWriter.init(allocator);
+    var buffer_printer = home_rt.js_printer.BufferPrinter.init(buffer_writer);
+    errdefer buffer_printer.ctx.buffer.deinit();
+
+    const symbols_nested = home_rt.ast.Symbol.NestedList.fromBorrowedSliceDangerous(&.{ast.symbols});
+    const symbols_map = home_rt.ast.Symbol.Map.initList(symbols_nested);
+
+    _ = try home_rt.js_printer.printAst(
+        @TypeOf(&buffer_printer),
+        &buffer_printer,
+        ast,
+        symbols_map,
+        &source,
+        true,
+        .{
+            .allocator = allocator,
+            .target = runtimeTarget(handle.platform),
+            .minify_whitespace = handle.minify_whitespace,
+            .minify_syntax = handle.minify_syntax,
+            .minify_identifiers = handle.minify_identifiers,
+            .transform_only = true,
+            .mangled_props = null,
+        },
+        false,
+    );
+
+    return buffer_printer.ctx.buffer.toOwnedSlice();
+}
+
+fn runtimeLoader(loader: TranspilerLoader) ?home_rt.options.Loader {
+    return switch (loader) {
+        .js => .js,
+        .jsx => .jsx,
+        .ts => .ts,
+        .tsx => .tsx,
+        .json => .json,
+        .toml => .toml,
+        .file => .file,
+        .napi => .napi,
+        .wasm => .wasm,
+        .text => .text,
+        .css => .css,
+        .html => .html,
+        .sqlite => .sqlite,
+    };
+}
+
+fn runtimeLoaderName(loader: TranspilerLoader) []const u8 {
+    const runtime_loader = runtimeLoader(loader) orelse return "input.js";
+    return runtime_loader.stdinName();
+}
+
+fn runtimeTarget(platform: TranspilerPlatform) home_rt.options.Target {
+    return switch (platform) {
+        .browser, .neutral => .browser,
+        .bun => .bun,
+        .node => .node,
+    };
+}
+
 fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
     const Fixture = struct {
         source: []const u8,

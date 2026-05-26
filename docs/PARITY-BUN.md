@@ -219,20 +219,38 @@ Fresh single-file evidence from `/private/tmp/home-bun-parity-main` on
 |---|---|---|
 | `bundler/transpiler/transpiler.test.js` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed | Native `Bun.Transpiler` bridge is reached; CRLF and empty-type-parameter probes now advance, and the current bootstrap-body blocker is malformed-enum parse-error behavior |
 | `bundler/transpiler/decorators.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed | Parser/lowerer path still rejects top-level legacy decorators: `SyntaxError: Invalid character: '@'` |
-| `bundler/native-plugin.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed, 1 unsupported | Corpus preprocessing reports `unsupported module syntax`; the file still needs the native plugin bridge |
+| `bundler/native-plugin.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed, 1 unsupported | File-attribute imports and native-plugin TS annotations now lower; current harness blocker is async lifecycle hooks before native-plugin ABI execution |
 
 Native plugin audit on 2026-05-26: `bundler/native-plugin.test.ts` is not
-a bootstrap-only fixture. It needs Bun's native/JSC plugin bridge:
+a bootstrap-only fixture. The corpus harness now lowers the upstream
+`import ... with { type: "file" }` fixture references and exposes
+`harness.makeTree` so a rebuilt runner can advance past generic module
+syntax without faking `.node` loading. It still needs Bun's native/JSC
+plugin bridge:
 node-gyp-built `.node` loading, `BUN_PLUGIN_NAME` / symbol lookup through
 the addon dlopen handle, N-API external validation, `build.onBeforeParse`,
 `OnBeforeParseArguments` / `OnBeforeParseResult`, error/version logging,
 first-plugin-wins semantics, and crash-name reporting. Home already has
 the relevant copied Zig/header substrate (`ParseTask.zig`,
 `JSBundler.zig`, `NodeModuleModule.zig`, `runtime/napi/napi.zig`, and the
-native bundler plugin header); the missing piece is integrating or
-faithfully porting Bun's `JSBundlerPlugin.cpp`, `napi.cpp`, and
-`napi_external.cpp` bridge into the Home runtime. Do not count a
-corpus-local `.node` mock as parity for this file.
+native bundler plugin header), and the audited header/fixture files match
+`/Users/chrisbreuer/Code/bun` byte-for-byte. The C++ bridge sources are
+also copied under `packages/runtime/upstream/src/jsc/bindings/`; the
+missing piece is integrating or faithfully porting Bun's
+`JSBundlerPlugin.cpp`, `napi.cpp`, and `napi_external.cpp` bridge into
+the Home runtime. Do not count a corpus-local `.node` mock as parity for
+this file.
+
+Worker evidence on 2026-05-26 after commit `f6ab6eaa`: no extra isolated
+Zig/header copies were found missing for this frontier. The native
+parser/printer bridge gained concrete Home compatibility shims
+(`bun.glob.match`, `ComptimeStringMap.getWithEql`, `jsc.math`,
+`KnownGlobal.minifyGlobalConstructor`, `BSSMap`/`BSSStringList`, and stale
+Zig 0.17 std API fixes), but that bridge remains gated until the
+resolver/cache cone is complete. The rebuilt native-plugin single-file
+probe no longer fails at module syntax; it now stops at `Async lifecycle
+hooks are not supported by the Home Bun corpus bootstrap runner yet`, so no
+parity credit is claimed.
 
 The next observed decorator blocker is `bundler/transpiler/decorators.test.ts`,
 which now reaches the real parser boundary after import/type erasure:

@@ -4690,7 +4690,11 @@ const harness_prelude =
     \\  expectFn((stats.objectTypeCounts && stats.objectTypeCounts[type]) || 0).toBeLessThanOrEqual(count);
     \\  return Promise.resolve(undefined);
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, gc(force) { return Bun.gc(force); }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
+    \\function __home_make_tree(root, files) {
+    \\  __home_write_temp_files(String(root), files || {});
+    \\  return Promise.resolve(undefined);
+    \\}
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, gc(force) { return Bun.gc(force); }, hideFromStackTrace(fn) { return fn; }, withoutAggressiveGC(callback) { return callback(); }, makeTree: __home_make_tree, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -12090,6 +12094,12 @@ fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) 
         .{ .needle = "const todoTests = new Set<string>([]);", .replacement = "const todoTests = new Set([]);" },
         .{ .needle = "function shouldTodo(name: string): boolean", .replacement = "function shouldTodo(name)" },
         .{ .needle = ": unique symbol =", .replacement = " =" },
+        .{ .needle = "let tempdir: string = \"\";", .replacement = "let tempdir = \"\";" },
+        .{ .needle = "let outdir: string = \"\";", .replacement = "let outdir = \"\";" },
+        .{ .needle = "const files: [filepath: string, var_name: string][] =", .replacement = "const files =" },
+        .{ .needle = "const err = e as AggregateError;", .replacement = "const err = e;" },
+        .{ .needle = "type AdditionalFile = {\n    name: string;\n    contents: BunFile | string;\n    loader: Loader;\n  };\n", .replacement = "" },
+        .{ .needle = "const additional_files: AdditionalFile[] = [", .replacement = "const additional_files = [" },
     };
     for (global_replacements) |entry| {
         if (std.mem.indexOf(u8, source, entry.needle)) |_| {
@@ -12258,6 +12268,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import process from \"process\";",
             .replacement = "const process = globalThis.process;",
+        },
+        .{
+            .needle = "import { BunFile, Loader } from \"bun\";",
+            .replacement = "const { BunFile, Loader } = globalThis.__home_import(\"bun\");",
         },
         .{
             .needle = "import \"harness\";",
@@ -12580,6 +12594,10 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const { bunEnv, bunExe, tempDirWithFiles } = globalThis.__home_import(\"harness\");",
         },
         .{
+            .needle = "import { bunEnv, bunExe, makeTree, tempDirWithFiles } from \"harness\";",
+            .replacement = "const { bunEnv, bunExe, makeTree, tempDirWithFiles } = globalThis.__home_import(\"harness\");",
+        },
+        .{
             .needle = "import { bunEnv, tempDirWithFiles } from \"harness\";",
             .replacement = "const { bunEnv, tempDirWithFiles } = globalThis.__home_import(\"harness\");",
         },
@@ -12706,6 +12724,18 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { itBundled } from \"./expectBundled\";",
             .replacement = "const { itBundled } = globalThis.__home_import(\"./expectBundled\");",
+        },
+        .{
+            .needle = "import bundlerPluginHeader from \"../../packages/bun-native-bundler-plugin-api/bundler_plugin.h\" with { type: \"file\" };",
+            .replacement = "const bundlerPluginHeader = \"packages/runtime/upstream/packages/bun-native-bundler-plugin-api/bundler_plugin.h\";",
+        },
+        .{
+            .needle = "import source from \"./native_plugin.cc\" with { type: \"file\" };",
+            .replacement = "const source = \"packages/runtime/test/bun-corpus/bundler/native_plugin.cc\";",
+        },
+        .{
+            .needle = "import notAPlugin from \"./not_native_plugin.cc\" with { type: \"file\" };",
+            .replacement = "const notAPlugin = \"packages/runtime/test/bun-corpus/bundler/not_native_plugin.cc\";",
         },
     };
 

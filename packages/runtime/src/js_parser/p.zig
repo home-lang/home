@@ -2938,7 +2938,7 @@ pub fn NewParser_(
 
                 return p.s(S.Empty{}, loc);
             } else if (remap_count > 0) {
-                item_refs.shrinkAndFree(stmt.items.len + @as(usize, @intFromBool(stmt.default_name != null)));
+                _ = stmt.items.len + @as(usize, @intFromBool(stmt.default_name != null));
             }
 
             if (path.import_tag != .none or path.loader != null) {
