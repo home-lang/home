@@ -74,7 +74,7 @@ pub const SymbolSlot = struct {
     pub const List = std.EnumArray(js_ast.Symbol.SlotNamespace, std.array_list.Managed(SymbolSlot));
 
     pub const InlineString = struct {
-        bytes: [15]u8 = [_]u8{0}**15,
+        bytes: [15]u8 = [_]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
         len: u8 = 0,
 
         pub fn init(str: []const u8) InlineString {
@@ -261,7 +261,7 @@ pub const MinifyRenamer = struct {
         }
     }
 
-    pub fn assignNamesByFrequency(this: *MinifyRenamer, name_minifier: *js_ast.NameMinifier) !void {
+    pub fn assignNamesByFrequency(this: *MinifyRenamer, name_minifier: anytype) !void {
         var name_buf = try std.array_list.Managed(u8).initCapacity(this.allocator, 64);
         defer name_buf.deinit();
 
@@ -872,7 +872,7 @@ pub fn computeInitialReservedNames(
         allocator,
         cjs_names_len +
             @as(u32, @truncate(JSLexer.Keywords.keys().len + JSLexer.StrictModeReservedWords.keys().len + 1 + extras.len)),
-        bun.StringHashMapContext{},
+        std.hash_map.StringContext{},
     );
 
     for (JSLexer.Keywords.keys()) |keyword| {

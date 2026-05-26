@@ -1599,7 +1599,7 @@ pub fn loadersFromTransformOptions(allocator: std.mem.Allocator, _loaders: ?api.
     return loaders;
 }
 
-const Dir = std.fs.Dir;
+const Dir = std.Io.Dir;
 
 pub const SourceMapOption = enum {
     none,
@@ -2090,14 +2090,14 @@ pub const BundleOptions = struct {
     }
 };
 
-pub fn openOutputDir(output_dir: string) !std.fs.Dir {
-    return std.fs.cwd().openDir(output_dir, .{}) catch brk: {
-        std.fs.cwd().makeDir(output_dir) catch |err| {
+pub fn openOutputDir(output_dir: string) !std.Io.Dir {
+    return std.Io.Dir.cwd().openDir(std.Options.debug_io, output_dir, .{}) catch brk: {
+        std.Io.Dir.cwd().createDir(std.Options.debug_io, output_dir, .default_dir) catch |err| {
             Output.printErrorln("error: Unable to mkdir \"{s}\": \"{s}\"", .{ output_dir, @errorName(err) });
             Global.crash();
         };
 
-        const handle = std.fs.cwd().openDir(output_dir, .{}) catch |err2| {
+        const handle = std.Io.Dir.cwd().openDir(std.Options.debug_io, output_dir, .{}) catch |err2| {
             Output.printErrorln("error: Unable to open \"{s}\": \"{s}\"", .{ output_dir, @errorName(err2) });
             Global.crash();
         };
@@ -2165,7 +2165,7 @@ pub const TransformResult = struct {
     warnings: []logger.Msg = &([_]logger.Msg{}),
     output_files: []OutputFile = &([_]OutputFile{}),
     outbase: string,
-    root_dir: ?std.fs.Dir = null,
+    root_dir: ?std.Io.Dir = null,
     pub fn init(
         outbase: string,
         output_files: []OutputFile,

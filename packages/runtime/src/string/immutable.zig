@@ -1366,7 +1366,7 @@ pub fn indexOfNotChar(slice: []const u8, char: u8) ?u32 {
 
 const invalid_char: u8 = 0xff;
 const hex_table: [256]u8 = brk: {
-    var values: [256]u8 = [_]u8{invalid_char}**256;
+    var values: [256]u8 = [_]u8{invalid_char} * *256;
     values['0'] = 0;
     values['1'] = 1;
     values['2'] = 2;
@@ -1807,15 +1807,7 @@ pub fn join(slices: []const string, delimiter: string, allocator: std.mem.Alloca
 }
 
 pub fn order(a: []const u8, b: []const u8) std.math.Order {
-    const len = @min(a.len, b.len);
-
-    const cmp = if (comptime Environment.isNative) bun.c.memcmp(a.ptr, b.ptr, len) else return std.mem.order(u8, a, b);
-    return switch (std.math.sign(cmp)) {
-        0 => std.math.order(a.len, b.len),
-        1 => .gt,
-        -1 => .lt,
-        else => unreachable,
-    };
+    return std.mem.order(u8, a, b);
 }
 
 pub fn cmpStringsAsc(_: void, a: string, b: string) bool {

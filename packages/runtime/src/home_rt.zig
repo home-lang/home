@@ -31,6 +31,9 @@ pub const Output = @import("output.zig");
 pub const Global = @import("global.zig");
 pub const Environment = @import("environment.zig");
 pub const fmt = @import("fmt.zig");
+pub const Generation = u16;
+pub const Wyhash11 = std.hash.Wyhash;
+pub const StandaloneModuleGraph = @import("standalone_graph/StandaloneModuleGraph.zig");
 
 fn assertNoHasherPointers(comptime T: type) void {
     switch (@typeInfo(T)) {
@@ -142,6 +145,7 @@ pub const PathString = @import("string/PathString.zig").PathString;
 pub const logger = @import("logger/logger.zig");
 pub const js_lexer = @import("js_parser/lexer.zig");
 pub const js_printer = @import("js_printer/js_printer.zig");
+pub const renamer = @import("js_printer/renamer.zig");
 pub const js_parser = @import("js_parser/parser.zig");
 pub const options = @import("bundler/options.zig");
 pub const defines = @import("bundler/defines.zig");
@@ -155,6 +159,8 @@ pub const ImportRecord = @import("options_types/import_record.zig").ImportRecord
 pub const ImportKind = @import("options_types/import_record.zig").ImportKind;
 pub const schema = @import("options_types/schema.zig");
 pub const bake = struct {
+    pub const DevServer = opaque {};
+
     pub const Framework = struct {
         is_built_in_react: bool = false,
         file_system_router_types: []FileSystemRouterType = &.{},
@@ -953,6 +959,10 @@ pub const jsc = struct {
         };
         pub threadlocal var default_vm: VirtualMachine = .{};
 
+        pub fn isLoaded() bool {
+            return false;
+        }
+
         pub const TimerState = struct {
             pub fn remove(this: *TimerState, timer: anytype) void {
                 _ = this;
@@ -1042,6 +1052,15 @@ pub const jsc = struct {
             _ = this;
             return null;
         }
+    };
+    pub const ModuleLoader = struct {
+        pub const HardcodedModule = struct {
+            pub const Alias = struct {
+                pub fn has(_: []const u8, _: anytype, _: anytype) bool {
+                    return false;
+                }
+            };
+        };
     };
     pub const URL = @import("jsc/URL.zig").URL;
     pub const DOMFormData = @import("jsc/DOMFormData.zig").DOMFormData;
@@ -2617,6 +2636,7 @@ pub const sourcemap = struct {
 // other subsystems still need are mirrored here.
 pub const bundler = struct {
     pub const IndexStringMap = @import("bundler/IndexStringMap.zig");
+    pub const NativePluginABI = @import("bundler/native_plugin_abi.zig");
 };
 
 // ---- src/http_jsc/ -----------------------------------------------------

@@ -219,7 +219,7 @@ Fresh single-file evidence from `/private/tmp/home-bun-parity-main` on
 |---|---|---|
 | `bundler/transpiler/transpiler.test.js` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed | Native `Bun.Transpiler` bridge is reached; CRLF and empty-type-parameter probes now advance, and the current bootstrap-body blocker is malformed-enum parse-error behavior |
 | `bundler/transpiler/decorators.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed | Parser/lowerer path still rejects top-level legacy decorators: `SyntaxError: Invalid character: '@'` |
-| `bundler/native-plugin.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed, 1 unsupported | File-attribute imports and native-plugin TS annotations now lower; current harness blocker is async lifecycle hooks before native-plugin ABI execution |
+| `bundler/native-plugin.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed, 0 unsupported | File-attribute imports, native-plugin TS annotations, and async lifecycle hooks now lower; current blocker is loading the node-gyp-built `.node` addon |
 
 Native plugin audit on 2026-05-26: `bundler/native-plugin.test.ts` is not
 a bootstrap-only fixture. The corpus harness now lowers the upstream
@@ -248,9 +248,26 @@ parser/printer bridge gained concrete Home compatibility shims
 `KnownGlobal.minifyGlobalConstructor`, `BSSMap`/`BSSStringList`, and stale
 Zig 0.17 std API fixes), but that bridge remains gated until the
 resolver/cache cone is complete. The rebuilt native-plugin single-file
-probe no longer fails at module syntax; it now stops at `Async lifecycle
-hooks are not supported by the Home Bun corpus bootstrap runner yet`, so no
-parity credit is claimed.
+probe no longer fails at module syntax or async lifecycle hooks; it now
+reaches the native addon load path and stops at `Cannot find module:
+/tmp/home-bun-corpus-native-plugins-<id>/build/Release/<plugin>.node`.
+No parity credit is claimed until the real `.node` bridge is wired.
+
+Native-plugin ABI bridge work on 2026-05-26 centralized Bun's public
+`bundler_plugin.h` loader/log layout in
+`packages/runtime/src/bundler/native_plugin_abi.zig` and moved
+`ParseTask.zig` to translate between Home's internal bundler loader enum
+and Bun's public native-plugin loader ids. This matters because Home's
+internal `Loader` enum has extra ids (`jsonc`, `sqlite`, `md`, etc.)
+that do not exist in Bun's C header; passing it directly would corrupt
+`OnBeforeParseArguments.default_loader` and `OnBeforeParseResult.loader`
+for real `.node` plugins. The same slice also fixes the `BunLogOptions`
+field order to match the header (`line`, `lineEnd`, `column`,
+`columnEnd`). The remaining ABI blocker is still the JSC/C++ bridge:
+`JSBundlerPlugin.cpp`, `napi.cpp`, and `napi_external.cpp` must attach
+dlopen metadata, validate private N-API externals, resolve
+`BUN_PLUGIN_NAME` / callback symbols, and call the now-correct
+`ParseTask` ABI.
 
 The next observed decorator blocker is `bundler/transpiler/decorators.test.ts`,
 which now reaches the real parser boundary after import/type erasure:

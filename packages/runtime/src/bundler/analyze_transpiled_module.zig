@@ -173,11 +173,11 @@ pub const ModuleInfo = struct {
     strings_map: std.ArrayHashMapUnmanaged(StringMapKey, void, void, true),
     strings_buf: std.ArrayListUnmanaged(u8),
     strings_lens: std.ArrayListUnmanaged(u32),
-    requested_modules: std.AutoArrayHashMap(StringID, FetchParameters),
+    requested_modules: std.ArrayHashMapUnmanaged(StringID, FetchParameters, std.hash_map.AutoContext(StringID), true),
     buffer: std.ArrayListUnmanaged(StringID),
     record_kinds: std.ArrayListUnmanaged(RecordKind),
     flags: Flags,
-    exported_names: std.AutoArrayHashMapUnmanaged(StringID, void),
+    exported_names: std.ArrayHashMapUnmanaged(StringID, void, std.hash_map.AutoContext(StringID), true),
     finalized: bool = false,
 
     /// only initialized after .finalize() is called
@@ -258,7 +258,7 @@ pub const ModuleInfo = struct {
             .strings_buf = .{},
             .strings_lens = .{},
             .exported_names = .{},
-            .requested_modules = std.AutoArrayHashMap(StringID, FetchParameters).init(allocator),
+            .requested_modules = .empty,
             .buffer = .empty,
             .record_kinds = .empty,
             .flags = .{ .contains_import_meta = false, .is_typescript = is_typescript },
@@ -270,7 +270,7 @@ pub const ModuleInfo = struct {
         self.strings_buf.deinit(self.gpa);
         self.strings_lens.deinit(self.gpa);
         self.exported_names.deinit(self.gpa);
-        self.requested_modules.deinit();
+        self.requested_modules.deinit(self.gpa);
         self.buffer.deinit(self.gpa);
         self.record_kinds.deinit(self.gpa);
     }
@@ -296,7 +296,7 @@ pub const ModuleInfo = struct {
     }
     pub fn requestModule(self: *ModuleInfo, import_record_path: StringID, fetch_parameters: FetchParameters) !void {
         // jsc only records the attributes of the first import with the given import_record_path. so only put if not exists.
-        const gpres = try self.requested_modules.getOrPut(import_record_path);
+        const gpres = try self.requested_modules.getOrPut(self.gpa, import_record_path);
         if (!gpres.found_existing) gpres.value_ptr.* = fetch_parameters;
     }
 
@@ -311,7 +311,7 @@ pub const ModuleInfo = struct {
         // Replace in requested_modules keys (preserving insertion order)
         if (self.requested_modules.getIndex(old_id)) |idx| {
             self.requested_modules.keys()[idx] = new_id;
-            self.requested_modules.reIndex() catch {};
+            self.requested_modules.reIndex(self.gpa) catch {};
         }
     }
 

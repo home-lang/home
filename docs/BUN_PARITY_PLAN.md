@@ -250,7 +250,7 @@ Fresh single-file probes on 2026-05-26 in
 |---|---|---|
 | `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/transpiler/transpiler.test.js` | Fails before promotion: 0 passed, 1 failed | Enters `Bun.Transpiler.transformSync`; CRLF and empty-type-parameter probes now advance, and the current bootstrap-body blocker is the malformed-enum parse-error section |
 | `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/transpiler/decorators.test.ts` | Fails before promotion: 0 passed, 1 failed | `SyntaxError: Invalid character: '@'` |
-| `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts` | Fails before promotion: 0 passed, 1 failed, 1 unsupported | File-attribute imports and native-plugin TS annotations now lower; current harness blocker is async lifecycle hooks before native-plugin ABI execution |
+| `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts` | Fails before promotion: 0 passed, 1 failed, 0 unsupported | File-attribute imports, native-plugin TS annotations, and async lifecycle hooks now lower; current blocker is loading the node-gyp-built `.node` addon |
 
 Decorator helper follow-through on 2026-05-26: the native corpus harness
 now exposes Bun's `bun:wrap` runtime helper surface for transformed output:
@@ -324,6 +324,11 @@ bundler plugin ABI:
   exposes those host functions to Home's JSC-enabled runtime and lets
   node-gyp-built addons attach the private dlopen handle used by
   `onBeforeParse`.
+- The ABI edge itself is now less ambiguous: Home has
+  `packages/runtime/src/bundler/native_plugin_abi.zig` for Bun's public
+  loader/log ids, and `ParseTask.zig` translates those ids to Home's
+  richer internal loader enum instead of passing the internal enum across
+  the C boundary.
 
 Worker evidence on 2026-05-26 after commit `f6ab6eaa`: no additional
 isolated Zig/header files were found missing for this frontier. The
@@ -338,8 +343,11 @@ shims (`bun.glob.match`, `ComptimeStringMap.getWithEql`, `jsc.math`,
 cone is complete. `zig build test -Dfilter=home_test --summary all`
 rebuilds green with 296/297 tests passing and one expected skip.
 The rebuilt native-plugin single-file probe no longer fails at module
-syntax; it now stops at `Async lifecycle hooks are not supported by the
-Home Bun corpus bootstrap runner yet`, before the `.node` ABI path can run.
+syntax or async lifecycle hooks; it now reaches the native addon load path
+and stops at `Cannot find module:
+/tmp/home-bun-corpus-native-plugins-<id>/build/Release/<plugin>.node`.
+The generic harness unsupported blocker is gone, but this remains no
+parity credit until the real `.node` bridge is wired.
 
 Do not close this by adding a corpus-only `.node` mock. A faithful close
 should first compile or port the native bridge, then promote the fixture

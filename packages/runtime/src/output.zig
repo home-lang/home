@@ -11,6 +11,12 @@ pub var enable_ansi_colors_stderr = false;
 pub var enable_ansi_colors_stdout = false;
 
 const CSI = "\x1b[";
+var error_writer_buffer: [4096]u8 = undefined;
+var error_file_writer: ?std.Io.File.Writer = null;
+
+fn debugIo() std.Io {
+    return std.Io.Threaded.global_single_threaded.io();
+}
 
 pub const color_map = struct {
     const Entry = struct {
@@ -75,6 +81,14 @@ pub fn flush() void {
     // writer. `std.debug.print` is already line-buffered to stderr, so
     // flush is a no-op until Home routes through its own buffered
     // writer in a later sub-phase.
+    if (error_file_writer) |*writer| writer.interface.flush() catch {};
+}
+
+pub fn errorWriter() *std.Io.Writer {
+    if (error_file_writer == null) {
+        error_file_writer = std.Io.File.Writer.initStreaming(.stderr(), debugIo(), &error_writer_buffer);
+    }
+    return &error_file_writer.?.interface;
 }
 
 /// Minimal stub for `bun.Output.Visibility`. Upstream uses `.visible` /

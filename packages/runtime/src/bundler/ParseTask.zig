@@ -802,20 +802,60 @@ const OnBeforeParsePlugin = struct {
 
     result: ?*OnBeforeParseResult = null,
 
-    const headers = bun.c;
+    const NativeLoader = NativePluginABI.Loader;
+    const NativeLogLevel = NativePluginABI.LogLevel;
+
+    fn nativeLoaderFromInternal(loader: Loader) ?NativeLoader {
+        return switch (loader) {
+            .jsx => .jsx,
+            .js => .js,
+            .ts => .ts,
+            .tsx => .tsx,
+            .css => .css,
+            .file => .file,
+            .json, .jsonc, .json5 => .json,
+            .toml => .toml,
+            .wasm => .wasm,
+            .napi => .napi,
+            .base64 => .base64,
+            .dataurl => .dataurl,
+            .text => .text,
+            .html => .html,
+            .yaml => .yaml,
+            .bunsh, .sqlite, .sqlite_embedded, .md => null,
+        };
+    }
+
+    fn internalLoaderFromNative(loader: NativeLoader) ?Loader {
+        return switch (loader) {
+            .jsx => .jsx,
+            .js => .js,
+            .ts => .ts,
+            .tsx => .tsx,
+            .css => .css,
+            .file => .file,
+            .json => .json,
+            .toml => .toml,
+            .wasm => .wasm,
+            .napi => .napi,
+            .base64 => .base64,
+            .dataurl => .dataurl,
+            .text => .text,
+            .html => .html,
+            .yaml => .yaml,
+            _ => null,
+        };
+    }
 
     comptime {
-        bun.assert(@sizeOf(OnBeforeParseArguments) == @sizeOf(headers.OnBeforeParseArguments));
-        bun.assert(@alignOf(OnBeforeParseArguments) == @alignOf(headers.OnBeforeParseArguments));
-
-        bun.assert(@sizeOf(BunLogOptions) == @sizeOf(headers.BunLogOptions));
-        bun.assert(@alignOf(BunLogOptions) == @alignOf(headers.BunLogOptions));
-
-        bun.assert(@sizeOf(OnBeforeParseResult) == @sizeOf(headers.OnBeforeParseResult));
-        bun.assert(@alignOf(OnBeforeParseResult) == @alignOf(headers.OnBeforeParseResult));
-
-        bun.assert(@sizeOf(BunLogOptions) == @sizeOf(headers.BunLogOptions));
-        bun.assert(@alignOf(BunLogOptions) == @alignOf(headers.BunLogOptions));
+        if (@sizeOf(usize) == 8) {
+            bun.assert(@sizeOf(OnBeforeParseArguments) == 64);
+            bun.assert(@alignOf(OnBeforeParseArguments) == 8);
+            bun.assert(@sizeOf(BunLogOptions) == 80);
+            bun.assert(@alignOf(BunLogOptions) == 8);
+            bun.assert(@sizeOf(OnBeforeParseResult) == 64);
+            bun.assert(@alignOf(OnBeforeParseResult) == 8);
+        }
     }
 
     const OnBeforeParseArguments = extern struct {
@@ -825,7 +865,7 @@ const OnBeforeParsePlugin = struct {
         path_len: usize = 0,
         namespace_ptr: ?[*]const u8 = "file",
         namespace_len: usize = "file".len,
-        default_loader: Loader = .file,
+        default_loader: NativeLoader = .file,
         external: ?*anyopaque = null,
     };
 
@@ -837,10 +877,10 @@ const OnBeforeParsePlugin = struct {
         path_len: usize = 0,
         source_line_text_ptr: ?[*]const u8 = null,
         source_line_text_len: usize = 0,
-        level: Logger.Log.Level = .err,
+        level: NativeLogLevel = .err,
         line: i32 = 0,
-        column: i32 = 0,
         line_end: i32 = 0,
+        column: i32 = 0,
         column_end: i32 = 0,
 
         pub fn sourceLineText(this: *const BunLogOptions) string {
@@ -920,7 +960,7 @@ const OnBeforeParsePlugin = struct {
         struct_size: usize = @sizeOf(OnBeforeParseResult),
         source_ptr: ?[*]const u8 = null,
         source_len: usize = 0,
-        loader: Loader,
+        loader: NativeLoader,
 
         fetch_source_code_fn: *const fn (*OnBeforeParseArguments, *OnBeforeParseResult) callconv(.c) i32 = &fetchSourceCode,
 
@@ -958,7 +998,11 @@ const OnBeforeParsePlugin = struct {
             this.allocator,
             this.file_path,
 
-            result.loader,
+            internalLoaderFromNative(result.loader) orelse {
+                this.deferred_error = error.InvalidNativePlugin;
+                this.should_continue_running.* = 0;
+                return 1;
+            },
         ) catch |err| {
             this.deferred_error = err;
             this.should_continue_running.* = 0;
@@ -977,7 +1021,7 @@ const OnBeforeParsePlugin = struct {
 
     pub export fn OnBeforeParseResult__reset(this: *OnBeforeParseResult) void {
         const wrapper = this.getWrapper();
-        this.loader = wrapper.loader;
+        this.loader = nativeLoaderFromInternal(wrapper.loader) orelse .file;
         if (wrapper.original_source) |src_ptr| {
             const src = src_ptr[0..wrapper.original_source_len];
             this.source_ptr = src.ptr;
@@ -1006,11 +1050,12 @@ const OnBeforeParsePlugin = struct {
     }
 
     pub fn run(this: *OnBeforeParsePlugin, plugin: *jsc.API.JSBundler.Plugin, from_plugin: *bool) !CacheEntry {
+        const default_native_loader = nativeLoaderFromInternal(this.loader.*) orelse .file;
         var args = OnBeforeParseArguments{
             .context = this,
             .path_ptr = this.file_path.text.ptr,
             .path_len = this.file_path.text.len,
-            .default_loader = this.loader.*,
+            .default_loader = default_native_loader,
         };
         if (this.file_path.namespace.len > 0) {
             args.namespace_ptr = this.file_path.namespace.ptr;
@@ -1019,7 +1064,7 @@ const OnBeforeParsePlugin = struct {
         var wrapper = OnBeforeParseResultWrapper{
             .loader = this.loader.*,
             .result = OnBeforeParseResult{
-                .loader = this.loader.*,
+                .loader = default_native_loader,
             },
         };
 
@@ -1076,7 +1121,16 @@ const OnBeforeParsePlugin = struct {
                     };
                 }
                 from_plugin.* = true;
-                this.loader.* = wrapper.result.loader;
+                this.loader.* = internalLoaderFromNative(wrapper.result.loader) orelse {
+                    var msg = Logger.Msg{ .data = .{ .location = null, .text = bun.default_allocator.dupe(
+                        u8,
+                        "Native plugin returned an unknown loader id in `OnBeforeParseResult.loader`.",
+                    ) catch |err| bun.handleOom(err) } };
+                    msg.kind = .err;
+                    args.context.log.errors += 1;
+                    bun.handleOom(args.context.log.addMsg(msg));
+                    return error.InvalidNativePlugin;
+                };
                 return .{
                     .contents = ptr[0..wrapper.result.source_len],
                     .external_free_function = .{
@@ -1459,6 +1513,7 @@ const Resolver = _resolver.Resolver;
 
 const options = @import("./options.zig");
 const Loader = options.Loader;
+const NativePluginABI = @import("./native_plugin_abi.zig");
 
 const bun = @import("bun");
 const Environment = bun.Environment;

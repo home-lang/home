@@ -75,7 +75,7 @@ Fresh single-file probes on 2026-05-26 in
 |---|---|---|
 | `bundler/transpiler/transpiler.test.js` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed | Native `Bun.Transpiler.transformSync` is reached; CRLF and empty-type-parameter probes now advance, and the current bootstrap-body blocker is malformed-enum parse-error behavior |
 | `bundler/transpiler/decorators.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed | `SyntaxError: Invalid character: '@'` |
-| `bundler/native-plugin.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed, 1 unsupported | File-attribute imports and native-plugin TS annotations now lower; current harness blocker is async lifecycle hooks before native-plugin ABI execution |
+| `bundler/native-plugin.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed, 0 unsupported | File-attribute imports, native-plugin TS annotations, and async lifecycle hooks now lower; current blocker is loading the node-gyp-built `.node` addon |
 
 Decorator helper groundwork (2026-05-26): the corpus harness now provides
 Bun's `bun:wrap` helper module for native-transpiled decorator output,
@@ -126,6 +126,17 @@ blocker is compiling or porting that bridge
 (`JSBundlerPlugin.cpp`, `napi.cpp`, `napi_external.cpp`) instead of adding
 a corpus-local mock.
 
+Native plugin ABI bridge note (2026-05-26): `ParseTask.zig` now uses a
+dedicated native-plugin ABI loader/log surface matching Bun's
+`packages/bun-native-bundler-plugin-api/bundler_plugin.h`, then maps
+that surface to Home's richer internal bundler loader enum. This closes
+the loader-id and `BunLogOptions` field-order drift that would have made
+real `build.onBeforeParse` callbacks observe the wrong loader or log
+location fields. The next blocker remains outside the bootstrap harness:
+wire the copied `JSBundlerPlugin.cpp`, `napi.cpp`, and
+`napi_external.cpp` bridge so `.node` modules carry dlopen metadata and
+N-API external cells into `build.onBeforeParse`.
+
 Worker evidence after commit `f6ab6eaa`: no extra isolated Zig/header
 copies were found missing for this frontier. `bunx --bun pickier` passed
 for the ledger files. The native parser/printer bridge gained concrete
@@ -133,9 +144,11 @@ Home compatibility shims (`bun.glob.match`, `ComptimeStringMap.getWithEql`,
 `jsc.math`, `KnownGlobal.minifyGlobalConstructor`, `BSSMap`/`BSSStringList`,
 stale Zig 0.17 std API usage), but the bridge remains gated until the
 resolver/cache cone is complete. The rebuilt native-plugin single-file
-probe no longer fails at module syntax; it now stops at `Async lifecycle
-hooks are not supported by the Home Bun corpus bootstrap runner yet`, so
-this is not parity credit yet.
+probe no longer fails at module syntax or async lifecycle hooks; it now
+reaches the native addon load path and stops at `Cannot find module:
+/tmp/home-bun-corpus-native-plugins-<id>/build/Release/<plugin>.node`.
+This is still not parity credit; the next faithful chunk is the real
+`.node`/N-API/JSC bridge, not a corpus-only mock.
 
 Next source-module work for bundler should replace the
 `__home_expect_bundled` bootstrap stub with a real `itBundled` adapter

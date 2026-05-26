@@ -101,30 +101,30 @@ pub const RuntimeTranspilerCache = struct {
         }
 
         pub fn decode(this: *Metadata, reader: anytype) !void {
-            this.cache_version = try reader.readInt(u32, .little);
+            this.cache_version = try reader.takeInt(u32, .little);
             if (this.cache_version != expected_version) {
                 return error.StaleCache;
             }
 
-            this.module_type = @enumFromInt(try reader.readInt(u8, .little));
-            this.output_encoding = @enumFromInt(try reader.readInt(u8, .little));
+            this.module_type = @enumFromInt(try reader.takeInt(u8, .little));
+            this.output_encoding = @enumFromInt(try reader.takeInt(u8, .little));
 
-            this.features_hash = try reader.readInt(u64, .little);
+            this.features_hash = try reader.takeInt(u64, .little);
 
-            this.input_byte_length = try reader.readInt(u64, .little);
-            this.input_hash = try reader.readInt(u64, .little);
+            this.input_byte_length = try reader.takeInt(u64, .little);
+            this.input_hash = try reader.takeInt(u64, .little);
 
-            this.output_byte_offset = try reader.readInt(u64, .little);
-            this.output_byte_length = try reader.readInt(u64, .little);
-            this.output_hash = try reader.readInt(u64, .little);
+            this.output_byte_offset = try reader.takeInt(u64, .little);
+            this.output_byte_length = try reader.takeInt(u64, .little);
+            this.output_hash = try reader.takeInt(u64, .little);
 
-            this.sourcemap_byte_offset = try reader.readInt(u64, .little);
-            this.sourcemap_byte_length = try reader.readInt(u64, .little);
-            this.sourcemap_hash = try reader.readInt(u64, .little);
+            this.sourcemap_byte_offset = try reader.takeInt(u64, .little);
+            this.sourcemap_byte_length = try reader.takeInt(u64, .little);
+            this.sourcemap_hash = try reader.takeInt(u64, .little);
 
-            this.esm_record_byte_offset = try reader.readInt(u64, .little);
-            this.esm_record_byte_length = try reader.readInt(u64, .little);
-            this.esm_record_hash = try reader.readInt(u64, .little);
+            this.esm_record_byte_offset = try reader.takeInt(u64, .little);
+            this.esm_record_byte_length = try reader.takeInt(u64, .little);
+            this.esm_record_hash = try reader.takeInt(u64, .little);
 
             switch (this.module_type) {
                 .esm, .cjs => {},
@@ -240,18 +240,18 @@ pub const RuntimeTranspilerCache = struct {
                         metadata.esm_record_hash = hash(esm_record);
                     }
 
-                    var metadata_stream = std.io.fixedBufferStream(&metadata_buf);
+                    var metadata_stream = std.Io.Writer.fixed(&metadata_buf);
 
-                    try metadata.encode(metadata_stream.writer());
+                    try metadata.encode(&metadata_stream);
 
                     if (comptime bun.Environment.isDebug) {
-                        var metadata_stream2 = std.io.fixedBufferStream(metadata_buf[0..Metadata.size]);
+                        var metadata_stream2 = std.Io.Reader.fixed(metadata_buf[0..Metadata.size]);
                         var metadata2 = Metadata{};
-                        metadata2.decode(metadata_stream2.reader()) catch |err| bun.Output.panic("Metadata did not roundtrip encode -> decode  successfully: {s}", .{@errorName(err)});
+                        metadata2.decode(&metadata_stream2) catch |err| bun.Output.panic("Metadata did not roundtrip encode -> decode  successfully: {s}", .{@errorName(err)});
                         bun.assert(std.meta.eql(metadata, metadata2));
                     }
 
-                    break :brk metadata_buf[0..metadata_stream.pos];
+                    break :brk metadata_stream.buffered();
                 };
 
                 var vecs_buf: [4]bun.PlatformIOVecConst = undefined;
@@ -301,12 +301,13 @@ pub const RuntimeTranspilerCache = struct {
 
         pub fn load(
             this: *Entry,
-            file: std.fs.File,
+            file: std.Io.File,
             sourcemap_allocator: std.mem.Allocator,
             output_code_allocator: std.mem.Allocator,
             esm_record_allocator: std.mem.Allocator,
         ) !void {
-            const stat_size = try file.getEndPos();
+            const io = std.Io.Threaded.global_single_threaded.io();
+            const stat_size = (try file.stat(io)).size;
             if (stat_size < Metadata.size + this.metadata.output_byte_length + this.metadata.sourcemap_byte_length) {
                 return error.MissingData;
             }
@@ -319,7 +320,7 @@ pub const RuntimeTranspilerCache = struct {
                 .utf8 => brk: {
                     const utf8 = try output_code_allocator.alloc(u8, this.metadata.output_byte_length);
                     errdefer output_code_allocator.free(utf8);
-                    const read_bytes = try file.preadAll(utf8, this.metadata.output_byte_offset);
+                    const read_bytes = try file.readPositionalAll(io, utf8, this.metadata.output_byte_offset);
                     if (read_bytes != this.metadata.output_byte_length) {
                         return error.MissingData;
                     }
@@ -328,7 +329,7 @@ pub const RuntimeTranspilerCache = struct {
                 .latin1 => brk: {
                     var latin1, const bytes = bun.String.createUninitialized(.latin1, this.metadata.output_byte_length);
                     errdefer latin1.deref();
-                    const read_bytes = try file.preadAll(bytes, this.metadata.output_byte_offset);
+                    const read_bytes = try file.readPositionalAll(io, bytes, this.metadata.output_byte_offset);
 
                     if (this.metadata.output_hash != 0) {
                         if (hash(latin1.latin1()) != this.metadata.output_hash) {
@@ -346,7 +347,7 @@ pub const RuntimeTranspilerCache = struct {
                     var string, const chars = bun.String.createUninitialized(.utf16, this.metadata.output_byte_length / 2);
                     errdefer string.deref();
 
-                    const read_bytes = try file.preadAll(std.mem.sliceAsBytes(chars), this.metadata.output_byte_offset);
+                    const read_bytes = try file.readPositionalAll(io, std.mem.sliceAsBytes(chars), this.metadata.output_byte_offset);
                     if (read_bytes != this.metadata.output_byte_length) {
                         return error.MissingData;
                     }
@@ -373,7 +374,7 @@ pub const RuntimeTranspilerCache = struct {
             if (this.metadata.sourcemap_byte_length > 0) {
                 const sourcemap = try sourcemap_allocator.alloc(u8, this.metadata.sourcemap_byte_length);
                 errdefer sourcemap_allocator.free(sourcemap);
-                const read_bytes = try file.preadAll(sourcemap, this.metadata.sourcemap_byte_offset);
+                const read_bytes = try file.readPositionalAll(io, sourcemap, this.metadata.sourcemap_byte_offset);
                 if (read_bytes != this.metadata.sourcemap_byte_length) {
                     return error.MissingData;
                 }
@@ -384,7 +385,7 @@ pub const RuntimeTranspilerCache = struct {
             if (this.metadata.esm_record_byte_length > 0) {
                 const esm_record = try esm_record_allocator.alloc(u8, this.metadata.esm_record_byte_length);
                 errdefer esm_record_allocator.free(esm_record);
-                const read_bytes = try file.preadAll(esm_record, this.metadata.esm_record_byte_offset);
+                const read_bytes = try file.readPositionalAll(io, esm_record, this.metadata.esm_record_byte_offset);
                 if (read_bytes != this.metadata.esm_record_byte_length) {
                     return error.MissingData;
                 }
@@ -543,24 +544,23 @@ pub const RuntimeTranspilerCache = struct {
         esm_record_allocator: std.mem.Allocator,
     ) !Entry {
         var metadata_bytes_buf: [Metadata.size * 2]u8 = undefined;
-        const file = try std.Io.Dir.openFileAbsolute(std.options.debug_io, cache_file_path.slice(), .{ .mode = .read_only });
-        defer file.close();
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const file = try std.Io.Dir.openFileAbsolute(io, cache_file_path.slice(), .{ .mode = .read_only });
+        defer file.close(io);
         errdefer {
             // On any error, we delete the cache file
-            std.Io.Dir.deleteFileAbsolute(std.options.debug_io, cache_file_path.slice()) catch {};
+            std.Io.Dir.deleteFileAbsolute(io, cache_file_path.slice()) catch {};
         }
 
-        const metadata_bytes = try file.preadAll(&metadata_bytes_buf, 0);
-        if (comptime bun.Environment.isWindows) try file.seekTo(0);
-        var metadata_stream = std.io.fixedBufferStream(metadata_bytes_buf[0..metadata_bytes]);
+        const metadata_bytes = try file.readPositionalAll(io, &metadata_bytes_buf, 0);
+        var metadata_stream = std.Io.Reader.fixed(metadata_bytes_buf[0..metadata_bytes]);
 
         var entry = Entry{
             .metadata = Metadata{},
             .output_code = .{ .utf8 = "" },
             .sourcemap = "",
         };
-        const reader = metadata_stream.reader();
-        try entry.metadata.decode(reader);
+        try entry.metadata.decode(&metadata_stream);
         if (entry.metadata.input_hash != input_hash or entry.metadata.input_byte_length != input_stat_size) {
             // delete the cache in this case
             return error.InvalidInputHash;

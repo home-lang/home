@@ -3246,8 +3246,45 @@ const harness_prelude =
     \\  return error;
     \\}
     \\function __home_run_hook(fn) {
-    \\  const result = fn();
-    \\  if (__home_is_thenable(result)) __home_unsupported("Async lifecycle hooks are not supported by the Home Bun corpus bootstrap runner yet");
+    \\  return fn();
+    \\}
+    \\function __home_run_hook_list(hooks, reverse) {
+    \\  let chain = null;
+    \\  const runAt = (index) => __home_run_hook(hooks[index]);
+    \\  const count = hooks.length;
+    \\  for (let offset = 0; offset < count; offset++) {
+    \\    const index = reverse ? count - 1 - offset : offset;
+    \\    if (chain) {
+    \\      chain = __home_then(chain, function() { return runAt(index); });
+    \\      continue;
+    \\    }
+    \\    const result = runAt(index);
+    \\    if (__home_is_thenable(result)) chain = Promise.resolve(result);
+    \\  }
+    \\  return chain;
+    \\}
+    \\function __home_then_after(value, after) {
+    \\  if (__home_is_thenable(value)) return __home_then(value, after);
+    \\  return after();
+    \\}
+    \\function __home_then_cleanup(value, cleanup) {
+    \\  if (__home_is_thenable(value)) {
+    \\    return __home_then(value,
+    \\      function(resolved) {
+    \\        const cleanupResult = cleanup();
+    \\        if (__home_is_thenable(cleanupResult)) return __home_then(cleanupResult, function() { return resolved; });
+    \\        return resolved;
+    \\      },
+    \\      function(error) {
+    \\        const cleanupResult = cleanup();
+    \\        if (__home_is_thenable(cleanupResult)) return __home_then(cleanupResult, function() { throw error; });
+    \\        throw error;
+    \\      },
+    \\    );
+    \\  }
+    \\  const cleanupResult = cleanup();
+    \\  if (__home_is_thenable(cleanupResult)) return __home_then(cleanupResult, function() { return value; });
+    \\  return value;
     \\}
     \\function __home_scope_chain(scope) {
     \\  const chain = [];
@@ -3255,21 +3292,27 @@ const harness_prelude =
     \\  return chain;
     \\}
     \\function __home_run_before_all_hooks(scope) {
+    \\  let chain = null;
     \\  for (const item of __home_scope_chain(scope)) {
     \\    if (item.beforeAllDone) continue;
     \\    item.beforeAllDone = true;
-    \\    for (const hook of item.beforeAll) __home_run_hook(hook);
+    \\    if (chain) {
+    \\      chain = __home_then(chain, function() { return __home_run_hook_list(item.beforeAll, false); });
+    \\      continue;
+    \\    }
+    \\    const result = __home_run_hook_list(item.beforeAll, false);
+    \\    if (__home_is_thenable(result)) chain = result;
     \\  }
+    \\  return chain;
     \\}
     \\function __home_run_scoped_after_all(scope) {
     \\  if (scope.afterAllDone) return;
     \\  scope.afterAllDone = true;
-    \\  for (const hook of scope.afterAll) __home_run_hook(hook);
+    \\  return __home_run_hook_list(scope.afterAll, false);
     \\}
     \\function __home_run_all_after_all(scope) {
     \\  if (!scope) return;
-    \\  __home_run_all_after_all(scope.parent);
-    \\  __home_run_scoped_after_all(scope);
+    \\  return __home_then_after(__home_run_all_after_all(scope.parent), function() { return __home_run_scoped_after_all(scope); });
     \\}
     \\function __home_register_hook(list, fn) {
     \\  if (typeof fn === "function") list.push(fn);
@@ -3290,7 +3333,7 @@ const harness_prelude =
     \\  return { fn, options };
     \\}
     \\function __home_run_finished_callbacks(callbacks) {
-    \\  for (let i = callbacks.length - 1; i >= 0; i--) __home_run_hook(callbacks[i]);
+    \\  return __home_run_hook_list(callbacks, true);
     \\}
     \\function __home_done_callback(error) {
     \\  if (error) throw error;
@@ -3349,26 +3392,50 @@ const harness_prelude =
     \\  const afterAllLengths = chain.map(item => item.afterAll.length);
     \\  const previousCallbacks = globalThis.__home_current_finished_callbacks;
     \\  globalThis.__home_current_finished_callbacks = [];
-    \\  try {
-    \\    __home_run_before_all_hooks(scope);
-    \\    for (const item of chain) for (const hook of item.beforeEach) __home_run_hook(hook);
-    \\    const result = fn.length > 0 ? fn(__home_done_callback) : fn();
-    \\    if (__home_is_thenable(result)) {
-    \\      if (globalThis.__home_current_finished_callbacks.length > 0) __home_unsupported("Async tests with onTestFinished callbacks are not supported by the Home Bun corpus bootstrap runner yet");
-    \\      return __home_track_test_thenable(result, parsed);
-    \\    }
-    \\  } finally {
-    \\    const callbacks = globalThis.__home_current_finished_callbacks;
+    \\  let callbacks = null;
+    \\  const cleanup = () => {
+    \\    callbacks = globalThis.__home_current_finished_callbacks;
     \\    globalThis.__home_current_finished_callbacks = previousCallbacks;
-    \\    __home_run_finished_callbacks(callbacks);
-    \\    for (let i = chain.length - 1; i >= 0; i--) for (const hook of chain[i].afterEach) __home_run_hook(hook);
+    \\    let cleanupChain = __home_run_finished_callbacks(callbacks);
+    \\    for (let i = chain.length - 1; i >= 0; i--) {
+    \\      const item = chain[i];
+    \\      cleanupChain = __home_then_after(cleanupChain, function() { return __home_run_hook_list(item.afterEach, false); });
+    \\    }
     \\    for (let i = 0; i < chain.length; i++) {
     \\      const item = chain[i];
     \\      const start = afterAllLengths[i];
     \\      const added = item.afterAll.slice(start);
     \\      item.afterAll.length = start;
-    \\      for (const hook of added) __home_run_hook(hook);
+    \\      cleanupChain = __home_then_after(cleanupChain, function() { return __home_run_hook_list(added, false); });
     \\    }
+    \\    return cleanupChain;
+    \\  };
+    \\  const runBody = () => {
+    \\    const result = fn.length > 0 ? fn(__home_done_callback) : fn();
+    \\    if (__home_is_thenable(result)) {
+    \\      if (globalThis.__home_current_finished_callbacks.length > 0) __home_unsupported("Async tests with onTestFinished callbacks are not supported by the Home Bun corpus bootstrap runner yet");
+    \\    }
+    \\    return result;
+    \\  };
+    \\  try {
+    \\    const beforeAllResult = __home_run_before_all_hooks(scope);
+    \\    const beforeEachAndBody = () => {
+    \\      let beforeEachChain = null;
+    \\      for (const item of chain) {
+    \\        if (beforeEachChain) {
+    \\          beforeEachChain = __home_then(beforeEachChain, function() { return __home_run_hook_list(item.beforeEach, false); });
+    \\          continue;
+    \\        }
+    \\        const result = __home_run_hook_list(item.beforeEach, false);
+    \\        if (__home_is_thenable(result)) beforeEachChain = result;
+    \\      }
+    \\      return __home_then_after(beforeEachChain, runBody);
+    \\    };
+    \\    return __home_then_cleanup(__home_then_after(beforeAllResult, beforeEachAndBody), cleanup);
+    \\  } catch (error) {
+    \\    const cleanupResult = cleanup();
+    \\    if (__home_is_thenable(cleanupResult)) return __home_then(cleanupResult, function() { throw error; });
+    \\    throw error;
     \\  }
     \\}
     \\function __home_execute_test(parsed) {
@@ -3409,7 +3476,7 @@ const harness_prelude =
     \\          if (__home_is_thenable(attemptResult)) {
     \\            if (retry > 0) __home_unsupported("Async tests with retry are not supported by the Home Bun corpus bootstrap runner yet");
     \\            completedSync = false;
-    \\            return attemptResult;
+    \\            return __home_track_test_thenable(attemptResult, parsed);
     \\          }
     \\          lastError = null;
     \\          break;

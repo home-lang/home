@@ -5779,14 +5779,15 @@ pub fn NewParser_(
                 const namespace = entry.value_ptr.namespace;
                 var inner_map: bun.StringHashMapUnmanaged(InlinedEnumValue) = .{};
                 try inner_map.ensureTotalCapacity(allocator, @intCast(namespace.count()));
-                for (namespace.keys(), namespace.values()) |key, val| {
-                    switch (val.data) {
+                var namespace_iter = namespace.iterator();
+                while (namespace_iter.next()) |namespace_entry| {
+                    switch (namespace_entry.value_ptr.data) {
                         .enum_number => |num| inner_map.putAssumeCapacityNoClobber(
-                            key,
+                            namespace_entry.key_ptr.*,
                             InlinedEnumValue.encode(.{ .number = num }),
                         ),
                         .enum_string => |str| inner_map.putAssumeCapacityNoClobber(
-                            key,
+                            namespace_entry.key_ptr.*,
                             InlinedEnumValue.encode(.{ .string = str }),
                         ),
                         else => continue,

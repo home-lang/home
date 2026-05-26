@@ -23,6 +23,25 @@ fn rawGet(name: []const u8) ?[]const u8 {
     return std.mem.span(result);
 }
 
+fn StringEnv(comptime name: []const u8) type {
+    return struct {
+        pub fn get() ?[]const u8 {
+            return rawGet(name);
+        }
+
+        pub fn getNotEmpty() ?[]const u8 {
+            const raw = rawGet(name) orelse return null;
+            if (raw.len == 0) return null;
+            return raw;
+        }
+    };
+}
+
+pub const BUN_TMPDIR = StringEnv("BUN_TMPDIR");
+pub const TMPDIR = StringEnv("TMPDIR");
+pub const TMP = StringEnv("TMP");
+pub const TEMP = StringEnv("TEMP");
+
 pub const CI = struct {
     pub fn get() ?bool {
         const raw = rawGet("CI") orelse return null;

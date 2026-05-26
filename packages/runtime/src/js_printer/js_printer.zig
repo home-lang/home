@@ -34,8 +34,8 @@ pub fn canPrintWithoutEscape(comptime CodePointType: type, c: CodePointType, com
     }
 }
 
-const indentation_space_buf = [_]u8{' '}**128;
-const indentation_tab_buf = [_]u8{'\t'}**128;
+const indentation_space_buf = [_]u8{' '} * *128;
+const indentation_tab_buf = [_]u8{'\t'} * *128;
 
 pub fn bestQuoteCharForString(comptime Type: type, str: []const Type, allow_backtick: bool) u8 {
     var single_cost: usize = 0;
@@ -5977,7 +5977,8 @@ pub fn printAst(
             }
         }
 
-        for (tree.named_exports.values()) |named_export| {
+        var named_export_iter = tree.named_exports.valueIterator();
+        while (named_export_iter.next()) |named_export| {
             if (symbols.get(named_export.ref)) |symbol| {
                 symbol.must_not_be_renamed = true;
             }

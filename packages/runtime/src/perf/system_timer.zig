@@ -30,23 +30,28 @@ fn NewTimer() type {
     return struct {
         started: i128,
 
+        fn nanoTimestamp() i128 {
+            const io = std.Io.Threaded.global_single_threaded.io();
+            return std.Io.Clock.awake.now(io).nanoseconds;
+        }
+
         pub fn start() !@This() {
-            return .{ .started = std.time.nanoTimestamp() };
+            return .{ .started = nanoTimestamp() };
         }
 
         pub fn read(self: @This()) u64 {
-            return @intCast(@max(std.time.nanoTimestamp() - self.started, 0));
+            return @intCast(@max(nanoTimestamp() - self.started, 0));
         }
 
         pub fn lap(self: *@This()) u64 {
-            const now = std.time.nanoTimestamp();
+            const now = nanoTimestamp();
             const elapsed = @max(now - self.started, 0);
             self.started = now;
             return @intCast(elapsed);
         }
 
         pub fn reset(self: *@This()) void {
-            self.started = std.time.nanoTimestamp();
+            self.started = nanoTimestamp();
         }
     };
 }
