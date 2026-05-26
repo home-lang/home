@@ -26,10 +26,10 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 
 | Status | Count |
 | --- | ---: |
-| emitted | 734 |
+| emitted | 737 |
 | declared | 2 |
 | tested-only | 0 |
-| catalog-only | 1340 |
+| catalog-only | 1337 |
 | total upstream codes | 2076 |
 
 ## Codes
@@ -528,11 +528,11 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS2323 | err | emitted | packages/ts_checker/src/check.zig:5991<br>packages/ts_checker/src/check.zig:5995<br>packages/ts_checker/src/check.zig:6062 | Cannot_redeclare_exported_variable_0_2323 |
 | TS2324 | err | catalog-only |  | Property_0_is_missing_in_type_1_2324 |
 | TS2325 | err | catalog-only |  | Property_0_is_private_in_type_1_but_not_in_type_2_2325 |
-| TS2326 | err | catalog-only |  | Types_of_property_0_are_incompatible_2326 |
-| TS2327 | err | catalog-only |  | Property_0_is_optional_in_type_1_but_required_in_type_2_2327 |
+| TS2326 | err | emitted | packages/ts_checker/src/check.zig:29728 | Types_of_property_0_are_incompatible_2326 |
+| TS2327 | err | emitted | packages/ts_checker/src/check.zig:29716 | Property_0_is_optional_in_type_1_but_required_in_type_2_2327 |
 | TS2328 | err | catalog-only |  | Types_of_parameters_0_and_1_are_incompatible_2328 |
 | TS2329 | err | catalog-only |  | Index_signature_for_type_0_is_missing_in_type_1_2329 |
-| TS2330 | err | catalog-only |  | _0_and_1_index_signatures_are_incompatible_2330 |
+| TS2330 | err | emitted | packages/ts_checker/src/check.zig:29754 | _0_and_1_index_signatures_are_incompatible_2330 |
 | TS2331 | err | emitted | packages/ts_checker/src/check.zig:44185<br>packages/ts_checker/src/check.zig:49755<br>packages/ts_checker/src/check.zig:86492 | this_cannot_be_referenced_in_a_module_or_namespace_body_2331 |
 | TS2332 | err | emitted | packages/ts_checker/src/check.zig:49700<br>packages/ts_checker/src/check.zig:54702 | this_cannot_be_referenced_in_current_location_2332 |
 | TS2334 | err | catalog-only |  | this_cannot_be_referenced_in_a_static_property_initializer_2334 |
