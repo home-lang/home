@@ -112,6 +112,9 @@ pub const CompileOptions = struct {
     no_emit: bool = false,
     /// Treat the source as `.tsx` — enables JSX parsing.
     is_tsx: bool = false,
+    /// Treat the source as JSON/JSONC and use TypeScript's JSON parser
+    /// recovery instead of the normal TS grammar.
+    is_json_source: bool = false,
     /// True when the effective compiler options include `jsx`.
     /// Kept separate from `is_tsx`: `.tsx` syntax still parses even
     /// when `--jsx` is absent, but the checker must report TS17004
@@ -1127,7 +1130,10 @@ pub fn compileSource(
     parser.setTargetEs2018OrLater(options.syntax_target_es2018);
     defer parser.deinit();
 
-    c.root = parser.parseSourceFile() catch |err| switch (err) {
+    c.root = (if (options.is_json_source)
+        parser.parseJsonSourceFile()
+    else
+        parser.parseSourceFile()) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => blk: {
             c.has_errors = true;
@@ -2652,6 +2658,26 @@ test "driver: parser diagnostics preserve span length for exact ordering" {
     }
     try T.expect(saw_span_1357);
     try T.expect(saw_span_1164);
+}
+
+test "driver: JSON parser mode surfaces TS1012 trailing token" {
+    var c = try compileSource(T.allocator, "{} blah", .{ .is_json_source = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 1012) {
+            found = true;
+            try T.expectEqual(@as(u32, 3), d.pos);
+            try T.expectEqual(@as(u32, 1), d.line);
+            try T.expectEqual(@as(u32, 4), d.span_len);
+            try T.expectEqualStrings("Unexpected token.", d.message);
+        }
+    }
+    try T.expect(found);
 }
 
 test "driver: importHelpers reports missing Stage 3 decorator helpers from virtual tslib" {

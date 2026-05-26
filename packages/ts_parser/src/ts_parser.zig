@@ -859,6 +859,123 @@ pub const Parser = struct {
     // Public entry
     // ========================================================================
 
+    /// Parse a JSON/JSONC source file using TypeScript's `parseJsonText`
+    /// top-level recovery shape. JSON files accept one top-level value;
+    /// if another value starts afterward, tsc reports TS1012 at that
+    /// trailing token and then keeps consuming the rest of the file.
+    pub fn parseJsonSourceFile(self: *Parser) ParseError!NodeId {
+        const start = self.peek();
+        var saw_expression = false;
+        while (self.peek().kind != .eof) {
+            try self.parseJsonTopLevelExpression();
+            if (!saw_expression) {
+                saw_expression = true;
+                const trailing = self.peek();
+                if (trailing.kind != .eof) {
+                    try self.reportCodeAtWithSpan(
+                        trailing.span.start,
+                        trailing.line,
+                        trailing.span.end - trailing.span.start,
+                        1012,
+                        "Unexpected token.",
+                    );
+                }
+            }
+        }
+
+        const end = self.peek();
+        return try self.builder.addBlock(.{ .start = start.span.start, .end = end.span.start }, &.{});
+    }
+
+    fn parseJsonTopLevelExpression(self: *Parser) ParseError!void {
+        const tok = self.peek();
+        switch (tok.kind) {
+            .open_bracket => try self.parseJsonArray(),
+            .open_brace => try self.parseJsonObject(),
+            .kw_true, .kw_false, .kw_null => _ = self.advance(),
+            .minus => {
+                if (self.peekAt(1).kind == .number_literal and self.peekAt(2).kind != .colon) {
+                    _ = self.advance();
+                    _ = self.advance();
+                } else {
+                    try self.parseJsonObject();
+                }
+            },
+            .number_literal, .string_literal => {
+                if (self.peekAt(1).kind != .colon) {
+                    _ = self.advance();
+                } else {
+                    try self.parseJsonObject();
+                }
+            },
+            else => try self.parseJsonObject(),
+        }
+    }
+
+    fn parseJsonValue(self: *Parser) ParseError!void {
+        switch (self.peek().kind) {
+            .open_brace => try self.parseJsonObject(),
+            .open_bracket => try self.parseJsonArray(),
+            .kw_true, .kw_false, .kw_null, .number_literal, .string_literal => _ = self.advance(),
+            .minus => {
+                _ = self.advance();
+                if (self.peek().kind == .number_literal) _ = self.advance();
+            },
+            else => {
+                if (self.peek().kind != .eof) _ = self.advance();
+            },
+        }
+    }
+
+    fn parseJsonObject(self: *Parser) ParseError!void {
+        if (self.peek().kind == .open_brace) {
+            _ = self.advance();
+        } else {
+            try self.reportCodeAtWithSpan(
+                self.peek().span.start,
+                self.peek().line,
+                self.peek().span.end - self.peek().span.start,
+                1005,
+                "'{' expected.",
+            );
+        }
+
+        while (self.peek().kind != .eof and self.peek().kind != .close_brace) {
+            if (self.peek().kind == .comma) {
+                _ = self.advance();
+                continue;
+            }
+            _ = self.advance();
+            if (self.peek().kind == .colon) {
+                _ = self.advance();
+                try self.parseJsonValue();
+            } else if (self.peek().kind != .close_brace and self.peek().kind != .eof) {
+                try self.reportCodeAtWithSpan(
+                    self.peek().span.start,
+                    self.peek().line,
+                    self.peek().span.end - self.peek().span.start,
+                    1005,
+                    "',' expected.",
+                );
+                _ = self.advance();
+            }
+        }
+        if (self.peek().kind == .close_brace) _ = self.advance();
+    }
+
+    fn parseJsonArray(self: *Parser) ParseError!void {
+        if (self.peek().kind == .open_bracket) _ = self.advance();
+        while (self.peek().kind != .eof and self.peek().kind != .close_bracket) {
+            if (self.peek().kind == .comma) {
+                _ = self.advance();
+                continue;
+            }
+            try self.parseJsonValue();
+            if (self.peek().kind == .comma) _ = self.advance();
+        }
+        if (self.peek().kind == .close_bracket) _ = self.advance();
+    }
+
     /// Parse a TS source file into HIR. Returns the source-file root
     /// `NodeId` (currently a synthesized block).
     pub fn parseSourceFile(self: *Parser) ParseError!NodeId {
@@ -17438,6 +17555,45 @@ test "parser: boolean and null literals" {
     try T.expectEqual(true, hir_mod.literalBoolOf(&s.hir, stmts[0]));
     try T.expectEqual(false, hir_mod.literalBoolOf(&s.hir, stmts[1]));
     try T.expectEqual(hir_mod.NodeKind.literal_null, s.hir.kindOf(stmts[2]));
+}
+
+test "parser: JSON trailing top-level value reports TS1012" {
+    var s = try newTestSetup("{} blah");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseJsonSourceFile();
+
+    const d = findFirstDiagnosticOfCode(&s.parser, 1012).?;
+    try T.expectEqual(@as(u32, 3), d.pos);
+    try T.expectEqual(@as(u32, 1), d.line);
+    try T.expectEqual(@as(u32, 4), d.span_len);
+    try T.expectEqualStrings("Unexpected token.", d.message);
+}
+
+test "parser: JSON adjacent objects report TS1012 at second object" {
+    var s = try newTestSetup("{} {}");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseJsonSourceFile();
+
+    const d = findFirstDiagnosticOfCode(&s.parser, 1012).?;
+    try T.expectEqual(@as(u32, 3), d.pos);
+    try T.expectEqual(@as(u32, 1), d.line);
+    try T.expectEqual(@as(u32, 1), d.span_len);
+    try T.expectEqualStrings("Unexpected token.", d.message);
+}
+
+test "parser: JSON comma-separated top-level objects report TS1012 at comma" {
+    var s = try newTestSetup("{}, {}");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseJsonSourceFile();
+
+    const d = findFirstDiagnosticOfCode(&s.parser, 1012).?;
+    try T.expectEqual(@as(u32, 2), d.pos);
+    try T.expectEqual(@as(u32, 1), d.line);
+    try T.expectEqual(@as(u32, 1), d.span_len);
+    try T.expectEqualStrings("Unexpected token.", d.message);
 }
 
 test "parser: let declaration with initializer" {

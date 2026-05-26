@@ -2634,6 +2634,33 @@ pub fn arbitraryExtensionImportDiagnostic(gpa: std.mem.Allocator, module_name: [
     };
 }
 
+pub fn jsxModuleResolutionDiagnostic(gpa: std.mem.Allocator, module_name: []const u8, resolved_file: []const u8) !ValidationDiagnostic {
+    return .{
+        .code = 6142,
+        .message = try std.fmt.allocPrint(gpa, "Module '{s}' was resolved to '{s}', but '--jsx' is not set.", .{ module_name, resolved_file }),
+        .owns_message = true,
+        .field = "jsx",
+    };
+}
+
+pub fn unresolvedPathWithExtensionsDiagnostic(gpa: std.mem.Allocator, path: []const u8, extensions: []const u8) !ValidationDiagnostic {
+    return .{
+        .code = 6231,
+        .message = try std.fmt.allocPrint(gpa, "Could not resolve the path '{s}' with the extensions: {s}.", .{ path, extensions }),
+        .owns_message = true,
+        .field = "files",
+    };
+}
+
+pub fn jsFileRequiresAllowJsDiagnostic(gpa: std.mem.Allocator, file: []const u8) !ValidationDiagnostic {
+    return .{
+        .code = 6504,
+        .message = try std.fmt.allocPrint(gpa, "File '{s}' is a JavaScript file. Did you mean to enable the 'allowJs' option?", .{file}),
+        .owns_message = true,
+        .field = "allowJs",
+    };
+}
+
 pub fn moduleResolutionStartDiagnostic(gpa: std.mem.Allocator, module_name: []const u8, from_file: []const u8) !ValidationDiagnostic {
     return .{
         .code = 6086,
@@ -4964,6 +4991,24 @@ test "tsconfig diagnostics: no-input and project-reference helpers mirror upstre
     try t.expectEqual(@as(u32, 6263), arbitrary.code);
     try t.expectEqualStrings("Module './component.html' was resolved to 'component.d.html.ts', but '--allowArbitraryExtensions' is not set.", arbitrary.message);
     try t.expectEqualStrings("allowArbitraryExtensions", arbitrary.field);
+
+    const jsx_resolution = try jsxModuleResolutionDiagnostic(t.allocator, "./tsx", "/tsx.tsx");
+    defer if (jsx_resolution.owns_message) t.allocator.free(jsx_resolution.message);
+    try t.expectEqual(@as(u32, 6142), jsx_resolution.code);
+    try t.expectEqualStrings("Module './tsx' was resolved to '/tsx.tsx', but '--jsx' is not set.", jsx_resolution.message);
+    try t.expectEqualStrings("jsx", jsx_resolution.field);
+
+    const unresolved_path = try unresolvedPathWithExtensionsDiagnostic(t.allocator, "a", "'.ts', '.tsx', '.d.ts', '.cts', '.d.cts', '.mts', '.d.mts'");
+    defer if (unresolved_path.owns_message) t.allocator.free(unresolved_path.message);
+    try t.expectEqual(@as(u32, 6231), unresolved_path.code);
+    try t.expectEqualStrings("Could not resolve the path 'a' with the extensions: '.ts', '.tsx', '.d.ts', '.cts', '.d.cts', '.mts', '.d.mts'.", unresolved_path.message);
+    try t.expectEqualStrings("files", unresolved_path.field);
+
+    const js_without_allow_js = try jsFileRequiresAllowJsDiagnostic(t.allocator, "a.js");
+    defer if (js_without_allow_js.owns_message) t.allocator.free(js_without_allow_js.message);
+    try t.expectEqual(@as(u32, 6504), js_without_allow_js.code);
+    try t.expectEqualStrings("File 'a.js' is a JavaScript file. Did you mean to enable the 'allowJs' option?", js_without_allow_js.message);
+    try t.expectEqualStrings("allowJs", js_without_allow_js.field);
 
     const trace = try moduleResolutionStartDiagnostic(t.allocator, "react", "/repo/src/app.tsx");
     defer if (trace.owns_message) t.allocator.free(trace.message);

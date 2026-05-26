@@ -123,6 +123,9 @@ pub const ProjectDiagnosticKind = enum {
     cannot_find_config_at_current_directory,
     file_not_found,
     unsupported_extension,
+    module_resolved_without_jsx,
+    unresolved_path_with_extensions,
+    js_file_without_allow_js,
 };
 
 pub const ProjectDiagnostic = struct {
@@ -970,6 +973,9 @@ pub fn projectDiagnostic(kind: ProjectDiagnosticKind, path: []const u8, detail: 
         .cannot_find_config_at_current_directory => .{ .code = 5081, .path = path },
         .file_not_found => .{ .code = 6053, .path = path },
         .unsupported_extension => .{ .code = 6054, .path = path, .detail = detail },
+        .module_resolved_without_jsx => .{ .code = 6142, .path = path, .detail = detail },
+        .unresolved_path_with_extensions => .{ .code = 6231, .path = path, .detail = detail },
+        .js_file_without_allow_js => .{ .code = 6504, .path = path },
     };
 }
 
@@ -986,6 +992,9 @@ pub fn formatProjectDiagnostic(gpa: std.mem.Allocator, diag: ProjectDiagnostic) 
         5083 => try std.fmt.allocPrint(gpa, "error TS5083: Cannot read file '{s}'.", .{diag.path}),
         6053 => try std.fmt.allocPrint(gpa, "error TS6053: File '{s}' not found.", .{diag.path}),
         6054 => try std.fmt.allocPrint(gpa, "error TS6054: File '{s}' has an unsupported extension. The only supported extensions are {s}.", .{ diag.path, diag.detail }),
+        6142 => try std.fmt.allocPrint(gpa, "error TS6142: Module '{s}' was resolved to '{s}', but '--jsx' is not set.", .{ diag.path, diag.detail }),
+        6231 => try std.fmt.allocPrint(gpa, "error TS6231: Could not resolve the path '{s}' with the extensions: {s}.", .{ diag.path, diag.detail }),
+        6504 => try std.fmt.allocPrint(gpa, "error TS6504: File '{s}' is a JavaScript file. Did you mean to enable the 'allowJs' option?", .{diag.path}),
         else => unreachable,
     };
 }
@@ -1677,15 +1686,31 @@ test "formatProjectDiagnostic: project and file diagnostics mirror upstream mess
         projectDiagnostic(.cannot_find_config_at_current_directory, "/repo", ""),
         projectDiagnostic(.file_not_found, "src/missing.ts", ""),
         projectDiagnostic(.unsupported_extension, "src/style.css", "'.ts', '.tsx', '.d.ts', '.js', '.jsx'"),
+        projectDiagnostic(.module_resolved_without_jsx, "./tsx", "/tsx.tsx"),
+        projectDiagnostic(.unresolved_path_with_extensions, "a", "'.ts', '.tsx', '.d.ts', '.cts', '.d.cts', '.mts', '.d.mts'"),
+        projectDiagnostic(.js_file_without_allow_js, "a.js", ""),
     };
-    const expected_codes = [_]u32{ 5001, 5012, 5083, 5033, 5054, 5057, 5058, 5068, 5081, 6053, 6054 };
-    for (cases, expected_codes) |diag, code| {
-        try T.expectEqual(code, diag.code);
+    const expected = [_]struct { code: u32, text: []const u8 }{
+        .{ .code = 5001, .text = "error TS5001: The current host does not support the 'watch' option." },
+        .{ .code = 5012, .text = "error TS5012: Cannot read file 'tsconfig.json': Permission denied." },
+        .{ .code = 5083, .text = "error TS5083: Cannot read file 'tsconfig.json'." },
+        .{ .code = 5033, .text = "error TS5033: Could not write file 'dist/out.js': EACCES." },
+        .{ .code = 5054, .text = "error TS5054: A 'tsconfig.json' file is already defined at: '/repo/tsconfig.json'." },
+        .{ .code = 5057, .text = "error TS5057: Cannot find a tsconfig.json file at the specified directory: 'packages/app'." },
+        .{ .code = 5058, .text = "error TS5058: The specified path does not exist: 'missing/tsconfig.json'." },
+        .{ .code = 5068, .text = "error TS5068: Adding a tsconfig.json file will help organize projects that contain both TypeScript and JavaScript files. Learn more at https://aka.ms/tsconfig." },
+        .{ .code = 5081, .text = "error TS5081: Cannot find a tsconfig.json file at the current directory: /repo." },
+        .{ .code = 6053, .text = "error TS6053: File 'src/missing.ts' not found." },
+        .{ .code = 6054, .text = "error TS6054: File 'src/style.css' has an unsupported extension. The only supported extensions are '.ts', '.tsx', '.d.ts', '.js', '.jsx'." },
+        .{ .code = 6142, .text = "error TS6142: Module './tsx' was resolved to '/tsx.tsx', but '--jsx' is not set." },
+        .{ .code = 6231, .text = "error TS6231: Could not resolve the path 'a' with the extensions: '.ts', '.tsx', '.d.ts', '.cts', '.d.cts', '.mts', '.d.mts'." },
+        .{ .code = 6504, .text = "error TS6504: File 'a.js' is a JavaScript file. Did you mean to enable the 'allowJs' option?" },
+    };
+    for (cases, expected) |diag, item| {
+        try T.expectEqual(item.code, diag.code);
         const text = try formatProjectDiagnostic(T.allocator, diag);
         defer T.allocator.free(text);
-        var code_buf: [16]u8 = undefined;
-        const code_text = try std.fmt.bufPrint(&code_buf, "TS{d}", .{code});
-        try T.expect(std.mem.indexOf(u8, text, code_text) != null);
+        try T.expectEqualStrings(item.text, text);
     }
 }
 
