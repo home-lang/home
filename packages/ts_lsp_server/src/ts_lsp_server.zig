@@ -168,6 +168,8 @@ pub const Method = enum {
     notebook_document_did_change,
     notebook_document_did_save,
     notebook_document_did_close,
+    workspace_symbol_resolve,
+    progress,
     text_document_moniker,
     text_document_inline_value,
     text_document_inline_completion,
@@ -243,6 +245,8 @@ pub const Method = enum {
             .{ "notebookDocument/didChange", Method.notebook_document_did_change },
             .{ "notebookDocument/didSave", Method.notebook_document_did_save },
             .{ "notebookDocument/didClose", Method.notebook_document_did_close },
+            .{ "workspaceSymbol/resolve", Method.workspace_symbol_resolve },
+            .{ "$/progress", Method.progress },
             .{ "textDocument/moniker", Method.text_document_moniker },
             .{ "textDocument/inlineValue", Method.text_document_inline_value },
             .{ "textDocument/inlineCompletion", Method.text_document_inline_completion },
@@ -340,6 +344,10 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     "notebookDocument/didChange",
     "notebookDocument/didSave",
     "notebookDocument/didClose",
+    // Resolve callback for workspace symbols (LSP 3.17+).
+    "workspaceSymbol/resolve",
+    // Progress notification recognition.
+    "$/progress",
     // Call hierarchy.
     "callHierarchy/incomingCalls",
     "callHierarchy/outgoingCalls",
@@ -2972,6 +2980,44 @@ pub fn handleNotebookDidClose(
     _ = findJsonRawField(params_json, "notebookDocument") orelse return error.MissingNotebookDocument;
 }
 
+/// Handle a `workspaceSymbol/resolve` JSON-RPC request: an editor
+/// has selected a `WorkspaceSymbol` from a prior `workspace/symbol`
+/// list and is asking the server to fill in any deferred fields
+/// (notably `location.range`, which `workspace/symbol` may return
+/// as a partial). The LSP 3.17 spec allows the server to round-trip
+/// the input symbol back when no resolution is needed — that's the
+/// faithful "no extra data to add" reply. Mirrors how
+/// `completionItem/resolve` echoes a CompletionItem the client
+/// already has when Home has nothing further to attach.
+pub fn handleWorkspaceSymbolResolve(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    _ = service;
+    // The `params` IS the WorkspaceSymbol object — pass it through
+    // verbatim. Per LSP 3.17 `workspaceSymbol/resolve`, the response
+    // is a `WorkspaceSymbol` with the same `name` / `kind` / `tags`
+    // / `containerName` and a now-resolved `location`.
+    return encodeResponse(gpa, request_id, params_json);
+}
+
+/// Handle a `$/progress` notification: clients can send progress
+/// notifications back to the server in some flows (e.g. ack of a
+/// server-emitted progress token). Home doesn't emit
+/// WorkDoneProgress operations yet, so this is a recognition-only
+/// no-op — surface as recognized rather than `Method not found`.
+pub fn handleProgress(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    params_json: []const u8,
+) !void {
+    _ = service;
+    _ = gpa;
+    _ = params_json;
+}
+
 /// Handle a `workspace/didRenameFiles` notification: editor has
 /// committed a rename. The paired `willRenameFiles` request returns
 /// WorkspaceEdits the server wants applied alongside the rename;
@@ -4004,6 +4050,14 @@ pub fn dispatchRequest(
             try handleNotebookDidClose(service, gpa, params);
             return &.{};
         },
+        .workspace_symbol_resolve => {
+            if (is_notification) return &.{};
+            return try handleWorkspaceSymbolResolve(service, gpa, id, params);
+        },
+        .progress => {
+            try handleProgress(service, gpa, params);
+            return &.{};
+        },
         .text_document_moniker => {
             if (is_notification) return &.{};
             return try handleMoniker(service, gpa, id, params);
@@ -4459,6 +4513,44 @@ test "handleWillDeleteFiles: returns null WorkspaceEdit" {
     const out = try handleWillDeleteFiles(&svc, T.allocator, RequestId{ .integer = 2 }, params);
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "\"result\":null") != null);
+}
+
+test "handleWorkspaceSymbolResolve: round-trips the WorkspaceSymbol payload" {
+    // Per LSP 3.17 the server may echo the input symbol when no
+    // resolution is needed. Home doesn't compute deferred fields
+    // beyond what `workspace/symbol` already returns, so the
+    // round-trip is the faithful reply.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+    const body =
+        \\{"jsonrpc":"2.0","id":201,"method":"workspaceSymbol/resolve","params":{"name":"myFunc","kind":12,"location":{"uri":"file:///main.ts","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":6}}}}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    const out = try handleWorkspaceSymbolResolve(&svc, T.allocator, .{ .integer = 201 }, params);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":201") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"name\":\"myFunc\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"kind\":12") != null);
+}
+
+test "handleProgress: accepts notification (recognition-only)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+    const body =
+        \\{"jsonrpc":"2.0","method":"$/progress","params":{"token":"home/index","value":{"kind":"report","percentage":50}}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    try handleProgress(&svc, T.allocator, params);
 }
 
 test "handleNotebookDidOpen: accepts notification (recognition-only)" {
