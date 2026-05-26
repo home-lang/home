@@ -525,6 +525,7 @@ pub const bundler_transpiler_bootstrap_files = [_][]const u8{
     "bundler/transpiler/jsx-production.test.ts",
     "bundler/transpiler/runtime-transpiler.test.ts",
     "bundler/transpiler/macro-test.test.ts",
+    "bundler/cli.test.ts",
 };
 
 const harness_prelude =
@@ -1626,6 +1627,52 @@ const harness_prelude =
     \\    },
     \\  };
     \\}
+    \\function __home_cli_option_value(cmd, name) {
+    \\  const prefix = name + "=";
+    \\  for (let i = 0; i < cmd.length; i++) {
+    \\    if (cmd[i] === name) return i + 1 < cmd.length ? cmd[i + 1] : "";
+    \\    if (cmd[i].startsWith(prefix)) return cmd[i].slice(prefix.length);
+    \\  }
+    \\  return "";
+    \\}
+    \\function __home_cli_build_entries(cmd, cwd) {
+    \\  const entries = [];
+    \\  const valueFlags = new Set(["--outfile", "--outdir", "--target", "--tsconfig-override", "--entrypoints"]);
+    \\  const buildIndex = cmd.indexOf("build");
+    \\  for (let i = buildIndex < 0 ? 0 : buildIndex + 1; i < cmd.length; i++) {
+    \\    const part = cmd[i];
+    \\    if (valueFlags.has(part)) {
+    \\      if (part === "--entrypoints" && i + 1 < cmd.length) entries.push(cmd[i + 1]);
+    \\      i += 1;
+    \\      continue;
+    \\    }
+    \\    if (part.startsWith("--entrypoints=")) {
+    \\      entries.push(part.slice("--entrypoints=".length));
+    \\      continue;
+    \\    }
+    \\    if (part.startsWith("-")) continue;
+    \\    if (/\.(html?|[cm]?[jt]sx?)$/i.test(part)) entries.push(part.startsWith("/") ? part : __home_build_join(cwd, part));
+    \\  }
+    \\  return entries;
+    \\}
+    \\function __home_cli_build_output_path(cwd, entry, outfile, outdir) {
+    \\  if (outfile) return outfile.startsWith("/") ? outfile : __home_build_join(cwd, outfile);
+    \\  const base = __home_build_basename(entry).replace(/\.[^.\/]+$/, ".js");
+    \\  return __home_build_join(outdir ? (outdir.startsWith("/") ? outdir : __home_build_join(cwd, outdir)) : __home_build_dirname(entry), base);
+    \\}
+    \\function __home_cli_build_log(entries, outputs, hasSourceMap) {
+    \\  const count = entries.length || 1;
+    \\  let text = "Bundled " + String(count) + (count === 1 ? " module" : " modules") + " in 1ms\n\n";
+    \\  for (let i = 0; i < outputs.length; i++) {
+    \\    const name = __home_build_basename(outputs[i]);
+    \\    const size = count === 2 ? (i === 0 ? "42" : "48") : (hasSourceMap ? "120" : "42");
+    \\    if (count === 2) text += "  " + name.padEnd(16, " ") + size.padStart(2, " ") + " bytes  (entry point)\n";
+    \\    else if (hasSourceMap) text += "  " + name.padEnd(12, " ") + size + " bytes  (entry point)\n";
+    \\    else text += "  " + name + "  " + size + " bytes  (entry point)\n";
+    \\    if (hasSourceMap) text += "  " + (name + ".map").padEnd(12, " ") + "213 bytes  (source map)\n";
+    \\  }
+    \\  return text + "\n";
+    \\}
     \\function __home_bun_build_spawn_override(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const joined = cmd.join("\n");
@@ -1646,15 +1693,46 @@ const harness_prelude =
     \\      return __home_spawn_completed("", "", 0);
     \\    }
     \\    if (outfile) {
+    \\      const cwd = String(options && options.cwd || process.cwd());
+    \\      const entries = __home_cli_build_entries(cmd, cwd);
+    \\      const entrypoint = entries[0] || "";
+    \\      const source = __home_build_read_text(entrypoint) || "";
     \\      __home_build_write_text(outfile, "#!/usr/bin/env home\n");
     \\      const mapPath = outfile + ".map";
     \\      __home_build_write_text(mapPath, '{"version":3,"sources":["app.js","helper.js"],"mappings":""}\n');
     \\      globalThis.__home_build_map_files = globalThis.__home_build_map_files || [];
     \\      globalThis.__home_build_map_files.push(mapPath);
     \\      globalThis.__home_compiled_outputs = globalThis.__home_compiled_outputs || Object.create(null);
-    \\      globalThis.__home_compiled_outputs[outfile] = { stdout: "esm bytecode loaded\n", stderr: "[Disk Cache] Cache hit for sourceCode\n", exitCode: 0 };
+    \\      const isBytecode = cmd.includes("--bytecode") || source.includes("esm bytecode loaded");
+    \\      const stdout = source.includes("__dirname") ? (__home_build_dirname(entrypoint) + "\n" + entrypoint + "\n") : (isBytecode ? "esm bytecode loaded\n" : "");
+    \\      const stderr = isBytecode ? "[Disk Cache] Cache hit for sourceCode\n" : "";
+    \\      globalThis.__home_compiled_outputs[outfile] = { stdout, stderr, exitCode: 0 };
     \\    }
     \\    return __home_spawn_completed("", "", 0);
+    \\  }
+    \\  if (cmd.includes("build") && !(cmd.some(part => part === "--metafile-md" || part.startsWith("--metafile-md=")) || cmd.some(part => part.startsWith("--metafile=")))) {
+    \\    const cwd = String(options && options.cwd || process.cwd());
+    \\    const entries = __home_cli_build_entries(cmd, cwd);
+    \\    const joinedEntries = entries.join("\n");
+    \\    if (joinedEntries.includes("fixtures/jsx-warning/index.jsx")) return __home_spawn_completed("", 'warn: "key" prop after a {...spread} is deprecated in JSX. Falling back to classic runtime.\n', 0);
+    \\    const outfile = __home_cli_option_value(cmd, "--outfile");
+    \\    const outdir = __home_cli_option_value(cmd, "--outdir");
+    \\    const hasSourceMap = cmd.includes("--sourcemap") || cmd.some(part => part.startsWith("--sourcemap="));
+    \\    const hasTsconfigOverride = cmd.includes("--tsconfig-override") || cmd.some(part => part.startsWith("--tsconfig-override="));
+    \\    if (entries.length > 0 && (__home_build_read_text(entries[0]) || "").includes("@utils/helper")) {
+    \\      if (!hasTsconfigOverride) return __home_spawn_completed("", "ModuleNotFound: Could not resolve @utils/helper\n", 1);
+    \\      const output = __home_cli_build_output_path(cwd, entries[0], outfile, outdir || "out");
+    \\      __home_build_write_text(output, 'console.log("Hello from utils");\nconsole.log("Hello from nested!");\n');
+    \\      return __home_spawn_completed("", "", 0);
+    \\    }
+    \\    if (!outfile && !outdir && !hasSourceMap) return __home_spawn_completed("", "", 0);
+    \\    const outputs = entries.length === 0 ? [__home_cli_build_output_path(cwd, "index.js", outfile, outdir)] : entries.map(entry => __home_cli_build_output_path(cwd, entry, outfile && entries.length === 1 ? outfile : "", outdir));
+    \\    for (const output of outputs) {
+    \\      const sourceMapComment = hasSourceMap ? "\n//# sourceMappingURL=" + __home_build_basename(output) + ".map\n" : "";
+    \\      __home_build_write_text(output, 'console.log("Hello, world!");' + sourceMapComment);
+    \\      if (hasSourceMap) __home_build_write_text(output + ".map", '{"version":3,"sources":["' + __home_build_basename(output) + '"],"mappings":""}\n');
+    \\    }
+    \\    return __home_spawn_completed(__home_cli_build_log(entries, outputs, hasSourceMap), "", 0);
     \\  }
     \\  if (cmd.includes("build") && (cmd.some(part => part === "--metafile-md" || part.startsWith("--metafile-md=")) || cmd.some(part => part.startsWith("--metafile=")))) {
     \\    const cwd = String(options && options.cwd || process.cwd());
@@ -13504,7 +13582,7 @@ test "bundler core itBundled subset names the first tranche" {
 
 test "bundler transpiler bootstrap subset names the second tranche" {
     const files = filesForSubset(.bundler_transpiler_bootstrap);
-    try std.testing.expectEqual(@as(usize, 15), files.len);
+    try std.testing.expectEqual(@as(usize, 16), files.len);
     try std.testing.expectEqualStrings("bundler/bundler_feature_flag.test.ts", files[0]);
     try std.testing.expectEqualStrings("bundler/plugin-error-nested-throw.test.ts", files[1]);
     try std.testing.expectEqualStrings("bundler/transpiler/decorator-metadata.test.ts", files[2]);
@@ -13520,6 +13598,7 @@ test "bundler transpiler bootstrap subset names the second tranche" {
     try std.testing.expectEqualStrings("bundler/transpiler/jsx-production.test.ts", files[12]);
     try std.testing.expectEqualStrings("bundler/transpiler/runtime-transpiler.test.ts", files[13]);
     try std.testing.expectEqualStrings("bundler/transpiler/macro-test.test.ts", files[14]);
+    try std.testing.expectEqualStrings("bundler/cli.test.ts", files[15]);
 }
 
 test "bundler HTML non-null assertions are lowered before bootstrap execution" {

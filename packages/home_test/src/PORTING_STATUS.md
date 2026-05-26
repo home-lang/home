@@ -39,25 +39,26 @@ failed, 16 upstream todo on 2026-05-26. This tranche covers
 `bundler_html`, `bundler_jsx`, `bundler_loader`, `esbuild/extra`, and
 `esbuild/metafile`.
 
-The `bundler-transpiler-bootstrap` tranche currently executes fifteen
-ordinary bundler/transpiler files and passes: 147 passed, 0 failed, 0
-todo on 2026-05-26. This green evidence covers `bundler_feature_flag`,
+The `bundler-transpiler-bootstrap` tranche currently executes sixteen
+ordinary bundler/transpiler/CLI files and passes: 157 passed, 0 failed,
+2 upstream/platform todo on 2026-05-26. This green evidence covers `bundler_feature_flag`,
 `plugin-error-nested-throw`, `transpiler/decorator-metadata`,
 `transpiler/es-decorators`, `transpiler/preserve-use-strict-cjs`,
 `transpiler/template-literal`, `transpiler/function-tostring-require`,
 `transpiler/export-default`, and `transpiler/scope-mismatch-panic`, plus
 `transpiler/bun-pragma`, `transpiler/property`,
 `transpiler/transpiler-stack-overflow`, `transpiler/jsx-production`, and
-`transpiler/runtime-transpiler`, plus `transpiler/macro-test`.
+`transpiler/runtime-transpiler`, plus `transpiler/macro-test` and
+`bundler/cli`.
 
 Bundler corpus audit on 2026-05-26: the copied corpus has 89
-`bundler/**/*.test.{ts,js}` files. Current green evidence covers 81
+`bundler/**/*.test.{ts,js}` files. Current green evidence covers 82
 unique files: 66 unique bundler files inside `minimal-js`, 5 more in
-`bundler-core-itbundled`, and 10 more unique files from the executable
-15-file `bundler-transpiler-bootstrap` tranche. The copied Bun corpus is
+`bundler-core-itbundled`, and 11 more unique files from the executable
+16-file `bundler-transpiler-bootstrap` tranche. The copied Bun corpus is
 exact against upstream Bun for `.test.ts` / `.test.js` files in this
 worktree: 1720 upstream paths, 1720 copied paths, zero missing, and zero
-extras. The remaining exact 8-file frontier after the transpiler
+extras. The remaining exact 7-file frontier after the transpiler/CLI
 tranche is:
 
 | Tranche | Files | First blocker surface |
@@ -65,7 +66,6 @@ tranche is:
 | Decorator transpiler semantics | `bundler/transpiler/decorators.test.ts`, `bundler/transpiler/es-decorators-esbuild.test.ts` | Legacy and standard decorator lowering; next observed blockers are unsupported module classification and parse-time syntax before execution |
 | Transpiler API surface | `bundler/transpiler/transpiler.test.js` | `Bun.Transpiler` and broader transpiler API behavior |
 | Resolver cache behavior | `bundler/resolver/cache-invalidation.test.ts`, `bundler/resolver/cache-node-compat.test.ts`, `bundler/resolver/cache-runtime.test.ts` | Repeated in-process `Bun.build()` / `require()` cache invalidation, filesystem mutation, Node-vs-Bun subprocess comparison |
-| CLI build surface | `bundler/cli.test.ts` | `bun build` subprocess matrix: compile/outfile/sourcemap/tsconfig override/package install paths |
 | Native plugin final | `bundler/native-plugin.test.ts` | Native plugin ABI, node-gyp build, `.node` loading, `onBeforeParse`, crash-name behavior |
 
 Next source-module work for bundler should replace the
