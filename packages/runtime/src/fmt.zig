@@ -51,6 +51,60 @@ pub fn hexIntUpper(value: anytype) HexIntFormatter {
     return .{ .value = @intCast(value), .upper = true };
 }
 
+pub const HostFormatter = struct {
+    host: []const u8,
+    port: ?u16 = null,
+    is_https: bool = false,
+
+    pub fn format(formatter: HostFormatter, writer: *std.Io.Writer) !void {
+        try writer.writeAll(formatter.host);
+        const is_port_optional = formatter.port == null or
+            (formatter.is_https and formatter.port.? == 443) or
+            (!formatter.is_https and formatter.port.? == 80);
+        if (!is_port_optional) try writer.print(":{d}", .{formatter.port.?});
+    }
+};
+
+pub const OutOfRangeOptions = struct {
+    min: i64 = std.math.maxInt(i64),
+    max: i64 = std.math.maxInt(i64),
+    field_name: []const u8,
+    msg: []const u8 = "",
+};
+
+pub fn OutOfRangeFormatter(comptime T: type) type {
+    return struct {
+        value: T,
+        min: i64,
+        max: i64,
+        field_name: []const u8,
+        msg: []const u8 = "",
+
+        pub fn format(self: @This(), writer: *std.Io.Writer) !void {
+            if (self.msg.len > 0) {
+                try writer.print("{s}", .{self.msg});
+                return;
+            }
+            try writer.print("{s} out of range: {any} (expected {d}..{d})", .{
+                self.field_name,
+                self.value,
+                self.min,
+                self.max,
+            });
+        }
+    };
+}
+
+pub fn outOfRange(value: anytype, options: OutOfRangeOptions) OutOfRangeFormatter(@TypeOf(value)) {
+    return .{
+        .value = value,
+        .min = options.min,
+        .max = options.max,
+        .field_name = options.field_name,
+        .msg = options.msg,
+    };
+}
+
 pub fn formatUTF16Type(slice: []const u16, writer: *std.Io.Writer) !void {
     var remaining = slice;
     var buf: [1024]u8 = undefined;

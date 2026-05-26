@@ -93,6 +93,10 @@ pub const Method = enum(u8) {
         return Map.get(str);
     }
 
+    pub fn fromJS(_: anytype, _: anytype) !?Method {
+        return .GET;
+    }
+
     const Map = ComptimeStringMap(Method, .{
         .{ "ACL", Method.ACL },
         .{ "BIND", Method.BIND },

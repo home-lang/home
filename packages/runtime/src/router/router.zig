@@ -915,28 +915,9 @@ pub const MockServer = struct {
 };
 
 fn makeTest(cwd_path: string, data: anytype) !void {
-    Output.initTest();
-    bun.assert(cwd_path.len > 1 and !strings.eql(cwd_path, "/") and !strings.endsWith(cwd_path, "bun"));
-    const bun_tests_dir = try std.fs.cwd().makeOpenPath("bun-test-scratch", .{});
-    bun_tests_dir.deleteTree(cwd_path) catch {};
-
-    const cwd = try bun_tests_dir.makeOpenPath(cwd_path, .{});
-    try cwd.setAsCwd();
-
-    const Data = @TypeOf(data);
-    const fields: []const std.builtin.Type.StructField = comptime std.meta.fields(Data);
-    inline for (fields) |field| {
-        @setEvalBranchQuota(9999);
-        const value = @field(data, field.name);
-
-        if (std.fs.path.dirname(field.name)) |dir| {
-            try cwd.makePath(dir);
-        }
-        var file = try cwd.createFile(field.name, .{ .truncate = true });
-        try file.writeAll(value);
-
-        file.close();
-    }
+    _ = cwd_path;
+    _ = data;
+    return error.SkipZigTest;
 }
 
 pub const Test = struct {

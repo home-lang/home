@@ -28,25 +28,7 @@ const JSGlobalObject = opaque {
 };
 const JSValue = enum(i64) { zero = 0, _ };
 
-/// `bun.String` C ABI stub. Real layout `{tag: u8, _padding: 7 bytes, impl: *anyopaque}`.
-/// Only the tag is meaningful here (callers compare against `.Dead`); the
-/// `borrowUTF8` builder routes through the JSC bridge in Phase 12.2.
-const String = extern struct {
-    tag: u8 = 0,
-    _padding: [7]u8 = @splat(0),
-    impl: ?*anyopaque = null,
-
-    pub const Tag = enum(u8) {
-        Dead = 0,
-        _,
-    };
-
-    /// Stub for `bun.String.borrowUTF8` — real impl returns a wrapped slice
-    /// reference. Until the JSC bridge ports, return a Dead-tagged sentinel.
-    pub fn borrowUTF8(_: []const u8) String {
-        return .{};
-    }
-};
+const String = home_rt.String;
 
 const JSError = error{JSError};
 

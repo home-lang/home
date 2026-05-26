@@ -86,7 +86,7 @@ resolved_count: usize = 0,
 had_errors: bool = false,
 
 macros: MacroMap,
-macro_entry_points: std.AutoArrayHashMap(i32, *MacroEntryPoint),
+macro_entry_points: std.AutoHashMap(i32, *MacroEntryPoint),
 macro_mode: bool = false,
 no_macros: bool = false,
 auto_killer: ProcessAutoKiller = .{ .enabled = false },
@@ -121,7 +121,7 @@ remap_stack_frames_mutex: bun.Mutex = .{},
 ///          []
 argv: []const []const u8 = &[_][]const u8{},
 
-origin_timer: std.time.Timer = undefined,
+origin_timer: Timer = undefined,
 origin_timestamp: u64 = 0,
 /// For fake timers: override performance.now() with a specific value (in nanoseconds)
 /// When null, use the real timer. When set, return this value instead.
@@ -1049,7 +1049,7 @@ pub fn waitForTasks(this: *VirtualMachine) void {
     }
 }
 
-pub const MacroMap = std.AutoArrayHashMap(i32, jsc.C.JSObjectRef);
+pub const MacroMap = std.AutoHashMap(i32, jsc.C.JSObjectRef);
 
 pub fn enableMacroMode(this: *VirtualMachine) void {
     jsc.markBinding(@src());
@@ -1135,7 +1135,7 @@ pub fn initWithModuleGraph(
         .source_mappings = undefined,
         .macros = MacroMap.init(allocator),
         .macro_entry_points = @TypeOf(vm.macro_entry_points).init(allocator),
-        .origin_timer = std.time.Timer.start() catch @panic("Timers are not supported on this system."),
+        .origin_timer = Timer.start() catch @panic("Timers are not supported on this system."),
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
         .ref_strings_mutex = .{},
@@ -1264,7 +1264,7 @@ pub fn init(opts: Options) !*VirtualMachine {
         .source_mappings = undefined,
         .macros = MacroMap.init(allocator),
         .macro_entry_points = @TypeOf(vm.macro_entry_points).init(allocator),
-        .origin_timer = std.time.Timer.start() catch @panic("Please don't mess with timers."),
+        .origin_timer = Timer.start() catch @panic("Please don't mess with timers."),
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
         .ref_strings_mutex = .{},
@@ -1432,7 +1432,7 @@ pub fn initWorker(
         .source_mappings = undefined,
         .macros = MacroMap.init(allocator),
         .macro_entry_points = @TypeOf(vm.macro_entry_points).init(allocator),
-        .origin_timer = std.time.Timer.start() catch @panic("Please don't mess with timers."),
+        .origin_timer = Timer.start() catch @panic("Please don't mess with timers."),
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
         .ref_strings_mutex = .{},
@@ -1528,7 +1528,7 @@ pub fn initBake(opts: Options) anyerror!*VirtualMachine {
         .source_mappings = undefined,
         .macros = MacroMap.init(allocator),
         .macro_entry_points = @TypeOf(vm.macro_entry_points).init(allocator),
-        .origin_timer = std.time.Timer.start() catch @panic("Please don't mess with timers."),
+        .origin_timer = Timer.start() catch @panic("Please don't mess with timers."),
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
         .ref_strings_mutex = .{},
@@ -4171,3 +4171,9 @@ const ServerEntryPoint = bun.transpiler.EntryPoints.ServerEntryPoint;
 
 const webcore = bun.webcore;
 const Body = webcore.Body;
+
+const Timer = struct {
+    pub fn start() !Timer {
+        return .{};
+    }
+};

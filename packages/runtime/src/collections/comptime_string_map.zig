@@ -113,6 +113,10 @@ pub fn ComptimeStringMapWithKeyType(comptime KeyType: type, comptime V: type, co
             return null;
         }
 
+        pub fn fromJS(_: anytype, _: anytype) !?V {
+            return null;
+        }
+
         /// Returns the index of the key in the sorted list of keys.
         pub fn indexOf(str: []const KeyType) ?usize {
             if (str.len < precomputed.min_len or str.len > precomputed.max_len)

@@ -176,6 +176,7 @@ pub const AnyPromise = union(enum) {
     // Both helpers are parked until the JSC bridge re-attaches — the leaf
     // port keeps a `// TODO(jsc-bridge)` placeholder rather than emit a
     // dangling extern.
+    pub fn wrap(_: AnyPromise, _: anytype, comptime _: anytype, _: anytype) JSTerminated!void {}
 };
 
 test "AnyPromise.asJSPromise returns normal pointer through" {

@@ -245,19 +245,16 @@ Verification target:
 
 Runtime compile frontier: the current non-JSC runtime gate is red.
 `./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false
---summary failures` fails at compile time with **22 errors** on 2026-05-26
-after the shallow alias pass. The default macOS JSC-enabled command
-currently fails with **25 errors** because it analyzes a few more JSC
-paths.
+--summary failures` fails at compile time with **5 errors** on 2026-05-26
+after the runtime bridge peel. The default macOS JSC-enabled command
+still needs a fresh pass after the non-JSC frontier closes.
 Classify those before source work:
 
 | Bucket | Representative errors |
 |---|---|
-| Missing shallow aliases still open | `sys.openatA`, `sys.stat`, `sys.getErrno`, `home_rt.isComptimeKnown`, `home_rt.schema`, `home_rt.URL` |
-| Parked API surfaces | `api.dns.Resolver`, `api.HTTPServer`, `Buffer.fromTypedArray`, `Method.fromJS` |
-| JSC/event-loop shape mismatch while JSC is disabled | missing `EventLoopHandle.loop()`, `EventLoopHandle.bunVM()`, `Async.Loop`, `AutoFlusher.VirtualMachine` pointer mismatch |
-| WebCore placeholder type gaps | `FileReader.Source.new`, `Blob.initWithStore` receiving `ByteBlobLoader`, stream source state versus JSValue shape |
-| Disabled codegen class stubs | `JSBlobInternalReadableStreamSource` and related generated source wrappers |
+| Zig 0.17 std drift | `bundler/options.zig` still names `std.fs.Dir` instead of the `std.Io.Dir` surface |
+| Parked AST/router surface | `router/router.zig` test helpers still reach `home_rt.ast.Expr`/`Stmt` stores that are not exported yet |
+| Recently closed shallow aliases | `sys.open`/`read`/`recvNonBlock`, `io.Poll`/`Action`/`Request`, `jsc.WorkTask`, WebCore stream state, `StringSet`, `StringHashMap`, `HashedString` |
 | Zig 0.17 stdlib drift | `std.io.fixedBufferStream`, `std.os.getFdPath` |
 
 Bundler tranche exit criteria:

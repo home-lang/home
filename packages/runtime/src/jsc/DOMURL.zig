@@ -5,37 +5,15 @@
 // extern getters that take `ZigString*` out-params and a tagged-union
 // `bun.String` for the file-system-path conversion.
 //
-// `JSValue`, `JSGlobalObject`, `VM`, `ZigString`, and `bun.String` are not
-// yet ported. Local stubs preserve the C ABI. The JSC bridge re-attaches
-// in Phase 12.2.
-//
-// Omitted:
-//   - `cast(JSValue)` — needs `jsc.VirtualMachine.get().global.vm()`; the
-//     `cast_(JSValue, *VM)` two-arg form stays, callers pass the VM in.
-//   - `bun.cpp.WebCore__DOMURL__*` re-references — we declare the externs
-//     locally (they live in the same shared lib).
+// The JSC bridge re-attaches in Phase 12.2. Until then, `cast(JSValue)`
+// remains a non-throwing stub for copied callers that probe URL wrappers.
 
 const std = @import("std");
+const bun = @import("home_rt");
 
-// JSC bridge stubs — re-attach in Phase 12.2.
-const JSValue = enum(i64) { zero = 0, _ };
-const VM = opaque {};
-
-// `bun.String` C ABI stub. Real layout `{tag: u8, _padding: 7 bytes, impl: *anyopaque}`.
-// We expose just enough surface (the `tag` field — callers check it against
-// the `.Dead` sentinel) to keep the FS-path path callable later.
-const String = extern struct {
-    tag: u8 = 0,
-    _padding: [7]u8 = @splat(0),
-    impl: ?*anyopaque = null,
-
-    pub const Tag = enum(u8) {
-        Dead = 0,
-        // Real tags re-attach in Phase 12.2; we only name `Dead` because
-        // upstream's `fileSystemPath` checks for it explicitly.
-        _,
-    };
-};
+const JSValue = bun.jsc.JSValue;
+const VM = bun.jsc.VirtualMachine;
+const String = bun.String;
 
 // `ZigString` C ABI stub: `{ptr, len}` view. Real ZigString uses the high
 // bit of len to flag UTF-16. We don't need that bit here.
@@ -53,8 +31,9 @@ pub const DOMURL = opaque {
         return WebCore__DOMURL__cast_(value, vm);
     }
 
-    // `cast(JSValue)` upstream goes through `jsc.VirtualMachine.get().global.vm()`.
-    // Callers can use `cast_(value, vm)` directly once they hold the VM.
+    pub fn cast(_: JSValue) ?*DOMURL {
+        return null;
+    }
 
     extern fn WebCore__DOMURL__href_(this: *DOMURL, out: *ZigString) void;
     pub fn href_(this: *DOMURL, out: *ZigString) void {
@@ -82,10 +61,7 @@ pub const DOMURL = opaque {
             3 => return ToFileSystemPathError.NotFileUrl,
             else => {},
         }
-        // Upstream: `bun.assert(path.tag != .Dead)`. With our stubbed String
-        // the assertion is structurally meaningful but `.Dead` re-attaches
-        // in Phase 12.2 — we keep the shape for now.
-        std.debug.assert(path.tag != @intFromEnum(String.Tag.Dead));
+        std.debug.assert(!path.isEmpty());
         return path;
     }
 
@@ -107,6 +83,7 @@ test "DOMURL is an opaque pointer-only type" {
 
 test "DOMURL exposes the expected entrypoints" {
     try std.testing.expect(@hasDecl(DOMURL, "cast_"));
+    try std.testing.expect(@hasDecl(DOMURL, "cast"));
     try std.testing.expect(@hasDecl(DOMURL, "href_"));
     try std.testing.expect(@hasDecl(DOMURL, "href"));
     try std.testing.expect(@hasDecl(DOMURL, "fileSystemPath"));

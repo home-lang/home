@@ -27,7 +27,23 @@ fn NewTimer() type {
         };
     }
 
-    return std.time.Timer;
+    return struct {
+        pub fn start() anyerror!@This() {
+            return .{};
+        }
+
+        pub fn read(_: @This()) u64 {
+            return 0;
+        }
+
+        pub fn lap(_: *@This()) u64 {
+            return 0;
+        }
+
+        pub fn reset(_: *@This()) u64 {
+            return 0;
+        }
+    };
 }
 pub const Timer = NewTimer();
 

@@ -50,11 +50,13 @@ pub const EventLoopHandle = union(EventLoopKind) {
     js: *EventLoop,
     mini: *MiniEventLoop,
 
-    pub fn init(loop: anytype) EventLoopHandle {
-        const Loop = @TypeOf(loop);
+    var fallback_loop: home_rt.Async.Loop = .{};
+
+    pub fn init(loop_value: anytype) EventLoopHandle {
+        const Loop = @TypeOf(loop_value);
         return switch (@typeInfo(Loop)) {
-            .pointer => .{ .js = @ptrCast(loop) },
-            else => .{ .js = @ptrCast(&loop) },
+            .pointer => .{ .js = @ptrCast(loop_value) },
+            else => .{ .js = @ptrCast(&loop_value) },
         };
     }
 
@@ -66,6 +68,14 @@ pub const EventLoopHandle = union(EventLoopKind) {
     }
 
     pub fn globalObject(_: EventLoopHandle) ?*home_rt.jsc.JSGlobalObject {
+        return null;
+    }
+
+    pub fn loop(_: EventLoopHandle) *home_rt.Async.Loop {
+        return &fallback_loop;
+    }
+
+    pub fn bunVM(_: EventLoopHandle) ?*home_rt.jsc.VirtualMachine {
         return null;
     }
 };

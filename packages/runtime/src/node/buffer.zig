@@ -139,6 +139,10 @@ pub const Buffer = struct {
         @panic("TODO(phase-12.2-M3): node:buffer.fromArrayBuffer needs JSC ArrayBuffer view");
     }
 
+    pub fn fromTypedArray(_: anytype, _: anytype) Buffer {
+        return .{ .data = &.{}, .allocator = null };
+    }
+
     /// Frees the underlying slice if the buffer owns its memory.
     /// No-op for borrowed buffers (those produced by `slice`).
     pub fn deinit(self: Buffer) void {

@@ -33,7 +33,7 @@ pub fn registerDeferredMicrotaskWithTypeUnchecked(comptime Type: type, this: *Ty
 
 // ---- Local stubs ------------------------------------------------------
 // JSC bridge VirtualMachine stubbed — re-attaches in Phase 12.2.
-pub const VirtualMachine = opaque {};
+pub const VirtualMachine = home_rt.jsc.VirtualMachine;
 
 const home_rt = @import("home_rt");
 const std = @import("std");

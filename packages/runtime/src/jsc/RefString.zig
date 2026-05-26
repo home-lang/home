@@ -39,7 +39,7 @@ const StringImpl = opaque {
     extern fn WTFStringImpl__deref(this: *StringImpl) void;
 };
 
-const RefString = @This();
+pub const RefString = @This();
 
 ptr: [*]const u8 = undefined,
 len: usize = 0,

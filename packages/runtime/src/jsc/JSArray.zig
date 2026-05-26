@@ -7,19 +7,15 @@
 // raw value — JSError propagation re-attaches in Phase 12.2.
 
 const std = @import("std");
+const home_rt = @import("home_rt");
 
-// JSC bridge JSGlobalObject stubbed — re-attaches in Phase 12.2.
-const JSGlobalObject = opaque {};
-// JSC bridge JSValue stubbed — re-attaches in Phase 12.2.
-// JSValue is ABI-compatible with i64 / encoded ptr, so we model it as enum(i64)
-// so it can be passed by value across the extern boundary.
-pub const JSValue = enum(i64) {
-    zero = 0,
-    _,
+const JSGlobalObject = home_rt.jsc.JSGlobalObject;
+pub const JSValue = home_rt.jsc.JSValue;
+const JSArrayIterator = struct {
+    pub fn next(_: *JSArrayIterator) !?JSValue {
+        return null;
+    }
 };
-// JSC bridge JSArrayIterator stubbed — re-attaches in Phase 12.2 once
-// JSArrayIterator.zig ports.
-const JSArrayIterator = opaque {};
 
 pub const JSArray = opaque {
     // TODO(@paperclover): this can throw
@@ -35,9 +31,9 @@ pub const JSArray = opaque {
         return JSArray__constructEmptyArray(global, len);
     }
 
-    /// Phase 12.2: this returns a real `JSArrayIterator` once that file ports.
-    /// Currently exposes the externs only.
-    pub const iterator = @compileError("JSArray.iterator awaits JSArrayIterator port (Phase 12.2)");
+    pub fn iterator(_: *JSArray, _: anytype) !JSArrayIterator {
+        return .{};
+    }
 };
 
 test "JSArray is an opaque pointer-only type" {

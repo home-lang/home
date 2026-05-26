@@ -27,7 +27,7 @@ pub fn NewReadFileHandler(comptime Function: anytype) type {
                         }
                     };
 
-                    try jsc.AnyPromise.wrap(.{ .normal = promise }, globalThis, WrappedFn.wrapped, .{ &blob, globalThis, bytes });
+                    try jsc.AnyPromise.wrap(.{ .normal = @ptrCast(promise) }, globalThis, WrappedFn.wrapped, .{ &blob, globalThis, bytes });
                 },
                 .err => |err| {
                     try promise.reject(globalThis, err.toErrorInstanceWithAsyncStack(globalThis, promise));
@@ -53,7 +53,7 @@ pub const ReadFile = struct {
     read_off: SizeType = 0,
     read_eof: bool = false,
     size: SizeType = 0,
-    buffer: std.ArrayListUnmanaged(u8) = .{},
+    buffer: std.ArrayListUnmanaged(u8) = .empty,
     task: bun.ThreadPool.Task = undefined,
     system_error: ?jsc.SystemError = null,
     errno: ?anyerror = null,
@@ -123,7 +123,7 @@ pub const ReadFile = struct {
         return try ReadFile.createWithCtx(allocator, store, @as(*anyopaque, @ptrCast(context)), Handler.run, off, max_len);
     }
 
-    pub const io_tag = io.Poll.Tag.ReadFile;
+    pub const io_tag = .ReadFile;
 
     pub fn onReadable(request: *io.Request) void {
         var this: *ReadFile = @fieldParentPtr("io_request", request);
@@ -375,7 +375,7 @@ pub const ReadFile = struct {
         // Special files might report a size of > 0, and be wrong.
         // so we should check specifically that its a regular file before trusting the size.
         if (this.size == 0 and bun.isRegularFile(this.file_store.mode)) {
-            this.buffer = .{};
+            this.buffer = .empty;
             this.byte_store = ByteStore.init(this.buffer.items, bun.default_allocator);
 
             this.onFinish();

@@ -33,7 +33,8 @@ the first helper blockers: `strings.convertUTF16ToUTF8Append`,
 `strings.split`, `bun.O`, `bun.sys.{write,writeNonblocking,sendNonBlock,
 isPollable}`, `Output.printError*`, `jsc.PlatformEventLoop`, `jsc.Task`,
 and the current `Buffer.fromArrayBuffer(ctx, value)` signature. The
-current front is 22 compile errors. The first remaining blocker is
-`jsc.EventLoopHandle.loop()` in `io/PipeWriter.zig` via
-`runtime/webcore/FileSink.zig`; resolving it belongs with the parked
-EventLoopHandle/WebCore bridge work, outside this shallow alias pass.
+current front is 5 compile errors after the runtime bridge peel. The
+remaining blockers are `std.fs.Dir` drift in bundler options and parked
+router AST stores (`home_rt.ast.Expr`/`Stmt`); resolving them belongs
+with the parked EventLoopHandle/WebCore bridge work, outside this
+shallow alias pass.

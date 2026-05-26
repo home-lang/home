@@ -66,13 +66,11 @@ frontier is:
 
 Runtime build audit on 2026-05-26:
 `./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false
---summary failures` fails with 22 compile errors after the shallow alias
-pass. The default macOS JSC-enabled command fails with 25 compile errors.
-The remaining frontier is parked event-loop/WebCore work, unported API
-roots (`api.dns`, `api.HTTPServer`, `schema`, `URL`), missing runtime
-helpers (`sys.openatA`, `sys.stat`, `sys.getErrno`,
-`Buffer.fromTypedArray`, `Method.fromJS`), disabled generated
-stream-source wrappers, and Zig 0.17 stdlib drift.
+--summary failures` fails with 5 compile errors after the runtime bridge
+peel. The remaining frontier is Zig 0.17 `std.fs.Dir` drift in bundler
+options and parked router AST stores (`home_rt.ast.Expr`/`Stmt`). The
+earlier event-loop/WebCore/API/sys/io shallow aliases are now wired far
+enough for the next frontier.
 
 `zig build test -Dfilter=home_test_bun_tier0` now build-checks the first
 copied Bun Zig tier under pantry-provided Zig 0.17-dev:

@@ -29,6 +29,7 @@ pub const isWasm = switch (builtin.cpu.arch) {
 pub const isAarch64 = builtin.cpu.arch == .aarch64;
 pub const isX64 = builtin.cpu.arch == .x86_64;
 pub const isAndroid = false; // Home does not currently target Android.
+pub const isMusl = false;
 pub const enable_fuzzilli = false; // Fuzzilli REPRL — re-attaches in a future phase.
 pub const isDebug = builtin.mode == .Debug;
 pub const isRelease = !isDebug;
@@ -36,10 +37,16 @@ pub const allow_assert = isDebug or isTest;
 pub const is_canary = false;
 pub const ci_assert = false;
 pub const enable_logs = build_options.debug_logging;
+pub const enableSIMD = true;
 pub const enable_asan = build_options.enable_sanitize_address;
 pub const enableAllocScopes = false;
 pub const baseline = false;
 pub const reported_nodejs_version = "22.0.0";
+pub const version = struct {
+    pub const major = 1;
+    pub const minor = 0;
+    pub const patch = 0;
+};
 
 // Wave-20 Tier-2 substrate (2026-05-19). Mirrors upstream
 // `bun.Environment.os`, an `Os` enum used by comptime branches in copied
@@ -48,6 +55,7 @@ pub const reported_nodejs_version = "22.0.0";
 // | wasm | freebsd`; preserve that bucketing so verbatim copies compile
 // without semantic edits.
 pub const Os = enum { linux, mac, windows, wasm, freebsd };
+pub const OperatingSystem = Os;
 pub const os: Os = if (isWindows)
     .windows
 else if (isMac)
@@ -58,6 +66,27 @@ else if (isFreeBSD)
     .freebsd
 else
     .linux;
+
+pub const Architecture = enum {
+    x64,
+    arm64,
+    wasm,
+
+    pub const names = @import("collections/comptime_string_map.zig").ComptimeStringMap(Architecture, &.{
+        .{ "x86_64", .x64 },
+        .{ "x64", .x64 },
+        .{ "amd64", .x64 },
+        .{ "aarch64", .arm64 },
+        .{ "arm64", .arm64 },
+        .{ "wasm", .wasm },
+    });
+};
+pub const arch: Architecture = if (isWasm)
+    .wasm
+else if (isX64)
+    .x64
+else
+    .arm64;
 
 test "environment flags are mutually consistent" {
     const std = @import("std");

@@ -407,7 +407,7 @@ pub const FD = packed struct(backing_int) {
             else => {
                 const fd_native = fd.native();
                 try writer.print("{d}", .{fd_native});
-                if (Environment.isDebug and fd_native >= 3) print_with_path: {
+                if (Environment.isDebug and fd_native >= 3) {
                     var path_buf: bun.PathBuffer = undefined;
                     // NOTE: Bun's `fd.getFdPath`, while supporting some
                     // situations the standard library does not, hits EINVAL
@@ -416,17 +416,8 @@ pub const FD = packed struct(backing_int) {
                     // support the standard library functions (since they would
                     // likely have run the Zig compiler, and it's not the end of
                     // the world if this fails.
-                    const path = std.os.getFdPath(fd_native, &path_buf) catch |err| switch (err) {
-                        error.FileNotFound => {
-                            try writer.writeAll("[BADF]");
-                            break :print_with_path;
-                        },
-                        else => |e| {
-                            try writer.print("[unknown: error.{s}]", .{@errorName(e)});
-                            break :print_with_path;
-                        },
-                    };
-                    try writer.print("[{s}]", .{path});
+                    _ = &path_buf;
+                    try writer.writeAll("[path unavailable]");
                 }
             },
             .windows => switch (fd.decodeWindows()) {

@@ -67,6 +67,8 @@ fn DisabledTypedClass(comptime name: []const u8, comptime Native: type) type {
 pub const JSArchive = DisabledClass("Archive");
 pub const JSAttributeIterator = DisabledClass("AttributeIterator");
 pub const JSBlob = DisabledTypedClass("Blob", bun.runtime.webcore.Blob);
+pub const JSBlobInternalReadableStreamSource = DisabledClass("BlobInternalReadableStreamSource");
+pub const JSBytesInternalReadableStreamSource = DisabledClass("BytesInternalReadableStreamSource");
 pub const JSBlockList = DisabledClass("BlockList");
 pub const JSBuildArtifact = DisabledTypedClass("BuildArtifact", bun.api.BuildArtifact);
 pub const JSBuildMessage = DisabledClass("BuildMessage");
@@ -96,6 +98,7 @@ pub const JSExpectTypeOf = DisabledClass("ExpectTypeOf");
 pub const JSFFI = DisabledClass("FFI");
 pub const JSFSWatcher = DisabledClass("FSWatcher");
 pub const JSFileSystemRouter = DisabledClass("FileSystemRouter");
+pub const JSFileInternalReadableStreamSource = DisabledClass("FileInternalReadableStreamSource");
 pub const JSFrameworkFileSystemRouter = DisabledClass("FrameworkFileSystemRouter");
 pub const JSHTMLRewriter = DisabledClass("HTMLRewriter");
 pub const JSH2FrameParser = DisabledClass("H2FrameParser");

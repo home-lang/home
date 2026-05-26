@@ -37,6 +37,8 @@
 
 const std = @import("std");
 
+pub const Worker = opaque {};
+
 pub const parallel = struct {
     pub const channel_source = "runtime/cli/test/parallel/Channel.zig";
     pub const coordinator_source = "runtime/cli/test/parallel/Coordinator.zig";

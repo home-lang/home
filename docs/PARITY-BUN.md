@@ -217,15 +217,12 @@ Invalid character: '@'`.
 
 Non-JSC runtime build frontier on 2026-05-26:
 `./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false
---summary failures` fails with **22 compile errors** after the shallow
-alias pass. The default macOS JSC-enabled command fails with **25 compile
-errors** because it analyzes a few more JSC paths. The remaining front is
-parked event-loop/WebCore work (`EventLoopHandle.loop()`/`bunVM()`,
-`Async.Loop`, `AutoFlusher.VirtualMachine`), unported API roots
-(`api.dns`, `api.HTTPServer`, `schema`, `URL`), missing runtime helpers
-(`sys.openatA`, `sys.stat`, `sys.getErrno`, `Buffer.fromTypedArray`,
-`Method.fromJS`), disabled generated stream-source wrappers, and Zig
-0.17 stdlib drift (`std.io.fixedBufferStream`, `std.os.getFdPath`).
+--summary failures` fails with **5 compile errors** after the runtime
+bridge peel. The remaining front is now concentrated in Zig 0.17 std API
+drift (`std.fs.Dir`) and the parked router AST stores
+(`home_rt.ast.Expr`/`Stmt`). Earlier shallow aliases for event loop,
+WebCore stream state, API shells, `StringSet`, `StringHashMap`, and
+runtime sys/io helpers are now wired far enough for the next frontier.
 
 ## Pantry (package management)
 

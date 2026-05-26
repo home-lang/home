@@ -268,31 +268,20 @@ pub fn toSystemError(this: Error) SystemError {
     // format taken from Node.js 'exceptions.cc'
     // search keyword: `Local<Value> UVException(Isolate* isolate,`
     var message_buf: [4096]u8 = @splat(0);
-    const message = message: {
-        var stream = std.io.fixedBufferStream(&message_buf);
-        const writer = stream.writer();
-        brk: {
-            if (maybe_code) |code| {
-                writer.writeAll(code) catch break :brk;
-                writer.writeAll(": ") catch break :brk;
-            }
-            writer.writeAll(label orelse "Unknown Error") catch break :brk;
-            writer.writeAll(", ") catch break :brk;
-            writer.writeAll(@tagName(this.syscall)) catch break :brk;
-            if (this.path.len > 0) {
-                writer.writeAll(" '") catch break :brk;
-                writer.writeAll(this.path) catch break :brk;
-                writer.writeAll("'") catch break :brk;
-
-                if (this.dest.len > 0) {
-                    writer.writeAll(" -> '") catch break :brk;
-                    writer.writeAll(this.dest) catch break :brk;
-                    writer.writeAll("'") catch break :brk;
-                }
-            }
-        }
-        break :message stream.getWritten();
-    };
+    const message = std.fmt.bufPrint(
+        &message_buf,
+        "{s}{s}{s}, {s}{s}{s}{s}{s}",
+        .{
+            maybe_code orelse "",
+            if (maybe_code != null) ": " else "",
+            label orelse "Unknown Error",
+            @tagName(this.syscall),
+            if (this.path.len > 0) " '" else "",
+            this.path,
+            if (this.dest.len > 0) "' -> '" else if (this.path.len > 0) "'" else "",
+            this.dest,
+        },
+    ) catch message_buf[0..0];
     err.message = bun.String.cloneUTF8(message);
 
     if (this.path.len > 0) {

@@ -5,6 +5,8 @@
 // `bun.jsc.ArrayBuffer.TypedArrayType` which depends on the as-yet-unported
 // `ArrayBuffer` opaque. Re-lands in Phase 12.2.
 
+const jsc = @import("home_rt").jsc;
+
 /// JSType is a critical performance optimization in JavaScriptCore that enables O(1) type
 /// identification for JavaScript values without virtual function calls or expensive RTTI.
 ///
@@ -489,8 +491,24 @@ pub const JSType = enum(u8) {
         };
     }
 
-    // JSC-bridge method `toTypedArrayType` omitted — re-lands in Phase 12.2
-    // when `bun.jsc.ArrayBuffer.TypedArrayType` exists.
+    pub fn toTypedArrayType(this: JSType) jsc.ArrayBuffer.TypedArrayType {
+        return switch (this) {
+            .Int8Array => .TypeInt8,
+            .Int16Array => .TypeInt16,
+            .Int32Array => .TypeInt32,
+            .Uint8Array => .TypeUint8,
+            .Uint8ClampedArray => .TypeUint8Clamped,
+            .Uint16Array => .TypeUint16,
+            .Uint32Array => .TypeUint32,
+            .Float16Array => .TypeFloat16,
+            .Float32Array => .TypeFloat32,
+            .Float64Array => .TypeFloat64,
+            .BigInt64Array => .TypeBigInt64,
+            .BigUint64Array => .TypeBigUint64,
+            .DataView => .TypeDataView,
+            else => .TypeNone,
+        };
+    }
 
     pub fn isHidden(this: JSType) bool {
         return switch (this) {

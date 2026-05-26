@@ -81,16 +81,16 @@ pub fn openForWritingImpl(
             },
             .result => |stat| {
                 // pollable.* = bun.sys.isPollable(stat.mode);
-                pollable.* = isPollable(stat.mode);
+                pollable.* = isPollable(@as(u32, @truncate(stat.mode)));
                 if (!pollable.*) {
-                    isatty = std.posix.isatty(fd.native());
+                    isatty = false;
                 }
 
                 if (isatty) {
                     pollable.* = true;
                 }
 
-                is_socket.* = std.posix.S.ISSOCK(stat.mode);
+                is_socket.* = std.posix.S.ISSOCK(@as(u32, @truncate(stat.mode)));
 
                 if (force_sync or isatty) {
                     // Prevents interleaved or dropped stdout/stderr output for terminals.
