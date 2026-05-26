@@ -164,6 +164,10 @@ pub const Method = enum {
     cancel_request,
     set_trace,
     work_done_progress_cancel,
+    notebook_document_did_open,
+    notebook_document_did_change,
+    notebook_document_did_save,
+    notebook_document_did_close,
     text_document_moniker,
     text_document_inline_value,
     text_document_inline_completion,
@@ -235,6 +239,10 @@ pub const Method = enum {
             .{ "$/cancelRequest", Method.cancel_request },
             .{ "$/setTrace", Method.set_trace },
             .{ "window/workDoneProgress/cancel", Method.work_done_progress_cancel },
+            .{ "notebookDocument/didOpen", Method.notebook_document_did_open },
+            .{ "notebookDocument/didChange", Method.notebook_document_did_change },
+            .{ "notebookDocument/didSave", Method.notebook_document_did_save },
+            .{ "notebookDocument/didClose", Method.notebook_document_did_close },
             .{ "textDocument/moniker", Method.text_document_moniker },
             .{ "textDocument/inlineValue", Method.text_document_inline_value },
             .{ "textDocument/inlineCompletion", Method.text_document_inline_completion },
@@ -327,6 +335,11 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     "$/cancelRequest",
     "$/setTrace",
     "window/workDoneProgress/cancel",
+    // Notebook document sync (LSP 3.17+).
+    "notebookDocument/didOpen",
+    "notebookDocument/didChange",
+    "notebookDocument/didSave",
+    "notebookDocument/didClose",
     // Call hierarchy.
     "callHierarchy/incomingCalls",
     "callHierarchy/outgoingCalls",
@@ -2906,6 +2919,59 @@ pub fn handleWorkDoneProgressCancel(
     _ = params_json;
 }
 
+/// Handle a `notebookDocument/didOpen` notification (LSP 3.17+):
+/// editor reports that a notebook (e.g. Jupyter `.ipynb`) was
+/// opened. Home does not yet model notebooks as first-class HIR
+/// units, so this is a recognition-only acknowledgement to avoid
+/// spurious `Method not found` errors in notebook-capable clients.
+/// A future enhancement would split cells into virtual `.ts` /
+/// `.tsx` sections and route them through the normal program graph.
+pub fn handleNotebookDidOpen(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    params_json: []const u8,
+) !void {
+    _ = service;
+    _ = gpa;
+    _ = findJsonRawField(params_json, "notebookDocument") orelse return error.MissingNotebookDocument;
+}
+
+/// Handle a `notebookDocument/didChange` notification: a notebook
+/// edit applied. Recognition-only (see `handleNotebookDidOpen`).
+pub fn handleNotebookDidChange(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    params_json: []const u8,
+) !void {
+    _ = service;
+    _ = gpa;
+    _ = findJsonRawField(params_json, "notebookDocument") orelse return error.MissingNotebookDocument;
+}
+
+/// Handle a `notebookDocument/didSave` notification: the notebook
+/// was saved to disk. Recognition-only (see `handleNotebookDidOpen`).
+pub fn handleNotebookDidSave(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    params_json: []const u8,
+) !void {
+    _ = service;
+    _ = gpa;
+    _ = findJsonRawField(params_json, "notebookDocument") orelse return error.MissingNotebookDocument;
+}
+
+/// Handle a `notebookDocument/didClose` notification: the notebook
+/// was closed. Recognition-only (see `handleNotebookDidOpen`).
+pub fn handleNotebookDidClose(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    params_json: []const u8,
+) !void {
+    _ = service;
+    _ = gpa;
+    _ = findJsonRawField(params_json, "notebookDocument") orelse return error.MissingNotebookDocument;
+}
+
 /// Handle a `workspace/didRenameFiles` notification: editor has
 /// committed a rename. The paired `willRenameFiles` request returns
 /// WorkspaceEdits the server wants applied alongside the rename;
@@ -3922,6 +3988,22 @@ pub fn dispatchRequest(
             try handleWorkDoneProgressCancel(service, gpa, params);
             return &.{};
         },
+        .notebook_document_did_open => {
+            try handleNotebookDidOpen(service, gpa, params);
+            return &.{};
+        },
+        .notebook_document_did_change => {
+            try handleNotebookDidChange(service, gpa, params);
+            return &.{};
+        },
+        .notebook_document_did_save => {
+            try handleNotebookDidSave(service, gpa, params);
+            return &.{};
+        },
+        .notebook_document_did_close => {
+            try handleNotebookDidClose(service, gpa, params);
+            return &.{};
+        },
         .text_document_moniker => {
             if (is_notification) return &.{};
             return try handleMoniker(service, gpa, id, params);
@@ -4377,6 +4459,66 @@ test "handleWillDeleteFiles: returns null WorkspaceEdit" {
     const out = try handleWillDeleteFiles(&svc, T.allocator, RequestId{ .integer = 2 }, params);
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "\"result\":null") != null);
+}
+
+test "handleNotebookDidOpen: accepts notification (recognition-only)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+    const body =
+        \\{"jsonrpc":"2.0","method":"notebookDocument/didOpen","params":{"notebookDocument":{"uri":"file:///nb.ipynb","notebookType":"jupyter-notebook","version":1,"cells":[]},"cellTextDocuments":[]}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    try handleNotebookDidOpen(&svc, T.allocator, params);
+}
+
+test "handleNotebookDidChange: accepts notification (recognition-only)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+    const body =
+        \\{"jsonrpc":"2.0","method":"notebookDocument/didChange","params":{"notebookDocument":{"uri":"file:///nb.ipynb","version":2},"change":{"cells":{"structure":{"array":{"start":0,"deleteCount":0,"cells":[]},"didOpen":[],"didClose":[]}}}}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    try handleNotebookDidChange(&svc, T.allocator, params);
+}
+
+test "handleNotebookDidSave: accepts notification (recognition-only)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+    const body =
+        \\{"jsonrpc":"2.0","method":"notebookDocument/didSave","params":{"notebookDocument":{"uri":"file:///nb.ipynb"}}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    try handleNotebookDidSave(&svc, T.allocator, params);
+}
+
+test "handleNotebookDidClose: accepts notification (recognition-only)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+    const body =
+        \\{"jsonrpc":"2.0","method":"notebookDocument/didClose","params":{"notebookDocument":{"uri":"file:///nb.ipynb"},"cellTextDocuments":[]}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    try handleNotebookDidClose(&svc, T.allocator, params);
 }
 
 test "handleDidChangeConfiguration: accepts notification (no-op)" {
