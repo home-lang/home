@@ -4373,7 +4373,9 @@ pub const Parser = struct {
         }
         var implements_list: std.ArrayListUnmanaged(NodeId) = .empty;
         defer implements_list.deinit(self.gpa);
+        var saw_implements_clause = false;
         if (self.peek().kind == .kw_implements) {
+            saw_implements_clause = true;
             const implements_tok = self.advance();
             try self.reportImplementsOnlyInTsIfNeeded(implements_tok);
             if (self.peek().kind == .open_brace or self.peek().kind == .eof) {
@@ -4424,6 +4426,24 @@ pub const Parser = struct {
             }
         }
 
+        // When a heritage clause (`extends`/`implements`) was actually
+        // parsed but the token that follows is neither another clause
+        // keyword nor the class body's `{`, tsc's `HeritageClauses`
+        // parse-list aborts via `parsingContextErrors` with TS1179
+        // "Unexpected token. '{' expected." (rather than the generic
+        // TS1005 the bare `expect` would synthesize). Recover by skipping
+        // to the body brace so the members still parse. Mirrors
+        // `parserExpressionWithTypeArguments.errors` heritage recovery.
+        if ((saw_extends_clause or saw_implements_clause) and
+            self.peek().kind != .open_brace and
+            self.peek().kind != .eof)
+        {
+            const bad = self.peek();
+            try self.reportCodeAt(bad.span.start, bad.line, 1179, "Unexpected token. '{' expected.");
+            while (self.peek().kind != .open_brace and self.peek().kind != .eof) {
+                _ = self.advance();
+            }
+        }
         _ = try self.expect(.open_brace, "'{' to open class body");
         const class_body_generator_depth = self.generator_depth;
         self.generator_depth = 0;
@@ -23920,5 +23940,48 @@ test "parser: TS1180/TS1181 stay clean on legitimate destructuring" {
         _ = try s.parser.parseSourceFile();
         try T.expectEqual(@as(u32, 0), countDiag(s, 1180));
         try T.expectEqual(@as(u32, 0), countDiag(s, 1181));
+    }
+}
+
+test "parser: TS1179 fires when a stray token follows a heritage clause" {
+    // tsc's `HeritageClauses` parse-list aborts via `parsingContextErrors`
+    // with TS1179 "Unexpected token. '{' expected." when, after an
+    // `extends`/`implements` clause, the next token is neither another
+    // clause keyword nor the class body `{`. Here `B` follows `extends A`.
+    const src = "class C extends A B {}";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findDiag(s, 1179) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Unexpected token. '{' expected.", d.message);
+    const expected_pos: u32 = @intCast(std.mem.indexOf(u8, src, "B {}").?);
+    try T.expectEqual(expected_pos, d.pos);
+    // The class body must still parse rather than collapsing into a
+    // generic TS1005 abort.
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1005));
+}
+
+test "parser: TS1179 fires after an `implements` clause too" {
+    const src = "class C implements I foo {}";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findDiag(s, 1179) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Unexpected token. '{' expected.", d.message);
+}
+
+test "parser: TS1179 stays clean for well-formed heritage clauses" {
+    const cases = [_][]const u8{
+        "class C extends A {}",
+        "class C implements I {}",
+        "class C extends A implements I {}",
+        "class C extends A<T> implements I, J {}",
+        "class C {}",
+    };
+    inline for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(u32, 0), countDiag(s, 1179));
     }
 }
