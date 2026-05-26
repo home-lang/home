@@ -294,6 +294,7 @@ pub const ConfigParseDiagnostic = struct {
     option: []const u8 = "",
     pattern: []const u8 = "",
     actual: []const u8 = "",
+    file_kind: []const u8 = "tsconfig.json",
 };
 
 pub const TsConfig = struct {
@@ -408,6 +409,12 @@ pub const TsConfig = struct {
 
         if (co.paths) |paths| {
             try validatePaths(gpa, &diags, paths, co.base_url != null);
+        }
+        if (self.include) |include| {
+            try validateFileSpecs(gpa, &diags, include, "include");
+        }
+        if (self.exclude) |exclude| {
+            try validateFileSpecs(gpa, &diags, exclude, "exclude");
         }
 
         if (co.ignore_deprecations) |ignore_deprecations| {
@@ -1011,6 +1018,7 @@ fn appendConfigParseDiagnostic(
         5064 => try std.fmt.allocPrint(gpa, "Substitution '{s}' for pattern '{s}' has incorrect type, expected 'string', got '{s}'.", .{ diag.option, diag.pattern, diag.actual }),
         6114 => try gpa.dupe(u8, "Unknown option 'excludes'. Did you mean 'exclude'?"),
         6258 => try std.fmt.allocPrint(gpa, "'{s}' should be set inside the 'compilerOptions' object of the config json file", .{diag.option}),
+        5092 => try std.fmt.allocPrint(gpa, "The root value of a '{s}' file must be an object.", .{diag.file_kind}),
         else => unreachable,
     };
     try diags.append(gpa, .{
@@ -1021,6 +1029,7 @@ fn appendConfigParseDiagnostic(
             5063, 5064 => "paths",
             6114 => "excludes",
             6258 => diag.option,
+            5092 => "",
             else => "",
         },
     });
@@ -1157,6 +1166,48 @@ fn validatePaths(
     }
 }
 
+fn validateFileSpecs(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    specs: []const []const u8,
+    field: []const u8,
+) !void {
+    for (specs) |spec| {
+        if (fileSpecEndsInRecursiveWildcard(spec)) {
+            try appendTs5010(gpa, diags, spec, field);
+        }
+        if (fileSpecHasParentAfterRecursiveWildcard(spec)) {
+            try appendTs5065(gpa, diags, spec, field);
+        }
+    }
+}
+
+fn fileSpecEndsInRecursiveWildcard(spec: []const u8) bool {
+    const trimmed = std.mem.trim(u8, spec, "/\\");
+    if (trimmed.len == 0) return false;
+    const last_sep = std.mem.lastIndexOfAny(u8, trimmed, "/\\");
+    const segment = if (last_sep) |idx| trimmed[idx + 1 ..] else trimmed;
+    return std.mem.eql(u8, segment, "**");
+}
+
+fn fileSpecHasParentAfterRecursiveWildcard(spec: []const u8) bool {
+    var saw_recursive = false;
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i <= spec.len) : (i += 1) {
+        if (i == spec.len or spec[i] == '/' or spec[i] == '\\') {
+            const segment = spec[start..i];
+            if (std.mem.eql(u8, segment, "**")) {
+                saw_recursive = true;
+            } else if (saw_recursive and std.mem.eql(u8, segment, "..")) {
+                return true;
+            }
+            start = i + 1;
+        }
+    }
+    return false;
+}
+
 fn hasZeroOrOneAsteriskCharacter(text: []const u8) bool {
     return std.mem.count(u8, text, "*") <= 1;
 }
@@ -1227,6 +1278,36 @@ fn appendTs5090(
         .message = msg,
         .owns_message = true,
         .field = "paths",
+    });
+}
+
+fn appendTs5010(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    spec: []const u8,
+    field: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(gpa, "File specification cannot end in a recursive directory wildcard ('**'): '{s}'.", .{spec});
+    try diags.append(gpa, .{
+        .code = 5010,
+        .message = msg,
+        .owns_message = true,
+        .field = field,
+    });
+}
+
+fn appendTs5065(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    spec: []const u8,
+    field: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(gpa, "File specification cannot contain a parent directory ('..') that appears after a recursive directory wildcard ('**'): '{s}'.", .{spec});
+    try diags.append(gpa, .{
+        .code = 5065,
+        .message = msg,
+        .owns_message = true,
+        .field = field,
     });
 }
 
@@ -2036,6 +2117,32 @@ pub fn parseString(
     }
 
     return cfg;
+}
+
+/// Parse enough of a config-like JSONC file to report TypeScript's
+/// conversion diagnostic when the top-level value is not an object.
+/// `parseString` still returns `error.NotAnObject` for callers that
+/// need a typed config; this helper gives CLI/harness layers the
+/// upstream TS5092 diagnostic shape before they bail out.
+pub fn parseRootValueDiagnostics(
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    source: []const u8,
+    file_kind: []const u8,
+) LoadError![]ValidationDiagnostic {
+    const doc = try jsonc.parse(gpa, arena, source);
+    gpa.free(doc.diagnostics);
+    if (doc.value.asObject() != null) {
+        return try gpa.alloc(ValidationDiagnostic, 0);
+    }
+
+    var diags: std.ArrayListUnmanaged(ValidationDiagnostic) = .empty;
+    errdefer diags.deinit(gpa);
+    try appendConfigParseDiagnostic(gpa, &diags, .{
+        .code = 5092,
+        .file_kind = file_kind,
+    });
+    return diags.toOwnedSlice(gpa);
 }
 
 fn parseStringArray(arena: std.mem.Allocator, v: jsonc.Value) ![][]const u8 {
@@ -3325,6 +3432,69 @@ test "tsconfig.validate: paths reports TS5063 and TS5064 for malformed substitut
     try t.expectEqual(@as(u32, 5064), diags[3].code);
     try t.expectEqualStrings("Substitution 'null' for pattern 'bad-types/*' has incorrect type, expected 'string', got 'object'.", diags[3].message);
     try t.expectEqual(@as(u32, 5090), diags[4].code);
+}
+
+test "tsconfig.validate: include and exclude file specs report TS5010 and TS5065" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "include": ["**", "src/**", "**/../*", "**/y/../*"],
+        \\  "exclude": ["dist/**", "**/.."]
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 6), diags.len);
+    try t.expectEqual(@as(u32, 5010), diags[0].code);
+    try t.expectEqualStrings("File specification cannot end in a recursive directory wildcard ('**'): '**'.", diags[0].message);
+    try t.expectEqualStrings("include", diags[0].field);
+    try t.expectEqual(@as(u32, 5010), diags[1].code);
+    try t.expectEqualStrings("File specification cannot end in a recursive directory wildcard ('**'): 'src/**'.", diags[1].message);
+    try t.expectEqual(@as(u32, 5065), diags[2].code);
+    try t.expectEqualStrings("File specification cannot contain a parent directory ('..') that appears after a recursive directory wildcard ('**'): '**/../*'.", diags[2].message);
+    try t.expectEqual(@as(u32, 5065), diags[3].code);
+    try t.expectEqualStrings("File specification cannot contain a parent directory ('..') that appears after a recursive directory wildcard ('**'): '**/y/../*'.", diags[3].message);
+    try t.expectEqual(@as(u32, 5010), diags[4].code);
+    try t.expectEqualStrings("exclude", diags[4].field);
+    try t.expectEqual(@as(u32, 5065), diags[5].code);
+    try t.expectEqualStrings("exclude", diags[5].field);
+}
+
+test "tsconfig.validate: clean include and exclude globs do not report recursive wildcard diagnostics" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "include": ["src/**/*", "types/**/index.d.ts"],
+        \\  "exclude": ["dist", "../shared", "**/*.generated.ts"]
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 0), diags.len);
+}
+
+test "tsconfig.validate: root value diagnostic reports TS5092" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const diags = try parseRootValueDiagnostics(t.allocator, arena.allocator(),
+        \\["not", "an", "object"]
+    , "tsconfig.json");
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), diags.len);
+    try t.expectEqual(@as(u32, 5092), diags[0].code);
+    try t.expectEqualStrings("The root value of a 'tsconfig.json' file must be an object.", diags[0].message);
+}
+
+test "tsconfig.validate: object root value has no TS5092 diagnostic" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const diags = try parseRootValueDiagnostics(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "strict": true } }
+    , "tsconfig.json");
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 0), diags.len);
 }
 
 test "tsconfig.validate: root excludes and misplaced compiler option report TS6114 and TS6258" {

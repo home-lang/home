@@ -73,6 +73,22 @@ pub const Options = struct {
     /// emit a `.d.ts.map` (or `.d.hm.map`) alongside each `.d.ts` /
     /// `.d.hm`. Implies `--declaration` at emit time.
     declaration_map: ?bool = null,
+    /// `--build` / `-b`.
+    build: bool = false,
+    build_clean: bool = false,
+    build_dry: bool = false,
+    build_force: bool = false,
+    build_verbose: bool = false,
+    build_stop_on_errors: bool = false,
+    parse_diagnostics: [8]CliDiagnostic = undefined,
+    parse_diagnostic_count: u8 = 0,
+};
+
+pub const CliDiagnostic = struct {
+    code: u32,
+    option: []const u8,
+    expected: []const u8 = "",
+    suggestion: ?[]const u8 = null,
 };
 
 pub const ParseError = error{
@@ -108,12 +124,40 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8) ParseError!Op
             opts.show_config = true;
         } else if (std.mem.eql(u8, a, "--init")) {
             opts.init_config = true;
-        } else if (std.mem.eql(u8, a, "--version") or std.mem.eql(u8, a, "-v")) {
+        } else if (std.mem.eql(u8, a, "--version") or (std.mem.eql(u8, a, "-v") and !opts.build)) {
             opts.show_version = true;
         } else if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h") or std.mem.eql(u8, a, "-?")) {
             opts.show_help = true;
         } else if (std.mem.eql(u8, a, "--all")) {
             opts.show_all_help = true;
+        } else if (std.mem.eql(u8, a, "--build") or std.mem.eql(u8, a, "-b")) {
+            opts.build = true;
+        } else if (buildOptionName(a)) |name| {
+            if (opts.build) {
+                applyBuildBoolOption(&opts, name);
+            } else {
+                appendCliDiagnostic(&opts, .{ .code = 5093, .option = name });
+            }
+        } else if (opts.build) {
+            if (buildModeCompilerOnlyOption(a)) |name| {
+                appendCliDiagnostic(&opts, .{ .code = 5094, .option = name });
+                i = maybeSkipOptionValue(args, i);
+            } else if (buildStringOptionName(a)) |name| {
+                if (i + 1 >= args.len or (args[i + 1].len > 0 and args[i + 1][0] == '-')) {
+                    appendCliDiagnostic(&opts, .{ .code = 5073, .option = name, .expected = "string" });
+                } else {
+                    i += 1;
+                }
+            } else if (unknownDashedOptionName(a)) |name| {
+                if (buildOptionSuggestion(name)) |suggestion| {
+                    appendCliDiagnostic(&opts, .{ .code = 5077, .option = a, .suggestion = suggestion });
+                } else {
+                    appendCliDiagnostic(&opts, .{ .code = 5072, .option = a });
+                }
+                i = maybeSkipOptionValue(args, i);
+            } else {
+                try files.append(gpa, a);
+            }
         } else if (std.mem.eql(u8, a, "--strict")) {
             opts.strict = true;
         } else if (std.mem.eql(u8, a, "--project") or std.mem.eql(u8, a, "-p")) {
@@ -181,6 +225,130 @@ fn parseEqFlag(a: []const u8, prefix: []const u8) ?[]const u8 {
     return null;
 }
 
+fn appendCliDiagnostic(opts: *Options, diag: CliDiagnostic) void {
+    if (opts.parse_diagnostic_count >= opts.parse_diagnostics.len) return;
+    opts.parse_diagnostics[opts.parse_diagnostic_count] = diag;
+    opts.parse_diagnostic_count += 1;
+}
+
+fn buildOptionName(arg: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, arg, "--clean")) return "clean";
+    if (std.mem.eql(u8, arg, "--dry") or std.mem.eql(u8, arg, "-d")) return "dry";
+    if (std.mem.eql(u8, arg, "--force") or std.mem.eql(u8, arg, "-f")) return "force";
+    if (std.mem.eql(u8, arg, "--verbose") or std.mem.eql(u8, arg, "-v")) return "verbose";
+    if (std.mem.eql(u8, arg, "--stopBuildOnErrors")) return "stopBuildOnErrors";
+    return null;
+}
+
+fn applyBuildBoolOption(opts: *Options, name: []const u8) void {
+    if (std.mem.eql(u8, name, "clean")) opts.build_clean = true;
+    if (std.mem.eql(u8, name, "dry")) opts.build_dry = true;
+    if (std.mem.eql(u8, name, "force")) opts.build_force = true;
+    if (std.mem.eql(u8, name, "verbose")) opts.build_verbose = true;
+    if (std.mem.eql(u8, name, "stopBuildOnErrors")) opts.build_stop_on_errors = true;
+}
+
+fn buildStringOptionName(arg: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, arg, "--generateCpuProfile")) return "generateCpuProfile";
+    if (std.mem.eql(u8, arg, "--generateTrace")) return "generateTrace";
+    return null;
+}
+
+fn buildModeCompilerOnlyOption(arg: []const u8) ?[]const u8 {
+    const name = unknownDashedOptionName(arg) orelse return null;
+    const compiler_only = comptime [_][]const u8{
+        "strict",
+        "target",
+        "module",
+        "jsx",
+        "outDir",
+        "outFile",
+        "tsBuildInfoFile",
+        "declaration",
+        "emitDeclarationOnly",
+        "isolatedDeclarations",
+    };
+    inline for (compiler_only) |candidate| {
+        if (std.mem.eql(u8, name, candidate)) return candidate;
+    }
+    return null;
+}
+
+fn unknownDashedOptionName(arg: []const u8) ?[]const u8 {
+    if (arg.len == 0 or arg[0] != '-') return null;
+    const start: usize = if (arg.len > 1 and arg[1] == '-') 2 else 1;
+    if (start >= arg.len) return null;
+    const body = arg[start..];
+    if (std.mem.indexOfScalar(u8, body, '=')) |eq| return body[0..eq];
+    return body;
+}
+
+fn maybeSkipOptionValue(args: []const []const u8, i: usize) usize {
+    if (std.mem.indexOfScalar(u8, args[i], '=') != null) return i;
+    if (i + 1 < args.len and (args[i + 1].len == 0 or args[i + 1][0] != '-')) return i + 1;
+    return i;
+}
+
+fn buildOptionSuggestion(name: []const u8) ?[]const u8 {
+    const candidates = comptime [_][]const u8{
+        "build",
+        "clean",
+        "dry",
+        "force",
+        "verbose",
+        "stopBuildOnErrors",
+        "watch",
+        "pretty",
+        "generateCpuProfile",
+        "generateTrace",
+    };
+    var best: ?[]const u8 = null;
+    var best_distance: usize = std.math.maxInt(usize);
+    inline for (candidates) |candidate| {
+        const distance = levenshteinIcase(name, candidate);
+        if (distance < best_distance) {
+            best = candidate;
+            best_distance = distance;
+        }
+    }
+    const threshold = name.len * 4 / 10 + 1;
+    return if (best != null and best_distance < threshold) best else null;
+}
+
+fn levenshteinIcase(a: []const u8, b: []const u8) usize {
+    var previous_buf: [96]usize = undefined;
+    var current_buf: [96]usize = undefined;
+    if (b.len + 1 > previous_buf.len) return std.math.maxInt(usize);
+    for (0..b.len + 1) |i| previous_buf[i] = i;
+    var i: usize = 0;
+    while (i < a.len) : (i += 1) {
+        current_buf[0] = i + 1;
+        var j: usize = 0;
+        while (j < b.len) : (j += 1) {
+            const ca = std.ascii.toLower(a[i]);
+            const cb = std.ascii.toLower(b[j]);
+            const cost: usize = if (ca == cb) 0 else 1;
+            const del = previous_buf[j + 1] + 1;
+            const ins = current_buf[j] + 1;
+            const sub = previous_buf[j] + cost;
+            current_buf[j + 1] = @min(@min(del, ins), sub);
+        }
+        @memcpy(previous_buf[0 .. b.len + 1], current_buf[0 .. b.len + 1]);
+    }
+    return previous_buf[b.len];
+}
+
+pub fn formatCliDiagnostic(gpa: std.mem.Allocator, diag: CliDiagnostic) ![]const u8 {
+    return switch (diag.code) {
+        5072 => try std.fmt.allocPrint(gpa, "error TS5072: Unknown build option '{s}'.", .{diag.option}),
+        5073 => try std.fmt.allocPrint(gpa, "error TS5073: Build option '{s}' requires a value of type {s}.", .{ diag.option, diag.expected }),
+        5077 => try std.fmt.allocPrint(gpa, "error TS5077: Unknown build option '{s}'. Did you mean '{s}'?", .{ diag.option, diag.suggestion.? }),
+        5093 => try std.fmt.allocPrint(gpa, "error TS5093: Compiler option '--{s}' may only be used with '--build'.", .{diag.option}),
+        5094 => try std.fmt.allocPrint(gpa, "error TS5094: Compiler option '--{s}' may not be used with '--build'.", .{diag.option}),
+        else => unreachable,
+    };
+}
+
 pub const helpText: []const u8 =
     \\Usage: home tsc [files...] [options]
     \\
@@ -221,6 +389,12 @@ pub const RunResult = struct {
 /// function — no I/O. The actual binary wraps this with stdout /
 /// stderr / disk reads.
 pub fn dispatch(opts: Options) RunResult {
+    if (opts.parse_diagnostic_count > 0) {
+        return .{
+            .code = .config_error,
+            .stderr_text = "error: invalid command line options",
+        };
+    }
     if (opts.show_version) {
         return .{ .code = .success, .stdout_text = versionText };
     }
@@ -425,6 +599,72 @@ test "parseArgs: --listFiles / --listFilesOnly / --explainFiles / --showConfig /
     try T.expect(opts.explain_files);
     try T.expect(opts.show_config);
     try T.expect(opts.init_config);
+}
+
+test "parseArgs: build-only options outside build report TS5093" {
+    const argv = [_][]const u8{ "--clean", "--dry", "--force", "--verbose" };
+    const opts = try parseArgs(T.allocator, &argv);
+    defer T.allocator.free(opts.files);
+    try T.expectEqual(@as(u8, 4), opts.parse_diagnostic_count);
+    const expected = [_][]const u8{ "clean", "dry", "force", "verbose" };
+    for (expected, 0..) |name, i| {
+        try T.expectEqual(@as(u32, 5093), opts.parse_diagnostics[i].code);
+        try T.expectEqualStrings(name, opts.parse_diagnostics[i].option);
+        const text = try formatCliDiagnostic(T.allocator, opts.parse_diagnostics[i]);
+        defer T.allocator.free(text);
+        try T.expect(std.mem.indexOf(u8, text, "may only be used with '--build'") != null);
+    }
+}
+
+test "parseArgs: build mode reports unknown build options and suggestions" {
+    const argv = [_][]const u8{ "--build", "--invalidOption", "--verbse" };
+    const opts = try parseArgs(T.allocator, &argv);
+    defer T.allocator.free(opts.files);
+    try T.expect(opts.build);
+    try T.expectEqual(@as(u8, 2), opts.parse_diagnostic_count);
+    try T.expectEqual(@as(u32, 5072), opts.parse_diagnostics[0].code);
+    try T.expectEqualStrings("--invalidOption", opts.parse_diagnostics[0].option);
+    {
+        const text = try formatCliDiagnostic(T.allocator, opts.parse_diagnostics[0]);
+        defer T.allocator.free(text);
+        try T.expectEqualStrings("error TS5072: Unknown build option '--invalidOption'.", text);
+    }
+    try T.expectEqual(@as(u32, 5077), opts.parse_diagnostics[1].code);
+    try T.expectEqualStrings("verbose", opts.parse_diagnostics[1].suggestion.?);
+    {
+        const text = try formatCliDiagnostic(T.allocator, opts.parse_diagnostics[1]);
+        defer T.allocator.free(text);
+        try T.expectEqualStrings("error TS5077: Unknown build option '--verbse'. Did you mean 'verbose'?", text);
+    }
+}
+
+test "parseArgs: build mode reports TS5073 and TS5094 option mismatches" {
+    const argv = [_][]const u8{ "--build", "--generateTrace", "--tsBuildInfoFile", "cache.tsbuildinfo", "--strict" };
+    const opts = try parseArgs(T.allocator, &argv);
+    defer T.allocator.free(opts.files);
+    try T.expectEqual(@as(u8, 3), opts.parse_diagnostic_count);
+    try T.expectEqual(@as(u32, 5073), opts.parse_diagnostics[0].code);
+    try T.expectEqualStrings("generateTrace", opts.parse_diagnostics[0].option);
+    try T.expectEqualStrings("string", opts.parse_diagnostics[0].expected);
+    try T.expectEqual(@as(u32, 5094), opts.parse_diagnostics[1].code);
+    try T.expectEqualStrings("tsBuildInfoFile", opts.parse_diagnostics[1].option);
+    try T.expectEqual(@as(u32, 5094), opts.parse_diagnostics[2].code);
+    try T.expectEqualStrings("strict", opts.parse_diagnostics[2].option);
+}
+
+test "parseArgs: build mode accepts build bool options and projects" {
+    const argv = [_][]const u8{ "--build", "--clean", "--dry", "--force", "-v", "--stopBuildOnErrors", "packages/a" };
+    const opts = try parseArgs(T.allocator, &argv);
+    defer T.allocator.free(opts.files);
+    try T.expect(opts.build);
+    try T.expect(opts.build_clean);
+    try T.expect(opts.build_dry);
+    try T.expect(opts.build_force);
+    try T.expect(opts.build_verbose);
+    try T.expect(opts.build_stop_on_errors);
+    try T.expectEqual(@as(u8, 0), opts.parse_diagnostic_count);
+    try T.expectEqual(@as(usize, 1), opts.files.len);
+    try T.expectEqualStrings("packages/a", opts.files[0]);
 }
 
 test "option help metadata includes upstream message diagnostics" {

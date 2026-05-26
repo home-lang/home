@@ -12313,6 +12313,20 @@ pub const Parser = struct {
         while (i < close_at and i < self.source.len) {
             const ch = self.source[i];
             if (ch == '\\') {
+                try self.reportRegexUnicodePropertyEscapeDiagnostics(i, close_at, start_tok.line, unicode_mode);
+                try self.reportRegexUnicodeEscapeAvailability(i, close_at, start_tok.line, unicode_mode);
+                if (unicode_mode and i + 1 < close_at and
+                    !(unicode_sets_mode and self.source[i + 1] == 'q') and
+                    isInvalidRegexIdentityEscape(self.source[i + 1]))
+                {
+                    try self.reportCodeAtWithSpan(
+                        @intCast(i),
+                        start_tok.line,
+                        2,
+                        1535,
+                        "This character cannot be escaped in a regular expression.",
+                    );
+                }
                 if ((unicode_mode or named_capture_groups) and i + 1 < close_at and self.source[i + 1] == 'k' and
                     (i + 2 >= close_at or self.source[i + 2] != '<'))
                 {
@@ -12361,6 +12375,100 @@ pub const Parser = struct {
             2,
             1512,
             "'\\c' must be followed by an ASCII letter.",
+        );
+    }
+
+    fn reportRegexUnicodePropertyEscapeDiagnostics(
+        self: *Parser,
+        slash_pos: usize,
+        limit: usize,
+        line: u32,
+        unicode_mode: bool,
+    ) ParseError!void {
+        if (slash_pos + 1 >= limit) return;
+        const esc = self.source[slash_pos + 1];
+        if (esc != 'p' and esc != 'P') return;
+        if (slash_pos + 2 >= limit or self.source[slash_pos + 2] != '{') {
+            if (unicode_mode) {
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "'\\{c}' must be followed by a Unicode property value expression enclosed in braces.",
+                    .{esc},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .pos = @intCast(slash_pos),
+                    .line = line,
+                    .span_len = 2,
+                    .code = 1531,
+                    .message = msg,
+                });
+            }
+            return;
+        }
+
+        const content_start = slash_pos + 3;
+        var pos = content_start;
+        while (pos < limit and pos < self.source.len and isRegexUnicodePropertyWord(self.source[pos])) : (pos += 1) {}
+        if (pos < limit and self.source[pos] == '=') {
+            if (pos == content_start) {
+                try self.reportCodeAtWithSpan(
+                    @intCast(content_start),
+                    line,
+                    0,
+                    1523,
+                    "Expected a Unicode property name.",
+                );
+            }
+            pos += 1;
+            const value_start = pos;
+            while (pos < limit and pos < self.source.len and isRegexUnicodePropertyWord(self.source[pos])) : (pos += 1) {}
+            if (pos == value_start) {
+                try self.reportCodeAtWithSpan(
+                    @intCast(value_start),
+                    line,
+                    0,
+                    1525,
+                    "Expected a Unicode property value.",
+                );
+            }
+        } else if (pos == content_start) {
+            try self.reportCodeAtWithSpan(
+                @intCast(content_start),
+                line,
+                0,
+                1527,
+                "Expected a Unicode property name or value.",
+            );
+        }
+
+        if (!unicode_mode) {
+            const end = self.regexClassBraceEscapeEnd(slash_pos + 2, limit) orelse @min(pos, limit);
+            try self.reportCodeAtWithSpan(
+                @intCast(slash_pos),
+                line,
+                @intCast(end - slash_pos),
+                1530,
+                "Unicode property value expressions are only available when the Unicode (u) flag or the Unicode Sets (v) flag is set.",
+            );
+        }
+    }
+
+    fn reportRegexUnicodeEscapeAvailability(
+        self: *Parser,
+        slash_pos: usize,
+        limit: usize,
+        line: u32,
+        unicode_mode: bool,
+    ) ParseError!void {
+        if (unicode_mode) return;
+        if (slash_pos + 2 >= limit or self.source[slash_pos + 1] != 'u' or self.source[slash_pos + 2] != '{') return;
+        const end = self.regexClassBraceEscapeEnd(slash_pos + 2, limit) orelse @min(slash_pos + 3, limit);
+        try self.reportCodeAtWithSpan(
+            @intCast(slash_pos),
+            line,
+            @intCast(end - slash_pos),
+            1538,
+            "Unicode escape sequences are only available when the Unicode (u) flag or the Unicode Sets (v) flag is set.",
         );
     }
 
@@ -12554,6 +12662,16 @@ pub const Parser = struct {
     ) ParseError!RegexClassAtom {
         if (start >= limit or start >= self.source.len) return .{ .start = start, .end = start, .value = null };
         if (self.source[start] != '\\') {
+            if (unicode_sets_mode and start + 1 < limit and self.source[start] == self.source[start + 1] and isRegexClassSetReservedDoublePunctuator(self.source[start])) {
+                try self.reportCodeAtWithSpan(
+                    @intCast(start),
+                    line,
+                    2,
+                    1522,
+                    "A character class must not contain a reserved double punctuator. Did you mean to escape it with backslash?",
+                );
+                return .{ .start = start, .end = start + 2, .kind = .single, .value = self.source[start] };
+            }
             return .{ .start = start, .end = start + 1, .kind = .single, .value = self.source[start] };
         }
         if (start + 1 >= limit) return .{ .start = start, .end = start + 1, .value = null };
@@ -12567,6 +12685,51 @@ pub const Parser = struct {
                 .value = null,
                 .string_set_may_be_multi = self.regexClassQStringMayBeMulti(start + 3, q_end),
             };
+        }
+        if (unicode_sets_mode and esc == 'q') {
+            try self.reportCodeAtWithSpan(
+                @intCast(start),
+                line,
+                2,
+                1521,
+                "'\\q' must be followed by string alternatives enclosed in braces.",
+            );
+        }
+        try self.reportRegexUnicodePropertyEscapeDiagnostics(start, limit, line, unicode_mode);
+        try self.reportRegexUnicodeEscapeAvailability(start, limit, line, unicode_mode);
+        if (scanRegexClassOctalEscape(self.source, start, limit)) |octal| {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Octal escape sequences and backreferences are not allowed in a character class. If this was intended as an escape sequence, use the syntax '{s}' instead.",
+                .{try regexHexEscapeSuggestion(self.diag_arena.allocator(), octal.value)},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .pos = @intCast(start),
+                .line = line,
+                .span_len = @intCast(octal.end - start),
+                .code = 1536,
+                .message = msg,
+            });
+            return .{ .start = start, .end = octal.end, .kind = .single, .value = octal.value };
+        }
+        if (esc == '8' or esc == '9') {
+            try self.reportCodeAtWithSpan(
+                @intCast(start),
+                line,
+                2,
+                1537,
+                "Decimal escape sequences and backreferences are not allowed in a character class.",
+            );
+            return .{ .start = start, .end = start + 2, .kind = .single, .value = esc };
+        }
+        if (unicode_mode and isInvalidRegexIdentityEscape(esc)) {
+            try self.reportCodeAtWithSpan(
+                @intCast(start),
+                line,
+                2,
+                1535,
+                "This character cannot be escaped in a regular expression.",
+            );
         }
         if (esc == 'c') {
             try self.reportInvalidControlEscapeIfNeeded(start, limit, line, unicode_mode);
@@ -12665,6 +12828,85 @@ pub const Parser = struct {
             if (len > 1) return true;
         }
         return len > 1;
+    }
+
+    const RegexOctalEscape = struct {
+        end: usize,
+        value: u21,
+    };
+
+    fn scanRegexClassOctalEscape(source: []const u8, start: usize, limit: usize) ?RegexOctalEscape {
+        if (start + 1 >= limit or source[start] != '\\') return null;
+        const first = source[start + 1];
+        if (first == '0') {
+            if (start + 2 >= limit or !std.ascii.isDigit(source[start + 2])) return null;
+        } else if (first < '1' or first > '7') {
+            return null;
+        }
+
+        var end = start + 2;
+        if (first >= '0' and first <= '3') {
+            if (end < limit and isRegexOctalDigit(source[end])) end += 1;
+            if (end < limit and isRegexOctalDigit(source[end])) end += 1;
+        } else if (first >= '4' and first <= '7') {
+            if (end < limit and isRegexOctalDigit(source[end])) end += 1;
+        }
+
+        var value: u21 = 0;
+        var i = start + 1;
+        while (i < end) : (i += 1) {
+            value = (value * 8) + @as(u21, source[i] - '0');
+        }
+        return .{ .end = end, .value = value };
+    }
+
+    fn regexHexEscapeSuggestion(allocator: std.mem.Allocator, value: u21) ![]const u8 {
+        const digits = "0123456789abcdef";
+        const byte: u8 = @intCast(value & 0xff);
+        var buf: [4]u8 = .{ '\\', 'x', digits[byte >> 4], digits[byte & 0x0f] };
+        return try allocator.dupe(u8, buf[0..]);
+    }
+
+    fn isRegexOctalDigit(ch: u8) bool {
+        return ch >= '0' and ch <= '7';
+    }
+
+    fn isRegexUnicodePropertyWord(ch: u8) bool {
+        return std.ascii.isAlphanumeric(ch) or ch == '_';
+    }
+
+    fn isInvalidRegexIdentityEscape(ch: u8) bool {
+        if (std.ascii.isDigit(ch)) return false;
+        return !isRegexSyntaxEscape(ch) and !isRegexCharacterEscape(ch) and !isRegexCharacterClassEscape(ch) and ch != 'p' and ch != 'P';
+    }
+
+    fn isRegexSyntaxEscape(ch: u8) bool {
+        return switch (ch) {
+            '^', '$', '/', '\\', '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|' => true,
+            else => false,
+        };
+    }
+
+    fn isRegexCharacterEscape(ch: u8) bool {
+        return switch (ch) {
+            'b', 't', 'n', 'v', 'f', 'r', '0', 'x', 'u', 'c', 'k' => true,
+            '\'', '"' => true,
+            else => false,
+        };
+    }
+
+    fn isRegexCharacterClassEscape(ch: u8) bool {
+        return switch (ch) {
+            'd', 'D', 's', 'S', 'w', 'W' => true,
+            else => false,
+        };
+    }
+
+    fn isRegexClassSetReservedDoublePunctuator(ch: u8) bool {
+        return switch (ch) {
+            '!', '#', '%', '*', '+', ',', '.', ':', ';', '<', '=', '>', '?', '@', '`', '~' => true,
+            else => false,
+        };
     }
 
     fn hexValue(ch: u8) ?u21 {
@@ -21424,6 +21666,126 @@ test "parser: unicode sets class operators require operands" {
         }
     }
     try T.expectEqual(@as(usize, 4), count);
+}
+
+test "parser: unicode sets class q escape requires braced alternatives" {
+    var s = try newTestSetup("let a = /[\\q]/v; let b = /[\\q{a|b}]/v; let c = /\\q/v;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_1521 = false;
+    var saw_1511 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1521) {
+            saw_1521 = true;
+            try T.expectEqualStrings("'\\q' must be followed by string alternatives enclosed in braces.", d.message);
+            try T.expectEqual(@as(u32, 2), d.span_len);
+        }
+        if (d.code == 1511) saw_1511 = true;
+    }
+    try T.expect(saw_1521);
+    try T.expect(saw_1511);
+}
+
+test "parser: unicode sets class rejects reserved double punctuators" {
+    var s = try newTestSetup("let a = /[!!##]/v; let b = /[a&&b--c]/v;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1522) {
+            count += 1;
+            try T.expectEqualStrings("A character class must not contain a reserved double punctuator. Did you mean to escape it with backslash?", d.message);
+            try T.expectEqual(@as(u32, 2), d.span_len);
+        }
+    }
+    try T.expectEqual(@as(usize, 2), count);
+}
+
+test "parser: regex Unicode property escape syntax diagnostics" {
+    var s = try newTestSetup("let a = /\\p/u; let b = /\\p{}/u; let c = /\\p{=Latin}/u; let d = /\\p{Script=}/u; let e = /\\p{L}/;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_1531 = false;
+    var saw_1527 = false;
+    var saw_1523 = false;
+    var saw_1525 = false;
+    var saw_1530 = false;
+    for (s.parser.diagnostics.items) |d| {
+        switch (d.code) {
+            1531 => {
+                saw_1531 = true;
+                try T.expectEqualStrings("'\\p' must be followed by a Unicode property value expression enclosed in braces.", d.message);
+            },
+            1527 => {
+                saw_1527 = true;
+                try T.expectEqualStrings("Expected a Unicode property name or value.", d.message);
+            },
+            1523 => {
+                saw_1523 = true;
+                try T.expectEqualStrings("Expected a Unicode property name.", d.message);
+            },
+            1525 => {
+                saw_1525 = true;
+                try T.expectEqualStrings("Expected a Unicode property value.", d.message);
+            },
+            1530 => {
+                saw_1530 = true;
+                try T.expectEqualStrings("Unicode property value expressions are only available when the Unicode (u) flag or the Unicode Sets (v) flag is set.", d.message);
+            },
+            else => {},
+        }
+    }
+    try T.expect(saw_1531);
+    try T.expect(saw_1527);
+    try T.expect(saw_1523);
+    try T.expect(saw_1525);
+    try T.expect(saw_1530);
+}
+
+test "parser: regex invalid identity and unicode escapes report scanner codes" {
+    var s = try newTestSetup("let a = /\\a/u; let b = /[\\_]/u; let c = /\\u{41}/; let d = /[\\u{41}]/;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var invalid_count: usize = 0;
+    var unicode_count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1535) {
+            invalid_count += 1;
+            try T.expectEqualStrings("This character cannot be escaped in a regular expression.", d.message);
+            try T.expectEqual(@as(u32, 2), d.span_len);
+        }
+        if (d.code == 1538) {
+            unicode_count += 1;
+            try T.expectEqualStrings("Unicode escape sequences are only available when the Unicode (u) flag or the Unicode Sets (v) flag is set.", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 2), invalid_count);
+    try T.expectEqual(@as(usize, 2), unicode_count);
+}
+
+test "parser: regex character class rejects octal and decimal escapes" {
+    var s = try newTestSetup("let a = /[\\1\\47\\08]/; let b = /[\\8\\9]/;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var octal_count: usize = 0;
+    var decimal_count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1536) {
+            octal_count += 1;
+            try T.expect(std.mem.indexOf(u8, d.message, "Octal escape sequences and backreferences are not allowed in a character class.") != null);
+        }
+        if (d.code == 1537) {
+            decimal_count += 1;
+            try T.expectEqualStrings("Decimal escape sequences and backreferences are not allowed in a character class.", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 3), octal_count);
+    try T.expectEqual(@as(usize, 2), decimal_count);
 }
 
 test "parser: unterminated regex literal recovers as call argument" {
