@@ -116,6 +116,45 @@ pub fn Once(comptime f: anytype) type {
     };
 }
 
+/// C++ FFI surface stubs. Upstream Bun's `bun.cpp.*` namespace exposes
+/// the symbols implemented on the JavaScriptCore C++ side. Home's JSC
+/// bridge isn't yet wired through (Phase 12.2 in flight), so each
+/// function here is a `@panic` stub that satisfies the type checker
+/// (unblocking unrelated tests in the home_rt binary) but aborts at
+/// runtime with an actionable message. Call sites that exercise these
+/// paths are in production string / JSC code rather than unit tests,
+/// so the panics don't fire in the current test surface.
+///
+/// Signatures inferred from the existing call sites in
+/// `string/wtf.zig` and `jsc/bun_string_jsc.zig`. When the C++
+/// side lands, replace each panic with the corresponding
+/// `pub extern fn` declaration.
+pub const cpp = struct {
+    pub fn Bun__WTFStringImpl__deref(self: anytype) void {
+        _ = self;
+        @panic("home_rt.cpp.Bun__WTFStringImpl__deref needs the C++ FFI bridge (Phase 12.2)");
+    }
+
+    pub fn Bun__WTFStringImpl__ref(self: anytype) void {
+        _ = self;
+        @panic("home_rt.cpp.Bun__WTFStringImpl__ref needs the C++ FFI bridge (Phase 12.2)");
+    }
+
+    pub fn Bun__WTFStringImpl__hasPrefix(self: anytype, text: [*]const u8, len: usize) bool {
+        _ = self;
+        _ = text;
+        _ = len;
+        @panic("home_rt.cpp.Bun__WTFStringImpl__hasPrefix needs the C++ FFI bridge (Phase 12.2)");
+    }
+
+    pub fn BunString__fromJS(global: anytype, value: anytype, out: anytype) bool {
+        _ = global;
+        _ = value;
+        _ = out;
+        @panic("home_rt.cpp.BunString__fromJS needs the C++ FFI bridge (Phase 12.2)");
+    }
+};
+
 pub inline fn copy(comptime T: type, dest: []T, src: []const T) void {
     @memcpy(dest[0..src.len], src);
 }
