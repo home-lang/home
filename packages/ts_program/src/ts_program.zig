@@ -992,6 +992,79 @@ pub const Program = struct {
 };
 
 // =============================================================================
+// Cross-file export-table merge (declaration-emit privacy support)
+// =============================================================================
+//
+// The per-file checker (`packages/ts_checker`) classifies a referenced
+// bare type name as `imported_external` when it is bound by an `import`
+// in the current file, but cannot tell whether the name is genuinely
+// exported from its source module (the fact upstream establishes via
+// `getExternalModuleContainer` / `isSymbolAccessibleWorker` against a
+// merged symbol table). These helpers supply that cross-file fact: given
+// the SOURCE of the resolved module, parse+bind it and report whether
+// `name` is an exported type-space symbol, plus the module's rendered
+// display name (the `{2}` diagnostic slot).
+//
+// We deliberately scope this to a faithful subset: a top-level
+// `export`ed declaration in type space (`interface` / `type` / `class` /
+// `enum`). This mirrors the `from private module` case of
+// `selectDiagnosticBasedOnModuleName`. The harder alias-chain and
+// `cannot be named` cases are left for a future symbol-graph merge.
+
+/// True when `module_source` declares `name` as an exported type-space
+/// symbol at module scope. Parses + binds the source through the same
+/// driver pipeline the program graph uses, then queries the bound
+/// module's top-level symbol table — robust against nesting, strings,
+/// and comments (unlike a raw text scan). `name` is the bare identifier.
+pub fn moduleExportsTypeSpaceName(
+    gpa: std.mem.Allocator,
+    module_source: []const u8,
+    name: []const u8,
+    is_tsx: bool,
+) bool {
+    var compilation = ts_driver.compileSource(gpa, module_source, .{
+        .is_tsx = is_tsx,
+        .continue_on_error = true,
+        .no_emit = true,
+    }) catch return false;
+    defer {
+        compilation.deinit();
+        gpa.destroy(compilation);
+    }
+    // Query the TYPE-space symbol table specifically: a class declares
+    // into both value and type space as separate symbols, and the
+    // generic `lookupTopLevel` returns the value symbol first (which has
+    // is_type=false). We want the type-space binding, so consult
+    // `module.root.types` directly.
+    const id = compilation.interner.lookup(name) orelse return false;
+    const sym = compilation.module.root.types.get(id) orelse return false;
+    return sym.flags.is_type and sym.flags.is_export;
+}
+
+/// Render the `{2}` module-name slot for the declaration-emit privacy
+/// diagnostics. Upstream `symbolToString` of a file's external-module
+/// symbol renders the QUOTED module stem: the basename of the resolved
+/// path with its extension(s) stripped, wrapped in double quotes
+/// (`"type"` for a file `type.ts` resolved from `./type`, matching the
+/// `declarationEmitExpandoPropertyPrivateName` baseline's `'"a"'`).
+/// Caller owns the returned slice.
+pub fn renderModuleDisplayName(gpa: std.mem.Allocator, resolved_path: []const u8) ![]u8 {
+    const stem = moduleStem(resolved_path);
+    return std.fmt.allocPrint(gpa, "\"{s}\"", .{stem});
+}
+
+/// Basename of `path` with all trailing extensions stripped (so
+/// `a.d.ts` -> `a`, `dir/type.ts` -> `type`). Pure slice, no alloc.
+pub fn moduleStem(path: []const u8) []const u8 {
+    var base = path;
+    if (std.mem.lastIndexOfScalar(u8, base, '/')) |slash| base = base[slash + 1 ..];
+    // Strip the first dot and everything after (handles `.ts`, `.d.ts`,
+    // `.tsx`, `.mts`, etc.). Upstream renders the bare module stem.
+    if (std.mem.indexOfScalar(u8, base, '.')) |dot| base = base[0..dot];
+    return base;
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -1405,4 +1478,53 @@ test "Program: declare global namespace roots are visible across files" {
     for (c.diagnostics.items) |d| {
         try T.expect(d.code != 2503);
     }
+}
+
+test "moduleStem strips dir and extensions" {
+    try T.expectEqualStrings("a", moduleStem("a.ts"));
+    try T.expectEqualStrings("type", moduleStem("./type.ts"));
+    try T.expectEqualStrings("foo", moduleStem("/dir/sub/foo.d.ts"));
+    try T.expectEqualStrings("bar", moduleStem("bar.tsx"));
+    try T.expectEqualStrings("index", moduleStem("/a/b/index.mts"));
+    try T.expectEqualStrings("noext", moduleStem("noext"));
+}
+
+test "renderModuleDisplayName quotes the module stem" {
+    const m = try renderModuleDisplayName(T.allocator, "./a.ts");
+    defer T.allocator.free(m);
+    try T.expectEqualStrings("\"a\"", m);
+    const m2 = try renderModuleDisplayName(T.allocator, "/node_modules/pkg/type.d.ts");
+    defer T.allocator.free(m2);
+    try T.expectEqualStrings("\"type\"", m2);
+}
+
+test "moduleExportsTypeSpaceName: exported interface is a type-space export" {
+    try T.expect(moduleExportsTypeSpaceName(T.allocator, "export interface I {}", "I", false));
+    try T.expect(moduleExportsTypeSpaceName(T.allocator, "export type A = number;", "A", false));
+    try T.expect(moduleExportsTypeSpaceName(T.allocator, "export class C {}", "C", false));
+    try T.expect(moduleExportsTypeSpaceName(T.allocator, "export enum E { A }", "E", false));
+}
+
+test "moduleExportsTypeSpaceName: non-exported or value-only names are not type-space exports" {
+    // Declared but NOT exported.
+    try T.expect(!moduleExportsTypeSpaceName(T.allocator, "interface I {}", "I", false));
+    // Exported value (const) is not a type-space symbol.
+    try T.expect(!moduleExportsTypeSpaceName(T.allocator, "export const v = 1;", "v", false));
+    // Exported function is value-space, not type-space.
+    try T.expect(!moduleExportsTypeSpaceName(T.allocator, "export function f() {}", "f", false));
+    // Absent name.
+    try T.expect(!moduleExportsTypeSpaceName(T.allocator, "export interface I {}", "Missing", false));
+}
+
+test "moduleExportsTypeSpaceName: nested declarations do not leak as top-level exports" {
+    // `Inner` is declared inside a namespace body, not at module scope —
+    // it must NOT be reported as a top-level export of this module.
+    const src =
+        \\export namespace N {
+        \\    export interface Inner {}
+        \\}
+    ;
+    try T.expect(!moduleExportsTypeSpaceName(T.allocator, src, "Inner", false));
+    // The namespace itself is a namespace-space export, not type-space.
+    try T.expect(!moduleExportsTypeSpaceName(T.allocator, src, "N", false));
 }

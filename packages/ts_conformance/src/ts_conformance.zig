@@ -43,6 +43,7 @@ const CheckerResolverAdapter = struct {
 
     pub const vtable = ts_checker.ExternalResolver.VTable{
         .resolve = resolveImpl,
+        .moduleExport = moduleExportImpl,
     };
 
     fn resolveImpl(
@@ -61,6 +62,32 @@ const CheckerResolverAdapter = struct {
             .path = r.path,
             .is_declaration = r.is_declaration,
             .alternate_result = r.alternate_result,
+        };
+    }
+
+    fn moduleExportImpl(
+        self_ptr: *anyopaque,
+        specifier: []const u8,
+        containing_file: []const u8,
+        name: []const u8,
+    ) ?ts_checker.ExternalResolver.ModuleExport {
+        const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        var stack_buf: [1024]u8 = undefined;
+        const containing = canonicalContainingPath(&stack_buf, containing_file);
+        const r = self.resolver.resolve(specifier, containing) catch return null;
+        // Read the resolved module's source and parse+bind it to query
+        // its top-level export table. The resolver's arena outlives the
+        // checker calls, so the rendered module name borrowed by the
+        // checker stays valid.
+        const arena = self.resolver.arena.allocator();
+        const src = self.resolver.fs.readFile(self.resolver.gpa, r.path) catch return null;
+        defer self.resolver.gpa.free(src);
+        const is_tsx = std.mem.endsWith(u8, r.path, ".tsx") or std.mem.endsWith(u8, r.path, ".jsx");
+        const exported = ts_program.moduleExportsTypeSpaceName(self.resolver.gpa, src, name, is_tsx);
+        const module_name = ts_program.renderModuleDisplayName(arena, r.path) catch return null;
+        return .{
+            .module_name = module_name,
+            .exported_type = exported,
         };
     }
 };
