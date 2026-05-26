@@ -9499,6 +9499,22 @@ pub const Parser = struct {
             _ = try self.expect(.colon, "':' in mapped type");
             const value = try self.parseTypeAnnotation();
             _ = self.match(.semicolon);
+            _ = self.match(.comma);
+            // TS7061 — `A mapped type may not declare properties or
+            // methods.` A mapped type body is `{ [K in T]: V }` only;
+            // any additional declared member is illegal. tsc parses the
+            // stray members anyway then grammar-checks the FIRST one. We
+            // recover by draining the trailing member list (so the closing
+            // `}` still matches and no cascading "'}' expected" fires) and
+            // anchoring TS7061 at the first stray member. Mirrors
+            // `checkGrammarMappedType`.
+            if (self.peek().kind != .close_brace and self.peek().kind != .eof) {
+                const stray = self.peek();
+                try self.reportCodeAt(stray.span.start, stray.line, 7061, "A mapped type may not declare properties or methods.");
+                var stray_members: std.ArrayListUnmanaged(NodeId) = .empty;
+                defer stray_members.deinit(self.gpa);
+                try self.parseTypeMemberList(&stray_members);
+            }
             const close = try self.expect(.close_brace, "'}' to close mapped type");
             const tp = try self.builder.addTypeParameter(tokenSpan(k_tok), k_id, hir_mod.none_node_id, hir_mod.none_node_id, 0, false);
             return try self.builder.addMappedType(.{ .start = open.span.start, .end = close.span.end }, tp, constraint, value, remap, readonly_mod, optional_mod);
@@ -24143,5 +24159,44 @@ test "parser: TS1179 stays clean for well-formed heritage clauses" {
         defer destroyTestSetup(s);
         _ = try s.parser.parseSourceFile();
         try T.expectEqual(@as(u32, 0), countDiag(s, 1179));
+    }
+}
+
+
+test "parser: TS7061 fires when a mapped type declares extra members" {
+    var s = try newTestSetup(
+        \\type M = { [K in keyof T]: V; foo: string };
+    );
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+
+    const d = findDiag(s, 7061) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("A mapped type may not declare properties or methods.", d.message);
+    try T.expectEqual(@as(u32, 1), countDiag(s, 7061));
+}
+
+test "parser: TS7061 fires for a method declared in a mapped type" {
+    var s = try newTestSetup(
+        \\type M = { [K in keyof T]: V; bar(): number };
+    );
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+
+    const d = findDiag(s, 7061) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("A mapped type may not declare properties or methods.", d.message);
+}
+
+test "parser: TS7061 stays clean for a well-formed mapped type" {
+    const cases = [_][]const u8{
+        "type M = { [K in keyof T]: V };",
+        "type M = { readonly [K in keyof T]?: V };",
+        "type M = { [K in keyof T as `g`]: V };",
+        "type O = { foo: string; bar(): number };",
+    };
+    inline for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = s.parser.parseSourceFile() catch {};
+        try T.expectEqual(@as(u32, 0), countDiag(s, 7061));
     }
 }
