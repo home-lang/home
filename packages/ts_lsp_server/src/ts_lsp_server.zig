@@ -159,7 +159,11 @@ pub const Method = enum {
     workspace_did_delete_files,
     workspace_did_change_watched_files,
     workspace_execute_command,
+    workspace_did_change_configuration,
+    workspace_did_change_workspace_folders,
     cancel_request,
+    set_trace,
+    work_done_progress_cancel,
     text_document_moniker,
     text_document_inline_value,
     text_document_inline_completion,
@@ -226,7 +230,11 @@ pub const Method = enum {
             .{ "workspace/didDeleteFiles", Method.workspace_did_delete_files },
             .{ "workspace/didChangeWatchedFiles", Method.workspace_did_change_watched_files },
             .{ "workspace/executeCommand", Method.workspace_execute_command },
+            .{ "workspace/didChangeConfiguration", Method.workspace_did_change_configuration },
+            .{ "workspace/didChangeWorkspaceFolders", Method.workspace_did_change_workspace_folders },
             .{ "$/cancelRequest", Method.cancel_request },
+            .{ "$/setTrace", Method.set_trace },
+            .{ "window/workDoneProgress/cancel", Method.work_done_progress_cancel },
             .{ "textDocument/moniker", Method.text_document_moniker },
             .{ "textDocument/inlineValue", Method.text_document_inline_value },
             .{ "textDocument/inlineCompletion", Method.text_document_inline_completion },
@@ -314,7 +322,11 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     "workspace/didDeleteFiles",
     "workspace/didChangeWatchedFiles",
     "workspace/executeCommand",
+    "workspace/didChangeConfiguration",
+    "workspace/didChangeWorkspaceFolders",
     "$/cancelRequest",
+    "$/setTrace",
+    "window/workDoneProgress/cancel",
     // Call hierarchy.
     "callHierarchy/incomingCalls",
     "callHierarchy/outgoingCalls",
@@ -2836,6 +2848,64 @@ pub fn handleCancelRequest(
     _ = params_json;
 }
 
+/// Handle a `workspace/didChangeConfiguration` notification: client
+/// reports that its settings (the `settings` blob the server reads at
+/// startup or via `workspace/configuration`) have changed. Validates
+/// the params shape and acknowledges. A future enhancement would
+/// invalidate cached compiler options and re-publish diagnostics for
+/// every open file.
+pub fn handleDidChangeConfiguration(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    params_json: []const u8,
+) !void {
+    _ = service;
+    _ = gpa;
+    _ = params_json;
+}
+
+/// Handle a `workspace/didChangeWorkspaceFolders` notification: client
+/// has added or removed workspace folders. Validates the params shape
+/// and acknowledges. A future enhancement would re-resolve module
+/// roots and re-scan tsconfig.json files in the new folder layout.
+pub fn handleDidChangeWorkspaceFolders(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    params_json: []const u8,
+) !void {
+    _ = service;
+    _ = gpa;
+    _ = findJsonRawField(params_json, "event") orelse return error.MissingEvent;
+}
+
+/// Handle a `$/setTrace` notification: client adjusts the trace
+/// verbosity (`"off"` / `"messages"` / `"verbose"`). Home's tracing
+/// is compile-time gated, so this is a no-op acknowledgement; surface
+/// as recognized rather than as `Method not found`.
+pub fn handleSetTrace(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    params_json: []const u8,
+) !void {
+    _ = service;
+    _ = gpa;
+    _ = params_json;
+}
+
+/// Handle a `window/workDoneProgress/cancel` notification: client
+/// requests cancellation of a server-initiated WorkDoneProgress.
+/// Home does not currently emit server-initiated progress, so this
+/// is a no-op acknowledgement.
+pub fn handleWorkDoneProgressCancel(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    params_json: []const u8,
+) !void {
+    _ = service;
+    _ = gpa;
+    _ = params_json;
+}
+
 /// Handle a `workspace/didRenameFiles` notification: editor has
 /// committed a rename. The paired `willRenameFiles` request returns
 /// WorkspaceEdits the server wants applied alongside the rename;
@@ -3836,6 +3906,22 @@ pub fn dispatchRequest(
             try handleCancelRequest(service, gpa, params);
             return &.{};
         },
+        .workspace_did_change_configuration => {
+            try handleDidChangeConfiguration(service, gpa, params);
+            return &.{};
+        },
+        .workspace_did_change_workspace_folders => {
+            try handleDidChangeWorkspaceFolders(service, gpa, params);
+            return &.{};
+        },
+        .set_trace => {
+            try handleSetTrace(service, gpa, params);
+            return &.{};
+        },
+        .work_done_progress_cancel => {
+            try handleWorkDoneProgressCancel(service, gpa, params);
+            return &.{};
+        },
         .text_document_moniker => {
             if (is_notification) return &.{};
             return try handleMoniker(service, gpa, id, params);
@@ -4291,6 +4377,66 @@ test "handleWillDeleteFiles: returns null WorkspaceEdit" {
     const out = try handleWillDeleteFiles(&svc, T.allocator, RequestId{ .integer = 2 }, params);
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "\"result\":null") != null);
+}
+
+test "handleDidChangeConfiguration: accepts notification (no-op)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+    const body =
+        \\{"jsonrpc":"2.0","method":"workspace/didChangeConfiguration","params":{"settings":{"home":{"strictNullChecks":true}}}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    try handleDidChangeConfiguration(&svc, T.allocator, params);
+}
+
+test "handleDidChangeWorkspaceFolders: accepts notification (no-op)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+    const body =
+        \\{"jsonrpc":"2.0","method":"workspace/didChangeWorkspaceFolders","params":{"event":{"added":[{"uri":"file:///proj/sub","name":"sub"}],"removed":[]}}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    try handleDidChangeWorkspaceFolders(&svc, T.allocator, params);
+}
+
+test "handleSetTrace: accepts notification (no-op)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+    const body =
+        \\{"jsonrpc":"2.0","method":"$/setTrace","params":{"value":"verbose"}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    try handleSetTrace(&svc, T.allocator, params);
+}
+
+test "handleWorkDoneProgressCancel: accepts notification (no-op)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+    const body =
+        \\{"jsonrpc":"2.0","method":"window/workDoneProgress/cancel","params":{"token":"home/scan-123"}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    try handleWorkDoneProgressCancel(&svc, T.allocator, params);
 }
 
 test "handleCancelRequest: accepts notification (no-op)" {
