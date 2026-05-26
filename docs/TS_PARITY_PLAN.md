@@ -1872,6 +1872,9 @@ The runner and a 56-case canon corpus are landed. Per-feature triage against the
 148. **2026-05-26 — Diagnostic-ledger JSDoc extends-clause mismatch sweep.**
     Ported the checker-side TS8023 branch from upstream `checkJSDocAugmentsTag`. Checked-JS classes now compare the first attached `@extends`/`@augments` entity name against the syntactic `extends` clause and report `JSDoc '@{tag} {name}' does not match the 'extends {class}' clause.` at the JSDoc entity-name position when they differ. Matching tags stay clean, and the duplicate-tag TS8025 pass continues to run independently. The regenerated diagnostic ledger now reports **726 emitted / 1 declared / 0 tested-only / 1349 catalog-only** across **2076** upstream codes. Verification: `ts_checker` **1665/1665**, regenerated `docs/TS_DIAGNOSTIC_CODE_STATUS.md`.
 
+149. **2026-05-26 — Diagnostic-ledger JSDoc typedef missing-type sweep.**
+    Ported the TS8021 JSDoc typedef validation from upstream `checkJSDocTypeAliasTag`. JSDoc `@typedef` tags without an inline type now report `JSDoc '@typedef' tag should either have a type annotation or be followed by '@property' or '@member' tags.` at the typedef name unless the immediately following tag supplies a typedef shape through `@property`, `@member`, or `@type`; this preserves the upstream `@typedef` + duplicate `@type` TS8033 fixture without adding a TS8021 cascade. The `@typedef` then `@template` then `@property` ordering trap now reports both TS8021 and TS8039 in source order. The regenerated diagnostic ledger now reports **727 emitted / 1 declared / 0 tested-only / 1348 catalog-only** across **2076** upstream codes. Verification: `ts_parser` **619/619**, regenerated `docs/TS_DIAGNOSTIC_CODE_STATUS.md`.
+
 7. **`fourslash` editor scenarios.** ~40 000 cases in tsgo's `internal/fourslash/tests/`. Adapter to drive `home-lsp` through the same scenarios. *Effort: 2 weeks for the adapter; ratchet from there.*
 
 ### §8.A · Phase 8 — LSP punch list

@@ -848,6 +848,7 @@ pub const Parser = struct {
             try self.scanJSDocCommentTypeExpressions(body_start, body_end);
             try self.scanJSDocImportTagDiagnostics(body_start, body_end);
             try self.scanJSDocTypedefDuplicateTypeTags(body_start, body_end);
+            try self.scanJSDocTypedefMissingTypeDiagnostics(body_start, body_end);
             try self.scanJSDocTemplateAfterTypeAliasLikeTags(body_start, body_end);
             try self.scanJSDocTemplateModifierDiagnostics(body_start, body_end);
             try self.scanJSDocPropertyNameDiagnostics(body_start, body_end);
@@ -1224,6 +1225,58 @@ pub const Parser = struct {
             }
             i = tag_name_end;
         }
+    }
+
+    fn scanJSDocTypedefMissingTypeDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            const tag_name = self.source[tag_name_start..tag_name_end];
+            i = tag_name_end;
+            if (!std.mem.eql(u8, tag_name, "typedef")) continue;
+
+            const line_end = self.jsDocTagLineEnd(tag_name_end, end);
+            const content_start = self.firstJSDocContentByte(tag_name_end, line_end);
+            if (content_start < line_end and self.source[content_start] == '{') continue;
+            if (self.nextJSDocTagCompletesTypedef(tag_name_end, end)) continue;
+
+            const report_pos = self.jsDocTypedefNamePos(content_start, line_end) orelse tag_name_start;
+            try self.reportCodeAtWithSpan(
+                @intCast(report_pos),
+                self.lineAt(@intCast(report_pos)),
+                @intCast(if (report_pos < line_end) self.jsDocTypedefNameEnd(report_pos, line_end) - report_pos else tag_name.len),
+                8021,
+                "JSDoc '@typedef' tag should either have a type annotation or be followed by '@property' or '@member' tags.",
+            );
+        }
+    }
+
+    fn nextJSDocTagCompletesTypedef(self: *const Parser, start: usize, end: usize) bool {
+        const next_tag = self.nextJSDocTagStart(start, end) orelse return false;
+        const name_start = next_tag + 1;
+        var name_end = name_start;
+        while (name_end < end and isJSDocTagNameChar(self.source[name_end])) : (name_end += 1) {}
+        const name = self.source[name_start..name_end];
+        return std.mem.eql(u8, name, "property") or
+            std.mem.eql(u8, name, "member") or
+            std.mem.eql(u8, name, "type");
+    }
+
+    fn jsDocTypedefNamePos(self: *const Parser, start: usize, end: usize) ?usize {
+        var i = start;
+        while (i < end) : (i += 1) {
+            if (isJSDocIdentifierChar(self.source[i])) return i;
+        }
+        return null;
+    }
+
+    fn jsDocTypedefNameEnd(self: *const Parser, start: usize, end: usize) usize {
+        var i = start;
+        while (i < end and (isJSDocIdentifierChar(self.source[i]) or self.source[i] == '.')) : (i += 1) {}
+        return i;
     }
 
     fn scanJSDocTemplateAfterTypeAliasLikeTags(self: *Parser, start: usize, end: usize) ParseError!void {
@@ -22304,6 +22357,63 @@ test "parser: JSDoc typedef with multiple type tags reports TS8033" {
     try T.expectEqual(@as(u32, 4), d.line);
     const line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..d.pos], '\n').? + 1;
     try T.expectEqual(@as(u32, 16), d.pos - @as(u32, @intCast(line_start)) + 1);
+}
+
+test "parser: JSDoc typedef missing type reports TS8021 unless followed by property-like tag" {
+    var s = try newTestSetup(
+        \\/**
+        \\ * @typedef Bad
+        \\ */
+        \\/**
+        \\ * @typedef Person
+        \\ * @property {string} name
+        \\ */
+        \\/**
+        \\ * @typedef MemberBox
+        \\ * @member {string} value
+        \\ */
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 8021) {
+            count += 1;
+            try T.expectEqualStrings("JSDoc '@typedef' tag should either have a type annotation or be followed by '@property' or '@member' tags.", d.message);
+            try T.expectEqual(@as(u32, 2), d.line);
+            const line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..d.pos], '\n').? + 1;
+            try T.expectEqual(@as(u32, 13), d.pos - @as(u32, @intCast(line_start)) + 1);
+        }
+    }
+    try T.expectEqual(@as(usize, 1), count);
+}
+
+test "parser: JSDoc typedef followed by template before property reports TS8021 and TS8039" {
+    var s = try newTestSetup(
+        \\/**
+        \\ * @typedef Oops
+        \\ * @template T
+        \\ * @property {T} a
+        \\ */
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var found_8021 = false;
+    var found_8039 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 8021) {
+            found_8021 = true;
+            try T.expectEqual(@as(u32, 2), d.line);
+        }
+        if (d.code == 8039) {
+            found_8039 = true;
+            try T.expectEqual(@as(u32, 3), d.line);
+        }
+    }
+    try T.expect(found_8021);
+    try T.expect(found_8039);
 }
 
 test "parser: JSDoc template after typedef callback or overload reports TS8039" {
