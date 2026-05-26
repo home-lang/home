@@ -192,7 +192,17 @@ pub const Scanner = struct {
         self.diagnostics.append(gpa, .{
             .pos = pos,
             .line = line,
-            .column = pos - self.line_start,
+            .column = if (pos >= self.line_start) pos - self.line_start else 0,
+            .message = owned,
+        }) catch {};
+    }
+
+    fn reportBinaryFile(self: *Scanner, gpa: std.mem.Allocator) void {
+        const owned = self.diag_arena.allocator().dupe(u8, "File appears to be binary.") catch return;
+        self.diagnostics.append(gpa, .{
+            .pos = 0,
+            .line = 1,
+            .column = 0,
             .message = owned,
         }) catch {};
     }
@@ -480,6 +490,13 @@ pub const Scanner = struct {
         return self.pos + 1 < self.source.len and
             self.source[self.pos] == 0xC2 and
             self.source[self.pos + 1] == 0xAC;
+    }
+
+    fn startsWithUtf8ReplacementCharacter(self: *const Scanner) bool {
+        return self.pos + 2 < self.source.len and
+            self.source[self.pos] == 0xEF and
+            self.source[self.pos + 1] == 0xBF and
+            self.source[self.pos + 2] == 0xBD;
     }
 
     fn isDecimalDigit(c: u8) bool {
@@ -987,6 +1004,17 @@ pub const Scanner = struct {
         }
 
         const c = self.source[self.pos];
+
+        if (self.startsWithUtf8ReplacementCharacter()) {
+            self.reportBinaryFile(gpa);
+            self.pos = @intCast(self.source.len);
+            return .{
+                .span = .{ .start = self.pos, .end = self.pos },
+                .kind = .eof,
+                .flags = flags,
+                .line = line,
+            };
+        }
 
         // U+00AC NOT SIGN is punctuation, not an ECMAScript
         // IdentifierStart. The scanner still permissively accepts most
@@ -1582,6 +1610,21 @@ test "Scanner: not sign is invalid punctuation" {
     try t.expectEqual(@as(u32, 2), toks.items[0].span.end);
     try t.expectEqual(@as(usize, 1), s.diagnostics.items.len);
     try t.expectEqualStrings("Invalid character.", s.diagnostics.items[0].message);
+}
+
+test "Scanner: replacement character marks binary file and stops tokenization" {
+    var s = Scanner.init(t.allocator, "let x = 1;\n\xEF\xBF\xBD\nlet y = 2;");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+
+    try t.expectEqual(TokenKind.kw_let, toks.items[0].kind);
+    try t.expectEqual(TokenKind.eof, toks.items[toks.items.len - 1].kind);
+    try t.expectEqual(@as(usize, 1), s.diagnostics.items.len);
+    try t.expectEqual(@as(u32, 0), s.diagnostics.items[0].pos);
+    try t.expectEqual(@as(u32, 1), s.diagnostics.items[0].line);
+    try t.expectEqual(@as(u32, 0), s.diagnostics.items[0].column);
+    try t.expectEqualStrings("File appears to be binary.", s.diagnostics.items[0].message);
 }
 
 test "Scanner: shebang after UTF-8 BOM is first-line trivia" {

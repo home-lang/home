@@ -1566,6 +1566,9 @@ fn normalizeScannerDiagnostic(message: []const u8) NormalizedScannerDiagnostic {
     if (std.mem.eql(u8, message, "Unknown regular expression flag.")) {
         return .{ .code = 1499, .message = message };
     }
+    if (std.mem.eql(u8, message, "File appears to be binary.")) {
+        return .{ .code = 1490, .message = message };
+    }
     if (std.mem.eql(u8, message, "Merge conflict marker encountered.")) {
         return .{ .code = 1185, .message = message };
     }
@@ -2009,6 +2012,25 @@ test "driver: tagged template suppresses invalid escape diagnostics" {
         try T.expect(d.code != 1487);
         try T.expect(d.code != 1488);
     }
+}
+
+test "driver: replacement character diagnostic maps to TS1490" {
+    var c = try compileSource(T.allocator, "const before = 1;\n\xEF\xBF\xBD\nconst after = 2;", .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var found_1490 = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 1490) {
+            found_1490 = true;
+            try T.expectEqual(@as(u32, 0), d.pos);
+            try T.expectEqual(@as(u32, 1), d.line);
+            try T.expectEqualStrings("File appears to be binary.", d.message);
+        }
+    }
+    try T.expect(found_1490);
 }
 
 test "driver: alwaysStrict enables strict parser early errors" {
