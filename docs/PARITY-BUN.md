@@ -229,6 +229,11 @@ The next observed decorator blocker is `bundler/transpiler/decorators.test.ts`,
 which now reaches the real parser boundary after import/type erasure:
 `SyntaxError: Invalid character: '@'`.
 
+The corpus harness now includes Bun's `bun:wrap` decorator helper module
+from `runtime.js`, so native-transpiled legacy and standard decorator
+output has the expected runtime helpers. This is groundwork only; the
+fixture still needs the real parser/lowerer/printer path before promotion.
+
 The source module follow-through for these bundler gates is to replace
 the `__home_expect_bundled` bootstrap stub with a real `itBundled`
 adapter and wire the copied Bun substrates in `packages/bundler/src/`:

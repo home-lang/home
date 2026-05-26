@@ -4322,6 +4322,135 @@ const harness_prelude =
     \\  return globalThis.__home_bun_test;
     \\};
     \\globalThis.__home_modules = globalThis.__home_modules || Object.create(null);
+    \\const __home_wrap_create = Object.create;
+    \\const __home_wrap_def_prop = Object.defineProperty;
+    \\const __home_wrap_get_own_prop_desc = Object.getOwnPropertyDescriptor;
+    \\function __home_wrap_name(target, name) {
+    \\  Object.defineProperty(target, "name", { value: name, enumerable: false, configurable: true });
+    \\  return target;
+    \\}
+    \\function __home_wrap_legacy_decorate_class_ts(decorators, target, key, desc) {
+    \\  var c = arguments.length, r = c < 3 ? target : desc === null ? (desc = Object.getOwnPropertyDescriptor(target, key)) : desc, d;
+    \\  if (typeof Reflect === "object" && typeof Reflect.decorate === "function") {
+    \\    r = Reflect.decorate(decorators, target, key, desc);
+    \\  } else {
+    \\    for (var i = decorators.length - 1; i >= 0; i--) {
+    \\      if ((d = decorators[i])) r = (c < 3 ? d(r) : c > 3 ? d(target, key, r) : d(target, key)) || r;
+    \\    }
+    \\  }
+    \\  return (c > 3 && r && Object.defineProperty(target, key, r), r);
+    \\}
+    \\function __home_wrap_legacy_decorate_param_ts(index, decorator) {
+    \\  return function(target, key) {
+    \\    return decorator(target, key, index);
+    \\  };
+    \\}
+    \\function __home_wrap_legacy_metadata_ts(k, v) {
+    \\  if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
+    \\}
+    \\function __home_wrap_known_symbol(name, symbol) {
+    \\  return (symbol = Symbol[name]) ? symbol : Symbol.for("Symbol." + name);
+    \\}
+    \\function __home_wrap_type_error(message) {
+    \\  throw TypeError(message);
+    \\}
+    \\function __home_wrap_def_normal_prop(obj, key, value) {
+    \\  return key in obj ? __home_wrap_def_prop(obj, key, { enumerable: true, configurable: true, writable: true, value }) : (obj[key] = value);
+    \\}
+    \\function __home_wrap_public_field(obj, key, value) {
+    \\  return __home_wrap_def_normal_prop(obj, typeof key !== "symbol" ? key + "" : key, value);
+    \\}
+    \\function __home_wrap_access_check(obj, member, message) {
+    \\  return member.has(obj) || __home_wrap_type_error("Cannot " + message);
+    \\}
+    \\function __home_wrap_private_in(member, obj) {
+    \\  return Object(obj) !== obj ? __home_wrap_type_error('Cannot use the "in" operator on this value') : member.has(obj);
+    \\}
+    \\function __home_wrap_private_get(obj, member, getter) {
+    \\  __home_wrap_access_check(obj, member, "read from private field");
+    \\  return getter ? getter.call(obj) : member.get(obj);
+    \\}
+    \\function __home_wrap_private_add(obj, member, value) {
+    \\  return member.has(obj) ? __home_wrap_type_error("Cannot add the same private member more than once") : member instanceof WeakSet ? member.add(obj) : member.set(obj, value);
+    \\}
+    \\function __home_wrap_private_set(obj, member, value, setter) {
+    \\  __home_wrap_access_check(obj, member, "write to private field");
+    \\  if (setter) setter.call(obj, value);
+    \\  else member.set(obj, value);
+    \\  return value;
+    \\}
+    \\function __home_wrap_private_method(obj, member, method) {
+    \\  __home_wrap_access_check(obj, member, "access private method");
+    \\  return method;
+    \\}
+    \\function __home_wrap_decorator_start(base) {
+    \\  return [, , , __home_wrap_create(base?.[__home_wrap_known_symbol("metadata")] ?? null)];
+    \\}
+    \\const __home_wrap_decorator_strings = ["class", "method", "getter", "setter", "accessor", "field", "value", "get", "set"];
+    \\function __home_wrap_expect_fn(fn) {
+    \\  return fn !== void 0 && typeof fn !== "function" ? __home_wrap_type_error("Function expected") : fn;
+    \\}
+    \\function __home_wrap_decorator_context(kind, name, done, metadata, fns) {
+    \\  return {
+    \\    kind: __home_wrap_decorator_strings[kind],
+    \\    name,
+    \\    metadata,
+    \\    addInitializer(fn) {
+    \\      return done._ ? __home_wrap_type_error("Already initialized") : fns.push(__home_wrap_expect_fn(fn || null));
+    \\    },
+    \\  };
+    \\}
+    \\function __home_wrap_decorator_metadata(array, target) {
+    \\  return __home_wrap_def_normal_prop(target, __home_wrap_known_symbol("metadata"), array[3]);
+    \\}
+    \\function __home_wrap_run_initializers(array, flags, self, value) {
+    \\  for (var i = 0, fns = array[flags >> 1], n = fns && fns.length; i < n; i++) {
+    \\    flags & 1 ? fns[i].call(self) : (value = fns[i].call(self, value));
+    \\  }
+    \\  return value;
+    \\}
+    \\function __home_wrap_decorate_element(array, flags, name, decorators, target, extra) {
+    \\  var fn, it, done, ctx, access, k = flags & 7, s = !!(flags & 8), p = !!(flags & 16);
+    \\  var j = k > 3 ? array.length + 1 : k ? (s ? 1 : 2) : 0, key = __home_wrap_decorator_strings[k + 5];
+    \\  var initializers = k > 3 && (array[j - 1] = []), extraInitializers = array[j] || (array[j] = []);
+    \\  var desc = k && (!p && !s && (target = target.prototype), k < 5 && (k > 3 || !p) && __home_wrap_get_own_prop_desc(k < 4 ? target : { get [name]() { return __home_wrap_private_get(this, extra); }, set [name](x) { __home_wrap_private_set(this, extra, x); } }, name));
+    \\  k ? p && k < 4 && __home_wrap_name(extra, (k > 2 ? "set " : k > 1 ? "get " : "") + name) : __home_wrap_name(target, name);
+    \\  for (var i = decorators.length - 1; i >= 0; i--) {
+    \\    ctx = __home_wrap_decorator_context(k, name, (done = {}), array[3], extraInitializers);
+    \\    if (k) {
+    \\      ((ctx.static = s), (ctx.private = p), (access = ctx.access = { has: p ? x => __home_wrap_private_in(target, x) : x => name in x }));
+    \\      if (k ^ 3) access.get = p ? x => (k ^ 1 ? __home_wrap_private_get : __home_wrap_private_method)(x, target, k ^ 4 ? extra : desc.get) : x => x[name];
+    \\      if (k > 2) access.set = p ? (x, y) => __home_wrap_private_set(x, target, y, k ^ 4 ? extra : desc.set) : (x, y) => (x[name] = y);
+    \\    }
+    \\    it = (0, decorators[i])(k ? (k < 4 ? (p ? extra : desc[key]) : k > 4 ? void 0 : { get: desc.get, set: desc.set }) : target, ctx);
+    \\    done._ = 1;
+    \\    if (k ^ 4 || it === void 0) __home_wrap_expect_fn(it) && (k > 4 ? initializers.unshift(it) : k ? (p ? (extra = it) : (desc[key] = it)) : (target = it));
+    \\    else if (typeof it !== "object" || it === null) __home_wrap_type_error("Object expected");
+    \\    else (__home_wrap_expect_fn((fn = it.get)) && (desc.get = fn), __home_wrap_expect_fn((fn = it.set)) && (desc.set = fn), __home_wrap_expect_fn((fn = it.init)) && initializers.unshift(fn));
+    \\  }
+    \\  return (k || __home_wrap_decorator_metadata(array, target), desc && __home_wrap_def_prop(target, name, desc), p ? (k ^ 4 ? extra : desc) : target);
+    \\}
+    \\function __home_wrap_esm(fn, res) {
+    \\  return function() {
+    \\    return fn && (res = fn((fn = 0))), res;
+    \\  };
+    \\}
+    \\globalThis.__home_modules["bun:wrap"] = {
+    \\  __decorateElement: __home_wrap_decorate_element,
+    \\  __decoratorMetadata: __home_wrap_decorator_metadata,
+    \\  __decoratorStart: __home_wrap_decorator_start,
+    \\  __esm: __home_wrap_esm,
+    \\  __legacyDecorateClassTS: __home_wrap_legacy_decorate_class_ts,
+    \\  __legacyDecorateParamTS: __home_wrap_legacy_decorate_param_ts,
+    \\  __legacyMetadataTS: __home_wrap_legacy_metadata_ts,
+    \\  __privateAdd: __home_wrap_private_add,
+    \\  __privateGet: __home_wrap_private_get,
+    \\  __privateIn: __home_wrap_private_in,
+    \\  __privateMethod: __home_wrap_private_method,
+    \\  __privateSet: __home_wrap_private_set,
+    \\  __publicField: __home_wrap_public_field,
+    \\  __runInitializers: __home_wrap_run_initializers,
+    \\};
     \\globalThis.__home_modules["bun"] = { $: Bun.$, ArrayBufferSink: __home_array_buffer_sink, semver: Bun.semver, concatArrayBuffers: __home_concat_array_buffers, deepEquals: Bun.deepEquals, escapeHTML: Bun.escapeHTML, file: Bun.file, fileURLToPath: __home_url_file_url_to_path, indexOfLine: Bun.indexOfLine, isMainThread: Bun.isMainThread, pathToFileURL: __home_url_path_to_file_url, randomUUIDv7: Bun.randomUUIDv7, readableStreamToArrayBuffer: stream => Bun.readableStreamToArrayBuffer(stream), readableStreamToBlob: stream => Bun.readableStreamToBlob(stream), readableStreamToBytes: stream => Bun.readableStreamToBytes(stream), readableStreamToFormData: (stream, contentType) => Bun.readableStreamToFormData(stream, contentType), readableStreamToJSON: stream => Bun.readableStreamToJSON(stream), readableStreamToText: stream => Bun.readableStreamToText(stream), sleep: Bun.sleep, sleepSync: Bun.sleepSync, spawn: Bun.spawn, spawnSync: Bun.spawnSync, version: Bun.version, write: Bun.write };
     \\globalThis.__home_modules["bun:test"] = globalThis.__home_bun_test;
     \\globalThis.__home_modules["vitest"] = globalThis.__home_bun_test;
@@ -13476,10 +13605,11 @@ fn supportedNamedImportModule(source: []const u8, start: usize) ?struct { name: 
         "../expectBundled",
         "../../expectBundled",
         "./buildNoThrow",
-        "bun",
+        "bun:wrap",
         "bun:build",
         "bun:sqlite",
         "bun:jsc",
+        "bun",
         "bun:internal-for-testing",
         "node:module",
         "node:buffer",
@@ -14801,6 +14931,82 @@ test "Bun internal testing import rewrite lowers named PowerShell import" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { escapePowershell } = globalThis.__home_import(\"bun:internal-for-testing\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:internal-for-testing\"") == null);
+}
+
+test "Bun wrap import rewrite lowers decorator helper imports" {
+    const source =
+        \\import { __legacyDecorateClassTS as decorate, __legacyDecorateParamTS } from "bun:wrap";
+        \\import { expect, test } from "bun:test";
+        \\test("wrap import", () => {
+        \\  expect(typeof decorate).toBe("function");
+        \\  expect(typeof __legacyDecorateParamTS).toBe("function");
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "bundler/transpiler/decorators.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "__legacyDecorateClassTS: decorate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "globalThis.__home_import(\"bun:wrap\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"bun:wrap\"") == null);
+}
+
+test "Bun wrap helpers execute native-transpiled decorator output" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { __decorateElement as decElement, __decoratorStart as decStart, __legacyDecorateClassTS as legacyClass, __legacyDecorateParamTS as legacyParam } from "bun:wrap";
+        \\import { expect, test } from "bun:test";
+        \\
+        \\test("legacy decorators", () => {
+        \\  const calls = [];
+        \\  let Example = class {
+        \\    method(value) { return value; }
+        \\  };
+        \\  legacyClass([
+        \\    legacyParam(0, (target, key, index) => { calls.push(["param", target === Example.prototype, key, index]); }),
+        \\    (target, key) => { calls.push(["method", target === Example.prototype, key]); },
+        \\  ], Example.prototype, "method", null);
+        \\  Example = legacyClass([
+        \\    target => {
+        \\      calls.push(["class", target === Example]);
+        \\      target.decorated = true;
+        \\      return target;
+        \\    },
+        \\  ], Example);
+        \\  expect(calls).toEqual([
+        \\    ["method", true, "method"],
+        \\    ["param", true, "method", 0],
+        \\    ["class", true],
+        \\  ]);
+        \\  expect(Example.decorated).toBe(true);
+        \\});
+        \\
+        \\test("standard method decorators", () => {
+        \\  const init = decStart(undefined);
+        \\  class Example {
+        \\    method() { return 1; }
+        \\  }
+        \\  decElement(init, 1, "method", [
+        \\    (value, context) => {
+        \\      expect(context.kind).toBe("method");
+        \\      expect(context.name).toBe("method");
+        \\      return function() { return value.call(this) + 41; };
+        \\    },
+        \\  ], Example);
+        \\  expect(new Example().method()).toBe(42);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/decorators.wrap-output.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "Bun internal testing import rewrite lowers strings internals import" {

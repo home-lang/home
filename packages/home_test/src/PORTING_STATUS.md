@@ -68,6 +68,13 @@ tranche is:
 | Transpiler API surface | `bundler/transpiler/transpiler.test.js` | `Bun.Transpiler` and broader transpiler API behavior |
 | Native plugin final | `bundler/native-plugin.test.ts` | Native plugin ABI, node-gyp build, `.node` loading, `onBeforeParse`, crash-name behavior |
 
+Decorator helper groundwork (2026-05-26): the corpus harness now provides
+Bun's `bun:wrap` helper module for native-transpiled decorator output,
+including the legacy TypeScript decorator helpers and standard decorator
+runtime helpers copied from Bun's `runtime.js`. The decorators fixture is
+still not promoted; the next blocker remains handing the copied file to
+the native Bun-compatible parser/lowerer/printer before JSC evaluation.
+
 Native plugin audit note (2026-05-26): the copied fixture currently stops
 at corpus preprocessing with `unsupported module syntax`, but its true
 closure dependency is native/JSC integration. The test needs node-gyp

@@ -243,6 +243,14 @@ classified by next faithful work batch:
 | B. Transpiler API surface | `bundler/transpiler/transpiler.test.js` | `Bun.Transpiler`, loader validation, transform APIs, and callback behavior |
 | C. Native plugin final | `bundler/native-plugin.test.ts` | Native plugin ABI, node-gyp build, `.node` loading, `onBeforeParse`, crash-name behavior |
 
+Decorator helper follow-through on 2026-05-26: the native corpus harness
+now exposes Bun's `bun:wrap` runtime helper surface for transformed output:
+legacy TypeScript decorator helpers, standard decorator helpers,
+private-field helpers, and `__publicField`. This does not promote
+`decorators.test.ts` yet; it
+removes the runtime-helper blocker so the remaining work is the faithful
+native parser/lowerer/printer handoff described above.
+
 Native plugin audit on 2026-05-26: `bundler/native-plugin.test.ts`
 still reports `unsupported module syntax` at the corpus preprocessor, but
 that is only the first guardrail. The real parity surface is Bun's native
