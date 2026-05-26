@@ -453,6 +453,100 @@ fn reportMissingReferencePathDiagnostics(
     }
 }
 
+/// Normalize a reference/section path for self-reference comparison:
+/// strip leading `./` and `/` segments so `./a.ts`, `/a.ts`, and
+/// `a.ts` all compare equal, matching how the harness anchors virtual
+/// section names.
+fn normalizeReferencePath(path: []const u8) []const u8 {
+    var p = std.mem.trim(u8, path, " \t\r");
+    while (std.mem.startsWith(u8, p, "./")) p = p[2..];
+    while (std.mem.startsWith(u8, p, "/")) p = p[1..];
+    return p;
+}
+
+/// TS1006 "A file cannot have a reference to itself." — emitted when a
+/// triple-slash `/// <reference path="X" />` directive resolves to the
+/// same file that contains it. tsc's `processReferencedFiles` raises
+/// this whenever the referenced file name equals the containing source
+/// file's own name.
+///
+/// In Home's single-source harness model the "containing file" is the
+/// enclosing `@filename:` section (multi-file fixtures) or, absent any
+/// section, the compilation's `importer_path`. A reference path that
+/// matches that name is a self-reference.
+fn reportSelfReferencePathDiagnostics(
+    gpa: std.mem.Allocator,
+    c: *Compilation,
+    source: []const u8,
+    options: CompileOptions,
+) CompileError!void {
+    if (std.mem.indexOf(u8, source, "<reference") == null or
+        std.mem.indexOf(u8, source, "path") == null)
+    {
+        return;
+    }
+
+    const importer_basename = if (options.importer_path.len != 0)
+        normalizeReferencePath(std.fs.path.basename(options.importer_path))
+    else
+        "";
+
+    var current_section: []const u8 = importer_basename;
+    var offset: usize = 0;
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |raw_line| {
+        const line_without_cr = std.mem.trim(u8, raw_line, "\r");
+        defer offset += raw_line.len + 1;
+
+        // Track the active virtual-file section so the comparison
+        // anchors at the file that physically contains the directive.
+        if (std.mem.indexOf(u8, line_without_cr, "@filename:") orelse
+            std.mem.indexOf(u8, line_without_cr, "@Filename:")) |marker|
+        {
+            const value = std.mem.trim(u8, line_without_cr[marker + "@filename:".len ..], " \t\r/*");
+            current_section = normalizeReferencePath(std.fs.path.basename(value));
+            continue;
+        }
+        if (current_section.len == 0) continue;
+
+        var leading: usize = 0;
+        while (leading < line_without_cr.len and
+            (line_without_cr[leading] == ' ' or line_without_cr[leading] == '\t')) : (leading += 1)
+        {}
+        const line = line_without_cr[leading..];
+        if (!std.mem.startsWith(u8, line, "///")) continue;
+        const ref_rel = std.mem.indexOf(u8, line, "<reference") orelse continue;
+        const path_rel = std.mem.indexOf(u8, line[ref_rel..], "path") orelse continue;
+        var idx = ref_rel + path_rel + "path".len;
+        while (idx < line.len and (line[idx] == ' ' or line[idx] == '\t')) : (idx += 1) {}
+        if (idx >= line.len or line[idx] != '=') continue;
+        idx += 1;
+        while (idx < line.len and (line[idx] == ' ' or line[idx] == '\t')) : (idx += 1) {}
+        if (idx >= line.len or (line[idx] != '\'' and line[idx] != '"')) continue;
+        const quote = line[idx];
+        idx += 1;
+        const path_start = idx;
+        while (idx < line.len and line[idx] != quote) : (idx += 1) {}
+        if (idx >= line.len) continue;
+        const path = line[path_start..idx];
+        if (path.len == 0) continue;
+
+        const ref_path = normalizeReferencePath(path);
+        const ref_basename = normalizeReferencePath(std.fs.path.basename(ref_path));
+        if (std.mem.eql(u8, ref_path, current_section) or
+            std.mem.eql(u8, ref_basename, current_section))
+        {
+            try appendDriverDiagnostic(
+                gpa,
+                c,
+                @intCast(offset + leading + path_start),
+                1006,
+                "A file cannot have a reference to itself.",
+            );
+        }
+    }
+}
+
 fn reportInvalidReferenceDirectiveSyntaxDiagnostics(
     gpa: std.mem.Allocator,
     c: *Compilation,
@@ -922,6 +1016,7 @@ pub fn compileSource(
     try reportJsxFactoryOptionDiagnostics(gpa, c, source, options);
 
     try reportInvalidReferenceDirectiveSyntaxDiagnostics(gpa, c, source);
+    try reportSelfReferencePathDiagnostics(gpa, c, source, options);
     try reportMissingReferencePathDiagnostics(gpa, c, source);
 
     const effective_import_helpers = options.emit.import_helpers or (directiveBool(source, "importHelpers") orelse false);
@@ -3425,6 +3520,69 @@ test "driver: triple-slash reference valid resolution-mode stays clean" {
     }
     for (c.diagnostics.items) |d| {
         try T.expect(d.code != 1453);
+    }
+}
+
+test "driver: triple-slash reference to the containing file reports TS1006" {
+    // Mirrors upstream `processReferencedFiles`: a `<reference path>`
+    // whose resolved name equals the containing file's own name is a
+    // self-reference. Here the directive sits inside the `a.ts`
+    // virtual section and points back at `a.ts`.
+    var c = try compileSource(T.allocator,
+        \\// @filename: a.ts
+        \\/// <reference path="a.ts" />
+        \\let x = 1;
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 1006) {
+            found = true;
+            try T.expectEqualStrings("A file cannot have a reference to itself.", d.message);
+        }
+        // A self-reference is satisfied by the file's own existence, so
+        // it must not also surface a missing-file TS6053.
+        try T.expect(d.code != 6053);
+    }
+    try T.expect(found);
+}
+
+test "driver: self-reference via importer_path reports TS1006" {
+    // Single-section source whose own path is supplied via
+    // `importer_path`. A directive pointing back at that basename is a
+    // self-reference even without a `@filename:` section.
+    var c = try compileSource(T.allocator,
+        \\/// <reference path="./self.ts" />
+        \\let x = 1;
+    , .{ .no_emit = true, .importer_path = "/project/self.ts" });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 1006) found = true;
+    }
+    try T.expect(found);
+}
+
+test "driver: reference to a different file does not report TS1006" {
+    var c = try compileSource(T.allocator,
+        \\// @filename: a.ts
+        \\/// <reference path="b.ts" />
+        \\let x = 1;
+        \\// @filename: b.ts
+        \\declare const y: number;
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 1006);
     }
 }
 
