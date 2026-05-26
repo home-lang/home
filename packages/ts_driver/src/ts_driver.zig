@@ -41,6 +41,11 @@ pub const DiagnosticChainEntry = struct {
 pub const Diagnostic = struct {
     pub const Phase = enum { lex, parse, bind, emit };
     pub const CodePrefix = enum { TS, HM };
+    /// Diagnostic category. Mirrors tsc's error/suggestion split.
+    /// `.suggestion` diagnostics (TS7043-TS7050) are not errors: they
+    /// never set `has_errors` and never appear in `.errors.txt`
+    /// baselines. Only surfaced when `include_suggestions` is set.
+    pub const Category = enum { error_, suggestion };
     phase: Phase,
     pos: u32,
     line: u32,
@@ -60,6 +65,8 @@ pub const Diagnostic = struct {
     /// Optional nested elaboration chain (tsc `messageChain`). Empty by
     /// default. `gpa`-owned; freed by `Compilation.deinit`.
     chain: []const DiagnosticChainEntry = &.{},
+    /// Error vs suggestion. Defaults to `.error_`.
+    category: Category = .error_,
 };
 
 /// Recursively free a `gpa`-owned diagnostic chain (each entry's
@@ -237,6 +244,14 @@ pub const CompileOptions = struct {
     /// this from the per-variant resolver `Strategy`. Empty means
     /// "infer from `// @moduleResolution:` directive in source".
     module_resolution: []const u8 = "",
+    /// When true, the checker additionally emits `.suggestion`-category
+    /// implicit-any diagnostics (TS7043-TS7050, "a better type may be
+    /// inferred from usage") and the driver surfaces them in
+    /// `Compilation.diagnostics`. Off by default so conformance and
+    /// normal compilation see only error-category diagnostics. The
+    /// language service / LSP opts in via this flag. Suggestions never
+    /// set `has_errors`. Mirrors tsc `getSuggestionDiagnostics`.
+    include_suggestions: bool = false,
 };
 
 fn appendDriverDiagnostic(
@@ -1268,6 +1283,7 @@ pub fn compileSource(
     );
     checker.setCheckJsEnabled(!options.suppress_js_check_diagnostics and
         (virtualFilenameIsJs(source) or pathIsJsLike(options.importer_path)));
+    checker.setEmitImplicitAnySuggestions(options.include_suggestions);
     checker.setTargetEs5Baseline(options.report_deprecated_target_es5);
     checker.setPrivateIdentifierDownlevelCollisionEnabled(!options.no_emit and !options.emit.es_target.supportsNativePrivateFields());
     if (options.external_resolver) |er| checker.setExternalResolver(er);
@@ -1337,6 +1353,13 @@ pub fn compileSource(
     const suppress_js_check_diagnostics = options.suppress_js_check_diagnostics or sourceIsUncheckedJs(source);
     for (checker.diagnostics.items) |d| {
         if (suppress_js_check_diagnostics and !checkerDiagnosticSurfacesInUncheckedJs(d.code, d.message, source)) continue;
+        // Suggestion-category diagnostics (TS7043-TS7050) only surface
+        // when the caller opted in. They are never errors and never
+        // appear in `.errors.txt` baselines, so conformance / normal
+        // compilation skip them. Double-guarded: the checker only emits
+        // them when `include_suggestions` set the corresponding flag.
+        const is_suggestion = d.category == .suggestion;
+        if (is_suggestion and !options.include_suggestions) continue;
         const diag_pos = d.pos orelse c.hir.spanOf(d.node).start;
         const diag_span_len = diagnosticSpanLen(&c.hir, d.node, diag_pos);
 
@@ -1372,8 +1395,11 @@ pub fn compileSource(
             },
             .message = try gpa.dupe(u8, d.message),
             .chain = try dupeCheckerChain(gpa, d.chain),
+            .category = if (is_suggestion) .suggestion else .error_,
         });
-        c.has_errors = true;
+        // Suggestions are not errors — they must not flip `has_errors`
+        // (which gates emit fallback / exit codes).
+        if (!is_suggestion) c.has_errors = true;
     }
 
     if (effective_import_helpers and !effective_experimental_decorators and !missing_imported_helpers_reported) {
@@ -2088,6 +2114,61 @@ test "driver: simple let binding round-trips" {
     // Symbol table is populated.
     const sym = c.lookupTopLevel("x") orelse return error.NoSymbol;
     try T.expect(sym.flags.is_let);
+}
+
+test "driver: implicit-any suggestions hidden by default, surfaced on opt-in" {
+    // Without include_suggestions (default), no suggestion-category
+    // diagnostic appears and has_errors stays false (noImplicitAny off).
+    {
+        var c = try compileSource(T.allocator, "function f(x) { return x; }", .{ .strict = false });
+        defer {
+            c.deinit();
+            T.allocator.destroy(c);
+        }
+        for (c.diagnostics.items) |d| {
+            try T.expect(d.code != 7044);
+            try T.expect(d.category == .error_);
+        }
+        try T.expect(!c.has_errors);
+    }
+    // With include_suggestions, TS7044 surfaces as a suggestion and does
+    // NOT flip has_errors.
+    {
+        var c = try compileSource(T.allocator, "function f(x) { return x; }", .{ .strict = false, .include_suggestions = true });
+        defer {
+            c.deinit();
+            T.allocator.destroy(c);
+        }
+        var saw: usize = 0;
+        for (c.diagnostics.items) |d| {
+            if (d.code == 7044) {
+                saw += 1;
+                try T.expect(d.category == .suggestion);
+                try T.expect(std.mem.indexOf(u8, d.message, "but a better type may be inferred from usage") != null);
+            }
+        }
+        try T.expectEqual(@as(usize, 1), saw);
+        try T.expect(!c.has_errors);
+    }
+}
+
+test "driver: noImplicitAny ON emits TS7006 error, never the TS7044 suggestion" {
+    // Even with include_suggestions, strict mode -> hard error path.
+    var c = try compileSource(T.allocator, "function f(x) { return x; }", .{ .strict = true, .include_suggestions = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var saw_err = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 7006) {
+            saw_err = true;
+            try T.expect(d.category == .error_);
+        }
+        try T.expect(d.code != 7044);
+    }
+    try T.expect(saw_err);
+    try T.expect(c.has_errors);
 }
 
 test "driver: scanner merge conflict marker diagnostic maps to TS1185" {

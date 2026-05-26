@@ -3442,6 +3442,10 @@ pub const Service = struct {
             const code: u32 = if (d.code != 0) d.code else 2300 + @as(u32, @intFromEnum(d.phase));
             const message = try gpa.dupe(u8, d.message);
             errdefer gpa.free(message);
+            // Suggestion-category diagnostics (TS7043-TS7050 "a better
+            // type may be inferred from usage") map to LSP Hint
+            // severity, mirroring tsc's `getSuggestionDiagnostics`.
+            const severity: LspDiagnostic.Severity = if (d.category == .suggestion) .hint else .err;
             try out.append(gpa, .{
                 .range = .{
                     .file = f.path,
@@ -3450,7 +3454,7 @@ pub const Service = struct {
                     .end_line = end_pos.line,
                     .end_col = end_pos.col,
                 },
-                .severity = .err,
+                .severity = severity,
                 .code = code,
                 .message = message,
                 .source = "ts",
