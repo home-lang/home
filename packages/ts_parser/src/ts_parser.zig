@@ -848,6 +848,7 @@ pub const Parser = struct {
             try self.scanJSDocCommentTypeExpressions(body_start, body_end);
             try self.scanJSDocImportTagDiagnostics(body_start, body_end);
             try self.scanJSDocTypedefDuplicateTypeTags(body_start, body_end);
+            try self.scanJSDocTemplateAfterTypeAliasLikeTags(body_start, body_end);
             try self.scanJSDocTemplateModifierDiagnostics(body_start, body_end);
             try self.scanJSDocPropertyNameDiagnostics(body_start, body_end);
             try self.scanJSDocImplementsTypeDiagnostics(body_start, body_end);
@@ -1222,6 +1223,40 @@ pub const Parser = struct {
                 return;
             }
             i = tag_name_end;
+        }
+    }
+
+    fn scanJSDocTemplateAfterTypeAliasLikeTags(self: *Parser, start: usize, end: usize) ParseError!void {
+        var seen_type_alias_like = false;
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            const tag_name = self.source[tag_name_start..tag_name_end];
+            i = tag_name_end;
+
+            if (std.mem.eql(u8, tag_name, "template")) {
+                if (seen_type_alias_like) {
+                    try self.reportCodeAtWithSpan(
+                        @intCast(tag_name_start),
+                        self.lineAt(@intCast(tag_name_start)),
+                        @intCast(tag_name.len),
+                        8039,
+                        "A JSDoc '@template' tag may not follow a '@typedef', '@callback', or '@overload' tag",
+                    );
+                    return;
+                }
+                continue;
+            }
+
+            if (std.mem.eql(u8, tag_name, "typedef") or
+                std.mem.eql(u8, tag_name, "callback") or
+                std.mem.eql(u8, tag_name, "overload"))
+            {
+                seen_type_alias_like = true;
+            }
         }
     }
 
@@ -22235,6 +22270,61 @@ test "parser: JSDoc typedef with multiple type tags reports TS8033" {
     try T.expectEqual(@as(u32, 4), d.line);
     const line_start = std.mem.lastIndexOfScalar(u8, s.parser.source[0..d.pos], '\n').? + 1;
     try T.expectEqual(@as(u32, 16), d.pos - @as(u32, @intCast(line_start)) + 1);
+}
+
+test "parser: JSDoc template after typedef callback or overload reports TS8039" {
+    var s = try newTestSetup(
+        \\/**
+        \\ * @typedef Oops
+        \\ * @template T
+        \\ * @property {T} a
+        \\ */
+        \\/**
+        \\ * @callback Call
+        \\ * @template T
+        \\ * @param {T} x
+        \\ */
+        \\/**
+        \\ * @template T
+        \\ * @type {Call<T>}
+        \\ */
+        \\const identity = x => x;
+        \\/**
+        \\ * @overload
+        \\ * @template T
+        \\ * @template U
+        \\ * @param {T[]} array
+        \\ */
+        \\function f(array) {}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 8039) {
+            count += 1;
+            try T.expectEqualStrings("A JSDoc '@template' tag may not follow a '@typedef', '@callback', or '@overload' tag", d.message);
+            try T.expectEqual(@as(u32, 8), d.span_len);
+        }
+    }
+    try T.expectEqual(@as(usize, 3), count);
+}
+
+test "parser: leading JSDoc template before type-like tag is allowed" {
+    var s = try newTestSetup(
+        \\/**
+        \\ * @template T
+        \\ * @type {Array<T>}
+        \\ */
+        \\const xs = [];
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 8039);
+    }
 }
 
 test "parser: JSDoc property private-name spelling reports TS1003" {

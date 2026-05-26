@@ -1860,6 +1860,9 @@ The runner and a 56-case canon corpus are landed. Per-feature triage against the
 144. **2026-05-26 — Diagnostic-ledger regex pattern-modifier sweep.**
     Continued the parser-side regex validator toward upstream `scanRegularExpressionWorker` parity. Regex literals now report TS1505 for `{,n}` / `{,}` incomplete quantifiers at the zero-width missing-minimum digit span, and pattern modifier groups now validate the subpattern-only flag set: `i`, `m`, and `s` can be toggled, while `d`, `g`, `u`, `v`, and `y` produce TS1509 and a bare minus such as `(?-i:...)` produces TS1504. The regenerated diagnostic ledger now reports **722 emitted / 1 declared / 0 tested-only / 1353 catalog-only** across **2076** upstream codes. Verification: `ts_parser` **613/613**, regenerated `docs/TS_DIAGNOSTIC_CODE_STATUS.md`.
 
+145. **2026-05-26 — Diagnostic-ledger JSDoc template-order sweep.**
+    Ported the parser-side JSDoc tag ordering check behind TS8039. JSDoc blocks now report `A JSDoc '@template' tag may not follow a '@typedef', '@callback', or '@overload' tag` on the `template` tag-name span when a `@template` follows `@typedef`, `@callback`, or `@overload`, while legal leading `@template` tags before ordinary type tags remain clean. The scan intentionally reports once per affected block, matching upstream recovery for callback/overload JSDoc signatures. The regenerated diagnostic ledger now reports **723 emitted / 1 declared / 0 tested-only / 1352 catalog-only** across **2076** upstream codes. Verification: `ts_parser` **615/615**, regenerated `docs/TS_DIAGNOSTIC_CODE_STATUS.md`.
+
 7. **`fourslash` editor scenarios.** ~40 000 cases in tsgo's `internal/fourslash/tests/`. Adapter to drive `home-lsp` through the same scenarios. *Effort: 2 weeks for the adapter; ratchet from there.*
 
 ### §8.A · Phase 8 — LSP punch list
