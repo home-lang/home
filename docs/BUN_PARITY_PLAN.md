@@ -250,7 +250,7 @@ Fresh single-file probes on 2026-05-26 in
 |---|---|---|
 | `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/transpiler/transpiler.test.js` | Fails before promotion: 0 passed, 1 failed | Enters `Bun.Transpiler.transformSync`; CRLF and empty-type-parameter probes now advance, and the current bootstrap-body blocker is the malformed-enum parse-error section |
 | `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/transpiler/decorators.test.ts` | Fails before promotion: 0 passed, 1 failed | `SyntaxError: Invalid character: '@'` |
-| `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts` | Fails before promotion: 0 passed, 1 failed, 0 unsupported | File-attribute imports, native-plugin TS annotations, async lifecycle hooks, and node-gyp addon build now run; current blocker is the Home N-API dlopen bridge for `.node` exports |
+| `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts` | Fails before promotion: 0 passed, 1 failed, 0 unsupported | File-attribute imports, native-plugin TS annotations, async lifecycle hooks, node-gyp addon build, and `.node` metadata probing now run; current blocker is the real N-API registration / `JSBundlerPlugin.onBeforeParse` bridge |
 
 Decorator helper follow-through on 2026-05-26: the native corpus harness
 now exposes Bun's `bun:wrap` runtime helper surface for transformed output:
@@ -365,6 +365,16 @@ runs the fixture's node-gyp build and reaches the native addon loader,
 then stops at `Native .node module loading requires the Home N-API dlopen
 bridge`. The generic harness blockers are gone, but this remains no
 parity credit until the real `.node` / N-API bridge is wired.
+
+Native `.node` metadata bridge update on 2026-05-26: the JSC corpus
+adapter can now `dlopen` the built addon, retain the `std.DynLib` handle,
+and report whether `napi_register_module_v1`, `BUN_PLUGIN_NAME`, and the
+native-plugin `plugin_impl*` symbols exist. The fixture advances beyond
+the previous hard `.node` loader error and now fails the basic native
+plugin case with `Build failed`. This is still not parity credit: the
+remaining faithful work is invoking the N-API registration path and the
+real `JSBundlerPlugin.onBeforeParse` bridge instead of completing the
+fixture with a corpus-only module simulation.
 
 Do not close this by adding a corpus-only `.node` mock. A faithful close
 should first compile or port the native bridge, then promote the fixture

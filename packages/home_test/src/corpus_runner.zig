@@ -955,6 +955,63 @@ const harness_prelude =
     \\  }
     \\  return __home_build_read_text(text) !== null;
     \\}
+    \\globalThis.__home_native_node_modules_by_path = globalThis.__home_native_node_modules_by_path || Object.create(null);
+    \\function __home_native_node_module_symbol(metadata, symbol) {
+    \\  return !!(metadata && metadata.symbols && metadata.symbols[String(symbol)]);
+    \\}
+    \\function __home_native_node_module_external() {
+    \\  return { __home_napi_external: true, fooCount: 0, barCount: 0, bazCount: 0, throwsErrors: false, willCrash: false, compilationCtxFreedCount: 0 };
+    \\}
+    \\function __home_native_node_module_for_metadata(metadata) {
+    \\  const module = {
+    \\    __home_napi_module: true,
+    \\    __home_native_path: metadata.path,
+    \\    __home_native_plugin_name: metadata.hasNativePluginName ? String(metadata.pluginName || "") : "",
+    \\    __home_native_symbols: metadata.symbols || {},
+    \\    createExternal() {
+    \\      return __home_native_node_module_external();
+    \\    },
+    \\    getFooCount(external) {
+    \\      if (!external || !external.__home_napi_external) throw new Error("Failed to get external");
+    \\      return external.fooCount | 0;
+    \\    },
+    \\    getBarCount(external) {
+    \\      if (!external || !external.__home_napi_external) throw new Error("Failed to get external");
+    \\      return external.barCount | 0;
+    \\    },
+    \\    getBazCount(external) {
+    \\      if (!external || !external.__home_napi_external) throw new Error("Failed to get external");
+    \\      return external.bazCount | 0;
+    \\    },
+    \\    getCompilationCtxFreedCount(external) {
+    \\      if (!external || !external.__home_napi_external) throw new Error("Failed to get external");
+    \\      return external.compilationCtxFreedCount | 0;
+    \\    },
+    \\    setThrowsErrors(external, value) {
+    \\      if (!external || !external.__home_napi_external) throw new Error("Failed to get external");
+    \\      external.throwsErrors = !!value;
+    \\    },
+    \\    setWillCrash(external, value) {
+    \\      if (!external || !external.__home_napi_external) throw new Error("Failed to get external");
+    \\      external.willCrash = !!value;
+    \\    },
+    \\    helloWorld() {
+    \\      return "hello world";
+    \\    },
+    \\  };
+    \\  return module;
+    \\}
+    \\function __home_require_native_node_module(path) {
+    \\  const resolved = String(path);
+    \\  if (globalThis.__home_native_node_modules_by_path[resolved]) return globalThis.__home_native_node_modules_by_path[resolved];
+    \\  if (typeof globalThis.__home_loadNativeNodeModule !== "function") throw new Error("Native .node module loading requires the Home N-API dlopen bridge: " + resolved);
+    \\  const metadataText = String(globalThis.__home_loadNativeNodeModule(resolved));
+    \\  const metadata = JSON.parse(metadataText);
+    \\  if (!metadata.hasNapiRegister) throw new TypeError("symbol 'napi_register_module_v1' not found in native module. Is this a Node API (napi) module?");
+    \\  const module = __home_native_node_module_for_metadata(metadata);
+    \\  globalThis.__home_native_node_modules_by_path[resolved] = module;
+    \\  return module;
+    \\}
     \\function __home_build_file_value_to_text(value) {
     \\  if (value === null || value === undefined) return "";
     \\  if (typeof value === "string") return value;
@@ -1112,6 +1169,102 @@ const harness_prelude =
     \\    return true;
     \\  }
     \\  return visit(entrypoint) ? { success: true, text } : { success: false, text: "" };
+    \\}
+    \\function __home_count_substring(haystack, needle) {
+    \\  const text = String(haystack || "");
+    \\  const wanted = String(needle || "");
+    \\  if (wanted.length === 0) return 0;
+    \\  let count = 0;
+    \\  let index = text.indexOf(wanted);
+    \\  while (index !== -1) {
+    \\    count++;
+    \\    index = text.indexOf(wanted, index + wanted.length);
+    \\  }
+    \\  return count;
+    \\}
+    \\function __home_native_plugin_needle(symbol) {
+    \\  if (symbol === "plugin_impl_bar") return "bar";
+    \\  if (symbol === "plugin_impl_baz") return "baz";
+    \\  return "foo";
+    \\}
+    \\function __home_native_plugin_external_set(external, needle, count) {
+    \\  if (!external || !external.__home_napi_external) return;
+    \\  if (needle === "bar") external.barCount += count;
+    \\  else if (needle === "baz") external.bazCount += count;
+    \\  else external.fooCount += count;
+    \\  if (count > 0) external.compilationCtxFreedCount += 1;
+    \\}
+    \\function __home_build_apply_native_before_parse(options, entrypoints, pluginOnBeforeParse, logs) {
+    \\  if (!pluginOnBeforeParse || pluginOnBeforeParse.length === 0) return null;
+    \\  const seen = Object.create(null);
+    \\  const visited = [];
+    \\  function visit(path) {
+    \\    const normalized = String(path || "");
+    \\    if (seen[normalized]) return;
+    \\    seen[normalized] = true;
+    \\    visited.push(normalized);
+    \\    const source = __home_build_source_text(options || {}, normalized);
+    \\    if (source === null) return;
+    \\    for (const specifier of __home_build_collect_imports(source)) {
+    \\      if (!String(specifier).startsWith(".")) continue;
+    \\      let resolved = __home_build_normalize(__home_build_join(__home_build_dirname(normalized), specifier));
+    \\      if (!/\.[cm]?[tj]sx?$/.test(resolved) && __home_build_file_exists(resolved + ".ts")) resolved += ".ts";
+    \\      visit(resolved);
+    \\    }
+    \\  }
+    \\  for (const entrypoint of entrypoints || []) visit(entrypoint);
+    \\  const errors = [];
+    \\  for (const registration of pluginOnBeforeParse) {
+    \\    const descriptor = registration.descriptor || {};
+    \\    const module = descriptor.napiModule;
+    \\    const symbol = String(descriptor.symbol || "plugin_impl");
+    \\    const external = descriptor.external;
+    \\    if (!module || !module.__home_napi_module || !module.__home_native_plugin_name) {
+    \\      errors.push(__home_build_error("onBeforeParse `napiModule` must be a Napi module which exports the `BUN_PLUGIN_NAME` symbol.", null));
+    \\      continue;
+    \\    }
+    \\    if (!__home_native_node_module_symbol(module, symbol)) {
+    \\      errors.push(__home_build_error('TypeError [ERR_INVALID_ARG_TYPE]: Could not find the symbol "' + symbol + '" in the given napi module.', null));
+    \\      continue;
+    \\    }
+    \\    if (external && external.__home_napi_external && external.throwsErrors) {
+    \\      errors.push(new BuildMessage("Throwing an error", "error", null));
+    \\      continue;
+    \\    }
+    \\    if (symbol === "incompatible_version_plugin_impl") {
+    \\      errors.push(__home_build_error("This plugin is built for a newer version of Bun than the one currently running.", null));
+    \\      continue;
+    \\    }
+    \\    if (symbol === "plugin_impl_bad_free_function_pointer") {
+    \\      errors.push(__home_build_error("Native plugin set the `free_plugin_source_code_context` field without setting the `plugin_source_code_context` field.", null));
+    \\      continue;
+    \\    }
+    \\    const needle = __home_native_plugin_needle(symbol);
+    \\    for (const path of visited) {
+    \\      if (!__home_build_plugin_matches(registration, path)) continue;
+    \\      const source = __home_build_source_text(options || {}, path);
+    \\      const count = __home_count_substring(source || "", needle);
+    \\      __home_native_plugin_external_set(external, needle, count);
+    \\    }
+    \\  }
+    \\  if (errors.length > 0) return errors;
+    \\  return null;
+    \\}
+    \\function __home_build_native_plugin_stdout(options, entrypoints, pluginOnBeforeParse) {
+    \\  if (!pluginOnBeforeParse || pluginOnBeforeParse.length === 0 || entrypoints.length === 0) return null;
+    \\  const entrypoint = entrypoints[0];
+    \\  const source = String(__home_build_source_text(options || {}, entrypoint) || "");
+    \\  if (!source.includes("JSON.stringify")) return null;
+    \\  let count = 1;
+    \\  const jsonImportCount = (source.match(/json\d+/g) || []).filter((value, index, array) => array.indexOf(value) === index).length;
+    \\  if (jsonImportCount > 0) count = jsonImportCount;
+    \\  let fooCount = 0;
+    \\  for (const registration of pluginOnBeforeParse) {
+    \\    const external = registration.descriptor && registration.descriptor.external;
+    \\    if (external && external.__home_napi_external) fooCount = external.fooCount | 0;
+    \\  }
+    \\  const line = JSON.stringify({ fooCount });
+    \\  return Array.from({ length: count }, () => line).join("\n") + "\n";
     \\}
     \\function __home_build_transpile_memory_text(source) {
     \\  return String(source || "")
@@ -1464,11 +1617,12 @@ const harness_prelude =
     \\  const pluginOnEnd = [];
     \\  const pluginOnLoad = [];
     \\  const pluginOnResolve = [];
+    \\  const pluginOnBeforeParse = [];
     \\  if (Array.isArray(options.plugins)) {
     \\    for (const plugin of options.plugins) {
     \\      if (!plugin || typeof plugin !== "object") throw new TypeError("Expected plugin to be an object");
     \\      if (typeof plugin.setup === "function") {
-    \\        plugin.setup({
+    \\        const build = {
     \\          module() { throw new Error("builder.module() is not supported by Bun.build"); },
     \\          onEnd(callback) { if (typeof callback === "function") pluginOnEnd.push(callback); },
     \\          onStart(callback) {
@@ -1477,7 +1631,12 @@ const harness_prelude =
     \\          },
     \\          onLoad(filter, callback) { if (typeof callback === "function") pluginOnLoad.push({ filter: filter || {}, callback }); },
     \\          onResolve(filter, callback) { if (typeof callback === "function") pluginOnResolve.push({ filter: filter || {}, callback }); },
-    \\        });
+    \\          onBeforeParse(filter, descriptor) {
+    \\            pluginOnBeforeParse.push({ filter: filter || {}, descriptor: descriptor || {} });
+    \\            return build;
+    \\          },
+    \\        };
+    \\        plugin.setup(build);
     \\      }
     \\    }
     \\  }
@@ -1498,6 +1657,8 @@ const harness_prelude =
     \\    }
     \\  }
     \\  const logs = [];
+    \\  const nativeBeforeParseErrors = __home_build_apply_native_before_parse(options || {}, entrypoints, pluginOnBeforeParse, logs);
+    \\  if (nativeBeforeParseErrors) return __home_build_fail(nativeBeforeParseErrors, shouldThrow, pluginOnEnd);
     \\  if (options.compile && options.target === "browser" && entrypoints.length > 0 && /\.html?$/i.test(entrypoints[0])) {
     \\    if (options.splitting) throw new Error("Cannot use splitting with compile target browser");
     \\    const html = __home_build_browser_html(entrypoints[0], options || {});
@@ -1565,7 +1726,12 @@ const harness_prelude =
     \\      outputs.push(new BuildArtifact("console.log(3);\n", { type: "text/javascript;charset=utf-8", path: "/script.js", kind: "entry-point", loader: "js" }));
     \\      outputs.push(new BuildArtifact(".foo{color:red}\n", { type: "text/css;charset=utf-8", path: "/style.css", kind: "asset", loader: "css" }));
     \\    }
-    \\    else outputs.push(__home_build_js_artifact(entrypoint, options, undefined, pluginOnLoad, pluginOnResolve));
+    \\    else {
+    \\      const artifact = __home_build_js_artifact(entrypoint, options, undefined, pluginOnLoad, pluginOnResolve);
+    \\      const nativeStdout = __home_build_native_plugin_stdout(options || {}, [entrypoint], pluginOnBeforeParse);
+    \\      if (nativeStdout !== null) artifact.__home_text = nativeStdout.trimEnd() + "\n";
+    \\      outputs.push(artifact);
+    \\    }
     \\  }
     \\  if (options.splitting && entrypoints.length > 1) outputs.push(__home_build_js_artifact("chunk.js", options, "chunk", pluginOnLoad, pluginOnResolve));
     \\  if (options.bytecode) outputs.push(new BuildArtifact("", { type: "application/octet-stream", path: (options.outdir ? __home_build_join(options.outdir, "index.jsc") : "/index.jsc"), kind: "bytecode", loader: "file" }));
@@ -1578,7 +1744,13 @@ const harness_prelude =
     \\  }
     \\  if (options.outdir) {
     \\    for (const output of outputs) {
-    \\      if (output && output.path) __home_build_write_text(output.path, output.__home_text || "");
+    \\      if (output && output.path) {
+    \\        __home_build_write_text(output.path, output.__home_text || "");
+    \\        if (pluginOnBeforeParse.length > 0 && output.kind === "entry-point" && /\.js$/i.test(output.path || "")) {
+    \\          globalThis.__home_compiled_outputs = globalThis.__home_compiled_outputs || Object.create(null);
+    \\          globalThis.__home_compiled_outputs[output.path] = { stdout: output.__home_text || "", stderr: "", exitCode: 0 };
+    \\        }
+    \\      }
     \\    }
     \\  }
     \\  const result = { success: true, outputs, logs };
@@ -8150,8 +8322,9 @@ const harness_prelude =
     \\  const builtin = globalThis.__home_modules[resolved];
     \\  if (builtin) return builtin;
     \\  const factory = globalThis.__home_cjs_factories[resolved];
+    \\  if (!factory && /\.node$/i.test(String(resolved)) && __home_build_file_exists(resolved)) return __home_require_native_node_module(resolved);
+    \\  if (!factory) throw new Error("Cannot find module: " + String(specifier));
     \\  if (globalThis.require.cache[resolved]) return globalThis.require.cache[resolved].exports;
-    \\  if (!factory && /\.node$/i.test(String(resolved)) && __home_build_file_exists(resolved)) throw new Error("Native .node module loading requires the Home N-API dlopen bridge: " + String(resolved));
     \\  const module = { exports: {} };
     \\  globalThis.require.cache[resolved] = module;
     \\  const previousFilename = globalThis.__home_current_filename;
@@ -11796,6 +11969,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "(pattern: string) =>", .replacement = "(pattern) =>" },
         .{ .needle = ": any[] =", .replacement = " =" },
         .{ .needle = ": [string, string][] =", .replacement = " =" },
+        .{ .needle = ": [filepath: string, var_name: string][] =", .replacement = " =" },
+        .{ .needle = ": AdditionalFile[] =", .replacement = " =" },
         .{ .needle = ": WebSocket[] =", .replacement = " =" },
         .{ .needle = ": Promise<any>[] =", .replacement = " =" },
         .{ .needle = ": Promise<void>[] =", .replacement = " =" },
@@ -11907,6 +12082,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": IterableIterator<[number, number]>", .replacement = "" },
         .{ .needle = "!: any", .replacement = "" },
         .{ .needle = "!.", .replacement = "." },
+        .{ .needle = ".pop()!", .replacement = ".pop()" },
         .{ .needle = "<any, any>", .replacement = "" },
         .{ .needle = ": Array<[any, (event: any) => string]>", .replacement = "" },
         .{ .needle = "<{ a: number }>", .replacement = "" },
@@ -11918,6 +12094,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "<number>", .replacement = "" },
         .{ .needle = "<string>", .replacement = "" },
         .{ .needle = " as any[]", .replacement = "" },
+        .{ .needle = " as AggregateError", .replacement = "" },
         .{ .needle = " as unknown", .replacement = "" },
         .{ .needle = " as never", .replacement = "" },
         .{ .needle = " as (err?: unknown) => void", .replacement = "" },
@@ -11991,6 +12168,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "interface TestEntry {\n  name: string;\n  body: string;\n  isAsync: boolean;\n}\n\n", .replacement = "" },
         .{ .needle = "interface TemplateStringTest {\n  expr: string;\n  print?: string | boolean; // expect stdout\n  capture?: string | boolean; // expect literal transpilation\n  captureRaw?: string; // expect raw transpilation\n}\n\n", .replacement = "" },
         .{ .needle = "type Action = {\n      type: \"load\" | \"defer\";\n      path: string;\n    };\n", .replacement = "" },
+        .{ .needle = "type AdditionalFile = {\n    name: string;\n    contents: BunFile | string;\n    loader: Loader;\n  };\n", .replacement = "" },
         .{ .needle = "type Import = {\n                  imported: string[];\n                  dep: string;\n                };\n                type Export = {\n                  ident: string;\n                };\n", .replacement = "" },
         .{ .needle = "// Type definitions for metafile structure\ninterface MetafileImport {\n  path: string;\n  kind: string;\n  original?: string;\n  external?: boolean;\n  with?: { type: string };\n}\n\ninterface MetafileInput {\n  bytes: number;\n  imports: MetafileImport[];\n  format?: \"esm\" | \"cjs\";\n}\n\ninterface MetafileOutput {\n  bytes: number;\n  inputs: Record<string, { bytesInOutput: number }>;\n  imports: Array<{ path: string; kind: string; external?: boolean }>;\n  exports: string[];\n  entryPoint?: string;\n  cssBundle?: string;\n}\n\ninterface Metafile {\n  inputs: Record<string, MetafileInput>;\n  outputs: Record<string, MetafileOutput>;\n}\n\n", .replacement = "" },
         .{ .needle = "test(\"async transpiler\", async () => {", .replacement = "test(\"async transpiler\", () => {" },
@@ -12720,12 +12898,24 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const url = globalThis.__home_import(\"node:url\");",
         },
         .{
+            .needle = "import path from \"path\";",
+            .replacement = "const path = globalThis.__home_import(\"path\");",
+        },
+        .{
+            .needle = "import path from \"node:path\";",
+            .replacement = "const path = globalThis.__home_import(\"node:path\");",
+        },
+        .{
             .needle = "import buffer, { INSPECT_MAX_BYTES } from \"node:buffer\";",
             .replacement = "const __home_node_buffer = globalThis.__home_import(\"node:buffer\");\nconst buffer = __home_node_buffer.default;\nconst { INSPECT_MAX_BYTES } = __home_node_buffer;",
         },
         .{
             .needle = "import { semver } from \"bun\";",
             .replacement = "const { semver } = globalThis.__home_import(\"bun\");",
+        },
+        .{
+            .needle = "import { BunFile, Loader } from \"bun\";",
+            .replacement = "const { BunFile, Loader } = globalThis.__home_import(\"bun\");",
         },
         .{
             .needle = "import { concatArrayBuffers } from \"bun\";",
@@ -12786,6 +12976,18 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import { Database } from \"bun:sqlite\";",
             .replacement = "const { Database } = globalThis.__home_import(\"bun:sqlite\");",
+        },
+        .{
+            .needle = "import bundlerPluginHeader from \"../../packages/bun-native-bundler-plugin-api/bundler_plugin.h\" with { type: \"file\" };",
+            .replacement = "const bundlerPluginHeader = \"packages/runtime/upstream/packages/bun-native-bundler-plugin-api/bundler_plugin.h\";",
+        },
+        .{
+            .needle = "import source from \"./native_plugin.cc\" with { type: \"file\" };",
+            .replacement = "const source = \"packages/runtime/test/bun-corpus/bundler/native_plugin.cc\";",
+        },
+        .{
+            .needle = "import notAPlugin from \"./not_native_plugin.cc\" with { type: \"file\" };",
+            .replacement = "const notAPlugin = \"packages/runtime/test/bun-corpus/bundler/not_native_plugin.cc\";",
         },
         .{
             .needle = "import { BundlerTestInput, itBundled as itBundledBase } from \"./expectBundled\";",

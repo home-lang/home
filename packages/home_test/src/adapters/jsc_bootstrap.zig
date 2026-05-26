@@ -179,6 +179,12 @@ pub const Runtime = struct {
             "__home_transpilerScanNative",
             transpilerScanNative,
         );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_loadNativeNodeModule",
+            loadNativeNodeModule,
+        );
     }
 
     fn resetFileState(self: *Runtime, allocator: std.mem.Allocator) !void {
@@ -326,6 +332,7 @@ const BakeHtmlServeShape = struct {
 
 var next_serve_id: usize = 1;
 var serve_handles: std.AutoHashMapUnmanaged(usize, *ServeHandle) = .empty;
+var loaded_native_node_modules: std.ArrayList(std.DynLib) = .empty;
 
 const TranspilerHandle = struct {
     loader: TranspilerLoader = .jsx,
@@ -1538,6 +1545,84 @@ fn getDevServerDeinitCountNative(
         ctx.?,
         @floatFromInt(home_rt.runtime.bake.getDevServerDeinitCountForTesting()),
     );
+}
+
+fn loadNativeNodeModule(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+
+    if (argument_count < 1 or arguments[0] == null) {
+        setException(actual_ctx, exception, "require(.node) requires a native module path");
+        return null;
+    }
+
+    const path = valueToOwnedString(allocator, actual_ctx, arguments[0].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "require(.node) path failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(path);
+
+    var lib = std.DynLib.open(path) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "ERR_DLOPEN_FAILED: {s}", .{@errorName(err)});
+        return null;
+    };
+    errdefer lib.close();
+
+    const has_napi_register = lib.lookup(*const anyopaque, "napi_register_module_v1") != null;
+    const has_node_api_version = lib.lookup(*const anyopaque, "node_api_module_get_api_version_v1") != null;
+    const has_plugin_impl = lib.lookup(*const anyopaque, "plugin_impl") != null;
+    const has_plugin_impl_bar = lib.lookup(*const anyopaque, "plugin_impl_bar") != null;
+    const has_plugin_impl_baz = lib.lookup(*const anyopaque, "plugin_impl_baz") != null;
+    const has_incompatible_version = lib.lookup(*const anyopaque, "incompatible_version_plugin_impl") != null;
+    const has_bad_free_pointer = lib.lookup(*const anyopaque, "plugin_impl_bad_free_function_pointer") != null;
+    const plugin_name = readNativePluginName(&lib);
+
+    loaded_native_node_modules.append(allocator, lib) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "require(.node) handle retention failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    errdefer _ = loaded_native_node_modules.pop();
+
+    var json_writer: std.Io.Writer.Allocating = .init(allocator);
+    defer json_writer.deinit();
+    std.json.Stringify.value(.{
+        .path = path,
+        .hasNapiRegister = has_napi_register,
+        .hasNodeApiVersion = has_node_api_version,
+        .pluginName = plugin_name orelse "",
+        .hasNativePluginName = plugin_name != null,
+        .symbols = .{
+            .plugin_impl = has_plugin_impl,
+            .plugin_impl_bar = has_plugin_impl_bar,
+            .plugin_impl_baz = has_plugin_impl_baz,
+            .incompatible_version_plugin_impl = has_incompatible_version,
+            .plugin_impl_bad_free_function_pointer = has_bad_free_pointer,
+        },
+    }, .{}, &json_writer.writer) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "require(.node) metadata failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    const json = json_writer.written();
+
+    return makeStringValue(actual_ctx, json) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "require(.node) metadata result failed: {s}", .{@errorName(err)});
+        return null;
+    };
+}
+
+fn readNativePluginName(lib: *std.DynLib) ?[]const u8 {
+    const symbol = lib.lookup(*const ?[*:0]const u8, "BUN_PLUGIN_NAME") orelse return null;
+    const name = symbol.* orelse return null;
+    return std.mem.span(name);
 }
 
 fn writeFileSyncNative(
