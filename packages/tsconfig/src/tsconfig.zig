@@ -229,6 +229,7 @@ pub const CompilerOptions = struct {
     jsx_fragment_factory: ?[]const u8 = null,
     jsx_import_source: ?[]const u8 = null,
     react_namespace: ?[]const u8 = null,
+    out_file: ?[]const u8 = null,
     out_dir: ?[]const u8 = null,
     root_dir: ?[]const u8 = null,
     declaration: ?bool = null,
@@ -272,6 +273,13 @@ pub const ExtraEntry = struct {
     value: jsonc.Value,
 };
 
+pub const OptionParseDiagnostic = struct {
+    code: u32,
+    option: []const u8,
+    expected: []const u8 = "",
+    suggestion: ?[]const u8 = null,
+};
+
 pub const TsConfig = struct {
     /// The path this config came from (set by the loader; empty when
     /// parsed via `parseString`).
@@ -297,6 +305,13 @@ pub const TsConfig = struct {
     /// validates that object with its own option table rather than
     /// treating these as generic unknown root keys.
     unknown_type_acquisition_options: [][]const u8,
+    /// Option-table diagnostics collected while parsing compilerOptions.
+    /// TypeScript's config parser keeps walking after these so users see
+    /// all bad option keys/types at once; validation formats them.
+    compiler_option_parse_diagnostics: []OptionParseDiagnostic,
+    /// Option-table diagnostics collected while parsing top-level
+    /// watchOptions.
+    watch_option_parse_diagnostics: []OptionParseDiagnostic,
 
     /// Walk the resolved config and report cross-field consistency
     /// issues that the parser accepts but `tsc` would reject during
@@ -347,6 +362,13 @@ pub const TsConfig = struct {
             }
         }
 
+        for (self.compiler_option_parse_diagnostics) |diag| {
+            try appendOptionParseDiagnostic(gpa, &diags, diag, .compiler);
+        }
+        for (self.watch_option_parse_diagnostics) |diag| {
+            try appendOptionParseDiagnostic(gpa, &diags, diag, .watch);
+        }
+
         for (self.unknown_type_acquisition_options) |option| {
             const suggestion = typeAcquisitionOptionSuggestion(option);
             const msg = if (suggestion) |suggested|
@@ -392,6 +414,14 @@ pub const TsConfig = struct {
                 .field = "allowImportingTsExtensions",
             });
         }
+        if (co.out_file != null) {
+            if (co.module) |explicit_module| {
+                if (explicit_module != .amd and explicit_module != .system) {
+                    try appendTs6082(gpa, &diags, "outFile");
+                    try appendTs6082(gpa, &diags, "module");
+                }
+            }
+        }
         if (!moduleResolutionSupportsPackageJsonExportsAndImports(effective_module_resolution)) {
             if (co.resolve_package_json_exports == true) {
                 try appendTs5098(gpa, &diags, "resolvePackageJsonExports");
@@ -428,6 +458,9 @@ pub const TsConfig = struct {
         if (co.inline_source_map == true and co.source_map == true) {
             try appendTs5053(gpa, &diags, "sourceMap", "sourceMap", "inlineSourceMap");
         }
+        if (co.inline_source_map == true and co.map_root != null) {
+            try appendTs5053(gpa, &diags, "mapRoot", "mapRoot", "inlineSourceMap");
+        }
         if (co.source_map != true and co.inline_source_map != true) {
             if (co.inline_sources == true) {
                 try appendTs5051(gpa, &diags, "inlineSources", "inlineSources");
@@ -438,6 +471,16 @@ pub const TsConfig = struct {
         }
         if (co.isolated_declarations == true and co.allow_js == true) {
             try appendTs5053(gpa, &diags, "allowJs", "allowJs", "isolatedDeclarations");
+        }
+        if (co.out_file != null and (co.isolated_modules == true or co.verbatim_module_syntax == true)) {
+            const conflicting = if (co.verbatim_module_syntax == true) "verbatimModuleSyntax" else "isolatedModules";
+            try appendTs5053(gpa, &diags, "outFile", "outFile", conflicting);
+        }
+        if (co.declaration_dir != null and co.out_file != null) {
+            try appendTs5053(gpa, &diags, "declarationDir", "declarationDir", "outFile");
+        }
+        if (co.lib != null and co.no_lib == true) {
+            try appendTs5053(gpa, &diags, "lib", "lib", "noLib");
         }
         if (co.jsx_factory) |jsx_factory| {
             if (co.react_namespace != null) {
@@ -522,6 +565,13 @@ pub const TsConfig = struct {
                     });
                 }
             }
+            if (co.incremental == false) {
+                try diags.append(gpa, .{
+                    .code = 6379,
+                    .message = "Composite projects may not disable incremental compilation.",
+                    .field = "incremental",
+                });
+            }
         }
 
         return diags.toOwnedSlice(gpa);
@@ -539,6 +589,48 @@ pub const ValidationDiagnostic = struct {
     /// spans multiple fields equally.
     field: []const u8 = "",
 };
+
+const OptionDiagnosticKind = enum {
+    compiler,
+    watch,
+};
+
+fn appendOptionParseDiagnostic(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    diag: OptionParseDiagnostic,
+    kind: OptionDiagnosticKind,
+) !void {
+    const ts5023: u32 = 5023;
+    const ts5024: u32 = 5024;
+    const ts5025: u32 = 5025;
+    const ts5078: u32 = 5078;
+    const ts5079: u32 = 5079;
+    const ts5080: u32 = 5080;
+    const message = switch (kind) {
+        .compiler => switch (diag.code) {
+            ts5023 => try std.fmt.allocPrint(gpa, "Unknown compiler option '{s}'.", .{diag.option}),
+            ts5024 => try std.fmt.allocPrint(gpa, "Compiler option '{s}' requires a value of type {s}.", .{ diag.option, diag.expected }),
+            ts5025 => try std.fmt.allocPrint(gpa, "Unknown compiler option '{s}'. Did you mean '{s}'?", .{ diag.option, diag.suggestion.? }),
+            else => unreachable,
+        },
+        .watch => switch (diag.code) {
+            ts5078 => try std.fmt.allocPrint(gpa, "Unknown watch option '{s}'.", .{diag.option}),
+            ts5079 => try std.fmt.allocPrint(gpa, "Unknown watch option '{s}'. Did you mean '{s}'?", .{ diag.option, diag.suggestion.? }),
+            ts5080 => try std.fmt.allocPrint(gpa, "Watch option '{s}' requires a value of type {s}.", .{ diag.option, diag.expected }),
+            else => unreachable,
+        },
+    };
+    try diags.append(gpa, .{
+        .code = diag.code,
+        .message = message,
+        .owns_message = true,
+        .field = switch (kind) {
+            .compiler => "compilerOptions",
+            .watch => "watchOptions",
+        },
+    });
+}
 
 pub fn freeValidationDiagnostics(gpa: std.mem.Allocator, diags: []ValidationDiagnostic) void {
     for (diags) |d| {
@@ -904,6 +996,20 @@ fn appendTs5091(
     });
 }
 
+fn appendTs6082(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    option: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(gpa, "Only 'amd' and 'system' modules are supported alongside --{s}.", .{option});
+    try diags.append(gpa, .{
+        .code = 6082,
+        .message = msg,
+        .owns_message = true,
+        .field = option,
+    });
+}
+
 /// Mirrors TypeScript's `parseIsolatedEntityName` validity check for
 /// JSX factory options: IdentifierName (`.` IdentifierName)*, with
 /// reserved words allowed. The ASCII path is exact for the common
@@ -1023,6 +1129,182 @@ fn isIdentifierPartByte(ch: u8) bool {
     return isIdentifierStartByte(ch) or (ch >= '0' and ch <= '9');
 }
 
+const OptionValueKind = enum {
+    boolean,
+    string,
+    number,
+    array,
+    object,
+    string_or_array,
+
+    fn typeString(self: OptionValueKind) []const u8 {
+        return switch (self) {
+            .boolean => "boolean",
+            .string => "string",
+            .number => "number",
+            .array => "Array",
+            .object => "object",
+            .string_or_array => "string or Array",
+        };
+    }
+
+    fn matches(self: OptionValueKind, value: jsonc.Value) bool {
+        return switch (value) {
+            .null_ => true,
+            .bool_ => self == .boolean,
+            .number => self == .number,
+            .string => self == .string or self == .string_or_array,
+            .array => self == .array or self == .string_or_array,
+            .object => self == .object,
+        };
+    }
+};
+
+const OptionSpec = struct {
+    name: []const u8,
+    kind: OptionValueKind,
+};
+
+const compiler_option_specs = [_]OptionSpec{
+    .{ .name = "help", .kind = .boolean },
+    .{ .name = "watch", .kind = .boolean },
+    .{ .name = "preserveWatchOutput", .kind = .boolean },
+    .{ .name = "listFiles", .kind = .boolean },
+    .{ .name = "explainFiles", .kind = .boolean },
+    .{ .name = "listEmittedFiles", .kind = .boolean },
+    .{ .name = "pretty", .kind = .boolean },
+    .{ .name = "traceResolution", .kind = .boolean },
+    .{ .name = "diagnostics", .kind = .boolean },
+    .{ .name = "extendedDiagnostics", .kind = .boolean },
+    .{ .name = "generateCpuProfile", .kind = .string },
+    .{ .name = "generateTrace", .kind = .string },
+    .{ .name = "incremental", .kind = .boolean },
+    .{ .name = "declaration", .kind = .boolean },
+    .{ .name = "declarationMap", .kind = .boolean },
+    .{ .name = "emitDeclarationOnly", .kind = .boolean },
+    .{ .name = "sourceMap", .kind = .boolean },
+    .{ .name = "inlineSourceMap", .kind = .boolean },
+    .{ .name = "noCheck", .kind = .boolean },
+    .{ .name = "noEmit", .kind = .boolean },
+    .{ .name = "assumeChangesOnlyAffectDirectDependencies", .kind = .boolean },
+    .{ .name = "locale", .kind = .string },
+    .{ .name = "target", .kind = .string },
+    .{ .name = "module", .kind = .string },
+    .{ .name = "all", .kind = .boolean },
+    .{ .name = "version", .kind = .boolean },
+    .{ .name = "init", .kind = .boolean },
+    .{ .name = "project", .kind = .string },
+    .{ .name = "showConfig", .kind = .boolean },
+    .{ .name = "listFilesOnly", .kind = .boolean },
+    .{ .name = "ignoreConfig", .kind = .boolean },
+    .{ .name = "lib", .kind = .string_or_array },
+    .{ .name = "allowJs", .kind = .boolean },
+    .{ .name = "checkJs", .kind = .boolean },
+    .{ .name = "jsx", .kind = .string },
+    .{ .name = "outFile", .kind = .string },
+    .{ .name = "outDir", .kind = .string },
+    .{ .name = "rootDir", .kind = .string },
+    .{ .name = "composite", .kind = .boolean },
+    .{ .name = "tsBuildInfoFile", .kind = .string },
+    .{ .name = "removeComments", .kind = .boolean },
+    .{ .name = "importHelpers", .kind = .boolean },
+    .{ .name = "importsNotUsedAsValues", .kind = .string },
+    .{ .name = "downlevelIteration", .kind = .boolean },
+    .{ .name = "isolatedModules", .kind = .boolean },
+    .{ .name = "verbatimModuleSyntax", .kind = .boolean },
+    .{ .name = "isolatedDeclarations", .kind = .boolean },
+    .{ .name = "erasableSyntaxOnly", .kind = .boolean },
+    .{ .name = "libReplacement", .kind = .boolean },
+    .{ .name = "strict", .kind = .boolean },
+    .{ .name = "noImplicitAny", .kind = .boolean },
+    .{ .name = "strictNullChecks", .kind = .boolean },
+    .{ .name = "strictFunctionTypes", .kind = .boolean },
+    .{ .name = "strictBindCallApply", .kind = .boolean },
+    .{ .name = "strictPropertyInitialization", .kind = .boolean },
+    .{ .name = "strictBuiltinIteratorReturn", .kind = .boolean },
+    .{ .name = "stableTypeOrdering", .kind = .boolean },
+    .{ .name = "noImplicitThis", .kind = .boolean },
+    .{ .name = "useUnknownInCatchVariables", .kind = .boolean },
+    .{ .name = "alwaysStrict", .kind = .boolean },
+    .{ .name = "noUnusedLocals", .kind = .boolean },
+    .{ .name = "noUnusedParameters", .kind = .boolean },
+    .{ .name = "exactOptionalPropertyTypes", .kind = .boolean },
+    .{ .name = "noImplicitReturns", .kind = .boolean },
+    .{ .name = "noFallthroughCasesInSwitch", .kind = .boolean },
+    .{ .name = "noUncheckedIndexedAccess", .kind = .boolean },
+    .{ .name = "noImplicitOverride", .kind = .boolean },
+    .{ .name = "noPropertyAccessFromIndexSignature", .kind = .boolean },
+    .{ .name = "moduleResolution", .kind = .string },
+    .{ .name = "baseUrl", .kind = .string },
+    .{ .name = "paths", .kind = .object },
+    .{ .name = "rootDirs", .kind = .string_or_array },
+    .{ .name = "typeRoots", .kind = .string_or_array },
+    .{ .name = "types", .kind = .string_or_array },
+    .{ .name = "allowSyntheticDefaultImports", .kind = .boolean },
+    .{ .name = "esModuleInterop", .kind = .boolean },
+    .{ .name = "preserveSymlinks", .kind = .boolean },
+    .{ .name = "allowUmdGlobalAccess", .kind = .boolean },
+    .{ .name = "moduleSuffixes", .kind = .array },
+    .{ .name = "allowImportingTsExtensions", .kind = .boolean },
+    .{ .name = "rewriteRelativeImportExtensions", .kind = .boolean },
+    .{ .name = "resolvePackageJsonExports", .kind = .boolean },
+    .{ .name = "resolvePackageJsonImports", .kind = .boolean },
+    .{ .name = "customConditions", .kind = .array },
+    .{ .name = "noUncheckedSideEffectImports", .kind = .boolean },
+    .{ .name = "sourceRoot", .kind = .string },
+    .{ .name = "mapRoot", .kind = .string },
+    .{ .name = "inlineSources", .kind = .boolean },
+    .{ .name = "experimentalDecorators", .kind = .boolean },
+    .{ .name = "emitDecoratorMetadata", .kind = .boolean },
+    .{ .name = "jsxFactory", .kind = .string },
+    .{ .name = "jsxFragmentFactory", .kind = .string },
+    .{ .name = "jsxImportSource", .kind = .string },
+    .{ .name = "resolveJsonModule", .kind = .boolean },
+    .{ .name = "allowArbitraryExtensions", .kind = .boolean },
+    .{ .name = "out", .kind = .string },
+    .{ .name = "reactNamespace", .kind = .string },
+    .{ .name = "skipDefaultLibCheck", .kind = .boolean },
+    .{ .name = "charset", .kind = .string },
+    .{ .name = "emitBOM", .kind = .boolean },
+    .{ .name = "newLine", .kind = .string },
+    .{ .name = "noErrorTruncation", .kind = .boolean },
+    .{ .name = "noLib", .kind = .boolean },
+    .{ .name = "noResolve", .kind = .boolean },
+    .{ .name = "stripInternal", .kind = .boolean },
+    .{ .name = "disableSizeLimit", .kind = .boolean },
+    .{ .name = "disableSourceOfProjectReferenceRedirect", .kind = .boolean },
+    .{ .name = "disableSolutionSearching", .kind = .boolean },
+    .{ .name = "disableReferencedProjectLoad", .kind = .boolean },
+    .{ .name = "noImplicitUseStrict", .kind = .boolean },
+    .{ .name = "noEmitHelpers", .kind = .boolean },
+    .{ .name = "noEmitOnError", .kind = .boolean },
+    .{ .name = "preserveConstEnums", .kind = .boolean },
+    .{ .name = "declarationDir", .kind = .string },
+    .{ .name = "skipLibCheck", .kind = .boolean },
+    .{ .name = "allowUnusedLabels", .kind = .boolean },
+    .{ .name = "allowUnreachableCode", .kind = .boolean },
+    .{ .name = "suppressExcessPropertyErrors", .kind = .boolean },
+    .{ .name = "suppressImplicitAnyIndexErrors", .kind = .boolean },
+    .{ .name = "forceConsistentCasingInFileNames", .kind = .boolean },
+    .{ .name = "maxNodeModuleJsDepth", .kind = .number },
+    .{ .name = "noStrictGenericChecks", .kind = .boolean },
+    .{ .name = "useDefineForClassFields", .kind = .boolean },
+    .{ .name = "preserveValueImports", .kind = .boolean },
+    .{ .name = "keyofStringsOnly", .kind = .boolean },
+    .{ .name = "plugins", .kind = .array },
+    .{ .name = "moduleDetection", .kind = .string },
+    .{ .name = "ignoreDeprecations", .kind = .string },
+};
+
+const watch_option_specs = [_]OptionSpec{
+    .{ .name = "watchFile", .kind = .string },
+    .{ .name = "watchDirectory", .kind = .string },
+    .{ .name = "fallbackPolling", .kind = .string },
+    .{ .name = "synchronousWatchDirectory", .kind = .boolean },
+    .{ .name = "excludeDirectories", .kind = .array },
+    .{ .name = "excludeFiles", .kind = .array },
+};
+
 pub const LoadError = error{
     NotAnObject,
     InvalidExtends,
@@ -1036,6 +1318,66 @@ pub const LoadError = error{
     InvalidEscape,
     DuplicateKey,
 };
+
+fn findOptionSpec(specs: []const OptionSpec, name: []const u8) ?OptionSpec {
+    for (specs) |spec| {
+        if (std.ascii.eqlIgnoreCase(name, spec.name)) return spec;
+    }
+    return null;
+}
+
+fn collectOptionParseDiagnostics(
+    arena: std.mem.Allocator,
+    obj: jsonc.Value.Object,
+    specs: []const OptionSpec,
+    unknown_code: u32,
+    unknown_suggestion_code: u32,
+    type_mismatch_code: u32,
+) ![]OptionParseDiagnostic {
+    var out: std.ArrayListUnmanaged(OptionParseDiagnostic) = .empty;
+    for (obj.keys, 0..) |key, i| {
+        if (findOptionSpec(specs, key)) |spec| {
+            if (!spec.kind.matches(obj.values[i])) {
+                try out.append(arena, .{
+                    .code = type_mismatch_code,
+                    .option = key,
+                    .expected = spec.kind.typeString(),
+                });
+            }
+        } else {
+            if (optionSuggestion(key, specs)) |suggestion| {
+                try out.append(arena, .{
+                    .code = unknown_suggestion_code,
+                    .option = key,
+                    .suggestion = suggestion,
+                });
+            } else {
+                try out.append(arena, .{
+                    .code = unknown_code,
+                    .option = key,
+                });
+            }
+        }
+    }
+    return out.toOwnedSlice(arena);
+}
+
+fn optionSuggestion(option: []const u8, specs: []const OptionSpec) ?[]const u8 {
+    var best: ?[]const u8 = null;
+    var best_distance: usize = std.math.maxInt(usize);
+    for (specs) |spec| {
+        const max_len_diff = @max(@as(usize, 2), option.len * 34 / 100);
+        const len_diff = if (option.len > spec.name.len) option.len - spec.name.len else spec.name.len - option.len;
+        if (len_diff > max_len_diff) continue;
+        const distance = levenshteinIcase(option, spec.name);
+        if (distance < best_distance) {
+            best = spec.name;
+            best_distance = distance;
+        }
+    }
+    const threshold = option.len * 4 / 10 + 1;
+    return if (best != null and best_distance < threshold) best else null;
+}
 
 /// Parse a tsconfig from raw JSONC source. Allocates into `arena`.
 pub fn parseString(
@@ -1058,6 +1400,8 @@ pub fn parseString(
         .exclude = null,
         .references = &.{},
         .unknown_type_acquisition_options = &.{},
+        .compiler_option_parse_diagnostics = &.{},
+        .watch_option_parse_diagnostics = &.{},
     };
 
     // extends: string or [string]
@@ -1111,8 +1455,28 @@ pub fn parseString(
             cfg.unknown_type_acquisition_options = try collectUnknownTypeAcquisitionOptions(arena, ta);
         }
     }
+    if (root.get("watchOptions")) |wo_v| {
+        if (wo_v.asObject()) |wo| {
+            cfg.watch_option_parse_diagnostics = try collectOptionParseDiagnostics(
+                arena,
+                wo,
+                &watch_option_specs,
+                5078,
+                5079,
+                5080,
+            );
+        }
+    }
     if (root.get("compilerOptions")) |co_v| {
         if (co_v.asObject()) |co| {
+            cfg.compiler_option_parse_diagnostics = try collectOptionParseDiagnostics(
+                arena,
+                co,
+                &compiler_option_specs,
+                5023,
+                5025,
+                5024,
+            );
             try fillCompilerOptions(arena, &cfg.compiler_options, co);
         }
     }
@@ -1206,6 +1570,9 @@ fn fillCompilerOptions(arena: std.mem.Allocator, co: *CompilerOptions, obj: json
     while (i < obj.keys.len) : (i += 1) {
         const key = obj.keys[i];
         const value = obj.values[i];
+        if (findOptionSpec(&compiler_option_specs, key)) |spec| {
+            if (!spec.kind.matches(value)) continue;
+        }
 
         // Boolean flags — list once, dispatch via comptime.
         const Bool = struct { name: []const u8, field: []const u8 };
@@ -1279,6 +1646,7 @@ fn fillCompilerOptions(arena: std.mem.Allocator, co: *CompilerOptions, obj: json
         const Str = struct { name: []const u8, field: []const u8 };
         const str_table = comptime [_]Str{
             .{ .name = "baseUrl", .field = "base_url" },
+            .{ .name = "outFile", .field = "out_file" },
             .{ .name = "outDir", .field = "out_dir" },
             .{ .name = "rootDir", .field = "root_dir" },
             .{ .name = "declarationDir", .field = "declaration_dir" },
@@ -1408,6 +1776,12 @@ pub fn merge(arena: std.mem.Allocator, base: TsConfig, child: TsConfig) !TsConfi
     if (child.extends.len > 0) merged.extends = child.extends;
     if (child.unknown_type_acquisition_options.len > 0) {
         merged.unknown_type_acquisition_options = child.unknown_type_acquisition_options;
+    }
+    if (child.compiler_option_parse_diagnostics.len > 0) {
+        merged.compiler_option_parse_diagnostics = child.compiler_option_parse_diagnostics;
+    }
+    if (child.watch_option_parse_diagnostics.len > 0) {
+        merged.watch_option_parse_diagnostics = child.watch_option_parse_diagnostics;
     }
     merged.has_extends = base.has_extends or child.has_extends;
     return merged;
@@ -1563,14 +1937,15 @@ test "tsconfig: lib array" {
     try t.expectEqualStrings("dom", lib[1]);
 }
 
-test "tsconfig: noEmit + skipLibCheck" {
+test "tsconfig: noEmit + skipLibCheck + outFile" {
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
     const cfg = try parseString(t.allocator, arena.allocator(),
-        \\{ "compilerOptions": { "noEmit": true, "skipLibCheck": true } }
+        \\{ "compilerOptions": { "noEmit": true, "skipLibCheck": true, "outFile": "bundle.js" } }
     );
     try t.expectEqual(@as(?bool, true), cfg.compiler_options.no_emit);
     try t.expectEqual(@as(?bool, true), cfg.compiler_options.skip_lib_check);
+    try t.expectEqualStrings("bundle.js", cfg.compiler_options.out_file.?);
 }
 
 test "tsconfig: unknown keys preserved in extra" {
@@ -1585,6 +1960,52 @@ test "tsconfig: unknown keys preserved in extra" {
     try t.expectEqualStrings("alsoUnknown", extra[1].key);
     try t.expectEqual(true, extra[0].value.asBool().?);
     try t.expectEqualStrings("value", extra[1].value.asString().?);
+}
+
+test "tsconfig.validate: compiler option table reports TS5023 TS5024 and TS5025" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "noEmt": true,
+        \\    "futureFlag": true,
+        \\    "strict": "yes"
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 3), diags.len);
+    try t.expectEqual(@as(u32, 5025), diags[0].code);
+    try t.expectEqualStrings("Unknown compiler option 'noEmt'. Did you mean 'noEmit'?", diags[0].message);
+    try t.expectEqual(@as(u32, 5023), diags[1].code);
+    try t.expectEqualStrings("Unknown compiler option 'futureFlag'.", diags[1].message);
+    try t.expectEqual(@as(u32, 5024), diags[2].code);
+    try t.expectEqualStrings("Compiler option 'strict' requires a value of type boolean.", diags[2].message);
+}
+
+test "tsconfig.validate: watchOptions reports TS5078 TS5079 and TS5080" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "watchOptions": {
+        \\    "watchFyle": "usefsevents",
+        \\    "watchMagic": true,
+        \\    "excludeFiles": "dist/**/*.ts"
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 3), diags.len);
+    try t.expectEqual(@as(u32, 5079), diags[0].code);
+    try t.expectEqualStrings("Unknown watch option 'watchFyle'. Did you mean 'watchFile'?", diags[0].message);
+    try t.expectEqual(@as(u32, 5078), diags[1].code);
+    try t.expectEqualStrings("Unknown watch option 'watchMagic'.", diags[1].message);
+    try t.expectEqual(@as(u32, 5080), diags[2].code);
+    try t.expectEqualStrings("Watch option 'excludeFiles' requires a value of type Array.", diags[2].message);
 }
 
 test "tsconfig: invalid module value rejected" {
@@ -2187,7 +2608,7 @@ test "tsconfig.validate: package-json and TS extension options accept supported 
         \\    "resolvePackageJsonImports": true,
         \\    "customConditions": ["home"],
         \\    "allowImportingTsExtensions": true,
-        \\    "rewriteRelativeImportExtensions": true
+        \\    "noEmit": true
         \\  }
         \\}
     );
@@ -2195,6 +2616,121 @@ test "tsconfig.validate: package-json and TS extension options accept supported 
     defer freeValidationDiagnostics(t.allocator, diags);
     try t.expectEqual(@as(usize, 0), diags.len);
     try t.expectEqualStrings("home", cfg.compiler_options.custom_conditions.?[0]);
+}
+
+test "tsconfig.validate: rewriteRelativeImportExtensions alone satisfies TS5096 gate" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "rewriteRelativeImportExtensions": true } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 0), diags.len);
+}
+
+test "tsconfig.validate: outFile reports TS6082 for non-bundling modules" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "outFile": "bundle.js", "module": "commonjs" } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 2), diags.len);
+    try t.expectEqual(@as(u32, 6082), diags[0].code);
+    try t.expectEqualStrings("outFile", diags[0].field);
+    try t.expectEqualStrings("Only 'amd' and 'system' modules are supported alongside --outFile.", diags[0].message);
+    try t.expectEqual(@as(u32, 6082), diags[1].code);
+    try t.expectEqualStrings("module", diags[1].field);
+    try t.expectEqualStrings("Only 'amd' and 'system' modules are supported alongside --module.", diags[1].message);
+}
+
+test "tsconfig.validate: outFile accepts amd system and implicit module" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+
+    const amd = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "outFile": "bundle.js", "module": "amd" } }
+    );
+    const amd_diags = try amd.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, amd_diags);
+    try t.expectEqual(@as(usize, 0), amd_diags.len);
+
+    const system = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "outFile": "bundle.js", "module": "system" } }
+    );
+    const system_diags = try system.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, system_diags);
+    try t.expectEqual(@as(usize, 0), system_diags.len);
+
+    const implicit = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "outFile": "bundle.js" } }
+    );
+    const implicit_diags = try implicit.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, implicit_diags);
+    try t.expectEqual(@as(usize, 0), implicit_diags.len);
+}
+
+test "tsconfig.validate: outFile declarationDir and lib conflicts report TS5053" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "outFile": "bundle.js",
+        \\    "isolatedModules": true,
+        \\    "declaration": true,
+        \\    "declarationDir": "types",
+        \\    "lib": ["es2024"],
+        \\    "noLib": true
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 3), diags.len);
+    try t.expectEqual(@as(u32, 5053), diags[0].code);
+    try t.expectEqualStrings("Option 'outFile' cannot be specified with option 'isolatedModules'.", diags[0].message);
+    try t.expectEqual(@as(u32, 5053), diags[1].code);
+    try t.expectEqualStrings("Option 'declarationDir' cannot be specified with option 'outFile'.", diags[1].message);
+    try t.expectEqual(@as(u32, 5053), diags[2].code);
+    try t.expectEqualStrings("Option 'lib' cannot be specified with option 'noLib'.", diags[2].message);
+}
+
+test "tsconfig.validate: inlineSourceMap companion conflicts report TS5053" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "inlineSourceMap": true,
+        \\    "sourceMap": true,
+        \\    "mapRoot": "maps"
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 2), diags.len);
+    try t.expectEqual(@as(u32, 5053), diags[0].code);
+    try t.expectEqualStrings("Option 'sourceMap' cannot be specified with option 'inlineSourceMap'.", diags[0].message);
+    try t.expectEqual(@as(u32, 5053), diags[1].code);
+    try t.expectEqualStrings("Option 'mapRoot' cannot be specified with option 'inlineSourceMap'.", diags[1].message);
+}
+
+test "tsconfig.validate: composite with incremental false reports TS6379" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "composite": true, "incremental": false } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), diags.len);
+    try t.expectEqual(@as(u32, 6379), diags[0].code);
+    try t.expectEqualStrings("incremental", diags[0].field);
+    try t.expectEqualStrings("Composite projects may not disable incremental compilation.", diags[0].message);
 }
 
 test "tsconfig.validate: node moduleResolution reports TS5110 for incompatible module" {

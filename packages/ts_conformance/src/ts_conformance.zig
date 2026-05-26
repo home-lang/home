@@ -1522,6 +1522,28 @@ pub const DirectoryLoadOptions = struct {
     /// outside the requested slice.
     load_start: usize = 0,
     load_limit: ?usize = null,
+    /// Optional loader accounting sink. When provided, the loader fills
+    /// this with source/baseline coverage for the full directory walk
+    /// and the selected window.
+    coverage: ?*DirectoryCoverage = null,
+};
+
+pub const DirectoryCoverage = struct {
+    eligible_sources: u32 = 0,
+    eligible_ts_sources: u32 = 0,
+    eligible_tsx_sources: u32 = 0,
+    loaded_sources: u32 = 0,
+    window_skipped_sources: u32 = 0,
+    direct_error_baselines: u32 = 0,
+    variant_error_baselines: u32 = 0,
+    option_only_error_baselines: u32 = 0,
+    exact_header_baselines: u32 = 0,
+    expected_error_sources: u32 = 0,
+    expected_clean_sources: u32 = 0,
+
+    pub fn baselineBackedSources(self: DirectoryCoverage) u32 {
+        return self.direct_error_baselines + self.variant_error_baselines;
+    }
 };
 
 /// Walk `dir_path` recursively and collect every `.ts` / `.tsx`
@@ -1541,6 +1563,7 @@ pub fn loadDirectoryWithOptions(
     dir_path: []const u8,
     options: DirectoryLoadOptions,
 ) ![]OwnedCorpusEntry {
+    if (options.coverage) |coverage| coverage.* = .{};
     var out: std.ArrayListUnmanaged(OwnedCorpusEntry) = .empty;
     errdefer {
         for (out.items) |entry| freeOwnedCorpusEntry(gpa, entry);
@@ -1562,9 +1585,20 @@ pub fn loadDirectoryWithOptions(
         const is_ts = std.mem.endsWith(u8, entry.basename, ".ts");
         const basename_is_tsx = std.mem.endsWith(u8, entry.basename, ".tsx");
         if (!is_ts and !basename_is_tsx) continue;
+        if (options.coverage) |coverage| {
+            coverage.eligible_sources += 1;
+            if (basename_is_tsx) {
+                coverage.eligible_tsx_sources += 1;
+            } else {
+                coverage.eligible_ts_sources += 1;
+            }
+        }
         const include_entry = code_index >= options.load_start and code_index < load_end;
         code_index += 1;
-        if (!include_entry) continue;
+        if (!include_entry) {
+            if (options.coverage) |coverage| coverage.window_skipped_sources += 1;
+            continue;
+        }
         // Open through the iterating root so paths are dir-relative.
         const src = read_src: {
             var file = entry.dir.openFile(io, entry.basename, .{}) catch continue;
@@ -1608,8 +1642,9 @@ pub fn loadDirectoryWithOptions(
         const raw_source: []u8 = if (stripped != null) src else &.{};
         const ext_dot = std.mem.lastIndexOfScalar(u8, entry.basename, '.') orelse ext_end;
         const stem = entry.basename[0..ext_dot];
-        const baseline_path = try errorBaselinePath(gpa, options.baseline_root, stem);
-        defer if (baseline_path) |p| gpa.free(p);
+        const baseline_info = try errorBaselineInfo(gpa, options.baseline_root, stem);
+        defer if (baseline_info) |info| gpa.free(info.path);
+        const baseline_path: ?[]const u8 = if (baseline_info) |info| info.path else null;
         const baseline_only_option_deprecation = if (baseline_path) |bp|
             try baselineHasOnlyOptionDeprecation(gpa, bp)
         else
@@ -1759,6 +1794,25 @@ pub fn loadDirectoryWithOptions(
             .raw_source = raw_source,
             .baseline_module_resolution = baseline_mr,
         });
+        if (options.coverage) |coverage| {
+            coverage.loaded_sources += 1;
+            if (baseline_info) |info| {
+                switch (info.kind) {
+                    .direct => coverage.direct_error_baselines += 1,
+                    .variant => coverage.variant_error_baselines += 1,
+                }
+                if (baseline_only_option_deprecation) {
+                    coverage.option_only_error_baselines += 1;
+                } else if (use_exact_errors and expected_errors.len > 0) {
+                    coverage.exact_header_baselines += 1;
+                }
+            }
+            if (expects_error) {
+                coverage.expected_error_sources += 1;
+            } else {
+                coverage.expected_clean_sources += 1;
+            }
+        }
     }
     return out.toOwnedSlice(gpa);
 }
@@ -2203,7 +2257,20 @@ fn hasErrorBaseline(gpa: std.mem.Allocator, baseline_root: ?[]const u8, stem: []
     return path != null;
 }
 
+const ErrorBaselineKind = enum { direct, variant };
+
+const ErrorBaselineInfo = struct {
+    path: []u8,
+    kind: ErrorBaselineKind,
+};
+
 fn errorBaselinePath(gpa: std.mem.Allocator, baseline_root: ?[]const u8, stem: []const u8) !?[]u8 {
+    const info = try errorBaselineInfo(gpa, baseline_root, stem);
+    if (info) |baseline| return baseline.path;
+    return null;
+}
+
+fn errorBaselineInfo(gpa: std.mem.Allocator, baseline_root: ?[]const u8, stem: []const u8) !?ErrorBaselineInfo {
     const root = baseline_root orelse return null;
     const path = try std.fmt.allocPrint(gpa, "{s}/{s}.errors.txt", .{ root, stem });
     var threaded = std.Io.Threaded.init(gpa, .{});
@@ -2211,9 +2278,11 @@ fn errorBaselinePath(gpa: std.mem.Allocator, baseline_root: ?[]const u8, stem: [
     const io = threaded.io();
     std.Io.Dir.cwd().access(io, path, .{}) catch {
         gpa.free(path);
-        return try variantErrorBaselinePath(gpa, root, stem);
+        const variant_path = try variantErrorBaselinePath(gpa, root, stem);
+        if (variant_path) |vp| return .{ .path = vp, .kind = .variant };
+        return null;
     };
-    return path;
+    return .{ .path = path, .kind = .direct };
 }
 
 fn variantErrorBaselinePath(gpa: std.mem.Allocator, root: []const u8, stem: []const u8) !?[]u8 {
@@ -49978,6 +50047,41 @@ test "conformance: discovers option-suffixed upstream error baselines" {
     try T.expect(std.mem.endsWith(u8, found.?, "sample(nouncheckedindexedaccess=false).errors.txt"));
 }
 
+test "conformance: loader coverage accounts compiler window and baselines" {
+    const paths_or_null = try resolveTsCaseFamilyPaths(T.allocator, "compiler");
+    if (paths_or_null == null) return;
+    const paths = paths_or_null.?;
+    defer {
+        T.allocator.free(paths.cases);
+        T.allocator.free(paths.baselines);
+    }
+
+    var coverage: DirectoryCoverage = .{};
+    const corpus = try loadDirectoryWithOptions(T.allocator, paths.cases, .{
+        .baseline_root = paths.baselines,
+        .strict_default_for_expected_errors = true,
+        .exact_error_headers = true,
+        .load_limit = 25,
+        .coverage = &coverage,
+    });
+    defer {
+        for (corpus) |entry| freeOwnedCorpusEntry(T.allocator, entry);
+        T.allocator.free(corpus);
+    }
+
+    try T.expectEqual(@as(usize, 25), corpus.len);
+    try T.expectEqual(@as(u32, 25), coverage.loaded_sources);
+    try T.expect(coverage.eligible_sources > coverage.loaded_sources);
+    try T.expectEqual(coverage.eligible_sources, coverage.loaded_sources + coverage.window_skipped_sources);
+    try T.expect(coverage.eligible_ts_sources > 1000);
+    try T.expect(coverage.eligible_tsx_sources > 0);
+    try T.expect(coverage.direct_error_baselines >= 1);
+    try T.expect(coverage.baselineBackedSources() >= coverage.direct_error_baselines);
+    try T.expect(coverage.exact_header_baselines >= 1);
+    try T.expect(coverage.expected_error_sources >= 1);
+    try T.expect(coverage.expected_clean_sources >= 1);
+}
+
 test "conformance: runCorpus supports exact diagnostic entries" {
     const exact = [_]CorpusEntry{
         .{
@@ -50339,12 +50443,14 @@ fn runOptInTsSuiteFamily(
     const want_exact = envBoolOne(exact_env);
     const trace_fixtures = envBoolOne(trace_env);
 
+    var coverage: DirectoryCoverage = .{};
     const corpus = try loadDirectoryWithOptions(T.allocator, paths.cases, .{
         .baseline_root = paths.baselines,
         .strict_default_for_expected_errors = true,
         .exact_error_headers = want_exact,
         .load_start = requested_start,
         .load_limit = requested_limit,
+        .coverage = &coverage,
     });
     defer {
         for (corpus) |entry| freeOwnedCorpusEntry(T.allocator, entry);
@@ -50392,6 +50498,7 @@ fn runOptInTsSuiteFamily(
         "[ts_suite {s}] total={d} passed={d} failed={d} skipped={d} pass_rate={d:.2}\n",
         .{ label, stats.total(), stats.passed, stats.failed, stats.skipped, stats.passRate() },
     );
+    printDirectoryCoverage("ts_suite", label, coverage);
 
     const fail_cap: u32 = if (want_exact) 200 else 20;
     var printed: u32 = 0;
@@ -50407,6 +50514,32 @@ fn runOptInTsSuiteFamily(
     } else {
         try T.expectEqual(@as(u32, @intCast(corpus.len)), stats.total());
     }
+}
+
+fn printDirectoryCoverage(
+    comptime prefix: []const u8,
+    comptime label: []const u8,
+    coverage: DirectoryCoverage,
+) void {
+    std.debug.print(
+        "[{s} {s}] coverage eligible={d} loaded={d} window_skipped={d} ts={d} tsx={d} baselines={d}(direct={d} variant={d} option_only={d} exact_headers={d}) expected_error={d} expected_clean={d}\n",
+        .{
+            prefix,
+            label,
+            coverage.eligible_sources,
+            coverage.loaded_sources,
+            coverage.window_skipped_sources,
+            coverage.eligible_ts_sources,
+            coverage.eligible_tsx_sources,
+            coverage.baselineBackedSources(),
+            coverage.direct_error_baselines,
+            coverage.variant_error_baselines,
+            coverage.option_only_error_baselines,
+            coverage.exact_header_baselines,
+            coverage.expected_error_sources,
+            coverage.expected_clean_sources,
+        },
+    );
 }
 
 // NOTE: an always-on exact-baseline ratchet test was prototyped
@@ -50466,12 +50599,14 @@ test "conformance: opt-in full local TypeScript corpus survey" {
     // on them. Leave the default on; exact-mode pass rate ratchets
     // through real semantic fixes, not by changing which strict
     // policy each case runs under.
+    var coverage: DirectoryCoverage = .{};
     const corpus = try loadDirectoryWithOptions(T.allocator, ts_root, .{
         .baseline_root = baseline_root,
         .strict_default_for_expected_errors = true,
         .exact_error_headers = want_exact,
         .load_start = requested_start,
         .load_limit = requested_limit,
+        .coverage = &coverage,
     });
     defer {
         for (corpus) |entry| freeOwnedCorpusEntry(T.allocator, entry);
@@ -50517,6 +50652,7 @@ test "conformance: opt-in full local TypeScript corpus survey" {
         "[ts_conformance full-corpus] total={d} passed={d} failed={d} skipped={d} pass_rate={d:.2}\n",
         .{ stats.total(), stats.passed, stats.failed, stats.skipped, stats.passRate() },
     );
+    printDirectoryCoverage("ts_conformance", "full-corpus", coverage);
 
     // 20 is fine for the coarse gate (which usually has 0 failures
     // once a slice ratchets clean), but 200 gives the exact-baseline

@@ -222,6 +222,16 @@ pub fn dispatch(opts: Options) RunResult {
     if (opts.show_help or opts.show_all_help) {
         return .{ .code = .success, .stdout_text = helpText };
     }
+    if (opts.project != null and opts.files.len != 0) {
+        const ts_project_cannot_mix_files: u32 = 5042;
+        return .{
+            .code = .config_error,
+            .stderr_text = std.fmt.comptimePrint(
+                "error TS{d}: Option 'project' cannot be mixed with source files on a command line.",
+                .{ts_project_cannot_mix_files},
+            ),
+        };
+    }
     if (opts.files.len == 0 and opts.project == null and !opts.init_config) {
         return .{
             .code = .config_error,
@@ -415,4 +425,13 @@ test "dispatch: --project sets up a compile run" {
     opts.project = "tsconfig.json";
     const r = dispatch(opts);
     try T.expectEqual(ExitCode.success, r.code);
+}
+
+test "dispatch: --project with source files reports TS5042" {
+    const files = [_][]const u8{"src/main.ts"};
+    var opts: Options = .{ .files = &files };
+    opts.project = "tsconfig.json";
+    const r = dispatch(opts);
+    try T.expectEqual(ExitCode.config_error, r.code);
+    try T.expect(std.mem.indexOf(u8, r.stderr_text, "TS5042") != null);
 }

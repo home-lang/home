@@ -1714,6 +1714,15 @@ pub const Parser = struct {
         }
         return switch (t.kind) {
             .kw_let, .kw_const, .kw_var => blk: {
+                if (self.peekAt(1).kind == .equal) {
+                    const bad = self.advance();
+                    try self.reportCodeAt(bad.span.start, bad.line, 1440, "Variable declaration not allowed at this location.");
+                    while (self.peek().kind != .semicolon and self.peek().kind != .eof and !self.peek().flags.preceded_by_newline) {
+                        _ = self.advance();
+                    }
+                    if (self.peek().kind == .semicolon) _ = self.advance();
+                    break :blk try self.builder.addBlock(.{ .start = bad.span.start, .end = self.tokens[self.cursor - 1].span.end }, &.{});
+                }
                 if (t.kind == .kw_let and
                     self.namespace_depth > 0 and
                     self.peekAt(1).kind == .semicolon)
@@ -2493,6 +2502,13 @@ pub const Parser = struct {
         if (tok.kind == .kw_class) {
             try self.reportCodeAt(tok.span.end, tok.line, 1005, "'{' expected.");
         }
+    }
+
+    fn reportInvalidParameterDeclarationName(self: *Parser, tok: Token) ParseError!void {
+        if (!tok.kind.isKeyword() or tok.kind.isContextualKeyword() or tok.kind.isModifierKeyword() or tok.kind == .kw_this) return;
+        const raw = self.source[tok.span.start..tok.span.end];
+        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' is not allowed as a parameter name.", .{raw});
+        try self.reportCodeAt(tok.span.start, tok.line, 1390, msg);
     }
 
     fn reportInvalidStrictIdentifierNode(self: *Parser, node: NodeId) ParseError!void {
@@ -3853,6 +3869,7 @@ pub const Parser = struct {
                     if (name_tok.kind == .private_identifier) {
                         try self.reportCodeAt(name_tok.span.start, name_tok.line, 18009, "Private identifiers cannot be used as parameters.");
                     }
+                    try self.reportInvalidParameterDeclarationName(name_tok);
                     if (!self.suppress_strict_param_names) try self.reportInvalidStrictName(name_tok);
                     try self.reportInvalidYieldName(name_tok, true);
                     try self.reportInvalidFutureReservedName(name_tok);
@@ -8069,6 +8086,85 @@ pub const Parser = struct {
         return expr;
     }
 
+    fn reportMissingSemicolonAfterIdentifierLike(self: *Parser) ParseError!bool {
+        if (self.cursor == 0) return false;
+        const prev = self.tokens[self.cursor - 1];
+        if (prev.kind != .identifier) return false;
+        const raw = self.source[prev.span.start..prev.span.end];
+        if (std.mem.eql(u8, raw, "const") or std.mem.eql(u8, raw, "let") or std.mem.eql(u8, raw, "var")) {
+            try self.reportCodeAt(prev.span.start, prev.line, 1440, "Variable declaration not allowed at this location.");
+            return true;
+        }
+        const suggestion = try self.keywordSuggestion(raw);
+        if (suggestion) |text| {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Unknown keyword or identifier. Did you mean '{s}'?",
+                .{text},
+            );
+            try self.reportCodeAt(prev.span.start, prev.line, 1435, msg);
+            return true;
+        }
+        return false;
+    }
+
+    fn keywordSuggestion(self: *Parser, raw: []const u8) ParseError!?[]const u8 {
+        const keywords = [_][]const u8{
+            "abstract",
+            "accessor",
+            "async",
+            "class",
+            "const",
+            "declare",
+            "function",
+            "interface",
+            "let",
+            "module",
+            "namespace",
+            "type",
+            "var",
+        };
+        for (keywords) |kw| {
+            if (raw.len > kw.len + 2 and std.mem.startsWith(u8, raw, kw)) {
+                return try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "{s} {s}",
+                    .{ kw, raw[kw.len..] },
+                );
+            }
+        }
+        for (keywords) |kw| {
+            if (keywordEditDistanceAtMostTwo(raw, kw)) return kw;
+        }
+        return null;
+    }
+
+    fn keywordEditDistanceAtMostTwo(a: []const u8, b: []const u8) bool {
+        if (a.len > b.len + 2 or b.len > a.len + 2) return false;
+        var row0: [32]u8 = undefined;
+        var row1: [32]u8 = undefined;
+        if (b.len + 1 > row0.len) return false;
+        var j: usize = 0;
+        while (j <= b.len) : (j += 1) row0[j] = @intCast(j);
+        var i: usize = 0;
+        while (i < a.len) : (i += 1) {
+            row1[0] = @intCast(i + 1);
+            var best: u8 = row1[0];
+            j = 0;
+            while (j < b.len) : (j += 1) {
+                const cost: u8 = if (a[i] == b[j]) 0 else 1;
+                const del = row0[j + 1] + 1;
+                const ins = row1[j] + 1;
+                const sub = row0[j] + cost;
+                row1[j + 1] = @min(@min(del, ins), sub);
+                best = @min(best, row1[j + 1]);
+            }
+            if (best > 2) return false;
+            @memcpy(row0[0 .. b.len + 1], row1[0 .. b.len + 1]);
+        }
+        return row0[b.len] <= 2;
+    }
+
     fn consumeStatementTerminator(self: *Parser) ParseError!void {
         if (self.match(.semicolon)) return;
         // ASI: if the next token starts on a new line, or is `}`, or is
@@ -8176,6 +8272,7 @@ pub const Parser = struct {
             _ = self.advance();
             return;
         }
+        if (try self.reportMissingSemicolonAfterIdentifierLike()) return;
         // §6.A 2000-3000 ratchet: align the missing-terminator
         // fallback with tsc's canonical TS1005 "';' expected." prose
         // rather than a Home-internal "expected ';' or newline after
@@ -9499,6 +9596,22 @@ pub const Parser = struct {
             _ = try self.expect(.colon, "':' in mapped type");
             const value = try self.parseTypeAnnotation();
             _ = self.match(.semicolon);
+            _ = self.match(.comma);
+            // TS7061 — `A mapped type may not declare properties or
+            // methods.` A mapped type body is `{ [K in T]: V }` only;
+            // any additional declared member (`{ [K in T]: V; foo: U }`)
+            // is illegal. tsc parses the extra members anyway then
+            // grammar-checks the FIRST one. We recover by draining the
+            // trailing member list (so the closing `}` still matches and
+            // no cascading "'}' expected" fires) and anchoring TS7061 at
+            // the first stray member. Mirrors `checkGrammarMappedType`.
+            if (self.peek().kind != .close_brace and self.peek().kind != .eof) {
+                const stray = self.peek();
+                try self.reportCodeAt(stray.span.start, stray.line, 7061, "A mapped type may not declare properties or methods.");
+                var stray_members: std.ArrayListUnmanaged(NodeId) = .empty;
+                defer stray_members.deinit(self.gpa);
+                try self.parseTypeMemberList(&stray_members);
+            }
             const close = try self.expect(.close_brace, "'}' to close mapped type");
             const tp = try self.builder.addTypeParameter(tokenSpan(k_tok), k_id, hir_mod.none_node_id, hir_mod.none_node_id, 0, false);
             return try self.builder.addMappedType(.{ .start = open.span.start, .end = close.span.end }, tp, constraint, value, remap, readonly_mod, optional_mod);
@@ -10081,18 +10194,41 @@ pub const Parser = struct {
         return !saw_content;
     }
 
-    fn indexSignatureKeyTypeIsValid(self: *const Parser, key_type: NodeId) bool {
+    const IndexSignatureKeyTypeKind = enum {
+        valid,
+        literal_or_generic,
+        invalid,
+    };
+
+    fn classifyIndexSignatureKeyType(self: *const Parser, key_type: NodeId) IndexSignatureKeyTypeKind {
         switch (self.hir.kindOf(key_type)) {
             .type_ref => {
                 const r = hir_mod.typeRefOf(self.hir, key_type);
-                if (r.qualifier_len != 0 or r.args_len != 0) return false;
+                if (r.args_len != 0) return .literal_or_generic;
+                if (r.qualifier_len != 0) return .invalid;
                 const name = self.interner.get(r.name);
-                return std.mem.eql(u8, name, "string") or
+                return if (std.mem.eql(u8, name, "string") or
                     std.mem.eql(u8, name, "number") or
-                    std.mem.eql(u8, name, "symbol");
+                    std.mem.eql(u8, name, "symbol"))
+                    .valid
+                else
+                    .invalid;
             },
-            .template_literal_type => return true,
-            else => return false,
+            .template_literal_type => return .valid,
+            .type_literal => return .literal_or_generic,
+            .union_type => {
+                for (hir_mod.unionTypeMembers(self.hir, key_type)) |member| {
+                    if (self.classifyIndexSignatureKeyType(member) == .literal_or_generic) return .literal_or_generic;
+                }
+                return .invalid;
+            },
+            .intersection_type => {
+                for (hir_mod.intersectionTypeMembers(self.hir, key_type)) |member| {
+                    if (self.classifyIndexSignatureKeyType(member) == .literal_or_generic) return .literal_or_generic;
+                }
+                return .invalid;
+            },
+            else => return .invalid,
         }
     }
 
@@ -10348,8 +10484,14 @@ pub const Parser = struct {
                 }
             }
         }
-        const key_type_valid = key_type != hir_mod.none_node_id and self.indexSignatureKeyTypeIsValid(key_type);
-        if (!key_type_valid and key_type != hir_mod.none_node_id) {
+        const key_type_kind = if (key_type != hir_mod.none_node_id)
+            self.classifyIndexSignatureKeyType(key_type)
+        else
+            IndexSignatureKeyTypeKind.invalid;
+        const key_type_valid = key_type != hir_mod.none_node_id and key_type_kind == .valid;
+        if (key_type_kind == .literal_or_generic) {
+            try self.reportCodeAt(id1.span.start, id1.line, 1337, "An index signature parameter type cannot be a literal type or generic type. Consider using a mapped object type instead.");
+        } else if (!key_type_valid and key_type != hir_mod.none_node_id) {
             // Only emit TS1268 when there IS a key type and it's of the
             // wrong shape. The missing-key-type case already surfaced
             // TS1022 above; suppressing TS1268 here keeps the diagnostic
@@ -14078,6 +14220,29 @@ pub const Parser = struct {
         try self.reportCodeAt(expr_span.start, line, 18007, "JSX expressions may not use the comma operator. Did you mean to write an array?");
     }
 
+    fn reportJsxUnexpectedTextTokens(self: *Parser, start: u32, end: u32) ParseError!void {
+        if (end <= start or end > self.source.len) return;
+        var i: usize = @intCast(start);
+        const stop: usize = @intCast(end);
+        while (i < stop) : (i += 1) {
+            switch (self.source[i]) {
+                '}' => try self.reportCodeAt(
+                    @intCast(i),
+                    self.lineForPos(@intCast(i)),
+                    1381,
+                    "Unexpected token. Did you mean `{'}'}` or `&rbrace;`?",
+                ),
+                '>' => try self.reportCodeAt(
+                    @intCast(i),
+                    self.lineForPos(@intCast(i)),
+                    1382,
+                    "Unexpected token. Did you mean `{'>'}` or `&gt;`?",
+                ),
+                else => {},
+            }
+        }
+    }
+
     fn newExpressionTypeArgsCanEndHere(self: *const Parser) bool {
         return switch (self.peek().kind) {
             .eof,
@@ -14580,6 +14745,7 @@ pub const Parser = struct {
                         const part = self.advance();
                         text_end = part.span.end;
                     }
+                    try self.reportJsxUnexpectedTextTokens(text_start, text_end);
                     if (self.jsxTextShouldBecomeChild(text_start, text_end)) {
                         const id = self.interner.intern(self.source[text_start..text_end]) catch return error.OutOfMemory;
                         const text = try self.builder.addLiteralString(.{ .start = text_start, .end = text_end }, id);
@@ -19236,6 +19402,43 @@ test "parser: jsx grammar diagnostics report duplicate attrs comma expressions a
     try T.expectEqual(@as(usize, 1), ts17002_count);
     try T.expectEqual(@as(usize, 1), ts17008_count);
     try T.expectEqual(@as(usize, 2), ts18007_count);
+}
+
+test "parser: jsx text reports raw brace and greater-than escape suggestions" {
+    const cases = [_]struct {
+        src: []const u8,
+        code: u32,
+        message: []const u8,
+    }{
+        .{
+            .src = "let brace = <div>hello } world</div>;",
+            .code = 1381,
+            .message = "Unexpected token. Did you mean `{'}'}` or `&rbrace;`?",
+        },
+        .{
+            .src = "let gt = <div>hello > world</div>;",
+            .code = 1382,
+            .message = "Unexpected token. Did you mean `{'>'}` or `&gt;`?",
+        },
+    };
+    inline for (cases) |case| {
+        var s = try newTsxTestSetup(case.src);
+        defer destroyTestSetup(s);
+        _ = s.parser.parseSourceFile() catch {};
+
+        try T.expectEqual(@as(u32, 1), countDiag(s, case.code));
+        const diag = findDiag(s, case.code) orelse return error.MissingDiagnostic;
+        try T.expectEqualStrings(case.message, diag.message);
+    }
+}
+
+test "parser: jsx escaped brace and greater-than text stays clean" {
+    var s = try newTsxTestSetup("let ok = <div>&rbrace; &gt; {'>'} {'}'}</div>;");
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1381));
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1382));
 }
 
 test "parser: jsx empty attribute initializer reports TS1145" {
@@ -24143,5 +24346,70 @@ test "parser: TS1179 stays clean for well-formed heritage clauses" {
         defer destroyTestSetup(s);
         _ = try s.parser.parseSourceFile();
         try T.expectEqual(@as(u32, 0), countDiag(s, 1179));
+    }
+}
+
+test "parser: misspelled declaration heads report TS1435 suggestions" {
+    const cases = [_]struct {
+        src: []const u8,
+        suggestion: []const u8,
+    }{
+        .{ .src = "asynd function f() {}", .suggestion = "async" },
+        .{ .src = "classs C {}", .suggestion = "class" },
+        .{ .src = "declareconst x;", .suggestion = "declare const" },
+        .{ .src = "typed Alias = string;", .suggestion = "type" },
+    };
+    inline for (cases) |case| {
+        var s = try newTestSetup(case.src);
+        defer destroyTestSetup(s);
+        _ = s.parser.parseSourceFile() catch {};
+        const d = findDiag(s, 1435) orelse return error.MissingDiagnostic;
+        const expected = try std.fmt.allocPrint(
+            s.parser.diag_arena.allocator(),
+            "Unknown keyword or identifier. Did you mean '{s}'?",
+            .{case.suggestion},
+        );
+        try T.expectEqualStrings(expected, d.message);
+    }
+}
+
+test "parser: declaration keyword in expression recovery reports TS1440" {
+    const src = "const = 1";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+    const d = findDiag(s, 1440) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Variable declaration not allowed at this location.", d.message);
+}
+
+test "parser: reserved words used as parameter names report TS1390" {
+    const src =
+        \\function f1(enum) {}
+        \\function f2(class) {}
+        \\function f3(function) {}
+        \\function f4(while) {}
+        \\function f5(for) {}
+    ;
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+    try T.expectEqual(@as(u32, 5), countDiag(s, 1390));
+    const first = findDiag(s, 1390) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("'enum' is not allowed as a parameter name.", first.message);
+}
+
+test "parser: index signature literal and generic key types report TS1337" {
+    const cases = [_][]const u8{
+        "interface I { [k: 'foo']: string; }",
+        "interface I { [k: 1 | 2]: string; }",
+        "interface I { [k: Record<string, string>]: string; }",
+    };
+    inline for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = s.parser.parseSourceFile() catch {};
+        const d = findDiag(s, 1337) orelse return error.MissingDiagnostic;
+        try T.expectEqualStrings("An index signature parameter type cannot be a literal type or generic type. Consider using a mapped object type instead.", d.message);
+        try T.expectEqual(@as(u32, 0), countDiag(s, 1268));
     }
 }
