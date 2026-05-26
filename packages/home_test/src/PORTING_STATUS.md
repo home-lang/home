@@ -68,6 +68,17 @@ tranche is:
 | Resolver cache behavior | `bundler/resolver/cache-invalidation.test.ts`, `bundler/resolver/cache-node-compat.test.ts`, `bundler/resolver/cache-runtime.test.ts` | Repeated in-process `Bun.build()` / `require()` cache invalidation, filesystem mutation, Node-vs-Bun subprocess comparison |
 | Native plugin final | `bundler/native-plugin.test.ts` | Native plugin ABI, node-gyp build, `.node` loading, `onBeforeParse`, crash-name behavior |
 
+Native plugin audit note (2026-05-26): the copied fixture currently stops
+at corpus preprocessing with `unsupported module syntax`, but its true
+closure dependency is native/JSC integration. The test needs node-gyp
+addon building, `.node` require/dlopen metadata, `BUN_PLUGIN_NAME` symbol
+lookup, N-API external validation, `JSBundlerPlugin.onBeforeParse`, and
+the `OnBeforeParseArguments` / `OnBeforeParseResult` ABI that Bun routes
+through `JSBundlerPlugin.cpp` and `ParseTask.zig`. Home has the copied
+Zig/header substrate; the remaining blocker is compiling or porting the
+C++/JSC bridge (`JSBundlerPlugin.cpp`, `napi.cpp`, `napi_external.cpp`)
+instead of adding a corpus-local mock.
+
 Next source-module work for bundler should replace the
 `__home_expect_bundled` bootstrap stub with a real `itBundled` adapter
 and wire copied Bun substrates in `packages/bundler/src/`: `options.zig`,

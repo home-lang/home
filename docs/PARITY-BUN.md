@@ -213,6 +213,19 @@ zero extras. The remaining bundler file frontier is:
 | Resolver cache behavior | `bundler/resolver/cache-invalidation.test.ts`, `bundler/resolver/cache-node-compat.test.ts`, `bundler/resolver/cache-runtime.test.ts` |
 | Native plugin final | `bundler/native-plugin.test.ts` |
 
+Native plugin audit on 2026-05-26: `bundler/native-plugin.test.ts` is not
+a bootstrap-only fixture. It needs Bun's native/JSC plugin bridge:
+node-gyp-built `.node` loading, `BUN_PLUGIN_NAME` / symbol lookup through
+the addon dlopen handle, N-API external validation, `build.onBeforeParse`,
+`OnBeforeParseArguments` / `OnBeforeParseResult`, error/version logging,
+first-plugin-wins semantics, and crash-name reporting. Home already has
+the relevant copied Zig/header substrate (`ParseTask.zig`,
+`JSBundler.zig`, `NodeModuleModule.zig`, `runtime/napi/napi.zig`, and the
+native bundler plugin header); the missing piece is integrating or
+faithfully porting Bun's `JSBundlerPlugin.cpp`, `napi.cpp`, and
+`napi_external.cpp` bridge into the Home runtime. Do not count a
+corpus-local `.node` mock as parity for this file.
+
 The next observed bundler blockers are `bundler/transpiler/decorators.test.ts`,
 which still fails bootstrap classification as unsupported module syntax,
 and `bundler/transpiler/es-decorators-esbuild.test.ts`, which fails
@@ -1582,12 +1595,12 @@ until they are exported or compiled through Home.
 | Metric | Count | Notes |
 |---|---|---|
 | Bun upstream files (excluding test/codegen/jsc/macros) | 1,193 | pinned at `fd0b6f1a` |
-| Runtime Zig files present in `packages/runtime/src/` | 1,393 | live `find packages/runtime/src -type f -name '*.zig'` count |
+| Runtime Zig files present in `packages/runtime/src/` | 1,391 | live `find packages/runtime/src -type f -name '*.zig'` count |
 | Audited Bun baseline files present in `packages/runtime/src/` | 1,193 / 1,193 | existing Home ports plus staged integration backlog |
 | Files integrated into Home | 552 | ~46.3% |
-| Staged Bun Zig files awaiting integration | 856 | see `packages/runtime/DORMANT_BUN_ZIG_IMPORT_2026-05-21.txt` and `packages/runtime/DORMANT_BUN_ZIG_IMPORT_2026-05-26.txt`; not counted as ported |
+| Staged Bun Zig files awaiting integration | 797 | from `scripts/measure-parity.sh --values`; not counted as ported |
 | Files remaining to integrate | 641 | ~53.7%; excludes raw copy-only files that duplicate already-integrated Home paths |
-| JSC bring-up (`packages/runtime/src/jsc/`) | 130 files | Phase 12.2 M6 milestone + native eval smoke |
+| JSC bring-up (`packages/runtime/src/jsc/`) | 128 files | Phase 12.2 M6 milestone + native eval smoke |
 | Node namespace (`packages/runtime/src/node/`) | 28 files | Phase 12.7 round-15 |
 | Bake lifetime carrier (`packages/runtime/src/runtime/bake/`) | 5 files | DevServer/HmrSocket deinit substrate, JS surface pending |
 | Server lifecycle carrier (`packages/runtime/src/runtime/server/server.zig`) | 1 file | DevServer detach/deinit gate, JS surface pending |

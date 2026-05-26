@@ -239,6 +239,41 @@ classified by next faithful work batch:
 | C. Resolver cache behavior | `bundler/resolver/cache-invalidation.test.ts`, `bundler/resolver/cache-node-compat.test.ts`, `bundler/resolver/cache-runtime.test.ts` | Repeated in-process `Bun.build()` / `require()` cache invalidation, filesystem mutation, Node-vs-Bun subprocess comparison |
 | D. Native plugin final | `bundler/native-plugin.test.ts` | Native plugin ABI, node-gyp build, `.node` loading, `onBeforeParse`, crash-name behavior |
 
+Native plugin audit on 2026-05-26: `bundler/native-plugin.test.ts`
+still reports `unsupported module syntax` at the corpus preprocessor, but
+that is only the first guardrail. The real parity surface is Bun's native
+bundler plugin ABI:
+
+- The copied fixture builds `native_plugin.cc` and `not_native_plugin.cc`
+  with `node-gyp`, requires the resulting `.node` modules, and passes a
+  N-API external into `build.onBeforeParse`.
+- The fixture exercises `BUN_PLUGIN_NAME` discovery, `dlsym` /
+  `GetProcAddress` symbol lookup, `OnBeforeParseArguments` /
+  `OnBeforeParseResult` struct-size versioning, `fetchSourceCode`,
+  source replacement, loader handoff, log/error propagation, external
+  pointer validation, invalid free-context detection, first-plugin-wins
+  semantics, concurrent filter matching, and crash-handler plugin-name
+  reporting.
+- Home already has the core copied Zig/header substrate:
+  `packages/runtime/src/bundler/ParseTask.zig`,
+  `packages/runtime/src/runtime/api/JSBundler.zig`,
+  `packages/runtime/src/jsc/NodeModuleModule.zig`,
+  `packages/runtime/src/runtime/napi/napi.zig`, and
+  `packages/runtime/upstream/packages/bun-native-bundler-plugin-api/bundler_plugin.h`.
+  The audited Zig/header files compared byte-for-byte with
+  `/Users/chrisbreuer/Code/bun` for the relevant paths.
+- The missing integration is the native/JSC bridge, especially
+  `src/jsc/bindings/JSBundlerPlugin.cpp`,
+  `src/jsc/bindings/napi.cpp`, and
+  `src/jsc/bindings/napi_external.cpp`, plus the build wiring that
+  exposes those host functions to Home's JSC-enabled runtime and lets
+  node-gyp-built addons attach the private dlopen handle used by
+  `onBeforeParse`.
+
+Do not close this by adding a corpus-only `.node` mock. A faithful close
+should first compile or port the native bridge, then promote the fixture
+with evidence from the single-file corpus run.
+
 Source module work after those corpus gates should stay faithful to the
 copied Bun graph rather than expanding the bootstrap stub. Replace
 `__home_expect_bundled` with a real `itBundled` adapter and wire the

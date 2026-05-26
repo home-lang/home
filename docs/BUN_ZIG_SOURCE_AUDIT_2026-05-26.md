@@ -63,6 +63,38 @@ Pinned upstream:
   coordinator scheduling, and end-to-end parallel corpus execution remain
   the next behavioral gates.
 
+## Native Plugin Frontier Audit
+
+- The final bundler frontier file `bundler/native-plugin.test.ts` currently
+  fails before execution as `unsupported module syntax`, but that parser
+  result is not the meaningful blocker. The fixture is Bun's native
+  bundler-plugin ABI test: it builds `native_plugin.cc` with node-gyp,
+  requires the resulting `.node`, passes a N-API external to
+  `build.onBeforeParse`, and validates `BUN_PLUGIN_NAME`, symbol lookup,
+  source replacement, loader handoff, error logging, version checks,
+  invalid free-context handling, first-plugin-wins behavior, concurrency,
+  and crash-name reporting.
+- The relevant copied Zig/header substrate is present. Local byte checks
+  against `/Users/chrisbreuer/Code/bun` passed for
+  `packages/runtime/src/bundler/ParseTask.zig`,
+  `packages/runtime/src/jsc/NodeModuleModule.zig`, and
+  `packages/runtime/upstream/packages/bun-native-bundler-plugin-api/bundler_plugin.h`.
+  `packages/runtime/src/runtime/api/JSBundler.zig` already declares the
+  `JSBundlerPlugin__callOnBeforeParsePlugins` extern surface, and
+  `packages/runtime/src/runtime/napi/napi.zig` is present for the N-API
+  side.
+- The missing integration is the native/JSC bridge that Bun implements in
+  `src/jsc/bindings/JSBundlerPlugin.cpp`, `src/jsc/bindings/napi.cpp`,
+  and `src/jsc/bindings/napi_external.cpp`, including the private dlopen
+  handle attached to N-API modules and the crash-handler plugin-name path.
+  These sources are copied under `packages/runtime/upstream/`, but they are
+  not yet compiled or ported into Home's JSC-enabled runtime.
+- Recommended sequence: wire the copied C++ bridge or port it faithfully,
+  ensure `node-gyp` built addons can load through Home's `.node` path,
+  enable `build.onBeforeParse` to register real native callbacks, then
+  promote `bundler/native-plugin.test.ts` with single-file corpus evidence.
+  A corpus-local `.node` mock should not be counted as parity.
+
 ## Closed Source Presence Gap
 
 Copied paths grouped by top-level upstream source directory:
