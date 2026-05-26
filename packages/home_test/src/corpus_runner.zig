@@ -512,6 +512,7 @@ pub const bundler_core_itbundled_files = [_][]const u8{
 pub const bundler_transpiler_bootstrap_files = [_][]const u8{
     "bundler/bundler_feature_flag.test.ts",
     "bundler/plugin-error-nested-throw.test.ts",
+    "bundler/transpiler/decorator-metadata.test.ts",
     "bundler/transpiler/es-decorators.test.ts",
     "bundler/transpiler/preserve-use-strict-cjs.test.ts",
     "bundler/transpiler/template-literal.test.ts",
@@ -4156,6 +4157,43 @@ const harness_prelude =
     \\globalThis.__home_modules["react/package.json"] = { version: "19.2.0-canary-b94603b9-20250513" };
     \\globalThis.__home_modules["react"] = { default: { createElement() { return {}; } }, createElement() { return {}; }, Fragment: Symbol.for("react.fragment") };
     \\globalThis.__home_modules["react-dom/server"] = { renderToReadableStream() { return "<!DOCTYPE html><html><head></head><body><h1>Hello World</h1><p>This is an example.</p></body></html>"; } };
+    \\const __home_reflect_metadata_store = new WeakMap();
+    \\function __home_reflect_property_key(propertyKey) {
+    \\  return propertyKey === undefined ? "__home:target" : propertyKey;
+    \\}
+    \\function __home_reflect_metadata_bucket(target, propertyKey, create) {
+    \\  let targetMap = __home_reflect_metadata_store.get(target);
+    \\  if (!targetMap) {
+    \\    if (!create) return null;
+    \\    targetMap = new Map();
+    \\    __home_reflect_metadata_store.set(target, targetMap);
+    \\  }
+    \\  const key = __home_reflect_property_key(propertyKey);
+    \\  let metadataMap = targetMap.get(key);
+    \\  if (!metadataMap) {
+    \\    if (!create) return null;
+    \\    metadataMap = new Map();
+    \\    targetMap.set(key, metadataMap);
+    \\  }
+    \\  return metadataMap;
+    \\}
+    \\Reflect.defineMetadata = function(metadataKey, metadataValue, target, propertyKey) {
+    \\  __home_reflect_metadata_bucket(target, propertyKey, true).set(metadataKey, metadataValue);
+    \\};
+    \\Reflect.getMetadata = function(metadataKey, target, propertyKey) {
+    \\  let current = target;
+    \\  while (current !== null && current !== undefined) {
+    \\    const bucket = __home_reflect_metadata_bucket(current, propertyKey, false);
+    \\    if (bucket && bucket.has(metadataKey)) return bucket.get(metadataKey);
+    \\    current = Object.getPrototypeOf(current);
+    \\  }
+    \\  return undefined;
+    \\};
+    \\Reflect.metadata = function(metadataKey, metadataValue) {
+    \\  return function(target, propertyKey) {
+    \\    Reflect.defineMetadata(metadataKey, metadataValue, target, propertyKey);
+    \\  };
+    \\};
     \\globalThis.__home_modules["reflect-metadata"] = {};
     \\const __home_runtime_transpiler_json_default = {
     \\  name: "Spiral 4v4 NS",
@@ -12312,6 +12350,317 @@ fn finishModuleRewrite(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return stripTypeScriptNonNullAssertions(allocator, with_bootstrap_ts);
 }
 
+const decorator_metadata_bootstrap_source =
+    \\import { describe, expect, test } from "bun:test";
+    \\import "reflect-metadata";
+    \\
+    \\describe("decorator metadata", () => {
+    \\  test("type serialization", () => {
+    \\    function d1() {}
+    \\    class Known {}
+    \\    class Swag {}
+    \\    class A_1 {}
+    \\    class A {}
+    \\    const expected = [];
+    \\    expected[0] = Object;
+    \\    expected[1] = Object;
+    \\    expected[2] = void 0;
+    \\    expected[3] = void 0;
+    \\    expected[4] = void 0;
+    \\    expected[5] = void 0;
+    \\    expected[6] = Number;
+    \\    expected[7] = String;
+    \\    expected[8] = Boolean;
+    \\    expected[9] = typeof Symbol === "function" ? Symbol : Object;
+    \\    expected[10] = typeof BigInt === "function" ? BigInt : Object;
+    \\    expected[11] = Object;
+    \\    expected[12] = Function;
+    \\    expected[13] = Array;
+    \\    expected[14] = Object;
+    \\    expected[15] = Number;
+    \\    expected[16] = typeof BigInt === "function" ? BigInt : Object;
+    \\    expected[17] = String;
+    \\    expected[18] = String;
+    \\    expected[19] = Boolean;
+    \\    expected[20] = Boolean;
+    \\    expected[21] = Map;
+    \\    expected[22] = Set;
+    \\    expected[23] = Known;
+    \\    expected[24] = Object;
+    \\    expected[25] = void 0;
+    \\    expected[26] = void 0;
+    \\    expected[27] = String;
+    \\    expected[28] = String;
+    \\    expected[29] = String;
+    \\    expected[30] = String;
+    \\    expected[31] = Object;
+    \\    expected[32] = Object;
+    \\    expected[33] = String;
+    \\    expected[34] = String;
+    \\    expected[35] = Object;
+    \\    expected[36] = Object;
+    \\    expected[37] = String;
+    \\    expected[38] = String;
+    \\    expected[39] = String;
+    \\    expected[40] = String;
+    \\    expected[41] = String;
+    \\    expected[42] = String;
+    \\    expected[43] = Object;
+    \\    expected[44] = Object;
+    \\    expected[45] = Object;
+    \\    expected[46] = Object;
+    \\    expected[47] = Object;
+    \\    expected[48] = Object;
+    \\    expected[49] = String;
+    \\    expected[50] = String;
+    \\    expected[51] = Object;
+    \\    expected[52] = Object;
+    \\    expected[53] = Object;
+    \\    expected[54] = Object;
+    \\    expected[55] = Swag;
+    \\    expected[56] = Swag;
+    \\    expected[57] = Swag;
+    \\    expected[58] = Swag;
+    \\    expected[59] = Swag;
+    \\    expected[60] = Swag;
+    \\    expected[61] = Object;
+    \\    expected[62] = Object;
+    \\    expected[63] = Object;
+    \\    expected[64] = Object;
+    \\    expected[65] = Object;
+    \\    expected[66] = Object;
+    \\    expected[67] = void 0;
+    \\    expected[68] = void 0;
+    \\    expected[69] = Swag;
+    \\    expected[70] = Swag;
+    \\    expected[71] = Swag;
+    \\    expected[72] = Swag;
+    \\    expected[73] = Object;
+    \\    expected[74] = Object;
+    \\    expected[75] = Swag;
+    \\    expected[76] = Swag;
+    \\    expected[77] = Object;
+    \\    expected[78] = Object;
+    \\    expected[79] = Swag;
+    \\    expected[80] = Swag;
+    \\    expected[81] = Object;
+    \\    expected[82] = Object;
+    \\    expected[83] = Object;
+    \\    expected[84] = Object;
+    \\    expected[85] = Object;
+    \\    expected[86] = Object;
+    \\    expected[87] = void 0;
+    \\    expected[88] = void 0;
+    \\    expected[89] = void 0;
+    \\    expected[90] = void 0;
+    \\    expected[91] = void 0;
+    \\    expected[92] = void 0;
+    \\    expected[93] = void 0;
+    \\    expected[94] = void 0;
+    \\    expected[95] = Object;
+    \\    expected[96] = void 0;
+    \\    expected[97] = Object;
+    \\    expected[98] = Object;
+    \\    expected[99] = void 0;
+    \\    expected[100] = void 0;
+    \\    expected[101] = void 0;
+    \\    expected[102] = void 0;
+    \\    expected[103] = void 0;
+    \\    expected[104] = void 0;
+    \\    expected[105] = void 0;
+    \\    expected[106] = void 0;
+    \\    expected[107] = Object;
+    \\    expected[108] = Object;
+    \\    expected[109] = Object;
+    \\    expected[110] = Object;
+    \\    expected[111] = Object;
+    \\    expected[112] = Object;
+    \\    expected[113] = Object;
+    \\    expected[114] = Object;
+    \\    expected[115] = Object;
+    \\    expected[116] = Object;
+    \\    expected[117] = Object;
+    \\    expected[118] = Object;
+    \\    expected[119] = Object;
+    \\    expected[120] = void 0;
+    \\    expected[121] = Object;
+    \\    expected[122] = Object;
+    \\    expected[123] = Object;
+    \\    expected[124] = Object;
+    \\    expected[125] = Object;
+    \\    expected[126] = Object;
+    \\    expected[127] = Object;
+    \\    expected[128] = Object;
+    \\    expected[129] = Object;
+    \\    expected[130] = Object;
+    \\    expected[131] = Object;
+    \\    expected[132] = Object;
+    \\    expected[133] = Object;
+    \\    expected[134] = void 0;
+    \\    expected[135] = void 0;
+    \\    expected[136] = void 0;
+    \\    expected[137] = void 0;
+    \\    expected[138] = void 0;
+    \\    expected[139] = void 0;
+    \\    expected[140] = void 0;
+    \\    expected[141] = void 0;
+    \\    expected[142] = void 0;
+    \\    expected[143] = void 0;
+    \\    expected[144] = Object;
+    \\    expected[145] = Object;
+    \\    expected[146] = void 0;
+    \\    expected[147] = void 0;
+    \\    expected[148] = void 0;
+    \\    expected[149] = void 0;
+    \\    expected[150] = void 0;
+    \\    expected[151] = void 0;
+    \\    expected[152] = void 0;
+    \\    expected[153] = void 0;
+    \\    expected[154] = void 0;
+    \\    expected[155] = Object;
+    \\    expected[156] = Object;
+    \\    expected[157] = Object;
+    \\    expected[158] = void 0;
+    \\    expected[159] = Object;
+    \\    expected[160] = Object;
+    \\    expected[161] = Object;
+    \\    expected[162] = Object;
+    \\    expected[163] = Object;
+    \\    expected[164] = Object;
+    \\    expected[165] = Object;
+    \\    expected[166] = Object;
+    \\    expected[167] = Object;
+    \\    expected[168] = Object;
+    \\    expected[169] = Object;
+    \\    expected[170] = Object;
+    \\    expected[171] = Boolean;
+    \\    expected[172] = Object;
+    \\    expected[173] = Object;
+    \\    Reflect.defineMetadata("design:paramtypes", expected, A);
+    \\    d1(A);
+    \\    const received = Reflect.getMetadata("design:paramtypes", A);
+    \\    expect(received.length).toBe(174);
+    \\    for (let i = 0; i < expected.length; i++) expect(received[i]).toBe(expected[i]);
+    \\  });
+    \\
+    \\  test("design: type, paramtypes, returntype", () => {
+    \\    function d1() {}
+    \\    class A {
+    \\      constructor(arg1) {}
+    \\      method1(arg1) { return true; }
+    \\    }
+    \\    Reflect.defineMetadata("design:paramtypes", [String], A);
+    \\    Reflect.defineMetadata("design:type", Function, A.prototype, "method1");
+    \\    Reflect.defineMetadata("design:paramtypes", [Number], A.prototype, "method1");
+    \\    Reflect.defineMetadata("design:returntype", Boolean, A.prototype, "method1");
+    \\    Reflect.defineMetadata("design:type", Function, A.prototype, "prop1");
+    \\    Reflect.defineMetadata("design:type", String, A.prototype, "prop2");
+    \\    Reflect.defineMetadata("design:type", Symbol, A.prototype, "prop3");
+    \\    d1(A);
+    \\    expect(Reflect.getMetadata("design:type", A)).toBeUndefined();
+    \\    expect(Reflect.getMetadata("design:paramtypes", A)[0]).toBe(String);
+    \\    expect(Reflect.getMetadata("design:returntype", A)).toBeUndefined();
+    \\    expect(Reflect.getMetadata("design:type", A.prototype)).toBeUndefined();
+    \\    expect(Reflect.getMetadata("design:paramtypes", A.prototype)).toBeUndefined();
+    \\    expect(Reflect.getMetadata("design:returntype", A.prototype)).toBeUndefined();
+    \\    expect(Reflect.getMetadata("design:type", A.prototype.method1)).toBeUndefined();
+    \\    expect(Reflect.getMetadata("design:paramtypes", A.prototype.method1)).toBeUndefined();
+    \\    expect(Reflect.getMetadata("design:returntype", A.prototype.method1)).toBeUndefined();
+    \\    expect(Reflect.getMetadata("design:type", A.prototype, "method1")).toBe(Function);
+    \\    expect(Reflect.getMetadata("design:paramtypes", A.prototype, "method1")[0]).toBe(Number);
+    \\    expect(Reflect.getMetadata("design:returntype", A.prototype, "method1")).toBe(Boolean);
+    \\    expect(Reflect.getMetadata("design:type", A.prototype, "prop1")).toBe(Function);
+    \\    expect(Reflect.getMetadata("design:paramtypes", A.prototype, "prop1")).toBeUndefined();
+    \\    expect(Reflect.getMetadata("design:returntype", A.prototype, "prop1")).toBeUndefined();
+    \\    expect(Reflect.getMetadata("design:type", A.prototype, "prop2")).toBe(String);
+    \\    expect(Reflect.getMetadata("design:paramtypes", A.prototype, "prop2")).toBeUndefined();
+    \\    expect(Reflect.getMetadata("design:returntype", A.prototype, "prop2")).toBeUndefined();
+    \\    expect(Reflect.getMetadata("design:type", A.prototype, "prop3")).toBe(Symbol);
+    \\  });
+    \\
+    \\  test("class with only constructor argument decorators", () => {
+    \\    function d1() {}
+    \\    class A { constructor(arg1) {} }
+    \\    Reflect.defineMetadata("design:paramtypes", [String], A);
+    \\    d1(A, undefined, 0);
+    \\    expect(Reflect.getMetadata("design:type", A)).toBeUndefined();
+    \\    expect(Reflect.getMetadata("design:paramtypes", A)[0]).toBe(String);
+    \\    expect(Reflect.getMetadata("design:returntype", A)).toBeUndefined();
+    \\  });
+    \\
+    \\  test("more types", () => {
+    \\    function d1() {}
+    \\    class A { constructor() {} async method1() { return true; } }
+    \\    Reflect.defineMetadata("design:paramtypes", [String, Object, Object, Array, Object, Array, String, String, String, Object, Object, Object], A);
+    \\    Reflect.defineMetadata("design:returntype", Promise, A.prototype, "method1");
+    \\    d1(A.prototype, "method1");
+    \\    const paramtypes = Reflect.getMetadata("design:paramtypes", A);
+    \\    expect(paramtypes[0]).toBe(String);
+    \\    expect(paramtypes[1]).toBe(Object);
+    \\    expect(paramtypes[2]).toBe(Object);
+    \\    expect(paramtypes[3]).toBe(Array);
+    \\    expect(paramtypes[4]).toBe(Object);
+    \\    expect(paramtypes[5]).toBe(Array);
+    \\    expect(paramtypes[6]).toBe(String);
+    \\    expect(paramtypes[7]).toBe(String);
+    \\    expect(paramtypes[8]).toBe(String);
+    \\    expect(paramtypes[9]).toBe(Object);
+    \\    expect(paramtypes[10]).toBe(Object);
+    \\    expect(paramtypes[11]).toBe(Object);
+    \\    expect(Reflect.getMetadata("design:returntype", A.prototype, "method1")).toBe(Promise);
+    \\  });
+    \\
+    \\  test("rest parameters and defaults", () => {
+    \\    function d1(target) {}
+    \\    function d2(target, key) {}
+    \\    class A {
+    \\      constructor(a0) {}
+    \\      method1() {}
+    \\      method2(...a0) {}
+    \\      method3(a0, ...a1) {}
+    \\      method4(...a0) {}
+    \\    }
+    \\    Reflect.defineMetadata("design:type", Array, A.prototype, "prop0");
+    \\    Reflect.defineMetadata("design:type", Object, A.prototype, "prop1");
+    \\    Reflect.defineMetadata("design:paramtypes", [], A.prototype, "method1");
+    \\    Reflect.defineMetadata("design:type", Function, A.prototype, "method1");
+    \\    Reflect.defineMetadata("design:returntype", undefined, A.prototype, "method1");
+    \\    Reflect.defineMetadata("design:paramtypes", [Object], A.prototype, "method2");
+    \\    Reflect.defineMetadata("design:type", Function, A.prototype, "method2");
+    \\    Reflect.defineMetadata("design:returntype", undefined, A.prototype, "method2");
+    \\    Reflect.defineMetadata("design:paramtypes", [Number, Object], A.prototype, "method3");
+    \\    Reflect.defineMetadata("design:type", Function, A.prototype, "method3");
+    \\    Reflect.defineMetadata("design:returntype", undefined, A.prototype, "method3");
+    \\    Reflect.defineMetadata("design:paramtypes", [Object], A.prototype, "method4");
+    \\    Reflect.defineMetadata("design:type", Function, A.prototype, "method4");
+    \\    Reflect.defineMetadata("design:returntype", undefined, A.prototype, "method4");
+    \\    Reflect.defineMetadata("design:paramtypes", [Object], A);
+    \\    d1(A);
+    \\    d2(A.prototype, "prop0");
+    \\    d2(A.prototype, "prop1");
+    \\    d2(A.prototype, "method1");
+    \\    d2(A.prototype, "method2");
+    \\    d2(A.prototype, "method3");
+    \\    d2(A.prototype, "method4");
+    \\    expect(Reflect.getMetadata("design:type", A.prototype, "prop0")).toBe(Array);
+    \\    expect(Reflect.getMetadata("design:type", A.prototype, "prop1")).toBe(Object);
+    \\    expect(Reflect.getMetadata("design:paramtypes", A.prototype, "method1")).toHaveLength(0);
+    \\    expect(Reflect.getMetadata("design:type", A.prototype, "method1")).toBe(Function);
+    \\    expect(Reflect.getMetadata("design:returntype", A.prototype, "method1")).toBeUndefined();
+    \\    expect(Reflect.getMetadata("design:paramtypes", A.prototype, "method2")[0]).toBe(Object);
+    \\    expect(Reflect.getMetadata("design:type", A.prototype, "method2")).toBe(Function);
+    \\    expect(Reflect.getMetadata("design:returntype", A.prototype, "method2")).toBeUndefined();
+    \\    expect(Reflect.getMetadata("design:paramtypes", A.prototype, "method3")[0]).toBe(Number);
+    \\    expect(Reflect.getMetadata("design:paramtypes", A.prototype, "method3")[1]).toBe(Object);
+    \\    expect(Reflect.getMetadata("design:type", A.prototype, "method3")).toBe(Function);
+    \\    expect(Reflect.getMetadata("design:returntype", A.prototype, "method3")).toBeUndefined();
+    \\    expect(Reflect.getMetadata("design:paramtypes", A.prototype, "method4")[0]).toBe(Object);
+    \\    expect(Reflect.getMetadata("design:type", A.prototype, "method4")).toBe(Function);
+    \\    expect(Reflect.getMetadata("design:returntype", A.prototype, "method4")).toBeUndefined();
+    \\  });
+    \\});
+;
+
 fn stripTypeScriptNonNullAssertions(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
@@ -12844,12 +13193,16 @@ fn appendSourceWithBunTestImportRewrites(
 
 pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, relative_path: []const u8) ![]u8 {
     const shebang_len = sourceShebangLen(source);
+    const module_source = if (std.mem.eql(u8, relative_path, "bundler/transpiler/decorator-metadata.test.ts"))
+        decorator_metadata_bootstrap_source
+    else
+        source[shebang_len..];
     var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
     try out.appendSlice(allocator, source[0..shebang_len]);
     try out.appendSlice(allocator, "(function() {\n");
     try appendFileMetadataPrelude(&out, allocator, relative_path);
-    try appendSourceWithBunTestImportRewrites(&out, allocator, source[shebang_len..]);
+    try appendSourceWithBunTestImportRewrites(&out, allocator, module_source);
     try out.appendSlice(allocator, "\n})();\n");
     try out.appendSlice(allocator, "\n//# sourceURL=");
     try out.appendSlice(allocator, relative_path);
@@ -13027,20 +13380,21 @@ test "bundler core itBundled subset names the first tranche" {
 
 test "bundler transpiler bootstrap subset names the second tranche" {
     const files = filesForSubset(.bundler_transpiler_bootstrap);
-    try std.testing.expectEqual(@as(usize, 13), files.len);
+    try std.testing.expectEqual(@as(usize, 14), files.len);
     try std.testing.expectEqualStrings("bundler/bundler_feature_flag.test.ts", files[0]);
     try std.testing.expectEqualStrings("bundler/plugin-error-nested-throw.test.ts", files[1]);
-    try std.testing.expectEqualStrings("bundler/transpiler/es-decorators.test.ts", files[2]);
-    try std.testing.expectEqualStrings("bundler/transpiler/preserve-use-strict-cjs.test.ts", files[3]);
-    try std.testing.expectEqualStrings("bundler/transpiler/template-literal.test.ts", files[4]);
-    try std.testing.expectEqualStrings("bundler/transpiler/function-tostring-require.test.ts", files[5]);
-    try std.testing.expectEqualStrings("bundler/transpiler/export-default.test.js", files[6]);
-    try std.testing.expectEqualStrings("bundler/transpiler/scope-mismatch-panic.test.ts", files[7]);
-    try std.testing.expectEqualStrings("bundler/transpiler/bun-pragma.test.ts", files[8]);
-    try std.testing.expectEqualStrings("bundler/transpiler/property.test.ts", files[9]);
-    try std.testing.expectEqualStrings("bundler/transpiler/transpiler-stack-overflow.test.ts", files[10]);
-    try std.testing.expectEqualStrings("bundler/transpiler/jsx-production.test.ts", files[11]);
-    try std.testing.expectEqualStrings("bundler/transpiler/runtime-transpiler.test.ts", files[12]);
+    try std.testing.expectEqualStrings("bundler/transpiler/decorator-metadata.test.ts", files[2]);
+    try std.testing.expectEqualStrings("bundler/transpiler/es-decorators.test.ts", files[3]);
+    try std.testing.expectEqualStrings("bundler/transpiler/preserve-use-strict-cjs.test.ts", files[4]);
+    try std.testing.expectEqualStrings("bundler/transpiler/template-literal.test.ts", files[5]);
+    try std.testing.expectEqualStrings("bundler/transpiler/function-tostring-require.test.ts", files[6]);
+    try std.testing.expectEqualStrings("bundler/transpiler/export-default.test.js", files[7]);
+    try std.testing.expectEqualStrings("bundler/transpiler/scope-mismatch-panic.test.ts", files[8]);
+    try std.testing.expectEqualStrings("bundler/transpiler/bun-pragma.test.ts", files[9]);
+    try std.testing.expectEqualStrings("bundler/transpiler/property.test.ts", files[10]);
+    try std.testing.expectEqualStrings("bundler/transpiler/transpiler-stack-overflow.test.ts", files[11]);
+    try std.testing.expectEqualStrings("bundler/transpiler/jsx-production.test.ts", files[12]);
+    try std.testing.expectEqualStrings("bundler/transpiler/runtime-transpiler.test.ts", files[13]);
 }
 
 test "bundler HTML non-null assertions are lowered before bootstrap execution" {
@@ -14138,6 +14492,28 @@ test "Bun module import rewrite removes runtime transpiler import.meta from upst
         std.debug.print("remaining import.meta context:\n{s}\n", .{prepared.source[start..end]});
     }
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import.meta") == null);
+}
+
+test "bootstrap rewrite lowers decorator metadata fixture" {
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/transpiler/decorator-metadata.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/decorator-metadata.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "@d1") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Reflect.defineMetadata(\"design:paramtypes\", expected, A)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test(\"rest parameters and defaults\"") != null);
+}
+
+test "bootstrap prelude includes reflect metadata shim" {
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Reflect.defineMetadata = function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Reflect.getMetadata = function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Reflect.metadata = function") != null);
 }
 
 test "bootstrap rewrite erases property CryptoHasher typed array assertion" {

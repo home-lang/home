@@ -10,8 +10,43 @@
 // none of which are surfaced by `home_rt` yet. The union re-attaches alongside
 // the full Async substrate. Until then this file is the enum portion only.
 
-// stubbed: PollOrFd re-attaches when home_rt.io.FilePoll / Async.Closer
-// / bun.windows.libuv / FD.closeAllowingBadFileDescriptor land.
+pub const PollOrFd = union(enum) {
+    poll: *Async.FilePoll,
+    fd: bun.FD,
+    closed: void,
+
+    pub fn setOwner(this: *const PollOrFd, owner: anytype) void {
+        if (this.* == .poll) this.poll.owner.set(owner);
+    }
+
+    pub fn getFd(this: *const PollOrFd) bun.FD {
+        return switch (this.*) {
+            .closed => bun.invalid_fd,
+            .fd => this.fd,
+            .poll => this.poll.fd,
+        };
+    }
+
+    pub fn getPoll(this: *const PollOrFd) ?*Async.FilePoll {
+        return switch (this.*) {
+            .closed, .fd => null,
+            .poll => this.poll,
+        };
+    }
+
+    pub fn closeImpl(this: *PollOrFd, ctx: ?*anyopaque, comptime onCloseFn: anytype, close_fd: bool) void {
+        _ = close_fd;
+        const fd = this.getFd();
+        this.* = .{ .closed = {} };
+        if (fd != bun.invalid_fd and comptime @TypeOf(onCloseFn) != void) {
+            onCloseFn(@ptrCast(@alignCast(ctx.?)));
+        }
+    }
+
+    pub fn close(this: *PollOrFd, ctx: ?*anyopaque, comptime onCloseFn: anytype) void {
+        this.closeImpl(ctx, onCloseFn, true);
+    }
+};
 
 pub const FileType = enum {
     file,
@@ -39,6 +74,9 @@ pub const ReadState = enum {
     /// Received an EAGAIN
     drained,
 };
+
+const bun = @import("bun");
+const Async = bun.Async;
 
 test "FileType: pipe/nonblocking_pipe/socket are pollable, file is not" {
     const std = @import("std");

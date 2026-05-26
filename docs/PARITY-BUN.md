@@ -8,14 +8,14 @@ section. Execution planning, source/test gates, and agent-sized
 workstreams live in [`BUN_PARITY_PLAN.md`](./BUN_PARITY_PLAN.md).
 
 > **Status:** Substrate + JSC M6 landed. `packages/runtime/src/`
-> currently contains 1,393 Zig source files. Of the audited 1,193-file
+> currently contains 1,391 Zig source files. Of the audited 1,193-file
 > Bun baseline, 552 files are integrated into Home (~46.3%): rewritten
 > for Home imports, Zig 0.17-clean, build-wired, and tested. The remaining
 > staged Bun files are an integration backlog, not parity credit; the
 > runtime is not yet JavaScript-callable end-to-end, but Phase 12.2
 > (JSC bring-up) has reached the M6
 > milestone — JSON + Promise + Iterator + Global helpers — across
-> 130 files in `packages/runtime/src/jsc/`, including a live
+> 128 files in `packages/runtime/src/jsc/`, including a live
 > `JSEvaluateScript` smoke and the public JavaScriptCore
 > `JSObjectMakeDeferredPromise` deferred-promise constructor bridge.
 > Bun's WebCore runtime source is now copied verbatim from
@@ -24,6 +24,8 @@ workstreams live in [`BUN_PARITY_PLAN.md`](./BUN_PARITY_PLAN.md).
 > it is not counted as JS-callable parity until wired and tested.
 > Full audit:
 > [`packages/runtime/PORT_AUDIT_2026-05-20.md`](../packages/runtime/PORT_AUDIT_2026-05-20.md).
+> Source-presence audit:
+> [`BUN_ZIG_SOURCE_AUDIT_2026-05-26.md`](./BUN_ZIG_SOURCE_AUDIT_2026-05-26.md).
 
 Legend:
 
@@ -195,37 +197,50 @@ status). The Zig-side surface compiles; what's missing is the JS
 API for `Bun.build`. CLI entrypoint (`home bundle`) is in progress.
 
 Corpus audit on 2026-05-26: the copied Bun corpus has **89**
-`bundler/**/*.test.{ts,js}` files. Current green evidence covers **79
+`bundler/**/*.test.{ts,js}` files. Current green evidence covers **80
 unique files**: 66 unique bundler files inside `minimal-js`, 5 more in
-`bundler-core-itbundled` (`295` passed, `0` failed, `16` todo), and 8
+`bundler-core-itbundled` (`295` passed, `0` failed, `16` todo), and 9
 more unique files from the executable `bundler-transpiler-bootstrap`
-subset (`132` passed, `0` failed, `0` todo across 13 files). The
-remaining file frontier is:
+subset (`137` passed, `0` failed, `0` todo across 14 files). The copied
+corpus itself is exact against upstream Bun for `.test.ts` / `.test.js`
+files, with 1720 upstream paths, 1720 copied paths, zero missing, and
+zero extras. The remaining bundler file frontier is:
 
 | Tranche | Files |
 |---|---|
-| Decorator transpiler semantics | `bundler/transpiler/decorator-metadata.test.ts`, `bundler/transpiler/decorators.test.ts`, `bundler/transpiler/es-decorators-esbuild.test.ts` |
+| Decorator transpiler semantics | `bundler/transpiler/decorators.test.ts`, `bundler/transpiler/es-decorators-esbuild.test.ts` |
 | Transpiler API and macro surface | `bundler/transpiler/macro-test.test.ts`, `bundler/transpiler/transpiler.test.js` |
 | Resolver cache behavior | `bundler/resolver/cache-invalidation.test.ts`, `bundler/resolver/cache-node-compat.test.ts`, `bundler/resolver/cache-runtime.test.ts` |
 | CLI build surface | `bundler/cli.test.ts` |
 | Native plugin final | `bundler/native-plugin.test.ts` |
 
-The next observed bundler blocker is
-`bundler/transpiler/decorator-metadata.test.ts`, which currently reaches
-Home's bootstrap parser and fails on decorator syntax with `SyntaxError:
-Invalid character: '@'`.
+The next observed bundler blockers are `bundler/transpiler/decorators.test.ts`,
+which still fails bootstrap classification as unsupported module syntax,
+and `bundler/transpiler/es-decorators-esbuild.test.ts`, which fails
+parse-time before execution.
+
+The source module follow-through for these bundler gates is to replace
+the `__home_expect_bundled` bootstrap stub with a real `itBundled`
+adapter and wire the copied Bun substrates in `packages/bundler/src/`:
+`options.zig`, `transpiler.zig`, `bundle_v2.zig`,
+`LinkerContext.zig`, `OutputFile.zig`, `HTMLImportManifest.zig`,
+`HTMLScanner.zig`, `ParseTask.zig`, `LinkerGraph.zig`, and the
+`linker_context/*` output/metafile/HTML/CSS chunk helpers that are
+currently present under `packages/runtime/src/bundler/linker_context/`.
+
+Current source-presence gap: **closed** in `/tmp/home-bun-parity-main`.
+The 72 previously missing upstream Zig paths are now copied into
+`packages/runtime/src/` preserving relative paths. They remain
+integration backlog only; they do not affect the integrated 552 / 1193
+baseline until rewritten, build-wired, and tested.
 
 Non-JSC runtime build frontier on 2026-05-26:
 `./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false
---summary failures` fails with **22 compile errors** after the shallow
-alias pass. The default macOS JSC-enabled command fails with **25 compile
-errors** because it analyzes a few more JSC paths. The remaining front is
-parked event-loop/WebCore work (`EventLoopHandle.loop()`/`bunVM()`,
-`Async.Loop`, `AutoFlusher.VirtualMachine`), unported API roots
-(`api.dns`, `api.HTTPServer`, `schema`, `URL`), missing runtime helpers
-(`sys.openatA`, `sys.stat`, `sys.getErrno`, `Buffer.fromTypedArray`,
-`Method.fromJS`), disabled generated stream-source wrappers, and Zig
-0.17 stdlib drift (`std.io.fixedBufferStream`, `std.os.getFdPath`).
+--summary all` now passes with **1380 / 1383 tests passed** and
+**3 skipped**. This is compile-frontier substrate, not JS-callable
+parity credit: it wires missing Bun/JSC aliases, parked subprocess
+owners, CowSlice/CowString exposure, Zig 0.17 compatibility shims, and
+test-only C++ extern stubs for the non-JSC build gate.
 
 ## Pantry (package management)
 

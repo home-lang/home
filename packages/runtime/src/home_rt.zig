@@ -47,6 +47,13 @@ pub const default_allocator: std.mem.Allocator = std.heap.smp_allocator;
 
 pub const String = @import("string/string.zig").String;
 
+pub const timespec = extern struct {
+    sec: i64,
+    nsec: i64,
+
+    pub const epoch: timespec = .{ .sec = 0, .nsec = 0 };
+};
+
 /// Top-level RFC 4122 UUID type, re-exported from the JSC subtree so
 /// upstream Bun call sites that spell `bun.UUID` (e.g.
 /// `runtime/webcore/ObjectURLRegistry.zig:175`,
@@ -62,6 +69,7 @@ pub const UUID = @import("jsc/uuid.zig");
 /// namespace traversal. The implementation is the same — a thin
 /// spinlock wrapper that mirrors `std.Thread.Mutex`'s API.
 pub const Mutex = @import("threading/Mutex.zig");
+pub const SignalCode = @import("sys/SignalCode.zig").SignalCode;
 
 /// Compile-time equality assertion. Mirrors upstream
 /// `bun.assert_eql(@sizeOf(bun.String), 24)` shape — both arguments
@@ -155,6 +163,69 @@ pub const cpp = struct {
     }
 };
 
+const TestJSCExterns = struct {
+    fn bunStringTransferToJS(_: *String, _: *jsc.JSGlobalObject) callconv(.c) jsc.JSValue {
+        return .zero;
+    }
+
+    fn determineSpecificType(_: *jsc.JSGlobalObject, _: jsc.JSValue) callconv(.c) String {
+        return String.static("Object");
+    }
+
+    fn globalObjectBunVM(_: *jsc.JSGlobalObject) callconv(.c) *jsc.VM {
+        return @ptrFromInt(0x1000);
+    }
+
+    fn globalObjectVM(_: *jsc.JSGlobalObject) callconv(.c) *jsc.VM {
+        return @ptrFromInt(0x1000);
+    }
+
+    fn jsValueType(_: jsc.JSValue) callconv(.c) jsc.JSValue.JSType {
+        return .Cell;
+    }
+
+    fn jsValueToBoolean(value: jsc.JSValue) callconv(.c) bool {
+        return value != .zero and value != .false and value != .null and value != .js_undefined;
+    }
+
+    fn vmThrowError(_: *jsc.VM, _: *jsc.JSGlobalObject, _: jsc.JSValue) callconv(.c) void {}
+
+    fn wasmStreamingAddBytes(_: *anyopaque, _: [*]const u8, _: usize) callconv(.c) void {}
+
+    fn globalObjectHasException(_: *jsc.JSGlobalObject) callconv(.c) bool {
+        return false;
+    }
+
+    fn globalObjectThrowOutOfMemory(_: *jsc.JSGlobalObject) callconv(.c) void {}
+
+    fn topExceptionScopeConstruct(_: *anyopaque, _: *jsc.JSGlobalObject, _: [*:0]const u8, _: [*:0]const u8, _: c_uint, _: usize, _: usize) callconv(.c) void {}
+
+    fn topExceptionScopePureException(_: *anyopaque) callconv(.c) ?*jsc.Exception {
+        return null;
+    }
+
+    fn topExceptionScopeAssertNoException(_: *anyopaque) callconv(.c) void {}
+
+    fn topExceptionScopeDestruct(_: *anyopaque) callconv(.c) void {}
+};
+
+comptime {
+    @export(&TestJSCExterns.bunStringTransferToJS, .{ .name = "BunString__transferToJS", .linkage = .weak });
+    @export(&TestJSCExterns.determineSpecificType, .{ .name = "Bun__ErrorCode__determineSpecificType", .linkage = .weak });
+    @export(&TestJSCExterns.globalObjectBunVM, .{ .name = "JSC__JSGlobalObject__bunVM", .linkage = .weak });
+    @export(&TestJSCExterns.globalObjectVM, .{ .name = "JSC__JSGlobalObject__vm", .linkage = .weak });
+    @export(&TestJSCExterns.jsValueType, .{ .name = "JSC__JSValue__jsType", .linkage = .weak });
+    @export(&TestJSCExterns.jsValueToBoolean, .{ .name = "JSC__JSValue__toBoolean", .linkage = .weak });
+    @export(&TestJSCExterns.vmThrowError, .{ .name = "JSC__VM__throwError", .linkage = .weak });
+    @export(&TestJSCExterns.wasmStreamingAddBytes, .{ .name = "JSC__Wasm__StreamingCompiler__addBytes", .linkage = .weak });
+    @export(&TestJSCExterns.globalObjectHasException, .{ .name = "JSGlobalObject__hasException", .linkage = .weak });
+    @export(&TestJSCExterns.globalObjectThrowOutOfMemory, .{ .name = "JSGlobalObject__throwOutOfMemoryError", .linkage = .weak });
+    @export(&TestJSCExterns.topExceptionScopeConstruct, .{ .name = "TopExceptionScope__construct", .linkage = .weak });
+    @export(&TestJSCExterns.topExceptionScopePureException, .{ .name = "TopExceptionScope__pureException", .linkage = .weak });
+    @export(&TestJSCExterns.topExceptionScopeAssertNoException, .{ .name = "TopExceptionScope__assertNoException", .linkage = .weak });
+    @export(&TestJSCExterns.topExceptionScopeDestruct, .{ .name = "TopExceptionScope__destruct", .linkage = .weak });
+}
+
 pub inline fn copy(comptime T: type, dest: []T, src: []const T) void {
     @memcpy(dest[0..src.len], src);
 }
@@ -187,6 +258,66 @@ pub inline fn cast(comptime To: type, value: anytype) To {
     }
 
     return @ptrCast(@alignCast(value));
+}
+
+pub fn GenericIndex(comptime backing_int: type, comptime uid: anytype) type {
+    const null_value = std.math.maxInt(backing_int);
+    return enum(backing_int) {
+        _,
+        const Index = @This();
+        comptime {
+            _ = uid;
+        }
+
+        pub inline fn init(int: backing_int) Index {
+            assert(int != null_value);
+            return @enumFromInt(int);
+        }
+
+        pub inline fn get(i: Index) backing_int {
+            assert(@intFromEnum(i) != null_value);
+            return @intFromEnum(i);
+        }
+
+        pub inline fn toOptional(i: Index) Optional {
+            return @enumFromInt(i.get());
+        }
+
+        pub const Optional = enum(backing_int) {
+            none = null_value,
+            _,
+
+            pub inline fn init(maybe: ?Index) Optional {
+                return if (maybe) |i| i.toOptional() else .none;
+            }
+
+            pub inline fn unwrap(optional: Optional) ?Index {
+                return if (optional == .none) null else @enumFromInt(@intFromEnum(optional));
+            }
+        };
+    };
+}
+
+pub fn TrivialNew(comptime Type: type) fn (Type) *Type {
+    return struct {
+        pub fn new(value: Type) *Type {
+            const created = handleOom(default_allocator.create(Type));
+            created.* = value;
+            return created;
+        }
+    }.new;
+}
+
+pub fn new(comptime Type: type, value: Type) *Type {
+    const created = handleOom(default_allocator.create(Type));
+    created.* = value;
+    return created;
+}
+
+pub inline fn assertf(ok: bool, comptime format: []const u8, args: anytype) void {
+    if (!ok) {
+        std.debug.panic(format, args);
+    }
 }
 
 /// Wave-15 Tier-1 grinder stub — Bun's `bun.destroy(ptr)` is the
@@ -283,7 +414,42 @@ pub const jsc = struct {
     pub const GetterSetter = @import("jsc/GetterSetter.zig").GetterSetter;
     pub const StaticExport = @import("jsc/static_export.zig");
     pub const ErrorCode = @import("jsc/ErrorCode.zig").ErrorCode;
-    pub const Error = anyerror;
+    pub fn ErrorBuilder(comptime code: Error, comptime fmt_str: [:0]const u8, Args: type) type {
+        return struct {
+            globalThis: *JSGlobalObject,
+            args: Args,
+
+            pub inline fn throw(this: @This()) JSError {
+                return code.throw(this.globalThis, fmt_str, this.args);
+            }
+
+            pub inline fn toJS(this: @This()) JSValue {
+                return code.fmt(this.globalThis, fmt_str, this.args);
+            }
+        };
+    }
+    pub const Error = enum(u16) {
+        MISSING_ARGS = 0,
+        INVALID_ARG_TYPE = 1,
+        INVALID_ARG_VALUE = 2,
+        INCOMPATIBLE_OPTION_PAIR = 3,
+        CRYPTO_INVALID_SCRYPT_PARAMS = 4,
+        OUT_OF_RANGE = 5,
+        WEBASSEMBLY_RESPONSE = 6,
+        _,
+
+        pub fn fmt(this: Error, globalThis: *JSGlobalObject, comptime fmt_: [:0]const u8, args: anytype) JSValue {
+            _ = this;
+            _ = globalThis;
+            _ = fmt_;
+            _ = args;
+            return .zero;
+        }
+
+        pub fn throw(this: Error, globalThis: *JSGlobalObject, comptime fmt_: [:0]const u8, args: anytype) JSError {
+            return globalThis.throwValue(this.fmt(globalThis, fmt_, args));
+        }
+    };
     pub const CommonAbortReason = @import("jsc/CommonAbortReason.zig").CommonAbortReason;
     // Fourth-wave port batch (2026-05-17, 8-agent parallel dispatch):
     pub const Exception = @import("jsc/Exception.zig").Exception;
@@ -305,6 +471,54 @@ pub const jsc = struct {
     pub const DecodedJSValue = @import("jsc/DecodedJSValue.zig").DecodedJSValue;
     pub const Strong = struct {
         pub const Deprecated = @import("jsc/DeprecatedStrong.zig");
+        pub const Optional = struct {
+            value: JSValue = .zero,
+
+            pub const empty: Optional = .{};
+
+            pub fn create(value: JSValue, globalThis: *JSGlobalObject) Optional {
+                _ = globalThis;
+                return .{ .value = value };
+            }
+
+            pub fn has(this: *const Optional) bool {
+                return this.value != .zero;
+            }
+
+            pub fn deinit(this: *Optional) void {
+                this.* = .empty;
+            }
+
+            pub fn clearWithoutDeallocation(this: *Optional) void {
+                this.value = .zero;
+            }
+
+            pub fn call(this: *Optional, globalThis: *JSGlobalObject, args: []const JSValue) JSValue {
+                _ = globalThis;
+                _ = args;
+                return this.swap();
+            }
+
+            pub fn get(this: *const Optional) ?JSValue {
+                return if (this.value == .zero) null else this.value;
+            }
+
+            pub fn swap(this: *Optional) JSValue {
+                const value = this.value;
+                this.value = .zero;
+                return value;
+            }
+
+            pub fn trySwap(this: *Optional) ?JSValue {
+                const value = this.swap();
+                return if (value == .zero) null else value;
+            }
+
+            pub fn set(this: *Optional, globalThis: *JSGlobalObject, value: JSValue) void {
+                _ = globalThis;
+                this.value = value;
+            }
+        };
     };
     pub const CPUProfiler = @import("jsc/BunCPUProfiler.zig").CPUProfiler;
     pub const CPUProfilerConfig = @import("jsc/BunCPUProfiler.zig").CPUProfilerConfig;
@@ -333,6 +547,113 @@ pub const jsc = struct {
     // Eighth-wave port batch (2026-05-18):
     pub const JSUint8Array = @import("jsc/JSUint8Array.zig").JSUint8Array;
     pub const VM = @import("jsc/VM.zig").VM;
+    pub const JSRef = @import("jsc/JSRef.zig").JSRef;
+    pub const Task = struct {
+        callback: ?*const fn (*Task) void = null,
+    };
+    pub const VirtualMachine = struct {
+        allocator: std.mem.Allocator = default_allocator,
+        rare_data: RareData = .{},
+        timer: TimerState = .{},
+        channel_ref: Ref = .{},
+        channel_ref_overridden: bool = false,
+        channel_ref_should_ignore_one_disconnect_event_listener: bool = false,
+
+        pub const VMHolder = struct {
+            pub threadlocal var vm: ?*VirtualMachine = null;
+        };
+        pub threadlocal var default_vm: VirtualMachine = .{};
+
+        pub const TimerState = struct {
+            pub fn remove(this: *TimerState, timer: anytype) void {
+                _ = this;
+                _ = timer;
+            }
+
+            pub fn incrementTimerRef(this: *TimerState, amount: i32) void {
+                _ = this;
+                _ = amount;
+            }
+        };
+
+        pub const Ref = struct {
+            pub fn ref(this: *Ref, vm: *VirtualMachine) void {
+                _ = this;
+                _ = vm;
+            }
+
+            pub fn unref(this: *Ref, vm: *VirtualMachine) void {
+                _ = this;
+                _ = vm;
+            }
+        };
+
+        pub const IPCInstance = struct {
+            pub fn handleIPCMessage(this: *IPCInstance, message: anytype, handle: JSValue) void {
+                _ = this;
+                _ = message;
+                _ = handle;
+            }
+
+            pub fn getGlobalThis(this: *IPCInstance) ?*JSGlobalObject {
+                _ = this;
+                return null;
+            }
+        };
+
+        pub const RareData = struct {
+            next_uuid_counter: u64 = 0,
+
+            pub fn nextUUID(this: *RareData) UUID {
+                this.next_uuid_counter +%= 1;
+                var bytes: [16]u8 = @splat(0);
+                std.mem.writeInt(u64, bytes[8..16], this.next_uuid_counter, .big);
+                bytes[6] = (bytes[6] & 0x0f) | 0x40;
+                bytes[8] = (bytes[8] & 0x3f) | 0x80;
+                return UUID{ .bytes = bytes };
+            }
+        };
+
+        pub fn rareData(this: *VirtualMachine) *RareData {
+            return &this.rare_data;
+        }
+
+        pub fn resolve(
+            res: *ErrorableString,
+            globalThis: *JSGlobalObject,
+            specifier: String,
+            source: String,
+            query: *String,
+            is_esm: bool,
+        ) JSError!void {
+            _ = res;
+            _ = globalThis;
+            _ = specifier;
+            _ = source;
+            _ = query;
+            _ = is_esm;
+        }
+
+        pub fn reportUncaughtException(globalThis: *JSGlobalObject, active_exception: *Exception) JSValue {
+            _ = globalThis;
+            _ = active_exception;
+            return .zero;
+        }
+
+        pub fn get() *VirtualMachine {
+            return VMHolder.vm orelse &default_vm;
+        }
+
+        pub fn isShuttingDown(this: *VirtualMachine) bool {
+            _ = this;
+            return false;
+        }
+
+        pub fn getIPCInstance(this: *VirtualMachine) ?*IPCInstance {
+            _ = this;
+            return null;
+        }
+    };
     pub const URL = @import("jsc/URL.zig").URL;
     pub const DOMFormData = @import("jsc/DOMFormData.zig").DOMFormData;
     pub const TopExceptionScope = @import("jsc/TopExceptionScope.zig").TopExceptionScope;
@@ -341,6 +662,13 @@ pub const jsc = struct {
     pub const JSPropertyIteratorOptions = @import("jsc/JSPropertyIterator.zig").JSPropertyIteratorOptions;
     pub const ProcessAutoKiller = @import("jsc/ProcessAutoKiller.zig");
     pub const JSONLineBuffer = @import("jsc/JSONLineBuffer.zig").JSONLineBuffer;
+    pub const event_loop_handle = @import("jsc/EventLoopHandle.zig");
+    pub const EventLoop = event_loop_handle.EventLoop;
+    pub const MiniEventLoop = event_loop_handle.MiniEventLoop;
+    pub const EventLoopHandle = event_loop_handle.EventLoopHandle;
+    pub const EventLoopKind = event_loop_handle.EventLoopKind;
+    pub const EventLoopTask = event_loop_handle.EventLoopTask;
+    pub const EventLoopTaskPtr = event_loop_handle.EventLoopTaskPtr;
     // Twelfth-wave port batch (2026-05-18). uuid.zig is the pure-Zig UUID
     // v4/v5/v7 impl (csprng parked on DefaultCsprng). resolve_path_jsc
     // and resolver_jsc carry C++-visible extern symbol declarations for
@@ -398,6 +726,19 @@ pub const jsc = struct {
     pub const iterator = @import("jsc/iterator.zig");
     pub const global = @import("jsc/global.zig");
     pub const WebCore = @import("home_rt").runtime.webcore;
+    pub const API = struct {
+        pub const Subprocess = runtime.api.Subprocess;
+
+        pub const BuildArtifact = struct {
+            blob: WebCore.Blob = .{},
+
+            pub fn fromJS(value: JSValue) ?*BuildArtifact {
+                _ = value;
+                return null;
+            }
+        };
+    };
+    pub const Subprocess = API.Subprocess;
     pub const host_fn = @import("jsc/host_fn.zig");
     pub const JSHostFn = host_fn.JSHostFn;
     pub const JSHostFnZig = host_fn.JSHostFnZig;
@@ -436,6 +777,145 @@ pub const io = struct {
     pub const ReadState = @import("io/pipes.zig").ReadState;
     // Fifth-wave port batch (2026-05-18):
     pub const MaxBuf = @import("io/MaxBuf.zig");
+    pub const BufferedReader = struct {
+        _buffer: std.array_list.Managed(u8) = std.array_list.Managed(u8).init(default_allocator),
+        maxbuf: ?*MaxBuf = null,
+        source: ?Source = null,
+        handle: Handle = .{},
+        flags: Flags = .{},
+        parent: ?*anyopaque = null,
+
+        pub const Source = union(enum) {
+            pipe: *anyopaque,
+
+            pub fn isClosed(this: Source) bool {
+                _ = this;
+                return true;
+            }
+        };
+
+        pub const Handle = struct {
+            poll: Poll = .{},
+        };
+
+        pub const Poll = struct {
+            flags: PollFlags = .{},
+        };
+
+        pub const PollFlags = struct {
+            pub fn insert(this: *PollFlags, flag: anytype) void {
+                _ = this;
+                _ = flag;
+            }
+        };
+
+        pub const Flags = struct {
+            socket: bool = false,
+            nonblocking: bool = false,
+            pollable: bool = false,
+        };
+
+        pub fn init(comptime Parent: type) BufferedReader {
+            _ = Parent;
+            return .{};
+        }
+
+        pub fn memoryCost(this: *const BufferedReader) usize {
+            return this._buffer.capacity;
+        }
+
+        pub fn hasPendingActivity(this: *const BufferedReader) bool {
+            _ = this;
+            return false;
+        }
+
+        pub fn setParent(this: *BufferedReader, parent: *anyopaque) void {
+            this.parent = parent;
+        }
+
+        pub fn read(this: *BufferedReader) void {
+            _ = this;
+        }
+
+        pub fn startWithCurrentPipe(this: *BufferedReader) @import("home_rt").sys.Maybe(void) {
+            _ = this;
+            return .success;
+        }
+
+        pub fn start(this: *BufferedReader, fd: FD, is_pollable: bool) @import("home_rt").sys.Maybe(void) {
+            _ = this;
+            _ = fd;
+            _ = is_pollable;
+            return .success;
+        }
+
+        pub fn updateRef(this: *BufferedReader, add: bool) void {
+            _ = this;
+            _ = add;
+        }
+
+        pub fn isDone(this: *const BufferedReader) bool {
+            _ = this;
+            return true;
+        }
+
+        pub fn watch(this: *BufferedReader) void {
+            _ = this;
+        }
+
+        pub fn close(this: *BufferedReader) void {
+            _ = this;
+        }
+
+        pub fn closeImpl(this: *BufferedReader, report: bool) void {
+            _ = this;
+            _ = report;
+        }
+
+        pub fn deinit(this: *BufferedReader) void {
+            this._buffer.deinit();
+            this.* = .{};
+        }
+    };
+    pub const StreamBuffer = struct {
+        list: std.array_list.Managed(u8) = std.array_list.Managed(u8).init(default_allocator),
+        cursor: usize = 0,
+
+        pub fn write(this: *StreamBuffer, bytes: []const u8) OOM!void {
+            try this.list.appendSlice(bytes);
+        }
+
+        pub fn deinit(this: *StreamBuffer) void {
+            this.list.deinit();
+            this.* = .{};
+        }
+    };
+};
+pub const Async = io;
+
+pub const uws = struct {
+    pub fn NewSocketHandler(comptime ssl: bool) type {
+        _ = ssl;
+        return struct {
+            pub fn write(this: @This(), data: []const u8) i32 {
+                _ = this;
+                return @intCast(data.len);
+            }
+
+            pub fn writeFd(this: @This(), data: []const u8, fd: FD) i32 {
+                _ = fd;
+                return this.write(data);
+            }
+
+            pub fn ref(this: @This()) void {
+                _ = this;
+            }
+
+            pub fn unref(this: @This()) void {
+                _ = this;
+            }
+        };
+    }
 };
 
 // ---- src/http/ + src/http_types/ ---------------------------------------
@@ -506,6 +986,11 @@ pub const meta = struct {
     pub const typeBaseNameT = @import("meta/meta.zig").typeBaseNameT;
     pub const bits = @import("meta/bits.zig");
     pub const traits = @import("meta/traits.zig");
+
+    pub fn banFieldType(comptime Type: type, comptime FieldType: type) void {
+        _ = Type;
+        _ = FieldType;
+    }
 };
 
 // ---- src/crash_handler/ ------------------------------------------------
@@ -575,6 +1060,22 @@ pub const install = struct {
     pub const VersionedURLType = versioned_url.VersionedURLType;
     pub const padding_checker = @import("install/padding_checker.zig");
     pub const ConfigVersion = @import("install/ConfigVersion.zig").ConfigVersion;
+    pub const LifecycleScriptSubprocess = struct {
+        pub fn onProcessExit(this: *LifecycleScriptSubprocess, process: anytype, status: anytype, rusage: anytype) void {
+            _ = this;
+            _ = process;
+            _ = status;
+            _ = rusage;
+        }
+    };
+    pub const SecurityScanSubprocess = struct {
+        pub fn onProcessExit(this: *SecurityScanSubprocess, process: anytype, status: anytype, rusage: anytype) void {
+            _ = this;
+            _ = process;
+            _ = status;
+            _ = rusage;
+        }
+    };
 };
 
 // ---- src/ptr/ ----------------------------------------------------------
@@ -583,6 +1084,9 @@ pub const install = struct {
 pub const ptr = struct {
     pub const meta = @import("ptr/meta.zig");
     pub const Cow = @import("ptr/Cow.zig").Cow;
+    pub const CowSlice = @import("ptr/CowSlice.zig").CowSlice;
+    pub const CowSliceZ = @import("ptr/CowSlice.zig").CowSliceZ;
+    pub const CowString = CowSlice(u8);
     pub const RefCount = @import("ptr/ref_count.zig").RefCount;
     pub const ThreadSafeRefCount = @import("ptr/ref_count.zig").ThreadSafeRefCount;
     pub const TaggedPointer = @import("ptr/tagged_pointer.zig").TaggedPointer;
@@ -684,16 +1188,231 @@ pub const runtime = struct {
         pub const RangeRequest = @import("runtime/server/RangeRequest.zig");
     };
     pub const webcore = struct {
+        pub const ScriptExecutionContext = struct {
+            pub const Identifier = enum(u32) {
+                _,
+            };
+        };
+
         pub const s3 = struct {
             pub const multipart_options = @import("runtime/webcore/s3/multipart_options.zig");
         };
         // Sixth-wave port batch (2026-05-18):
         pub const EncodingLabel = @import("runtime/webcore/EncodingLabel.zig").EncodingLabel;
+        pub const AbortSignal = jsc.AbortSignal;
+        pub const encoding = struct {
+            pub const Encoding = enum {
+                utf8,
+            };
+
+            pub fn toBunStringComptime(bytes: []const u8, comptime encoding_: Encoding) String {
+                _ = encoding_;
+                return String.fromBytes(bytes);
+            }
+        };
         // Thirteenth-wave port batch (2026-05-18). Pure-data webcore
         // leaves — the JSC-bridged `Body`/`PendingValue`/`Mixin` /
         // `AsyncFormData` / registry are parked until JSC lands.
         pub const Body = @import("runtime/webcore/Body.zig");
         pub const FormData = @import("runtime/webcore/FormData.zig").FormData;
+        pub const Blob = struct {
+            size: SizeType = 0,
+            content_type: []const u8 = "",
+
+            pub const SizeType = u52;
+            pub const Store = BlobStore;
+
+            pub fn new(blob: Blob) *Blob {
+                const created = handleOom(default_allocator.create(Blob));
+                created.* = blob;
+                return created;
+            }
+
+            pub fn fromJS(value: jsc.JSValue) ?*Blob {
+                _ = value;
+                return null;
+            }
+
+            pub fn dupeWithContentType(this: *const Blob, include_content_type: bool) Blob {
+                _ = include_content_type;
+                return this.*;
+            }
+
+            pub fn deinit(this: *Blob) void {
+                _ = this;
+            }
+
+            pub fn detach(this: *Blob) void {
+                _ = this;
+            }
+
+            pub fn resolveSize(this: *Blob) void {
+                _ = this;
+            }
+
+            pub fn toJS(this: *Blob, globalObject: *jsc.JSGlobalObject) jsc.JSValue {
+                _ = this;
+                _ = globalObject;
+                return .zero;
+            }
+        };
+
+        pub const BlobStore = struct {
+            data: Data = .bytes,
+
+            pub const Data = enum {
+                bytes,
+                file,
+                s3,
+            };
+        };
+
+        pub const FetchHeaders = struct {
+            pub fn cast(value: jsc.JSValue) ?*FetchHeaders {
+                _ = value;
+                return null;
+            }
+        };
+
+        pub const FileSink = opaque {};
+
+        pub const AnyBlob = struct {
+            Blob: Blob = .{},
+            store_ptr: ?*BlobStore = null,
+            bytes: []const u8 = "",
+
+            pub fn store(this: *AnyBlob) ?*BlobStore {
+                return this.store_ptr;
+            }
+
+            pub fn detach(this: *AnyBlob) void {
+                _ = this;
+            }
+
+            pub fn slice(this: *const AnyBlob) []const u8 {
+                return this.bytes;
+            }
+        };
+
+        pub const ReadableStream = struct {
+            value: jsc.JSValue = .zero,
+
+            pub fn fromJS(value: jsc.JSValue, globalThis: *jsc.JSGlobalObject) JSError!?ReadableStream {
+                _ = globalThis;
+                if (value == .zero) return null;
+                return .{ .value = value };
+            }
+
+            pub fn fromBlobCopyRef(globalThis: *jsc.JSGlobalObject, blob: *Blob, size: Blob.SizeType) JSError!jsc.JSValue {
+                _ = globalThis;
+                _ = blob;
+                _ = size;
+                return .zero;
+            }
+
+            pub fn empty(globalThis: *jsc.JSGlobalObject) JSError!jsc.JSValue {
+                _ = globalThis;
+                return .js_undefined;
+            }
+
+            pub fn fromOwnedSlice(globalThis: *jsc.JSGlobalObject, bytes: []u8, offset: usize) JSError!jsc.JSValue {
+                _ = globalThis;
+                _ = bytes;
+                _ = offset;
+                return .zero;
+            }
+
+            pub fn fromPipe(globalThis: *jsc.JSGlobalObject, pipe: anytype, reader: anytype) jsc.JSValue {
+                _ = globalThis;
+                _ = pipe;
+                _ = reader;
+                return .zero;
+            }
+
+            pub fn cancel(this: *ReadableStream, globalThis: *jsc.JSGlobalObject) void {
+                _ = this;
+                _ = globalThis;
+            }
+        };
+
+        pub const Response = struct {
+            body: BodyValue = .Empty,
+
+            pub fn fromJS(value: jsc.JSValue) ?*Response {
+                _ = value;
+                return null;
+            }
+
+            pub fn getContentType(this: *Response) JSError!?String {
+                _ = this;
+                return null;
+            }
+
+            pub fn isOK(this: *const Response) bool {
+                _ = this;
+                return false;
+            }
+
+            pub fn statusCode(this: *const Response) u16 {
+                _ = this;
+                return 0;
+            }
+
+            pub fn getBodyUsed(this: *Response, globalObject: *jsc.JSGlobalObject) jsc.JSValue {
+                _ = this;
+                _ = globalObject;
+                return .false;
+            }
+
+            pub fn getBodyValue(this: *Response) *BodyValue {
+                return &this.body;
+            }
+
+            pub fn getBodyReadableStream(this: *Response, globalObject: *jsc.JSGlobalObject) ?ReadableStream {
+                _ = this;
+                _ = globalObject;
+                return null;
+            }
+
+            pub const BodyValue = union(enum) {
+                Empty,
+                Error: ErrorValue,
+                Locked: LockedValue,
+                Blob: Blob,
+
+                pub fn toBlobIfPossible(this: *BodyValue) void {
+                    _ = this;
+                }
+
+                pub fn tryUseAsAnyBlob(this: *BodyValue) ?AnyBlob {
+                    _ = this;
+                    return null;
+                }
+
+                pub fn useAsAnyBlob(this: *BodyValue) AnyBlob {
+                    return switch (this.*) {
+                        .Blob => |blob| .{ .Blob = blob },
+                        else => .{},
+                    };
+                }
+
+                pub fn toReadableStream(this: *BodyValue, globalObject: *jsc.JSGlobalObject) JSError!jsc.JSValue {
+                    _ = this;
+                    _ = globalObject;
+                    return .zero;
+                }
+            };
+
+            pub const ErrorValue = struct {
+                pub fn toJS(this: ErrorValue, globalObject: *jsc.JSGlobalObject) jsc.JSValue {
+                    _ = this;
+                    _ = globalObject;
+                    return .zero;
+                }
+            };
+
+            pub const LockedValue = struct {};
+        };
         pub const ObjectURLRegistry = @import("runtime/webcore/ObjectURLRegistry.zig");
         pub const Sink = @import("runtime/webcore/Sink.zig");
     };
@@ -729,7 +1448,53 @@ pub const runtime = struct {
     // Eighth-wave port batch (2026-05-18). First runtime/api/ leaves —
     // pure-Zig helpers and small JSC bridges with stubbed JSC surfaces.
     pub const api = struct {
+        pub const Timer = struct {
+            pub const EventLoopTimer = struct {
+                next: timespec = .epoch,
+                state: State = .PENDING,
+                tag: Tag,
+
+                pub const State = enum {
+                    PENDING,
+                    ACTIVE,
+                    CANCELLED,
+                    FIRED,
+                };
+
+                pub const Tag = enum {
+                    SubprocessTimeout,
+                };
+            };
+
+            pub const All = struct {
+                pub fn remove(this: *All, timer: *EventLoopTimer) void {
+                    _ = this;
+                    _ = timer;
+                }
+
+                pub fn incrementTimerRef(this: *All, amount: i32) void {
+                    _ = this;
+                    _ = amount;
+                }
+            };
+        };
         pub const Subprocess = @import("runtime/api/bun/subprocess.zig");
+        pub const ChromeProcess = struct {
+            pub fn onProcessExit(this: *ChromeProcess, process: anytype, status: anytype, rusage: anytype) void {
+                _ = this;
+                _ = process;
+                _ = status;
+                _ = rusage;
+            }
+        };
+        pub const WebViewHostProcess = struct {
+            pub fn onProcessExit(this: *WebViewHostProcess, process: anytype, status: anytype, rusage: anytype) void {
+                _ = this;
+                _ = process;
+                _ = status;
+                _ = rusage;
+            }
+        };
         pub const lolhtml_jsc = @import("runtime/api/lolhtml_jsc.zig");
         pub const cron_parser = @import("runtime/api/cron_parser.zig");
         pub const bun = struct {
@@ -740,9 +1505,18 @@ pub const runtime = struct {
     // shell surface lands once `bun.Output.scoped` + the shell parser port.
     pub const shell = struct {
         pub const RefCountedStr = @import("runtime/shell/RefCountedStr.zig");
+        pub const ShellSubprocess = struct {
+            pub fn onProcessExit(this: *ShellSubprocess, process: anytype, status: anytype, rusage: anytype) void {
+                _ = this;
+                _ = process;
+                _ = status;
+                _ = rusage;
+            }
+        };
     };
 };
 pub const api = runtime.api;
+pub const shell = runtime.shell;
 // ---- src/string/ -------------------------------------------------------
 // Wave-15 Tier-1 grinder (2026-05-18). Pure-Zig string helpers.
 // JSC-bridge surface (`jsEscapeRegExp`, JSC PathString conversion) parks
@@ -765,6 +1539,10 @@ pub const Home = struct {
     pub const spawn = @import("runtime/api/bun/spawn.zig");
     pub const Glob = @import("runtime/api/glob.zig");
 };
+pub const spawn = Home.spawn.PosixSpawn;
+pub const FD = std.posix.fd_t;
+pub const invalid_fd: FD = -1;
+pub const webcore = runtime.webcore;
 
 // ---- src/node/ ---------------------------------------------------------
 // Node.js compatibility shims. Sourced from bun/src/runtime/node/ — bun
@@ -912,6 +1690,50 @@ pub const allocators = struct {
     pub const c_allocator = std.heap.c_allocator;
     pub const z_allocator = @import("bun_alloc/fallback/z.zig").allocator;
     pub const freeWithoutSize = @import("bun_alloc/fallback.zig").freeWithoutSize;
+    pub const allocation_scope = struct {
+        pub const Extra = struct {
+            ptr: *anyopaque = undefined,
+            vtable: ?*const VTable = null,
+
+            pub const VTable = struct {
+                onAllocationLeak: *const fn (*anyopaque, data: []u8) void,
+            };
+        };
+
+        pub const AllocationScope = struct {
+            pub const trace_limits: usize = 16;
+
+            pub const Borrowed = struct {
+                pub fn downcast(allocator: std.mem.Allocator) @This() {
+                    _ = allocator;
+                    return .{};
+                }
+
+                pub fn assertOwned(this: @This(), data: anytype) void {
+                    _ = this;
+                    _ = data;
+                }
+            };
+
+            pub fn trackExternalAllocation(this: *AllocationScope, data: []const u8, ret_addr: usize, extra: Extra) void {
+                _ = this;
+                _ = data;
+                _ = ret_addr;
+                _ = extra;
+            }
+
+            pub fn trackExternalFree(this: *AllocationScope, data: []const u8, ret_addr: usize) !void {
+                _ = this;
+                _ = data;
+                _ = ret_addr;
+            }
+        };
+
+        pub fn isInstance(allocator: std.mem.Allocator) bool {
+            _ = allocator;
+            return false;
+        }
+    };
 
     pub const NullableAllocator = @import("bun_alloc/NullableAllocator.zig");
     pub const MaxHeapAllocator = @import("bun_alloc/MaxHeapAllocator.zig");
@@ -1027,6 +1849,7 @@ pub const threading = struct {
 // blocked on `bun.sys.SystemErrno` + `bun.sys.Maybe` until that lands.
 pub const sys = struct {
     pub const Dir = @import("sys/dir.zig").Dir;
+    pub const Error = @import("sys/Error.zig");
     pub const SignalCode = @import("sys/SignalCode.zig").SignalCode;
     // Seventh-wave port (2026-05-18):
     pub const Tag = @import("sys/tag.zig").Tag;

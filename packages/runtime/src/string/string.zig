@@ -217,8 +217,7 @@ pub const String = extern struct {
             return String.static(fmt);
         }
 
-        var sba = std.heap.stackFallback(512, bun.default_allocator);
-        const alloc = sba.get();
+        const alloc = bun.default_allocator;
         const buf = try std.fmt.allocPrint(alloc, fmt, args);
         defer alloc.free(buf);
         return cloneUTF8(buf);
@@ -502,7 +501,7 @@ pub const String = extern struct {
     /// - Never allocates or copies any memory
     /// - Does not increment reference counts
     pub fn fromBytes(value: []const u8) String {
-        return String.init(ZigString.fromBytes(value));
+        return String.init(ZigString.init(value));
     }
 
     pub fn format(self: String, writer: *std.Io.Writer) !void {

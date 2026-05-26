@@ -23,16 +23,16 @@ The upstream pin is consistent today:
   `fd0b6f1a271fca0b8124b69f230b100f4d636af6`
 
 Cheap live recount from `scripts/measure-parity.sh --values` on
-2026-05-26 after the 70-file Zig source-presence gap copy:
+2026-05-26 in `/tmp/home-bun-parity-main`:
 
 | Measurement | Value | What it means |
 |---|---:|---|
-| `RUNTIME_ZIG_PRESENT_FILES` | 1394 | Zig files present in `packages/runtime/src/`; **not** integrated parity credit |
-| `RUNTIME_SUBSYSTEMS` | 99 | Top-level runtime source directories present |
-| `RUNTIME_ZIG_DORMANT_FILES` | 856 | Source-first copied Zig files in dormant import manifests; still awaiting rewrite/wiring/tests |
+| `RUNTIME_ZIG_PRESENT_FILES` | 1391 | Zig files present in `packages/runtime/src/`; **not** integrated parity credit |
+| `RUNTIME_SUBSYSTEMS` | 98 | Top-level runtime source directories present |
+| `RUNTIME_ZIG_DORMANT_FILES` | 797 | Source-first copied Zig files in `packages/runtime/DORMANT_BUN_ZIG_IMPORT_2026-05-21.txt`; still awaiting rewrite/wiring/tests |
 | `BUN_UPSTREAM_FILES` | 1193 | Audited Bun baseline from the 2026-05-18/20 audit, excluding tests/codegen/macros |
 | `NODE_FILES` | 28 | Zig files currently under `packages/runtime/src/node/` |
-| `JSC_FILES` | 130 | Zig files currently under `packages/runtime/src/jsc/` |
+| `JSC_FILES` | 128 | Zig files currently under `packages/runtime/src/jsc/` |
 | `COMPAT_SYMBOLS` | 16 / ~103 | Top-level `bun.*` shim symbols in `packages/compat/src/compat.zig` |
 
 Honest interpretation:
@@ -41,11 +41,16 @@ Honest interpretation:
   That is expected because `packages/runtime/src/` contains dormant Bun
   source backlog plus Home adapters. It must not be reported as
   `>100%` runtime parity.
-- Upstream Zig source presence is now complete for the pinned checkout:
-  `comm -23` between `/Users/chrisbreuer/Code/bun/src/**/*.zig` and
-  `packages/runtime/src/**/*.zig` returns zero missing paths. The newest
-  70 files are documented in
-  [`packages/runtime/DORMANT_BUN_ZIG_IMPORT_2026-05-26.txt`](../packages/runtime/DORMANT_BUN_ZIG_IMPORT_2026-05-26.txt).
+- Upstream Zig source presence is now complete in this main-based
+  worktree. The 72-path JSC-adjacent source gap was copied from
+  `/Users/chrisbreuer/Code/bun/src/` into `packages/runtime/src/`,
+  preserving relative paths and leaving zero missing upstream Zig paths.
+  See
+  [`BUN_ZIG_SOURCE_AUDIT_2026-05-26.md`](./BUN_ZIG_SOURCE_AUDIT_2026-05-26.md).
+- Copied Bun corpus presence is complete for the pinned checkout:
+  `/Users/chrisbreuer/Code/bun/test/**/*.test.{ts,js}` and
+  `packages/runtime/test/bun-corpus/**/*.test.{ts,js}` both contain
+  **1720** files, with zero missing and zero extra copied test paths.
 - The last audited integrated baseline is still **552 / 1193 (~46.3%)**:
   Home-import-rewritten, Zig 0.17-clean, build-wired, and tested. Do not
   raise that number without a fresh integration audit.
@@ -168,11 +173,11 @@ Current corpus scale for the next ratchet:
 
 Next large slice: **bundler corpus completion**. A local audit on
 2026-05-26 finds **89** copied `bundler/**/*.test.{ts,js}` files. The
-current green evidence covers **79 unique files**: 66 unique bundler
-files inside `minimal-js`, 5 more in `bundler-core-itbundled`, and 8
-more from the executable 13-file `bundler-transpiler-bootstrap`
-subset. Promote the remaining **10** files into native Home corpus gates
-before expanding into more Bake or server-heavy tests. Keep
+current green evidence covers **80 unique files**: 66 unique bundler
+files inside `minimal-js`, 5 more in `bundler-core-itbundled`, and 9
+more from the executable 14-file `bundler-transpiler-bootstrap`
+subset. Promote the remaining exact **9** files into native Home corpus
+gates before expanding into more Bake or server-heavy tests. Keep
 `bundler/native-plugin.test.ts` last because upstream handles it as a
 special native-plugin case, so it should not mask ordinary bundler
 coverage.
@@ -201,13 +206,14 @@ closed the TypeScript/non-null lowering blocker for the first ordinary
 Second agent-sized chunk: **bundler transpiler bootstrap tranche**.
 `bundler_transpiler_bootstrap` now exists and is accepted by
 `home test --bun-corpus-native-subset=bundler-transpiler-bootstrap`.
-It runs thirteen additional bundler/transpiler files and passes:
-**132 passed, 0 failed, 0 todo** on 2026-05-26.
+It runs fourteen additional bundler/transpiler files and passes:
+**137 passed, 0 failed, 0 todo** on 2026-05-26.
 
 Files in the tranche:
 
 - `bundler/bundler_feature_flag.test.ts`
 - `bundler/plugin-error-nested-throw.test.ts`
+- `bundler/transpiler/decorator-metadata.test.ts`
 - `bundler/transpiler/es-decorators.test.ts`
 - `bundler/transpiler/preserve-use-strict-cjs.test.ts`
 - `bundler/transpiler/template-literal.test.ts`
@@ -220,45 +226,44 @@ Files in the tranche:
 - `bundler/transpiler/jsx-production.test.ts`
 - `bundler/transpiler/runtime-transpiler.test.ts`
 
-Remaining bundler file frontier, classified by tranche:
+Remaining bundler file frontier after the 14-file transpiler tranche,
+classified by next faithful work batch:
 
 | Tranche | Files | Primary blocker from local corpus |
 |---|---|---|
-| A. Decorator transpiler semantics | `bundler/transpiler/decorator-metadata.test.ts`, `bundler/transpiler/decorators.test.ts`, `bundler/transpiler/es-decorators-esbuild.test.ts` | Decorator metadata / legacy and standard decorator syntax lowering; next observed blocker is parse-time `SyntaxError: Invalid character: '@'` in `decorator-metadata.test.ts` |
-| B. Transpiler API and macro surface | `bundler/transpiler/macro-test.test.ts`, `bundler/transpiler/transpiler.test.js` | `Bun.Transpiler`, macro imports, and broader transpiler API behavior |
+| A. Decorator transpiler semantics | `bundler/transpiler/decorators.test.ts`, `bundler/transpiler/es-decorators-esbuild.test.ts` | Legacy and standard decorator syntax lowering; latest probes fail at bootstrap classification / parse-time syntax before execution |
+| B. Transpiler API and macro surface | `bundler/transpiler/macro-test.test.ts`, `bundler/transpiler/transpiler.test.js` | `Bun.Transpiler`, macro imports, loader validation, transform APIs, and macro callback behavior |
 | C. Resolver cache behavior | `bundler/resolver/cache-invalidation.test.ts`, `bundler/resolver/cache-node-compat.test.ts`, `bundler/resolver/cache-runtime.test.ts` | Repeated in-process `Bun.build()` / `require()` cache invalidation, filesystem mutation, Node-vs-Bun subprocess comparison |
 | D. CLI build surface | `bundler/cli.test.ts` | `bun build` CLI subprocess matrix: compile/outfile/sourcemap/tsconfig override/package install paths |
 | E. Native plugin final | `bundler/native-plugin.test.ts` | Native plugin ABI, node-gyp build, `.node` loading, `onBeforeParse`, crash-name behavior |
 
-After the file frontier is green, replace the `__home_expect_bundled`
-stub with a real `itBundled` adapter and wire the needed Bun bundler
-substrates in `packages/bundler/src/` (`options.zig`,
-`transpiler.zig`, `bundle_v2.zig`, `LinkerContext.zig`,
-`OutputFile.zig`, plus HTML/metafile surfaces).
+Source module work after those corpus gates should stay faithful to the
+copied Bun graph rather than expanding the bootstrap stub. Replace
+`__home_expect_bundled` with a real `itBundled` adapter and wire the
+needed Bun bundler substrates in `packages/bundler/src/`:
+`options.zig`, `transpiler.zig`, `bundle_v2.zig`,
+`LinkerContext.zig`, `OutputFile.zig`, `HTMLImportManifest.zig`,
+`HTMLScanner.zig`, `ParseTask.zig`, `LinkerGraph.zig`, and the
+`linker_context/*` output/metafile/HTML/CSS chunk helpers currently
+present under `packages/runtime/src/bundler/linker_context/`.
 Verification target:
 
 ```sh
 ./pantry/.bin/zig build test -Dfilter=home_test --summary all
 ./zig-out/bin/home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=bundler-core-itbundled
 ./zig-out/bin/home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=bundler-transpiler-bootstrap
+bunx --bun pickier docs/BUN_PARITY_PLAN.md docs/PARITY-BUN.md packages/home_test/src/PORTING_STATUS.md
+git diff --check -- docs/BUN_PARITY_PLAN.md docs/PARITY-BUN.md packages/home_test/src/PORTING_STATUS.md
 ```
 
-Runtime compile frontier: the current non-JSC runtime gate is red.
+Runtime compile frontier: the current non-JSC runtime gate is green.
 `./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false
---summary failures` fails at compile time with **22 errors** on 2026-05-26
-after the shallow alias pass. The default macOS JSC-enabled command
-currently fails with **25 errors** because it analyzes a few more JSC
-paths.
-Classify those before source work:
-
-| Bucket | Representative errors |
-|---|---|
-| Missing shallow aliases still open | `sys.openatA`, `sys.stat`, `sys.getErrno`, `home_rt.isComptimeKnown`, `home_rt.schema`, `home_rt.URL` |
-| Parked API surfaces | `api.dns.Resolver`, `api.HTTPServer`, `Buffer.fromTypedArray`, `Method.fromJS` |
-| JSC/event-loop shape mismatch while JSC is disabled | missing `EventLoopHandle.loop()`, `EventLoopHandle.bunVM()`, `Async.Loop`, `AutoFlusher.VirtualMachine` pointer mismatch |
-| WebCore placeholder type gaps | `FileReader.Source.new`, `Blob.initWithStore` receiving `ByteBlobLoader`, stream source state versus JSValue shape |
-| Disabled codegen class stubs | `JSBlobInternalReadableStreamSource` and related generated source wrappers |
-| Zig 0.17 stdlib drift | `std.io.fixedBufferStream`, `std.os.getFdPath` |
+--summary all` now passes on 2026-05-26 with **1380 / 1383 tests passed**
+and **3 skipped**. The bridge layer that made this green is
+still compile-frontier substrate, not JS-callable parity credit: it adds
+missing Bun/JSC aliases, Zig 0.17 compatibility shims, parked subprocess
+owners, CowSlice/CowString exposure, and test-only C++ extern stubs for
+the non-JSC build gate.
 
 Bundler tranche exit criteria:
 
@@ -370,15 +375,32 @@ dependency chain in the PR description before editing.
 
 ## Next Bulk Tranches
 
-1. **Bundler corpus completion.** Promote the remaining roughly 23
+1. **Bundler corpus completion.** Promote the remaining exact 9
    unallowlisted upstream Bun `bundler/` corpus files as the next large
-   test slice before moving into Bake/server-heavy tests. Keep
+   test slice before moving into Bake/server-heavy tests. The files are
+   `bundler/transpiler/decorators.test.ts`,
+   `bundler/transpiler/es-decorators-esbuild.test.ts`,
+   `bundler/transpiler/macro-test.test.ts`,
+   `bundler/transpiler/transpiler.test.js`,
+   `bundler/resolver/cache-invalidation.test.ts`,
+   `bundler/resolver/cache-node-compat.test.ts`,
+   `bundler/resolver/cache-runtime.test.ts`, `bundler/cli.test.ts`,
+   and `bundler/native-plugin.test.ts`. Keep
    `bundler/native-plugin.test.ts` last because upstream treats native
    plugins specially.
-2. **Parallel test-runner process pool.** Integrate the dormant
+2. **JSC-adjacent source integration.** The 72 previously missing upstream Zig
+   paths listed in
+   [`BUN_ZIG_SOURCE_AUDIT_2026-05-26.md`](./BUN_ZIG_SOURCE_AUDIT_2026-05-26.md)
+   are now source-present. Next work is integration, not copying: apply
+   Home import rewrites, Zig 0.17 cleanup, build wiring, and tests by
+   dependency weight across SQL JSC, Valkey JSC, HTTP/WebSocket JSC, DNS
+   JSC, then the smaller CSS/sys/parser/semver/URL/AST/patch leaves.
+3. **Parallel test-runner process pool.** Integrate the
    `runtime/cli/test/parallel` subtree as one chunk. Treat this as an
-   integration backlog, not raw source-copy work: the seven Zig files are
-   already source-present, but only the compile-wired leaves count today.
+   integration backlog, not raw source-copy work: `FileRange.zig` and
+   `Frame.zig` are already compile-wired leaves, while `Channel.zig`,
+   `Coordinator.zig`, `Worker.zig`, `aggregate.zig`, and `runner.zig`
+   are now source-present backlog.
 
    | File | Current status | Next integration work |
    |---|---|---|
@@ -404,6 +426,6 @@ dependency chain in the PR description before editing.
    cover frame IPC, worker spawn/reap, result aggregation, coverage or
    JUnit fragment handling, and at least one multi-file `home test
    --parallel` corpus smoke.
-3. **Bake after bundler.** The sorted full-gate frontier moves naturally
+4. **Bake after bundler.** The sorted full-gate frontier moves naturally
    into `bake/`, and existing runtime source already has Bake lifetime
    carrier work to build on.

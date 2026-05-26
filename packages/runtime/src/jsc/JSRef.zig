@@ -8,11 +8,10 @@
 
 const std = @import("std");
 const home_rt = @import("home_rt");
-const Strong = @import("./Strong.zig");
+const Strong = home_rt.jsc.Strong;
 
-// JSC bridge JSGlobalObject stubbed — re-attaches in Phase 12.2.
-const JSGlobalObject = opaque {};
-const JSValue = Strong.JSValue;
+const JSGlobalObject = home_rt.jsc.JSGlobalObject;
+const JSValue = home_rt.jsc.JSValue;
 
 // JSValue capability shims used by upstream code. The real JSValue exposes
 // these on the C++ side via `isEmptyOrUndefinedOrNull`. While JSValue is a
