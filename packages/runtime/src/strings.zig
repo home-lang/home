@@ -131,6 +131,34 @@ pub fn withoutTrailingSlashWindowsPath(input: []const u8) []const u8 {
     return path;
 }
 
+pub fn pathContainsNodeModulesFolder(path: []const u8) bool {
+    if (std.mem.indexOf(u8, path, "/node_modules/") != null) return true;
+    if (std.mem.endsWith(u8, path, "/node_modules")) return true;
+    if (std.mem.indexOf(u8, path, "\\node_modules\\") != null) return true;
+    return std.mem.endsWith(u8, path, "\\node_modules");
+}
+
+pub fn allocateLatin1IntoUTF8(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    var extra: usize = 0;
+    for (input) |byte| {
+        if (byte >= 0x80) extra += 1;
+    }
+
+    const output = try allocator.alloc(u8, input.len + extra);
+    var out_i: usize = 0;
+    for (input) |byte| {
+        if (byte < 0x80) {
+            output[out_i] = byte;
+            out_i += 1;
+        } else {
+            output[out_i] = 0xC0 | @as(u8, @intCast(byte >> 6));
+            output[out_i + 1] = 0x80 | (byte & 0x3F);
+            out_i += 2;
+        }
+    }
+    return output;
+}
+
 /// Comptime-known suffix match. Mirrors `bun.strings.endsWithComptime`.
 pub fn endsWithComptime(slice: []const u8, comptime suffix: []const u8) bool {
     if (slice.len < suffix.len) return false;

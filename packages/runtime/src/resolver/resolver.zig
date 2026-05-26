@@ -1227,7 +1227,8 @@ pub const Resolver = struct {
 
             // Run node's resolution rules (e.g. adding ".js")
             var normalizer = ResolvePath.PosixToWinNormalizer{};
-            if (r.loadAsFileOrDirectory(normalizer.resolve(source_dir, import_path), kind)) |entry| {
+            const resolved_import_path = bun.path.joinAbsStringBuf(source_dir, bufs(.load_as_file_or_directory_via_tsconfig_base_path), &.{import_path}, .auto);
+            if (r.loadAsFileOrDirectory(normalizer.resolve(resolved_import_path), kind)) |entry| {
                 return .{
                     .success = Result{
                         .dirname_fd = entry.dirname_fd,
@@ -3137,14 +3138,14 @@ pub const Resolver = struct {
                 // Swap out the "*" in the original path for whatever the "*" matched
                 const matched_text = path[longest_match.prefix.len .. path.len - longest_match.suffix.len];
 
-                const total_length: ?u32 = strings.indexOfChar(original_path, '*');
+                const total_length: ?usize = strings.indexOfChar(original_path, '*');
                 var prefix_parts = [_]string{ abs_base_url, original_path[0 .. total_length orelse original_path.len] };
 
                 // Concatenate the matched text with the suffix from the wildcard path
                 var matched_text_with_suffix = bufs(.tsconfig_match_full_buf3);
                 var matched_text_with_suffix_len: usize = 0;
                 if (total_length != null) {
-                    const suffix = std.mem.trimLeft(u8, original_path[total_length orelse original_path.len ..], "*");
+                    const suffix = std.mem.trimStart(u8, original_path[total_length orelse original_path.len ..], "*");
                     matched_text_with_suffix_len = matched_text.len + suffix.len;
                     if (matched_text_with_suffix_len > matched_text_with_suffix.len) continue;
                     bun.concat(u8, matched_text_with_suffix, &.{ matched_text, suffix });
@@ -3158,8 +3159,8 @@ pub const Resolver = struct {
                 // so that "/Users/foo/components/", "/foo/bar" => /Users/foo/components/foo/bar
                 var parts = [_]string{
                     prefix,
-                    if (matched_text_with_suffix_len > 0) std.mem.trimLeft(u8, matched_text_with_suffix[0..matched_text_with_suffix_len], "/") else "",
-                    std.mem.trimLeft(u8, longest_match.suffix, "/"),
+                    if (matched_text_with_suffix_len > 0) std.mem.trimStart(u8, matched_text_with_suffix[0..matched_text_with_suffix_len], "/") else "",
+                    std.mem.trimStart(u8, longest_match.suffix, "/"),
                 };
                 const absolute_original_path = r.fs.absBufChecked(
                     &parts,
@@ -4043,7 +4044,7 @@ pub const Resolver = struct {
                         }
 
                         const this_dir = fd.stdDir();
-                        var file = bun.FD.fromStdDir(this_dir.openDirZ(bun.pathLiteral("node_modules/.bin"), .{}) catch
+                        var file = (bun.sys.openat(.fromStdDir(this_dir), bun.pathLiteral("node_modules/.bin"), bun.O.DIRECTORY, 0).unwrap() catch
                             break :append_bin_dir);
                         defer file.close();
                         const bin_path = file.getFdPath(bufs(.node_bin_path)) catch break :append_bin_dir;
@@ -4069,9 +4070,9 @@ pub const Resolver = struct {
                             }
 
                             const this_dir = fd.stdDir();
-                            var file = this_dir.openDirZ(".bin", .{}) catch break :append_bin_dir;
+                            var file = bun.sys.openat(.fromStdDir(this_dir), bun.pathLiteral(".bin"), bun.O.DIRECTORY, 0).unwrap() catch break :append_bin_dir;
                             defer file.close();
-                            const bin_path = bun.getFdPath(.fromStdDir(file), bufs(.node_bin_path)) catch break :append_bin_dir;
+                            const bin_path = file.getFdPath(bufs(.node_bin_path)) catch break :append_bin_dir;
                             bin_folders_lock.lock();
                             defer bin_folders_lock.unlock();
 

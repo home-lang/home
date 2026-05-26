@@ -90,6 +90,17 @@ pub fn ThreadlocalBuffers(comptime T: type) type {
     };
 }
 
+pub inline fn isComptimeKnown(value: anytype) bool {
+    _ = value;
+    return @inComptime();
+}
+
+pub const deprecated = struct {
+    pub fn jsErrorToWriteError(_: anyerror) std.Io.Writer.Error {
+        return error.WriteFailed;
+    }
+};
+
 pub fn DebugOnlyDisabler(comptime Type: type) type {
     return struct {
         threadlocal var disable_create_in_debug: if (Environment.isDebug) usize else u0 = 0;
@@ -298,6 +309,29 @@ pub const cpp = struct {
         return std.fmt.parseFloat(f64, bytes_ptr[0..len]) catch std.math.nan(f64);
     }
 
+    pub fn JSC__JSValue__coerceToInt32(value: jsc.JSValue, globalThis: *jsc.JSGlobalObject) JSError!i32 {
+        _ = globalThis;
+        return @intCast(@intFromEnum(value));
+    }
+
+    pub fn JSC__JSValue__coerceToInt64(value: jsc.JSValue, globalThis: *jsc.JSGlobalObject) JSError!i64 {
+        _ = globalThis;
+        return @intFromEnum(value);
+    }
+
+    pub fn JSC__JSValue__isSymbol(value: jsc.JSValue) bool {
+        _ = value;
+        return false;
+    }
+
+    pub fn JSC__JSValue__getIfPropertyExistsImpl(value: jsc.JSValue, globalThis: *jsc.JSGlobalObject, bytes_ptr: [*]const u8, len: usize) JSError!jsc.JSValue {
+        _ = value;
+        _ = globalThis;
+        _ = bytes_ptr;
+        _ = len;
+        return .property_does_not_exist_on_object;
+    }
+
     pub fn Bun__WTFStringImpl__deref(self: anytype) void {
         _ = self;
         @panic("home_rt.cpp.Bun__WTFStringImpl__deref needs the C++ FFI bridge (Phase 12.2)");
@@ -336,6 +370,11 @@ pub const cpp = struct {
     pub fn BunString__fromUTF16Unitialized(len: usize) String {
         _ = len;
         return .dead;
+    }
+
+    pub fn JSC__JSValue__isCallable(value: anytype) bool {
+        _ = value;
+        return false;
     }
 };
 
@@ -672,6 +711,74 @@ pub fn StringArrayHashMapUnmanaged(comptime Type: type) type {
     return StringHashMapUnmanaged(Type);
 }
 
+pub const StringMap = struct {
+    map: Map,
+    dupe_keys: bool = false,
+
+    pub const Map = StringArrayHashMap([]const u8);
+
+    pub fn clone(self: StringMap) !StringMap {
+        return .{
+            .map = try self.map.clone(),
+            .dupe_keys = self.dupe_keys,
+        };
+    }
+
+    pub fn init(allocator: std.mem.Allocator, dupe_keys: bool) StringMap {
+        return .{
+            .map = Map.init(allocator),
+            .dupe_keys = dupe_keys,
+        };
+    }
+
+    pub fn keys(self: StringMap) []const []const u8 {
+        return self.map.keys();
+    }
+
+    pub fn values(self: StringMap) []const []const u8 {
+        return self.map.values();
+    }
+
+    pub fn count(self: StringMap) usize {
+        return self.map.count();
+    }
+
+    pub fn insert(self: *StringMap, key: []const u8, value: []const u8) !void {
+        const entry = try self.map.getOrPut(key);
+        if (!entry.found_existing and self.dupe_keys) {
+            entry.key_ptr.* = try self.map.allocator.dupe(u8, key);
+        } else if (entry.found_existing) {
+            self.map.allocator.free(entry.value_ptr.*);
+        }
+
+        entry.value_ptr.* = try self.map.allocator.dupe(u8, value);
+    }
+
+    pub const put = insert;
+
+    pub fn get(self: *const StringMap, key: []const u8) ?[]const u8 {
+        return self.map.get(key);
+    }
+
+    pub fn sort(self: *StringMap, sort_ctx: anytype) void {
+        self.map.sort(sort_ctx);
+    }
+
+    pub fn deinit(self: *StringMap) void {
+        for (self.map.values()) |value| {
+            self.map.allocator.free(value);
+        }
+
+        if (self.dupe_keys) {
+            for (self.map.keys()) |key| {
+                self.map.allocator.free(key);
+            }
+        }
+
+        self.map.deinit();
+    }
+};
+
 pub fn StringHashMap(comptime Type: type) type {
     return std.StringHashMap(Type);
 }
@@ -820,7 +927,102 @@ pub const jsc = struct {
     pub const JSValue = @import("jsc/JSValue.zig").JSValue;
     pub const CallFrame = @import("jsc/CallFrame.zig").CallFrame;
     pub const JSGlobalObject = @import("jsc/JSGlobalObject.zig").JSGlobalObject;
-    pub const ConsoleObject = @import("jsc/ConsoleObject.zig");
+    pub const ConsoleObject = struct {
+        pub const MessageLevel = enum(u32) {
+            Log = 0,
+            Warning = 1,
+            Error = 2,
+            Debug = 3,
+            Info = 4,
+            _,
+        };
+
+        pub const MessageType = enum(u32) {
+            Log = 0,
+            Dir = 1,
+            DirXML = 2,
+            Table = 3,
+            Trace = 4,
+            Clear = 5,
+            StartGroup = 6,
+            StartGroupCollapsed = 7,
+            EndGroup = 8,
+            Assert = 9,
+            Timing = 10,
+            Profile = 11,
+            ProfileEnd = 12,
+            Image = 13,
+            _,
+        };
+
+        pub const Formatter = struct {
+            remaining_values: []const JSValue = &.{},
+            globalThis: ?*JSGlobalObject = null,
+            map_node: ?*anyopaque = null,
+            stack_check: StackCheck = .{},
+
+            pub fn deinit(this: *Formatter) void {
+                this.map_node = null;
+            }
+
+            pub const ZigFormatter = struct {
+                formatter: *Formatter,
+                value: JSValue,
+
+                pub fn format(this: ZigFormatter, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+                    _ = this.formatter;
+                    try writer.print("{d}", .{@intFromEnum(this.value)});
+                }
+            };
+
+            pub const Tag = enum {
+                Undefined,
+                Null,
+                Boolean,
+                Integer,
+                Double,
+                String,
+                Array,
+                Object,
+                Error,
+                Private,
+                Promise,
+                JSON,
+                toJSON,
+                Other,
+
+                pub const Result = struct {
+                    tag: Tag,
+                };
+
+                pub fn get(value: JSValue, globalThis: *JSGlobalObject) JSError!Tag.Result {
+                    _ = globalThis;
+                    return .{ .tag = switch (value) {
+                        .js_undefined => .Undefined,
+                        .null => .Null,
+                        .true, .false => .Boolean,
+                        else => .Other,
+                    } };
+                }
+            };
+        };
+
+        pub fn messageWithTypeAndLevel(
+            console: ?*ConsoleObject,
+            message_type: MessageType,
+            level: MessageLevel,
+            globalThis: *JSGlobalObject,
+            vals: [*]JSValue,
+            len: usize,
+        ) callconv(jsc.conv) void {
+            _ = console;
+            _ = message_type;
+            _ = level;
+            _ = globalThis;
+            _ = vals;
+            _ = len;
+        }
+    };
     pub const JSPromiseRejectionOperation = @import("jsc/JSPromiseRejectionOperation.zig").JSPromiseRejectionOperation;
     pub const ScriptExecutionStatus = @import("jsc/ScriptExecutionStatus.zig").ScriptExecutionStatus;
     pub const SourceType = @import("jsc/SourceType.zig").SourceType;
@@ -971,7 +1173,54 @@ pub const jsc = struct {
     pub const VM = @import("jsc/VM.zig").VM;
     pub const JSRef = @import("jsc/JSRef.zig").JSRef;
     pub const ZigException = @import("jsc/ZigException.zig").ZigException;
+    pub const JSCell = @import("jsc/JSCell.zig").JSCell;
+    pub const JSPromise = @import("jsc/JSPromise.zig").JSPromise;
+    pub const JSInternalPromise = @import("jsc/JSInternalPromise.zig").JSInternalPromise;
+    pub const EventType = @import("jsc/EventType.zig").EventType;
+    pub const ArrayBuffer = struct {
+        bytes: []const u8 = "",
+        shared: bool = false,
+        typed_array_type: TypedArrayType = .ArrayBuffer,
+
+        pub const TypedArrayType = enum {
+            ArrayBuffer,
+            Int8Array,
+            Uint8Array,
+            Uint8ClampedArray,
+            Int16Array,
+            Uint16Array,
+            Int32Array,
+            Uint32Array,
+            Float32Array,
+            Float64Array,
+            BigInt64Array,
+            BigUint64Array,
+            DataView,
+        };
+
+        pub fn byteSlice(this: ArrayBuffer) []const u8 {
+            return this.bytes;
+        }
+    };
+    pub const AnyPromise = @import("jsc/AnyPromise.zig").AnyPromise;
+    pub const JSObject = @import("jsc/JSObject.zig").JSObject;
+    pub const Jest = struct {
+        pub const BunTestRoot = struct {
+            pub fn onBeforePrint(this: *BunTestRoot) void {
+                _ = this;
+            }
+        };
+
+        pub const Runner = struct {
+            bun_test_root: BunTestRoot = .{},
+        };
+
+        pub const Jest = struct {
+            pub threadlocal var runner: ?*Runner = null;
+        };
+    };
     pub const Node = struct {
+        pub const Encoding = @import("runtime/node/types.zig").Encoding;
         pub const Dirent = struct {
             pub const Kind = std.Io.File.Kind;
         };
@@ -981,12 +1230,14 @@ pub const jsc = struct {
     };
     pub const VirtualMachine = struct {
         pub const MacroMap = std.AutoHashMap(i32, javascript_core_c_api.JSObjectRef);
+        pub const string_allocation_limit: usize = std.math.maxInt(u32);
 
         allocator: std.mem.Allocator = default_allocator,
         macros: MacroMap = MacroMap.init(default_allocator),
         rare_data: RareData = .{},
         timer: TimerState = .{},
         transpiler: RuntimeTranspiler = .{},
+        console: ConsoleObject = undefined,
         jsc_vm: *VirtualMachine = undefined,
         global: *JSGlobalObject = undefined,
         channel_ref: Ref = .{},
@@ -1057,6 +1308,14 @@ pub const jsc = struct {
             return .{};
         }
 
+        pub fn uncaughtException(this: *VirtualMachine, globalObject: *JSGlobalObject, value: JSValue, was_handled: bool) JSValue {
+            _ = this;
+            _ = globalObject;
+            _ = value;
+            _ = was_handled;
+            return .zero;
+        }
+
         pub fn runWithAPILock(this: *VirtualMachine, comptime Context: type, ctx: *Context, comptime function: fn (ctx: *Context) void) void {
             _ = this;
             function(ctx);
@@ -1067,6 +1326,32 @@ pub const jsc = struct {
             _ = global_object;
             _ = result;
             _ = value;
+        }
+
+        pub fn waitForPromise(this: *VirtualMachine, promise_value: anytype) void {
+            _ = this;
+            _ = promise_value;
+        }
+
+        pub fn printErrorlikeObject(
+            this: *VirtualMachine,
+            value: JSValue,
+            name: ?[]const u8,
+            message: ?[]const u8,
+            formatter: anytype,
+            comptime Writer: type,
+            writer: Writer,
+            comptime enable_ansi_colors: bool,
+            add_cause: bool,
+        ) void {
+            _ = this;
+            _ = value;
+            _ = name;
+            _ = message;
+            _ = formatter;
+            _ = enable_ansi_colors;
+            _ = add_cause;
+            writer.writeAll("Error") catch {};
         }
 
         pub const TimerState = struct {
@@ -1243,6 +1528,13 @@ pub const jsc = struct {
             pub fn fromJS(value: JSValue) ?*BuildArtifact {
                 _ = value;
                 return null;
+            }
+
+            pub fn writeFormat(this: *BuildArtifact, comptime Formatter: type, formatter: *Formatter, writer: anytype, comptime enable_ansi_colors: bool) !void {
+                _ = this;
+                _ = formatter;
+                _ = enable_ansi_colors;
+                try writer.writeAll("BuildArtifact");
             }
         };
     };
@@ -1791,6 +2083,25 @@ pub const runtime = struct {
                 _ = encoding_;
                 return String.fromBytes(bytes);
             }
+
+            pub fn encodeIntoFrom16(input: []const u16, out: []u8, comptime enc: anytype, comptime allow_partial_write: bool) !usize {
+                _ = enc;
+                _ = allow_partial_write;
+                var written: usize = 0;
+                for (input) |unit| {
+                    if (written >= out.len) break;
+                    out[written] = @truncate(unit);
+                    written += 1;
+                }
+                return written;
+            }
+
+            pub fn encodeIntoFrom8(input: []const u8, out: []u8, comptime enc: anytype) !usize {
+                _ = enc;
+                const len = @min(input.len, out.len);
+                @memcpy(out[0..len], input[0..len]);
+                return len;
+            }
         };
         // Thirteenth-wave port batch (2026-05-18). Pure-data webcore
         // leaves — the JSC-bridged `Body`/`PendingValue`/`Mixin` /
@@ -1836,6 +2147,11 @@ pub const runtime = struct {
                 _ = this;
                 _ = globalObject;
                 return .zero;
+            }
+
+            pub fn sharedView(this: *const Blob) []const u8 {
+                _ = this;
+                return "";
             }
         };
 
@@ -1956,6 +2272,19 @@ pub const runtime = struct {
                 return null;
             }
 
+            pub fn getBlobWithoutCallFrame(this: *Response, globalObject: *jsc.JSGlobalObject) JSError!jsc.JSValue {
+                _ = this;
+                _ = globalObject;
+                return .zero;
+            }
+
+            pub fn writeFormat(this: *Response, comptime Formatter: type, formatter: *Formatter, writer: anytype, comptime enable_ansi_colors: bool) !void {
+                _ = this;
+                _ = formatter;
+                _ = enable_ansi_colors;
+                try writer.writeAll("Response");
+            }
+
             pub const BodyValue = union(enum) {
                 Empty,
                 Error: ErrorValue,
@@ -1994,6 +2323,26 @@ pub const runtime = struct {
             };
 
             pub const LockedValue = struct {};
+        };
+        pub const Request = struct {
+            pub fn fromJS(value: jsc.JSValue) ?*Request {
+                _ = value;
+                return null;
+            }
+
+            pub fn getBlobWithoutCallFrame(this: *Request, globalObject: *jsc.JSGlobalObject) JSError!jsc.JSValue {
+                _ = this;
+                _ = globalObject;
+                return .zero;
+            }
+
+            pub fn writeFormat(this: *Request, value: jsc.JSValue, comptime Formatter: type, formatter: *Formatter, writer: anytype, comptime enable_ansi_colors: bool) !void {
+                _ = this;
+                _ = value;
+                _ = formatter;
+                _ = enable_ansi_colors;
+                try writer.writeAll("Request");
+            }
         };
         pub const ObjectURLRegistry = @import("runtime/webcore/ObjectURLRegistry.zig");
         pub const Sink = @import("runtime/webcore/Sink.zig");
@@ -2066,6 +2415,18 @@ pub const runtime = struct {
             };
         };
         pub const Subprocess = @import("runtime/api/bun/subprocess.zig");
+        pub const ResolveMessage = struct {
+            pub fn fromJS(value: jsc.JSValue) ?*ResolveMessage {
+                _ = value;
+                return null;
+            }
+        };
+        pub const BuildMessage = struct {
+            pub fn fromJS(value: jsc.JSValue) ?*BuildMessage {
+                _ = value;
+                return null;
+            }
+        };
         pub const ChromeProcess = struct {
             pub fn onProcessExit(this: *ChromeProcess, process: anytype, status: anytype, rusage: anytype) void {
                 _ = this;
@@ -2517,6 +2878,14 @@ pub const allocators = struct {
 
     pub const Result = BSSResult;
 
+    pub fn isSliceInBuffer(slice: []const u8, buffer: []const u8) bool {
+        const start = @intFromPtr(buffer.ptr);
+        const end = start + buffer.len;
+        const slice_start = @intFromPtr(slice.ptr);
+        const slice_end = slice_start + slice.len;
+        return slice_start >= start and slice_end <= end;
+    }
+
     const BSSIndexMapContext = struct {
         pub fn hash(_: @This(), key: u64) u64 {
             return key;
@@ -2530,6 +2899,60 @@ pub const allocators = struct {
     pub const c_allocator = std.heap.c_allocator;
     pub const z_allocator = @import("bun_alloc/fallback/z.zig").allocator;
     pub const freeWithoutSize = @import("bun_alloc/fallback.zig").freeWithoutSize;
+
+    pub fn BSSList(comptime ValueType: type, comptime _count: anytype) type {
+        const count = _count * 2;
+        const max_index = count - 1;
+        return struct {
+            const Self = @This();
+
+            allocator: std.mem.Allocator,
+            backing_buf: [count]ValueType = undefined,
+            overflow: std.ArrayList(ValueType) = .empty,
+            used: u32 = 0,
+
+            pub var instance: *Self = undefined;
+            pub var loaded = false;
+
+            pub fn init(allocator: std.mem.Allocator) *Self {
+                if (!loaded) {
+                    instance = allocator.create(Self) catch outOfMemory();
+                    instance.* = .{ .allocator = allocator };
+                    loaded = true;
+                }
+                return instance;
+            }
+
+            pub fn deinit(self: *Self) void {
+                self.overflow.deinit(self.allocator);
+                self.allocator.destroy(self);
+                loaded = false;
+            }
+
+            pub fn isOverflowing() bool {
+                return loaded and instance.used >= @as(u32, @intCast(count));
+            }
+
+            pub fn exists(_: *Self, _: ValueType) bool {
+                return false;
+            }
+
+            pub fn append(self: *Self, value: ValueType) !*ValueType {
+                if (self.used <= max_index) {
+                    const index = self.used;
+                    self.backing_buf[index] = value;
+                    self.used += 1;
+                    return &self.backing_buf[index];
+                }
+
+                try self.overflow.append(self.allocator, value);
+                self.used += 1;
+                return &self.overflow.items[self.overflow.items.len - 1];
+            }
+
+            pub const Pair = struct { index: IndexType, value: *ValueType };
+        };
+    }
 
     pub fn BSSStringList(comptime _: usize, comptime _: usize) type {
         return struct {
@@ -2574,6 +2997,19 @@ pub const allocators = struct {
                 return @constCast(try self.append(AppendType, value));
             }
 
+            pub fn appendLowerCase(self: *Self, comptime AppendType: type, value: AppendType) OOM![]const u8 {
+                const input = switch (@typeInfo(AppendType)) {
+                    .pointer => value,
+                    .array => value[0..],
+                    else => @compileError("unsupported BSSStringList appendLowerCase type"),
+                };
+                const out = try self.allocator.alloc(u8, input.len);
+                for (input, 0..) |char, index| {
+                    out[index] = std.ascii.toLower(char);
+                }
+                return out;
+            }
+
             pub fn exists(_: *const Self, _: []const u8) bool {
                 return false;
             }
@@ -2594,9 +3030,14 @@ pub const allocators = struct {
             index: std.HashMapUnmanaged(u64, IndexType, BSSIndexMapContext, 80) = .{},
             values: std.ArrayListUnmanaged(ValueType) = .empty,
 
+            pub var instance: *Self = undefined;
+            pub var loaded = false;
+
             pub fn init(allocator: std.mem.Allocator) *Self {
                 const self = allocator.create(Self) catch outOfMemory();
                 self.* = .{ .allocator = allocator };
+                instance = self;
+                loaded = true;
                 return self;
             }
 
@@ -2604,6 +3045,7 @@ pub const allocators = struct {
                 self.index.deinit(self.allocator);
                 self.values.deinit(self.allocator);
                 self.allocator.destroy(self);
+                loaded = false;
             }
 
             fn keyFor(denormalized_key: []const u8) []const u8 {
@@ -2851,6 +3293,15 @@ pub const sys = struct {
     pub const E = @import("errno/errno.zig").E;
     pub const libuv_error_map = @import("sys/libuv_error_map.zig").libuv_error_map;
     pub const coreutils_error_map = @import("sys/coreutils_error_map.zig").coreutils_error_map;
+
+    pub const LStat = struct {
+        kind: std.Io.File.Kind = .file,
+    };
+
+    pub fn lstat_absolute(path_: [:0]const u8) !LStat {
+        _ = path_;
+        return .{};
+    }
 
     fn unexpected(comptime tag: Tag) Error {
         return .{ .errno = @intFromEnum(E.INVAL), .syscall = tag };

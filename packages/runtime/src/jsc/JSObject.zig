@@ -26,6 +26,17 @@ pub const JSObject = opaque {
         std.mem.doNotOptimizeAway(this);
     }
 
+    pub fn toJS(this: *JSObject) home_rt.jsc.JSValue {
+        return @enumFromInt(@as(i64, @bitCast(@as(u64, @intCast(@intFromPtr(this))))));
+    }
+
+    pub fn getIndex(value: home_rt.jsc.JSValue, globalThis: *home_rt.jsc.JSGlobalObject, index: u32) home_rt.JSError!home_rt.jsc.JSValue {
+        _ = value;
+        _ = globalThis;
+        _ = index;
+        return .js_undefined;
+    }
+
     /// The discriminated `(tag, index|name)` payload SQL bindings pass into
     /// `JSC__createStructure`. `name` carries a `bun.String` upstream; we keep
     /// the same memory layout (a single `usize` cell) so the extern call site

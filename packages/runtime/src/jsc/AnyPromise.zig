@@ -33,7 +33,7 @@ pub const JSValue = enum(i64) {
 };
 
 // JSC bridge VM stubbed — re-attaches in Phase 12.2.
-const VM = opaque {};
+const VM = home_rt.jsc.VirtualMachine;
 
 /// Phase 12.2 re-attaches the real bridge methods. Until then,
 /// `bun.JSTerminated` is `error{JSTerminated}` — matches upstream's alias.

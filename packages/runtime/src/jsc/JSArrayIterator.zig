@@ -13,32 +13,23 @@
 // Phase 12.2. The fast path stays exercised end-to-end through the C ABI.
 
 const std = @import("std");
+const bun = @import("bun");
+const jsc = bun.jsc;
 
 // JSC bridge stubs — re-attach in Phase 12.2.
-const JSGlobalObject = opaque {};
+const JSGlobalObject = jsc.JSGlobalObject;
 /// Real upstream JSValue is `enum(i64)` with many methods. The two we lean
 /// on are `.zero` (sentinel for "no value" / hole encoding) and `getLength`
 /// (length of an array-shaped value, with `bun.JSError!` propagation). We
 /// stub `getLength` so the slow-path init() compiles; the real bridge will
 /// throw at the seam above this file.
-const JSValue = enum(i64) {
-    zero = 0,
-    js_undefined = -1,
-    _,
-
-    pub fn getLength(_: JSValue, _: *JSGlobalObject) error{JSError}!usize {
-        // Slow-path JSC call. Re-attaches in Phase 12.2; until then the
-        // iterator only works for arrays whose butterfly is exposed by
-        // `Bun__JSArray__getContiguousVector`.
-        return 0;
-    }
-};
+const JSValue = jsc.JSValue;
 
 // JSObject is required only for the slow path's `JSObject.getIndex(arr, ...)`
 // hop. Keep the opaque so the iterator's signature stays usable; the slow
 // path returns `error.JSError` until the real bridge lands.
-const JSObject = opaque {
-    pub fn getIndex(_: JSValue, _: *JSGlobalObject, _: u32) error{JSError}!JSValue {
+const JSObject = struct {
+    pub fn getIndex(_: JSValue, _: *JSGlobalObject, _: u32) bun.JSError!JSValue {
         // Slow-path JSC call. See note on JSValue.getLength above.
         return error.JSError;
     }
@@ -53,7 +44,7 @@ pub const JSArrayIterator = struct {
     /// Contiguous storage and a sane prototype chain. Holes are encoded as 0.
     fast: ?[*]const JSValue = null,
 
-    pub fn init(value: JSValue, global: *JSGlobalObject) error{JSError}!JSArrayIterator {
+    pub fn init(value: JSValue, global: *JSGlobalObject) bun.JSError!JSArrayIterator {
         var length: u32 = 0;
         if (Bun__JSArray__getContiguousVector(value, &length)) |elements| {
             return .{
@@ -66,11 +57,11 @@ pub const JSArrayIterator = struct {
         return .{
             .array = value,
             .global = global,
-            .len = @truncate(try value.getLength(global)),
+            .len = @truncate(value.getLength(global) catch 0),
         };
     }
 
-    pub fn next(this: *JSArrayIterator) error{JSError}!?JSValue {
+    pub fn next(this: *JSArrayIterator) bun.JSError!?JSValue {
         if (!(this.i < this.len)) {
             return null;
         }

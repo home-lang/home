@@ -6,6 +6,7 @@
 // based on `Environment.isWindows`, etc.).
 
 const builtin = @import("builtin");
+const std = @import("std");
 
 pub const isWindows = builtin.os.tag == .windows;
 pub const isMac = switch (builtin.os.tag) {
@@ -26,6 +27,7 @@ pub const isNative = !isWasm;
 // `Environment.isX64` predicates. Mirrors upstream `Environment.isAarch64`.
 pub const isAarch64 = builtin.cpu.arch == .aarch64;
 pub const isX64 = builtin.cpu.arch == .x86_64;
+pub const isMusl = false;
 pub const isAndroid = false; // Home does not currently target Android.
 pub const enable_fuzzilli = false; // Fuzzilli REPRL — re-attaches in a future phase.
 pub const isDebug = builtin.mode == .Debug;
@@ -43,8 +45,55 @@ pub const show_crash_trace = false;
 // table). Bun maps every Zig OS tag down to one of `linux | mac | windows
 // | wasm | freebsd`; preserve that bucketing so verbatim copies compile
 // without semantic edits.
-pub const Os = enum { linux, mac, windows, wasm, freebsd };
-pub const os: Os = if (isWindows)
+pub const OperatingSystem = enum {
+    linux,
+    mac,
+    windows,
+    wasm,
+    freebsd,
+
+    pub fn displayString(this: OperatingSystem) []const u8 {
+        return switch (this) {
+            .linux => "Linux",
+            .mac => "macOS",
+            .windows => "Windows",
+            .wasm => "WASM",
+            .freebsd => "FreeBSD",
+        };
+    }
+
+    pub fn nameString(this: OperatingSystem) []const u8 {
+        return switch (this) {
+            .linux => "linux",
+            .mac => "darwin",
+            .windows => "win32",
+            .wasm => "wasm",
+            .freebsd => "freebsd",
+        };
+    }
+
+    pub fn stdOSTag(this: OperatingSystem) std.Target.Os.Tag {
+        return switch (this) {
+            .linux => .linux,
+            .mac => .macos,
+            .windows => .windows,
+            .freebsd => .freebsd,
+            .wasm => unreachable,
+        };
+    }
+
+    pub fn npmName(this: OperatingSystem) []const u8 {
+        return switch (this) {
+            .linux => "linux",
+            .mac => "darwin",
+            .windows => "windows",
+            .wasm => "wasm",
+            .freebsd => "freebsd",
+        };
+    }
+};
+pub const Os = OperatingSystem;
+pub const os: OperatingSystem = if (isWindows)
     .windows
 else if (isMac)
     .mac
@@ -55,8 +104,35 @@ else if (isFreeBSD)
 else
     .linux;
 
+pub const Architecture = enum {
+    x64,
+    arm64,
+    wasm,
+
+    pub fn npmName(this: Architecture) []const u8 {
+        return switch (this) {
+            .x64 => "x64",
+            .arm64 => "aarch64",
+            .wasm => "wasm",
+        };
+    }
+};
+pub const arch: Architecture = if (isWasm)
+    .wasm
+else if (isX64)
+    .x64
+else if (isAarch64)
+    .arm64
+else
+    @compileError("Please add your architecture to Environment.Architecture");
+
+pub const version: std.SemanticVersion = .{
+    .major = 0,
+    .minor = 0,
+    .patch = 0,
+};
+
 test "environment flags are mutually consistent" {
-    const std = @import("std");
     var count: usize = 0;
     if (isWindows) count += 1;
     if (isMac) count += 1;

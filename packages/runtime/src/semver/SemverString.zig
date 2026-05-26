@@ -116,6 +116,19 @@ pub const String = extern struct {
         return std.hash.Wyhash.hash(0, buf);
     }
 
+    pub const ArrayHashContext = struct {
+        arg_buf: string,
+        existing_buf: string,
+
+        pub fn hash(this: ArrayHashContext, value: String) u32 {
+            return @truncate(String.stringHash(value.slice(this.arg_buf)));
+        }
+
+        pub fn eql(this: ArrayHashContext, a: String, b: String, _: usize) bool {
+            return a.eql(b, this.arg_buf, this.existing_buf);
+        }
+    };
+
     comptime {
         if (@sizeOf(String) != @sizeOf(Pointer)) {
             @compileError("String types must be the same size");

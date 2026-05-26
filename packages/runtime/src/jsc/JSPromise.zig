@@ -19,6 +19,9 @@ pub const JSPromise = opaque {
 
     // JSC-bridge `Unwrapped` union omitted — it carries `JSValue` payloads which
     // re-land in Phase 12.2.
+    pub fn status(_: *JSPromise) Status {
+        return .pending;
+    }
 };
 
 test "JSPromise.Status tags" {

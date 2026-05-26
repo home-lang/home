@@ -255,6 +255,35 @@ pub const ZigString = extern struct {
         return std.mem.eql(u8, this.slice(), value);
     }
 
+    pub fn eql(this: ZigString, other: ZigString) bool {
+        if (this.len != other.len) return false;
+        if (!this.is16Bit() and !other.is16Bit()) {
+            return std.mem.eql(u8, this.slice(), other.slice());
+        }
+        var i: usize = 0;
+        while (i < this.len) : (i += 1) {
+            const left: u21 = if (this.is16Bit()) this.utf16SliceAligned()[i] else this.slice()[i];
+            const right: u21 = if (other.is16Bit()) other.utf16SliceAligned()[i] else other.slice()[i];
+            if (left != right) return false;
+        }
+        return true;
+    }
+
+    pub fn format(this: ZigString, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        if (this.is16Bit()) {
+            var buf: [4]u8 = undefined;
+            for (this.utf16SliceAligned()) |unit| {
+                const len = std.unicode.utf8Encode(@intCast(unit), &buf) catch {
+                    try writer.writeAll("\xEF\xBF\xBD");
+                    continue;
+                };
+                try writer.writeAll(buf[0..len]);
+            }
+            return;
+        }
+        try writer.writeAll(this.slice());
+    }
+
     pub inline fn full(this: *const ZigString) []const u8 {
         return untagged(this._unsafe_ptr_do_not_use)[0..this.len];
     }

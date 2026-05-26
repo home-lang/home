@@ -660,12 +660,12 @@ pub const JSValue = enum(i64) {
         if (value.isEmptyOrUndefinedOrNull()) return null;
         if (value.asInternalPromise()) |promise| {
             return AnyPromise{
-                .internal = promise,
+                .internal = @ptrCast(promise),
             };
         }
         if (value.asPromise()) |promise| {
             return AnyPromise{
-                .normal = promise,
+                .normal = @ptrCast(promise),
             };
         }
         return null;

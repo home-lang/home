@@ -15,44 +15,13 @@
 // scope guards re-use the ported `home_rt.jsc.TopExceptionScope`.
 
 const std = @import("std");
-const home_rt = @import("home_rt");
-const TopExceptionScope = home_rt.jsc.TopExceptionScope;
-
-// JSC bridge stubs — re-attach in Phase 12.2.
-const JSGlobalObject = opaque {};
-const JSObject = opaque {
-    /// Real upstream: `*JSObject -> JSValue` cell-pointer cast. Until the
-    /// real JSValue is ported we hand back the opaque pointer cast to the
-    /// stub `JSValue` enum so the call site compiles.
-    pub fn toJS(this: *JSObject) JSValue {
-        return @enumFromInt(@as(i64, @bitCast(@as(u64, @intCast(@intFromPtr(this))))));
-    }
-    /// Real upstream: pins the JSC cell via the conservative roots scan. The
-    /// debug-only sanity check re-attaches in Phase 12.2; here it's a no-op
-    /// so call sites compile.
-    pub fn ensureStillAlive(_: *JSObject) void {}
-};
-const JSValue = enum(i64) { zero = 0, _ };
-
-/// `bun.String` C ABI stub. Real layout `{tag: u8, _padding: 7 bytes, impl: *anyopaque}`.
-/// Only the tag is meaningful here (callers compare against `.Dead`).
-const String = extern struct {
-    tag: u8 = 0,
-    _padding: [7]u8 = @splat(0),
-    impl: ?*anyopaque = null,
-
-    pub const Tag = enum(u8) { Dead = 0, _ };
-
-    /// Sentinel for "no value bound". Upstream spells this as
-    /// `bun.String.dead`; we keep the name so the loop body reads naturally.
-    pub const dead: String = .{};
-
-    /// Stub for `name.isEmpty()`. Real impl peers into the WTFStringImpl;
-    /// re-attaches in Phase 12.2 once the bun.String runtime lands.
-    pub fn isEmpty(_: String) bool {
-        return false;
-    }
-};
+const bun = @import("bun");
+const jsc = bun.jsc;
+const TopExceptionScope = jsc.TopExceptionScope;
+const JSGlobalObject = jsc.JSGlobalObject;
+const JSObject = jsc.JSObject;
+const JSValue = jsc.JSValue;
+const String = bun.String;
 
 pub const JSPropertyIteratorOptions = struct {
     skip_empty_name: bool,
@@ -98,7 +67,7 @@ pub fn JSPropertyIterator(comptime options: JSPropertyIteratorOptions) type {
                 options.own_properties_only,
                 options.only_non_index_properties,
             );
-            if (home_rt.Environment.allow_assert) {
+            if (bun.Environment.allow_assert) {
                 if (len > 0) {
                     std.debug.assert(impl != null);
                 } else {
@@ -145,7 +114,7 @@ pub fn JSPropertyIterator(comptime options: JSPropertyIteratorOptions) type {
                     this.impl.?.getName(&name, i);
                 }
 
-                if (name.tag == @intFromEnum(String.Tag.Dead)) {
+                if (name.tag == .Dead) {
                     continue;
                 }
 

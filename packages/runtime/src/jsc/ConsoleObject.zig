@@ -7,12 +7,29 @@ const ScriptArguments = opaque {};
 const DEFAULT_CONSOLE_LOG_DEPTH: u16 = 2;
 
 const Counter = std.AutoHashMapUnmanaged(u64, u32);
+const TimerCompat = struct {
+    started: i128 = 0,
+
+    pub fn start() !TimerCompat {
+        return .{ .started = nowNs() };
+    }
+
+    pub fn read(this: TimerCompat) u64 {
+        const elapsed = nowNs() - this.started;
+        return if (elapsed > 0) @intCast(elapsed) else 0;
+    }
+
+    fn nowNs() i128 {
+        const timestamp = std.Io.Clock.boot.now(std.Io.Threaded.global_single_threaded.io());
+        return @intCast(timestamp.nanoseconds);
+    }
+};
 
 stderr_buffer: [4096]u8,
 stdout_buffer: [4096]u8,
 
-error_writer_backing: @TypeOf(Output.Source.StreamType.quietWriter(undefined)).Adapter,
-writer_backing: @TypeOf(Output.Source.StreamType.quietWriter(undefined)).Adapter,
+error_writer_backing: std.Io.Writer.Discarding,
+writer_backing: std.Io.Writer.Discarding,
 error_writer: *std.Io.Writer,
 writer: *std.Io.Writer,
 
@@ -22,7 +39,9 @@ counts: Counter = .{},
 
 pub fn format(_: @This(), comptime _: []const u8, _: anytype, _: anytype) !void {}
 
-pub fn init(out: *ConsoleObject, error_writer: Output.Source.StreamType, writer: Output.Source.StreamType) void {
+pub fn init(out: *ConsoleObject, error_writer: anytype, writer: anytype) void {
+    _ = error_writer;
+    _ = writer;
     out.* = .{
         .stderr_buffer = undefined,
         .stdout_buffer = undefined,
@@ -34,11 +53,11 @@ pub fn init(out: *ConsoleObject, error_writer: Output.Source.StreamType, writer:
         .writer = undefined,
     };
 
-    out.error_writer_backing = error_writer.quietWriter().adaptToNewApi(&out.stderr_buffer);
-    out.writer_backing = writer.quietWriter().adaptToNewApi(&out.stdout_buffer);
+    out.error_writer_backing = std.Io.Writer.Discarding.init(&out.stderr_buffer);
+    out.writer_backing = std.Io.Writer.Discarding.init(&out.stdout_buffer);
 
-    out.error_writer = &out.error_writer_backing.new_interface;
-    out.writer = &out.writer_backing.new_interface;
+    out.error_writer = &out.error_writer_backing.writer;
+    out.writer = &out.writer_backing.writer;
 }
 
 pub const MessageLevel = enum(u32) {
@@ -522,8 +541,7 @@ pub const TablePrinter = struct {
     ) !void {
         const globalObject = this.globalObject;
 
-        var stack_fallback = std.heap.stackFallback(@sizeOf(Column) * 16, this.globalObject.allocator());
-        var columns = try std.array_list.Managed(Column).initCapacity(stack_fallback.get(), 16);
+        var columns = try std.array_list.Managed(Column).initCapacity(this.globalObject.allocator(), 16);
         defer {
             for (columns.items) |*col| {
                 col.name.deref();
@@ -1750,7 +1768,7 @@ pub const Formatter = struct {
         };
     }
 
-    const indentation_buf = [_]u8{' '}**64;
+    const indentation_buf: [64]u8 = @splat(' ');
     pub fn writeIndent(
         this: *ConsoleObject.Formatter,
         comptime Writer: type,
@@ -3619,7 +3637,7 @@ pub fn countReset(
     entry.value_ptr.* = 0;
 }
 
-const PendingTimers = std.AutoHashMap(u64, ?std.time.Timer);
+const PendingTimers = std.AutoHashMap(u64, ?TimerCompat);
 threadlocal var pending_time_logs: PendingTimers = undefined;
 threadlocal var pending_time_logs_loaded = false;
 
@@ -3640,7 +3658,7 @@ pub fn time(
     const result = pending_time_logs.getOrPut(id) catch unreachable;
 
     if (!result.found_existing or (result.found_existing and result.value_ptr.* == null)) {
-        result.value_ptr.* = std.time.Timer.start() catch unreachable;
+        result.value_ptr.* = TimerCompat.start() catch unreachable;
     }
 }
 pub fn timeEnd(
@@ -3657,7 +3675,7 @@ pub fn timeEnd(
 
     const id = bun.hash(chars[0..len]);
     const result = (pending_time_logs.fetchPut(id, null) catch null) orelse return;
-    var value: std.time.Timer = result.value orelse return;
+    var value: TimerCompat = result.value orelse return;
     // get the duration in microseconds
     // then display it in milliseconds
     Output.printElapsed(@as(f64, @floatFromInt(value.read() / std.time.ns_per_us)) / std.time.us_per_ms);
@@ -3687,7 +3705,7 @@ pub fn timeLog(
     }
 
     const id = bun.hash(chars[0..len]);
-    var value: std.time.Timer = (pending_time_logs.get(id) orelse return) orelse return;
+    var value: TimerCompat = (pending_time_logs.get(id) orelse return) orelse return;
     // get the duration in microseconds
     // then display it in milliseconds
     Output.printElapsed(@as(f64, @floatFromInt(value.read() / std.time.ns_per_us)) / std.time.us_per_ms);

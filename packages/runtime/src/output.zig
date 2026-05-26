@@ -64,6 +64,18 @@ pub fn prettyErrorln(comptime fmt: []const u8, args: anytype) void {
     std.debug.print(fmt ++ "\n", args);
 }
 
+pub fn printError(comptime fmt: []const u8, args: anytype) void {
+    std.debug.print(fmt, args);
+}
+
+pub fn printErrorln(comptime fmt: []const u8, args: anytype) void {
+    std.debug.print(fmt ++ "\n", args);
+}
+
+pub fn printElapsed(elapsed_ms: f64) void {
+    std.debug.print("[{d:.2}ms]", .{elapsed_ms});
+}
+
 pub fn prettyFmt(comptime fmt: []const u8, comptime _: bool) []const u8 {
     return fmt;
 }
@@ -83,6 +95,8 @@ pub fn flush() void {
     // writer in a later sub-phase.
     if (error_file_writer) |*writer| writer.interface.flush() catch {};
 }
+
+pub fn resetTerminal() void {}
 
 pub fn errorWriter() *std.Io.Writer {
     if (error_file_writer == null) {

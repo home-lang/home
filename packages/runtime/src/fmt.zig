@@ -53,6 +53,15 @@ pub fn hexIntUpper(value: anytype) HexIntFormatter {
     return .{ .value = @intCast(value), .upper = true };
 }
 
+pub fn fastDigitCount(value: anytype) u64 {
+    var n: u64 = @intCast(value);
+    var count: u64 = 1;
+    while (n >= 10) : (count += 1) {
+        n /= 10;
+    }
+    return count;
+}
+
 pub const QuickAndDirtyJavaScriptSyntaxHighlighter = struct {
     text: []const u8,
     opts: Options,

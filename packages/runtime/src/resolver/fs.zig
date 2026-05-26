@@ -22,7 +22,7 @@ pub const FileSystem = struct {
     dirname_store: *DirnameStore,
     filename_store: *FilenameStore,
 
-    threadlocal var tmpdir_handle: ?std.fs.Dir = null;
+    threadlocal var tmpdir_handle: ?std.Io.Dir = null;
 
     pub fn topLevelDirWithoutTrailingSlash(this: *const FileSystem) []const u8 {
         if (this.top_level_dir.len > 1 and this.top_level_dir[this.top_level_dir.len - 1] == std.fs.path.sep) {
@@ -32,7 +32,7 @@ pub const FileSystem = struct {
         }
     }
 
-    pub fn tmpdir(fs: *FileSystem) !std.fs.Dir {
+    pub fn tmpdir(fs: *FileSystem) !std.Io.Dir {
         if (tmpdir_handle == null) {
             tmpdir_handle = try fs.fs.openTmpDir();
         }
@@ -281,7 +281,7 @@ pub const FileSystem = struct {
                     }
 
                     pub fn eql(_: @This(), _: []const u8, b: []const u8) bool {
-                        return strings.eqlComptime(b, query);
+                        return strings.eqlComptime(b, &query);
                     }
                 }{},
             ) orelse return null;
@@ -597,7 +597,7 @@ pub const FileSystem = struct {
             return bun.env_var.BUN_TMPDIR.getNotEmpty() orelse platformTempDir();
         }
 
-        pub fn openTmpDir(_: *const RealFS) !std.fs.Dir {
+        pub fn openTmpDir(_: *const RealFS) !std.Io.Dir {
             if (comptime Environment.isWindows) {
                 return (try bun.sys.openDirAtWindowsA(bun.invalid_fd, tmpdirPath(), .{
                     .iterable = true,
@@ -650,7 +650,7 @@ pub const FileSystem = struct {
             fd: bun.FD = bun.invalid_fd,
             dir_fd: bun.FD = bun.invalid_fd,
 
-            pub inline fn dir(this: *TmpfilePosix) std.fs.Dir {
+            pub inline fn dir(this: *TmpfilePosix) std.Io.Dir {
                 return this.dir_fd.stdDir();
             }
 
@@ -694,7 +694,7 @@ pub const FileSystem = struct {
             fd: bun.FD = bun.invalid_fd,
             existing_path: []const u8 = "",
 
-            pub inline fn dir(_: *TmpfileWindows) std.fs.Dir {
+            pub inline fn dir(_: *TmpfileWindows) std.Io.Dir {
                 return Fs.FileSystem.instance.tmpdir();
             }
 
@@ -941,7 +941,7 @@ pub const FileSystem = struct {
             pub const Map = allocators.BSSMap(EntriesOption, Preallocate.Counts.dir_entry, false, 256, true);
         };
 
-        pub fn openDir(_: *RealFS, unsafe_dir_string: string) !std.fs.Dir {
+        pub fn openDir(_: *RealFS, unsafe_dir_string: string) !std.Io.Dir {
             const dirfd = if (Environment.isWindows)
                 bun.sys.openDirAtWindowsA(bun.invalid_fd, unsafe_dir_string, .{ .iterable = true, .no_follow = false, .read_only = true })
             else
@@ -960,7 +960,7 @@ pub const FileSystem = struct {
             prev_map: ?*DirEntry.EntryMap,
             _dir: string,
             generation: bun.Generation,
-            handle: std.fs.Dir,
+            handle: std.Io.Dir,
             comptime Iterator: type,
             iterator: Iterator,
         ) !DirEntry {
@@ -972,7 +972,7 @@ pub const FileSystem = struct {
             errdefer dir.deinit(allocator);
 
             if (store_fd) {
-                FileSystem.setMaxFd(handle.fd);
+                FileSystem.setMaxFd(handle.handle);
                 dir.fd = .fromStdDir(handle);
             }
 
@@ -982,7 +982,7 @@ pub const FileSystem = struct {
                 try dir.addEntry(prev_map, _entry, allocator, Iterator, iterator);
             }
 
-            debug("readdir({f}, {s}) = {d}", .{ printHandle(handle.fd), _dir, dir.data.count() });
+            debug("readdir({f}, {s}) = {d}", .{ printHandle(handle.handle), _dir, dir.data.count() });
 
             return dir;
         }
@@ -1019,7 +1019,7 @@ pub const FileSystem = struct {
         pub fn readDirectory(
             fs: *RealFS,
             _dir: string,
-            _handle: ?std.fs.Dir,
+            _handle: ?std.Io.Dir,
             generation: bun.Generation,
             store_fd: bool,
         ) !*EntriesOption {
@@ -1039,7 +1039,7 @@ pub const FileSystem = struct {
         pub fn readDirectoryWithIterator(
             fs: *RealFS,
             dir_maybe_trail_slash: string,
-            maybe_handle: ?std.fs.Dir,
+            maybe_handle: ?std.Io.Dir,
             generation: bun.Generation,
             store_fd: bool,
             comptime Iterator: type,
@@ -1047,7 +1047,7 @@ pub const FileSystem = struct {
         ) !*EntriesOption {
             var dir = bun.strings.withoutTrailingSlashWindowsPath(dir_maybe_trail_slash);
 
-            bun.resolver.Resolver.assertValidCacheKey(dir);
+            @import("resolver.zig").Resolver.assertValidCacheKey(dir);
             var cache_result: ?allocators.Result = null;
             if (comptime FeatureFlags.enable_entry_cache) {
                 fs.entries_mutex.lock();
@@ -1314,7 +1314,7 @@ pub const FileSystem = struct {
             var outpath: bun.PathBuffer = undefined;
 
             const stat = try bun.sys.lstat_absolute(absolute_path);
-            const is_symlink = stat.kind == std.fs.File.Kind.SymLink;
+            const is_symlink = stat.kind == .sym_link;
             var _kind = stat.kind;
             var cache = Entry.Cache{
                 .kind = Entry.Kind.file,
@@ -1447,7 +1447,7 @@ pub const FileSystem = struct {
             }
 
             const stat = try bun.sys.lstat_absolute(absolute_path_c);
-            const is_symlink = stat.kind == std.fs.File.Kind.sym_link;
+            const is_symlink = stat.kind == .sym_link;
             var file_kind = stat.kind;
 
             var symlink: []const u8 = "";

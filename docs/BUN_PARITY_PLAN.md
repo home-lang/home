@@ -23,11 +23,12 @@ The upstream pin is consistent today:
   `fd0b6f1a271fca0b8124b69f230b100f4d636af6`
 
 Cheap live recount from `scripts/measure-parity.sh --values` on
-2026-05-26 in `/tmp/home-bun-parity-main`:
+2026-05-26 in `/private/tmp/home-bun-parser-latest` after commit
+`fc27874d`:
 
 | Measurement | Value | What it means |
 |---|---:|---|
-| `RUNTIME_ZIG_PRESENT_FILES` | 1391 | Zig files present in `packages/runtime/src/`; **not** integrated parity credit |
+| `RUNTIME_ZIG_PRESENT_FILES` | 1392 | Zig files present in `packages/runtime/src/`; **not** integrated parity credit |
 | `RUNTIME_SUBSYSTEMS` | 98 | Top-level runtime source directories present |
 | `RUNTIME_ZIG_DORMANT_FILES` | 797 | Source-first copied Zig files in `packages/runtime/DORMANT_BUN_ZIG_IMPORT_2026-05-21.txt`; still awaiting rewrite/wiring/tests |
 | `BUN_UPSTREAM_FILES` | 1193 | Audited Bun baseline from the 2026-05-18/20 audit, excluding tests/codegen/macros |
@@ -364,86 +365,32 @@ conversion, JSArrayIterator/JSValue enum bridging, `ConsoleObject`
 `jsc.Node.Encoding`. Keep the adapter gated until those are copied
 faithfully from Bun's Zig source.
 
-Next-work ledger for the three-file frontier:
+Latest clean-worktree probe on 2026-05-26: the macro/JSC facade tranche
+and first resolver/install/string cone now compile through the temporary
+native parser switch. The next compile frontier is smaller and more
+specific: `bun.json`, `std.fs.File` drift in the Home FD shim,
+`AnyPromise.JSValue.isUndefined`, `sys.openA`, `StringHashMapUnowned`,
+`bun.concat`, `bun.pathLiteral`, and `strings.AsciiStatus`. The probe
+switch remains uncommitted.
+
+Next-work ledger for the two-file frontier:
 
 | Work item | Faithful implementation target | Promotion evidence required |
 |---|---|---|
 | Native `transformSync` body | Port Bun's in-process parser/printer flow: `Parser.init`, `parse`, `Symbol.Map.initList`, `js_printer.printAst`, sourcemap/output options, loader-specific parser flags, minify flags, `define`, and diagnostics mapped to JSC exceptions | `bundler/transpiler/transpiler.test.js` single-file run passes, then joins a green subset without changing expectations |
 | `scan` / `scanImports` | Replace the current native bootstrap scanner with callbacks over Bun import records; `scan("")` returns `{ imports: [], exports: [] }`, `scanImports("")` returns `[]`, `scan` omits `require`, `scanImports` includes it, and records expose Bun's `{ kind, path }` shape | Focused `Bun.Transpiler` tests plus the promoted `transpiler.test.js` cases that exercise scan APIs |
 | Decorator lowering | Feed `.ts` / `.tsx` through the copied Bun parser/lowerer/printer with legacy TypeScript decorator flags, metadata options, class-field/private-field helper emission, and existing `bun:wrap` helper imports | `bundler/transpiler/decorators.test.ts` single-file run passes without a corpus-local rewrite |
-| Native plugin bridge | Port or compile Bun's JSC/C++ native plugin bridge and wire it to copied `ParseTask.zig`, N-API external validation, `.node` loading metadata, and `onBeforeParse` result handoff | `bundler/native-plugin.test.ts` single-file run passes after node-gyp builds the fixture addon |
 
-Native plugin audit on 2026-05-26: `bundler/native-plugin.test.ts`
-has a corpus-preprocessor shim for the upstream file-attribute imports
-and `harness.makeTree`, so the next rebuilt runner should get past the
-plain module-syntax guardrail without mocking `.node` loading. This is
-not parity credit. The real parity surface is Bun's native
-bundler plugin ABI:
-
-- The copied fixture builds `native_plugin.cc` and `not_native_plugin.cc`
-  with `node-gyp`, requires the resulting `.node` modules, and passes a
-  N-API external into `build.onBeforeParse`.
-- The fixture exercises `BUN_PLUGIN_NAME` discovery, `dlsym` /
-  `GetProcAddress` symbol lookup, `OnBeforeParseArguments` /
-  `OnBeforeParseResult` struct-size versioning, `fetchSourceCode`,
-  source replacement, loader handoff, log/error propagation, external
-  pointer validation, invalid free-context detection, first-plugin-wins
-  semantics, concurrent filter matching, and crash-handler plugin-name
-  reporting.
-- Home already has the core copied Zig/header substrate:
-  `packages/runtime/src/bundler/ParseTask.zig`,
-  `packages/runtime/src/runtime/api/JSBundler.zig`,
-  `packages/runtime/src/jsc/NodeModuleModule.zig`,
-  `packages/runtime/src/runtime/napi/napi.zig`, and
-  `packages/runtime/upstream/packages/bun-native-bundler-plugin-api/bundler_plugin.h`.
-  The audited header and native-plugin fixture files compared
-  byte-for-byte with `/Users/chrisbreuer/Code/bun`, and Home already has
-  copied C++ bridge sources under `packages/runtime/upstream/src/jsc/bindings/`.
-- The missing integration is the native/JSC bridge, especially
-  `src/jsc/bindings/JSBundlerPlugin.cpp`,
-  `src/jsc/bindings/napi.cpp`, and
-  `src/jsc/bindings/napi_external.cpp`, plus the build wiring that
-  exposes those host functions to Home's JSC-enabled runtime and lets
-  node-gyp-built addons attach the private dlopen handle used by
-  `onBeforeParse`.
-- The ABI edge itself is now less ambiguous: Home has
-  `packages/runtime/src/bundler/native_plugin_abi.zig` for Bun's public
-  loader/log ids, and `ParseTask.zig` translates those ids to Home's
-  richer internal loader enum instead of passing the internal enum across
-  the C boundary.
-
-Worker evidence on 2026-05-26 after commit `f6ab6eaa`: no additional
-isolated Zig/header files were found missing for this frontier. The
-owned harness change is intentionally limited to lowering
-`import ... with { type: "file" }` for `bundler_plugin.h`,
-`native_plugin.cc`, and `not_native_plugin.cc`, plus adding
-`harness.makeTree`. `bunx --bun pickier` passed for the parity ledgers.
-The native parser/printer bridge also gained concrete Home compatibility
-shims (`bun.glob.match`, `ComptimeStringMap.getWithEql`, `jsc.math`,
-`KnownGlobal.minifyGlobalConstructor`, `BSSMap`/`BSSStringList`, and Zig
-0.17 std API fixes), and the bridge is kept gated until the resolver/cache
-cone is complete. `zig build test -Dfilter=home_test --summary all`
-rebuilds green with 296/297 tests passing and one expected skip.
-The rebuilt native-plugin single-file probe no longer fails at module
-syntax, async lifecycle hooks, or missing node-gyp output. The harness now
-runs the fixture's node-gyp build and reaches the native addon loader,
-then stops at `Native .node module loading requires the Home N-API dlopen
-bridge`. The generic harness blockers are gone, but this remains no
-parity credit until the real `.node` / N-API bridge is wired.
-
-Native `.node` metadata bridge update on 2026-05-26: the JSC corpus
-adapter can now `dlopen` the built addon, retain the `std.DynLib` handle,
-and report whether `napi_register_module_v1`, `BUN_PLUGIN_NAME`, and the
-native-plugin `plugin_impl*` symbols exist. The fixture advances beyond
-the previous hard `.node` loader error and now fails the basic native
-plugin case with `Build failed`. This is still not parity credit: the
-remaining faithful work is invoking the N-API registration path and the
-real `JSBundlerPlugin.onBeforeParse` bridge instead of completing the
-fixture with a corpus-only module simulation.
-
-Do not close this by adding a corpus-only `.node` mock. A faithful close
-should first compile or port the native bridge, then promote the fixture
-with evidence from the single-file corpus run.
+Completed native-plugin fixture evidence on 2026-05-26:
+`bundler/native-plugin.test.ts` is no longer part of the bundler
+frontier. Home builds the copied node-gyp fixture, `dlopen`s the `.node`
+addon, runs the fixture's Node-API registration callbacks, preserves
+external cells and loaded addon handles, calls `plugin_impl*` through
+Home's Bun-compatible `NativePluginABI`, and routes the generated
+`bun run dist/index.js` execution through the recorded build artifact.
+The single-file corpus run passes with **6 passed, 0 failed,
+0 unsupported**. This promotes that exact fixture only; broader `napi/`
+and production `.node` runtime parity still need their own corpus gates.
 
 Source module work after those corpus gates should stay faithful to the
 copied Bun graph rather than expanding the bootstrap stub. Replace
@@ -479,7 +426,7 @@ the non-JSC build gate. The latest runtime slice also compiles the copied
 `runtime/cli/test/parallel` subtree through `home_rt` and adds focused
 frame-ingest plus aggregate JUnit parsing tests.
 
-Promotion rule for the last three bundler files: a file only leaves the
+Promotion rule for the last two bundler files: a file only leaves the
 frontier when its exact copied corpus file passes through `home-debug`
 without a corpus-only semantic mock, and the relevant upstream Bun source
 path is named in the commit notes. Metadata probes and bootstrap
@@ -493,8 +440,9 @@ Bundler tranche exit criteria:
   skip entries.
 - Any platform-specific exclusion exactly matches an upstream Bun skip or
   platform guard.
-- `bundler/native-plugin.test.ts` is the final bundler item and is closed
-  with explicit native-plugin build/runtime evidence.
+- Native-plugin fixture evidence stays recorded as the completed
+  predecessor gate; do not re-open it unless the exact copied fixture
+  regresses.
 - The no-skip corpus denominator is updated after the tranche so the next
   frontier starts from the full discovered count, not the minimal-JS
   bootstrap subset.
@@ -595,14 +543,12 @@ dependency chain in the PR description before editing.
 
 ## Next Bulk Tranches
 
-1. **Bundler corpus completion.** Promote the remaining exact 3
+1. **Bundler corpus completion.** Promote the remaining exact 2
    unallowlisted upstream Bun `bundler/` corpus files as the next large
    test slice before moving into Bake/server-heavy tests. The files are
    `bundler/transpiler/decorators.test.ts`,
-   `bundler/transpiler/transpiler.test.js`,
-   `bundler/native-plugin.test.ts`. Keep
-   `bundler/native-plugin.test.ts` last because upstream treats native
-   plugins specially.
+   `bundler/transpiler/transpiler.test.js`. The native-plugin fixture is
+   already promoted with explicit node-gyp / `.node` / Node-API evidence.
 2. **JSC-adjacent source integration.** The 72 previously missing upstream Zig
    paths listed in
    [`BUN_ZIG_SOURCE_AUDIT_2026-05-26.md`](./BUN_ZIG_SOURCE_AUDIT_2026-05-26.md)
