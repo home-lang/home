@@ -6649,6 +6649,13 @@ pub const Parser = struct {
             while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
                 const spec_start = self.peek();
                 const spec_type_only = self.match(.kw_type);
+                // TS2206 — a named import specifier cannot carry its own
+                // `type` modifier when the whole statement is already an
+                // `import type {...}`. Anchored at the specifier's `type`
+                // keyword. Mirrors `checkGrammarTypeOnlyNamedImportsOrExports`.
+                if (is_type_only and spec_type_only) {
+                    try self.reportCodeAt(spec_start.span.start, spec_start.line, 2206, "The 'type' modifier cannot be used on a named import when 'import type' is used on its import statement.");
+                }
                 const imported_tok = try self.expectModuleExportName();
                 const imported_is_string_literal = imported_tok.kind == .string_literal;
                 var local_id = try self.internModuleExportName(imported_tok);
@@ -7222,6 +7229,13 @@ pub const Parser = struct {
             while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
                 const spec_start = self.peek();
                 const spec_type_only = self.match(.kw_type);
+                // TS2207 — a named export specifier cannot carry its own
+                // `type` modifier when the whole statement is already an
+                // `export type {...}`. Anchored at the specifier's `type`
+                // keyword. Mirrors `checkGrammarTypeOnlyNamedImportsOrExports`.
+                if (is_type_only and spec_type_only) {
+                    try self.reportCodeAt(spec_start.span.start, spec_start.line, 2207, "The 'type' modifier cannot be used on a named export when 'export type' is used on its export statement.");
+                }
                 const imported_tok = try self.expectModuleExportName();
                 const imported_id = try self.internModuleExportName(imported_tok);
                 const imported_is_string_literal = imported_tok.kind == .string_literal;
@@ -9562,6 +9576,22 @@ pub const Parser = struct {
             _ = try self.expect(.colon, "':' in mapped type");
             const value = try self.parseTypeAnnotation();
             _ = self.match(.semicolon);
+            _ = self.match(.comma);
+            // TS7061 — `A mapped type may not declare properties or
+            // methods.` A mapped type body is `{ [K in T]: V }` only;
+            // any additional declared member is illegal. tsc parses the
+            // stray members anyway then grammar-checks the FIRST one. We
+            // recover by draining the trailing member list (so the closing
+            // `}` still matches and no cascading "'}' expected" fires) and
+            // anchoring TS7061 at the first stray member. Mirrors
+            // `checkGrammarMappedType`.
+            if (self.peek().kind != .close_brace and self.peek().kind != .eof) {
+                const stray = self.peek();
+                try self.reportCodeAt(stray.span.start, stray.line, 7061, "A mapped type may not declare properties or methods.");
+                var stray_members: std.ArrayListUnmanaged(NodeId) = .empty;
+                defer stray_members.deinit(self.gpa);
+                try self.parseTypeMemberList(&stray_members);
+            }
             const close = try self.expect(.close_brace, "'}' to close mapped type");
             const tp = try self.builder.addTypeParameter(tokenSpan(k_tok), k_id, hir_mod.none_node_id, hir_mod.none_node_id, 0, false);
             return try self.builder.addMappedType(.{ .start = open.span.start, .end = close.span.end }, tp, constraint, value, remap, readonly_mod, optional_mod);
@@ -24437,5 +24467,91 @@ test "parser: TS1450 stays clean for one- and two-argument dynamic imports" {
         defer destroyTestSetup(s);
         _ = try s.parser.parseSourceFile();
         try T.expectEqual(@as(u32, 0), countDiag(s, 1450));
+    }
+}
+
+test "parser: TS7061 fires when a mapped type declares extra members" {
+    var s = try newTestSetup(
+        \\type M = { [K in keyof T]: V; foo: string };
+    );
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+
+    const d = findDiag(s, 7061) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("A mapped type may not declare properties or methods.", d.message);
+    try T.expectEqual(@as(u32, 1), countDiag(s, 7061));
+}
+
+test "parser: TS7061 fires for a method declared in a mapped type" {
+    var s = try newTestSetup(
+        \\type M = { [K in keyof T]: V; bar(): number };
+    );
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+
+    const d = findDiag(s, 7061) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("A mapped type may not declare properties or methods.", d.message);
+}
+
+test "parser: TS7061 stays clean for a well-formed mapped type" {
+    const cases = [_][]const u8{
+        "type M = { [K in keyof T]: V };",
+        "type M = { readonly [K in keyof T]?: V };",
+        "type M = { [K in keyof T as `g`]: V };",
+        "type O = { foo: string; bar(): number };",
+    };
+    inline for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = s.parser.parseSourceFile() catch {};
+        try T.expectEqual(@as(u32, 0), countDiag(s, 7061));
+    }
+}
+
+
+test "parser: TS2206 fires for a type-modified specifier under import type" {
+    var s = try newTestSetup(
+        \\import type { type A } from "mod";
+    );
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+    const d = findDiag(s, 2206) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("The 'type' modifier cannot be used on a named import when 'import type' is used on its import statement.", d.message);
+}
+
+test "parser: TS2206 stays clean for a plain import type" {
+    const cases = [_][]const u8{
+        "import type { A } from \"mod\";",
+        "import { type A } from \"mod\";",
+        "import { A, type B } from \"mod\";",
+    };
+    inline for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = s.parser.parseSourceFile() catch {};
+        try T.expectEqual(@as(u32, 0), countDiag(s, 2206));
+    }
+}
+
+test "parser: TS2207 fires for a type-modified specifier under export type" {
+    var s = try newTestSetup(
+        \\export type { type A } from "mod";
+    );
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+    const d = findDiag(s, 2207) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("The 'type' modifier cannot be used on a named export when 'export type' is used on its export statement.", d.message);
+}
+
+test "parser: TS2207 stays clean for a plain export type" {
+    const cases = [_][]const u8{
+        "export type { A } from \"mod\";",
+        "export { type A } from \"mod\";",
+    };
+    inline for (cases) |src| {
+        var s = try newTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = s.parser.parseSourceFile() catch {};
+        try T.expectEqual(@as(u32, 0), countDiag(s, 2207));
     }
 }
