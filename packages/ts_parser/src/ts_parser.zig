@@ -11634,6 +11634,7 @@ pub const Parser = struct {
             return try self.builder.addLiteralRegex(.{ .start = start_tok.span.start, .end = recovery_end });
         };
         try self.reportUnbalancedRegexGroup(start_tok, end);
+        try self.reportRegexNamedCaptureDiagnostics(start_tok, end);
         try self.reportRegexPatternModifierDiagnostics(start_tok, end);
         try self.reportRegexQuantifierDiagnostics(start_tok, end);
         try self.reportRegexEscapeAndClassDiagnostics(start_tok, end);
@@ -11980,6 +11981,221 @@ pub const Parser = struct {
             }
         }
         return false;
+    }
+
+    const RegexGroupName = struct {
+        start: usize,
+        end: usize,
+        text: []const u8,
+        depth: usize = 0,
+    };
+
+    fn reportRegexNamedCaptureDiagnostics(self: *Parser, start_tok: Token, end: u32) ParseError!void {
+        const start_i: usize = @intCast(start_tok.span.start);
+        const end_i: usize = @intCast(end);
+        if (start_i >= self.source.len or self.source[start_i] != '/') return;
+        const close_at = self.regexLiteralClose(start_i, end_i) orelse return;
+
+        var groups: std.ArrayListUnmanaged(RegexGroupName) = .empty;
+        defer groups.deinit(self.gpa);
+        var active_groups: std.ArrayListUnmanaged(RegexGroupName) = .empty;
+        defer active_groups.deinit(self.gpa);
+        var references: std.ArrayListUnmanaged(RegexGroupName) = .empty;
+        defer references.deinit(self.gpa);
+        var decimal_escapes: std.ArrayListUnmanaged(RegexGroupName) = .empty;
+        defer decimal_escapes.deinit(self.gpa);
+
+        var i = start_i + 1;
+        var escaped = false;
+        var in_class = false;
+        var capture_count: usize = 0;
+        var group_depth: usize = 0;
+        while (i < close_at and i < self.source.len) {
+            const ch = self.source[i];
+            if (escaped) {
+                escaped = false;
+                i += 1;
+                continue;
+            }
+            if (ch == '\\') {
+                if (!in_class and i + 1 < close_at and self.source[i + 1] >= '1' and self.source[i + 1] <= '9') {
+                    const digits_start = i + 1;
+                    var digits_end = digits_start + 1;
+                    while (digits_end < close_at and std.ascii.isDigit(self.source[digits_end])) : (digits_end += 1) {}
+                    try decimal_escapes.append(self.gpa, .{
+                        .start = digits_start,
+                        .end = digits_end,
+                        .text = self.source[digits_start..digits_end],
+                    });
+                    i = digits_end;
+                    continue;
+                }
+                if (!in_class and i + 2 < close_at and self.source[i + 1] == 'k' and self.source[i + 2] == '<') {
+                    const name_start = i + 3;
+                    const name_end = try self.scanRegexGroupName(name_start, close_at, start_tok.line);
+                    if (name_end > name_start) {
+                        try references.append(self.gpa, .{
+                            .start = name_start,
+                            .end = name_end,
+                            .text = self.source[name_start..name_end],
+                        });
+                    }
+                    i = if (name_end < close_at and self.source[name_end] == '>') name_end + 1 else name_end;
+                    continue;
+                }
+                escaped = true;
+                i += 1;
+                continue;
+            }
+            if (ch == '[') {
+                in_class = true;
+                i += 1;
+                continue;
+            }
+            if (ch == ']' and in_class) {
+                in_class = false;
+                i += 1;
+                continue;
+            }
+            if (in_class) {
+                i += 1;
+                continue;
+            }
+            if (ch == '|') {
+                removeRegexGroupNamesAtDepth(&active_groups, group_depth);
+                i += 1;
+                continue;
+            }
+            if (ch == ')') {
+                if (group_depth > 0) {
+                    removeRegexGroupNamesAtDepth(&active_groups, group_depth);
+                    group_depth -= 1;
+                }
+                i += 1;
+                continue;
+            }
+            if (ch == '(') {
+                if (i + 1 < close_at and self.source[i + 1] == '?') {
+                    if (i + 2 < close_at and self.source[i + 2] == '<') {
+                        if (i + 3 < close_at and (self.source[i + 3] == '=' or self.source[i + 3] == '!')) {
+                            group_depth += 1;
+                            i += 4;
+                            continue;
+                        }
+                        const name_start = i + 3;
+                        const name_end = try self.scanRegexGroupName(name_start, close_at, start_tok.line);
+                        if (name_end > name_start) {
+                            const name = RegexGroupName{
+                                .start = name_start,
+                                .end = name_end,
+                                .text = self.source[name_start..name_end],
+                                .depth = group_depth,
+                            };
+                            if (regexGroupNameSeen(active_groups.items, name.text)) {
+                                try self.reportCodeAtWithSpan(
+                                    @intCast(name.start),
+                                    start_tok.line,
+                                    @intCast(name.end - name.start),
+                                    1515,
+                                    "Named capturing groups with the same name must be mutually exclusive to each other.",
+                                );
+                            } else {
+                                try active_groups.append(self.gpa, name);
+                                try groups.append(self.gpa, name);
+                            }
+                        }
+                        capture_count += 1;
+                        group_depth += 1;
+                        i = if (name_end < close_at and self.source[name_end] == '>') name_end + 1 else name_end;
+                        continue;
+                    }
+                    group_depth += 1;
+                    i += 2;
+                    continue;
+                }
+                capture_count += 1;
+                group_depth += 1;
+            }
+            i += 1;
+        }
+
+        for (references.items) |ref| {
+            if (!regexGroupNameSeen(groups.items, ref.text)) {
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "There is no capturing group named '{s}' in this regular expression.",
+                    .{ref.text},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .pos = @intCast(ref.start),
+                    .line = start_tok.line,
+                    .span_len = @intCast(ref.end - ref.start),
+                    .code = 1532,
+                    .message = msg,
+                });
+            }
+        }
+        for (decimal_escapes.items) |esc| {
+            const value = std.fmt.parseInt(usize, esc.text, 10) catch continue;
+            if (value <= capture_count) continue;
+            const msg = if (capture_count == 0)
+                "This backreference refers to a group that does not exist. There are no capturing groups in this regular expression."
+            else
+                try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "This backreference refers to a group that does not exist. There are only {d} capturing groups in this regular expression.",
+                    .{capture_count},
+                );
+            try self.diagnostics.append(self.gpa, .{
+                .pos = @intCast(esc.start),
+                .line = start_tok.line,
+                .span_len = @intCast(esc.end - esc.start),
+                .code = if (capture_count == 0) 1534 else 1533,
+                .message = if (capture_count == 0)
+                    try self.diag_arena.allocator().dupe(u8, msg)
+                else
+                    msg,
+            });
+        }
+    }
+
+    fn scanRegexGroupName(self: *Parser, start: usize, close_at: usize, line: u32) ParseError!usize {
+        if (start >= close_at or start >= self.source.len or !isRegexGroupNameStart(self.source[start])) {
+            try self.reportCodeAt(@intCast(start), line, 1514, "Expected a capturing group name.");
+            return start;
+        }
+        var i = start + 1;
+        while (i < close_at and i < self.source.len and isRegexGroupNamePart(self.source[i])) : (i += 1) {}
+        return i;
+    }
+
+    fn regexGroupNameSeen(groups: []const RegexGroupName, text: []const u8) bool {
+        for (groups) |group| {
+            if (std.mem.eql(u8, group.text, text)) return true;
+        }
+        return false;
+    }
+
+    fn removeRegexGroupNamesAtDepth(groups: *std.ArrayListUnmanaged(RegexGroupName), depth: usize) void {
+        var write: usize = 0;
+        for (groups.items) |group| {
+            if (group.depth < depth) {
+                groups.items[write] = group;
+                write += 1;
+            }
+        }
+        groups.items.len = write;
+    }
+
+    fn isRegexGroupNameStart(ch: u8) bool {
+        return (ch >= 'A' and ch <= 'Z') or
+            (ch >= 'a' and ch <= 'z') or
+            ch == '_' or
+            ch == '$';
+    }
+
+    fn isRegexGroupNamePart(ch: u8) bool {
+        return isRegexGroupNameStart(ch) or std.ascii.isDigit(ch);
     }
 
     fn decimalStringGreater(a_raw: []const u8, b_raw: []const u8) bool {
@@ -20661,6 +20877,84 @@ test "parser: annex-b k escape reports only when regex has named capture group" 
         if (d.code == 1510) count += 1;
     }
     try T.expectEqual(@as(usize, 2), count);
+}
+
+test "parser: regex named capture group names report TS1514" {
+    var s = try newTestSetup("let a = /(?<>x)/; let b = /(?<1>x)/; let c = /\\k<>/;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1514) {
+            count += 1;
+            try T.expectEqualStrings("Expected a capturing group name.", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 3), count);
+}
+
+test "parser: regex duplicate and missing named captures report TS1515 and TS1532" {
+    var s = try newTestSetup("let a = /(?<id>x)(?<id>y)/; let b = /\\k<missing>(?<name>x)/;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_duplicate = false;
+    var saw_missing = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1515) {
+            saw_duplicate = true;
+            try T.expectEqualStrings("Named capturing groups with the same name must be mutually exclusive to each other.", d.message);
+            try T.expectEqual(@as(u32, 2), d.span_len);
+        }
+        if (d.code == 1532) {
+            saw_missing = true;
+            try T.expectEqualStrings("There is no capturing group named 'missing' in this regular expression.", d.message);
+            try T.expectEqual(@as(u32, 7), d.span_len);
+        }
+    }
+    try T.expect(saw_duplicate);
+    try T.expect(saw_missing);
+}
+
+test "parser: regex numeric backreferences report TS1533 and TS1534" {
+    var s = try newTestSetup("let a = /\\1/; let b = /(x)\\2/; let c = /(x)\\1/; let d = /[\\1]/;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_none = false;
+    var saw_too_few = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1534) {
+            saw_none = true;
+            try T.expectEqualStrings("This backreference refers to a group that does not exist. There are no capturing groups in this regular expression.", d.message);
+        }
+        if (d.code == 1533) {
+            saw_too_few = true;
+            try T.expectEqualStrings("This backreference refers to a group that does not exist. There are only 1 capturing groups in this regular expression.", d.message);
+        }
+    }
+    try T.expect(saw_none);
+    try T.expect(saw_too_few);
+}
+
+test "parser: valid regex named and numeric backreferences stay clean" {
+    var s = try newTestSetup(
+        \\let a = /(?<id>x)\k<id>/;
+        \\let b = /(x)\1/;
+        \\let c = /(?<alt>x)|(?<alt>y)/;
+        \\let d = /(?:(?<nested>x)|(?<nested>y))/;
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1514);
+        try T.expect(d.code != 1515);
+        try T.expect(d.code != 1532);
+        try T.expect(d.code != 1533);
+        try T.expect(d.code != 1534);
+    }
 }
 
 test "parser: regex character class reports out-of-order ranges" {

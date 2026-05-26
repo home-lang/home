@@ -164,9 +164,12 @@ pub const Paths = struct {
     /// resolution: try each substitution in order).
     patterns: [][]const u8,
     substitutions: [][]const []const u8,
+    /// Original array length for each pattern before invalid
+    /// non-string entries are filtered from `substitutions`.
+    raw_substitution_counts: []usize,
 
     pub fn empty() Paths {
-        return .{ .patterns = &.{}, .substitutions = &.{} };
+        return .{ .patterns = &.{}, .substitutions = &.{}, .raw_substitution_counts = &.{} };
     }
 };
 
@@ -280,6 +283,13 @@ pub const OptionParseDiagnostic = struct {
     suggestion: ?[]const u8 = null,
 };
 
+pub const ConfigParseDiagnostic = struct {
+    code: u32,
+    option: []const u8 = "",
+    pattern: []const u8 = "",
+    actual: []const u8 = "",
+};
+
 pub const TsConfig = struct {
     /// The path this config came from (set by the loader; empty when
     /// parsed via `parseString`).
@@ -312,6 +322,9 @@ pub const TsConfig = struct {
     /// Option-table diagnostics collected while parsing top-level
     /// watchOptions.
     watch_option_parse_diagnostics: []OptionParseDiagnostic,
+    /// Config-file shape diagnostics that TypeScript reports while
+    /// converting `tsconfig.json`.
+    config_parse_diagnostics: []ConfigParseDiagnostic,
 
     /// Walk the resolved config and report cross-field consistency
     /// issues that the parser accepts but `tsc` would reject during
@@ -335,6 +348,10 @@ pub const TsConfig = struct {
         errdefer diags.deinit(gpa);
 
         const co = self.compiler_options;
+
+        for (self.config_parse_diagnostics) |diag| {
+            try appendConfigParseDiagnostic(gpa, &diags, diag);
+        }
 
         // TS18051: `extends` accepts a path or path array, but each
         // path must be non-empty. TypeScript reports one diagnostic per
@@ -590,6 +607,31 @@ pub const ValidationDiagnostic = struct {
     field: []const u8 = "",
 };
 
+fn appendConfigParseDiagnostic(
+    gpa: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    diag: ConfigParseDiagnostic,
+) !void {
+    const msg = switch (diag.code) {
+        5063 => try std.fmt.allocPrint(gpa, "Substitutions for pattern '{s}' should be an array.", .{diag.pattern}),
+        5064 => try std.fmt.allocPrint(gpa, "Substitution '{s}' for pattern '{s}' has incorrect type, expected 'string', got '{s}'.", .{ diag.option, diag.pattern, diag.actual }),
+        6114 => try gpa.dupe(u8, "Unknown option 'excludes'. Did you mean 'exclude'?"),
+        6258 => try std.fmt.allocPrint(gpa, "'{s}' should be set inside the 'compilerOptions' object of the config json file", .{diag.option}),
+        else => unreachable,
+    };
+    try diags.append(gpa, .{
+        .code = diag.code,
+        .message = msg,
+        .owns_message = true,
+        .field = switch (diag.code) {
+            5063, 5064 => "paths",
+            6114 => "excludes",
+            6258 => diag.option,
+            else => "",
+        },
+    });
+}
+
 const OptionDiagnosticKind = enum {
     compiler,
     watch,
@@ -706,7 +748,8 @@ fn validatePaths(
         }
 
         const substitutions = paths.substitutions[idx];
-        if (substitutions.len == 0) {
+        const raw_count = if (idx < paths.raw_substitution_counts.len) paths.raw_substitution_counts[idx] else substitutions.len;
+        if (raw_count == 0) {
             try appendTs5066(gpa, diags, pattern);
         }
         for (substitutions) |subst| {
@@ -1362,6 +1405,76 @@ fn collectOptionParseDiagnostics(
     return out.toOwnedSlice(arena);
 }
 
+fn collectConfigParseDiagnostics(arena: std.mem.Allocator, root: jsonc.Value.Object) ![]ConfigParseDiagnostic {
+    var out: std.ArrayListUnmanaged(ConfigParseDiagnostic) = .empty;
+
+    const has_compiler_options = root.contains("compilerOptions");
+    for (root.keys) |key| {
+        if (std.mem.eql(u8, key, "excludes")) {
+            try out.append(arena, .{ .code = 6114 });
+        } else if (!has_compiler_options and findOptionSpec(&compiler_option_specs, key) != null) {
+            try out.append(arena, .{ .code = 6258, .option = key });
+        }
+    }
+
+    if (root.get("compilerOptions")) |co_v| {
+        if (co_v.asObject()) |co| {
+            if (co.get("paths")) |paths_v| {
+                if (paths_v.asObject()) |paths| {
+                    try collectPathParseDiagnostics(arena, &out, paths);
+                }
+            }
+        }
+    }
+
+    return out.toOwnedSlice(arena);
+}
+
+fn collectPathParseDiagnostics(
+    arena: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(ConfigParseDiagnostic),
+    paths: jsonc.Value.Object,
+) !void {
+    for (paths.keys, 0..) |pattern, idx| {
+        const value = paths.values[idx];
+        const substitutions = value.asArray() orelse {
+            try out.append(arena, .{ .code = 5063, .pattern = pattern });
+            continue;
+        };
+
+        for (substitutions) |subst| {
+            if (subst.asString() == null) {
+                try out.append(arena, .{
+                    .code = 5064,
+                    .option = try jsonValueDiagnosticText(arena, subst),
+                    .pattern = pattern,
+                    .actual = jsonTypeofName(subst),
+                });
+            }
+        }
+    }
+}
+
+fn jsonTypeofName(value: jsonc.Value) []const u8 {
+    return switch (value) {
+        .bool_ => "boolean",
+        .number => "number",
+        .string => "string",
+        .null_, .array, .object => "object",
+    };
+}
+
+fn jsonValueDiagnosticText(arena: std.mem.Allocator, value: jsonc.Value) ![]const u8 {
+    return switch (value) {
+        .null_ => "null",
+        .bool_ => |b| if (b) "true" else "false",
+        .number => |n| try std.fmt.allocPrint(arena, "{d}", .{n}),
+        .string => |s| s,
+        .array => "<array>",
+        .object => "<object>",
+    };
+}
+
 fn optionSuggestion(option: []const u8, specs: []const OptionSpec) ?[]const u8 {
     var best: ?[]const u8 = null;
     var best_distance: usize = std.math.maxInt(usize);
@@ -1402,7 +1515,10 @@ pub fn parseString(
         .unknown_type_acquisition_options = &.{},
         .compiler_option_parse_diagnostics = &.{},
         .watch_option_parse_diagnostics = &.{},
+        .config_parse_diagnostics = &.{},
     };
+
+    cfg.config_parse_diagnostics = try collectConfigParseDiagnostics(arena, root);
 
     // extends: string or [string]
     if (root.get("extends")) |ext_v| {
@@ -1718,16 +1834,26 @@ fn fillCompilerOptions(arena: std.mem.Allocator, co: *CompilerOptions, obj: json
             const npats = obj_v.keys.len;
             const patterns = try arena.alloc([]const u8, npats);
             const substitutions = try arena.alloc([]const []const u8, npats);
+            const raw_substitution_counts = try arena.alloc(usize, npats);
             for (obj_v.keys, 0..) |pk, idx| {
                 patterns[idx] = pk;
-                const arr = obj_v.values[idx].asArray() orelse return error.InvalidPaths;
+                const arr = obj_v.values[idx].asArray() orelse {
+                    substitutions[idx] = &.{};
+                    raw_substitution_counts[idx] = 1;
+                    continue;
+                };
+                raw_substitution_counts[idx] = arr.len;
                 const subs = try arena.alloc([]const u8, arr.len);
-                for (arr, 0..) |s, j| {
-                    subs[j] = s.asString() orelse return error.InvalidPaths;
+                var n: usize = 0;
+                for (arr) |s| {
+                    if (s.asString()) |subst| {
+                        subs[n] = subst;
+                        n += 1;
+                    }
                 }
-                substitutions[idx] = subs;
+                substitutions[idx] = subs[0..n];
             }
-            co.paths = .{ .patterns = patterns, .substitutions = substitutions };
+            co.paths = .{ .patterns = patterns, .substitutions = substitutions, .raw_substitution_counts = raw_substitution_counts };
             continue;
         }
 
@@ -1782,6 +1908,9 @@ pub fn merge(arena: std.mem.Allocator, base: TsConfig, child: TsConfig) !TsConfi
     }
     if (child.watch_option_parse_diagnostics.len > 0) {
         merged.watch_option_parse_diagnostics = child.watch_option_parse_diagnostics;
+    }
+    if (child.config_parse_diagnostics.len > 0) {
+        merged.config_parse_diagnostics = child.config_parse_diagnostics;
     }
     merged.has_extends = base.has_extends or child.has_extends;
     return merged;
@@ -2451,6 +2580,69 @@ test "tsconfig.validate: paths reports TS5061 TS5062 TS5066 and TS5090" {
     try t.expectEqualStrings("Substitution 'bad/**/x' in pattern 'ok/*' can have at most one '*' character.", diags[3].message);
     try t.expectEqual(@as(u32, 5090), diags[4].code);
     try t.expectEqualStrings("paths", diags[4].field);
+}
+
+test "tsconfig.validate: paths reports TS5063 and TS5064 for malformed substitutions" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "paths": {
+        \\      "not-array": "src/*",
+        \\      "bad-types/*": [false, 1, null, "ok/*"]
+        \\    }
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 5), diags.len);
+    try t.expectEqual(@as(u32, 5063), diags[0].code);
+    try t.expectEqualStrings("Substitutions for pattern 'not-array' should be an array.", diags[0].message);
+    try t.expectEqual(@as(u32, 5064), diags[1].code);
+    try t.expectEqualStrings("Substitution 'false' for pattern 'bad-types/*' has incorrect type, expected 'string', got 'boolean'.", diags[1].message);
+    try t.expectEqual(@as(u32, 5064), diags[2].code);
+    try t.expectEqualStrings("Substitution '1' for pattern 'bad-types/*' has incorrect type, expected 'string', got 'number'.", diags[2].message);
+    try t.expectEqual(@as(u32, 5064), diags[3].code);
+    try t.expectEqualStrings("Substitution 'null' for pattern 'bad-types/*' has incorrect type, expected 'string', got 'object'.", diags[3].message);
+    try t.expectEqual(@as(u32, 5090), diags[4].code);
+}
+
+test "tsconfig.validate: root excludes and misplaced compiler option report TS6114 and TS6258" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "excludes": ["dist"],
+        \\  "strict": true
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 2), diags.len);
+    try t.expectEqual(@as(u32, 6114), diags[0].code);
+    try t.expectEqualStrings("Unknown option 'excludes'. Did you mean 'exclude'?", diags[0].message);
+    try t.expectEqualStrings("excludes", diags[0].field);
+    try t.expectEqual(@as(u32, 6258), diags[1].code);
+    try t.expectEqualStrings("'strict' should be set inside the 'compilerOptions' object of the config json file", diags[1].message);
+    try t.expectEqualStrings("strict", diags[1].field);
+}
+
+test "tsconfig.validate: root compiler option is tolerated when compilerOptions exists" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "strict": true,
+        \\  "compilerOptions": {
+        \\    "strict": true
+        \\  }
+        \\}
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 0), diags.len);
 }
 
 test "tsconfig.validate: paths accepts non-relative substitutions when baseUrl is set" {

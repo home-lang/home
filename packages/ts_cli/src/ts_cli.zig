@@ -222,6 +222,15 @@ pub fn dispatch(opts: Options) RunResult {
     if (opts.show_help or opts.show_all_help) {
         return .{ .code = .success, .stdout_text = helpText };
     }
+    if (opts.target) |target| {
+        if (tsconfig_mod.Target.fromString(target) == null) return invalidCustomTypeOption("--target", targetValuesText);
+    }
+    if (opts.module) |module| {
+        if (tsconfig_mod.Module.fromString(module) == null) return invalidCustomTypeOption("--module", moduleValuesText);
+    }
+    if (opts.jsx) |jsx| {
+        if (tsconfig_mod.Jsx.fromString(jsx) == null) return invalidCustomTypeOption("--jsx", jsxValuesText);
+    }
     if (opts.project != null and opts.files.len != 0) {
         const ts_project_cannot_mix_files: u32 = 5042;
         return .{
@@ -243,6 +252,21 @@ pub fn dispatch(opts: Options) RunResult {
     // graph, run compileAll, then either emit to disk or
     // (if --noEmit) just collate diagnostics.
     return .{ .code = .success };
+}
+
+const targetValuesText = "'es3', 'es5', 'es6', 'es2015', 'es2016', 'es2017', 'es2018', 'es2019', 'es2020', 'es2021', 'es2022', 'es2023', 'es2024', 'esnext'";
+const moduleValuesText = "'none', 'commonjs', 'amd', 'umd', 'system', 'es6', 'es2015', 'es2020', 'es2022', 'esnext', 'node16', 'node18', 'node20', 'nodenext', 'preserve'";
+const jsxValuesText = "'preserve', 'react', 'react-jsx', 'react-jsxdev', 'react-native'";
+
+fn invalidCustomTypeOption(comptime option: []const u8, comptime values: []const u8) RunResult {
+    const ts_argument_for_option_must_be: u32 = 6046;
+    return .{
+        .code = .config_error,
+        .stderr_text = std.fmt.comptimePrint(
+            "error TS{d}: Argument for '{s}' option must be: {s}.",
+            .{ ts_argument_for_option_must_be, option, values },
+        ),
+    };
 }
 
 // =============================================================================
@@ -434,4 +458,32 @@ test "dispatch: --project with source files reports TS5042" {
     const r = dispatch(opts);
     try T.expectEqual(ExitCode.config_error, r.code);
     try T.expect(std.mem.indexOf(u8, r.stderr_text, "TS5042") != null);
+}
+
+test "dispatch: invalid custom-type option values report TS6046" {
+    {
+        var opts: Options = .{ .files = &.{"src/main.ts"} };
+        opts.target = "tomorrow-script";
+        const r = dispatch(opts);
+        try T.expectEqual(ExitCode.config_error, r.code);
+        try T.expect(std.mem.indexOf(u8, r.stderr_text, "TS6046") != null);
+        try T.expect(std.mem.indexOf(u8, r.stderr_text, "Argument for '--target' option must be") != null);
+        try T.expect(std.mem.indexOf(u8, r.stderr_text, "'es2024'") != null);
+    }
+    {
+        var opts: Options = .{ .files = &.{"src/main.ts"} };
+        opts.module = "sandwich";
+        const r = dispatch(opts);
+        try T.expectEqual(ExitCode.config_error, r.code);
+        try T.expect(std.mem.indexOf(u8, r.stderr_text, "Argument for '--module' option must be") != null);
+        try T.expect(std.mem.indexOf(u8, r.stderr_text, "'nodenext'") != null);
+    }
+    {
+        var opts: Options = .{ .files = &.{"src/main.ts"} };
+        opts.jsx = "sparkles";
+        const r = dispatch(opts);
+        try T.expectEqual(ExitCode.config_error, r.code);
+        try T.expect(std.mem.indexOf(u8, r.stderr_text, "Argument for '--jsx' option must be") != null);
+        try T.expect(std.mem.indexOf(u8, r.stderr_text, "'react-jsxdev'") != null);
+    }
 }
