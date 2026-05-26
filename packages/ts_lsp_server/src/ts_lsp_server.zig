@@ -158,6 +158,7 @@ pub const Method = enum {
     text_document_document_color,
     text_document_color_presentation,
     text_document_will_save_wait_until,
+    text_document_will_save,
     text_document_did_save,
     unknown,
 
@@ -216,6 +217,7 @@ pub const Method = enum {
             .{ "textDocument/documentColor", Method.text_document_document_color },
             .{ "textDocument/colorPresentation", Method.text_document_color_presentation },
             .{ "textDocument/willSaveWaitUntil", Method.text_document_will_save_wait_until },
+            .{ "textDocument/willSave", Method.text_document_will_save },
             .{ "textDocument/didSave", Method.text_document_did_save },
         };
         inline for (map) |entry| {
@@ -282,6 +284,7 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     "documentLink/resolve",
     "inlayHint/resolve",
     "textDocument/willSaveWaitUntil",
+    "textDocument/willSave",
     "textDocument/didSave",
     // Workspace.
     "workspace/symbol",
@@ -642,6 +645,23 @@ pub fn handleDidOpen(
 /// resolve. A future enhancement would unload the file (drop its
 /// compilation, remove from `Program.by_path`).
 pub fn handleDidClose(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    params_json: []const u8,
+) !void {
+    _ = service;
+    _ = gpa;
+    _ = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+}
+
+/// Handle a `textDocument/willSave` notification: parse `uri` (required)
+/// and acknowledge. The notification is sent BEFORE the editor writes
+/// to disk, paired with the post-save `textDocument/didSave`. The
+/// active form `textDocument/willSaveWaitUntil` (request, returns
+/// TextEdits the server wants applied before save) is handled
+/// separately. This pure notification is informational — the program
+/// graph is already current via `didChange`.
+pub fn handleWillSave(
     service: *ts_lsp.Service,
     gpa: std.mem.Allocator,
     params_json: []const u8,
@@ -3598,6 +3618,10 @@ pub fn dispatchRequest(
             try handleDidSave(service, gpa, params);
             return &.{};
         },
+        .text_document_will_save => {
+            try handleWillSave(service, gpa, params);
+            return &.{};
+        },
         .text_document_inline_completion => {
             if (is_notification) return &.{};
             return try handleInlineCompletion(service, gpa, id, params);
@@ -3997,6 +4021,32 @@ test "handleDidSave: accepts notification without text payload" {
     const params = findJsonRawField(body, "params").?;
     try handleDidSave(&svc, T.allocator, params);
 
+    const id = program.lookupPath("/main.ts") orelse return error.TestUnexpectedResult;
+    try T.expectEqualStrings("let x = 1;", program.fileById(id).source);
+}
+
+test "handleWillSave: accepts notification (no-op)" {
+    // willSave is a pure pre-save notification — informational, no
+    // text payload, no expected mutation. The active variant
+    // `willSaveWaitUntil` (request) is what carries the TextEdits the
+    // server wants applied before save.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x = 1;");
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","method":"textDocument/willSave","params":{"textDocument":{"uri":"file:///main.ts"},"reason":1}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    try handleWillSave(&svc, T.allocator, params);
+
+    // Source unchanged — pure notification.
     const id = program.lookupPath("/main.ts") orelse return error.TestUnexpectedResult;
     try T.expectEqualStrings("let x = 1;", program.fileById(id).source);
 }
