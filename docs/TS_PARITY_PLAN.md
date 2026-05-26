@@ -1869,6 +1869,9 @@ The runner and a 56-case canon corpus are landed. Per-feature triage against the
 147. **2026-05-26 — Diagnostic-ledger regex q-escape sweep.**
     Continued the regex scanner parity lane from upstream `scanAtomEscape`. Unicode-sets regex literals now emit TS1511 for `\q` atom escapes outside character classes, anchored to the two-byte escape span, while ordinary Unicode regexes such as `/\q/u` and `\q` inside a character class remain outside this diagnostic path. The regenerated diagnostic ledger now reports **725 emitted / 1 declared / 0 tested-only / 1350 catalog-only** across **2076** upstream codes. Verification: `ts_parser` **617/617**, regenerated `docs/TS_DIAGNOSTIC_CODE_STATUS.md`.
 
+148. **2026-05-26 — Diagnostic-ledger JSDoc extends-clause mismatch sweep.**
+    Ported the checker-side TS8023 branch from upstream `checkJSDocAugmentsTag`. Checked-JS classes now compare the first attached `@extends`/`@augments` entity name against the syntactic `extends` clause and report `JSDoc '@{tag} {name}' does not match the 'extends {class}' clause.` at the JSDoc entity-name position when they differ. Matching tags stay clean, and the duplicate-tag TS8025 pass continues to run independently. The regenerated diagnostic ledger now reports **726 emitted / 1 declared / 0 tested-only / 1349 catalog-only** across **2076** upstream codes. Verification: `ts_checker` **1665/1665**, regenerated `docs/TS_DIAGNOSTIC_CODE_STATUS.md`.
+
 7. **`fourslash` editor scenarios.** ~40 000 cases in tsgo's `internal/fourslash/tests/`. Adapter to drive `home-lsp` through the same scenarios. *Effort: 2 weeks for the adapter; ratchet from there.*
 
 ### §8.A · Phase 8 — LSP punch list
