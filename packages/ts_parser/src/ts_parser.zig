@@ -14617,6 +14617,7 @@ pub const Parser = struct {
         while (true) {
             const t = self.peek();
             if (t.span.start > last_child_end and self.jsxTextShouldBecomeChild(last_child_end, t.span.start)) {
+                try self.reportJsxTextStrayTokens(last_child_end, self.lineAt(last_child_end), t.span.start);
                 const id = self.interner.intern(self.source[last_child_end..t.span.start]) catch return error.OutOfMemory;
                 const text = try self.builder.addLiteralString(.{ .start = last_child_end, .end = t.span.start }, id);
                 try out.append(self.gpa, text);
@@ -14653,11 +14654,21 @@ pub const Parser = struct {
                 else => {
                     const text_start = t.span.start;
                     var text_end = t.span.end;
+                    // TS1382/TS1381: a literal `>` or `}` appearing in
+                    // JSX child text is invalid — tsc's `scanJsxText`
+                    // flags each occurrence and suggests the escaped
+                    // forms. Mirrors scanner.go ~L1268. We scan the raw
+                    // source bytes of the text run (token granularity
+                    // would miss `>`/`}` glued to adjacent text) and
+                    // anchor a 1-char span at each offending character,
+                    // matching upstream's `errorAt(…, s.pos, 1)`.
+                    try self.reportJsxTextStrayTokens(text_start, t.line, t.span.end);
                     while (self.peek().kind != .less_than and
                         self.peek().kind != .open_brace and
                         self.peek().kind != .eof)
                     {
                         const part = self.advance();
+                        try self.reportJsxTextStrayTokens(part.span.start, part.line, part.span.end);
                         text_end = part.span.end;
                     }
                     if (self.jsxTextShouldBecomeChild(text_start, text_end)) {
@@ -14667,6 +14678,28 @@ pub const Parser = struct {
                     }
                     last_child_end = text_end;
                 },
+            }
+        }
+    }
+
+    /// Scan a JSX child-text byte range and emit TS1382 for each
+    /// literal `>` and TS1381 for each literal `}`, anchored at the
+    /// offending character with a 1-byte span. Mirrors upstream
+    /// `scanJsxText` (scanner.go ~L1268), which surfaces these as the
+    /// raw text is consumed. `start`/`end` are absolute source offsets;
+    /// `line` is the line of the run's first character (close enough for
+    /// the single-line JSX text runs these checks target).
+    fn reportJsxTextStrayTokens(self: *Parser, start: u32, line: u32, end: u32) ParseError!void {
+        if (end > self.source.len or start >= end) return;
+        var i: u32 = start;
+        var cur_line = line;
+        while (i < end) : (i += 1) {
+            const ch = self.source[i];
+            switch (ch) {
+                '>' => try self.reportCodeWithSpanAt(i, cur_line, 1382, 1, "Unexpected token. Did you mean `{'>'}` or `&gt;`?"),
+                '}' => try self.reportCodeWithSpanAt(i, cur_line, 1381, 1, "Unexpected token. Did you mean `{'}'}` or `&rbrace;`?"),
+                '\n' => cur_line += 1,
+                else => {},
             }
         }
     }
@@ -19282,6 +19315,51 @@ test "parser: jsx self-closing element" {
     const init_node = hir_mod.varDeclOf(&s.hir, top).init;
     try T.expectEqual(hir_mod.NodeKind.jsx_self_closing, s.hir.kindOf(init_node));
     try T.expect(hir_mod.jsxElementOf(&s.hir, init_node).self_closing);
+}
+
+test "parser: TS1382 fires for a stray `>` in JSX child text" {
+    // Mirrors upstream `scanJsxText` (scanner.go ~L1268): a literal `>`
+    // in JSX element content is invalid and must be escaped. tsc
+    // suggests `{'>'}` or `&gt;`.
+    var s = try newTsxTestSetup("let v = <div>1 > 2</div>;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findDiag(s, 1382) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Unexpected token. Did you mean `{'>'}` or `&gt;`?", d.message);
+    // Anchored on the `>` character (0-based byte offset 15 in the
+    // source, i.e. just after `<div>1 `).
+    try T.expectEqual(@as(u32, 15), d.pos);
+}
+
+test "parser: TS1381 fires for a stray `}` in JSX child text" {
+    // A literal `}` in JSX content is likewise invalid; tsc suggests
+    // `{'}'}` or `&rbrace;`.
+    var s = try newTsxTestSetup("let v = <div>a } b</div>;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    const d = findDiag(s, 1381) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("Unexpected token. Did you mean `{'}'}` or `&rbrace;`?", d.message);
+}
+
+test "parser: TS1381/TS1382 stay clean for well-formed JSX content" {
+    // Escaped/expression forms and ordinary text must not draw the
+    // stray-token diagnostics. `{'>'}` / `{'}'}` are JSX expression
+    // containers whose inner `>`/`}` live inside string literals, not
+    // raw child text.
+    const cases = [_][]const u8{
+        "let v = <div>hello world</div>;",
+        "let v = <div>{'>'}</div>;",
+        "let v = <div>{'}'}</div>;",
+        "let v = <div>{x > y}</div>;",
+        "let v = <Foo a={1} />;",
+    };
+    inline for (cases) |src| {
+        var s = try newTsxTestSetup(src);
+        defer destroyTestSetup(s);
+        _ = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(u32, 0), countDiag(s, 1381));
+        try T.expectEqual(@as(u32, 0), countDiag(s, 1382));
+    }
 }
 
 test "parser: jsx self-close after expression-value attribute does not glom into a regex literal" {
