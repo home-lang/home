@@ -17,6 +17,10 @@ section.
 > 128 files in `packages/runtime/src/jsc/`, including a live
 > `JSEvaluateScript` smoke and the public JavaScriptCore
 > `JSObjectMakeDeferredPromise` deferred-promise constructor bridge.
+> Bun's WebCore runtime source is now copied verbatim from
+> `/Users/chrisbreuer/Code/bun/src/runtime/webcore*.zig` into
+> `packages/runtime/src/runtime/webcore*.zig` as source-first backlog;
+> it is not counted as JS-callable parity until wired and tested.
 > Full audit:
 > [`packages/runtime/PORT_AUDIT_2026-05-20.md`](../packages/runtime/PORT_AUDIT_2026-05-20.md).
 
@@ -34,7 +38,7 @@ Legend:
 | 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone + native eval smoke landed (128 files: JSON + Promise + Iterator + Global helpers + `JSEvaluateScript` + `JSObjectMakeDeferredPromise`) |
 | 12.3 | `event_loop/`, `io/`, `async/` | `src/event_loop/` | 🟡 substrate landing (~30+ leaves ported) |
 | 12.4 | `resolver/`, `module_loader.zig` | `src/module_loader/` | 🔴 blocked on 12.2 |
-| 12.5 | `web/`, `http/`, `csrf/`, `dns/` | `src/web/` | 🔴 blocked on 12.3 |
+| 12.5 | `runtime/webcore*.zig`, `http/`, `csrf/`, `dns/` | `src/runtime/webcore*.zig`, `src/http/` | 🟡 WebCore source snapshot copied; wiring blocked on 12.2/12.3 |
 | 12.6 | `bun.zig` (Home.* surface) | `src/home/` | 🔴 blocked on 12.2 |
 | 12.7 | `node/` namespace shims | `src/node/` | 🟡 round-15 landed (28 files: path / Stat / buffer / stream / fs / events / util / assert / os / url / querystring / crypto / process / string_decoder / tty + bindings) |
 | 12.8 | `test/` runner | `src/test/` | 🔴 blocked on 12.2 |
