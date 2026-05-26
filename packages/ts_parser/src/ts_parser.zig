@@ -579,6 +579,46 @@ pub const Parser = struct {
         return self.advance();
     }
 
+    fn expectMatching(
+        self: *Parser,
+        close_kind: TokenKind,
+        close_message: []const u8,
+        open_tok: Token,
+        open_text: []const u8,
+        close_text: []const u8,
+    ) ParseError!Token {
+        if (self.peek().kind == close_kind) return self.advance();
+        const tok = self.peek();
+        try self.reportCodeAt(tok.span.start, tok.line, 1005, close_message);
+        try self.reportExpectedMatchingToken(open_tok, open_text, close_text);
+        return .{
+            .span = .{ .start = tok.span.start, .end = tok.span.start },
+            .kind = close_kind,
+            .flags = tok.flags,
+            .line = tok.line,
+        };
+    }
+
+    fn reportExpectedMatchingToken(
+        self: *Parser,
+        open_tok: Token,
+        open_text: []const u8,
+        close_text: []const u8,
+    ) ParseError!void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "The parser expected to find a '{s}' to match the '{s}' token here.",
+            .{ close_text, open_text },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .pos = open_tok.span.start,
+            .line = open_tok.line,
+            .code = 1007,
+            .message = msg,
+            .span_len = open_tok.span.end - open_tok.span.start,
+        });
+    }
+
     fn extractLeadingQuotedToken(what: []const u8) ?[]const u8 {
         if (what.len < 2 or what[0] != '\'') return null;
         const end = std.mem.indexOfScalarPos(u8, what, 1, '\'') orelse return null;
@@ -2651,7 +2691,7 @@ pub const Parser = struct {
 
     fn parseIfStatement(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // if
-        _ = try self.expect(.open_paren, "'(' after 'if'");
+        const open_paren = try self.expect(.open_paren, "'(' after 'if'");
         const cond = try self.parseExpression();
         var missing_close_paren = false;
         if (self.peek().kind == .close_paren) {
@@ -2659,6 +2699,7 @@ pub const Parser = struct {
         } else {
             const close_tok = self.peek();
             try self.reportCodeAt(close_tok.span.start, close_tok.line, 1005, "')' expected.");
+            try self.reportExpectedMatchingToken(open_paren, "(", ")");
             missing_close_paren = true;
         }
         // TS1313: `if (cond);` — the body is an empty statement.
@@ -2691,9 +2732,9 @@ pub const Parser = struct {
 
     fn parseWhileStatement(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // while
-        _ = try self.expect(.open_paren, "'(' after 'while'");
+        const open_paren = try self.expect(.open_paren, "'(' after 'while'");
         const cond = try self.parseExpression();
-        _ = try self.expect(.close_paren, "')' after while condition");
+        _ = try self.expectMatching(.close_paren, "')' expected.", open_paren, "(", ")");
         self.loop_depth += 1;
         defer self.loop_depth -= 1;
         self.loop_switch_depth += 1;
@@ -2711,9 +2752,9 @@ pub const Parser = struct {
         defer self.loop_switch_depth -= 1;
         const body = try self.parseNestedStatement();
         _ = try self.expect(.kw_while, "'while' after do-block");
-        _ = try self.expect(.open_paren, "'(' after 'while'");
+        const open_paren = try self.expect(.open_paren, "'(' after 'while'");
         const cond = try self.parseExpression();
-        const close = try self.expect(.close_paren, "')' after do-while condition");
+        const close = try self.expectMatching(.close_paren, "')' expected.", open_paren, "(", ")");
         _ = self.match(.semicolon);
         return try self.builder.addDoWhile(.{ .start = start.span.start, .end = close.span.end }, body, cond);
     }
@@ -2727,7 +2768,7 @@ pub const Parser = struct {
         const for_init_extras_base = self.for_init_extras.items.len;
         // Optional `await` modifier — `for await (... of asyncIter)`.
         const is_await = self.match(.kw_await);
-        _ = try self.expect(.open_paren, "'(' after 'for'");
+        const open_paren = try self.expect(.open_paren, "'(' after 'for'");
 
         // Parse the init slot. Three shapes:
         //   for (;;) ...                  — empty init
@@ -2789,7 +2830,7 @@ pub const Parser = struct {
                 try self.reportCodeAt(empty_pos, binding_start.line, 1123, "Variable declaration list cannot be empty.");
                 if (binding_start.kind == .kw_in) {
                     const source_expr = try self.parseExpression();
-                    _ = try self.expect(.close_paren, "')' to close for-in/of header");
+                    _ = try self.expectMatching(.close_paren, "')' expected.", open_paren, "(", ")");
                     self.loop_depth += 1;
                     defer self.loop_depth -= 1;
                     self.loop_switch_depth += 1;
@@ -2870,7 +2911,7 @@ pub const Parser = struct {
                     );
                 };
                 const source_expr = try self.parseExpression();
-                _ = try self.expect(.close_paren, "')' to close for-in/of header");
+                _ = try self.expectMatching(.close_paren, "')' expected.", open_paren, "(", ")");
                 self.loop_depth += 1;
                 defer self.loop_depth -= 1;
                 self.loop_switch_depth += 1;
@@ -2977,7 +3018,7 @@ pub const Parser = struct {
                     multiple_decl_token,
                 );
                 const source_expr = try self.parseExpression();
-                _ = try self.expect(.close_paren, "')' to close for-in/of header");
+                _ = try self.expectMatching(.close_paren, "')' expected.", open_paren, "(", ")");
                 self.loop_depth += 1;
                 defer self.loop_depth -= 1;
                 self.loop_switch_depth += 1;
@@ -3017,7 +3058,7 @@ pub const Parser = struct {
                     try self.reportCodeAt(kind_tok.span.start, kind_tok.line, 1005, "'of' expected.");
                 }
                 const source_expr = try self.parseExpression();
-                _ = try self.expect(.close_paren, "')' to close for-in/of header");
+                _ = try self.expectMatching(.close_paren, "')' expected.", open_paren, "(", ")");
                 self.loop_depth += 1;
                 defer self.loop_depth -= 1;
                 self.loop_switch_depth += 1;
@@ -3041,7 +3082,7 @@ pub const Parser = struct {
         _ = try self.expect(.semicolon, "';' after for-condition");
         var update: NodeId = hir_mod.none_node_id;
         if (self.peek().kind != .close_paren) update = try self.parseExpression();
-        _ = try self.expect(.close_paren, "')' to close for header");
+        _ = try self.expectMatching(.close_paren, "')' expected.", open_paren, "(", ")");
         self.loop_depth += 1;
         defer self.loop_depth -= 1;
         self.loop_switch_depth += 1;
@@ -3125,9 +3166,9 @@ pub const Parser = struct {
         } else if (self.unsupported_with_body_depth == 0) {
             try self.reportCodeAt(start.span.start, start.line, 2410, "The 'with' statement is not supported. All symbols in a 'with' block will have type 'any'.");
         }
-        _ = try self.expect(.open_paren, "'(' after 'with'");
+        const open_paren = try self.expect(.open_paren, "'(' after 'with'");
         const object_expr = try self.parseExpression();
-        _ = try self.expect(.close_paren, "')' after with expression");
+        _ = try self.expectMatching(.close_paren, "')' expected.", open_paren, "(", ")");
         self.unsupported_with_body_depth += 1;
         defer self.unsupported_with_body_depth -= 1;
         const body = try self.parseNestedStatement();
@@ -3313,10 +3354,10 @@ pub const Parser = struct {
 
     fn parseSwitchStatement(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // switch
-        _ = try self.expect(.open_paren, "'(' after 'switch'");
+        const open_paren = try self.expect(.open_paren, "'(' after 'switch'");
         const discriminant = try self.parseExpression();
-        _ = try self.expect(.close_paren, "')' after switch discriminant");
-        _ = try self.expect(.open_brace, "'{' to open switch body");
+        _ = try self.expectMatching(.close_paren, "')' expected.", open_paren, "(", ")");
+        const open_brace = try self.expect(.open_brace, "'{' to open switch body");
         self.loop_switch_depth += 1;
         defer self.loop_switch_depth -= 1;
 
@@ -3345,6 +3386,11 @@ pub const Parser = struct {
             while (true) {
                 const k = self.peek().kind;
                 if (!self.hasPendingStatement() and (k == .kw_case or k == .kw_default or k == .close_brace or k == .eof)) break;
+                if (!self.hasPendingStatement() and !switchClauseTokenCanStartStatement(k)) {
+                    const bad = self.advance();
+                    try self.reportCodeAt(bad.span.start, bad.line, 1129, "Statement expected.");
+                    continue;
+                }
                 try stmts.append(self.gpa, try self.parseStatement());
             }
             const last_end: u32 = if (stmts.items.len > 0)
@@ -3357,8 +3403,22 @@ pub const Parser = struct {
             }, value, stmts.items);
             try cases.append(self.gpa, case);
         }
-        const close = try self.expect(.close_brace, "'}' to close switch body");
+        const close = try self.expectMatching(.close_brace, "'}' expected.", open_brace, "{", "}");
         return try self.builder.addSwitch(.{ .start = start.span.start, .end = close.span.end }, discriminant, cases.items);
+    }
+
+    fn switchClauseTokenCanStartStatement(kind: TokenKind) bool {
+        return switch (kind) {
+            .kw_else,
+            .kw_catch,
+            .kw_finally,
+            .close_paren,
+            .close_bracket,
+            .colon,
+            .comma,
+            => false,
+            else => true,
+        };
     }
 
     fn missingIdentifierAt(self: *Parser, pos: u32) ParseError!NodeId {
@@ -3623,7 +3683,7 @@ pub const Parser = struct {
     /// Parse a parenthesized parameter list. Allocates the result slice;
     /// caller frees with `gpa.free`.
     fn parseParameterList(self: *Parser) ParseError![]NodeId {
-        _ = try self.expect(.open_paren, "'(' for parameter list");
+        const open_paren = try self.expect(.open_paren, "'(' for parameter list");
         var params: std.ArrayListUnmanaged(NodeId) = .empty;
         errdefer params.deinit(self.gpa);
         var seen_names: std.AutoHashMapUnmanaged(hir_mod.StringId, Span) = .empty;
@@ -3638,6 +3698,7 @@ pub const Parser = struct {
                     _ = self.advance();
                     const close = self.peek();
                     try self.reportCodeAt(close.span.end, close.line, 1005, "')' expected.");
+                    try self.reportExpectedMatchingToken(open_paren, "(", ")");
                     missing_close_reported = true;
                     self.parameter_list_recovered_body_as_missing_close = true;
                     if (self.peek().kind == .close_brace) _ = self.advance();
@@ -3990,6 +4051,7 @@ pub const Parser = struct {
                     if (self.peek().kind == .close_brace) {
                         const close = self.advance();
                         try self.reportCodeAt(close.span.end, close.line, 1005, "')' expected.");
+                        try self.reportExpectedMatchingToken(open_paren, "(", ")");
                         missing_close_reported = true;
                         self.parameter_list_recovered_body_as_missing_close = true;
                     }
@@ -4013,6 +4075,7 @@ pub const Parser = struct {
                     if (self.peek().kind == .semicolon) _ = self.advance();
                     const close_tok = self.peek();
                     try self.reportCodeAt(close_tok.span.start, close_tok.line, 1005, "')' expected.");
+                    try self.reportExpectedMatchingToken(open_paren, "(", ")");
                     missing_close_reported = true;
                     break;
                 }
@@ -4041,7 +4104,7 @@ pub const Parser = struct {
                 if (self.peek().kind == .close_paren) break; // trailing comma
             }
         }
-        if (!missing_close_reported) _ = try self.expect(.close_paren, "')' to close parameter list");
+        if (!missing_close_reported) _ = try self.expectMatching(.close_paren, "')' expected.", open_paren, "(", ")");
         return try params.toOwnedSlice(self.gpa);
     }
 
@@ -7371,8 +7434,8 @@ pub const Parser = struct {
                         defer self.gpa.free(args);
                         node = try self.builder.addOptionalCall(.{ .start = self.hir.spanOf(node).start, .end = self.tokens[self.cursor - 1].span.end }, node, args);
                     } else if (self.peek().kind == .open_bracket) {
-                        _ = self.advance();
-                        node = try self.finishElementAccess(node, true);
+                        const open = self.advance();
+                        node = try self.finishElementAccess(node, true, open);
                     } else {
                         const name_tok = try self.expectIdentifierLike();
                         const name_id = try self.internToken(name_tok);
@@ -8013,7 +8076,7 @@ pub const Parser = struct {
             const end_pos = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else open.span.end;
             return try self.builder.addBlock(.{ .start = open.span.start, .end = end_pos }, stmts.items);
         }
-        const close = try self.expect(.close_brace, "'}' to close block");
+        const close = try self.expectMatching(.close_brace, "'}' expected.", open, "{", "}");
         return try self.builder.addBlock(span(open, close), stmts.items);
     }
 
@@ -13595,8 +13658,8 @@ pub const Parser = struct {
                     node = try self.builder.addMemberAccess(sp, node, name_id, false);
                 },
                 .open_bracket => {
-                    _ = self.advance();
-                    node = try self.finishElementAccess(node, false);
+                    const open = self.advance();
+                    node = try self.finishElementAccess(node, false, open);
                 },
                 else => break,
             }
@@ -13636,8 +13699,8 @@ pub const Parser = struct {
                         const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = close_pos };
                         node = try self.builder.addOptionalCall(sp, node, args);
                     } else if (self.peek().kind == .open_bracket) {
-                        _ = self.advance();
-                        node = try self.finishElementAccess(node, true);
+                        const open = self.advance();
+                        node = try self.finishElementAccess(node, true, open);
                     } else if (self.peek().kind == .no_substitution_template or self.peek().kind == .template_head) {
                         try self.reportCodeAt(self.peek().span.start, self.peek().line, 1358, "Tagged template expressions are not permitted in an optional chain.");
                         node = try self.parseTaggedTemplateWithTypeArgs(node, &.{});
@@ -13704,8 +13767,8 @@ pub const Parser = struct {
                     } else break;
                 },
                 .open_bracket => {
-                    _ = self.advance();
-                    node = try self.finishElementAccess(node, false);
+                    const open = self.advance();
+                    node = try self.finishElementAccess(node, false, open);
                 },
                 .bang => {
                     // Postfix `!` — non-null assertion. TS only
@@ -13785,13 +13848,13 @@ pub const Parser = struct {
         };
     }
 
-    fn finishElementAccess(self: *Parser, object: NodeId, optional: bool) ParseError!NodeId {
+    fn finishElementAccess(self: *Parser, object: NodeId, optional: bool, open: Token) ParseError!NodeId {
         const idx = if (self.peek().kind == .close_bracket) blk: {
             const close = self.peek();
             try self.reportCodeAt(close.span.start, close.line, 1011, "An element access expression should take an argument.");
             break :blk try self.builder.addLiteralNumber(.{ .start = close.span.start, .end = close.span.start }, 0);
         } else try self.parseExpression();
-        const close = try self.expect(.close_bracket, "']' to close index access");
+        const close = try self.expectMatching(.close_bracket, "']' expected.", open, "[", "]");
         const sp: Span = .{ .start = self.hir.spanOf(object).start, .end = close.span.end };
         return try self.builder.addElementAccess(sp, object, idx, optional);
     }
@@ -13940,7 +14003,7 @@ pub const Parser = struct {
 
     /// Allocates the args slice; caller must `gpa.free` it.
     fn parseArgumentList(self: *Parser) ParseError![]NodeId {
-        _ = try self.expect(.open_paren, "'(' for argument list");
+        const open_paren = try self.expect(.open_paren, "'(' for argument list");
         // Reset `disallow_arrow_return_type` for argument expressions
         // (a fresh assignment-expression context). Mirrors TS's
         // `parseArgumentExpression` calling
@@ -13998,6 +14061,7 @@ pub const Parser = struct {
                 try self.reportCodeAt(close_tok.span.start, close_tok.line, 1005, "',' expected.");
             } else if (!missing_arg_before_statement) {
                 try self.reportCodeAt(close_tok.span.start, close_tok.line, 1005, "')' expected.");
+                try self.reportExpectedMatchingToken(open_paren, "(", ")");
             }
         }
         return try args.toOwnedSlice(self.gpa);
@@ -14105,7 +14169,7 @@ pub const Parser = struct {
                 return try self.builder.addIdentifier(tokenSpan(t), id);
             },
             .open_paren => {
-                _ = self.advance();
+                const open = self.advance();
                 // Reset `disallow_arrow_return_type` inside a
                 // parenthesized expression — the inner expression is a
                 // fresh assignment-expression context. Mirrors TS
@@ -14138,9 +14202,10 @@ pub const Parser = struct {
                 {
                     const op_tok = self.peek();
                     try self.reportCodeAt(op_tok.span.start, op_tok.line, 1005, "')' expected.");
+                    try self.reportExpectedMatchingToken(open, "(", ")");
                     return e;
                 }
-                _ = try self.expect(.close_paren, "')' to close parenthesized expression");
+                _ = try self.expectMatching(.close_paren, "')' expected.", open, "(", ")");
                 return e;
             },
             .less_than => {
@@ -15234,7 +15299,7 @@ pub const Parser = struct {
             }
             break;
         }
-        const close = try self.expect(.close_bracket, "']' to close array literal");
+        const close = try self.expectMatching(.close_bracket, "']' expected.", start, "[", "]");
         return try self.builder.addArrayLiteral(.{ .start = start.span.start, .end = close.span.end }, elements.items);
     }
 
@@ -15376,9 +15441,10 @@ pub const Parser = struct {
             {
                 const accessor_kw = self.advance();
                 var is_computed_key = false;
-                const key = if (self.match(.open_bracket)) blk: {
+                const key = if (self.peek().kind == .open_bracket) blk: {
+                    const open = self.advance();
                     const expr = try self.parseAssignmentExpression();
-                    _ = try self.expect(.close_bracket, "']' to close computed accessor key");
+                    _ = try self.expectMatching(.close_bracket, "']' expected.", open, "[", "]");
                     is_computed_key = true;
                     break :blk expr;
                 } else blk: {
@@ -15456,7 +15522,8 @@ pub const Parser = struct {
             var key: NodeId = undefined;
             var is_computed = false;
             var can_be_shorthand_property = false;
-            if (self.match(.open_bracket)) {
+            if (self.peek().kind == .open_bracket) {
+                const open = self.advance();
                 key = try self.parseAssignmentExpression();
                 // tsc parses the full Expression inside the brackets so it
                 // can recognize a comma expression as a key. TS1171 is
@@ -15478,6 +15545,7 @@ pub const Parser = struct {
                     _ = self.advance();
                 } else {
                     try self.reportCodeAt(self.peek().span.start, self.peek().line, 1005, "']' expected.");
+                    try self.reportExpectedMatchingToken(open, "[", "]");
                 }
                 is_computed = true;
             } else {
@@ -15689,7 +15757,7 @@ pub const Parser = struct {
             try self.reportCodeAt(semi.span.end, semi.line, 1005, "'}' expected.");
             return try self.builder.addObjectLiteral(.{ .start = start.span.start, .end = semi.span.end }, props.items);
         }
-        const close = try self.expect(.close_brace, "'}' to close object literal");
+        const close = try self.expectMatching(.close_brace, "'}' expected.", start, "{", "}");
         return try self.builder.addObjectLiteral(.{ .start = start.span.start, .end = close.span.end }, props.items);
     }
 
@@ -17434,6 +17502,53 @@ test "parser: switch with cases and default" {
     try T.expectEqual(@as(usize, 3), cases.len);
     // Default case has none_node_id value.
     try T.expectEqual(hir_mod.none_node_id, hir_mod.switchCaseOf(&s.hir, cases[2]).value);
+}
+
+test "parser: switch clause invalid token reports TS1129" {
+    // Mirrors upstream `parsingContextErrors(SwitchClauseStatements)`:
+    // tokens such as `else` cannot begin a statement inside a case
+    // clause, so the parser reports TS1129 and continues recovery.
+    var s = try newTestSetup(
+        \\switch (x) {
+        \\  case 1:
+        \\    else
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_ts1129 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1129 and std.mem.eql(u8, d.message, "Statement expected.")) saw_ts1129 = true;
+    }
+    try T.expect(saw_ts1129);
+}
+
+test "parser: missing switch body brace reports TS1007 companion" {
+    // Mirrors upstream `parseExpectedMatchingBrackets`: a missing
+    // switch-body `}` gets the ordinary TS1005 plus a TS1007 diagnostic
+    // anchored at the unmatched `{`.
+    const src =
+        \\switch (x) {
+        \\  case 1: break;
+    ;
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    const open_pos: u32 = @intCast(std.mem.indexOf(u8, src, "{").?);
+    var saw_close = false;
+    var saw_related = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1005 and std.mem.eql(u8, d.message, "'}' expected.")) saw_close = true;
+        if (d.code == 1007 and d.pos == open_pos and
+            std.mem.eql(u8, d.message, "The parser expected to find a '}' to match the '{' token here."))
+        {
+            saw_related = true;
+        }
+    }
+    try T.expect(saw_close);
+    try T.expect(saw_related);
 }
 
 test "parser: function declaration with parameters and body" {
@@ -22786,14 +22901,16 @@ test "parser: object literal malformed computed indexer recovers like upstream" 
     defer destroyTestSetup(s);
 
     _ = try s.parser.parseSourceFile();
-    try T.expectEqual(@as(usize, 4), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 5), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
     try T.expectEqualStrings("']' expected.", s.parser.diagnostics.items[0].message);
-    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
-    try T.expectEqualStrings("',' expected.", s.parser.diagnostics.items[1].message);
-    try T.expectEqual(@as(u32, 1136), s.parser.diagnostics.items[2].code);
-    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[3].code);
-    try T.expectEqualStrings("':' expected.", s.parser.diagnostics.items[3].message);
+    try T.expectEqual(@as(u32, 1007), s.parser.diagnostics.items[1].code);
+    try T.expectEqualStrings("The parser expected to find a ']' to match the '[' token here.", s.parser.diagnostics.items[1].message);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[2].code);
+    try T.expectEqualStrings("',' expected.", s.parser.diagnostics.items[2].message);
+    try T.expectEqual(@as(u32, 1136), s.parser.diagnostics.items[3].code);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[4].code);
+    try T.expectEqualStrings("':' expected.", s.parser.diagnostics.items[4].message);
 }
 
 test "parser: call argument list missing argument before return recovers" {
@@ -22816,10 +22933,12 @@ test "parser: call argument list empty slot before eof reports close paren" {
     defer destroyTestSetup(s);
 
     _ = try s.parser.parseSourceFile();
-    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 3), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1135), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
     try T.expectEqualStrings("')' expected.", s.parser.diagnostics.items[1].message);
+    try T.expectEqual(@as(u32, 1007), s.parser.diagnostics.items[2].code);
+    try T.expectEqualStrings("The parser expected to find a ')' to match the '(' token here.", s.parser.diagnostics.items[2].message);
 }
 
 test "parser: top-level close parens recover as declaration expected" {
@@ -22999,8 +23118,10 @@ test "parser: if condition missing close paren preserves condition" {
     defer destroyTestSetup(s);
 
     _ = try s.parser.parseSourceFile();
-    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1007), s.parser.diagnostics.items[1].code);
+    try T.expectEqualStrings("The parser expected to find a ')' to match the '(' token here.", s.parser.diagnostics.items[1].message);
 }
 
 test "parser: nested class declaration in class body bails to outer statement" {

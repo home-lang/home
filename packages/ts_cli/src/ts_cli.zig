@@ -44,6 +44,8 @@ pub const Options = struct {
     list_files: bool = false,
     /// `--listFilesOnly`.
     list_files_only: bool = false,
+    /// `--explainFiles`.
+    explain_files: bool = false,
     /// `--showConfig`.
     show_config: bool = false,
     /// `--init`.
@@ -100,6 +102,8 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8) ParseError!Op
             opts.list_files = true;
         } else if (std.mem.eql(u8, a, "--listFilesOnly")) {
             opts.list_files_only = true;
+        } else if (std.mem.eql(u8, a, "--explainFiles")) {
+            opts.explain_files = true;
         } else if (std.mem.eql(u8, a, "--showConfig")) {
             opts.show_config = true;
         } else if (std.mem.eql(u8, a, "--init")) {
@@ -194,6 +198,7 @@ pub const helpText: []const u8 =
     \\  --pretty / --no-pretty Force-toggle ANSI-colored diagnostics
     \\  --listFiles            Print all included files and exit
     \\  --listFilesOnly        Same as --listFiles but stops before emit
+    \\  --explainFiles         Print files and the reasons they are included
     \\  --showConfig           Print the resolved tsconfig as JSON
     \\  --init                 Write a default tsconfig.json
     \\  --version, -v          Print version
@@ -411,14 +416,27 @@ test "parseArgs: mixed flags + files" {
     try T.expectEqualStrings("b.ts", opts.files[1]);
 }
 
-test "parseArgs: --listFiles / --listFilesOnly / --showConfig / --init" {
-    const argv = [_][]const u8{ "--listFiles", "--listFilesOnly", "--showConfig", "--init" };
+test "parseArgs: --listFiles / --listFilesOnly / --explainFiles / --showConfig / --init" {
+    const argv = [_][]const u8{ "--listFiles", "--listFilesOnly", "--explainFiles", "--showConfig", "--init" };
     const opts = try parseArgs(T.allocator, &argv);
     defer T.allocator.free(opts.files);
     try T.expect(opts.list_files);
     try T.expect(opts.list_files_only);
+    try T.expect(opts.explain_files);
     try T.expect(opts.show_config);
     try T.expect(opts.init_config);
+}
+
+test "option help metadata includes upstream message diagnostics" {
+    const show_config = tsconfig_mod.compilerOptionMessageDiagnostic("showConfig").?;
+    try T.expectEqual(@as(u32, 1350), show_config.code);
+    try T.expectEqualStrings("Print the final configuration instead of building.", show_config.message);
+
+    const preserve_value_imports = tsconfig_mod.compilerOptionMessageDiagnostic("preserveValueImports").?;
+    try T.expectEqual(@as(u32, 1449), preserve_value_imports.code);
+
+    const module_detection_default = tsconfig_mod.compilerOptionMessageDiagnostic("moduleDetection.default").?;
+    try T.expectEqual(@as(u32, 1476), module_detection_default.code);
 }
 
 test "dispatch: --version returns versionText to stdout" {

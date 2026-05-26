@@ -662,6 +662,219 @@ pub const ValidationDiagnostic = struct {
     field: []const u8 = "",
 };
 
+pub const OptionMessageDiagnostic = struct {
+    option: []const u8,
+    code: u32,
+    message: []const u8,
+};
+
+pub const compiler_option_message_diagnostics = [_]OptionMessageDiagnostic{
+    .{
+        .option = "showConfig",
+        .code = 1350,
+        .message = "Print the final configuration instead of building.",
+    },
+    .{
+        .option = "preserveValueImports",
+        .code = 1449,
+        .message = "Preserve unused imported values in the JavaScript output that would otherwise be removed.",
+    },
+    .{
+        .option = "moduleDetection",
+        .code = 1475,
+        .message = "Control what method is used to detect module-format JS files.",
+    },
+    .{
+        .option = "moduleDetection.default",
+        .code = 1476,
+        .message = "\"auto\": Treat files with imports, exports, import.meta, jsx (with jsx: react-jsx), or esm format (with module: node16+) as modules.",
+    },
+    .{
+        .option = "jsxFragmentFactory",
+        .code = 18034,
+        .message = "Specify the JSX fragment factory function to use when targeting 'react' JSX emit with 'jsxFactory' compiler option is specified, e.g. 'Fragment'.",
+    },
+};
+
+pub fn compilerOptionMessageDiagnostic(option: []const u8) ?OptionMessageDiagnostic {
+    for (compiler_option_message_diagnostics) |diag| {
+        if (std.mem.eql(u8, option, diag.option)) return diag;
+    }
+    return null;
+}
+
+pub const FileIncludeReasonKind = enum {
+    root_file,
+    source_from_project_reference,
+    output_from_project_reference,
+    import,
+    reference_file,
+    type_reference_directive,
+    lib_reference_directive,
+};
+
+pub const SyntheticImportKind = enum {
+    source_text,
+    import_helpers,
+    jsx_factory,
+};
+
+pub const ReferencedFileReason = struct {
+    text: []const u8,
+    from_file: []const u8,
+    package_id: ?[]const u8 = null,
+};
+
+pub const ImportFileReason = struct {
+    text: []const u8,
+    from_file: []const u8,
+    package_id: ?[]const u8 = null,
+    synthetic_kind: SyntheticImportKind = .source_text,
+};
+
+pub const RootFileReason = union(enum) {
+    files_list,
+    include_pattern: struct {
+        pattern: []const u8,
+        config_file: []const u8,
+    },
+};
+
+pub const ProjectReferenceReason = struct {
+    project: []const u8,
+    option: []const u8 = "--out",
+};
+
+pub const FileIncludeReason = union(FileIncludeReasonKind) {
+    root_file: RootFileReason,
+    source_from_project_reference: ProjectReferenceReason,
+    output_from_project_reference: ProjectReferenceReason,
+    import: ImportFileReason,
+    reference_file: ReferencedFileReason,
+    type_reference_directive: ReferencedFileReason,
+    lib_reference_directive: ReferencedFileReason,
+};
+
+pub const FileIncludeDiagnostic = struct {
+    code: u32,
+    message: []const u8,
+    owns_message: bool = false,
+    related_code: ?u32 = null,
+    related_message: ?[]const u8 = null,
+    owns_related_message: bool = false,
+};
+
+pub fn freeFileIncludeDiagnostic(gpa: std.mem.Allocator, diag: FileIncludeDiagnostic) void {
+    if (diag.owns_message) gpa.free(diag.message);
+    if (diag.owns_related_message) {
+        if (diag.related_message) |message| gpa.free(message);
+    }
+}
+
+pub fn fileIncludeReasonToDiagnostic(gpa: std.mem.Allocator, reason: FileIncludeReason) !FileIncludeDiagnostic {
+    return switch (reason) {
+        .import => |import_reason| importFileReasonToDiagnostic(gpa, import_reason),
+        .reference_file => |ref| .{
+            .code = 1400,
+            .message = try std.fmt.allocPrint(gpa, "Referenced via '{s}' from file '{s}'", .{ ref.text, ref.from_file }),
+            .owns_message = true,
+            .related_code = 1401,
+            .related_message = "File is included via reference here.",
+        },
+        .type_reference_directive => |ref| if (ref.package_id) |package_id| .{
+            .code = 1403,
+            .message = try std.fmt.allocPrint(gpa, "Type library referenced via '{s}' from file '{s}' with packageId '{s}'", .{ ref.text, ref.from_file, package_id }),
+            .owns_message = true,
+            .related_code = 1404,
+            .related_message = "File is included via type library reference here.",
+        } else .{
+            .code = 1402,
+            .message = try std.fmt.allocPrint(gpa, "Type library referenced via '{s}' from file '{s}'", .{ ref.text, ref.from_file }),
+            .owns_message = true,
+            .related_code = 1404,
+            .related_message = "File is included via type library reference here.",
+        },
+        .lib_reference_directive => |ref| .{
+            .code = 1405,
+            .message = try std.fmt.allocPrint(gpa, "Library referenced via '{s}' from file '{s}'", .{ ref.text, ref.from_file }),
+            .owns_message = true,
+            .related_code = 1406,
+            .related_message = "File is included via library reference here.",
+        },
+        .root_file => |root| switch (root) {
+            .files_list => .{
+                .code = 1409,
+                .message = "Part of 'files' list in tsconfig.json",
+                .related_code = 1410,
+                .related_message = "File is matched by 'files' list specified here.",
+            },
+            .include_pattern => |include| .{
+                .code = 1407,
+                .message = try std.fmt.allocPrint(gpa, "Matched by include pattern '{s}' in '{s}'", .{ include.pattern, include.config_file }),
+                .owns_message = true,
+                .related_code = 1408,
+                .related_message = "File is matched by include pattern specified here.",
+            },
+        },
+        .output_from_project_reference => |project| if (std.mem.eql(u8, project.option, "--module=none")) .{
+            .code = 1412,
+            .message = try std.fmt.allocPrint(gpa, "Output from referenced project '{s}' included because '--module' is specified as 'none'", .{project.project}),
+            .owns_message = true,
+            .related_code = 1413,
+            .related_message = "File is output from referenced project specified here.",
+        } else .{
+            .code = 1411,
+            .message = try std.fmt.allocPrint(gpa, "Output from referenced project '{s}' included because '{s}' specified", .{ project.project, project.option }),
+            .owns_message = true,
+            .related_code = 1413,
+            .related_message = "File is output from referenced project specified here.",
+        },
+        .source_from_project_reference => |project| if (std.mem.eql(u8, project.option, "--module=none")) .{
+            .code = 1415,
+            .message = try std.fmt.allocPrint(gpa, "Source from referenced project '{s}' included because '--module' is specified as 'none'", .{project.project}),
+            .owns_message = true,
+            .related_code = 1416,
+            .related_message = "File is source from referenced project specified here.",
+        } else .{
+            .code = 1414,
+            .message = try std.fmt.allocPrint(gpa, "Source from referenced project '{s}' included because '{s}' specified", .{ project.project, project.option }),
+            .owns_message = true,
+            .related_code = 1416,
+            .related_message = "File is source from referenced project specified here.",
+        },
+    };
+}
+
+fn importFileReasonToDiagnostic(gpa: std.mem.Allocator, ref: ImportFileReason) !FileIncludeDiagnostic {
+    const has_package_id = ref.package_id != null;
+    const code: u32 = switch (ref.synthetic_kind) {
+        .source_text => if (has_package_id) 1394 else 1393,
+        .import_helpers => if (has_package_id) 1396 else 1395,
+        .jsx_factory => if (has_package_id) 1398 else 1397,
+    };
+    const message = switch (ref.synthetic_kind) {
+        .source_text => if (ref.package_id) |package_id|
+            try std.fmt.allocPrint(gpa, "Imported via {s} from file '{s}' with packageId '{s}'", .{ ref.text, ref.from_file, package_id })
+        else
+            try std.fmt.allocPrint(gpa, "Imported via {s} from file '{s}'", .{ ref.text, ref.from_file }),
+        .import_helpers => if (ref.package_id) |package_id|
+            try std.fmt.allocPrint(gpa, "Imported via {s} from file '{s}' with packageId '{s}' to import 'importHelpers' as specified in compilerOptions", .{ ref.text, ref.from_file, package_id })
+        else
+            try std.fmt.allocPrint(gpa, "Imported via {s} from file '{s}' to import 'importHelpers' as specified in compilerOptions", .{ ref.text, ref.from_file }),
+        .jsx_factory => if (ref.package_id) |package_id|
+            try std.fmt.allocPrint(gpa, "Imported via {s} from file '{s}' with packageId '{s}' to import 'jsx' and 'jsxs' factory functions", .{ ref.text, ref.from_file, package_id })
+        else
+            try std.fmt.allocPrint(gpa, "Imported via {s} from file '{s}' to import 'jsx' and 'jsxs' factory functions", .{ ref.text, ref.from_file }),
+    };
+    return .{
+        .code = code,
+        .message = message,
+        .owns_message = true,
+        .related_code = 1399,
+        .related_message = "File is included via import here.",
+    };
+}
+
 fn appendConfigParseDiagnostic(
     gpa: std.mem.Allocator,
     diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
@@ -2344,6 +2557,144 @@ test "tsconfig: JSX factory string fields parse" {
     try t.expectEqualStrings("Fragment", co.jsx_fragment_factory.?);
     try t.expectEqualStrings("preact", co.jsx_import_source.?);
     try t.expectEqualStrings("Preact", co.react_namespace.?);
+}
+
+test "tsconfig: compiler option message diagnostics mirror upstream help text codes" {
+    const show_config = compilerOptionMessageDiagnostic("showConfig").?;
+    try t.expectEqual(@as(u32, 1350), show_config.code);
+    try t.expectEqualStrings("Print the final configuration instead of building.", show_config.message);
+
+    const preserve_value_imports = compilerOptionMessageDiagnostic("preserveValueImports").?;
+    try t.expectEqual(@as(u32, 1449), preserve_value_imports.code);
+    try t.expectEqualStrings("Preserve unused imported values in the JavaScript output that would otherwise be removed.", preserve_value_imports.message);
+
+    const module_detection = compilerOptionMessageDiagnostic("moduleDetection").?;
+    try t.expectEqual(@as(u32, 1475), module_detection.code);
+    const module_detection_default = compilerOptionMessageDiagnostic("moduleDetection.default").?;
+    try t.expectEqual(@as(u32, 1476), module_detection_default.code);
+
+    const jsx_fragment_factory = compilerOptionMessageDiagnostic("jsxFragmentFactory").?;
+    try t.expectEqual(@as(u32, 18034), jsx_fragment_factory.code);
+    try t.expect(compilerOptionMessageDiagnostic("unknownOption") == null);
+}
+
+test "tsconfig: file include diagnostics cover import and reference reasons" {
+    {
+        const diag = try fileIncludeReasonToDiagnostic(t.allocator, .{
+            .import = .{
+                .text = "\"./dep\"",
+                .from_file = "/repo/src/main.ts",
+            },
+        });
+        defer freeFileIncludeDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1393), diag.code);
+        try t.expectEqualStrings("Imported via \"./dep\" from file '/repo/src/main.ts'", diag.message);
+        try t.expectEqual(@as(?u32, 1399), diag.related_code);
+        try t.expectEqualStrings("File is included via import here.", diag.related_message.?);
+    }
+    {
+        const diag = try fileIncludeReasonToDiagnostic(t.allocator, .{
+            .import = .{
+                .text = "\"tslib\"",
+                .from_file = "/repo/src/main.ts",
+                .package_id = "tslib/index.d.ts@2.6.2",
+                .synthetic_kind = .import_helpers,
+            },
+        });
+        defer freeFileIncludeDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1396), diag.code);
+        try t.expectEqualStrings("Imported via \"tslib\" from file '/repo/src/main.ts' with packageId 'tslib/index.d.ts@2.6.2' to import 'importHelpers' as specified in compilerOptions", diag.message);
+    }
+    {
+        const diag = try fileIncludeReasonToDiagnostic(t.allocator, .{
+            .import = .{
+                .text = "\"react/jsx-runtime\"",
+                .from_file = "/repo/src/view.tsx",
+                .synthetic_kind = .jsx_factory,
+            },
+        });
+        defer freeFileIncludeDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1397), diag.code);
+    }
+    {
+        const diag = try fileIncludeReasonToDiagnostic(t.allocator, .{
+            .reference_file = .{
+                .text = "./types.d.ts",
+                .from_file = "/repo/src/main.ts",
+            },
+        });
+        defer freeFileIncludeDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1400), diag.code);
+        try t.expectEqual(@as(?u32, 1401), diag.related_code);
+        try t.expectEqualStrings("Referenced via './types.d.ts' from file '/repo/src/main.ts'", diag.message);
+    }
+}
+
+test "tsconfig: file include diagnostics cover type, lib, root, and project reasons" {
+    {
+        const diag = try fileIncludeReasonToDiagnostic(t.allocator, .{
+            .type_reference_directive = .{
+                .text = "node",
+                .from_file = "/repo/src/main.ts",
+                .package_id = "@types/node/index.d.ts@20.0.0",
+            },
+        });
+        defer freeFileIncludeDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1403), diag.code);
+        try t.expectEqual(@as(?u32, 1404), diag.related_code);
+    }
+    {
+        const diag = try fileIncludeReasonToDiagnostic(t.allocator, .{
+            .lib_reference_directive = .{
+                .text = "dom",
+                .from_file = "/repo/src/main.ts",
+            },
+        });
+        defer freeFileIncludeDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1405), diag.code);
+        try t.expectEqual(@as(?u32, 1406), diag.related_code);
+    }
+    {
+        const diag = try fileIncludeReasonToDiagnostic(t.allocator, .{
+            .root_file = .{ .include_pattern = .{
+                .pattern = "src/**/*",
+                .config_file = "/repo/tsconfig.json",
+            } },
+        });
+        defer freeFileIncludeDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1407), diag.code);
+        try t.expectEqual(@as(?u32, 1408), diag.related_code);
+        try t.expectEqualStrings("Matched by include pattern 'src/**/*' in '/repo/tsconfig.json'", diag.message);
+    }
+    {
+        const diag = try fileIncludeReasonToDiagnostic(t.allocator, .{ .root_file = .files_list });
+        defer freeFileIncludeDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1409), diag.code);
+        try t.expectEqual(@as(?u32, 1410), diag.related_code);
+        try t.expectEqualStrings("Part of 'files' list in tsconfig.json", diag.message);
+    }
+    {
+        const diag = try fileIncludeReasonToDiagnostic(t.allocator, .{
+            .output_from_project_reference = .{
+                .project = "../lib/tsconfig.json",
+                .option = "--outFile",
+            },
+        });
+        defer freeFileIncludeDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1411), diag.code);
+        try t.expectEqual(@as(?u32, 1413), diag.related_code);
+    }
+    {
+        const diag = try fileIncludeReasonToDiagnostic(t.allocator, .{
+            .source_from_project_reference = .{
+                .project = "../lib/tsconfig.json",
+                .option = "--module=none",
+            },
+        });
+        defer freeFileIncludeDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1415), diag.code);
+        try t.expectEqual(@as(?u32, 1416), diag.related_code);
+    }
 }
 
 test "tsconfig: merge propagates new bool fields" {
