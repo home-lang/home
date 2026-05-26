@@ -1042,6 +1042,11 @@ pub const jsc = struct {
             return .{};
         }
 
+        pub fn runWithAPILock(this: *VirtualMachine, comptime Context: type, ctx: *Context, comptime function: fn (ctx: *Context) void) void {
+            _ = this;
+            function(ctx);
+        }
+
         pub fn unhandledRejection(this: *VirtualMachine, global_object: *JSGlobalObject, result: JSValue, value: JSValue) void {
             _ = this;
             _ = global_object;
