@@ -11232,6 +11232,7 @@ pub const Parser = struct {
         };
         try self.reportUnbalancedRegexGroup(start_tok, end);
         try self.reportRegexQuantifierDiagnostics(start_tok, end);
+        try self.reportRegexEscapeAndClassDiagnostics(start_tok, end);
         try self.reportInvalidRegexFlags(start_tok.span.start, start_tok.line, end);
         // The scanner committed to `.slash` (vs. `regex_literal`) based
         // on the preceding token, but the parser now knows this span is
@@ -11436,6 +11437,168 @@ pub const Parser = struct {
         while (b.len > 0 and b[0] == '0') b = b[1..];
         if (a.len != b.len) return a.len > b.len;
         return std.mem.order(u8, a, b) == .gt;
+    }
+
+    fn reportRegexEscapeAndClassDiagnostics(self: *Parser, start_tok: Token, end: u32) ParseError!void {
+        const start_i: usize = @intCast(start_tok.span.start);
+        const end_i: usize = @intCast(end);
+        if (start_i >= self.source.len or self.source[start_i] != '/') return;
+        const close_at = self.regexLiteralClose(start_i, end_i) orelse return;
+        const unicode_mode = self.regexLiteralHasFlag(close_at + 1, end_i, 'u') or
+            self.regexLiteralHasFlag(close_at + 1, end_i, 'v');
+
+        var i = start_i + 1;
+        while (i < close_at and i < self.source.len) {
+            const ch = self.source[i];
+            if (ch == '\\') {
+                try self.reportInvalidControlEscapeIfNeeded(i, close_at, start_tok.line, unicode_mode);
+                i += if (i + 1 < close_at) 2 else 1;
+                continue;
+            }
+            if (ch == '[') {
+                i = try self.scanRegexClassForRangeDiagnostics(i + 1, close_at, start_tok.line, unicode_mode);
+                continue;
+            }
+            i += 1;
+        }
+    }
+
+    fn reportInvalidControlEscapeIfNeeded(
+        self: *Parser,
+        slash_pos: usize,
+        limit: usize,
+        line: u32,
+        unicode_mode: bool,
+    ) ParseError!void {
+        if (!unicode_mode) return;
+        if (slash_pos + 1 >= limit or self.source[slash_pos + 1] != 'c') return;
+        if (slash_pos + 2 < limit and std.ascii.isAlphabetic(self.source[slash_pos + 2])) return;
+        try self.reportCodeAtWithSpan(
+            @intCast(slash_pos),
+            line,
+            2,
+            1512,
+            "'\\c' must be followed by an ASCII letter.",
+        );
+    }
+
+    const RegexClassAtom = struct {
+        start: usize,
+        end: usize,
+        value: ?u21,
+    };
+
+    fn scanRegexClassForRangeDiagnostics(
+        self: *Parser,
+        class_start: usize,
+        close_at: usize,
+        line: u32,
+        unicode_mode: bool,
+    ) ParseError!usize {
+        var i = class_start;
+        if (i < close_at and self.source[i] == '^') i += 1;
+        while (i < close_at and i < self.source.len) {
+            if (self.source[i] == ']') return i + 1;
+            const min_atom = try self.scanRegexClassAtom(i, close_at, line, unicode_mode);
+            i = min_atom.end;
+            if (i >= close_at or i >= self.source.len or self.source[i] != '-') continue;
+            if (i + 1 >= close_at or self.source[i + 1] == ']') {
+                i += 1;
+                continue;
+            }
+            i += 1;
+            const max_atom = try self.scanRegexClassAtom(i, close_at, line, unicode_mode);
+            i = max_atom.end;
+            if (min_atom.value) |min_value| {
+                if (max_atom.value) |max_value| {
+                    if (min_value > max_value) {
+                        try self.reportCodeAtWithSpan(
+                            @intCast(min_atom.start),
+                            line,
+                            @intCast(max_atom.end - min_atom.start),
+                            1517,
+                            "Range out of order in character class.",
+                        );
+                    }
+                }
+            }
+        }
+        return i;
+    }
+
+    fn scanRegexClassAtom(
+        self: *Parser,
+        start: usize,
+        limit: usize,
+        line: u32,
+        unicode_mode: bool,
+    ) ParseError!RegexClassAtom {
+        if (start >= limit or start >= self.source.len) return .{ .start = start, .end = start, .value = null };
+        if (self.source[start] != '\\') {
+            return .{ .start = start, .end = start + 1, .value = self.source[start] };
+        }
+        if (start + 1 >= limit) return .{ .start = start, .end = start + 1, .value = null };
+        const esc = self.source[start + 1];
+        if (esc == 'c') {
+            try self.reportInvalidControlEscapeIfNeeded(start, limit, line, unicode_mode);
+            if (start + 2 < limit and std.ascii.isAlphabetic(self.source[start + 2])) {
+                return .{ .start = start, .end = start + 3, .value = @as(u21, self.source[start + 2]) & 0x1f };
+            }
+            return .{ .start = start, .end = @min(start + 2, limit), .value = null };
+        }
+        switch (esc) {
+            'n' => return .{ .start = start, .end = start + 2, .value = '\n' },
+            'r' => return .{ .start = start, .end = start + 2, .value = '\r' },
+            't' => return .{ .start = start, .end = start + 2, .value = '\t' },
+            'f' => return .{ .start = start, .end = start + 2, .value = 0x0c },
+            'v' => return .{ .start = start, .end = start + 2, .value = 0x0b },
+            'b' => return .{ .start = start, .end = start + 2, .value = 0x08 },
+            'd', 'D', 's', 'S', 'w', 'W' => return .{ .start = start, .end = start + 2, .value = null },
+            'x' => {
+                if (start + 3 < limit) {
+                    if (hexValue(self.source[start + 2])) |hi| {
+                        if (hexValue(self.source[start + 3])) |lo| {
+                            return .{ .start = start, .end = start + 4, .value = (@as(u21, hi) << 4) | lo };
+                        }
+                    }
+                }
+                return .{ .start = start, .end = start + 2, .value = null };
+            },
+            'u' => {
+                if (start + 2 < limit and self.source[start + 2] == '{') {
+                    var p = start + 3;
+                    var value: u21 = 0;
+                    var saw_digit = false;
+                    while (p < limit and self.source[p] != '}') : (p += 1) {
+                        const hv = hexValue(self.source[p]) orelse return .{ .start = start, .end = p + 1, .value = null };
+                        saw_digit = true;
+                        value = (value << 4) | hv;
+                    }
+                    if (saw_digit and p < limit and self.source[p] == '}') {
+                        return .{ .start = start, .end = p + 1, .value = value };
+                    }
+                } else if (start + 5 < limit) {
+                    var value: u21 = 0;
+                    var p = start + 2;
+                    while (p < start + 6) : (p += 1) {
+                        const hv = hexValue(self.source[p]) orelse return .{ .start = start, .end = p + 1, .value = null };
+                        value = (value << 4) | hv;
+                    }
+                    return .{ .start = start, .end = start + 6, .value = value };
+                }
+                return .{ .start = start, .end = start + 2, .value = null };
+            },
+            else => return .{ .start = start, .end = start + 2, .value = esc },
+        }
+    }
+
+    fn hexValue(ch: u8) ?u21 {
+        return switch (ch) {
+            '0'...'9' => ch - '0',
+            'a'...'f' => 10 + ch - 'a',
+            'A'...'F' => 10 + ch - 'A',
+            else => null,
+        };
     }
 
     fn reportUnbalancedRegexGroup(self: *Parser, start_tok: Token, end: u32) ParseError!void {
@@ -19606,6 +19769,56 @@ test "parser: regex literal treats valid quantified term as clean" {
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1506);
         try T.expect(d.code != 1507);
+    }
+}
+
+test "parser: unicode regex reports invalid control escape" {
+    var s = try newTestSetup("let x = /\\c1/u; let y = /[\\c0]/u;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1512) {
+            count += 1;
+            try T.expectEqualStrings("'\\c' must be followed by an ASCII letter.", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 2), count);
+}
+
+test "parser: non-unicode regex accepts annex-b control escape recovery" {
+    var s = try newTestSetup("let x = /\\c1/; let y = /[\\c0]/;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1512);
+    }
+}
+
+test "parser: regex character class reports out-of-order ranges" {
+    var s = try newTestSetup("let x = /[z-a\\r-\\n]/;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1517) {
+            count += 1;
+            try T.expectEqualStrings("Range out of order in character class.", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 2), count);
+}
+
+test "parser: regex character class accepts ordered and class-escape ranges" {
+    var s = try newTestSetup("let x = /[a-z\\b-\\n\\d-\\w]/;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1517);
     }
 }
 
