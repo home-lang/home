@@ -848,6 +848,7 @@ pub const Parser = struct {
             try self.scanJSDocCommentTypeExpressions(body_start, body_end);
             try self.scanJSDocImportTagDiagnostics(body_start, body_end);
             try self.scanJSDocTypedefDuplicateTypeTags(body_start, body_end);
+            try self.scanJSDocDuplicateUniqueTags(body_start, body_end);
             try self.scanJSDocTemplateAfterTypeAliasLikeTags(body_start, body_end);
             try self.scanJSDocTemplateModifierDiagnostics(body_start, body_end);
             try self.scanJSDocPropertyNameDiagnostics(body_start, body_end);
@@ -1223,6 +1224,69 @@ pub const Parser = struct {
                 return;
             }
             i = tag_name_end;
+        }
+    }
+
+    /// TS1223 — `'{0}' tag already specified.` Mirrors tsc's
+    /// `parseReturnTag`/`parseTypeTag`, which reject a second
+    /// occurrence of a tag that may only appear once in a comment.
+    /// The diagnostic anchors on the offending tag name with `{0}`
+    /// set to that name. `@return`/`@returns` are the same tag, so a
+    /// later `@return` after an earlier `@returns` (or vice versa)
+    /// still collides. A duplicate `@type` only triggers TS1223 when
+    /// the comment is not a `@typedef`/`@callback` group — those use
+    /// the typedef-scoped TS8033 instead.
+    fn scanJSDocDuplicateUniqueTags(self: *Parser, start: usize, end: usize) ParseError!void {
+        // Pre-scan: a `@typedef`/`@callback` comment routes duplicate
+        // `@type` tags through TS8033, so suppress the `@type` arm here.
+        var has_typedef_like = false;
+        {
+            var j = start;
+            while (j < end) {
+                const tag_pos = self.nextJSDocTagStart(j, end) orelse break;
+                const ns = tag_pos + 1;
+                var ne = ns;
+                while (ne < end and isJSDocTagNameChar(self.source[ne])) : (ne += 1) {}
+                const nm = self.source[ns..ne];
+                if (std.mem.eql(u8, nm, "typedef") or std.mem.eql(u8, nm, "callback")) {
+                    has_typedef_like = true;
+                    break;
+                }
+                j = ne;
+            }
+        }
+
+        var seen_return = false;
+        var seen_type = false;
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            const tag_name = self.source[tag_name_start..tag_name_end];
+            i = tag_name_end;
+
+            const is_return = std.mem.eql(u8, tag_name, "returns") or std.mem.eql(u8, tag_name, "return");
+            const is_type = !has_typedef_like and std.mem.eql(u8, tag_name, "type");
+            if (!is_return and !is_type) continue;
+
+            const already = if (is_return) seen_return else seen_type;
+            if (is_return) seen_return = true else seen_type = true;
+            if (!already) continue;
+
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "'{s}' tag already specified.",
+                .{tag_name},
+            );
+            try self.reportCodeAtWithSpan(
+                @intCast(tag_name_start),
+                self.lineAt(@intCast(tag_name_start)),
+                @intCast(tag_name.len),
+                1223,
+                msg,
+            );
         }
     }
 
@@ -22478,6 +22542,102 @@ test "parser: JSDoc template after typedef callback or overload reports TS8039" 
         }
     }
     try T.expectEqual(@as(usize, 3), count);
+}
+
+test "parser: duplicate JSDoc @returns reports TS1223" {
+    var s = try newTestSetup(
+        \\/**
+        \\ * @returns {string} first
+        \\ * @returns {number} second
+        \\ */
+        \\function f() { return ""; }
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1223) {
+            count += 1;
+            try T.expectEqualStrings("'returns' tag already specified.", d.message);
+            try T.expectEqual(@as(u32, 3), d.line);
+            try T.expectEqual(@as(u32, 7), d.span_len);
+        }
+    }
+    try T.expectEqual(@as(usize, 1), count);
+}
+
+test "parser: duplicate JSDoc @return mixed spelling reports TS1223 with second name" {
+    var s = try newTestSetup(
+        \\/**
+        \\ * @returns {string} a
+        \\ * @return {number} b
+        \\ */
+        \\function f() { return ""; }
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1223) {
+            count += 1;
+            try T.expectEqualStrings("'return' tag already specified.", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 1), count);
+}
+
+test "parser: duplicate JSDoc @type outside typedef reports TS1223" {
+    var s = try newTestSetup(
+        \\/**
+        \\ * @type {string}
+        \\ * @type {number}
+        \\ */
+        \\const x = "";
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1223) {
+            count += 1;
+            try T.expectEqualStrings("'type' tag already specified.", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 1), count);
+}
+
+test "parser: duplicate JSDoc @type inside typedef uses TS8033 not TS1223" {
+    var s = try newTestSetup(
+        \\/**
+        \\ * @typedef Name
+        \\ * @type {string}
+        \\ * @type {Oops}
+        \\ */
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1223);
+    }
+}
+
+test "parser: single JSDoc @returns does not report TS1223" {
+    var s = try newTestSetup(
+        \\/**
+        \\ * @returns {string} only
+        \\ */
+        \\function f() { return ""; }
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1223);
+    }
 }
 
 test "parser: leading JSDoc template before type-like tag is allowed" {
