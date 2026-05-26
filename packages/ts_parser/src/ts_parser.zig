@@ -12245,7 +12245,7 @@ pub const Parser = struct {
                 continue;
             }
             if (ch == '[') {
-                i = try self.scanRegexClassForRangeDiagnostics(i + 1, close_at, start_tok.line, unicode_mode);
+                i = try self.scanRegexClassForRangeDiagnostics(i + 1, close_at, start_tok.line, unicode_mode, unicode_sets_mode);
                 continue;
             }
             i += 1;
@@ -12272,9 +12272,24 @@ pub const Parser = struct {
     }
 
     const RegexClassAtom = struct {
+        const Kind = enum {
+            single,
+            class_escape,
+            string_set,
+            unknown,
+        };
+
         start: usize,
         end: usize,
+        kind: Kind = .unknown,
         value: ?u21,
+        string_set_may_be_multi: bool = false,
+    };
+
+    const RegexClassSetOperator = enum {
+        none,
+        intersection,
+        subtraction,
     };
 
     fn scanRegexClassForRangeDiagnostics(
@@ -12283,12 +12298,30 @@ pub const Parser = struct {
         close_at: usize,
         line: u32,
         unicode_mode: bool,
+        unicode_sets_mode: bool,
     ) ParseError!usize {
+        if (unicode_sets_mode) {
+            try self.reportRegexClassSetOperatorDiagnostics(class_start, close_at, line);
+        }
+
         var i = class_start;
-        if (i < close_at and self.source[i] == '^') i += 1;
+        var negated = false;
+        if (i < close_at and self.source[i] == '^') {
+            negated = true;
+            i += 1;
+        }
         while (i < close_at and i < self.source.len) {
             if (self.source[i] == ']') return i + 1;
-            const min_atom = try self.scanRegexClassAtom(i, close_at, line, unicode_mode);
+            const min_atom = try self.scanRegexClassAtom(i, close_at, line, unicode_mode, unicode_sets_mode);
+            if (negated and min_atom.kind == .string_set and min_atom.string_set_may_be_multi) {
+                try self.reportCodeAtWithSpan(
+                    @intCast(min_atom.start),
+                    line,
+                    @intCast(min_atom.end - min_atom.start),
+                    1518,
+                    "Anything that would possibly match more than a single character is invalid inside a negated character class.",
+                );
+            }
             i = min_atom.end;
             if (i >= close_at or i >= self.source.len or self.source[i] != '-') continue;
             if (i + 1 >= close_at or self.source[i + 1] == ']') {
@@ -12296,8 +12329,35 @@ pub const Parser = struct {
                 continue;
             }
             i += 1;
-            const max_atom = try self.scanRegexClassAtom(i, close_at, line, unicode_mode);
+            const max_atom = try self.scanRegexClassAtom(i, close_at, line, unicode_mode, unicode_sets_mode);
+            if (negated and max_atom.kind == .string_set and max_atom.string_set_may_be_multi) {
+                try self.reportCodeAtWithSpan(
+                    @intCast(max_atom.start),
+                    line,
+                    @intCast(max_atom.end - max_atom.start),
+                    1518,
+                    "Anything that would possibly match more than a single character is invalid inside a negated character class.",
+                );
+            }
             i = max_atom.end;
+            if (min_atom.kind == .class_escape or min_atom.kind == .string_set) {
+                try self.reportCodeAtWithSpan(
+                    @intCast(min_atom.start),
+                    line,
+                    @intCast(min_atom.end - min_atom.start),
+                    1516,
+                    "A character class range must not be bounded by another character class.",
+                );
+            }
+            if (max_atom.kind == .class_escape or max_atom.kind == .string_set) {
+                try self.reportCodeAtWithSpan(
+                    @intCast(max_atom.start),
+                    line,
+                    @intCast(max_atom.end - max_atom.start),
+                    1516,
+                    "A character class range must not be bounded by another character class.",
+                );
+            }
             if (min_atom.value) |min_value| {
                 if (max_atom.value) |max_value| {
                     if (min_value > max_value) {
@@ -12315,39 +12375,133 @@ pub const Parser = struct {
         return i;
     }
 
+    fn reportRegexClassSetOperatorDiagnostics(
+        self: *Parser,
+        class_start: usize,
+        close_at: usize,
+        line: u32,
+    ) ParseError!void {
+        var i = class_start;
+        if (i < close_at and self.source[i] == '^') i += 1;
+        var saw_operand = false;
+        var previous_op: RegexClassSetOperator = .none;
+        var depth: usize = 0;
+        while (i < close_at and i < self.source.len) {
+            const ch = self.source[i];
+            if (ch == '\\') {
+                if (i + 1 < close_at) {
+                    if (self.source[i + 1] == 'q' and i + 2 < close_at and self.source[i + 2] == '{') {
+                        i = self.regexClassQStringEnd(i + 2, close_at) orelse i + 2;
+                    } else if ((self.source[i + 1] == 'p' or self.source[i + 1] == 'P') and i + 2 < close_at and self.source[i + 2] == '{') {
+                        i = self.regexClassBraceEscapeEnd(i + 2, close_at) orelse i + 2;
+                    } else {
+                        i += 2;
+                    }
+                } else {
+                    i += 1;
+                }
+                saw_operand = true;
+                continue;
+            }
+            if (ch == '[') {
+                depth += 1;
+                saw_operand = true;
+                i += 1;
+                continue;
+            }
+            if (ch == ']') {
+                if (depth > 0) {
+                    depth -= 1;
+                    i += 1;
+                    continue;
+                }
+                if (!saw_operand and previous_op != .none) {
+                    try self.reportCodeAtWithSpan(@intCast(i), line, 0, 1520, "Expected a class set operand.");
+                }
+                return;
+            }
+            if (depth == 0 and i + 1 < close_at) {
+                const op: RegexClassSetOperator = if (ch == '&' and self.source[i + 1] == '&')
+                    .intersection
+                else if (ch == '-' and self.source[i + 1] == '-')
+                    .subtraction
+                else
+                    .none;
+                if (op != .none) {
+                    if (!saw_operand) {
+                        try self.reportCodeAtWithSpan(@intCast(i), line, 2, 1520, "Expected a class set operand.");
+                    }
+                    if (previous_op != .none and previous_op != op) {
+                        try self.reportCodeAtWithSpan(
+                            @intCast(i),
+                            line,
+                            2,
+                            1519,
+                            "Operators must not be mixed within a character class. Wrap it in a nested class instead.",
+                        );
+                    }
+                    previous_op = op;
+                    saw_operand = false;
+                    i += 2;
+                    continue;
+                }
+            }
+            saw_operand = true;
+            i += 1;
+        }
+    }
+
     fn scanRegexClassAtom(
         self: *Parser,
         start: usize,
         limit: usize,
         line: u32,
         unicode_mode: bool,
+        unicode_sets_mode: bool,
     ) ParseError!RegexClassAtom {
         if (start >= limit or start >= self.source.len) return .{ .start = start, .end = start, .value = null };
         if (self.source[start] != '\\') {
-            return .{ .start = start, .end = start + 1, .value = self.source[start] };
+            return .{ .start = start, .end = start + 1, .kind = .single, .value = self.source[start] };
         }
         if (start + 1 >= limit) return .{ .start = start, .end = start + 1, .value = null };
         const esc = self.source[start + 1];
+        if (unicode_sets_mode and esc == 'q' and start + 2 < limit and self.source[start + 2] == '{') {
+            const q_end = self.regexClassQStringEnd(start + 2, limit) orelse start + 2;
+            return .{
+                .start = start,
+                .end = q_end,
+                .kind = .string_set,
+                .value = null,
+                .string_set_may_be_multi = self.regexClassQStringMayBeMulti(start + 3, q_end),
+            };
+        }
         if (esc == 'c') {
             try self.reportInvalidControlEscapeIfNeeded(start, limit, line, unicode_mode);
             if (start + 2 < limit and std.ascii.isAlphabetic(self.source[start + 2])) {
-                return .{ .start = start, .end = start + 3, .value = @as(u21, self.source[start + 2]) & 0x1f };
+                return .{ .start = start, .end = start + 3, .kind = .single, .value = @as(u21, self.source[start + 2]) & 0x1f };
             }
             return .{ .start = start, .end = @min(start + 2, limit), .value = null };
         }
         switch (esc) {
-            'n' => return .{ .start = start, .end = start + 2, .value = '\n' },
-            'r' => return .{ .start = start, .end = start + 2, .value = '\r' },
-            't' => return .{ .start = start, .end = start + 2, .value = '\t' },
-            'f' => return .{ .start = start, .end = start + 2, .value = 0x0c },
-            'v' => return .{ .start = start, .end = start + 2, .value = 0x0b },
-            'b' => return .{ .start = start, .end = start + 2, .value = 0x08 },
-            'd', 'D', 's', 'S', 'w', 'W' => return .{ .start = start, .end = start + 2, .value = null },
+            'n' => return .{ .start = start, .end = start + 2, .kind = .single, .value = '\n' },
+            'r' => return .{ .start = start, .end = start + 2, .kind = .single, .value = '\r' },
+            't' => return .{ .start = start, .end = start + 2, .kind = .single, .value = '\t' },
+            'f' => return .{ .start = start, .end = start + 2, .kind = .single, .value = 0x0c },
+            'v' => return .{ .start = start, .end = start + 2, .kind = .single, .value = 0x0b },
+            'b' => return .{ .start = start, .end = start + 2, .kind = .single, .value = 0x08 },
+            'd', 'D', 's', 'S', 'w', 'W' => return .{ .start = start, .end = start + 2, .kind = .class_escape, .value = null },
+            'p', 'P' => {
+                const prop_end = if (start + 2 < limit and self.source[start + 2] == '{')
+                    self.regexClassBraceEscapeEnd(start + 2, limit) orelse start + 2
+                else
+                    start + 2;
+                return .{ .start = start, .end = prop_end, .kind = .class_escape, .value = null };
+            },
             'x' => {
                 if (start + 3 < limit) {
                     if (hexValue(self.source[start + 2])) |hi| {
                         if (hexValue(self.source[start + 3])) |lo| {
-                            return .{ .start = start, .end = start + 4, .value = (@as(u21, hi) << 4) | lo };
+                            return .{ .start = start, .end = start + 4, .kind = .single, .value = (@as(u21, hi) << 4) | lo };
                         }
                     }
                 }
@@ -12364,7 +12518,7 @@ pub const Parser = struct {
                         value = (value << 4) | hv;
                     }
                     if (saw_digit and p < limit and self.source[p] == '}') {
-                        return .{ .start = start, .end = p + 1, .value = value };
+                        return .{ .start = start, .end = p + 1, .kind = .single, .value = value };
                     }
                 } else if (start + 5 < limit) {
                     var value: u21 = 0;
@@ -12373,12 +12527,51 @@ pub const Parser = struct {
                         const hv = hexValue(self.source[p]) orelse return .{ .start = start, .end = p + 1, .value = null };
                         value = (value << 4) | hv;
                     }
-                    return .{ .start = start, .end = start + 6, .value = value };
+                    return .{ .start = start, .end = start + 6, .kind = .single, .value = value };
                 }
                 return .{ .start = start, .end = start + 2, .value = null };
             },
-            else => return .{ .start = start, .end = start + 2, .value = esc },
+            else => return .{ .start = start, .end = start + 2, .kind = .single, .value = esc },
         }
+    }
+
+    fn regexClassBraceEscapeEnd(self: *Parser, brace_start: usize, limit: usize) ?usize {
+        var i = brace_start + 1;
+        while (i < limit and i < self.source.len) : (i += 1) {
+            if (self.source[i] == '}') return i + 1;
+        }
+        return null;
+    }
+
+    fn regexClassQStringEnd(self: *Parser, brace_start: usize, limit: usize) ?usize {
+        return self.regexClassBraceEscapeEnd(brace_start, limit);
+    }
+
+    fn regexClassQStringMayBeMulti(self: *Parser, content_start: usize, q_end: usize) bool {
+        if (q_end == 0 or content_start >= q_end - 1) return false;
+        var len: usize = 0;
+        var escaped = false;
+        var i = content_start;
+        while (i < q_end - 1 and i < self.source.len) : (i += 1) {
+            const ch = self.source[i];
+            if (escaped) {
+                escaped = false;
+                len += 1;
+                continue;
+            }
+            if (ch == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (ch == '|') {
+                if (len > 1) return true;
+                len = 0;
+                continue;
+            }
+            len += 1;
+            if (len > 1) return true;
+        }
+        return len > 1;
     }
 
     fn hexValue(ch: u8) ?u21 {
@@ -20980,6 +21173,66 @@ test "parser: regex character class accepts ordered and class-escape ranges" {
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1517);
     }
+}
+
+test "parser: regex character class range rejects class escape bounds" {
+    var s = try newTestSetup("let a = /[\\d-a]/u; let b = /[a-\\w]/u; let c = /[\\p{L}-a]/v;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1516) {
+            count += 1;
+            try T.expectEqualStrings("A character class range must not be bounded by another character class.", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 3), count);
+}
+
+test "parser: unicode sets negated class rejects multi-character q strings" {
+    var s = try newTestSetup("let a = /[^\\q{a}]/v; let b = /[^\\q{ab}]/v; let c = /[^\\q{a|bc}]/v;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1518) {
+            count += 1;
+            try T.expectEqualStrings("Anything that would possibly match more than a single character is invalid inside a negated character class.", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 2), count);
+}
+
+test "parser: unicode sets class operators cannot be mixed" {
+    var s = try newTestSetup("let a = /[a--b&&c]/v; let b = /[a&&b--c]/v; let c = /[[a]--[b]]/v;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1519) {
+            count += 1;
+            try T.expectEqualStrings("Operators must not be mixed within a character class. Wrap it in a nested class instead.", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 2), count);
+}
+
+test "parser: unicode sets class operators require operands" {
+    var s = try newTestSetup("let a = /[&&a]/v; let b = /[--a]/v; let c = /[a&&]/v; let d = /[a--]/v;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1520) {
+            count += 1;
+            try T.expectEqualStrings("Expected a class set operand.", d.message);
+        }
+    }
+    try T.expectEqual(@as(usize, 4), count);
 }
 
 test "parser: unterminated regex literal recovers as call argument" {
