@@ -28,6 +28,12 @@ cd "${ROOT}"
 # fd0b6f1a. Refresh this constant when the audit doc moves forward.
 BUN_UPSTREAM_FILES=1193
 
+# Last audited integrated Bun file count. "Integrated" means
+# Home-import-rewritten, Zig 0.17-clean, build-wired, and tested. Raw
+# source-first backlog copies do not move this number; refresh it only
+# from an explicit integration audit.
+BUN_INTEGRATED_FILES=552
+
 # Approximate full external `bun.X` surface (identifiers) as documented
 # in the head comment of packages/compat/src/compat.zig.
 BUN_COMPAT_SYMBOLS_TOTAL=103
@@ -42,6 +48,11 @@ LSP_TOTAL_METHODS=70
 
 count_runtime_files() {
     find packages/runtime/src -type f -name "*.zig" 2>/dev/null | wc -l | tr -d ' '
+}
+
+count_runtime_dormant_files() {
+    awk '/^Copied files:/ { total += $3 } END { print total + 0 }' \
+        packages/runtime/DORMANT_BUN_ZIG_IMPORT_*.txt 2>/dev/null
 }
 
 count_runtime_subsystems() {
@@ -96,6 +107,11 @@ count_capability_notyet() {
 # -----------------------------------------------------------------
 
 RUNTIME_FILES="$(count_runtime_files)"
+RUNTIME_PRESENT_FILES="${RUNTIME_FILES}"
+RUNTIME_ZIG_PRESENT_FILES="${RUNTIME_PRESENT_FILES}"
+RUNTIME_INTEGRATED_FILES="${BUN_INTEGRATED_FILES}"
+RUNTIME_DORMANT_FILES="$(count_runtime_dormant_files)"
+RUNTIME_ZIG_DORMANT_FILES="${RUNTIME_DORMANT_FILES}"
 RUNTIME_SUBSYSTEMS="$(count_runtime_subsystems)"
 NODE_FILES="$(count_node_files)"
 JSC_FILES="$(count_jsc_files)"
@@ -114,7 +130,7 @@ pct() {
     awk -v n="${num}" -v d="${den}" 'BEGIN { printf "%.1f", (n / d) * 100 }'
 }
 
-RUNTIME_PCT="$(pct "${RUNTIME_FILES}" "${BUN_UPSTREAM_FILES}")"
+RUNTIME_INTEGRATED_PCT="$(pct "${RUNTIME_INTEGRATED_FILES}" "${BUN_UPSTREAM_FILES}")"
 COMPAT_PCT="$(pct "${COMPAT_SYMBOLS}" "${BUN_COMPAT_SYMBOLS_TOTAL}")"
 LSP_PCT="$(pct "${LSP_METHODS}" "${LSP_TOTAL_METHODS}")"
 
@@ -132,7 +148,8 @@ print_markdown() {
 | **TypeScript — named-category survey** | **86 / 86 — 100%** | \`assignmentCompatibility\` + \`comparable\` + \`inOperator\` + \`stringLiteral\` |
 | **TypeScript — diagnostic codes** | **~${TS_DIAG_CODES} entries** | mirrors the full upstream \`diag(code, …)\` table |
 | **LSP wire methods** | **${LSP_METHODS} / ~${LSP_TOTAL_METHODS} — ~${LSP_PCT}%** | \`SUPPORTED_METHODS\` in \`packages/ts_lsp_server/\` |
-| **Bun runtime — source files ported** | **${RUNTIME_FILES} / ${BUN_UPSTREAM_FILES} — ~${RUNTIME_PCT}%** | substrate + JSC bring-up in progress |
+| **Bun runtime — Zig source files present** | **${RUNTIME_ZIG_PRESENT_FILES} files in \`packages/runtime/src/\`** | includes Home glue and staged Bun backlog; audited Bun baseline is ${BUN_UPSTREAM_FILES} files |
+| **Bun runtime — files integrated** | **${RUNTIME_INTEGRATED_FILES} / ${BUN_UPSTREAM_FILES} — ~${RUNTIME_INTEGRATED_PCT}%** | Home-import-rewritten, Zig 0.17-clean, build-wired, and tested |
 | **Bun compat shim — \`bun.*\` symbols** | **${COMPAT_SYMBOLS} / ~${BUN_COMPAT_SYMBOLS_TOTAL} — ~${COMPAT_PCT}%** | Tier-0 lets vendored Bun source compile against Home's stdlib |
 | **Node.js — \`node:*\` binding files** | **${NODE_FILES} files** | Zig substrate landing module-by-module |
 | **JSC bring-up (Phase 12.2)** | **${JSC_FILES} files** | M1-M6 milestones landed |
@@ -143,8 +160,13 @@ EOF
 print_values() {
     cat <<EOF
 RUNTIME_FILES=${RUNTIME_FILES}
+RUNTIME_PRESENT_FILES=${RUNTIME_PRESENT_FILES}
+RUNTIME_ZIG_PRESENT_FILES=${RUNTIME_ZIG_PRESENT_FILES}
+RUNTIME_INTEGRATED_FILES=${RUNTIME_INTEGRATED_FILES}
+RUNTIME_INTEGRATED_PCT=${RUNTIME_INTEGRATED_PCT}
+RUNTIME_DORMANT_FILES=${RUNTIME_DORMANT_FILES}
+RUNTIME_ZIG_DORMANT_FILES=${RUNTIME_ZIG_DORMANT_FILES}
 RUNTIME_SUBSYSTEMS=${RUNTIME_SUBSYSTEMS}
-RUNTIME_PCT=${RUNTIME_PCT}
 BUN_UPSTREAM_FILES=${BUN_UPSTREAM_FILES}
 NODE_FILES=${NODE_FILES}
 JSC_FILES=${JSC_FILES}
@@ -193,7 +215,8 @@ diff_against_readme() {
         fi
     }
     echo "Comparing README.md against live counts..." >&2
-    check "runtime files"   "$(extract 'Bun runtime — source files ported' README.md)" "${RUNTIME_FILES}"
+    check "runtime Zig files present" "$(extract 'Bun runtime — Zig source files present' README.md)" "${RUNTIME_ZIG_PRESENT_FILES}"
+    check "runtime files integrated" "$(extract 'Bun runtime — files integrated' README.md)" "${RUNTIME_INTEGRATED_FILES}"
     check "node files"      "$(extract 'Node.js — .node:.. binding files' README.md)" "${NODE_FILES}"
     check "jsc files"       "$(extract 'JSC bring-up' README.md)"                       "${JSC_FILES}"
     check "compat symbols"  "$(extract 'Bun compat shim' README.md)"                    "${COMPAT_SYMBOLS}"

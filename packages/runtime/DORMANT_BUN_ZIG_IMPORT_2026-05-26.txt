@@ -1,0 +1,89 @@
+# Dormant Bun Zig Import - 2026-05-26
+
+Upstream: /Users/chrisbreuer/Code/bun/src
+Pinned SHA: fd0b6f1a271fca0b8124b69f230b100f4d636af6
+Destination: packages/runtime/src
+
+These files were copied without overwriting existing Home ports and are
+intentionally not exported/wired yet. They close the remaining upstream Zig
+source-presence gap after the 2026-05-21 source-first import. Like the
+previous dormant batch, they require Home import rewrites, Zig 0.17-dev
+cleanup, package integration, and tests before they count as integrated
+parity.
+
+Filter: upstream Zig files that were still absent from Home's runtime source
+tree, mostly JSC-adjacent directories excluded from the older audited baseline.
+Copied files: 70
+
+## Files
+
+- packages/runtime/src/ast_jsc/logger_jsc.zig
+- packages/runtime/src/css_jsc/color_js.zig
+- packages/runtime/src/css_jsc/css_internals.zig
+- packages/runtime/src/css_jsc/error_jsc.zig
+- packages/runtime/src/http_jsc/headers_jsc.zig
+- packages/runtime/src/http_jsc/websocket_client.zig
+- packages/runtime/src/http_jsc/websocket_client/CppWebSocket.zig
+- packages/runtime/src/http_jsc/websocket_client/WebSocketDeflate.zig
+- packages/runtime/src/http_jsc/websocket_client/WebSocketProxy.zig
+- packages/runtime/src/http_jsc/websocket_client/WebSocketProxyTunnel.zig
+- packages/runtime/src/http_jsc/websocket_client/WebSocketUpgradeClient.zig
+- packages/runtime/src/js_parser_jsc/expr_jsc.zig
+- packages/runtime/src/js_parser_jsc/Macro.zig
+- packages/runtime/src/patch_jsc/testing.zig
+- packages/runtime/src/runtime/cli/test/parallel/aggregate.zig
+- packages/runtime/src/runtime/cli/test/parallel/Channel.zig
+- packages/runtime/src/runtime/cli/test/parallel/Coordinator.zig
+- packages/runtime/src/runtime/cli/test/parallel/runner.zig
+- packages/runtime/src/runtime/cli/test/parallel/Worker.zig
+- packages/runtime/src/runtime/dns_jsc/cares_jsc.zig
+- packages/runtime/src/runtime/dns_jsc/dns.zig
+- packages/runtime/src/runtime/dns_jsc/options_jsc.zig
+- packages/runtime/src/runtime/valkey_jsc/index.zig
+- packages/runtime/src/runtime/valkey_jsc/js_valkey_functions.zig
+- packages/runtime/src/runtime/valkey_jsc/js_valkey.zig
+- packages/runtime/src/runtime/valkey_jsc/protocol_jsc.zig
+- packages/runtime/src/runtime/valkey_jsc/valkey.zig
+- packages/runtime/src/runtime/valkey_jsc/ValkeyCommand.zig
+- packages/runtime/src/semver_jsc/SemverObject.zig
+- packages/runtime/src/semver_jsc/SemverString_jsc.zig
+- packages/runtime/src/sql_jsc/mysql.zig
+- packages/runtime/src/sql_jsc/mysql/JSMySQLConnection.zig
+- packages/runtime/src/sql_jsc/mysql/JSMySQLQuery.zig
+- packages/runtime/src/sql_jsc/mysql/MySQLConnection.zig
+- packages/runtime/src/sql_jsc/mysql/MySQLContext.zig
+- packages/runtime/src/sql_jsc/mysql/MySQLQuery.zig
+- packages/runtime/src/sql_jsc/mysql/MySQLRequestQueue.zig
+- packages/runtime/src/sql_jsc/mysql/MySQLStatement.zig
+- packages/runtime/src/sql_jsc/mysql/MySQLValue.zig
+- packages/runtime/src/sql_jsc/mysql/protocol/any_mysql_error_jsc.zig
+- packages/runtime/src/sql_jsc/mysql/protocol/DecodeBinaryValue.zig
+- packages/runtime/src/sql_jsc/mysql/protocol/error_packet_jsc.zig
+- packages/runtime/src/sql_jsc/mysql/protocol/ResultSet.zig
+- packages/runtime/src/sql_jsc/mysql/protocol/Signature.zig
+- packages/runtime/src/sql_jsc/postgres.zig
+- packages/runtime/src/sql_jsc/postgres/AuthenticationState.zig
+- packages/runtime/src/sql_jsc/postgres/command_tag_jsc.zig
+- packages/runtime/src/sql_jsc/postgres/DataCell.zig
+- packages/runtime/src/sql_jsc/postgres/error_jsc.zig
+- packages/runtime/src/sql_jsc/postgres/PostgresRequest.zig
+- packages/runtime/src/sql_jsc/postgres/PostgresSQLConnection.zig
+- packages/runtime/src/sql_jsc/postgres/PostgresSQLContext.zig
+- packages/runtime/src/sql_jsc/postgres/PostgresSQLQuery.zig
+- packages/runtime/src/sql_jsc/postgres/PostgresSQLStatement.zig
+- packages/runtime/src/sql_jsc/postgres/protocol/error_response_jsc.zig
+- packages/runtime/src/sql_jsc/postgres/protocol/notice_response_jsc.zig
+- packages/runtime/src/sql_jsc/postgres/SASL.zig
+- packages/runtime/src/sql_jsc/postgres/Signature.zig
+- packages/runtime/src/sql_jsc/postgres/types/bool.zig
+- packages/runtime/src/sql_jsc/postgres/types/bytea.zig
+- packages/runtime/src/sql_jsc/postgres/types/date.zig
+- packages/runtime/src/sql_jsc/postgres/types/json.zig
+- packages/runtime/src/sql_jsc/postgres/types/PostgresString.zig
+- packages/runtime/src/sql_jsc/postgres/types/tag_jsc.zig
+- packages/runtime/src/sql_jsc/shared/CachedStructure.zig
+- packages/runtime/src/sql_jsc/shared/ObjectIterator.zig
+- packages/runtime/src/sql_jsc/shared/QueryBindingIterator.zig
+- packages/runtime/src/sql_jsc/shared/SQLDataCell.zig
+- packages/runtime/src/sys_jsc/signal_code_jsc.zig
+- packages/runtime/src/url_jsc/url_jsc.zig

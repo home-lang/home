@@ -1,11 +1,11 @@
 # Home Runtime (`packages/runtime/`)
 
-> **Status (2026-05-21):** `packages/runtime/src/` currently contains
-> **1,289 Zig source files**. Of the audited **1,193-file Bun baseline**,
+> **Status (2026-05-26):** `packages/runtime/src/` currently contains
+> **1,393 Zig source files**. Of the audited **1,193-file Bun baseline**,
 > **552 files are integrated into Home (~46.3%)**: Home-import-rewritten,
 > Zig 0.17-clean, build-wired, and tested.
 > Phase 12.2 (JSC bring-up) has reached the M6 milestone — JSON + Promise
-> + Iterator + Global helpers across 128 files. Phase 12.7 round-15
+> + Iterator + Global helpers across 129 files. Phase 12.7 round-15
 > has top-level `node:*` substrate modules for `buffer`, `stream`,
 > `fs`, `events`, `util`, `assert`, `os`, `url`, `querystring`, and
 > `crypto`, `process`, `string_decoder`, and `tty`. End-to-end
@@ -26,10 +26,11 @@ This package is Home's JavaScript / TypeScript runtime, equivalent to Bun in sur
 5. Every copied file must add **at least one** inline `test "..."` that exercises a method or invariant.
 6. After integrating: run `./pantry/.bin/zig build test --summary all` AND `home test` in `~/Code/Apps/settlers-iii`. Both must stay green; commit only if so.
 
-The 2026-05-21 bulk import is deliberately different: it staged the
-remaining filtered Bun Zig source in `src/` without overwriting
+The 2026-05-21 and 2026-05-26 bulk imports are deliberately different:
+they staged the remaining filtered Bun Zig source in `src/` without overwriting
 integrated Home ports. Those files are tracked in
-`DORMANT_BUN_ZIG_IMPORT_2026-05-21.txt` as an integration backlog only:
+`DORMANT_BUN_ZIG_IMPORT_2026-05-21.txt` and
+`DORMANT_BUN_ZIG_IMPORT_2026-05-26.txt` as an integration backlog only:
 they do not count as ported until they go through the rules above and
 are exported, build-wired, and tested.
 
@@ -41,7 +42,7 @@ are exported, build-wired, and tested.
 
 Per user direction: "build it natively as if it was ours, bc bun is MIT code." Bun is MIT-licensed, so we can copy. The flattening convention:
 
-- Copied subsystem directories live directly under `src/` (e.g. `src/cli/`, `src/install/`, `src/jsc/`, `src/event_loop/`, `src/web/`, `src/home/`, `src/node/`).
+- Copied Bun Zig subsystem directories live directly under `src/` (e.g. `src/cli/`, `src/jsc/`, `src/event_loop/`, `src/web/`, `src/home/`, `src/node/`). Home-only shims such as `src/install/` are documented separately.
 - The aggregator `src/home_rt.zig` re-exports everything so subsystems can `@import("home_rt")` without coupling to Bun's namespace.
 - JS-visible APIs go under `Home.*` (Bun's `Bun.*` namespace becomes `Home.*` for runtime callers); the Zig aggregator stays `home_rt` to avoid colliding with `home.runtime` which is reserved for native Home callers.
 
@@ -70,7 +71,7 @@ packages while the execution engine is still blocked.
 ## What's here today
 
 - `src/home_rt.zig` — aggregator that re-exports every ported subsystem.
-- `src/jsc/` — 128 files; Phase 12.2 milestones M1-M6 plus the first
+- `src/jsc/` — 129 files; Phase 12.2 milestones M1-M6 plus the first
   native `JSEvaluateScript` helper and the public
   `JSObjectMakeDeferredPromise` deferred-promise constructor bridge.
   Default tests compile the surface; run
@@ -88,14 +89,14 @@ packages while the execution engine is still blocked.
   active websockets must all clear before a DevServer is detached and
   deinitialized.
 - `src/install/` — `home <-> pantry` shim. Pantry replaces `bun install` entirely.
-- `src/event_loop/`, `src/io/`, `src/async/`, `src/web/`, `src/http/`, `src/runtime/`, `src/string/`, `src/threading/`, `src/css/`, `src/sql/`, `src/uws_sys/`, … — 85 subsystem directories under `src/`, most populated by wave-19+ grinder rounds (Tier-0 / Tier-1 leaves, no JSC dependency yet).
+- `src/event_loop/`, `src/io/`, `src/async/`, `src/web/`, `src/http/`, `src/runtime/`, `src/string/`, `src/threading/`, `src/css/`, `src/sql/`, `src/sql_jsc/`, `src/http_jsc/`, … — 99 subsystem directories under `src/`, most populated by wave-19+ grinder rounds and dormant Zig source-first backlog.
 
 ## What's deferred to follow-up sub-phases
 
 | Sub-phase | Source under `~/Code/bun/src/` | Destination | Status |
 |---|---|---|---|
 | 12.1 | `cli/` | `src/cli/` | 🟡 scaffold landed |
-| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone landed (128 files; JS-callable bridge pending) |
+| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone landed (129 files; JS-callable bridge pending) |
 | 12.3 | `event_loop/`, `io/`, `async/` | `src/event_loop/` | 🟡 substrate landing (~30+ leaves via wave-19+ grinders) |
 | 12.4 | `resolver/`, `module_loader.zig` | `src/module_loader/` | 🔴 blocked on 12.2 |
 | 12.5 | `web/`, `http/`, `csrf/`, `dns/` | `src/web/` | 🔴 blocked on 12.3 |
@@ -120,7 +121,7 @@ The runtime package is wired into the Home build. Substrate + JSC milestones M1-
 To recount the port progress in one shot:
 
 ```sh
-scripts/measure-parity.sh --values   # raw counts (RUNTIME_FILES, JSC_FILES, NODE_FILES, …)
+scripts/measure-parity.sh --values   # raw counts (RUNTIME_ZIG_PRESENT_FILES, JSC_FILES, NODE_FILES, ...)
 scripts/measure-parity.sh --markdown # README headline-numbers table block
 scripts/measure-parity.sh --diff     # exits non-zero if README has gone stale
 ```
