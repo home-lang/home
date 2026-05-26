@@ -28,6 +28,10 @@ pub fn indexOf(haystack: []const u8, needle: []const u8) ?usize {
     return std.mem.indexOf(u8, haystack, needle);
 }
 
+pub fn lastIndexOf(haystack: []const u8, needle: []const u8) ?usize {
+    return std.mem.lastIndexOf(u8, haystack, needle);
+}
+
 /// Find the first index in `slice` containing any byte from `needles`.
 /// Mirrors `bun.strings.indexOfAny`. Used by `escapeRegExp` + assorted
 /// scanner helpers.
@@ -45,6 +49,27 @@ pub fn hasPrefix(slice: []const u8, prefix: []const u8) bool {
     return std.mem.startsWith(u8, slice, prefix);
 }
 
+pub fn hasPrefixComptime(slice: []const u8, comptime prefix: []const u8) bool {
+    if (slice.len < prefix.len) return false;
+    return eqlComptime(slice[0..prefix.len], prefix);
+}
+
+pub fn hasPrefixComptimeUTF16(slice: []const u16, comptime prefix: []const u8) bool {
+    if (slice.len < prefix.len) return false;
+    inline for (prefix, 0..) |c, i| {
+        if (slice[i] != c) return false;
+    }
+    return true;
+}
+
+pub fn hasPrefixComptimeType(comptime T: type, slice: []const T, comptime prefix: anytype) bool {
+    if (slice.len < prefix.len) return false;
+    inline for (prefix, 0..) |c, i| {
+        if (slice[i] != c) return false;
+    }
+    return true;
+}
+
 pub fn endsWith(slice: []const u8, suffix: []const u8) bool {
     return std.mem.endsWith(u8, slice, suffix);
 }
@@ -57,6 +82,10 @@ pub fn endsWithComptime(slice: []const u8, comptime suffix: []const u8) bool {
 
 pub fn containsChar(slice: []const u8, char: u8) bool {
     return std.mem.indexOfScalar(u8, slice, char) != null;
+}
+
+pub fn contains(slice: []const u8, needle: []const u8) bool {
+    return std.mem.indexOf(u8, slice, needle) != null;
 }
 
 pub fn eql(a: []const u8, b: []const u8) bool {
@@ -187,6 +216,191 @@ pub fn toUTF8Alloc(allocator: std.mem.Allocator, utf16: []const u16) ![]u8 {
 pub fn toUTF8AllocZ(allocator: std.mem.Allocator, utf16: []const u16) ![:0]u8 {
     var list = try toUTF8ListWithType(std.array_list.Managed(u8).init(allocator), utf16);
     return try list.toOwnedSliceSentinel(0);
+}
+
+pub const CodepointIterator = struct {
+    bytes: []const u8,
+    i: usize = 0,
+
+    pub const Cursor = struct {
+        c: u21 = 0,
+        i: usize = 0,
+        width: usize = 0,
+    };
+
+    pub fn next(this: *CodepointIterator, cursor: *Cursor) bool {
+        if (this.i >= this.bytes.len) return false;
+        const start = this.i;
+        const width = std.unicode.utf8ByteSequenceLength(this.bytes[start]) catch 1;
+        const end = @min(start + width, this.bytes.len);
+        const codepoint = std.unicode.utf8Decode(this.bytes[start..end]) catch this.bytes[start];
+        this.i = end;
+        cursor.* = .{ .c = codepoint, .i = start, .width = end - start };
+        return true;
+    }
+};
+
+pub const EncodeIntoResult = struct {
+    read: usize,
+    written: usize,
+};
+
+pub fn copyLatin1IntoASCII(dest: []u8, src: []const u8) void {
+    const len = @min(dest.len, src.len);
+    for (src[0..len], 0..) |byte, i| {
+        dest[i] = byte & 0x7f;
+    }
+}
+
+pub fn copyLatin1IntoUTF8(dest: []u8, src: []const u8) EncodeIntoResult {
+    var read: usize = 0;
+    var written: usize = 0;
+    while (read < src.len) : (read += 1) {
+        const byte = src[read];
+        if (byte < 0x80) {
+            if (written >= dest.len) break;
+            dest[written] = byte;
+            written += 1;
+        } else {
+            if (written + 2 > dest.len) break;
+            dest[written] = 0xC0 | @as(u8, @intCast(byte >> 6));
+            dest[written + 1] = 0x80 | (byte & 0x3F);
+            written += 2;
+        }
+    }
+    return .{ .read = read, .written = written };
+}
+
+pub fn copyLatin1IntoUTF16(comptime Buffer: type, dest: Buffer, src: []const u8) EncodeIntoResult {
+    const len = @min(dest.len, src.len);
+    for (src[0..len], 0..) |byte, i| {
+        dest[i] = byte;
+    }
+    return .{ .read = len, .written = len };
+}
+
+pub fn elementLengthLatin1IntoUTF8(src: []const u8) usize {
+    var len: usize = 0;
+    for (src) |byte| len += if (byte < 0x80) @as(usize, 1) else 2;
+    return len;
+}
+
+pub fn elementLengthUTF8IntoUTF16(src: []const u8) usize {
+    const view = std.unicode.Utf8View.init(src) catch return src.len;
+    var iter = view.iterator();
+    var len: usize = 0;
+    while (iter.nextCodepoint()) |cp| {
+        len += if (cp > 0xffff) @as(usize, 2) else 1;
+    }
+    return len;
+}
+
+pub fn copyUTF16IntoUTF8Impl(dest: []u8, src: []const u16, comptime allow_partial_write: bool) EncodeIntoResult {
+    var read: usize = 0;
+    var written: usize = 0;
+    while (read < src.len) {
+        const cp = std.unicode.utf16DecodeSurrogatePair(src[read..]) catch blk: {
+            const value: u21 = src[read];
+            read += 1;
+            break :blk value;
+        };
+        if (cp > 0xffff) read += 2;
+        var buf: [4]u8 = undefined;
+        const width = std.unicode.utf8Encode(cp, &buf) catch std.unicode.utf8Encode(unicode_replacement, &buf) catch unreachable;
+        if (written + width > dest.len) {
+            if (!allow_partial_write) break;
+            const remaining = dest.len - written;
+            @memcpy(dest[written..][0..remaining], buf[0..remaining]);
+            written += remaining;
+            break;
+        }
+        @memcpy(dest[written..][0..width], buf[0..width]);
+        written += width;
+    }
+    return .{ .read = read, .written = written };
+}
+
+pub fn copyU16IntoU8(dest: []u8, src: []const u16) void {
+    const len = @min(dest.len, src.len);
+    for (src[0..len], 0..) |value, i| {
+        dest[i] = @truncate(value);
+    }
+}
+
+pub fn allocateLatin1IntoUTF8(allocator: std.mem.Allocator, src: []const u8) ![]u8 {
+    const dest = try allocator.alloc(u8, elementLengthLatin1IntoUTF8(src));
+    const wrote = copyLatin1IntoUTF8(dest, src).written;
+    return dest[0..wrote];
+}
+
+pub fn toUTF16Alloc(allocator: std.mem.Allocator, bytes: []const u8, comptime fail_if_invalid: bool, comptime sentinel: bool) !if (sentinel) ?[:0]u16 else ?[]u16 {
+    _ = fail_if_invalid;
+    if (isAllASCII(bytes)) return null;
+    var list = std.array_list.Managed(u16).init(allocator);
+    errdefer list.deinit();
+    const view = std.unicode.Utf8View.init(bytes) catch {
+        for (bytes) |byte| try list.append(byte);
+        return if (sentinel) try list.toOwnedSliceSentinel(0) else try list.toOwnedSlice();
+    };
+    var iter = view.iterator();
+    while (iter.nextCodepoint()) |cp| {
+        if (cp <= 0xffff) {
+            try list.append(@intCast(cp));
+        } else {
+            var pair: [2]u16 = undefined;
+            const adjusted = cp - 0x10000;
+            pair[0] = 0xD800 + @as(u16, @intCast(adjusted >> 10));
+            pair[1] = 0xDC00 + @as(u16, @intCast(adjusted & 0x3FF));
+            try list.appendSlice(&pair);
+        }
+    }
+    return if (sentinel) try list.toOwnedSliceSentinel(0) else try list.toOwnedSlice();
+}
+
+pub fn toUTF8AllocWithType(allocator: std.mem.Allocator, utf16: []const u16) ![]u8 {
+    return toUTF8Alloc(allocator, utf16);
+}
+
+pub fn trim(slice: anytype, comptime values_to_strip: []const u8) @TypeOf(slice) {
+    return std.mem.trim(@typeInfo(@TypeOf(slice)).pointer.child, slice, values_to_strip);
+}
+
+pub fn withoutUTF8BOM(slice: []const u8) []const u8 {
+    return if (std.mem.startsWith(u8, slice, "\xEF\xBB\xBF")) slice[3..] else slice;
+}
+
+fn hexValue(comptime T: type, c: T) ?u8 {
+    const byte: u8 = @truncate(c);
+    return switch (byte) {
+        '0'...'9' => byte - '0',
+        'a'...'f' => byte - 'a' + 10,
+        'A'...'F' => byte - 'A' + 10,
+        else => null,
+    };
+}
+
+pub fn decodeHexToBytesTruncate(dest: []u8, comptime T: type, src: []const T) usize {
+    var read: usize = 0;
+    var written: usize = 0;
+    while (read + 1 < src.len and written < dest.len) : (read += 2) {
+        const hi = hexValue(T, src[read]) orelse break;
+        const lo = hexValue(T, src[read + 1]) orelse break;
+        dest[written] = (hi << 4) | lo;
+        written += 1;
+    }
+    return written;
+}
+
+pub fn encodeBytesToHex(dest: []u8, src: []const u8) usize {
+    const alphabet = "0123456789abcdef";
+    var written: usize = 0;
+    for (src) |byte| {
+        if (written + 2 > dest.len) break;
+        dest[written] = alphabet[byte >> 4];
+        dest[written + 1] = alphabet[byte & 0x0f];
+        written += 2;
+    }
+    return written;
 }
 
 test "indexOfChar finds the first occurrence" {

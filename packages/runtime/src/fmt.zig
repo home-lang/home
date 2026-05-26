@@ -51,6 +51,65 @@ pub fn hexIntUpper(value: anytype) HexIntFormatter {
     return .{ .value = @intCast(value), .upper = true };
 }
 
+pub fn formatUTF16Type(slice: []const u16, writer: *std.Io.Writer) !void {
+    var remaining = slice;
+    var buf: [1024]u8 = undefined;
+
+    while (remaining.len > 0) {
+        var read: usize = 0;
+        var written: usize = 0;
+
+        while (read < remaining.len and written < buf.len) {
+            const cp = std.unicode.utf16DecodeSurrogatePair(remaining[read..]) catch blk: {
+                const value: u21 = remaining[read];
+                read += 1;
+                break :blk value;
+            };
+            if (cp > 0xffff) read += 2;
+
+            var encoded: [4]u8 = undefined;
+            const width = std.unicode.utf8Encode(cp, &encoded) catch
+                std.unicode.utf8Encode(0xfffd, &encoded) catch unreachable;
+            if (written + width > buf.len) {
+                if (cp > 0xffff) read -= 2 else read -= 1;
+                break;
+            }
+            @memcpy(buf[written..][0..width], encoded[0..width]);
+            written += width;
+        }
+
+        if (written == 0) break;
+        try writer.writeAll(buf[0..written]);
+        remaining = remaining[read..];
+    }
+}
+
+pub fn formatLatin1(slice: []const u8, writer: *std.Io.Writer) !void {
+    var buf: [1024]u8 = undefined;
+    var remaining = slice;
+
+    while (remaining.len > 0) {
+        var written: usize = 0;
+        var read: usize = 0;
+        while (read < remaining.len and written < buf.len) : (read += 1) {
+            const byte = remaining[read];
+            if (byte < 0x80) {
+                buf[written] = byte;
+                written += 1;
+            } else {
+                if (written + 2 > buf.len) break;
+                buf[written] = 0xc0 | @as(u8, @intCast(byte >> 6));
+                buf[written + 1] = 0x80 | (byte & 0x3f);
+                written += 2;
+            }
+        }
+
+        if (written == 0) break;
+        try writer.writeAll(buf[0..written]);
+        remaining = remaining[read..];
+    }
+}
+
 test "hexIntLower prints lowercase hex" {
     var buf: [32]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);

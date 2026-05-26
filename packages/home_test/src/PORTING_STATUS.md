@@ -22,7 +22,9 @@ file/run result model; `runner.zig` owns the adapter-neutral
 prepared-file and file-run contracts; `adapters/jsc_bootstrap.zig` owns
 the current JSC bootstrap execution adapter plus the native host-call
 bridge used by bootstrap `Bun.spawnSync`; `corpus_runner.zig` owns the
-explicit `--bun-corpus-native-subset=minimal-js` allowlist, single-file
+explicit `--bun-corpus-native-subset=minimal-js` allowlist, the
+`--bun-corpus-native-subset=bundler-core-itbundled` bundler tranche,
+single-file
 corpus execution, source preparation, and summary aggregation. The full
 corpus gate now walks all discovered Bun test files through the Home JSC
 bootstrap and fails on real unsupported/failing files instead of the old
@@ -30,6 +32,23 @@ synthetic `native-js-test-runner-missing` blocker; delegated
 `home test <fixture>` corpus descendants also re-enter that bootstrap
 instead of Home's parser. It remains red until the native `bun:test` port
 and JSC host-call bridge close the unsupported surface.
+
+The `bundler-core-itbundled` tranche now executes all five selected
+bundler files through the bootstrap layer and passes: 295 passed, 0
+failed, 16 upstream todo on 2026-05-26. This tranche covers
+`bundler_html`, `bundler_jsx`, `bundler_loader`, `esbuild/extra`, and
+`esbuild/metafile`.
+
+The `bundler-transpiler-bootstrap` tranche now executes eight more
+ordinary bundler/transpiler files and passes: 78 passed, 0 failed, 0
+todo on 2026-05-26. This tranche covers `bundler_feature_flag`,
+`plugin-error-nested-throw`, `transpiler/es-decorators`,
+`transpiler/preserve-use-strict-cjs`, `transpiler/template-literal`,
+`transpiler/function-tostring-require`, `transpiler/export-default`, and
+`transpiler/scope-mismatch-panic`. The next first blocker is
+`bundler/transpiler/bun-pragma.test.ts`, which currently needs bootstrap
+lowering for typed rest-parameter syntax such as
+`(...segs: string[]): string =>`.
 
 `zig build test -Dfilter=home_test_bun_tier0` now build-checks the first
 copied Bun Zig tier under pantry-provided Zig 0.17-dev:

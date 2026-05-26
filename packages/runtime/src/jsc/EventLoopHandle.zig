@@ -50,11 +50,23 @@ pub const EventLoopHandle = union(EventLoopKind) {
     js: *EventLoop,
     mini: *MiniEventLoop,
 
+    pub fn init(loop: anytype) EventLoopHandle {
+        const Loop = @TypeOf(loop);
+        return switch (@typeInfo(Loop)) {
+            .pointer => .{ .js = @ptrCast(loop) },
+            else => .{ .js = @ptrCast(&loop) },
+        };
+    }
+
     pub fn cast(this: EventLoopHandle, comptime tag: EventLoopKind) switch (tag) {
         .js => *EventLoop,
         .mini => *MiniEventLoop,
     } {
         return @field(this, @tagName(tag));
+    }
+
+    pub fn globalObject(_: EventLoopHandle) ?*home_rt.jsc.JSGlobalObject {
+        return null;
     }
 };
 

@@ -154,6 +154,8 @@ test "home_test corpus discovery is linked" {
 
 test "home_test corpus runner is linked" {
     try std.testing.expectEqual(corpus_runner.Subset.minimal_js, corpus_runner.parseSubsetFlagValue("minimal-js").?);
+    try std.testing.expectEqual(corpus_runner.Subset.bundler_core_itbundled, corpus_runner.parseSubsetFlagValue("bundler-core-itbundled").?);
+    try std.testing.expectEqual(corpus_runner.Subset.bundler_transpiler_bootstrap, corpus_runner.parseSubsetFlagValue("bundler-transpiler-bootstrap").?);
 }
 
 test "home_test result model is linked" {

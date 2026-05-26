@@ -15,7 +15,7 @@ workstreams live in [`BUN_PARITY_PLAN.md`](./BUN_PARITY_PLAN.md).
 > runtime is not yet JavaScript-callable end-to-end, but Phase 12.2
 > (JSC bring-up) has reached the M6
 > milestone — JSON + Promise + Iterator + Global helpers — across
-> 129 files in `packages/runtime/src/jsc/`, including a live
+> 130 files in `packages/runtime/src/jsc/`, including a live
 > `JSEvaluateScript` smoke and the public JavaScriptCore
 > `JSObjectMakeDeferredPromise` deferred-promise constructor bridge.
 > Bun's WebCore runtime source is now copied verbatim from
@@ -36,7 +36,7 @@ Legend:
 | Sub-phase | Source under `~/Code/bun/src/` | Destination | Status |
 |---|---|---|---|
 | 12.1 | `cli/` | `src/cli/` | 🟡 scaffold landed (CLI flag parsing partial) |
-| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone + native eval smoke landed (129 files: JSON + Promise + Iterator + Global helpers + `JSEvaluateScript` + `JSObjectMakeDeferredPromise`) |
+| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone + native eval smoke landed (130 files: JSON + Promise + Iterator + Global helpers + `JSEvaluateScript` + `JSObjectMakeDeferredPromise`) |
 | 12.3 | `event_loop/`, `io/`, `async/` | `src/event_loop/` | 🟡 substrate landing (~30+ leaves ported) |
 | 12.4 | `resolver/`, `module_loader.zig` | `src/module_loader/` | 🔴 blocked on 12.2 |
 | 12.5 | `runtime/webcore*.zig`, `http/`, `csrf/`, `dns/` | `src/runtime/webcore*.zig`, `src/http/` | 🟡 WebCore source snapshot copied; wiring blocked on 12.2/12.3 |
@@ -1542,7 +1542,7 @@ until they are exported or compiled through Home.
 | Files integrated into Home | 552 | ~46.3% |
 | Staged Bun Zig files awaiting integration | 856 | see `packages/runtime/DORMANT_BUN_ZIG_IMPORT_2026-05-21.txt` and `packages/runtime/DORMANT_BUN_ZIG_IMPORT_2026-05-26.txt`; not counted as ported |
 | Files remaining to integrate | 641 | ~53.7%; excludes raw copy-only files that duplicate already-integrated Home paths |
-| JSC bring-up (`packages/runtime/src/jsc/`) | 129 files | Phase 12.2 M6 milestone + native eval smoke |
+| JSC bring-up (`packages/runtime/src/jsc/`) | 130 files | Phase 12.2 M6 milestone + native eval smoke |
 | Node namespace (`packages/runtime/src/node/`) | 28 files | Phase 12.7 round-15 |
 | Bake lifetime carrier (`packages/runtime/src/runtime/bake/`) | 5 files | DevServer/HmrSocket deinit substrate, JS surface pending |
 | Server lifecycle carrier (`packages/runtime/src/runtime/server/server.zig`) | 1 file | DevServer detach/deinit gate, JS surface pending |

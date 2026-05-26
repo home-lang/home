@@ -123,7 +123,7 @@ pub const Impl = opaque {
     pub fn get(this: *Impl) jsc.JSValue {
         // `this` is actually a pointer to a `JSC::JSValue`; see Strong.cpp.
         const js_value: *jsc.DecodedJSValue = @ptrCast(@alignCast(this));
-        return js_value.encode();
+        return @enumFromInt(@intFromEnum(js_value.encode()));
     }
 
     pub fn set(this: *Impl, global: *jsc.JSGlobalObject, value: jsc.JSValue) void {

@@ -26,6 +26,12 @@ pub fn errorln(comptime fmt: []const u8, args: anytype) void {
     std.debug.print(fmt ++ "\n", args);
 }
 
+pub fn warn(comptime fmt: []const u8, args: anytype) void {
+    std.debug.print(fmt ++ "\n", args);
+}
+
+pub fn printElapsed(_: u64) void {}
+
 pub inline fn debugWarn(comptime fmt: []const u8, args: anytype) void {
     if (@import("environment.zig").isDebug) {
         prettyErrorln("<yellow>debug warn<r><d>:<r> " ++ fmt, args);

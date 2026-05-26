@@ -27,12 +27,12 @@ Cheap live recount from `scripts/measure-parity.sh --values` on
 
 | Measurement | Value | What it means |
 |---|---:|---|
-| `RUNTIME_ZIG_PRESENT_FILES` | 1393 | Zig files present in `packages/runtime/src/`; **not** integrated parity credit |
+| `RUNTIME_ZIG_PRESENT_FILES` | 1394 | Zig files present in `packages/runtime/src/`; **not** integrated parity credit |
 | `RUNTIME_SUBSYSTEMS` | 99 | Top-level runtime source directories present |
 | `RUNTIME_ZIG_DORMANT_FILES` | 856 | Source-first copied Zig files in dormant import manifests; still awaiting rewrite/wiring/tests |
 | `BUN_UPSTREAM_FILES` | 1193 | Audited Bun baseline from the 2026-05-18/20 audit, excluding tests/codegen/macros |
 | `NODE_FILES` | 28 | Zig files currently under `packages/runtime/src/node/` |
-| `JSC_FILES` | 129 | Zig files currently under `packages/runtime/src/jsc/` |
+| `JSC_FILES` | 130 | Zig files currently under `packages/runtime/src/jsc/` |
 | `COMPAT_SYMBOLS` | 16 / ~103 | Top-level `bun.*` shim symbols in `packages/compat/src/compat.zig` |
 
 Honest interpretation:
@@ -192,19 +192,39 @@ Harness status: `bundler_core_itbundled` now exists in
 current subset runs all five files and passes under the bootstrap
 runner: **295 passed, 0 failed, 16 upstream todo** on 2026-05-26. This
 closed the TypeScript/non-null lowering blocker for the first ordinary
-`itBundled` tranche. Next work is to promote the next broad bundler
-slice (`bundler_feature_flag`, `plugin-error-nested-throw`, and
-transpiler-focused files that do not require native plugins or resolver
-cache state), then replace the `__home_expect_bundled` stub with a real
-`itBundled` adapter and wire the needed Bun bundler substrates in
-`packages/bundler/src/` (`options.zig`, `transpiler.zig`,
-`bundle_v2.zig`, `LinkerContext.zig`, `OutputFile.zig`, plus
-HTML/metafile surfaces).
+`itBundled` tranche.
+
+Second agent-sized chunk: **bundler transpiler bootstrap tranche**.
+`bundler_transpiler_bootstrap` now exists and is accepted by
+`home test --bun-corpus-native-subset=bundler-transpiler-bootstrap`.
+It runs eight additional bundler/transpiler files and passes:
+**78 passed, 0 failed, 0 todo** on 2026-05-26.
+
+Files in the tranche:
+
+- `bundler/bundler_feature_flag.test.ts`
+- `bundler/plugin-error-nested-throw.test.ts`
+- `bundler/transpiler/es-decorators.test.ts`
+- `bundler/transpiler/preserve-use-strict-cjs.test.ts`
+- `bundler/transpiler/template-literal.test.ts`
+- `bundler/transpiler/function-tostring-require.test.ts`
+- `bundler/transpiler/export-default.test.js`
+- `bundler/transpiler/scope-mismatch-panic.test.ts`
+
+Next work is to promote `bundler/transpiler/bun-pragma.test.ts`, whose
+first current blocker is bootstrap lowering for typed rest-parameter
+syntax such as `(...segs: string[]): string =>`, then continue through
+the remaining ordinary transpiler files before replacing the
+`__home_expect_bundled` stub with a real `itBundled` adapter and wiring
+the needed Bun bundler substrates in `packages/bundler/src/`
+(`options.zig`, `transpiler.zig`, `bundle_v2.zig`,
+`LinkerContext.zig`, `OutputFile.zig`, plus HTML/metafile surfaces).
 Verification target:
 
 ```sh
 ./pantry/.bin/zig build test -Dfilter=home_test --summary all
 ./zig-out/bin/home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=bundler-core-itbundled
+./zig-out/bin/home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=bundler-transpiler-bootstrap
 ```
 
 Bundler tranche exit criteria:

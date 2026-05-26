@@ -11,10 +11,19 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const build_options = @import("build_options");
 
 pub const upstream_sha = "fd0b6f1a271fca0b8124b69f230b100f4d636af6";
 pub const callconv_inline: std.builtin.CallingConvention = if (builtin.mode == .Debug) .auto else .@"inline";
 pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .Debug) .auto else .always_inline;
+pub const enable_parallel_process_pool_smoke = true;
+pub fn DebugOnly(comptime T: type) type {
+    return if (Environment.isDebug) T else void;
+}
+
+pub const heap_breakdown = struct {
+    pub const enabled = false;
+};
 
 // Faithful Bun-source import surface for the Node URL/querystring/assert/util
 // and Web text-encoding parity slice. This namespace points at copied Bun Zig
@@ -33,6 +42,7 @@ pub const Environment = @import("environment.zig");
 pub const fmt = @import("fmt.zig");
 pub const path = @import("path.zig");
 pub const env_var = @import("env_var.zig");
+pub const logger = @import("logger/logger.zig");
 
 // Re-exports so copied source can spell `home_rt.assert(...)` /
 // `home_rt.OOM` etc. directly (mirrors Bun's flat `bun.assert` /
@@ -54,12 +64,83 @@ pub const WTF = struct {
 };
 
 pub const String = @import("string/string.zig").String;
+pub const StringJoiner = @import("string/StringJoiner.zig");
+pub const SliceWithUnderlyingString = @import("string/string.zig").SliceWithUnderlyingString;
+pub const PathString = @import("string/PathString.zig").PathString;
 pub const UUID = @import("jsc/uuid.zig");
 pub const spawn = @import("runtime/api/bun/spawn.zig").PosixSpawn;
+pub const Async = struct {
+    pub const KeepAlive = io.KeepAlive;
+    pub const FilePoll = struct {
+        pub const Flags = struct {
+            hup: bool = false,
+
+            pub fn contains(this: Flags, comptime flag: anytype) bool {
+                return switch (flag) {
+                    .hup => this.hup,
+                    else => false,
+                };
+            }
+        };
+
+        flags: Flags = .{},
+
+        pub fn init(_: anytype, _: FD, _: anytype, _: anytype, _: anytype) *FilePoll {
+            unreachable;
+        }
+
+        pub fn fileType(_: *FilePoll) @import("io/pipes.zig").FileType {
+            return .file;
+        }
+
+        pub fn isRegistered(_: *FilePoll) bool {
+            return false;
+        }
+
+        pub fn canEnableKeepingProcessAlive(_: *const FilePoll) bool {
+            return false;
+        }
+
+        pub fn enableKeepingProcessAlive(_: *FilePoll, _: anytype) void {}
+        pub fn disableKeepingProcessAlive(_: *FilePoll, _: anytype) void {}
+    };
+};
 pub const webcore = runtime.webcore;
+pub const FormData = runtime.webcore.FormData;
 pub const NullableAllocator = allocators.NullableAllocator;
 pub const mimalloc = mimalloc_sys.mimalloc;
 pub const Mutex = threading.Mutex;
+pub const SourceMap = @import("sourcemap/sourcemap.zig");
+pub const Transpiler = @import("bundler/transpiler.zig").Transpiler;
+pub const transpiler = @import("bundler/transpiler.zig");
+pub const SignalCode = sys.SignalCode;
+pub const fs = @import("resolver/fs.zig");
+pub const windows = @import("sys/windows/windows.zig");
+pub const base64 = @import("base64/base64.zig");
+pub const simdutf = @import("simdutf_sys/simdutf.zig");
+pub const O = FD.O;
+pub const Mode = u32;
+pub const StringArrayHashMapUnmanaged = std.StringArrayHashMapUnmanaged;
+pub const start_time: i128 = 0;
+pub const timespec = extern struct {
+    sec: i64,
+    nsec: i64,
+
+    pub const epoch: timespec = .{ .sec = 0, .nsec = 0 };
+
+    pub fn eql(this: *const timespec, other: *const timespec) bool {
+        return this.sec == other.sec and this.nsec == other.nsec;
+    }
+};
+
+pub fn selfExePath() ![]u8 {
+    return std.fs.selfExePathAlloc(default_allocator);
+}
+
+pub fn memmove(dest: []u8, src: []const u8) void {
+    std.debug.assert(dest.len >= src.len);
+    @memmove(dest[0..src.len], src);
+}
 
 pub inline fn assert_eql(a: anytype, b: anytype) void {
     if (a == b) return;
@@ -82,8 +163,55 @@ pub const cpp = struct {
     pub extern fn BunString__fromJS(*jsc.JSGlobalObject, jsc.JSValue, *String) bool;
     pub extern fn BunString__toJSON(*jsc.JSGlobalObject, *String) jsc.JSValue;
     pub extern fn BunString__createUTF8ForJS(*jsc.JSGlobalObject, [*]const u8, usize) jsc.JSValue;
+    pub extern fn BunString__fromLatin1Unitialized(usize) String;
+    pub extern fn BunString__fromUTF16Unitialized(usize) String;
+    pub extern fn BunString__fromLatin1([*]const u8, usize) String;
+    pub extern fn BunString__fromUTF16([*]const u16, usize) String;
+    pub extern fn BunString__fromUTF16ToLatin1([*]const u16, usize) String;
+    pub extern fn JSC__JSValue__toStringOrNull(jsc.JSValue, *jsc.JSGlobalObject) ?*jsc.JSString;
+    pub extern fn JSC__JSValue__toInt64(jsc.JSValue) i64;
+    pub extern fn ReadableStream__empty(*jsc.JSGlobalObject) jsc.JSValue;
+    pub extern fn ReadableStream__used(*jsc.JSGlobalObject) jsc.JSValue;
     pub extern fn Bun__parseDate(*jsc.JSGlobalObject, *String) JSError!f64;
 };
+
+pub fn GenericIndex(comptime backing_int: type, comptime uid: anytype) type {
+    const null_value = std.math.maxInt(backing_int);
+    return enum(backing_int) {
+        _,
+        const Index = @This();
+        comptime {
+            _ = uid;
+        }
+
+        pub inline fn init(int: backing_int) Index {
+            assert(int != null_value);
+            return @enumFromInt(int);
+        }
+
+        pub inline fn get(i: Index) backing_int {
+            assert(@intFromEnum(i) != null_value);
+            return @intFromEnum(i);
+        }
+
+        pub inline fn toOptional(i: Index) Optional {
+            return @enumFromInt(i.get());
+        }
+
+        pub const Optional = enum(backing_int) {
+            none = null_value,
+            _,
+
+            pub inline fn init(maybe: ?Index) Optional {
+                return if (maybe) |i| i.toOptional() else .none;
+            }
+
+            pub inline fn unwrap(optional: Optional) ?Index {
+                return if (optional == .none) null else @enumFromInt(@intFromEnum(optional));
+            }
+        };
+    };
+}
 
 pub inline fn copy(comptime T: type, dest: []T, src: []const T) void {
     @memcpy(dest[0..src.len], src);
@@ -109,6 +237,36 @@ pub fn TrivialNew(comptime T: type) fn (T) *T {
             return new(T, t);
         }
     }.new_;
+}
+
+pub fn HiveRef(comptime T: type, comptime capacity: u16) type {
+    return struct {
+        const HiveAllocator = HiveArray(@This(), capacity).Fallback;
+        ref_count: u32,
+        allocator: *HiveAllocator,
+        value: T,
+
+        pub fn init(value: T, allocator: *HiveAllocator) !*@This() {
+            const this = try allocator.tryGet();
+            this.* = .{ .ref_count = 1, .allocator = allocator, .value = value };
+            return this;
+        }
+
+        pub fn ref(this: *@This()) *@This() {
+            this.ref_count += 1;
+            return this;
+        }
+
+        pub fn unref(this: *@This()) ?*@This() {
+            this.ref_count -= 1;
+            if (this.ref_count == 0) {
+                const allocator = this.allocator;
+                allocator.put(this);
+                return null;
+            }
+            return this;
+        }
+    };
 }
 
 pub fn stackFallback(comptime size: usize, fallback_allocator: std.mem.Allocator) StackFallbackAllocator(size) {
@@ -284,6 +442,7 @@ pub const jsc = struct {
     else
         .c;
 
+    pub const C = @import("jsc/javascript_core_c_api.zig");
     pub const JSValue = @import("jsc/JSValue.zig").JSValue;
     pub const array_buffer = @import("jsc/array_buffer.zig");
     pub const ArrayBuffer = array_buffer.ArrayBuffer;
@@ -295,6 +454,7 @@ pub const jsc = struct {
     pub const SourceType = @import("jsc/SourceType.zig").SourceType;
     pub const sizes = @import("jsc/sizes.zig");
     pub const JSRuntimeType = @import("jsc/JSRuntimeType.zig").JSRuntimeType;
+    pub const JSObject = @import("jsc/JSObject.zig").JSObject;
     pub const GetterSetter = @import("jsc/GetterSetter.zig").GetterSetter;
     pub const StaticExport = @import("jsc/static_export.zig");
     pub const ErrorCode = @import("jsc/ErrorCode.zig").ErrorCode;
@@ -334,7 +494,7 @@ pub const jsc = struct {
     pub const ConcurrentPromiseTask = @import("jsc/ConcurrentPromiseTask.zig").ConcurrentPromiseTask;
     // Seventh-wave port batch (2026-05-18):
     pub const AbortSignal = @import("jsc/AbortSignal.zig").AbortSignal;
-    pub const JSString = @import("jsc/JSString.zig");
+    pub const JSString = @import("jsc/JSString.zig").JSString;
     pub const JSRef = @import("jsc/JSRef.zig").JSRef;
     pub const JSPromise = @import("jsc/JSPromise.zig").JSPromise;
     pub const RefString = @import("jsc/RefString.zig").RefString;
@@ -421,7 +581,10 @@ pub const jsc = struct {
     pub const ZigStackFrame = @import("jsc/ZigStackFrame.zig").ZigStackFrame;
     pub const JSInternalPromise = @import("jsc/JSInternalPromise.zig").JSInternalPromise;
     pub const FetchHeaders = @import("jsc/FetchHeaders.zig").FetchHeaders;
-    pub const Codegen = @import("ZigGeneratedClasses");
+    pub const Codegen = if (build_options.enable_jsc)
+        @import("ZigGeneratedClasses")
+    else
+        @import("jsc/codegen_disabled.zig");
     pub const host_fn = @import("jsc/host_fn.zig");
     pub const JSHostFn = host_fn.JSHostFn;
     pub const JSHostFnZig = host_fn.JSHostFnZig;
@@ -435,6 +598,14 @@ pub const jsc = struct {
     pub const fromJSHostCallGeneric = host_fn.fromJSHostCallGeneric;
 
     const log = Output.scoped(.JSC, .hidden);
+    pub const hot_reloader = struct {
+        pub const HotReloader = opaque {};
+        pub const ImportWatcher = opaque {};
+    };
+    pub const EventLoopHandle = @import("jsc/EventLoopHandle.zig").EventLoopHandle;
+    pub const JSTimeType = u52;
+    pub const init_timestamp = std.math.maxInt(JSTimeType);
+
     pub inline fn markBinding(src: std.builtin.SourceLocation) void {
         log("{s} ({s}:{d})", .{ src.fn_name, src.file, src.line });
     }
@@ -457,6 +628,10 @@ pub const io = struct {
     pub const Loop = @import("io/stub_event_loop.zig").Loop;
     pub const KeepAlive = @import("io/stub_event_loop.zig").KeepAlive;
     pub const FilePoll = @import("io/stub_event_loop.zig").FilePoll;
+    pub const StreamingWriter = @import("io/PipeWriter.zig").StreamingWriter;
+    pub const WriteResult = @import("io/PipeWriter.zig").WriteResult;
+    pub const openForWriting = @import("io/io.zig").openForWriting;
+    pub const openForWritingImpl = @import("io/io.zig").openForWritingImpl;
     // Fourth-wave port batch (2026-05-17). pipes.zig is enum-only;
     // the PollOrFd union re-attaches with the full Async substrate.
     pub const FileType = @import("io/pipes.zig").FileType;
@@ -617,6 +792,7 @@ pub const ptr = struct {
     pub const TaggedPointer = @import("ptr/tagged_pointer.zig").TaggedPointer;
     pub const TaggedPointerUnion = @import("ptr/tagged_pointer.zig").TaggedPointerUnion;
     pub const RawRefCount = @import("ptr/raw_ref_count.zig").RawRefCount;
+    pub const CowString = @import("ptr/CowSlice.zig").CowSlice(u8);
     // Wave-15 Tier-1 grinder (2026-05-18):
     pub const WeakPtr = @import("ptr/weak_ptr.zig").WeakPtr;
     pub const WeakPtrData = @import("ptr/weak_ptr.zig").WeakPtrData;
@@ -624,6 +800,7 @@ pub const ptr = struct {
 };
 pub const TaggedPointer = ptr.TaggedPointer;
 pub const TaggedPointerUnion = ptr.TaggedPointerUnion;
+pub const uws = @import("uws/uws.zig");
 
 // ---- src/uws_sys/ ------------------------------------------------------
 // Opaque bindings to the `us_*` C ABI in `packages/bun-usockets`.
@@ -724,13 +901,56 @@ pub const runtime = struct {
         // `AsyncFormData` / registry are parked until JSC lands.
         pub const Body = @import("runtime/webcore/Body.zig");
         pub const Blob = @import("runtime/webcore/Blob.zig");
+        pub const Request = @import("runtime/webcore/Request.zig");
         pub const Response = @import("runtime/webcore/Response.zig");
         pub const FileSink = @import("runtime/webcore/FileSink.zig");
         pub const ByteBlobLoader = @import("runtime/webcore/ByteBlobLoader.zig");
         pub const ReadableStream = @import("runtime/webcore/ReadableStream.zig").ReadableStream;
+        pub const PathOrFileDescriptor = union(enum) {
+            path: jsc.ZigString.Slice,
+            fd: FD,
+
+            pub fn deinit(this: *const @This()) void {
+                if (this.* == .path) this.path.deinit();
+            }
+        };
+        pub const DrainResult = union(enum) {
+            owned: struct {
+                list: std.array_list.Managed(u8),
+                size_hint: usize,
+            },
+            estimated_size: usize,
+            empty: void,
+            aborted: void,
+        };
+        pub const AutoFlusher = event_loop.AutoFlusher;
+        pub const FileReader = struct {
+            pub const Source = opaque {};
+            pub const Lazy = union(enum) {
+                blob: *ByteBlobLoader,
+                none: void,
+            };
+
+            lazy: Lazy = .{ .none = {} },
+
+            pub fn parent(_: *@This()) *@This() {
+                unreachable;
+            }
+
+            pub fn cancel(_: *@This()) void {}
+        };
+        pub const ByteStream = struct {
+            pub const Source = opaque {};
+
+            pub fn parent(_: *@This()) *@This() {
+                unreachable;
+            }
+
+            pub fn cancel(_: *@This()) void {}
+        };
+        pub const CookieMap = opaque {};
         pub const AbortSignal = @import("jsc/AbortSignal.zig").AbortSignal;
         pub const streams = @import("runtime/webcore/streams.zig");
-        pub const DrainResult = @import("runtime/webcore/streams.zig").DrainResult;
         pub const encoding = @import("runtime/webcore/encoding.zig");
         pub const FetchHeaders = @import("jsc/FetchHeaders.zig").FetchHeaders;
         pub const FormData = @import("runtime/webcore/FormData.zig").FormData;
@@ -763,6 +983,13 @@ pub const runtime = struct {
             pub const parallel = struct {
                 pub const FileRange = @import("runtime/cli/test/parallel/FileRange.zig").FileRange;
                 pub const Frame = @import("runtime/cli/test/parallel/Frame.zig");
+                pub const process_pool = ParallelRunner.parallel;
+                pub const channel_source = process_pool.channel_source;
+                pub const coordinator_source = process_pool.coordinator_source;
+                pub const worker_source = process_pool.worker_source;
+                pub const aggregate_source = process_pool.aggregate_source;
+                pub const runner_source = process_pool.runner_source;
+                pub const imports = process_pool.imports;
             };
         };
     };
@@ -771,6 +998,12 @@ pub const runtime = struct {
     pub const api = struct {
         pub const ResolveMessage = @import("jsc/ResolveMessage.zig").ResolveMessage;
         pub const Subprocess = @import("runtime/api/bun/subprocess.zig");
+        pub const Timer = struct {
+            pub const EventLoopTimer = @import("event_loop/EventLoopTimer.zig");
+            pub const All = struct {};
+        };
+        pub const BuildArtifact = @import("runtime/api/JSBundler.zig").BuildArtifact;
+        pub const node = @import("home_rt").node;
         pub const lolhtml_jsc = @import("runtime/api/lolhtml_jsc.zig");
         pub const cron_parser = @import("runtime/api/cron_parser.zig");
         pub const bun = struct {
@@ -789,6 +1022,7 @@ pub const api = runtime.api;
 // JSC-bridge surface (`jsEscapeRegExp`, JSC PathString conversion) parks
 // behind Phase 12.2.
 pub const string = struct {
+    pub const PathString = @import("string/PathString.zig").PathString;
     pub const HashedString = @import("string/HashedString.zig");
     pub const WTFString = @import("string/wtf.zig").WTFString;
     pub const WTFStringImpl = @import("string/wtf.zig").WTFStringImpl;
@@ -933,6 +1167,10 @@ pub const node = struct {
     // isatty/window-size/raw-mode/color-depth substrate for future
     // ReadStream/WriteStream JS wrappers.
     pub const tty = @import("node/tty.zig");
+    pub const Buffer = @import("node/buffer.zig").Buffer;
+    pub const Encoding = @import("node/types.zig").Encoding;
+    pub const PathLike = @import("runtime/node/types.zig").PathLike;
+    pub const PathOrFileDescriptor = @import("runtime/node/types.zig").PathOrFileDescriptor;
 };
 
 // ---- src/core/ + src/alloc/ + src/safety/ ----------------------
@@ -961,6 +1199,7 @@ pub const allocators = struct {
     pub const MaxHeapAllocator = @import("bun_alloc/MaxHeapAllocator.zig");
     pub const BufferFallbackAllocator = @import("bun_alloc/BufferFallbackAllocator.zig");
     pub const MaybeOwned = @import("bun_alloc/maybe_owned.zig").MaybeOwned;
+    pub const allocation_scope = @import("bun_alloc/allocation_scope.zig");
 
     pub fn isDefault(allocator: std.mem.Allocator) bool {
         return allocator.vtable == @This().c_allocator.vtable;
@@ -1094,6 +1333,10 @@ pub const sys = struct {
     // off `SystemErrno`; they cover Node.js's `uv_strerror` table and
     // coreutils' `strerror` table respectively.
     pub const SystemErrno = @import("errno/errno.zig").SystemErrno;
+    pub fn updateNonblocking(_: FD, _: bool) Maybe(void) {
+        return .success;
+    }
+
     pub const libuv_error_map = @import("sys/libuv_error_map.zig").libuv_error_map;
     pub const coreutils_error_map = @import("sys/coreutils_error_map.zig").coreutils_error_map;
     pub fn munmap(memory_: []align(std.heap.page_size_min) const u8) Maybe(void) {
@@ -1633,9 +1876,9 @@ test "home_rt: substrate compiles" {
 
 test "home_rt: cli.which_npm_client surface is exported" {
     const NPMClient = cli.which_npm_client.NPMClient;
-    const c: NPMClient = .{ .bin = "home", .tag = .home };
-    try std.testing.expectEqualStrings("home", c.bin);
-    try std.testing.expect(c.tag == .home);
+    const npm_client: NPMClient = .{ .bin = "home", .tag = .home };
+    try std.testing.expectEqualStrings("home", npm_client.bin);
+    try std.testing.expect(npm_client.tag == .home);
 }
 
 test "home_rt: cli.yarn_commands recognises canonical yarn verbs" {
@@ -2177,9 +2420,9 @@ test "home_rt.sql.postgres.protocol.PortalOrPreparedStatement tags correctly" {
 }
 
 test "home_rt.sql.postgres.protocol.Close composes a portal target" {
-    const c: sql.postgres.protocol.Close = .{ .p = .{ .portal = "x" } };
-    try std.testing.expectEqualStrings("x", c.p.slice());
-    try std.testing.expectEqual(@as(u8, 'P'), c.p.tag());
+    const close_msg: sql.postgres.protocol.Close = .{ .p = .{ .portal = "x" } };
+    try std.testing.expectEqualStrings("x", close_msg.p.slice());
+    try std.testing.expectEqual(@as(u8, 'P'), close_msg.p.tag());
 }
 
 test "home_rt.sql.postgres.protocol.Execute defaults max_rows to 0" {
@@ -2250,4 +2493,21 @@ test "home_rt.perf.hw_timer.is_supported tracks aarch64/x64" {
 
 test "home_rt.safety.thread_id.invalid is the max thread id" {
     try std.testing.expectEqual(std.math.maxInt(std.Thread.Id), safety.thread_id.invalid);
+}
+
+test "home_rt exposes the gated parallel process-pool source map" {
+    const parallel = runtime.cli.test_.parallel;
+
+    try std.testing.expectEqualStrings("runtime/cli/test/parallel/Channel.zig", parallel.channel_source);
+    try std.testing.expectEqualStrings("runtime/cli/test/parallel/Coordinator.zig", parallel.coordinator_source);
+    try std.testing.expectEqualStrings("runtime/cli/test/parallel/Worker.zig", parallel.worker_source);
+    try std.testing.expectEqualStrings("runtime/cli/test/parallel/aggregate.zig", parallel.aggregate_source);
+    try std.testing.expectEqualStrings("runtime/cli/test/parallel/runner.zig", parallel.runner_source);
+    try std.testing.expect(enable_parallel_process_pool_smoke);
+    try std.testing.expect(@hasDecl(parallel.imports.channel, "Channel"));
+    try std.testing.expect(@hasDecl(parallel.imports.coordinator, "Coordinator"));
+    try std.testing.expect(@hasDecl(parallel.imports.worker, "Worker"));
+    try std.testing.expect(@hasDecl(parallel.imports.aggregate, "mergeJUnitFragments"));
+    try std.testing.expect(@hasDecl(parallel.imports.runner, "runAsCoordinator"));
+    try std.testing.expect(@hasDecl(parallel.imports.runner, "runAsWorker"));
 }

@@ -18,9 +18,18 @@ Copied checked-in Zig support modules for the Home runtime test command:
 
 Adaptation: `@import("bun")` is rewritten to `@import("home_rt")` so the copied
 files bind through Home's Bun-compatible runtime aggregator. `FileRange` and
-`Frame` are compile-wired leaves today. The five process-pool modules are copied
-as source backlog only; they stay unwired until Home's spawn/sys/uws/JSC
-test-runner surfaces are ready.
+`Frame` are compile-wired leaves today. The five process-pool modules are also
+module-parse-wired behind `home_rt.enable_parallel_process_pool_smoke`; the
+`ParallelRunner` runtime entrypoint re-exports remain parked so no spawn/IPC
+behavior is exposed yet.
+The smoke gate is currently enabled in `home_rt.zig` intentionally so the
+copied modules stay visible to the aggregator's parse/type surface without
+un-parking `runAsCoordinator`, `runAsWorker`, or worker IPC behavior.
 
 Current blocker status is tracked by
 `./pantry/.bin/zig build test -Dfilter=home_rt --summary failures`.
+With `-Denable_jsc=false`, the current front is 24 compile errors. The
+first blockers are `strings.convertUTF16ToUTF8Append`, `bun.O`,
+`bun.sys.write`, `Output.printError*`, `jsc.PlatformEventLoop`, and
+the parked WebCore/JSC request, stream, sink, S3, and SystemError
+bridges.

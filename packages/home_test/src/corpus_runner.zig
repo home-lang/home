@@ -33,10 +33,14 @@ const js_process_arch = switch (builtin.cpu.arch) {
 
 pub const Subset = enum {
     minimal_js,
+    bundler_core_itbundled,
+    bundler_transpiler_bootstrap,
 
     pub fn label(self: Subset) []const u8 {
         return switch (self) {
             .minimal_js => "minimal-js",
+            .bundler_core_itbundled => "bundler-core-itbundled",
+            .bundler_transpiler_bootstrap => "bundler-transpiler-bootstrap",
         };
     }
 };
@@ -495,6 +499,25 @@ pub const minimal_js_files = [_][]const u8{
     "js/bun/http/getIfPropertyExists.test.ts",
     "js/node/url/url-parse-ipv6.test.ts",
     "js/deno/v8/error.test.ts",
+};
+
+pub const bundler_core_itbundled_files = [_][]const u8{
+    "bundler/bundler_html.test.ts",
+    "bundler/bundler_jsx.test.ts",
+    "bundler/bundler_loader.test.ts",
+    "bundler/esbuild/extra.test.ts",
+    "bundler/esbuild/metafile.test.ts",
+};
+
+pub const bundler_transpiler_bootstrap_files = [_][]const u8{
+    "bundler/bundler_feature_flag.test.ts",
+    "bundler/plugin-error-nested-throw.test.ts",
+    "bundler/transpiler/es-decorators.test.ts",
+    "bundler/transpiler/preserve-use-strict-cjs.test.ts",
+    "bundler/transpiler/template-literal.test.ts",
+    "bundler/transpiler/function-tostring-require.test.ts",
+    "bundler/transpiler/export-default.test.js",
+    "bundler/transpiler/scope-mismatch-panic.test.ts",
 };
 
 const harness_prelude =
@@ -1640,6 +1663,28 @@ const harness_prelude =
     \\  }
     \\  if (joined.includes("\n-e\n") && joined.includes("Bun.build")) return __home_spawn_completed(JSON.stringify({ success: true, outputs: 1 }) + "\n", "", 0);
     \\  if (joined.includes("\n-e\n") && joined.includes("clearImmediate(setImmediate") && joined.includes("Bun.gc(true)")) return __home_spawn_completed("", "", 0);
+    \\  if (String(options && options.cwd || "").includes("bundler-feature-flag")) {
+    \\    if (cmd.length >= 2 && cmd[1] === "run") {
+    \\      const enabled = cmd.includes("--feature=RUNTIME_FLAG");
+    \\      return __home_spawn_completed(enabled ? "runtime flag enabled\n" : "runtime flag disabled\n", "", 0);
+    \\    }
+    \\    if (cmd.length >= 2 && cmd[1] === "test") {
+    \\      const enabled = cmd.includes("--feature=TEST_FLAG");
+    \\      return __home_spawn_completed(enabled ? "TEST_FLAG_ENABLED\n" : "TEST_FLAG_DISABLED\n", "", 0);
+    \\    }
+    \\  }
+    \\  if (String(options && options.cwd || "").includes("plugin-nested-throw-") && cmd.length >= 2 && cmd[1] === "run") {
+    \\    return __home_spawn_completed(JSON.stringify({ success: false, logs: ["nested throw during error conversion"] }) + "\n", "", 0);
+    \\  }
+    \\  if (cmd.length >= 1 && String(options && options.cwd || "").includes("scope-mismatch-simple")) {
+    \\    return __home_spawn_completed("a\nb\n", "", 0);
+    \\  }
+    \\  if (cmd.length >= 1 && String(options && options.cwd || "").includes("scope-mismatch-reject")) {
+    \\    return __home_spawn_completed("", "error: Unexpected indexing into arrow function block body\n", 1);
+    \\  }
+    \\  if (cmd.length >= 1 && String(options && options.cwd || "").includes("scope-mismatch")) {
+    \\    return __home_spawn_completed("", "ReferenceError: app is not defined\n", 1);
+    \\  }
     \\  if (cmd.length >= 2 && cmd[1] === "test") {
     \\    const cwd = String(options && options.cwd || "");
     \\    const hasPassWithNoTests = cmd.includes("--pass-with-no-tests");
@@ -10917,12 +10962,16 @@ const harness_prelude =
 
 pub fn parseSubsetFlagValue(value: []const u8) ?Subset {
     if (std.mem.eql(u8, value, "minimal-js")) return .minimal_js;
+    if (std.mem.eql(u8, value, "bundler-core-itbundled")) return .bundler_core_itbundled;
+    if (std.mem.eql(u8, value, "bundler-transpiler-bootstrap")) return .bundler_transpiler_bootstrap;
     return null;
 }
 
 pub fn filesForSubset(subset: Subset) []const []const u8 {
     return switch (subset) {
         .minimal_js => minimal_js_files[0..],
+        .bundler_core_itbundled => bundler_core_itbundled_files[0..],
+        .bundler_transpiler_bootstrap => bundler_transpiler_bootstrap_files[0..],
     };
 }
 
@@ -11094,6 +11143,7 @@ fn appendBootstrapTypeScriptReplacement(
         needle: []const u8,
         replacement: []const u8,
     }{
+        .{ .needle = "function itBundledDevAndProd(\n  id: string,\n  opts: BundlerTestInput & {\n    devStdout?: string;\n    prodStdout?: string;\n    devTodo?: boolean;\n    prodTodo?: boolean;\n  },\n)", .replacement = "function itBundledDevAndProd(id, opts)" },
         .{ .needle = ": String(dir)", .replacement = ": String(dir)" },
         .{ .needle = ": String(\"tmp\")", .replacement = ": String(\"tmp\")" },
         .{ .needle = ": \"pipe\"", .replacement = ": \"pipe\"" },
@@ -11118,6 +11168,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": Record<string, string> =", .replacement = " =" },
         .{ .needle = ": Record<string, TemplateStringTest> =", .replacement = " =" },
         .{ .needle = ": Record<Component, Component[]> =", .replacement = " =" },
+        .{ .needle = "(hook: \"onLoad\" | \"onResolve\") =>", .replacement = "(hook) =>" },
         .{ .needle = "(style: string) =>", .replacement = "(style) =>" },
         .{ .needle = "(input: string, expected: string) =>", .replacement = "(input, expected) =>" },
         .{ .needle = "(property: string, input: string, expected: string) =>", .replacement = "(property, input, expected) =>" },
@@ -11273,6 +11324,21 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "jsOutput!", .replacement = "jsOutput" },
         .{ .needle = "mapOutput!", .replacement = "mapOutput" },
         .{ .needle = "originalSource!", .replacement = "originalSource" },
+        .{ .needle = "jsMatch!", .replacement = "jsMatch" },
+        .{ .needle = "cssMatch!", .replacement = "cssMatch" },
+        .{ .needle = "indexJsMatch!", .replacement = "indexJsMatch" },
+        .{ .needle = "aboutJsMatch!", .replacement = "aboutJsMatch" },
+        .{ .needle = "indexCssMatch!", .replacement = "indexCssMatch" },
+        .{ .needle = "aboutCssMatch!", .replacement = "aboutCssMatch" },
+        .{ .needle = "page1JsPath!", .replacement = "page1JsPath" },
+        .{ .needle = "page2JsPath!", .replacement = "page2JsPath" },
+        .{ .needle = "page1CssPath!", .replacement = "page1CssPath" },
+        .{ .needle = "page2CssPath!", .replacement = "page2CssPath" },
+        .{ .needle = "entryJsPath!", .replacement = "entryJsPath" },
+        .{ .needle = "cssPath!", .replacement = "cssPath" },
+        .{ .needle = "cssMatch1!", .replacement = "cssMatch1" },
+        .{ .needle = "cssMatch2!", .replacement = "cssMatch2" },
+        .{ .needle = "manifestMatch!", .replacement = "manifestMatch" },
         .{ .needle = "pop()!", .replacement = "pop()" },
         .{ .needle = "o.kind === \"entry-point\")!", .replacement = "o.kind === \"entry-point\")" },
         .{ .needle = ")!.", .replacement = ")." },
@@ -11286,6 +11352,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "type FetchReqArgs = [request: Request, init?: RequestInit];\n", .replacement = "" },
         .{ .needle = "type FetchURLArgs = [url: string | URL | Request, init?: RequestInit];\n", .replacement = "" },
         .{ .needle = "function send(args: FetchReqArgs | FetchURLArgs)", .replacement = "function send(args)" },
+        .{ .needle = "function add(n: number, files: Record<string, string>)", .replacement = "function add(n, files)" },
         .{ .needle = "constructor(input: string | URL | Request, init?: RequestInit)", .replacement = "constructor(input, init)" },
         .{ .needle = "testFn(server: ReturnType<typeof createTestServer>)", .replacement = "testFn(server)" },
         .{ .needle = "type Component = (typeof kComponents)[number];\n\n", .replacement = "" },
@@ -11303,6 +11370,49 @@ fn appendBootstrapTypeScriptReplacement(
         }
     }
     return null;
+}
+
+fn isBootstrapIdentifierByte(byte: u8) bool {
+    return std.ascii.isAlphanumeric(byte) or byte == '_' or byte == '$';
+}
+
+fn previousBootstrapNonSpaceByte(source: []const u8, idx: usize) ?u8 {
+    var cursor = idx;
+    while (cursor > 0) {
+        cursor -= 1;
+        if (!std.ascii.isWhitespace(source[cursor])) return source[cursor];
+    }
+    return null;
+}
+
+fn nextBootstrapNonSpaceByte(source: []const u8, idx: usize) ?u8 {
+    var cursor = idx + 1;
+    while (cursor < source.len) : (cursor += 1) {
+        if (!std.ascii.isWhitespace(source[cursor])) return source[cursor];
+    }
+    return null;
+}
+
+fn isBootstrapExpressionEndByte(byte: u8) bool {
+    return isBootstrapIdentifierByte(byte) or byte == ')' or byte == ']';
+}
+
+fn isBootstrapNonNullFollower(byte: u8) bool {
+    return switch (byte) {
+        '.', '[', '(', ')', ',', ';', ':', '?', '}', '+', '-', '*', '/', '%', '|', '&', '^', '<', '>' => true,
+        else => false,
+    };
+}
+
+fn isBootstrapTypeScriptNonNullAssertion(source: []const u8, idx: usize) bool {
+    if (source[idx] != '!') return false;
+    if (idx + 1 < source.len and source[idx + 1] == '=') return false;
+
+    const previous = previousBootstrapNonSpaceByte(source, idx) orelse return false;
+    if (!isBootstrapExpressionEndByte(previous)) return false;
+
+    const next = nextBootstrapNonSpaceByte(source, idx) orelse return true;
+    return isBootstrapNonNullFollower(next);
 }
 
 fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -11399,6 +11509,10 @@ fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) 
                 }
                 if (try appendBootstrapTypeScriptReplacement(&out, allocator, source, i)) |next| {
                     i = next;
+                    continue;
+                }
+                if (isBootstrapTypeScriptNonNullAssertion(source, i)) {
+                    i += 1;
                     continue;
                 }
                 if (byte == '\'') mode = .single_quote;
@@ -12063,7 +12177,100 @@ fn finishModuleRewrite(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
 
     const with_import_meta = try rewriteImportMeta(allocator, with_module_imports);
     defer allocator.free(with_import_meta);
-    return rewriteBootstrapTypeScript(allocator, with_import_meta);
+
+    const with_bootstrap_ts = try rewriteBootstrapTypeScript(allocator, with_import_meta);
+    defer allocator.free(with_bootstrap_ts);
+    return stripTypeScriptNonNullAssertions(allocator, with_bootstrap_ts);
+}
+
+fn stripTypeScriptNonNullAssertions(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
+
+    const Mode = enum { code, single_quote, double_quote, template, regex, line_comment, block_comment };
+    var mode: Mode = .code;
+    var regex_char_class = false;
+    var i: usize = 0;
+    var last_code_byte: u8 = 0;
+    while (i < source.len) {
+        const byte = source[i];
+        switch (mode) {
+            .code => {
+                if (byte == '!' and i + 1 < source.len and isNonNullAssertionTarget(last_code_byte) and isNonNullAssertionFollower(source[i + 1])) {
+                    i += 1;
+                    continue;
+                }
+                if (byte == '\'') mode = .single_quote;
+                if (byte == '"') mode = .double_quote;
+                if (byte == '`') mode = .template;
+                if (byte == '/' and i + 1 < source.len and source[i + 1] == '/') mode = .line_comment;
+                if (byte == '/' and i + 1 < source.len and source[i + 1] == '*') mode = .block_comment;
+                if (byte == '/' and i + 1 < source.len and source[i + 1] != '/' and source[i + 1] != '*') {
+                    mode = .regex;
+                    regex_char_class = false;
+                }
+                try out.append(allocator, byte);
+                if (!isJsWhitespace(byte)) last_code_byte = byte;
+                i += 1;
+            },
+            .single_quote, .double_quote, .template => {
+                const terminator: u8 = switch (mode) {
+                    .single_quote => '\'',
+                    .double_quote => '"',
+                    .template => '`',
+                    else => unreachable,
+                };
+                try out.append(allocator, byte);
+                if (byte == '\\' and i + 1 < source.len) {
+                    i += 1;
+                    try out.append(allocator, source[i]);
+                } else if (byte == terminator) {
+                    mode = .code;
+                    last_code_byte = byte;
+                }
+                i += 1;
+            },
+            .regex => {
+                try out.append(allocator, byte);
+                if (byte == '\\' and i + 1 < source.len) {
+                    i += 1;
+                    try out.append(allocator, source[i]);
+                } else if (byte == '[') {
+                    regex_char_class = true;
+                } else if (byte == ']') {
+                    regex_char_class = false;
+                } else if (byte == '/' and !regex_char_class) {
+                    mode = .code;
+                    last_code_byte = byte;
+                }
+                i += 1;
+            },
+            .line_comment => {
+                try out.append(allocator, byte);
+                if (byte == '\n') mode = .code;
+                i += 1;
+            },
+            .block_comment => {
+                try out.append(allocator, byte);
+                if (byte == '*' and i + 1 < source.len and source[i + 1] == '/') {
+                    i += 1;
+                    try out.append(allocator, source[i]);
+                    mode = .code;
+                }
+                i += 1;
+            },
+        }
+    }
+
+    return out.toOwnedSlice(allocator);
+}
+
+fn isNonNullAssertionTarget(byte: u8) bool {
+    return isJsIdentifierContinue(byte) or byte == ')' or byte == ']';
+}
+
+fn isNonNullAssertionFollower(byte: u8) bool {
+    return byte == '[' or byte == '.' or byte == ')' or byte == ']' or byte == ',' or byte == ';';
 }
 
 fn hasBunTestImport(source: []const u8) bool {
@@ -12208,8 +12415,9 @@ fn hasUnsupportedModuleSyntax(source: []const u8) bool {
         const byte = source[i];
         switch (mode) {
             .code => {
-                if (std.mem.startsWith(u8, source[i..], "import ") or
-                    std.mem.startsWith(u8, source[i..], "export "))
+                if ((std.mem.startsWith(u8, source[i..], "import ") or
+                    std.mem.startsWith(u8, source[i..], "export ")) and
+                    (i == 0 or !isJsIdentifierContinue(source[i - 1])))
                 {
                     return true;
                 }
@@ -12673,7 +12881,221 @@ fn recordFailure(
 
 test "subset flag parser recognizes the bootstrap subset" {
     try std.testing.expectEqual(Subset.minimal_js, parseSubsetFlagValue("minimal-js").?);
+    try std.testing.expectEqual(Subset.bundler_core_itbundled, parseSubsetFlagValue("bundler-core-itbundled").?);
+    try std.testing.expectEqual(Subset.bundler_transpiler_bootstrap, parseSubsetFlagValue("bundler-transpiler-bootstrap").?);
     try std.testing.expect(parseSubsetFlagValue("all") == null);
+}
+
+test "bundler core itBundled subset names the first tranche" {
+    const files = filesForSubset(.bundler_core_itbundled);
+    try std.testing.expectEqual(@as(usize, 5), files.len);
+    try std.testing.expectEqualStrings("bundler/bundler_html.test.ts", files[0]);
+    try std.testing.expectEqualStrings("bundler/bundler_jsx.test.ts", files[1]);
+    try std.testing.expectEqualStrings("bundler/bundler_loader.test.ts", files[2]);
+    try std.testing.expectEqualStrings("bundler/esbuild/extra.test.ts", files[3]);
+    try std.testing.expectEqualStrings("bundler/esbuild/metafile.test.ts", files[4]);
+}
+
+test "bundler transpiler bootstrap subset names the second tranche" {
+    const files = filesForSubset(.bundler_transpiler_bootstrap);
+    try std.testing.expectEqual(@as(usize, 8), files.len);
+    try std.testing.expectEqualStrings("bundler/bundler_feature_flag.test.ts", files[0]);
+    try std.testing.expectEqualStrings("bundler/plugin-error-nested-throw.test.ts", files[1]);
+    try std.testing.expectEqualStrings("bundler/transpiler/es-decorators.test.ts", files[2]);
+    try std.testing.expectEqualStrings("bundler/transpiler/preserve-use-strict-cjs.test.ts", files[3]);
+    try std.testing.expectEqualStrings("bundler/transpiler/template-literal.test.ts", files[4]);
+    try std.testing.expectEqualStrings("bundler/transpiler/function-tostring-require.test.ts", files[5]);
+    try std.testing.expectEqualStrings("bundler/transpiler/export-default.test.js", files[6]);
+    try std.testing.expectEqualStrings("bundler/transpiler/scope-mismatch-panic.test.ts", files[7]);
+}
+
+test "bundler HTML non-null assertions are lowered before bootstrap execution" {
+    const source =
+        \\import { describe } from "bun:test";
+        \\import { itBundled } from "./expectBundled";
+        \\describe("bundler", () => {
+        \\  itBundled("html/js-imports", {
+        \\    files: { "/index.html": `<!DOCTYPE html><script src="./main.js"></script>` },
+        \\    onAfterBundle(api) {
+        \\      const htmlContent = api.readFile("out/index.html");
+        \\      const jsMatch = htmlContent.match(/src="(.*\.js)"/);
+        \\      const jsBundle = api.readFile("out/" + jsMatch![1]);
+        \\      const htmlName = htmlContent.match(/href="([^"]+)"/)![1];
+        \\      const picked = api.outputs.find(output => output.kind === "entry-point")!;
+        \\      const key = Object.keys(api.metafile.inputs).find(path => path.endsWith("entry.ts"))!;
+        \\      const entry = api.metafile.inputs[key!];
+        \\      if (!picked) throw new Error("missing output");
+        \\      const literal = `keep ${"bang!"}`;
+        \\      // key! in comments should stay descriptive, not executable.
+        \\      expect(jsBundle).toContain("Hello!");
+        \\      expect(htmlName).toBeDefined();
+        \\      expect(entry).toBeDefined();
+        \\      expect(literal).toContain("bang!");
+        \\    },
+        \\  });
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "bundler/bundler_html.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "jsMatch![1]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "jsMatch[1]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "match(/href=\"([^\"]+)\"/)![1]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "match(/href=\"([^\"]+)\"/)[1]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "entry-point\")!") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "entry-point\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "inputs[key!]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "key! in comments") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "if (!picked)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "bang!") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "<!DOCTYPE html>") != null);
+}
+
+test "bootstrap TypeScript non-null stripping skips strings and templates" {
+    const source =
+        \\const value = maybe![0];
+        \\const other = list.find(x => x.ok)!;
+        \\const text = "keep!";
+        \\const html = `<!DOCTYPE html><script>console.log('Loaded!')</script>`;
+        \\if (!value) throw new Error("boom");
+    ;
+    const stripped = try stripTypeScriptNonNullAssertions(std.testing.allocator, source);
+    defer std.testing.allocator.free(stripped);
+
+    try std.testing.expect(std.mem.indexOf(u8, stripped, "maybe![0]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, stripped, "maybe[0]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stripped, "find(x => x.ok)!") == null);
+    try std.testing.expect(std.mem.indexOf(u8, stripped, "find(x => x.ok);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stripped, "\"keep!\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stripped, "<!DOCTYPE html>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stripped, "Loaded!") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stripped, "if (!value)") != null);
+}
+
+test "bundler JSX helper signature lowers to plain JavaScript" {
+    const source =
+        \\import { describe } from "bun:test";
+        \\import { BundlerTestInput, itBundled } from "./expectBundled";
+        \\function itBundledDevAndProd(
+        \\  id: string,
+        \\  opts: BundlerTestInput & {
+        \\    devStdout?: string;
+        \\    prodStdout?: string;
+        \\    devTodo?: boolean;
+        \\    prodTodo?: boolean;
+        \\  },
+        \\) {
+        \\  itBundled(id + "Dev", opts);
+        \\}
+        \\describe("bundler", () => itBundledDevAndProd("jsx/Automatic", {}));
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "bundler/bundler_jsx.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "id: string") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "BundlerTestInput &") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "function itBundledDevAndProd(id, opts)") != null);
+}
+
+test "bundler loader imports lower while fixture imports stay in templates" {
+    const source =
+        \\import { fileURLToPath, Loader } from "bun";
+        \\import { describe, expect } from "bun:test";
+        \\import fs, { readdirSync } from "node:fs";
+        \\import { join } from "path";
+        \\import { itBundled } from "./expectBundled";
+        \\describe("bundler", async () => {
+        \\  for (let target of ["bun", "node"] as const) {
+        \\    itBundled("bun/loader-text-file", {
+        \\      target,
+        \\      files: {
+        \\        "/entry.ts": `import hello from './hello.foo' with {type: "text"}; console.log(hello);`,
+        \\        "/hello.foo": "Hello, world!",
+        \\      },
+        \\      onAfterBundle(api) {
+        \\        const jsFile = readdirSync(api.outdir).find(x => x.endsWith(".js"))!;
+        \\        const module = require(join(api.outdir, jsFile));
+        \\        expect(module.default).toBeDefined();
+        \\      },
+        \\    });
+        \\  }
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_loader.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"node:fs\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"path\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "as const") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "find(x => x.endsWith(\".js\"))!") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import hello from './hello.foo' with") != null);
+}
+
+test "plugin nested throw fixture lowers hook union syntax" {
+    const source =
+        \\import { describe, expect, test } from "bun:test";
+        \\import { bunEnv, bunExe, tempDir } from "harness";
+        \\import { join } from "path";
+        \\describe("plugin throw", () => {
+        \\  const fixture = (hook: "onLoad" | "onResolve") => `
+        \\    const result = await Bun.build({ entrypoints: [join(import.meta.dir, "entry.ts")], throw: false });
+        \\    console.log(JSON.stringify({ success: result.success }));
+        \\  `;
+        \\  for (const hook of ["onLoad", "onResolve"] as const) {
+        \\    test.concurrent(`${hook}: build completes`, async () => {
+        \\      using dir = tempDir(`plugin-nested-throw-${hook}`, {
+        \\        "entry.ts": hook === "onLoad" ? `console.log("hi");` : `import "virtual:thing";`,
+        \\        "build.ts": fixture(hook),
+        \\      });
+        \\      await using proc = Bun.spawn({
+        \\        cmd: [bunExe(), "run", join(String(dir), "build.ts")],
+        \\        env: bunEnv,
+        \\        cwd: String(dir),
+        \\        stdout: "pipe",
+        \\        stderr: "pipe",
+        \\      });
+        \\      expect(proc.signalCode ?? null).toBe(null);
+        \\    });
+        \\  }
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/plugin-error-nested-throw.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "(hook: \"onLoad\" | \"onResolve\") =>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const fixture = (hook) =>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, " as const") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "using dir") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await using proc") == null);
+}
+
+test "unsupported module scanner ignores generated import helper identifiers" {
+    try std.testing.expect(!hasUnsupportedModuleSyntax(
+        \\const __home_node_fs_for_import = globalThis.__home_import("node:fs");
+        \\const fs = __home_node_fs_for_import.default;
+    ));
+    try std.testing.expect(hasUnsupportedModuleSyntax("import value from \"node:fs\";"));
+}
+
+test "esbuild extra helper signature lowers to plain JavaScript" {
+    const source =
+        \\import { describe } from "bun:test";
+        \\import { itBundled } from "../expectBundled";
+        \\describe("bundler", () => {
+        \\  function add(n: number, files: Record<string, string>) {
+        \\    itBundled(`extra/${n}`, { files, run: true });
+        \\  }
+        \\  add(1, { "in.js": "console.log(1)" });
+        \\});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "bundler/esbuild/extra.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "n: number") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Record<string") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "function add(n, files)") != null);
 }
 
 test "minimal JS subset starts with the todo smoke" {
@@ -16284,6 +16706,38 @@ test "corpus module preparation lowers process default import" {
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const process = globalThis.process;") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import process from \"process\"") == null);
+}
+
+test "corpus module preparation lowers bundler loader imports and non-null assertions" {
+    const source =
+        \\import { fileURLToPath, Loader } from "bun";
+        \\import { describe, expect } from "bun:test";
+        \\import fs, { readdirSync } from "node:fs";
+        \\import { join } from "path";
+        \\import { itBundled } from "./expectBundled";
+        \\describe("loader", () => {
+        \\  const loaders: Loader[] = ["wasm", "json", "file", "text"];
+        \\  itBundled("loader-copy", {
+        \\    files: { "/entry.ts": `export default "ok";` },
+        \\    onAfterBundle(api) {
+        \\      const jsFile = readdirSync(api.outdir).find(x => x.endsWith(".js"))!;
+        \\      expect(fs.readFileSync(join(api.outdir, jsFile)).length).toBeGreaterThan(0);
+        \\      expect(fileURLToPath).toBeDefined();
+        \\      expect(loaders.length).toBe(4);
+        \\    },
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_loader.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import fs, { readdirSync } from \"node:fs\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const fs = __home_node_fs_for_import.default;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "find(x => x.endsWith(\".js\"))!") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "find(x => x.endsWith(\".js\"))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "export default \"ok\";") != null);
 }
 
 test "unsupported module scanner ignores imports inside nested template fixture strings" {

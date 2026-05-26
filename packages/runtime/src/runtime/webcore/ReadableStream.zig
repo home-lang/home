@@ -1,4 +1,4 @@
-const ReadableStream = @This();
+pub const ReadableStream = @This();
 
 value: JSValue,
 ptr: Source,

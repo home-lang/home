@@ -8,4 +8,10 @@ pub const CommonAbortReason = enum(u8) {
     Timeout = 1,
     UserAbort = 2,
     ConnectionClosed = 3,
+
+    pub fn toJS(_: CommonAbortReason, _: *jsc.JSGlobalObject) jsc.JSValue {
+        return .zero;
+    }
 };
+
+const jsc = @import("home_rt").jsc;

@@ -43,6 +43,10 @@ pub export fn mi_free(p: ?*anyopaque) callconv(.c) void {
     std.c.free(p);
 }
 
+pub fn mi_is_in_heap_region(p: ?*const anyopaque) bool {
+    return p != null;
+}
+
 test "mimalloc shim libc fallback symbols compile" {
     _ = @typeName(@TypeOf(mi_malloc));
     _ = @typeName(@TypeOf(mi_calloc));

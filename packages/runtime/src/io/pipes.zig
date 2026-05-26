@@ -12,6 +12,34 @@
 
 // stubbed: PollOrFd re-attaches when home_rt.io.FilePoll / Async.Closer
 // / bun.windows.libuv / FD.closeAllowingBadFileDescriptor land.
+const bun = @import("bun");
+
+pub const PollOrFd = union(enum) {
+    poll: *bun.Async.FilePoll,
+    fd: bun.FD,
+    closed: void,
+
+    pub fn getPoll(_: *const PollOrFd) ?*bun.Async.FilePoll {
+        return null;
+    }
+
+    pub fn getFd(this: *const PollOrFd) bun.FD {
+        return switch (this.*) {
+            .fd => |fd| fd,
+            else => bun.invalid_fd,
+        };
+    }
+
+    pub fn close(this: *PollOrFd, _: anytype, _: anytype) void {
+        this.* = .{ .closed = {} };
+    }
+
+    pub fn closeImpl(this: *PollOrFd, _: anytype, _: anytype, _: bool) void {
+        this.* = .{ .closed = {} };
+    }
+
+    pub fn setOwner(_: *PollOrFd, _: anytype) void {}
+};
 
 pub const FileType = enum {
     file,

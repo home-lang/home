@@ -1750,7 +1750,7 @@ pub const Formatter = struct {
         };
     }
 
-    const indentation_buf = [_]u8{' '}**64;
+    const indentation_buf = [_]u8{' '} * *64;
     pub fn writeIndent(
         this: *ConsoleObject.Formatter,
         comptime Writer: type,
@@ -3619,7 +3619,7 @@ pub fn countReset(
     entry.value_ptr.* = 0;
 }
 
-const PendingTimers = std.AutoHashMap(u64, ?std.time.Timer);
+const PendingTimers = std.AutoHashMap(u64, ?i128);
 threadlocal var pending_time_logs: PendingTimers = undefined;
 threadlocal var pending_time_logs_loaded = false;
 
@@ -3640,7 +3640,7 @@ pub fn time(
     const result = pending_time_logs.getOrPut(id) catch unreachable;
 
     if (!result.found_existing or (result.found_existing and result.value_ptr.* == null)) {
-        result.value_ptr.* = std.time.Timer.start() catch unreachable;
+        result.value_ptr.* = 0;
     }
 }
 pub fn timeEnd(
@@ -3657,10 +3657,11 @@ pub fn timeEnd(
 
     const id = bun.hash(chars[0..len]);
     const result = (pending_time_logs.fetchPut(id, null) catch null) orelse return;
-    var value: std.time.Timer = result.value orelse return;
+    const value = result.value orelse return;
     // get the duration in microseconds
     // then display it in milliseconds
-    Output.printElapsed(@as(f64, @floatFromInt(value.read() / std.time.ns_per_us)) / std.time.us_per_ms);
+    _ = value;
+    Output.printElapsed(0);
     switch (len) {
         0 => Output.printErrorln("\n", .{}),
         else => Output.printErrorln(" {s}", .{chars[0..len]}),
@@ -3687,10 +3688,11 @@ pub fn timeLog(
     }
 
     const id = bun.hash(chars[0..len]);
-    var value: std.time.Timer = (pending_time_logs.get(id) orelse return) orelse return;
+    const value = (pending_time_logs.get(id) orelse return) orelse return;
     // get the duration in microseconds
     // then display it in milliseconds
-    Output.printElapsed(@as(f64, @floatFromInt(value.read() / std.time.ns_per_us)) / std.time.us_per_ms);
+    _ = value;
+    Output.printElapsed(0);
     switch (len) {
         0 => {},
         else => Output.printError(" {s}", .{chars[0..len]}),

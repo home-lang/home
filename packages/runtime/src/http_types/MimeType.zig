@@ -5,7 +5,7 @@
 // raw `bun` import and bundler `Loader` import with local pure-Zig shims so
 // this leaf can be tested before the wider resolver/bundler surface lands.
 
-const MimeType = @This();
+pub const MimeType = @This();
 
 value: string,
 category: Category,

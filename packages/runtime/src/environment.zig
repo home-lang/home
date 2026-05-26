@@ -37,6 +37,7 @@ pub const is_canary = false;
 pub const ci_assert = false;
 pub const enable_logs = build_options.debug_logging;
 pub const enable_asan = build_options.enable_sanitize_address;
+pub const enableAllocScopes = false;
 pub const baseline = false;
 pub const reported_nodejs_version = "22.0.0";
 

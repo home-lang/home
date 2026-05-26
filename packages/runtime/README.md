@@ -5,7 +5,7 @@
 > **552 files are integrated into Home (~46.3%)**: Home-import-rewritten,
 > Zig 0.17-clean, build-wired, and tested.
 > Phase 12.2 (JSC bring-up) has reached the M6 milestone — JSON + Promise
-> + Iterator + Global helpers across 129 files. Phase 12.7 round-15
+> + Iterator + Global helpers across 130 files. Phase 12.7 round-15
 > has top-level `node:*` substrate modules for `buffer`, `stream`,
 > `fs`, `events`, `util`, `assert`, `os`, `url`, `querystring`, and
 > `crypto`, `process`, `string_decoder`, and `tty`. End-to-end
@@ -71,7 +71,7 @@ packages while the execution engine is still blocked.
 ## What's here today
 
 - `src/home_rt.zig` — aggregator that re-exports every ported subsystem.
-- `src/jsc/` — 129 files; Phase 12.2 milestones M1-M6 plus the first
+- `src/jsc/` — 130 files; Phase 12.2 milestones M1-M6 plus the first
   native `JSEvaluateScript` helper and the public
   `JSObjectMakeDeferredPromise` deferred-promise constructor bridge.
   Default tests compile the surface; run
@@ -96,7 +96,7 @@ packages while the execution engine is still blocked.
 | Sub-phase | Source under `~/Code/bun/src/` | Destination | Status |
 |---|---|---|---|
 | 12.1 | `cli/` | `src/cli/` | 🟡 scaffold landed |
-| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone landed (129 files; JS-callable bridge pending) |
+| 12.2 | `jsc/`, `bun.js.zig`, `jsc_stub.zig` | `src/jsc/` | 🟡 M6 milestone landed (130 files; JS-callable bridge pending) |
 | 12.3 | `event_loop/`, `io/`, `async/` | `src/event_loop/` | 🟡 substrate landing (~30+ leaves via wave-19+ grinders) |
 | 12.4 | `resolver/`, `module_loader.zig` | `src/module_loader/` | 🔴 blocked on 12.2 |
 | 12.5 | `web/`, `http/`, `csrf/`, `dns/` | `src/web/` | 🔴 blocked on 12.3 |

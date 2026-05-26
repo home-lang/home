@@ -7,13 +7,14 @@
 //     `./parallel/runner.zig` and `./parallel/Worker.zig`, which carry
 //     bun.sys / bun.spawn / bun.cli.Command deps that fall outside the
 //     present allow-list. They will re-land alongside the rest of the
-//     `parallel/` subtree (post-12.5).
+//     runtime entrypoint pass.
 //   - The module-level //! doc comment is preserved verbatim so future
 //     re-attachment of the facade only needs to delete the parked block
 //     and re-add the four re-exports.
 // No `bun.*` runtime references remain. The upstream behavior surface stays
-// parked, but the copied process-pool files are named below so Home can track
-// the chunk without exposing spawn/IPC entrypoints prematurely.
+// parked, but the copied process-pool files are compile-wired behind the
+// smoke gate below so Home can parse the chunk without exposing spawn/IPC
+// entrypoints prematurely.
 
 //! `bun test --parallel`: process-pool coordinator and worker.
 //!
@@ -55,8 +56,7 @@ pub const parallel = struct {
 test "ParallelRunner docs facade compiles standalone" {
     // No runtime surface yet — the test exists so the file participates in
     // `zig test` and the banner comments above stay live as compile-checked
-    // documentation. Once `parallel/runner.zig` lands, replace this with
-    // smoke coverage of the facade.
+    // documentation. The process-pool modules are declaration-smoked below.
     try std.testing.expect(true);
 }
 
@@ -67,12 +67,14 @@ test "ParallelRunner tracks the copied process-pool modules behind a smoke gate"
     try std.testing.expectEqualStrings("runtime/cli/test/parallel/aggregate.zig", parallel.aggregate_source);
     try std.testing.expectEqualStrings("runtime/cli/test/parallel/runner.zig", parallel.runner_source);
 
-    if (comptime enable_process_pool_smoke) {
+    if (enable_process_pool_smoke) {
         try std.testing.expect(@hasDecl(parallel.imports.channel, "Channel"));
         try std.testing.expect(@hasDecl(parallel.imports.coordinator, "Coordinator"));
         try std.testing.expect(@hasDecl(parallel.imports.worker, "Worker"));
         try std.testing.expect(@hasDecl(parallel.imports.aggregate, "mergeJUnitFragments"));
         try std.testing.expect(@hasDecl(parallel.imports.runner, "runAsCoordinator"));
+        try std.testing.expect(@hasDecl(parallel.imports.runner, "runAsWorker"));
+        try std.testing.expect(@hasDecl(parallel.imports.runner, "workerEmitTestDone"));
     } else {
         try std.testing.expectEqual(@as(usize, 0), @typeInfo(parallel.imports).@"struct".decls.len);
     }

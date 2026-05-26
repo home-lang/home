@@ -47,6 +47,8 @@
 // form (`*WithIo`) for production hookup.
 
 const std = @import("std");
+
+pub const NodeFS = opaque {};
 const builtin = @import("builtin");
 const testing = std.testing;
 

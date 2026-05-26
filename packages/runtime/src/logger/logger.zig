@@ -185,7 +185,11 @@ pub const Location = struct {
                 .line = usize2Loc(data.line_count).start,
                 .column = usize2Loc(data.column_count).start,
                 .length = if (r.len > -1) @as(u32, @intCast(r.len)) else 1,
-                .line_text = std.mem.trimLeft(u8, full_line, "\n\r"),
+                .line_text = brk: {
+                    var start: usize = 0;
+                    while (start < full_line.len and (full_line[start] == '\n' or full_line[start] == '\r')) start += 1;
+                    break :brk full_line[start..];
+                },
                 .offset = @as(usize, @intCast(@max(r.loc.start, 0))),
             };
         }
