@@ -483,6 +483,7 @@ pub const minimal_js_files = [_][]const u8{
     "js/node/url/url-parse-query.test.js",
     "integration/bun-types/fixture/5396.test.ts",
     "js/web/html/FormData.test.ts",
+    "js/web/fetch/blob-write.test.ts",
     "js/web/fetch/utf8-bom.test.ts",
     "js/web/fetch/form-data-boundary-crash.test.ts",
     "js/web/fetch/response.test.ts",
@@ -1686,6 +1687,40 @@ const harness_prelude =
     \\        const buffer = new ArrayBuffer(bytes.length);
     \\        new Uint8Array(buffer).set(bytes);
     \\        return Promise.resolve(buffer);
+    \\      },
+    \\      write(data) {
+    \\        __home_build_write_text(filePath, __home_build_file_value_to_text(data));
+    \\        return Promise.resolve(undefined);
+    \\      },
+    \\      unlink() {
+    \\        if (globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, filePath)) delete globalThis.__home_written_files[filePath];
+    \\        if (typeof globalThis.__home_unlinkSyncNative === "function") {
+    \\          try {
+    \\            globalThis.__home_unlinkSyncNative(filePath);
+    \\          } catch (error) {}
+    \\        }
+    \\        return Promise.resolve(undefined);
+    \\      },
+    \\      delete() {
+    \\        return this.unlink();
+    \\      },
+    \\      writer() {
+    \\        let chunks = [];
+    \\        return {
+    \\          write(value) {
+    \\            __home_array_append(chunks, __home_build_file_value_to_text(value));
+    \\          },
+    \\          end() {
+    \\            __home_build_write_text(filePath, chunks.join(""));
+    \\            chunks = [];
+    \\            return Promise.resolve(undefined);
+    \\          },
+    \\        };
+    \\      },
+    \\      stat() {
+    \\        const nativeText = __home_build_read_text(filePath);
+    \\        if (nativeText === null) return Promise.resolve(undefined);
+    \\        return Promise.resolve({ size: __home_text_to_utf8_bytes(nativeText).length });
     \\      },
     \\      slice(start, end, contentType) {
     \\        const nativeText = __home_build_read_text(filePath);
@@ -3193,6 +3228,19 @@ const harness_prelude =
     \\const __home_expect_matchers = Object.create(null);
     \\function __home_make_expectation(value, isNot) {
     \\  const expectation = {
+    \\    get resolves() {
+    \\      return {
+    \\        toBe(expected) {
+    \\          return Promise.resolve(value).then(resolved => __home_make_expectation(resolved, isNot).toBe(expected));
+    \\        },
+    \\        toBeDefined() {
+    \\          return Promise.resolve(value).then(resolved => __home_make_expectation(resolved, isNot).toBeDefined());
+    \\        },
+    \\        toBeUndefined() {
+    \\          return Promise.resolve(value).then(resolved => __home_make_expectation(resolved, isNot).toBeUndefined());
+    \\        },
+    \\      };
+    \\    },
     \\    get not() {
     \\      return __home_make_expectation(value, !isNot);
     \\    },
@@ -3834,7 +3882,12 @@ const harness_prelude =
     \\    },
     \\  });
     \\}
-    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, gc(force) { return Bun.gc(force); }, withoutAggressiveGC(callback) { return callback(); }, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); } };
+    \\function __home_expect_max_object_type_count(expectFn, type, count) {
+    \\  const stats = globalThis.__home_import("bun:jsc").heapStats();
+    \\  expectFn((stats.objectTypeCounts && stats.objectTypeCounts[type]) || 0).toBeLessThanOrEqual(count);
+    \\  return Promise.resolve(undefined);
+    \\}
+    \\globalThis.__home_modules["harness"] = { isASAN: false, isBroken: false, isDebug: false, isArm64: false, isLinux: process.platform === "linux", isMacOS: process.platform === "darwin", isMusl: false, isWindows: false, bunEnv: Object.assign({}, process.env), bunExe() { return process.execPath; }, gc(force) { return Bun.gc(force); }, withoutAggressiveGC(callback) { return callback(); }, normalizeBunSnapshot(value) { return String(value); }, osSlashes(value) { const text = String(value); return process.platform === "win32" ? text.replace(/\//g, String.fromCharCode(92)) : text; }, readableStreamFromArray: __home_readable_stream_from_array, tempDir: __home_temp_dir_with_files, tempDirWithFiles: __home_temp_dir_with_files, tempDirWithFilesAnon(files) { return __home_temp_dir_with_files("anon", files); }, tmpdirSync() { return __home_temp_dir_with_files("tmp", {}); }, expectMaxObjectTypeCount: __home_expect_max_object_type_count };
     \\globalThis.__home_modules["./buildNoThrow"] = {
     \\  buildNoThrow(options) {
     \\    return Bun.build(Object.assign({}, options || {}, { throw: false }));
@@ -6945,6 +6998,9 @@ const harness_prelude =
     \\  fullGC() {
     \\    return Bun.gc(true);
     \\  },
+    \\  heapStats() {
+    \\    return { objectTypeCounts: Object.create(null) };
+    \\  },
     \\  estimateShallowMemoryUsageOf(value) {
     \\    if (value === performance && typeof performance.getEntries === "function") {
     \\      return 1024 + performance.getEntries().length * 64;
@@ -8559,6 +8615,24 @@ const harness_prelude =
     \\};
     \\Blob.prototype.formData = function() {
     \\  return this.text().then(text => __home_parse_formdata_text(text, this.__home_content_type || this.type || "application/x-www-form-urlencoded"));
+    \\};
+    \\function __home_blob_readonly_error() {
+    \\  return new Error("Cannot write to a Blob backed by bytes, which are always read-only");
+    \\}
+    \\Blob.prototype.write = function() {
+    \\  throw __home_blob_readonly_error();
+    \\};
+    \\Blob.prototype.unlink = function() {
+    \\  throw __home_blob_readonly_error();
+    \\};
+    \\Blob.prototype.delete = function() {
+    \\  throw __home_blob_readonly_error();
+    \\};
+    \\Blob.prototype.writer = function() {
+    \\  throw __home_blob_readonly_error();
+    \\};
+    \\Blob.prototype.stat = function() {
+    \\  return Promise.resolve(undefined);
     \\};
     \\Blob.prototype.slice = function(start, end, contentType) {
     \\  const size = this.size || 0;
