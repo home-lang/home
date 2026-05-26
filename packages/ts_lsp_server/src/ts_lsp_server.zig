@@ -158,6 +158,7 @@ pub const Method = enum {
     text_document_document_color,
     text_document_color_presentation,
     text_document_will_save_wait_until,
+    text_document_did_save,
     unknown,
 
     pub fn fromString(s: []const u8) Method {
@@ -215,6 +216,7 @@ pub const Method = enum {
             .{ "textDocument/documentColor", Method.text_document_document_color },
             .{ "textDocument/colorPresentation", Method.text_document_color_presentation },
             .{ "textDocument/willSaveWaitUntil", Method.text_document_will_save_wait_until },
+            .{ "textDocument/didSave", Method.text_document_did_save },
         };
         inline for (map) |entry| {
             if (std.mem.eql(u8, s, entry[0])) return entry[1];
@@ -280,6 +282,7 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     "documentLink/resolve",
     "inlayHint/resolve",
     "textDocument/willSaveWaitUntil",
+    "textDocument/didSave",
     // Workspace.
     "workspace/symbol",
     "workspace/diagnostic",
@@ -646,6 +649,34 @@ pub fn handleDidClose(
     _ = service;
     _ = gpa;
     _ = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+}
+
+/// Handle a `textDocument/didSave` notification: parse `uri` (required)
+/// and optional `text` (sent when `TextDocumentSyncOptions.save.includeText`
+/// is true). When `text` is present, refresh the in-memory source so
+/// the post-save diagnostic pass observes whatever the editor wrote.
+/// Otherwise treat as an acknowledgement — the source already came
+/// through `didChange` and the program graph is current.
+///
+/// Notifications carry no `id`, so this returns void; the caller's
+/// dispatch arm replies with an empty body.
+pub fn handleDidSave(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    params_json: []const u8,
+) !void {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const path = uriToPath(uri);
+    if (findJsonStringField(params_json, "text")) |text_raw| {
+        const source = try decodeJsonString(gpa, text_raw);
+        defer gpa.free(source);
+        if (service.program.lookupPath(path) != null) {
+            _ = try service.program.updateSource(path, source);
+        } else {
+            _ = try service.program.add(path, source);
+        }
+        try service.program.compileAll(.{});
+    }
 }
 
 /// Locate an integer JSON field by `key` inside `body`. Walks the
@@ -3563,6 +3594,10 @@ pub fn dispatchRequest(
             if (is_notification) return &.{};
             return try handleWillSaveWaitUntil(service, gpa, id, params);
         },
+        .text_document_did_save => {
+            try handleDidSave(service, gpa, params);
+            return &.{};
+        },
         .text_document_inline_completion => {
             if (is_notification) return &.{};
             return try handleInlineCompletion(service, gpa, id, params);
@@ -3938,6 +3973,59 @@ test "handleDidClose: accepts notification (no-op)" {
 
     // File remains tracked (no-op semantics today).
     try T.expect(program.lookupPath("/main.ts") != null);
+}
+
+test "handleDidSave: accepts notification without text payload" {
+    // The save notification's `text` field is optional (sent only when
+    // the client advertises `TextDocumentSyncOptions.save.includeText`).
+    // Without it, the handler should acknowledge the URI and leave the
+    // program graph unchanged — the existing source already reflects
+    // post-`didChange` state.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x = 1;");
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","method":"textDocument/didSave","params":{"textDocument":{"uri":"file:///main.ts"}}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    try handleDidSave(&svc, T.allocator, params);
+
+    const id = program.lookupPath("/main.ts") orelse return error.TestUnexpectedResult;
+    try T.expectEqualStrings("let x = 1;", program.fileById(id).source);
+}
+
+test "handleDidSave: refreshes source when text payload included" {
+    // When the client sends `save.includeText: true`, the notification
+    // carries the post-save source. The handler must refresh the
+    // in-memory copy and recompile so subsequent diagnostic pulls
+    // observe the saved-to-disk content (which may differ from the
+    // last `didChange` if the editor ran format-on-save or auto-fixes).
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x: number = \"oops\";");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","method":"textDocument/didSave","params":{"textDocument":{"uri":"file:///main.ts"},"text":"let x: number = 1;"}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    try handleDidSave(&svc, T.allocator, params);
+
+    const id = program.lookupPath("/main.ts") orelse return error.TestUnexpectedResult;
+    try T.expectEqualStrings("let x: number = 1;", program.fileById(id).source);
 }
 
 test "lineColToByte: walks lines + columns" {
