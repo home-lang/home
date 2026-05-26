@@ -68,7 +68,7 @@ pub const FD = packed struct(backing_int) {
     }
 
     pub fn cwd() FD {
-        return .fromNative(std.fs.cwd().fd);
+        return .fromNative(std.Io.Dir.cwd().handle);
     }
 
     pub fn stdin() FD {
@@ -92,20 +92,20 @@ pub const FD = packed struct(backing_int) {
         return windows_cached_stderr;
     }
 
-    pub fn fromStdFile(file: std.fs.File) FD {
+    pub fn fromStdFile(file: std.Io.File) FD {
         return .fromNative(file.handle);
     }
 
-    pub fn fromStdDir(dir: std.fs.Dir) FD {
-        return .fromNative(dir.fd);
+    pub fn fromStdDir(dir: std.Io.Dir) FD {
+        return .fromNative(dir.handle);
     }
 
-    pub fn stdFile(fd: FD) std.fs.File {
+    pub fn stdFile(fd: FD) std.Io.File {
+        return .{ .handle = fd.native(), .flags = .{ .nonblocking = false } };
+    }
+
+    pub fn stdDir(fd: FD) std.Io.Dir {
         return .{ .handle = fd.native() };
-    }
-
-    pub fn stdDir(fd: FD) std.fs.Dir {
-        return .{ .fd = fd.native() };
     }
 
     /// Perform different logic for each kind of windows file descriptor

@@ -686,7 +686,7 @@ pub const PathLike = union(enum) {
             => {
                 const buffer = Buffer.fromTypedArray(ctx, arg);
                 try Valid.pathBuffer(buffer, ctx);
-                try Valid.pathNullBytes(buffer.slice(), ctx);
+                try Valid.pathNullBytes(buffer.data, ctx);
 
                 arguments.protectEat();
                 return .{ .buffer = buffer };
@@ -695,7 +695,7 @@ pub const PathLike = union(enum) {
             .ArrayBuffer => {
                 const buffer = Buffer.fromArrayBuffer(ctx, arg);
                 try Valid.pathBuffer(buffer, ctx);
-                try Valid.pathNullBytes(buffer.slice(), ctx);
+                try Valid.pathNullBytes(buffer.data, ctx);
 
                 arguments.protectEat();
                 return .{ .buffer = buffer };
@@ -807,7 +807,7 @@ pub const Valid = struct {
     }
 
     pub fn pathBuffer(buffer: Buffer, ctx: *jsc.JSGlobalObject) bun.JSError!void {
-        const slice = buffer.slice();
+        const slice = buffer.data;
         switch (slice.len) {
             0 => {
                 return ctx.throwInvalidArguments("Invalid path buffer: can't be empty", .{});

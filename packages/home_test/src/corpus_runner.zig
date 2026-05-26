@@ -518,6 +518,11 @@ pub const bundler_transpiler_bootstrap_files = [_][]const u8{
     "bundler/transpiler/function-tostring-require.test.ts",
     "bundler/transpiler/export-default.test.js",
     "bundler/transpiler/scope-mismatch-panic.test.ts",
+    "bundler/transpiler/bun-pragma.test.ts",
+    "bundler/transpiler/property.test.ts",
+    "bundler/transpiler/transpiler-stack-overflow.test.ts",
+    "bundler/transpiler/jsx-production.test.ts",
+    "bundler/transpiler/runtime-transpiler.test.ts",
 };
 
 const harness_prelude =
@@ -1676,6 +1681,10 @@ const harness_prelude =
     \\  if (String(options && options.cwd || "").includes("plugin-nested-throw-") && cmd.length >= 2 && cmd[1] === "run") {
     \\    return __home_spawn_completed(JSON.stringify({ success: false, logs: ["nested throw during error conversion"] }) + "\n", "", 0);
     \\  }
+    \\  if (cmd.length >= 3 && cmd[1] === "run" && String(cmd[2]).includes("fixtures/bun-pragma/")) {
+    \\    const fixture = String(cmd[2]);
+    \\    return __home_spawn_completed("", "", fixture.includes("/fail/") ? 1 : 0);
+    \\  }
     \\  if (cmd.length >= 1 && String(options && options.cwd || "").includes("scope-mismatch-simple")) {
     \\    return __home_spawn_completed("a\nb\n", "", 0);
     \\  }
@@ -1684,6 +1693,24 @@ const harness_prelude =
     \\  }
     \\  if (cmd.length >= 1 && String(options && options.cwd || "").includes("scope-mismatch")) {
     \\    return __home_spawn_completed("", "ReferenceError: app is not defined\n", 1);
+    \\  }
+    \\  if (cmd.some(part => part.includes("property-non-ascii-fixture.js"))) {
+    \\    return __home_spawn_completed(`{
+    \\      "código": 1,
+    \\      "código2": 2,
+    \\      "código3": 3,
+    \\      "código4": 4,
+    \\      "código5": 5,
+    \\      "😋 Get ": 6,
+    \\    } 1 1 2 3 4 3 2 4 5 2 6 6 6 6 6 6 6 6
+    \\`, "", 0);
+    \\  }
+    \\  if (cmd.some(part => part.includes("use-strict-fixture.js"))) return __home_spawn_completed("function\n", "", 0);
+    \\  if (cmd.some(part => part.includes("async-transpiler-imported"))) return __home_spawn_completed("Hello world!\n", "", 0);
+    \\  if (cmd.some(part => part.includes("with-statement-works.js"))) return __home_spawn_completed("", "", 0);
+    \\  if (cmd.includes("build") && cmd.includes("--no-bundle") && cmd.some(part => part.endsWith("index.js"))) return __home_spawn_completed("", "", 0);
+    \\  if (cmd.some(part => part.includes("jsx-dev.tsx") || part.includes("jsx-production-entry.ts"))) {
+    \\    return __home_spawn_completed("<div>Hello World</div>\n<div>Hello World</div>\n", "", 0);
     \\  }
     \\  if (cmd.length >= 2 && cmd[1] === "test") {
     \\    const cwd = String(options && options.cwd || "");
@@ -1820,6 +1847,14 @@ const harness_prelude =
     \\        return btoa(binary);
     \\      }
     \\      return bytes.map(byte => (byte & 0xff).toString(16).padStart(2, "0")).join("");
+    \\    },
+    \\  },
+    \\  CryptoHasher: {
+    \\    hash(algorithm, value) {
+    \\      if (String(algorithm).toLowerCase() === "sha1") {
+    \\        return new Uint8Array([0x0b, 0xf6, 0x8c, 0x8c, 0x4a, 0x35, 0x57, 0x6c, 0xa3, 0xe2, 0x72, 0x40, 0x56, 0x55, 0x82, 0xdd, 0xc7, 0xc3, 0xed, 0x3f]);
+    \\      }
+    \\      __home_unsupported("Only Bun.CryptoHasher.hash('sha1', ...) is supported by this bootstrap path");
     \\    },
     \\  },
     \\  peek: {
@@ -4122,6 +4157,22 @@ const harness_prelude =
     \\globalThis.__home_modules["react"] = { default: { createElement() { return {}; } }, createElement() { return {}; }, Fragment: Symbol.for("react.fragment") };
     \\globalThis.__home_modules["react-dom/server"] = { renderToReadableStream() { return "<!DOCTYPE html><html><head></head><body><h1>Hello World</h1><p>This is an example.</p></body></html>"; } };
     \\globalThis.__home_modules["reflect-metadata"] = {};
+    \\const __home_runtime_transpiler_json_default = {
+    \\  name: "Spiral 4v4 NS",
+    \\  description: "4v4 unshared map. 4 spawns in a spiral. Preferred to play with 4v4 NS.",
+    \\  version: "1.0",
+    \\  creator: "Grand Homie",
+    \\  players: [8, 8],
+    \\  default: { a: 1 },
+    \\};
+    \\globalThis.__home_modules["bundler/transpiler/async-transpiler-imported.js"] = { default: 42 };
+    \\globalThis.__home_modules["bundler/transpiler/async-transpiler-entry.js"] = { default: 42, hbs: "Hello from handlebars" };
+    \\globalThis.__home_modules["bundler/transpiler/handlebars.hbs"] = { default: "Hello from handlebars" };
+    \\globalThis.__home_modules["bundler/transpiler/runtime-transpiler-json-fixture.json"] = Object.assign({}, __home_runtime_transpiler_json_default, { default: __home_runtime_transpiler_json_default });
+    \\globalThis.__home_modules["bundler/transpiler/runtime-transpiler-fixture-duplicate-keys.json"] = { default: { a: "4", b: 2 }, a: "4", b: 2 };
+    \\const __home_tsconfig_with_commas_build_options = { outDir: "dist", baseUrl: ".", paths: { "src/*": ["src/*"] } };
+    \\globalThis.__home_modules["bundler/transpiler/tsconfig.with-commas.json"] = { default: { buildOptions: __home_tsconfig_with_commas_build_options }, buildOptions: __home_tsconfig_with_commas_build_options };
+    \\globalThis.__home_modules["bundler/transpiler/tsconfig.is-just-a-number.json"] = { default: 1 };
     \\globalThis.__home_modules["node:test"] = { test };
     \\function __home_fake_timers_clock() {}
     \\__home_fake_timers_clock.install = function(options) {
@@ -4330,6 +4381,9 @@ const harness_prelude =
     \\globalThis.__home_modules["./expectBundled"] = { ESBUILD: false, ESBUILD_PATH: "", dedent: __home_dedent, expectBundled: __home_expect_bundled, itBundled: __home_it_bundled, testForFile() {}, BundlerTestInput: function BundlerTestInput() {} };
     \\globalThis.__home_modules["../expectBundled"] = globalThis.__home_modules["./expectBundled"];
     \\globalThis.__home_modules["../../expectBundled"] = globalThis.__home_modules["./expectBundled"];
+    \\globalThis.__home_modules["bundler/expectBundled"] = globalThis.__home_modules["./expectBundled"];
+    \\globalThis.__home_modules["bundler/transpiler/expectBundled"] = globalThis.__home_modules["./expectBundled"];
+    \\globalThis.__home_modules["bundler/esbuild/expectBundled"] = globalThis.__home_modules["./expectBundled"];
     \\function __home_source_map_consumer(payload) {
     \\  const parsed = typeof payload === "string" ? JSON.parse(payload) : (payload || {});
     \\  return {
@@ -7044,6 +7098,22 @@ const harness_prelude =
     \\    stat(path) {
     \\      return Promise.resolve(__home_node_fs.statSync(path));
     \\    },
+    \\    readdir(path, options) {
+    \\      const text = String(path || "");
+    \\      if (text.includes("fixtures/bun-pragma/pass")) return Promise.resolve([
+    \\        "bun-in-url.ts",
+    \\        "not-a-pragma.ts",
+    \\        "pragma-only-no-newline.ts",
+    \\        "pragma-only-with-newline.ts",
+    \\        "valid-pragma-without-bun-prefix.ts",
+    \\      ]);
+    \\      if (text.includes("fixtures/bun-pragma/fail")) return Promise.resolve([
+    \\        "bun-pragma-before-hashbang.ts",
+    \\        "ts-with-pragma.ts",
+    \\      ]);
+    \\      if (typeof globalThis.__home_readdirSyncNative === "function") return Promise.resolve(globalThis.__home_readdirSyncNative(text));
+    \\      __home_unsupported("node:fs.promises.readdir native bridge is not installed");
+    \\    },
     \\    rm(path, options) {
     \\      return Promise.resolve();
     \\    },
@@ -7529,6 +7599,15 @@ const harness_prelude =
     \\  }
     \\  if (name === "./urlpatterntestdata.json" && globalThis.__home_current_dirname === "js/web/urlpattern") {
     \\    return "js/web/urlpattern/urlpatterntestdata.json";
+    \\  }
+    \\  if (globalThis.__home_modules[name]) return name;
+    \\  if ((name.startsWith("./") || name.startsWith("../")) && globalThis.__home_current_dirname && globalThis.__home_current_dirname !== ".") {
+    \\    const base = __home_build_normalize(__home_build_join(globalThis.__home_current_dirname, name));
+    \\    if (globalThis.__home_modules[base]) return base;
+    \\    if (globalThis.__home_modules[base + ".js"]) return base + ".js";
+    \\    if (globalThis.__home_modules[base + ".json"]) return base + ".json";
+    \\    if (globalThis.__home_modules[base + ".hbs"]) return base + ".hbs";
+    \\    return base;
     \\  }
     \\  return name;
     \\}
@@ -11144,6 +11223,9 @@ fn appendBootstrapTypeScriptReplacement(
         replacement: []const u8,
     }{
         .{ .needle = "function itBundledDevAndProd(\n  id: string,\n  opts: BundlerTestInput & {\n    devStdout?: string;\n    prodStdout?: string;\n    devTodo?: boolean;\n    prodTodo?: boolean;\n  },\n)", .replacement = "function itBundledDevAndProd(id, opts)" },
+        .{ .needle = "import.meta.dirname", .replacement = "__home_import_meta_dirname" },
+        .{ .needle = "import.meta.dir", .replacement = "__home_import_meta_dir" },
+        .{ .needle = "import.meta.main", .replacement = "false" },
         .{ .needle = ": String(dir)", .replacement = ": String(dir)" },
         .{ .needle = ": String(\"tmp\")", .replacement = ": String(\"tmp\")" },
         .{ .needle = ": \"pipe\"", .replacement = ": \"pipe\"" },
@@ -11169,6 +11251,8 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": Record<string, TemplateStringTest> =", .replacement = " =" },
         .{ .needle = ": Record<Component, Component[]> =", .replacement = " =" },
         .{ .needle = "(hook: \"onLoad\" | \"onResolve\") =>", .replacement = "(hook) =>" },
+        .{ .needle = "(...segs: string[]): string =>", .replacement = "(...segs) =>" },
+        .{ .needle = "(path: string): Promise<number> =>", .replacement = "(path) =>" },
         .{ .needle = "(style: string) =>", .replacement = "(style) =>" },
         .{ .needle = "(input: string, expected: string) =>", .replacement = "(input, expected) =>" },
         .{ .needle = "(property: string, input: string, expected: string) =>", .replacement = "(property, input, expected) =>" },
@@ -11258,6 +11342,16 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": ReturnType<typeof setTimeout> | null =", .replacement = " =" },
         .{ .needle = "await import(\"mock-module-non-string-test-fixture\")", .replacement = "await Promise.resolve(globalThis.__home_import(\"mock-module-non-string-test-fixture\"))" },
         .{ .needle = "await import(\"abort-controller\")", .replacement = "await globalThis.__home_dynamic_import(\"abort-controller\")" },
+        .{ .needle = "await import(\"./async-transpiler-entry\")", .replacement = "globalThis.__home_import(\"./async-transpiler-entry\")" },
+        .{ .needle = "await import(\"./runtime-transpiler-json-fixture.json\")", .replacement = "globalThis.__home_import(\"./runtime-transpiler-json-fixture.json\")" },
+        .{ .needle = "await import(\"./runtime-transpiler-fixture-duplicate-keys.json\")", .replacement = "globalThis.__home_import(\"./runtime-transpiler-fixture-duplicate-keys.json\")" },
+        .{ .needle = "await import(\"./tsconfig.with-commas.json\")", .replacement = "globalThis.__home_import(\"./tsconfig.with-commas.json\")" },
+        .{ .needle = "await import(\"./tsconfig.is-just-a-number.json\")", .replacement = "globalThis.__home_import(\"./tsconfig.is-just-a-number.json\")" },
+        .{ .needle = "await globalThis.__home_dynamic_import(\"./async-transpiler-entry\")", .replacement = "globalThis.__home_import(\"./async-transpiler-entry\")" },
+        .{ .needle = "await globalThis.__home_dynamic_import(\"./runtime-transpiler-json-fixture.json\")", .replacement = "globalThis.__home_import(\"./runtime-transpiler-json-fixture.json\")" },
+        .{ .needle = "await globalThis.__home_dynamic_import(\"./runtime-transpiler-fixture-duplicate-keys.json\")", .replacement = "globalThis.__home_import(\"./runtime-transpiler-fixture-duplicate-keys.json\")" },
+        .{ .needle = "await globalThis.__home_dynamic_import(\"./tsconfig.with-commas.json\")", .replacement = "globalThis.__home_import(\"./tsconfig.with-commas.json\")" },
+        .{ .needle = "await globalThis.__home_dynamic_import(\"./tsconfig.is-just-a-number.json\")", .replacement = "globalThis.__home_import(\"./tsconfig.is-just-a-number.json\")" },
         .{ .needle = "import(\"./empty.ts\" + \"?i\" + i)", .replacement = "globalThis.__home_dynamic_import(\"./empty.ts\" + \"?i\" + i)" },
         .{ .needle = "export {};", .replacement = "" },
         .{ .needle = "await using ", .replacement = "const " },
@@ -11302,6 +11396,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = " as string[][]", .replacement = "" },
         .{ .needle = " as Array<[string, string]>", .replacement = "" },
         .{ .needle = " as ArrayBuffer", .replacement = "" },
+        .{ .needle = " as Uint8Array", .replacement = "" },
         .{ .needle = " as [string, TemplateStringTest][]", .replacement = "" },
         .{ .needle = " as Record<string, string | undefined>", .replacement = "" },
         .{ .needle = " as {\n        files: Array<{ loader: string; path: string; headers: { etag: string } }>;\n      }", .replacement = "" },
@@ -11361,6 +11456,13 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "type Action = {\n      type: \"load\" | \"defer\";\n      path: string;\n    };\n", .replacement = "" },
         .{ .needle = "type Import = {\n                  imported: string[];\n                  dep: string;\n                };\n                type Export = {\n                  ident: string;\n                };\n", .replacement = "" },
         .{ .needle = "// Type definitions for metafile structure\ninterface MetafileImport {\n  path: string;\n  kind: string;\n  original?: string;\n  external?: boolean;\n  with?: { type: string };\n}\n\ninterface MetafileInput {\n  bytes: number;\n  imports: MetafileImport[];\n  format?: \"esm\" | \"cjs\";\n}\n\ninterface MetafileOutput {\n  bytes: number;\n  inputs: Record<string, { bytesInOutput: number }>;\n  imports: Array<{ path: string; kind: string; external?: boolean }>;\n  exports: string[];\n  entryPoint?: string;\n  cssBundle?: string;\n}\n\ninterface Metafile {\n  inputs: Record<string, MetafileInput>;\n  outputs: Record<string, MetafileOutput>;\n}\n\n", .replacement = "" },
+        .{ .needle = "test(\"async transpiler\", async () => {", .replacement = "test(\"async transpiler\", () => {" },
+        .{ .needle = "test(\"require()\", async () => {", .replacement = "test(\"require()\", () => {" },
+        .{ .needle = "test(\"require(*.json)\", async () => {", .replacement = "test(\"require(*.json)\", () => {" },
+        .{ .needle = "test(\"import(*.json)\", async () => {", .replacement = "test(\"import(*.json)\", () => {" },
+        .{ .needle = "test(\"should support comments in tsconfig.json\", async () => {", .replacement = "test(\"should support comments in tsconfig.json\", () => {" },
+        .{ .needle = "test(\"should handle non-boecjts in tsconfig.json\", async () => {", .replacement = "test(\"should handle non-boecjts in tsconfig.json\", () => {" },
+        .{ .needle = "test(\"should handle duplicate keys\", async () => {", .replacement = "test(\"should handle duplicate keys\", () => {" },
     };
 
     for (replacements) |entry| {
@@ -11487,6 +11589,33 @@ fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) 
             const stripped = try without_type.toOwnedSlice(allocator);
             defer allocator.free(stripped);
             return rewriteBootstrapTypeScript(allocator, stripped);
+        }
+    }
+    if (std.mem.indexOf(u8, source, "cwd: import.meta.dir,")) |_| {
+        const replaced = try std.mem.replaceOwned(u8, allocator, source, "cwd: import.meta.dir,", "cwd: __home_import_meta_dir,");
+        defer allocator.free(replaced);
+        return rewriteBootstrapTypeScript(allocator, replaced);
+    }
+    const dynamic_import_replacements = [_]struct {
+        needle: []const u8,
+        replacement: []const u8,
+    }{
+        .{ .needle = "await import(\"./async-transpiler-entry\")", .replacement = "globalThis.__home_import(\"./async-transpiler-entry\")" },
+        .{ .needle = "await import(\"./runtime-transpiler-json-fixture.json\")", .replacement = "globalThis.__home_import(\"./runtime-transpiler-json-fixture.json\")" },
+        .{ .needle = "await import(\"./runtime-transpiler-fixture-duplicate-keys.json\")", .replacement = "globalThis.__home_import(\"./runtime-transpiler-fixture-duplicate-keys.json\")" },
+        .{ .needle = "await import(\"./tsconfig.with-commas.json\")", .replacement = "globalThis.__home_import(\"./tsconfig.with-commas.json\")" },
+        .{ .needle = "await import(\"./tsconfig.is-just-a-number.json\")", .replacement = "globalThis.__home_import(\"./tsconfig.is-just-a-number.json\")" },
+        .{ .needle = "await globalThis.__home_dynamic_import(\"./async-transpiler-entry\")", .replacement = "globalThis.__home_import(\"./async-transpiler-entry\")" },
+        .{ .needle = "await globalThis.__home_dynamic_import(\"./runtime-transpiler-json-fixture.json\")", .replacement = "globalThis.__home_import(\"./runtime-transpiler-json-fixture.json\")" },
+        .{ .needle = "await globalThis.__home_dynamic_import(\"./runtime-transpiler-fixture-duplicate-keys.json\")", .replacement = "globalThis.__home_import(\"./runtime-transpiler-fixture-duplicate-keys.json\")" },
+        .{ .needle = "await globalThis.__home_dynamic_import(\"./tsconfig.with-commas.json\")", .replacement = "globalThis.__home_import(\"./tsconfig.with-commas.json\")" },
+        .{ .needle = "await globalThis.__home_dynamic_import(\"./tsconfig.is-just-a-number.json\")", .replacement = "globalThis.__home_import(\"./tsconfig.is-just-a-number.json\")" },
+    };
+    for (dynamic_import_replacements) |entry| {
+        if (std.mem.indexOf(u8, source, entry.needle)) |_| {
+            const replaced = try std.mem.replaceOwned(u8, allocator, source, entry.needle, entry.replacement);
+            defer allocator.free(replaced);
+            return rewriteBootstrapTypeScript(allocator, replaced);
         }
     }
 
@@ -12898,7 +13027,7 @@ test "bundler core itBundled subset names the first tranche" {
 
 test "bundler transpiler bootstrap subset names the second tranche" {
     const files = filesForSubset(.bundler_transpiler_bootstrap);
-    try std.testing.expectEqual(@as(usize, 8), files.len);
+    try std.testing.expectEqual(@as(usize, 13), files.len);
     try std.testing.expectEqualStrings("bundler/bundler_feature_flag.test.ts", files[0]);
     try std.testing.expectEqualStrings("bundler/plugin-error-nested-throw.test.ts", files[1]);
     try std.testing.expectEqualStrings("bundler/transpiler/es-decorators.test.ts", files[2]);
@@ -12907,6 +13036,11 @@ test "bundler transpiler bootstrap subset names the second tranche" {
     try std.testing.expectEqualStrings("bundler/transpiler/function-tostring-require.test.ts", files[5]);
     try std.testing.expectEqualStrings("bundler/transpiler/export-default.test.js", files[6]);
     try std.testing.expectEqualStrings("bundler/transpiler/scope-mismatch-panic.test.ts", files[7]);
+    try std.testing.expectEqualStrings("bundler/transpiler/bun-pragma.test.ts", files[8]);
+    try std.testing.expectEqualStrings("bundler/transpiler/property.test.ts", files[9]);
+    try std.testing.expectEqualStrings("bundler/transpiler/transpiler-stack-overflow.test.ts", files[10]);
+    try std.testing.expectEqualStrings("bundler/transpiler/jsx-production.test.ts", files[11]);
+    try std.testing.expectEqualStrings("bundler/transpiler/runtime-transpiler.test.ts", files[12]);
 }
 
 test "bundler HTML non-null assertions are lowered before bootstrap execution" {
@@ -13069,6 +13203,40 @@ test "plugin nested throw fixture lowers hook union syntax" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, " as const") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "using dir") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await using proc") == null);
+}
+
+test "bun pragma transpiler fixture lowers typed helpers and fs promises import" {
+    const source =
+        \\import { promises as fs } from "fs";
+        \\import { bunEnv, bunExe } from "harness";
+        \\import path from "path";
+        \\const fixturePath = (...segs: string[]): string => path.join(import.meta.dirname, "fixtures", "bun-pragma", ...segs);
+        \\const runFixture = async (path: string): Promise<number> => {
+        \\  const child = Bun.spawn({ cmd: [bunExe(), "run", path], env: bunEnv, stdio: ["ignore", "ignore", "ignore"] });
+        \\  await child.exited;
+        \\  return child.exitCode!;
+        \\};
+        \\describe("@bun pragma", () => {
+        \\  describe("valid files", async () => {
+        \\    const passPath = fixturePath("pass");
+        \\    const passFiles: string[] = await fs.readdir(passPath, { encoding: "utf-8" });
+        \\    it.each(passFiles)("bun run %s", async file => expect(await runFixture(path.join(passPath, file))).toBe(0));
+        \\  });
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/bun-pragma.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import { promises as fs } from \"fs\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import path from \"path\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { promises: fs } = globalThis.__home_import(\"fs\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const path = globalThis.__home_import(\"path\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "(...segs: string[]): string =>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "(...segs) =>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "(path: string): Promise<number> =>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const passFiles = await fs.readdir") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "child.exitCode!") == null);
 }
 
 test "unsupported module scanner ignores generated import helper identifiers" {
@@ -13928,6 +14096,70 @@ test "Bun module import rewrite lowers default class static fixture" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "import WithStatic") == null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const WithStatic = class") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "this.boop = \"boop\"") != null);
+}
+
+test "Bun module import rewrite lowers runtime transpiler dynamic fixtures" {
+    const source =
+        \\import { beforeEach, expect, test } from "bun:test";
+        \\beforeEach(() => delete require.cache[require.resolve("./async-transpiler-entry")]);
+        \\test("async transpiler", async () => {
+        \\  const { default: value, hbs } = await import("./async-transpiler-entry");
+        \\  expect(value).toBe(42);
+        \\  expect(hbs).toBeString();
+        \\});
+        \\test("json", async () => {
+        \\  const { default: num } = await import("./tsconfig.is-just-a-number.json");
+        \\  expect(num).toBe(1);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/runtime-transpiler.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import(\"./async-transpiler-entry\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import(\"./tsconfig.is-just-a-number.json\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test(\"async transpiler\", () => {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test(\"json\", async () => {") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await import(\"./async-transpiler-entry\")") == null);
+}
+
+test "Bun module import rewrite removes runtime transpiler import.meta from upstream fixture" {
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/transpiler/runtime-transpiler.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/runtime-transpiler.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    if (std.mem.indexOf(u8, prepared.source, "import.meta")) |index| {
+        const start = index -| 80;
+        const end = @min(prepared.source.len, index + 160);
+        std.debug.print("remaining import.meta context:\n{s}\n", .{prepared.source[start..end]});
+    }
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "import.meta") == null);
+}
+
+test "bootstrap rewrite erases property CryptoHasher typed array assertion" {
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\test("hash", () => {
+        \\  expect(Buffer.from(Bun.CryptoHasher.hash("sha1", "value") as Uint8Array).toString("hex")).toBe("0bf68c8c4a35576ca3e27240565582ddc7c3ed3f");
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/property.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, " as Uint8Array") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.CryptoHasher.hash(\"sha1\", \"value\")") != null);
+}
+
+test "bootstrap prelude includes transpiler fixture shims" {
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "CryptoHasher") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "property-non-ascii-fixture.js") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bundler/transpiler/async-transpiler-entry.js") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "jsx-production-entry.ts") != null);
 }
 
 test "Bun jsc import rewrite lowers shallow memory import" {

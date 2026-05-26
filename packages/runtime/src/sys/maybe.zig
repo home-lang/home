@@ -130,6 +130,14 @@ pub fn Maybe(comptime ReturnTypeT: type, comptime ErrorTypeT: type) type {
             };
         }
 
+        pub fn toJS(this: @This(), globalThis: anytype) !@import("home_rt").jsc.JSValue {
+            _ = globalThis;
+            return switch (this) {
+                .result => |value| if (ReturnType == @import("home_rt").jsc.JSValue) value else .zero,
+                .err => .zero,
+            };
+        }
+
         pub inline fn unwrapOr(this: @This(), default_value: ReturnType) ReturnType {
             return switch (this) {
                 .result => |v| v,

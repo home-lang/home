@@ -135,7 +135,7 @@ pub const Buffer = struct {
     /// Stub. `ArrayBuffer` is a JSC primitive; the real binding
     /// lands with the Phase 12.2 JSC bridge. Pure-Zig callers can
     /// use `Buffer.from(allocator, bytes)` instead.
-    pub fn fromArrayBuffer(_: *anyopaque) Buffer {
+    pub fn fromArrayBuffer(_: anytype, _: anytype) Buffer {
         @panic("TODO(phase-12.2-M3): node:buffer.fromArrayBuffer needs JSC ArrayBuffer view");
     }
 
@@ -169,10 +169,15 @@ pub const Buffer = struct {
         };
     }
 
+    /// Returns the underlying byte slice.
+    pub fn slice(self: Buffer) []u8 {
+        return self.data;
+    }
+
     /// Returns a **borrowed** view into `self.data[start..end]`.
     /// The view shares memory with `self`; calling `deinit` on the
-    /// view is a no-op. Mirrors `Buffer.subarray` / `Buffer.slice`.
-    pub fn slice(self: Buffer, start: usize, end: usize) Buffer {
+    /// view is a no-op. Mirrors `Buffer.subarray`.
+    pub fn subarray(self: Buffer, start: usize, end: usize) Buffer {
         const lo = @min(start, self.data.len);
         const hi = @min(end, self.data.len);
         const real_hi = if (hi < lo) lo else hi;
@@ -641,7 +646,7 @@ test "slice produces borrowed view" {
     var buf = try Buffer.from(testing.allocator, "hello world");
     defer buf.deinit();
 
-    const view = buf.slice(6, 11);
+    const view = buf.subarray(6, 11);
     try testing.expectEqualStrings("world", view.data);
     try testing.expectEqual(@as(?std.mem.Allocator, null), view.allocator);
     view.deinit(); // must be a no-op

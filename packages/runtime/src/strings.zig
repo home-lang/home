@@ -92,6 +92,15 @@ pub fn eql(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 
+pub fn eqlCaseInsensitiveASCII(a: []const u8, b: []const u8, comptime check_len: bool) bool {
+    if (check_len and a.len != b.len) return false;
+    if (a.len != b.len) return false;
+    for (a, b) |left, right| {
+        if (std.ascii.toLower(left) != std.ascii.toLower(right)) return false;
+    }
+    return true;
+}
+
 /// Comptime-aware equality check that asserts the comptime length
 /// matches at compile time. Used by the `ComptimeStringMap` family
 /// to short-circuit per-length buckets without re-checking `len`
@@ -180,6 +189,26 @@ pub fn toUTF8ListWithType(list_: std.array_list.Managed(u8), utf16: []const u16)
         list.appendSliceAssumeCapacity(buf[0..width]);
     }
     return list;
+}
+
+pub fn convertUTF16ToUTF8Append(list: *std.array_list.Managed(u8), utf16: []const u16) !void {
+    try list.ensureUnusedCapacity(elementLengthUTF16IntoUTF8(utf16));
+    var i: usize = 0;
+    while (i < utf16.len) {
+        const cp = std.unicode.utf16DecodeSurrogatePair(utf16[i..]) catch blk: {
+            const value: u21 = utf16[i];
+            i += 1;
+            break :blk value;
+        };
+        if (cp > 0xFFFF) i += 2;
+        var buf: [4]u8 = undefined;
+        const width = std.unicode.utf8Encode(cp, &buf) catch std.unicode.utf8Encode(unicode_replacement, &buf) catch unreachable;
+        list.appendSliceAssumeCapacity(buf[0..width]);
+    }
+}
+
+pub fn split(slice: []const u8, delimiter: []const u8) std.mem.SplitIterator(u8, .sequence) {
+    return std.mem.splitSequence(u8, slice, delimiter);
 }
 
 pub fn allocateLatin1IntoUTF8WithList(list_: std.array_list.Managed(u8), offset_into_list: usize, latin1: []const u8) !std.array_list.Managed(u8) {

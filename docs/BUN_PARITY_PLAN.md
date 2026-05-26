@@ -166,9 +166,13 @@ Current corpus scale for the next ratchet:
 | Minimal-JS unique files | 417 | One duplicate entry remains in the subset ledger |
 | Outside minimal-JS subset | 3621 | Remaining copied-corpus frontier after the bootstrap subset |
 
-Next large slice: **bundler corpus completion**. Promote the remaining
-roughly 23 unallowlisted upstream Bun `bundler/` tests into the native
-Home corpus gate before expanding into Bake or server-heavy tests. Keep
+Next large slice: **bundler corpus completion**. A local audit on
+2026-05-26 finds **89** copied `bundler/**/*.test.{ts,js}` files. The
+current green evidence covers **74 unique files**: 66 unique bundler
+files inside `minimal-js`, 5 more in `bundler-core-itbundled`, and 3
+more in the currently executable 8-file `bundler-transpiler-bootstrap`
+subset. Promote the remaining **15** files into native Home corpus gates
+before expanding into more Bake or server-heavy tests. Keep
 `bundler/native-plugin.test.ts` last because upstream handles it as a
 special native-plugin case, so it should not mask ordinary bundler
 coverage.
@@ -211,14 +215,31 @@ Files in the tranche:
 - `bundler/transpiler/export-default.test.js`
 - `bundler/transpiler/scope-mismatch-panic.test.ts`
 
-Next work is to promote `bundler/transpiler/bun-pragma.test.ts`, whose
-first current blocker is bootstrap lowering for typed rest-parameter
-syntax such as `(...segs: string[]): string =>`, then continue through
-the remaining ordinary transpiler files before replacing the
-`__home_expect_bundled` stub with a real `itBundled` adapter and wiring
-the needed Bun bundler substrates in `packages/bundler/src/`
-(`options.zig`, `transpiler.zig`, `bundle_v2.zig`,
-`LinkerContext.zig`, `OutputFile.zig`, plus HTML/metafile surfaces).
+Current mismatch: `packages/home_test/src/corpus_runner.zig` now lists
+`bundler/transpiler/bun-pragma.test.ts` in
+`bundler_transpiler_bootstrap_files`, but
+`./pantry/.bin/zig build test -Dfilter=home_test --summary all` fails
+the subset-name unit test because it still expects 8 files and finds 9.
+The existing `./zig-out/bin/home` artifact also still reports the subset
+as 8 files. Do not count `bun-pragma.test.ts` as green until that source
+/ artifact mismatch is resolved and the subset reruns clean.
+
+Remaining bundler file frontier, classified by tranche:
+
+| Tranche | Files | Primary blocker from local corpus |
+|---|---|---|
+| A. Bootstrap ledger repair | `bundler/transpiler/bun-pragma.test.ts` | Source allowlist includes it, but `home_test` unit still expects 8-file tranche; test itself uses typed rest params, `fs.promises.readdir`, `Bun.spawn`, and `bunExe() run` fixture exits |
+| B. Decorator / JSX transpiler subprocesses | `bundler/transpiler/decorator-metadata.test.ts`, `bundler/transpiler/decorators.test.ts`, `bundler/transpiler/es-decorators-esbuild.test.ts`, `bundler/transpiler/jsx-production.test.ts` | Decorator metadata / legacy and standard decorator semantics, fixture imports, subprocess `bunExe() run`, JSX runtime env matrix |
+| C. Transpiler API, macro, and stress | `bundler/transpiler/macro-test.test.ts`, `bundler/transpiler/property.test.ts`, `bundler/transpiler/runtime-transpiler.test.ts`, `bundler/transpiler/transpiler-stack-overflow.test.ts`, `bundler/transpiler/transpiler.test.js` | `Bun.Transpiler`, macro imports, `Bun.CryptoHasher`, JSON/Handlebars/runtime transpiler fixture loading, long parser stress, subprocess `build --no-bundle` |
+| D. Resolver cache behavior | `bundler/resolver/cache-invalidation.test.ts`, `bundler/resolver/cache-node-compat.test.ts`, `bundler/resolver/cache-runtime.test.ts` | Repeated in-process `Bun.build()` / `require()` cache invalidation, filesystem mutation, Node-vs-Bun subprocess comparison |
+| E. CLI build surface | `bundler/cli.test.ts` | `bun build` CLI subprocess matrix: compile/outfile/sourcemap/tsconfig override/package install paths |
+| F. Native plugin final | `bundler/native-plugin.test.ts` | Native plugin ABI, node-gyp build, `.node` loading, `onBeforeParse`, crash-name behavior |
+
+After the file frontier is green, replace the `__home_expect_bundled`
+stub with a real `itBundled` adapter and wire the needed Bun bundler
+substrates in `packages/bundler/src/` (`options.zig`,
+`transpiler.zig`, `bundle_v2.zig`, `LinkerContext.zig`,
+`OutputFile.zig`, plus HTML/metafile surfaces).
 Verification target:
 
 ```sh
@@ -226,6 +247,23 @@ Verification target:
 ./zig-out/bin/home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=bundler-core-itbundled
 ./zig-out/bin/home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=bundler-transpiler-bootstrap
 ```
+
+Runtime compile frontier: the current non-JSC runtime gate is red.
+`./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false
+--summary failures` fails at compile time with **22 errors** on 2026-05-26
+after the shallow alias pass. The default macOS JSC-enabled command
+currently fails with **25 errors** because it analyzes a few more JSC
+paths.
+Classify those before source work:
+
+| Bucket | Representative errors |
+|---|---|
+| Missing shallow aliases still open | `sys.openatA`, `sys.stat`, `sys.getErrno`, `home_rt.isComptimeKnown`, `home_rt.schema`, `home_rt.URL` |
+| Parked API surfaces | `api.dns.Resolver`, `api.HTTPServer`, `Buffer.fromTypedArray`, `Method.fromJS` |
+| JSC/event-loop shape mismatch while JSC is disabled | missing `EventLoopHandle.loop()`, `EventLoopHandle.bunVM()`, `Async.Loop`, `AutoFlusher.VirtualMachine` pointer mismatch |
+| WebCore placeholder type gaps | `FileReader.Source.new`, `Blob.initWithStore` receiving `ByteBlobLoader`, stream source state versus JSValue shape |
+| Disabled codegen class stubs | `JSBlobInternalReadableStreamSource` and related generated source wrappers |
+| Zig 0.17 stdlib drift | `std.io.fixedBufferStream`, `std.os.getFdPath` |
 
 Bundler tranche exit criteria:
 

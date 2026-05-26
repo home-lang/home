@@ -17,29 +17,13 @@
 // `home_rt` allow-list yet. Re-add when `home_rt.Output.prettyFmt` lands.
 
 const std = @import("std");
+const bun = @import("home_rt");
 
 // JSC bridge stubs — re-attach in Phase 12.2.
-const JSGlobalObject = opaque {};
-const JSValue = enum(i64) { zero = 0, _ };
-const JSPromise = opaque {};
-
-// `bun.String` C ABI stub — re-attaches in Phase 12.2.
-// Real layout is `{tag: u8, _padding: 7 bytes, impl: *anyopaque}` (see
-// upstream src/string/BunString.h). The methods callers see in this file
-// are `ref` / `deref` / `isEmpty` and the `.empty` sentinel.
-const String = extern struct {
-    tag: u8 = 0,
-    _padding: [7]u8 = @splat(0),
-    impl: ?*anyopaque = null,
-
-    pub const empty: String = .{};
-
-    pub fn ref(_: *const String) void {}
-    pub fn deref(_: *const String) void {}
-    pub fn isEmpty(this: *const String) bool {
-        return this.tag == 0 and this.impl == null;
-    }
-};
+const JSGlobalObject = bun.jsc.JSGlobalObject;
+const JSValue = bun.jsc.JSValue;
+const JSPromise = bun.jsc.JSPromise;
+const String = bun.String;
 
 // `bun.sys.E` errno enum stubbed — re-attaches with the sys layer.
 const SysE = enum(i32) {

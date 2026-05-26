@@ -39,16 +39,49 @@ failed, 16 upstream todo on 2026-05-26. This tranche covers
 `bundler_html`, `bundler_jsx`, `bundler_loader`, `esbuild/extra`, and
 `esbuild/metafile`.
 
-The `bundler-transpiler-bootstrap` tranche now executes eight more
+The `bundler-transpiler-bootstrap` tranche currently executes eight more
 ordinary bundler/transpiler files and passes: 78 passed, 0 failed, 0
-todo on 2026-05-26. This tranche covers `bundler_feature_flag`,
+todo on 2026-05-26. This green evidence covers `bundler_feature_flag`,
 `plugin-error-nested-throw`, `transpiler/es-decorators`,
 `transpiler/preserve-use-strict-cjs`, `transpiler/template-literal`,
 `transpiler/function-tostring-require`, `transpiler/export-default`, and
-`transpiler/scope-mismatch-panic`. The next first blocker is
-`bundler/transpiler/bun-pragma.test.ts`, which currently needs bootstrap
-lowering for typed rest-parameter syntax such as
-`(...segs: string[]): string =>`.
+`transpiler/scope-mismatch-panic`.
+
+Current mismatch: `corpus_runner.zig` now includes
+`bundler/transpiler/bun-pragma.test.ts` in
+`bundler_transpiler_bootstrap_files`, but
+`./pantry/.bin/zig build test -Dfilter=home_test --summary all` fails the
+subset-name unit test with `expected 8, found 9`, and the existing
+`./zig-out/bin/home` artifact still reports 8 executed files for
+`--bun-corpus-native-subset=bundler-transpiler-bootstrap`. Do not count
+`bun-pragma.test.ts` as green until that source / artifact mismatch is
+closed and the subset reruns clean.
+
+Bundler corpus audit on 2026-05-26: the copied corpus has 89
+`bundler/**/*.test.{ts,js}` files. Current green evidence covers 74
+unique files: 66 unique bundler files inside `minimal-js`, 5 more in
+`bundler-core-itbundled`, and 3 more unique files from the executable
+8-file `bundler-transpiler-bootstrap` tranche. The remaining 15-file
+frontier is:
+
+| Tranche | Files | First blocker surface |
+|---|---|---|
+| Bootstrap ledger repair | `bundler/transpiler/bun-pragma.test.ts` | Source allowlist/test expectation mismatch; file uses typed rest params, `fs.promises.readdir`, `Bun.spawn`, and `bunExe() run` fixture exits |
+| Decorator / JSX transpiler subprocesses | `bundler/transpiler/decorator-metadata.test.ts`, `bundler/transpiler/decorators.test.ts`, `bundler/transpiler/es-decorators-esbuild.test.ts`, `bundler/transpiler/jsx-production.test.ts` | Decorator metadata / legacy and standard decorator semantics, fixture imports, subprocess `bunExe() run`, JSX runtime env matrix |
+| Transpiler API, macro, and stress | `bundler/transpiler/macro-test.test.ts`, `bundler/transpiler/property.test.ts`, `bundler/transpiler/runtime-transpiler.test.ts`, `bundler/transpiler/transpiler-stack-overflow.test.ts`, `bundler/transpiler/transpiler.test.js` | `Bun.Transpiler`, macro imports, `Bun.CryptoHasher`, JSON/Handlebars/runtime transpiler fixture loading, long parser stress, subprocess `build --no-bundle` |
+| Resolver cache behavior | `bundler/resolver/cache-invalidation.test.ts`, `bundler/resolver/cache-node-compat.test.ts`, `bundler/resolver/cache-runtime.test.ts` | Repeated in-process `Bun.build()` / `require()` cache invalidation, filesystem mutation, Node-vs-Bun subprocess comparison |
+| CLI build surface | `bundler/cli.test.ts` | `bun build` subprocess matrix: compile/outfile/sourcemap/tsconfig override/package install paths |
+| Native plugin final | `bundler/native-plugin.test.ts` | Native plugin ABI, node-gyp build, `.node` loading, `onBeforeParse`, crash-name behavior |
+
+Runtime build audit on 2026-05-26:
+`./pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false
+--summary failures` fails with 22 compile errors after the shallow alias
+pass. The default macOS JSC-enabled command fails with 25 compile errors.
+The remaining frontier is parked event-loop/WebCore work, unported API
+roots (`api.dns`, `api.HTTPServer`, `schema`, `URL`), missing runtime
+helpers (`sys.openatA`, `sys.stat`, `sys.getErrno`,
+`Buffer.fromTypedArray`, `Method.fromJS`), disabled generated
+stream-source wrappers, and Zig 0.17 stdlib drift.
 
 `zig build test -Dfilter=home_test_bun_tier0` now build-checks the first
 copied Bun Zig tier under pantry-provided Zig 0.17-dev:

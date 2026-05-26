@@ -11,6 +11,14 @@ pub fn print(comptime fmt: []const u8, args: anytype) void {
     std.debug.print(fmt, args);
 }
 
+pub fn printError(comptime fmt: []const u8, args: anytype) void {
+    std.debug.print(fmt, args);
+}
+
+pub fn printErrorln(comptime fmt: []const u8, args: anytype) void {
+    std.debug.print(fmt ++ "\n", args);
+}
+
 pub fn prettyln(comptime fmt: []const u8, args: anytype) void {
     // Home strips Bun's `<r>`/`<red>`/etc. markup at copy time; the
     // pretty layer renders them through the upstream macro. Until the
@@ -66,6 +74,18 @@ pub fn scoped(comptime _: anytype, comptime _: Visibility) fn (comptime []const 
 pub fn panic(comptime fmt: []const u8, args: anytype) noreturn {
     std.debug.panic(fmt, args);
 }
+
+pub const DebugTimer = struct {
+    timer: std.time.Timer,
+
+    pub inline fn start() DebugTimer {
+        return .{ .timer = std.time.Timer.start() catch unreachable };
+    }
+
+    pub fn format(self: DebugTimer, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        try writer.print("{d}ns", .{self.timer.read()});
+    }
+};
 
 test "prettyln formats without crashing" {
     prettyln("hello {s}", .{"world"});

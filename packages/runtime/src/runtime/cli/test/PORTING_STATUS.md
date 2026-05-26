@@ -28,8 +28,12 @@ un-parking `runAsCoordinator`, `runAsWorker`, or worker IPC behavior.
 
 Current blocker status is tracked by
 `./pantry/.bin/zig build test -Dfilter=home_rt --summary failures`.
-With `-Denable_jsc=false`, the current front is 24 compile errors. The
-first blockers are `strings.convertUTF16ToUTF8Append`, `bun.O`,
-`bun.sys.write`, `Output.printError*`, `jsc.PlatformEventLoop`, and
-the parked WebCore/JSC request, stream, sink, S3, and SystemError
-bridges.
+With `-Denable_jsc=false`, the 2026-05-26 shallow alias pass removed
+the first helper blockers: `strings.convertUTF16ToUTF8Append`,
+`strings.split`, `bun.O`, `bun.sys.{write,writeNonblocking,sendNonBlock,
+isPollable}`, `Output.printError*`, `jsc.PlatformEventLoop`, `jsc.Task`,
+and the current `Buffer.fromArrayBuffer(ctx, value)` signature. The
+current front is 22 compile errors. The first remaining blocker is
+`jsc.EventLoopHandle.loop()` in `io/PipeWriter.zig` via
+`runtime/webcore/FileSink.zig`; resolving it belongs with the parked
+EventLoopHandle/WebCore bridge work, outside this shallow alias pass.

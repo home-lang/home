@@ -75,6 +75,14 @@ pub const Async = struct {
         pub const Flags = struct {
             hup: bool = false,
 
+            pub fn insert(this: *Flags, comptime flag: anytype) void {
+                switch (flag) {
+                    .hup => this.hup = true,
+                    .nonblocking => {},
+                    else => {},
+                }
+            }
+
             pub fn contains(this: Flags, comptime flag: anytype) bool {
                 return switch (flag) {
                     .hup => this.hup,
@@ -95,6 +103,10 @@ pub const Async = struct {
 
         pub fn isRegistered(_: *FilePoll) bool {
             return false;
+        }
+
+        pub fn registerWithFd(_: *FilePoll, _: anytype, _: anytype, _: anytype, _: FD) sys.Maybe(void) {
+            return .success;
         }
 
         pub fn canEnableKeepingProcessAlive(_: *const FilePoll) bool {
@@ -118,7 +130,7 @@ pub const fs = @import("resolver/fs.zig");
 pub const windows = @import("sys/windows/windows.zig");
 pub const base64 = @import("base64/base64.zig");
 pub const simdutf = @import("simdutf_sys/simdutf.zig");
-pub const O = FD.O;
+pub const O = sys.O;
 pub const Mode = u32;
 pub const StringArrayHashMapUnmanaged = std.StringArrayHashMapUnmanaged;
 pub const start_time: i128 = 0;
@@ -132,6 +144,40 @@ pub const timespec = extern struct {
         return this.sec == other.sec and this.nsec == other.nsec;
     }
 };
+
+pub const PollFlag = enum {
+    ready,
+    not_ready,
+    hup,
+};
+
+pub fn isWritable(_: FD) PollFlag {
+    return .ready;
+}
+
+pub const StackCheck = struct {
+    cached_stack_end: usize = std.math.maxInt(usize),
+
+    pub fn configureThread() void {}
+
+    pub fn init() StackCheck {
+        return .{};
+    }
+
+    pub fn update(_: *StackCheck) void {}
+
+    pub fn isSafeToRecurse(_: StackCheck) bool {
+        return true;
+    }
+};
+
+pub const StandaloneModuleGraph = struct {
+    pub const SerializedSourceMap = struct {
+        pub const Loaded = opaque {};
+    };
+};
+
+pub const S3 = @import("runtime/webcore/s3/client.zig");
 
 pub fn selfExePath() ![]u8 {
     return std.fs.selfExePathAlloc(default_allocator);
@@ -581,10 +627,12 @@ pub const jsc = struct {
     pub const ZigStackFrame = @import("jsc/ZigStackFrame.zig").ZigStackFrame;
     pub const JSInternalPromise = @import("jsc/JSInternalPromise.zig").JSInternalPromise;
     pub const FetchHeaders = @import("jsc/FetchHeaders.zig").FetchHeaders;
-    pub const Codegen = if (build_options.enable_jsc)
+    pub const Codegen = if (build_options.enable_jsc and !builtin.is_test)
         @import("ZigGeneratedClasses")
     else
         @import("jsc/codegen_disabled.zig");
+    pub const PlatformEventLoop = @import("io/stub_event_loop.zig").Loop;
+    pub const Task = @import("event_loop/AnyTask.zig").Task;
     pub const host_fn = @import("jsc/host_fn.zig");
     pub const JSHostFn = host_fn.JSHostFn;
     pub const JSHostFnZig = host_fn.JSHostFnZig;
@@ -630,6 +678,8 @@ pub const io = struct {
     pub const FilePoll = @import("io/stub_event_loop.zig").FilePoll;
     pub const StreamingWriter = @import("io/PipeWriter.zig").StreamingWriter;
     pub const WriteResult = @import("io/PipeWriter.zig").WriteResult;
+    pub const WriteStatus = @import("io/PipeWriter.zig").WriteStatus;
+    pub const StreamBuffer = @import("http/ThreadSafeStreamBuffer.zig").StreamBuffer;
     pub const openForWriting = @import("io/io.zig").openForWriting;
     pub const openForWritingImpl = @import("io/io.zig").openForWritingImpl;
     // Fourth-wave port batch (2026-05-17). pipes.zig is enum-only;
@@ -940,7 +990,11 @@ pub const runtime = struct {
             pub fn cancel(_: *@This()) void {}
         };
         pub const ByteStream = struct {
-            pub const Source = opaque {};
+            pub const Source = struct {
+                pub fn new(_: anytype) jsc.JSValue {
+                    return .zero;
+                }
+            };
 
             pub fn parent(_: *@This()) *@This() {
                 unreachable;
@@ -1003,6 +1057,7 @@ pub const runtime = struct {
             pub const All = struct {};
         };
         pub const BuildArtifact = @import("runtime/api/JSBundler.zig").BuildArtifact;
+        pub const AnyRequestContext = @import("runtime/server/AnyRequestContext.zig");
         pub const node = @import("home_rt").node;
         pub const lolhtml_jsc = @import("runtime/api/lolhtml_jsc.zig");
         pub const cron_parser = @import("runtime/api/cron_parser.zig");
@@ -1333,8 +1388,81 @@ pub const sys = struct {
     // off `SystemErrno`; they cover Node.js's `uv_strerror` table and
     // coreutils' `strerror` table respectively.
     pub const SystemErrno = @import("errno/errno.zig").SystemErrno;
+    pub const E = @import("errno/errno.zig").E;
+    pub const syslog = Output.scoped(.SYS, .visible);
+    pub const O = switch (Environment.os) {
+        .mac => struct {
+            pub const PATH = 0x0000;
+            pub const RDONLY = 0x0000;
+            pub const WRONLY = 0x0001;
+            pub const RDWR = 0x0002;
+            pub const NONBLOCK = 0x0004;
+            pub const APPEND = 0x0008;
+            pub const CREAT = 0x0200;
+            pub const TRUNC = 0x0400;
+            pub const EXCL = 0x0800;
+            pub const NOFOLLOW = 0x0100;
+            pub const CLOEXEC = 0x01000000;
+            pub const DIRECTORY = 0x00100000;
+            pub const NOCTTY = 0x00020000;
+        },
+        .linux => struct {
+            pub const PATH = 0o10000000;
+            pub const RDONLY = 0o0;
+            pub const WRONLY = 0o1;
+            pub const RDWR = 0o2;
+            pub const NONBLOCK = 0o4000;
+            pub const APPEND = 0o2000;
+            pub const CREAT = 0o100;
+            pub const TRUNC = 0o1000;
+            pub const EXCL = 0o200;
+            pub const NOFOLLOW = 0o400000;
+            pub const CLOEXEC = 0o2000000;
+            pub const DIRECTORY = 0o200000;
+            pub const NOCTTY = 0o400;
+        },
+        else => struct {
+            pub const PATH = 0;
+            pub const RDONLY = 0;
+            pub const WRONLY = 1;
+            pub const RDWR = 2;
+            pub const NONBLOCK = 4;
+            pub const APPEND = 8;
+            pub const CREAT = 0x0200;
+            pub const TRUNC = 0x0400;
+            pub const EXCL = 0x0800;
+            pub const NOFOLLOW = 0x0100;
+            pub const CLOEXEC = 0;
+            pub const DIRECTORY = 0;
+            pub const NOCTTY = 0;
+        },
+    };
     pub fn updateNonblocking(_: FD, _: bool) Maybe(void) {
         return .success;
+    }
+
+    pub fn write(fd: FD, bytes: []const u8) Maybe(usize) {
+        _ = fd;
+        return .{ .result = bytes.len };
+    }
+
+    pub fn writeNonblocking(fd: FD, bytes: []const u8) Maybe(usize) {
+        return write(fd, bytes);
+    }
+
+    pub fn sendNonBlock(fd: FD, bytes: []const u8) Maybe(usize) {
+        return write(fd, bytes);
+    }
+
+    pub fn openat(_: FD, _: [:0]const u8, _: i32, _: Mode) Maybe(FD) {
+        return .{ .err = .{ .syscall = .open } };
+    }
+
+    pub fn isPollable(mode: Mode) bool {
+        return switch (maybe.kindFromMode(@intCast(mode))) {
+            .named_pipe, .unix_domain_socket => true,
+            else => false,
+        };
     }
 
     pub const libuv_error_map = @import("sys/libuv_error_map.zig").libuv_error_map;
