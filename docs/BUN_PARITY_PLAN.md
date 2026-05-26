@@ -251,6 +251,18 @@ private-field helpers, and `__publicField`. This does not promote
 removes the runtime-helper blocker so the remaining work is the faithful
 native parser/lowerer/printer handoff described above.
 
+Native transpiler substrate follow-through on 2026-05-26: `home_rt` now
+exposes the copied Bun parser/printer/transpiler surface through the flat
+`bun.*` namespace: `logger`, `js_lexer`, `js_parser`, `js_printer`,
+`ast`, `options`, `transpiler`, `Transpiler`, `bundle_v2`, and
+`SourceMap`. The copied parser aggregators now resolve Home's existing
+`src/ast`, `js_parser/parse`, `js_parser/scan`, `js_parser/lower`, and
+`js_parser/visit` files instead of stale `js_parser/ast/*` CamelCase
+paths from older Bun copies. This is a compile substrate, not corpus
+credit; the next chunk is the `jsc_bootstrap.zig` native
+`Bun.Transpiler` handle/callback bridge modeled on
+`runtime/api/JSTranspiler.zig`.
+
 Native plugin audit on 2026-05-26: `bundler/native-plugin.test.ts`
 still reports `unsupported module syntax` at the corpus preprocessor, but
 that is only the first guardrail. The real parity surface is Bun's native

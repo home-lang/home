@@ -68,7 +68,7 @@ pub const Array = struct {
         return out;
     }
 
-    pub const toJS = @import("../../js_parser_jsc/expr_jsc.zig").arrayToJS;
+    pub const toJS = @import("../js_parser_jsc/expr_jsc.zig").arrayToJS;
 
     /// Assumes each item in the array is a string
     pub fn alphabetizeStrings(this: *Array) void {
@@ -137,7 +137,7 @@ pub const Binary = struct {
 
 pub const Boolean = struct {
     value: bool,
-    pub const toJS = @import("../../js_parser_jsc/expr_jsc.zig").boolToJS;
+    pub const toJS = @import("../js_parser_jsc/expr_jsc.zig").boolToJS;
 };
 pub const Super = struct {};
 pub const Null = struct {};
@@ -493,7 +493,7 @@ pub const Number = struct {
         return try writer.write(self.value);
     }
 
-    pub const toJS = @import("../../js_parser_jsc/expr_jsc.zig").numberToJS;
+    pub const toJS = @import("../js_parser_jsc/expr_jsc.zig").numberToJS;
 };
 
 pub const BigInt = struct {
@@ -505,7 +505,7 @@ pub const BigInt = struct {
         return try writer.write(self.value);
     }
 
-    pub const toJS = @import("../../js_parser_jsc/expr_jsc.zig").bigIntToJS;
+    pub const toJS = @import("../js_parser_jsc/expr_jsc.zig").bigIntToJS;
 };
 
 pub const Object = struct {
@@ -537,7 +537,7 @@ pub const Object = struct {
         return if (asProperty(self, key)) |query| query.expr else @as(?Expr, null);
     }
 
-    pub const toJS = @import("../../js_parser_jsc/expr_jsc.zig").objectToJS;
+    pub const toJS = @import("../js_parser_jsc/expr_jsc.zig").objectToJS;
 
     pub fn put(self: *Object, allocator: std.mem.Allocator, key: string, expr: Expr) !void {
         if (asProperty(self, key)) |query| {
@@ -1140,7 +1140,7 @@ pub const String = struct {
         }
     }
 
-    pub const toJS = @import("../../js_parser_jsc/expr_jsc.zig").stringToJS;
+    pub const toJS = @import("../js_parser_jsc/expr_jsc.zig").stringToJS;
 
     pub fn toZigString(s: *String, allocator: std.mem.Allocator) jsc.ZigString {
         if (s.isUTF8()) {
@@ -1177,7 +1177,7 @@ pub const String = struct {
     }
 
     pub fn jsonStringify(s: *const String, writer: anytype) !void {
-        var buf = [_]u8{0} ** 4096;
+        var buf = std.mem.zeroes([4096]u8);
         var i: usize = 0;
         for (s.slice16()) |char| {
             buf[i] = @as(u8, @intCast(char));

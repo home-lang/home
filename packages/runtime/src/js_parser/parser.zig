@@ -1201,19 +1201,19 @@ pub const ParseBindingOptions = struct {
     is_using_statement: bool = false,
 };
 
-pub const ConvertESMExportsForHmr = @import("./ast/ConvertESMExportsForHmr.zig");
-pub const ImportScanner = @import("./ast/ImportScanner.zig");
-pub const TypeScript = @import("./ast/TypeScript.zig");
+pub const ConvertESMExportsForHmr = @import("./lower/lower_esm_exports_hmr.zig");
+pub const ImportScanner = @import("./scan/scan_imports.zig");
+pub const TypeScript = @import("./typescript.zig");
 pub const fs = @import("../resolver/fs.zig");
 pub const options = @import("../bundler/options.zig");
 pub const renamer = @import("../js_printer/renamer.zig");
-pub const KnownGlobal = @import("./ast/KnownGlobal.zig").KnownGlobal;
-pub const Parser = @import("./ast/Parser.zig").Parser;
-pub const SideEffects = @import("./ast/SideEffects.zig").SideEffects;
-pub const foldStringAddition = @import("./ast/foldStringAddition.zig").foldStringAddition;
+pub const KnownGlobal = @import("../ast/known_global.zig").KnownGlobal;
+pub const Parser = @import("./parse/parse_entry.zig").Parser;
+pub const SideEffects = @import("./scan/scan_side_effects.zig").SideEffects;
+pub const foldStringAddition = @import("../ast/fold_string_addition.zig").foldStringAddition;
 pub const isPackagePath = @import("../resolver/resolver.zig").isPackagePath;
 
-pub const Ref = @import("./ast/base.zig").Ref;
+pub const Ref = @import("../ast/base.zig").Ref;
 
 pub const importRecord = @import("../options_types/import_record.zig");
 pub const ImportKind = importRecord.ImportKind;
@@ -1223,7 +1223,7 @@ pub const RuntimeFeatures = _runtime.Runtime.Features;
 pub const RuntimeImports = _runtime.Runtime.Imports;
 pub const RuntimeNames = _runtime.Runtime.Names;
 
-pub const NewParser_ = @import("./ast/P.zig").NewParser_;
+pub const NewParser_ = @import("./p.zig").NewParser_;
 
 pub const StringHashMap = bun.StringHashMap;
 pub const js_printer = bun.js_printer;
@@ -1264,11 +1264,11 @@ const Allocator = std.mem.Allocator;
 
 const _runtime = @import("./runtime.zig");
 const Define = @import("../bundler/defines.zig").Define;
-const NewParser = @import("./ast/P.zig").NewParser;
+const NewParser = @import("./p.zig").NewParser;
 const ObjectPool = @import("../collections/pool.zig").ObjectPool;
 
-const Index = @import("./ast/base.zig").Index;
-const RefCtx = @import("./ast/base.zig").RefCtx;
+const Index = @import("../ast/base.zig").Index;
+const RefCtx = @import("../ast/base.zig").RefCtx;
 
 const bun = @import("bun");
 const Output = bun.Output;

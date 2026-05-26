@@ -234,6 +234,14 @@ from `runtime.js`, so native-transpiled legacy and standard decorator
 output has the expected runtime helpers. This is groundwork only; the
 fixture still needs the real parser/lowerer/printer path before promotion.
 
+The Home runtime namespace now exposes the copied Bun native
+parser/printer/transpiler substrate (`logger`, `js_lexer`, `js_parser`,
+`js_printer`, `ast`, `options`, `transpiler`, `Transpiler`,
+`bundle_v2`, and `SourceMap`). The copied parser aggregators were
+remapped to Home's existing `src/ast` and `js_parser/*` module layout, so
+the next faithful parity step is a native `Bun.Transpiler` host-callback
+bridge in the corpus JSC adapter rather than more JS string rewrites.
+
 The source module follow-through for these bundler gates is to replace
 the `__home_expect_bundled` bootstrap stub with a real `itBundled`
 adapter and wire the copied Bun substrates in `packages/bundler/src/`:

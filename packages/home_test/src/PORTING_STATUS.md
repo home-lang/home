@@ -75,6 +75,17 @@ runtime helpers copied from Bun's `runtime.js`. The decorators fixture is
 still not promoted; the next blocker remains handing the copied file to
 the native Bun-compatible parser/lowerer/printer before JSC evaluation.
 
+Native transpiler substrate groundwork (2026-05-26): `home_rt` now
+exposes the copied Bun parser/printer/transpiler modules (`logger`,
+`js_lexer`, `js_parser`, `js_printer`, `ast`, `options`, `transpiler`,
+`Transpiler`, `bundle_v2`, and `SourceMap`) through the flat Bun
+namespace expected by copied sources. The parser aggregators now resolve
+Home's already-copied AST and parser submodules instead of the stale
+`js_parser/ast/*` CamelCase paths from older Bun copies. This is still
+substrate only: `Bun.Transpiler` in the corpus harness must next acquire
+native JSC callbacks and handles before `decorators.test.ts` or
+`transpiler.test.js` can be promoted.
+
 Native plugin audit note (2026-05-26): the copied fixture currently stops
 at corpus preprocessing with `unsupported module syntax`, but its true
 closure dependency is native/JSC integration. The test needs node-gyp

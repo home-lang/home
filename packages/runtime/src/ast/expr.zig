@@ -147,7 +147,7 @@ pub fn hasAnyPropertyNamed(expr: *const Expr, comptime names: []const string) bo
     return false;
 }
 
-pub const toJS = @import("../../js_parser_jsc/expr_jsc.zig").exprToJS;
+pub const toJS = @import("../js_parser_jsc/expr_jsc.zig").exprToJS;
 
 pub inline fn isArray(this: *const Expr) bool {
     return this.data == .e_array;
@@ -3112,7 +3112,7 @@ pub const Data = union(Tag) {
         return Equality.unknown;
     }
 
-    pub const toJS = @import("../../js_parser_jsc/expr_jsc.zig").dataToJS;
+    pub const toJS = @import("../js_parser_jsc/expr_jsc.zig").dataToJS;
 
     pub const Store = struct {
         const StoreType = NewStore(&.{
@@ -3220,7 +3220,7 @@ fn stringToEquivalentNumberValue(str: []const u8) f64 {
 const string = []const u8;
 const stringZ = [:0]const u8;
 
-const JSPrinter = @import("../../js_printer/js_printer.zig");
+const JSPrinter = @import("../js_printer/js_printer.zig");
 const std = @import("std");
 
 const bun = @import("bun");

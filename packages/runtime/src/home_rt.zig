@@ -47,6 +47,22 @@ pub const default_allocator: std.mem.Allocator = std.heap.smp_allocator;
 
 pub const String = @import("string/string.zig").String;
 
+// Bun native transpiler parity surface. These are direct re-exports of
+// copied upstream files so home_test can move off JS string shims and into
+// the parser/printer path Home already vendors.
+pub const logger = @import("logger/logger.zig");
+pub const js_lexer = @import("js_parser/lexer.zig");
+pub const js_printer = @import("js_printer/js_printer.zig");
+pub const js_parser = @import("js_parser/parser.zig");
+pub const options = @import("bundler/options.zig");
+pub const defines = @import("bundler/defines.zig");
+pub const transpiler = @import("bundler/transpiler.zig");
+pub const Transpiler = transpiler.Transpiler;
+pub const bundle_v2 = @import("bundler/bundle_v2.zig");
+pub const Loader = bundle_v2.Loader;
+pub const SourceMap = @import("sourcemap/sourcemap.zig");
+pub const ast = @import("js_parser/js_parser.zig");
+
 pub const timespec = extern struct {
     sec: i64,
     nsec: i64,
@@ -372,6 +388,42 @@ pub const AutoStaticHashMap = static_hash_map.AutoStaticHashMap;
 pub const StaticHashMap = static_hash_map.StaticHashMap;
 pub const HashMap = static_hash_map.HashMap;
 pub const SortedHashMap = static_hash_map.SortedHashMap;
+
+pub const StringArrayHashMapContext = struct {
+    pub fn hash(_: @This(), s: []const u8) u32 {
+        return @as(u32, @truncate(std.hash.Wyhash.hash(0, s)));
+    }
+
+    pub fn eql(_: @This(), a: []const u8, b: []const u8, _: usize) bool {
+        return strings.eqlLong(a, b, true);
+    }
+};
+
+pub const StringHashMapContext = struct {
+    pub fn hash(_: @This(), s: []const u8) u64 {
+        return std.hash.Wyhash.hash(0, s);
+    }
+
+    pub fn eql(_: @This(), a: []const u8, b: []const u8) bool {
+        return strings.eqlLong(a, b, true);
+    }
+};
+
+pub fn StringArrayHashMap(comptime Type: type) type {
+    return std.StringArrayHashMap(Type);
+}
+
+pub fn StringArrayHashMapUnmanaged(comptime Type: type) type {
+    return std.StringArrayHashMapUnmanaged(Type);
+}
+
+pub fn StringHashMap(comptime Type: type) type {
+    return std.StringHashMap(Type);
+}
+
+pub fn StringHashMapUnmanaged(comptime Type: type) type {
+    return std.StringHashMapUnmanaged(Type);
+}
 
 const baby_list = @import("collections/baby_list.zig");
 pub const BabyList = baby_list.BabyList;
@@ -1058,6 +1110,7 @@ pub const crash_handler = struct {
 pub const ExactSizeMatcher = @import("core/string/immutable/exact_size_matcher.zig").ExactSizeMatcher;
 // Sixth-wave port batch (2026-05-18):
 pub const feature_flags = @import("core/feature_flags.zig");
+pub const FeatureFlags = feature_flags;
 pub const util = @import("core/util.zig");
 pub const grapheme = @import("core/string/immutable/grapheme.zig");
 pub const BoundedArray = @import("core/bounded_array.zig").BoundedArray;
@@ -2032,20 +2085,6 @@ pub const http_jsc = struct {
 // `bun.allocators.LinuxMemFdAllocator` / `bun.windows.*`.
 pub const platform = struct {
     pub const darwin = @import("platform/darwin.zig");
-};
-
-// ---- src/ast/ ----------------------------------------------------------
-// Sixth-wave port batch (2026-05-18). Pure-data AST leaves only;
-// Ref/Index, the `use client`/`use server` directive parser, and the
-// server-components boundary table. Wider AST (Expr/Stmt/Symbol/G/…)
-// re-attaches alongside the JS parser port.
-pub const ast = struct {
-    pub const Index = @import("ast/base.zig").Index;
-    pub const Ref = @import("ast/base.zig").Ref;
-    pub const RefHashCtx = @import("ast/base.zig").RefHashCtx;
-    pub const RefCtx = @import("ast/base.zig").RefCtx;
-    pub const UseDirective = @import("ast/use_directive.zig").UseDirective;
-    pub const ServerComponentBoundary = @import("ast/server_component_boundary.zig");
 };
 
 // ---- src/css/ ----------------------------------------------------------

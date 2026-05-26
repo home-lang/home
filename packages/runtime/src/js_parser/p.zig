@@ -43,7 +43,7 @@ pub fn NewParser_(
         pub const allow_macros = FeatureFlags.is_macro_enabled;
         const MacroCallCountType = if (allow_macros) u32 else u0;
 
-        const skipTypescript_zig = @import("./skipTypescript.zig").SkipTypescript(parser_feature__typescript, parser_feature__jsx, parser_feature__scan_only);
+        const skipTypescript_zig = @import("./parse/parse_skip_typescript.zig").SkipTypescript(parser_feature__typescript, parser_feature__jsx, parser_feature__scan_only);
         pub const skipTypescriptReturnType = skipTypescript_zig.skipTypescriptReturnType;
         pub const skipTypescriptReturnTypeWithMetadata = skipTypescript_zig.skipTypescriptReturnTypeWithMetadata;
         pub const skipTypeScriptType = skipTypescript_zig.skipTypeScriptType;
@@ -63,7 +63,7 @@ pub fn NewParser_(
         pub const trySkipTypeScriptArrowArgsWithBacktracking = skipTypescript_zig.trySkipTypeScriptArrowArgsWithBacktracking;
         pub const trySkipTypeScriptConstraintOfInferTypeWithBacktracking = skipTypescript_zig.trySkipTypeScriptConstraintOfInferTypeWithBacktracking;
 
-        const parse_zig = @import("./parse.zig").Parse(parser_feature__typescript, parser_feature__jsx, parser_feature__scan_only);
+        const parse_zig = @import("./parse/parse.zig").Parse(parser_feature__typescript, parser_feature__jsx, parser_feature__scan_only);
         pub const parsePrefix = parse_zig.parsePrefix;
         pub const parseSuffix = parse_zig.parseSuffix;
         pub const parseStmt = parse_zig.parseStmt;
@@ -104,7 +104,7 @@ pub fn NewParser_(
         pub const parseTypeScriptImportEqualsStmt = parse_zig.parseTypeScriptImportEqualsStmt;
         pub const parseTypescriptEnumStmt = parse_zig.parseTypescriptEnumStmt;
 
-        const astVisit = @import("./visit.zig").Visit(parser_feature__typescript, parser_feature__jsx, parser_feature__scan_only);
+        const astVisit = @import("./visit/visit.zig").Visit(parser_feature__typescript, parser_feature__jsx, parser_feature__scan_only);
         pub const visitStmtsAndPrependTempRefs = astVisit.visitStmtsAndPrependTempRefs;
         pub const recordDeclaredSymbol = astVisit.recordDeclaredSymbol;
         pub const visitExpr = astVisit.visitExpr;
@@ -124,20 +124,20 @@ pub fn NewParser_(
         pub const visitStmts = astVisit.visitStmts;
         pub const visitAndAppendStmt = astVisit.visitAndAppendStmt;
 
-        pub const BinaryExpressionVisitor = @import("./visitBinaryExpression.zig").CreateBinaryExpressionVisitor(parser_feature__typescript, parser_feature__jsx, parser_feature__scan_only).BinaryExpressionVisitor;
+        pub const BinaryExpressionVisitor = @import("./visit/visit_binary.zig").CreateBinaryExpressionVisitor(parser_feature__typescript, parser_feature__jsx, parser_feature__scan_only).BinaryExpressionVisitor;
 
-        const maybe = @import("./maybe.zig").AstMaybe(parser_feature__typescript, parser_feature__jsx, parser_feature__scan_only);
+        const maybe = @import("./fold.zig").AstMaybe(parser_feature__typescript, parser_feature__jsx, parser_feature__scan_only);
         pub const maybeRelocateVarsToTopLevel = maybe.maybeRelocateVarsToTopLevel;
         pub const maybeRewritePropertyAccess = maybe.maybeRewritePropertyAccess;
         pub const maybeCommaSpreadError = maybe.maybeCommaSpreadError;
         pub const maybeDefinedHelper = maybe.maybeDefinedHelper;
         pub const checkIfDefinedHelper = maybe.checkIfDefinedHelper;
 
-        const symbols_zig = @import("./symbols.zig").Symbols(parser_feature__typescript, parser_feature__jsx, parser_feature__scan_only);
+        const symbols_zig = @import("./scan/scan_symbols.zig").Symbols(parser_feature__typescript, parser_feature__jsx, parser_feature__scan_only);
         pub const findSymbol = symbols_zig.findSymbol;
         pub const findSymbolWithRecordUsage = symbols_zig.findSymbolWithRecordUsage;
 
-        const lowerDecorators_zig = @import("./lowerDecorators.zig").LowerDecorators(parser_feature__typescript, parser_feature__jsx, parser_feature__scan_only);
+        const lowerDecorators_zig = @import("./lower/lower_decorators.zig").LowerDecorators(parser_feature__typescript, parser_feature__jsx, parser_feature__scan_only);
         pub const lowerStandardDecoratorsStmt = lowerDecorators_zig.lowerStandardDecoratorsStmt;
         pub const lowerStandardDecoratorsExpr = lowerDecorators_zig.lowerStandardDecoratorsExpr;
 
@@ -995,7 +995,7 @@ pub fn NewParser_(
 
             // Add everything in the file to the histogram
             var freq: js_ast.CharFreq = .{
-                .freqs = [_]i32{0} ** 64,
+                .freqs = std.mem.zeroes([64]i32),
             };
 
             freq.scan(p.source.contents, 1);
@@ -6863,8 +6863,8 @@ const string = []const u8;
 
 const repl_transforms = @import("./repl_transforms.zig");
 
-const Define = @import("../../bundler/defines.zig").Define;
-const DefineData = @import("../../bundler/defines.zig").DefineData;
+const Define = @import("../bundler/defines.zig").Define;
+const DefineData = @import("../bundler/defines.zig").DefineData;
 
 const bun = @import("bun");
 const Environment = bun.Environment;

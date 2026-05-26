@@ -11,6 +11,10 @@ pub const basename = std.fs.path.basename;
 pub const dirname = std.fs.path.dirname;
 pub const extension = std.fs.path.extension;
 pub const stem = std.fs.path.stem;
+pub const isSepAny = @import("paths/resolve_path.zig").isSepAny;
+pub const isSepAnyT = @import("paths/resolve_path.zig").isSepAnyT;
+pub const lastIndexOfSep = @import("paths/resolve_path.zig").lastIndexOfSep;
+pub const lastIndexOfSepT = @import("paths/resolve_path.zig").lastIndexOfSepT;
 
 pub fn join(parts: []const []const u8, sep: std.fs.path.Style) []const u8 {
     _ = sep;
