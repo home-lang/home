@@ -1042,7 +1042,7 @@ This is a scanner-generated code-coverage ledger, not a proof of exact parity. D
 | TS4028 | err | catalog-only |  | Public_static_property_0_of_exported_class_has_or_is_using_private_name_1_4028 |
 | TS4029 | err | catalog-only |  | Public_property_0_of_exported_class_has_or_is_using_name_1_from_external_module_2_but_cannot_be_name_4029 |
 | TS4030 | err | catalog-only |  | Public_property_0_of_exported_class_has_or_is_using_name_1_from_private_module_2_4030 |
-| TS4031 | err | catalog-only |  | Public_property_0_of_exported_class_has_or_is_using_private_name_1_4031 |
+| TS4031 | err | emitted | packages/ts_checker/src/check.zig:18045<br>packages/ts_checker/src/check.zig:97785 | Public_property_0_of_exported_class_has_or_is_using_private_name_1_4031 |
 | TS4032 | err | catalog-only |  | Property_0_of_exported_interface_has_or_is_using_name_1_from_private_module_2_4032 |
 | TS4033 | err | catalog-only |  | Property_0_of_exported_interface_has_or_is_using_private_name_1_4033 |
 | TS4034 | err | catalog-only |  | Parameter_type_of_public_static_setter_0_from_exported_class_has_or_is_using_name_1_from_private_mod_4034 |
