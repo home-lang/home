@@ -7082,7 +7082,17 @@ pub const Parser = struct {
             if (!self.importKeywordBeginsImportEquals(self.cursor)) {
                 try self.reportCodeAt(start.span.start, start.line, 1191, "An import declaration cannot have modifiers.");
             }
-            return try self.parseImportDeclaration();
+            const import_node = try self.parseImportDeclaration();
+            // Record the leading `export` modifier on the import-equals
+            // node so the checker can surface TS1269 when the alias
+            // target resolves to a type / type-only namespace under
+            // isolatedModules-like flags.
+            if (self.hir.kindOf(import_node) == .import_decl and
+                hir_mod.importOf(self.hir, import_node).import_equals != hir_mod.none_node_id)
+            {
+                self.hir.markImportExported(import_node);
+            }
+            return import_node;
         }
 
         // `export as namespace Foo;` is a declaration-file/global UMD

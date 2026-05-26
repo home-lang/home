@@ -646,6 +646,12 @@ pub const ImportPayload = struct {
     named_len: u32,
     /// True for `import type ...`.
     is_type_only: bool,
+    /// True for an import-equals declaration carrying the `export`
+    /// modifier (`export import Foo = ns.Foo;`). Only meaningful when
+    /// `import_equals != none_node_id`. Used by the checker to surface
+    /// TS1269 ("Cannot use 'export import' on a type or type-only
+    /// namespace …") when the alias target resolves to a type.
+    is_export: bool = false,
 };
 
 pub const ExportPayload = struct {
@@ -1412,6 +1418,16 @@ pub const Hir = struct {
         std.debug.assert(self.kindOf(id) == .enum_decl);
         const payload_idx = self.payloads.items[id];
         self.enum_payloads.items[payload_idx].is_const = true;
+    }
+
+    /// Set the `is_export` flag on an existing import-equals decl. Used
+    /// by the parser for `export import Foo = ns.Foo;` — the leading
+    /// `export` modifier is consumed before `parseImportDeclaration`
+    /// runs, so we patch the flag afterward.
+    pub fn markImportExported(self: *Hir, id: NodeId) void {
+        std.debug.assert(self.kindOf(id) == .import_decl);
+        const payload_idx = self.payloads.items[id];
+        self.import_payloads.items[payload_idx].is_export = true;
     }
 };
 
