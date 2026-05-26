@@ -126,6 +126,9 @@ pub const CompileOptions = struct {
     /// True when the parser should apply ES2015+ contextual-reserved
     /// word rules such as rejecting `yield` as a binding/function name.
     syntax_target_es2015: bool = false,
+    /// True when syntax features gated at ES2018 or newer should parse
+    /// without downlevel availability diagnostics.
+    syntax_target_es2018: bool = false,
     /// Report TS5107 for deprecated ES5 target selection. Conformance
     /// exact mode enables this when it selects the ES5 baseline variant.
     report_deprecated_target_es5: bool = false,
@@ -883,6 +886,10 @@ pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
             .es3, .es5 => false,
             else => true,
         };
+        opts.syntax_target_es2018 = switch (t) {
+            .es3, .es5, .es2015, .es2016, .es2017 => false,
+            else => true,
+        };
     }
     if (cfg.compiler_options.module) |m| {
         opts.emit.module_kind = switch (m) {
@@ -1110,6 +1117,7 @@ pub fn compileSource(
     parser.setJavaScriptFile(pathIsJsLike(options.importer_path));
     parser.setStrictMode(options.always_strict);
     parser.setTargetEs2015OrLater(options.syntax_target_es2015);
+    parser.setTargetEs2018OrLater(options.syntax_target_es2018);
     defer parser.deinit();
 
     c.root = parser.parseSourceFile() catch |err| switch (err) {
@@ -3346,6 +3354,40 @@ test "driver: optionsFromConfig with no jsx leaves is_tsx false" {
     );
     const opts = optionsFromConfig(&cfg);
     try T.expect(!opts.is_tsx);
+}
+
+test "driver: ES2018 target gates regex named capture availability" {
+    var downlevel = try compileSource(
+        T.allocator,
+        "let r = /(?<name>x)/;",
+        .{ .no_emit = true },
+    );
+    defer {
+        downlevel.deinit();
+        T.allocator.destroy(downlevel);
+    }
+
+    var saw_1503 = false;
+    for (downlevel.diagnostics.items) |d| {
+        if (d.code == 1503 and std.mem.eql(u8, d.message, "Named capturing groups are only available when targeting 'ES2018' or later.")) {
+            saw_1503 = true;
+        }
+    }
+    try T.expect(saw_1503);
+
+    var es2018 = try compileSource(
+        T.allocator,
+        "let r = /(?<name>x)/;",
+        .{ .no_emit = true, .syntax_target_es2018 = true, .emit = .{ .es_target = .es2018 } },
+    );
+    defer {
+        es2018.deinit();
+        T.allocator.destroy(es2018);
+    }
+
+    for (es2018.diagnostics.items) |d| {
+        try T.expect(d.code != 1503);
+    }
 }
 
 test "driver: noEmit suppresses downlevel private-name WeakMap collisions" {

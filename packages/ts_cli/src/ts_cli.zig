@@ -73,6 +73,9 @@ pub const Options = struct {
     /// emit a `.d.ts.map` (or `.d.hm.map`) alongside each `.d.ts` /
     /// `.d.hm`. Implies `--declaration` at emit time.
     declaration_map: ?bool = null,
+    incremental: ?bool = null,
+    out_file: ?[]const u8 = null,
+    ts_buildinfo_file: ?[]const u8 = null,
     /// `--build` / `-b`.
     build: bool = false,
     build_clean: bool = false,
@@ -89,6 +92,25 @@ pub const CliDiagnostic = struct {
     option: []const u8,
     expected: []const u8 = "",
     suggestion: ?[]const u8 = null,
+};
+
+pub const ProjectDiagnosticKind = enum {
+    host_unsupported_option,
+    cannot_read_file_with_reason,
+    cannot_read_file,
+    could_not_write_file,
+    config_already_defined,
+    cannot_find_config_at_directory,
+    specified_path_does_not_exist,
+    add_tsconfig_json,
+    cannot_find_config_at_current_directory,
+};
+
+pub const ProjectDiagnostic = struct {
+    code: u32,
+    path: []const u8 = "",
+    detail: []const u8 = "",
+    option: []const u8 = "",
 };
 
 pub const ParseError = error{
@@ -178,6 +200,18 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8) ParseError!Op
             i += 1;
             if (i >= args.len) return error.MissingValue;
             opts.out_dir = args[i];
+        } else if (parseEqFlag(a, "--outFile=")) |v| {
+            opts.out_file = v;
+        } else if (std.mem.eql(u8, a, "--outFile")) {
+            i += 1;
+            if (i >= args.len) return error.MissingValue;
+            opts.out_file = args[i];
+        } else if (parseEqFlag(a, "--tsBuildInfoFile=")) |v| {
+            opts.ts_buildinfo_file = v;
+        } else if (std.mem.eql(u8, a, "--tsBuildInfoFile")) {
+            i += 1;
+            if (i >= args.len) return error.MissingValue;
+            opts.ts_buildinfo_file = args[i];
         } else if (parseEqFlag(a, "--module=")) |v| {
             opts.module = v;
         } else if (std.mem.eql(u8, a, "--module")) {
@@ -202,6 +236,10 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8) ParseError!Op
             opts.declaration_map = true;
         } else if (std.mem.eql(u8, a, "--no-declarationMap")) {
             opts.declaration_map = false;
+        } else if (std.mem.eql(u8, a, "--incremental")) {
+            opts.incremental = true;
+        } else if (std.mem.eql(u8, a, "--no-incremental")) {
+            opts.incremental = false;
         } else if (a.len > 0 and a[0] == '-') {
             // Unknown flag — silently accept for forward-compat per
             // TS_PARITY_PLAN. A future cycle promotes selected
@@ -349,6 +387,35 @@ pub fn formatCliDiagnostic(gpa: std.mem.Allocator, diag: CliDiagnostic) ![]const
     };
 }
 
+pub fn projectDiagnostic(kind: ProjectDiagnosticKind, path: []const u8, detail: []const u8) ProjectDiagnostic {
+    return switch (kind) {
+        .host_unsupported_option => .{ .code = 5001, .option = path },
+        .cannot_read_file_with_reason => .{ .code = 5012, .path = path, .detail = detail },
+        .cannot_read_file => .{ .code = 5083, .path = path },
+        .could_not_write_file => .{ .code = 5033, .path = path, .detail = detail },
+        .config_already_defined => .{ .code = 5054, .path = path },
+        .cannot_find_config_at_directory => .{ .code = 5057, .path = path },
+        .specified_path_does_not_exist => .{ .code = 5058, .path = path },
+        .add_tsconfig_json => .{ .code = 5068 },
+        .cannot_find_config_at_current_directory => .{ .code = 5081, .path = path },
+    };
+}
+
+pub fn formatProjectDiagnostic(gpa: std.mem.Allocator, diag: ProjectDiagnostic) ![]const u8 {
+    return switch (diag.code) {
+        5001 => try std.fmt.allocPrint(gpa, "error TS5001: The current host does not support the '{s}' option.", .{diag.option}),
+        5012 => try std.fmt.allocPrint(gpa, "error TS5012: Cannot read file '{s}': {s}.", .{ diag.path, diag.detail }),
+        5033 => try std.fmt.allocPrint(gpa, "error TS5033: Could not write file '{s}': {s}.", .{ diag.path, diag.detail }),
+        5054 => try std.fmt.allocPrint(gpa, "error TS5054: A 'tsconfig.json' file is already defined at: '{s}'.", .{diag.path}),
+        5057 => try std.fmt.allocPrint(gpa, "error TS5057: Cannot find a tsconfig.json file at the specified directory: '{s}'.", .{diag.path}),
+        5058 => try std.fmt.allocPrint(gpa, "error TS5058: The specified path does not exist: '{s}'.", .{diag.path}),
+        5068 => try gpa.dupe(u8, "error TS5068: Adding a tsconfig.json file will help organize projects that contain both TypeScript and JavaScript files. Learn more at https://aka.ms/tsconfig."),
+        5081 => try std.fmt.allocPrint(gpa, "error TS5081: Cannot find a tsconfig.json file at the current directory: {s}.", .{diag.path}),
+        5083 => try std.fmt.allocPrint(gpa, "error TS5083: Cannot read file '{s}'.", .{diag.path}),
+        else => unreachable,
+    };
+}
+
 pub const helpText: []const u8 =
     \\Usage: home tsc [files...] [options]
     \\
@@ -418,6 +485,12 @@ pub fn dispatch(opts: Options) RunResult {
                 "error TS{d}: Option 'project' cannot be mixed with source files on a command line.",
                 .{ts_project_cannot_mix_files},
             ),
+        };
+    }
+    if (opts.incremental == true and opts.project == null and opts.out_file == null and opts.ts_buildinfo_file == null) {
+        return .{
+            .code = .config_error,
+            .stderr_text = "error TS5074: Option '--incremental' can only be specified using tsconfig, emitting to single file or when option '--tsBuildInfoFile' is specified.",
         };
     }
     if (opts.files.len == 0 and opts.project == null and !opts.init_config) {
@@ -506,6 +579,15 @@ test "parseArgs: --target / --module / --outDir / --jsx" {
     try T.expectEqualStrings("esnext", opts.module.?);
     try T.expectEqualStrings("dist", opts.out_dir.?);
     try T.expectEqualStrings("react-jsx", opts.jsx.?);
+}
+
+test "parseArgs: incremental output options" {
+    const argv = [_][]const u8{ "--incremental", "--outFile", "bundle.js", "--tsBuildInfoFile=.cache/build.tsbuildinfo" };
+    const opts = try parseArgs(T.allocator, &argv);
+    defer T.allocator.free(opts.files);
+    try T.expectEqual(@as(?bool, true), opts.incremental);
+    try T.expectEqualStrings("bundle.js", opts.out_file.?);
+    try T.expectEqualStrings(".cache/build.tsbuildinfo", opts.ts_buildinfo_file.?);
 }
 
 test "parseArgs: --pretty and --no-pretty" {
@@ -716,6 +798,41 @@ test "dispatch: --project with source files reports TS5042" {
     const r = dispatch(opts);
     try T.expectEqual(ExitCode.config_error, r.code);
     try T.expect(std.mem.indexOf(u8, r.stderr_text, "TS5042") != null);
+}
+
+test "dispatch: --incremental without config, outFile, or tsBuildInfoFile reports TS5074" {
+    const files = [_][]const u8{"src/main.ts"};
+    var opts: Options = .{ .files = &files, .incremental = true };
+    const r = dispatch(opts);
+    try T.expectEqual(ExitCode.config_error, r.code);
+    try T.expect(std.mem.indexOf(u8, r.stderr_text, "TS5074") != null);
+
+    opts.ts_buildinfo_file = ".cache/build.tsbuildinfo";
+    const ok = dispatch(opts);
+    try T.expectEqual(ExitCode.success, ok.code);
+}
+
+test "formatProjectDiagnostic: project and file diagnostics mirror upstream messages" {
+    const cases = [_]ProjectDiagnostic{
+        projectDiagnostic(.host_unsupported_option, "watch", ""),
+        projectDiagnostic(.cannot_read_file_with_reason, "tsconfig.json", "Permission denied"),
+        projectDiagnostic(.cannot_read_file, "tsconfig.json", ""),
+        projectDiagnostic(.could_not_write_file, "dist/out.js", "EACCES"),
+        projectDiagnostic(.config_already_defined, "/repo/tsconfig.json", ""),
+        projectDiagnostic(.cannot_find_config_at_directory, "packages/app", ""),
+        projectDiagnostic(.specified_path_does_not_exist, "missing/tsconfig.json", ""),
+        projectDiagnostic(.add_tsconfig_json, "", ""),
+        projectDiagnostic(.cannot_find_config_at_current_directory, "/repo", ""),
+    };
+    const expected_codes = [_]u32{ 5001, 5012, 5083, 5033, 5054, 5057, 5058, 5068, 5081 };
+    for (cases, expected_codes) |diag, code| {
+        try T.expectEqual(code, diag.code);
+        const text = try formatProjectDiagnostic(T.allocator, diag);
+        defer T.allocator.free(text);
+        var code_buf: [16]u8 = undefined;
+        const code_text = try std.fmt.bufPrint(&code_buf, "TS{d}", .{code});
+        try T.expect(std.mem.indexOf(u8, text, code_text) != null);
+    }
 }
 
 test "dispatch: invalid custom-type option values report TS6046" {

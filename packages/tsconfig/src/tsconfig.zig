@@ -297,6 +297,31 @@ pub const ConfigParseDiagnostic = struct {
     file_kind: []const u8 = "tsconfig.json",
 };
 
+pub const ModuleFormatDiagnostic = struct {
+    code: u32,
+    message: []const u8,
+    owns_message: bool = false,
+};
+
+pub const ModuleFormatKind = enum {
+    esm_package_json_type_module,
+    commonjs_package_json_type_not_module,
+    commonjs_package_json_missing_type,
+    commonjs_package_json_not_found,
+};
+
+pub const ModuleFormatSuggestionKind = enum {
+    change_extension_or_create_package_json,
+    change_extension_or_add_type_module,
+    add_type_module_to_package_json,
+    create_package_json_type_module,
+};
+
+pub const PackageMapKind = enum {
+    exports,
+    imports,
+};
+
 pub const TsConfig = struct {
     /// The path this config came from (set by the loader; empty when
     /// parsed via `parseString`).
@@ -595,6 +620,13 @@ pub const TsConfig = struct {
         if (co.preserve_const_enums == false and (co.isolated_modules == true or co.verbatim_module_syntax == true)) {
             const enabled = if (co.verbatim_module_syntax == true) "verbatimModuleSyntax" else "isolatedModules";
             try appendTs5091(gpa, &diags, "preserveConstEnums", enabled);
+        }
+        if (co.incremental == true and co.ts_buildinfo_file == null and co.out_file == null and self.file_path.len == 0) {
+            try diags.append(gpa, .{
+                .code = 5074,
+                .message = "Option '--incremental' can only be specified using tsconfig, emitting to single file or when option '--tsBuildInfoFile' is specified.",
+                .field = "incremental",
+            });
         }
 
         const emit_declarations = co.declaration == true or co.composite == true;
@@ -1019,6 +1051,8 @@ fn appendConfigParseDiagnostic(
         6114 => try gpa.dupe(u8, "Unknown option 'excludes'. Did you mean 'exclude'?"),
         6258 => try std.fmt.allocPrint(gpa, "'{s}' should be set inside the 'compilerOptions' object of the config json file", .{diag.option}),
         5092 => try std.fmt.allocPrint(gpa, "The root value of a '{s}' file must be an object.", .{diag.file_kind}),
+        1327 => try gpa.dupe(u8, "String literal with double quotes expected."),
+        1328 => try gpa.dupe(u8, "Property value can only be string literal, numeric literal, 'true', 'false', 'null', object literal or array literal."),
         else => unreachable,
     };
     try diags.append(gpa, .{
@@ -1030,6 +1064,7 @@ fn appendConfigParseDiagnostic(
             6114 => "excludes",
             6258 => diag.option,
             5092 => "",
+            1327, 1328 => "",
             else => "",
         },
     });
@@ -2145,6 +2180,242 @@ pub fn parseRootValueDiagnostics(
     return diags.toOwnedSlice(gpa);
 }
 
+/// Scan the JSON source conversion surface that TypeScript reports
+/// before typed tsconfig option validation: config/property strings
+/// must be double quoted (TS1327), and untyped property values must be
+/// JSON literals/objects/arrays (TS1328). This intentionally stays
+/// small and syntax-shape oriented; the full value tree still comes
+/// from `jsonc.parse`.
+pub fn parseJsonConversionDiagnostics(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+) ![]ValidationDiagnostic {
+    var scanner = JsonConversionScanner{ .source = source };
+    var diags: std.ArrayListUnmanaged(ValidationDiagnostic) = .empty;
+    errdefer diags.deinit(gpa);
+
+    while (scanner.nextSignificant()) |tok| {
+        switch (tok.kind) {
+            .single_string => try appendConfigParseDiagnostic(gpa, &diags, .{ .code = 1327 }),
+            .colon => {
+                const value = scanner.nextSignificant() orelse break;
+                switch (value.kind) {
+                    .double_string, .single_string, .open_object, .open_array, .number, .keyword_true, .keyword_false, .keyword_null => {},
+                    else => try appendConfigParseDiagnostic(gpa, &diags, .{ .code = 1328 }),
+                }
+                if (value.kind == .single_string) {
+                    try appendConfigParseDiagnostic(gpa, &diags, .{ .code = 1327 });
+                }
+            },
+            else => {},
+        }
+    }
+    return diags.toOwnedSlice(gpa);
+}
+
+const JsonTokenKind = enum {
+    double_string,
+    single_string,
+    colon,
+    open_object,
+    open_array,
+    number,
+    keyword_true,
+    keyword_false,
+    keyword_null,
+    other,
+};
+
+const JsonToken = struct {
+    kind: JsonTokenKind,
+};
+
+const JsonConversionScanner = struct {
+    source: []const u8,
+    pos: usize = 0,
+
+    fn nextSignificant(self: *JsonConversionScanner) ?JsonToken {
+        self.skipTrivia();
+        if (self.pos >= self.source.len) return null;
+
+        const c = self.source[self.pos];
+        switch (c) {
+            '"' => {
+                self.skipQuoted('"');
+                return .{ .kind = .double_string };
+            },
+            '\'' => {
+                self.skipQuoted('\'');
+                return .{ .kind = .single_string };
+            },
+            ':' => {
+                self.pos += 1;
+                return .{ .kind = .colon };
+            },
+            '{' => {
+                self.pos += 1;
+                return .{ .kind = .open_object };
+            },
+            '[' => {
+                self.pos += 1;
+                return .{ .kind = .open_array };
+            },
+            '-', '0'...'9' => {
+                self.skipNumber();
+                return .{ .kind = .number };
+            },
+            't' => if (self.consumeKeyword("true")) return .{ .kind = .keyword_true },
+            'f' => if (self.consumeKeyword("false")) return .{ .kind = .keyword_false },
+            'n' => if (self.consumeKeyword("null")) return .{ .kind = .keyword_null },
+            else => {},
+        }
+        self.pos += 1;
+        return .{ .kind = .other };
+    }
+
+    fn skipTrivia(self: *JsonConversionScanner) void {
+        while (self.pos < self.source.len) {
+            const c = self.source[self.pos];
+            switch (c) {
+                ' ', '\t', '\r', '\n' => self.pos += 1,
+                '/' => {
+                    if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '/') {
+                        self.pos += 2;
+                        while (self.pos < self.source.len and self.source[self.pos] != '\n') self.pos += 1;
+                    } else if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '*') {
+                        self.pos += 2;
+                        while (self.pos + 1 < self.source.len) {
+                            if (self.source[self.pos] == '*' and self.source[self.pos + 1] == '/') {
+                                self.pos += 2;
+                                break;
+                            }
+                            self.pos += 1;
+                        }
+                    } else return;
+                },
+                else => return,
+            }
+        }
+    }
+
+    fn skipQuoted(self: *JsonConversionScanner, quote: u8) void {
+        self.pos += 1;
+        while (self.pos < self.source.len) {
+            const c = self.source[self.pos];
+            self.pos += 1;
+            if (c == '\\' and self.pos < self.source.len) {
+                self.pos += 1;
+            } else if (c == quote) {
+                break;
+            }
+        }
+    }
+
+    fn skipNumber(self: *JsonConversionScanner) void {
+        if (self.pos < self.source.len and self.source[self.pos] == '-') self.pos += 1;
+        while (self.pos < self.source.len and std.ascii.isDigit(self.source[self.pos])) self.pos += 1;
+        if (self.pos < self.source.len and self.source[self.pos] == '.') {
+            self.pos += 1;
+            while (self.pos < self.source.len and std.ascii.isDigit(self.source[self.pos])) self.pos += 1;
+        }
+        if (self.pos < self.source.len and (self.source[self.pos] == 'e' or self.source[self.pos] == 'E')) {
+            self.pos += 1;
+            if (self.pos < self.source.len and (self.source[self.pos] == '+' or self.source[self.pos] == '-')) self.pos += 1;
+            while (self.pos < self.source.len and std.ascii.isDigit(self.source[self.pos])) self.pos += 1;
+        }
+    }
+
+    fn consumeKeyword(self: *JsonConversionScanner, keyword: []const u8) bool {
+        if (self.pos + keyword.len > self.source.len) return false;
+        if (!std.mem.eql(u8, self.source[self.pos .. self.pos + keyword.len], keyword)) return false;
+        self.pos += keyword.len;
+        return true;
+    }
+};
+
+pub fn ambiguousProjectRootDiagnostic(
+    gpa: std.mem.Allocator,
+    kind: PackageMapKind,
+    entry: []const u8,
+    file: []const u8,
+) !ValidationDiagnostic {
+    const code: u32 = switch (kind) {
+        .exports => 2209,
+        .imports => 2210,
+    };
+    const label = switch (kind) {
+        .exports => "export",
+        .imports => "import",
+    };
+    return .{
+        .code = code,
+        .message = try std.fmt.allocPrint(gpa, "The project root is ambiguous, but is required to resolve {s} map entry '{s}' in file '{s}'. Supply the `rootDir` compiler option to disambiguate.", .{ label, entry, file }),
+        .owns_message = true,
+        .field = "rootDir",
+    };
+}
+
+pub fn moduleFormatExplanationDiagnostic(
+    gpa: std.mem.Allocator,
+    kind: ModuleFormatKind,
+    package_json_path: []const u8,
+) !ModuleFormatDiagnostic {
+    return switch (kind) {
+        .esm_package_json_type_module => .{
+            .code = 1458,
+            .message = try std.fmt.allocPrint(gpa, "File is ECMAScript module because '{s}' has field \"type\" with value \"module\"", .{package_json_path}),
+            .owns_message = true,
+        },
+        .commonjs_package_json_type_not_module => .{
+            .code = 1459,
+            .message = try std.fmt.allocPrint(gpa, "File is CommonJS module because '{s}' has field \"type\" whose value is not \"module\"", .{package_json_path}),
+            .owns_message = true,
+        },
+        .commonjs_package_json_missing_type => .{
+            .code = 1460,
+            .message = try std.fmt.allocPrint(gpa, "File is CommonJS module because '{s}' does not have field \"type\"", .{package_json_path}),
+            .owns_message = true,
+        },
+        .commonjs_package_json_not_found => .{
+            .code = 1461,
+            .message = "File is CommonJS module because 'package.json' was not found",
+        },
+    };
+}
+
+pub fn moduleFormatSuggestionDiagnostic(
+    gpa: std.mem.Allocator,
+    kind: ModuleFormatSuggestionKind,
+    extension: []const u8,
+    package_json_path: []const u8,
+) !ModuleFormatDiagnostic {
+    return switch (kind) {
+        .change_extension_or_create_package_json => .{
+            .code = 1480,
+            .message = try std.fmt.allocPrint(gpa, "To convert this file to an ECMAScript module, change its file extension to '{s}' or create a local package.json file.", .{extension}),
+            .owns_message = true,
+        },
+        .change_extension_or_add_type_module => .{
+            .code = 1481,
+            .message = try std.fmt.allocPrint(gpa, "To convert this file to an ECMAScript module, change its file extension to '{s}' or add the field `\"type\": \"module\"` to '{s}'.", .{ extension, package_json_path }),
+            .owns_message = true,
+        },
+        .add_type_module_to_package_json => .{
+            .code = 1482,
+            .message = try std.fmt.allocPrint(gpa, "To convert this file to an ECMAScript module, add the field `\"type\": \"module\"` to '{s}'.", .{package_json_path}),
+            .owns_message = true,
+        },
+        .create_package_json_type_module => .{
+            .code = 1483,
+            .message = "To convert this file to an ECMAScript module, create a local package.json file with `\"type\": \"module\"`.",
+        },
+    };
+}
+
+pub fn freeModuleFormatDiagnostic(gpa: std.mem.Allocator, diag: ModuleFormatDiagnostic) void {
+    if (diag.owns_message) gpa.free(diag.message);
+}
+
 fn parseStringArray(arena: std.mem.Allocator, v: jsonc.Value) ![][]const u8 {
     const arr = v.asArray() orelse return &.{};
     const out = try arena.alloc([]const u8, arr.len);
@@ -2989,6 +3260,67 @@ test "tsconfig: file include diagnostics cover type-library and library entry po
     }
 }
 
+test "tsconfig: module-resolution helper diagnostics cover TS2209 and TS2210" {
+    {
+        const diag = try ambiguousProjectRootDiagnostic(t.allocator, .exports, ".", "package.json");
+        defer if (diag.owns_message) t.allocator.free(diag.message);
+        try t.expectEqual(@as(u32, 2209), diag.code);
+        try t.expectEqualStrings("The project root is ambiguous, but is required to resolve export map entry '.' in file 'package.json'. Supply the `rootDir` compiler option to disambiguate.", diag.message);
+        try t.expectEqualStrings("rootDir", diag.field);
+    }
+    {
+        const diag = try ambiguousProjectRootDiagnostic(t.allocator, .imports, "#dep", "package.json");
+        defer if (diag.owns_message) t.allocator.free(diag.message);
+        try t.expectEqual(@as(u32, 2210), diag.code);
+        try t.expectEqualStrings("The project root is ambiguous, but is required to resolve import map entry '#dep' in file 'package.json'. Supply the `rootDir` compiler option to disambiguate.", diag.message);
+    }
+}
+
+test "tsconfig: module-format explanation and suggestion diagnostics mirror upstream codes" {
+    {
+        const diag = try moduleFormatExplanationDiagnostic(t.allocator, .esm_package_json_type_module, "/repo/package.json");
+        defer freeModuleFormatDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1458), diag.code);
+        try t.expectEqualStrings("File is ECMAScript module because '/repo/package.json' has field \"type\" with value \"module\"", diag.message);
+    }
+    {
+        const diag = try moduleFormatExplanationDiagnostic(t.allocator, .commonjs_package_json_type_not_module, "/repo/package.json");
+        defer freeModuleFormatDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1459), diag.code);
+    }
+    {
+        const diag = try moduleFormatExplanationDiagnostic(t.allocator, .commonjs_package_json_missing_type, "/repo/package.json");
+        defer freeModuleFormatDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1460), diag.code);
+    }
+    {
+        const diag = try moduleFormatExplanationDiagnostic(t.allocator, .commonjs_package_json_not_found, "");
+        defer freeModuleFormatDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1461), diag.code);
+        try t.expectEqualStrings("File is CommonJS module because 'package.json' was not found", diag.message);
+    }
+    {
+        const diag = try moduleFormatSuggestionDiagnostic(t.allocator, .change_extension_or_create_package_json, ".mts", "");
+        defer freeModuleFormatDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1480), diag.code);
+    }
+    {
+        const diag = try moduleFormatSuggestionDiagnostic(t.allocator, .change_extension_or_add_type_module, ".mts", "/repo/package.json");
+        defer freeModuleFormatDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1481), diag.code);
+    }
+    {
+        const diag = try moduleFormatSuggestionDiagnostic(t.allocator, .add_type_module_to_package_json, "", "/repo/package.json");
+        defer freeModuleFormatDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1482), diag.code);
+    }
+    {
+        const diag = try moduleFormatSuggestionDiagnostic(t.allocator, .create_package_json_type_module, "", "");
+        defer freeModuleFormatDiagnostic(t.allocator, diag);
+        try t.expectEqual(@as(u32, 1483), diag.code);
+    }
+}
+
 test "tsconfig: file include diagnostics cover default roots, redirects, and casing" {
     {
         const diag = try fileIncludeReasonToDiagnostic(t.allocator, .{
@@ -3159,6 +3491,38 @@ test "tsconfig.validate: clean config produces no diagnostics" {
     const diags = try cfg.validate(t.allocator);
     defer freeValidationDiagnostics(t.allocator, diags);
     try t.expectEqual(@as(usize, 0), diags.len);
+}
+
+test "tsconfig.validate: incremental outside config reports TS5074 unless build info or outFile is present" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    {
+        const cfg = try parseString(t.allocator, arena.allocator(),
+            \\{ "compilerOptions": { "incremental": true } }
+        );
+        const diags = try cfg.validate(t.allocator);
+        defer freeValidationDiagnostics(t.allocator, diags);
+        try t.expectEqual(@as(usize, 1), diags.len);
+        try t.expectEqual(@as(u32, 5074), diags[0].code);
+        try t.expectEqualStrings("incremental", diags[0].field);
+    }
+    {
+        var cfg = try parseString(t.allocator, arena.allocator(),
+            \\{ "compilerOptions": { "incremental": true } }
+        );
+        cfg.file_path = "/repo/tsconfig.json";
+        const diags = try cfg.validate(t.allocator);
+        defer freeValidationDiagnostics(t.allocator, diags);
+        try t.expectEqual(@as(usize, 0), diags.len);
+    }
+    {
+        const cfg = try parseString(t.allocator, arena.allocator(),
+            \\{ "compilerOptions": { "incremental": true, "tsBuildInfoFile": ".cache/build.tsbuildinfo" } }
+        );
+        const diags = try cfg.validate(t.allocator);
+        defer freeValidationDiagnostics(t.allocator, diags);
+        try t.expectEqual(@as(usize, 0), diags.len);
+    }
 }
 
 test "tsconfig.validate: outDir == rootDir reports TS5009-shaped diagnostic" {
@@ -3493,6 +3857,42 @@ test "tsconfig.validate: object root value has no TS5092 diagnostic" {
     const diags = try parseRootValueDiagnostics(t.allocator, arena.allocator(),
         \\{ "compilerOptions": { "strict": true } }
     , "tsconfig.json");
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 0), diags.len);
+}
+
+test "tsconfig.validate: JSON conversion diagnostics report TS1327 and TS1328" {
+    const diags = try parseJsonConversionDiagnostics(t.allocator,
+        \\{
+        \\  'compilerOptions': {
+        \\    "target": 'es2024',
+        \\    "strict": maybe,
+        \\    "noEmit": true
+        \\  }
+        \\}
+    );
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 3), diags.len);
+    try t.expectEqual(@as(u32, 1327), diags[0].code);
+    try t.expectEqualStrings("String literal with double quotes expected.", diags[0].message);
+    try t.expectEqual(@as(u32, 1327), diags[1].code);
+    try t.expectEqual(@as(u32, 1328), diags[2].code);
+    try t.expectEqualStrings("Property value can only be string literal, numeric literal, 'true', 'false', 'null', object literal or array literal.", diags[2].message);
+}
+
+test "tsconfig.validate: JSON conversion accepts valid JSON values" {
+    const diags = try parseJsonConversionDiagnostics(t.allocator,
+        \\{
+        \\  "compilerOptions": {
+        \\    "strict": true,
+        \\    "target": "es2024",
+        \\    "plugins": [{ "name": "typed" }],
+        \\    "disableSizeLimit": false,
+        \\    "maxNodeModuleJsDepth": 2,
+        \\    "jsxImportSource": null
+        \\  }
+        \\}
+    );
     defer freeValidationDiagnostics(t.allocator, diags);
     try t.expectEqual(@as(usize, 0), diags.len);
 }

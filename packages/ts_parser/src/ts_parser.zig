@@ -171,6 +171,7 @@ pub const Parser = struct {
     in_string_named_module: bool,
     strict_mode: bool,
     target_es2015_or_later: bool,
+    target_es2018_or_later: bool,
     suppress_strict_param_names: bool,
     allow_parameter_list_arrow_recovery: bool,
     parameter_list_arrow_is_comma: bool,
@@ -289,6 +290,7 @@ pub const Parser = struct {
             .in_string_named_module = false,
             .strict_mode = false,
             .target_es2015_or_later = false,
+            .target_es2018_or_later = false,
             .suppress_strict_param_names = false,
             .allow_parameter_list_arrow_recovery = false,
             .parameter_list_arrow_is_comma = false,
@@ -330,6 +332,10 @@ pub const Parser = struct {
 
     pub fn setTargetEs2015OrLater(self: *Parser, enabled: bool) void {
         self.target_es2015_or_later = enabled;
+    }
+
+    pub fn setTargetEs2018OrLater(self: *Parser, enabled: bool) void {
+        self.target_es2018_or_later = enabled;
     }
 
     pub fn deinit(self: *Parser) void {
@@ -12178,6 +12184,15 @@ pub const Parser = struct {
                         const name_start = i + 3;
                         const name_end = try self.scanRegexGroupName(name_start, close_at, start_tok.line);
                         if (name_end > name_start) {
+                            if (!self.target_es2018_or_later) {
+                                try self.reportCodeAtWithSpan(
+                                    @intCast(i + 2),
+                                    start_tok.line,
+                                    @intCast(name_end - (i + 2)),
+                                    1503,
+                                    "Named capturing groups are only available when targeting 'ES2018' or later.",
+                                );
+                            }
                             const name = RegexGroupName{
                                 .start = name_start,
                                 .end = name_end,
@@ -12313,6 +12328,20 @@ pub const Parser = struct {
         while (i < close_at and i < self.source.len) {
             const ch = self.source[i];
             if (ch == '\\') {
+                if (scanRegexAtomOctalEscape(self.source, i, close_at)) |octal| {
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Octal escape sequences are not allowed. Use the syntax '{s}'.",
+                        .{try regexHexEscapeSuggestion(self.diag_arena.allocator(), octal.value)},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .pos = @intCast(i),
+                        .line = start_tok.line,
+                        .span_len = @intCast(octal.end - i),
+                        .code = 1487,
+                        .message = msg,
+                    });
+                }
                 try self.reportRegexUnicodePropertyEscapeDiagnostics(i, close_at, start_tok.line, unicode_mode);
                 try self.reportRegexUnicodeEscapeAvailability(i, close_at, start_tok.line, unicode_mode);
                 if (unicode_mode and i + 1 < close_at and
@@ -12350,6 +12379,22 @@ pub const Parser = struct {
                 try self.reportInvalidControlEscapeIfNeeded(i, close_at, start_tok.line, unicode_mode);
                 i += if (i + 1 < close_at) 2 else 1;
                 continue;
+            }
+            if (ch == ')' or
+                ((ch == ']' or ch == '}') and unicode_mode))
+            {
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Unexpected '{c}'. Did you mean to escape it with backslash?",
+                    .{ch},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .pos = @intCast(i),
+                    .line = start_tok.line,
+                    .span_len = 1,
+                    .code = 1508,
+                    .message = msg,
+                });
             }
             if (ch == '[') {
                 i = try self.scanRegexClassForRangeDiagnostics(i + 1, close_at, start_tok.line, unicode_mode, unicode_sets_mode);
@@ -12851,6 +12896,21 @@ pub const Parser = struct {
         } else if (first >= '4' and first <= '7') {
             if (end < limit and isRegexOctalDigit(source[end])) end += 1;
         }
+
+        var value: u21 = 0;
+        var i = start + 1;
+        while (i < end) : (i += 1) {
+            value = (value * 8) + @as(u21, source[i] - '0');
+        }
+        return .{ .end = end, .value = value };
+    }
+
+    fn scanRegexAtomOctalEscape(source: []const u8, start: usize, limit: usize) ?RegexOctalEscape {
+        if (start + 2 >= limit or source[start] != '\\' or source[start + 1] != '0' or !std.ascii.isDigit(source[start + 2])) return null;
+
+        var end = start + 2;
+        if (end < limit and isRegexOctalDigit(source[end])) end += 1;
+        if (end < limit and isRegexOctalDigit(source[end])) end += 1;
 
         var value: u21 = 0;
         var i = start + 1;
@@ -21543,6 +21603,31 @@ test "parser: regex duplicate and missing named captures report TS1515 and TS153
     try T.expect(saw_missing);
 }
 
+test "parser: regex named captures require ES2018 target" {
+    var downlevel = try newTestSetup("let a = /(?<name>x)/; let b = /(?<x>x)\\k<x>/;");
+    defer destroyTestSetup(downlevel);
+
+    _ = try downlevel.parser.parseSourceFile();
+    var count: usize = 0;
+    for (downlevel.parser.diagnostics.items) |d| {
+        if (d.code == 1503) {
+            count += 1;
+            try T.expectEqualStrings("Named capturing groups are only available when targeting 'ES2018' or later.", d.message);
+            try T.expect(d.span_len >= 2);
+        }
+    }
+    try T.expectEqual(@as(usize, 2), count);
+
+    var es2018 = try newTestSetup("let a = /(?<name>x)/;");
+    defer destroyTestSetup(es2018);
+    es2018.parser.setTargetEs2018OrLater(true);
+
+    _ = try es2018.parser.parseSourceFile();
+    for (es2018.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1503);
+    }
+}
+
 test "parser: regex numeric backreferences report TS1533 and TS1534" {
     var s = try newTestSetup("let a = /\\1/; let b = /(x)\\2/; let c = /(x)\\1/; let d = /[\\1]/;");
     defer destroyTestSetup(s);
@@ -21562,6 +21647,46 @@ test "parser: regex numeric backreferences report TS1533 and TS1534" {
     }
     try T.expect(saw_none);
     try T.expect(saw_too_few);
+}
+
+test "parser: regex atom octal escapes report TS1487" {
+    var s = try newTestSetup("let a = /\\01/; let b = /(x)\\01/; let c = /\\0/; let d = /\\00/u;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1487) {
+            count += 1;
+            try T.expect(std.mem.startsWith(u8, d.message, "Octal escape sequences are not allowed. Use the syntax '"));
+            try T.expectEqual(@as(u32, 3), d.span_len);
+        }
+    }
+    try T.expectEqual(@as(usize, 3), count);
+}
+
+test "parser: regex body unexpected closers report TS1508" {
+    var s = try newTestSetup("let a = /)/; let b = /]/; let c = /}/; let d = /]/u; let e = /}/u;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    var saw_paren = false;
+    var saw_bracket = false;
+    var saw_brace = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1508) {
+            count += 1;
+            if (std.mem.eql(u8, d.message, "Unexpected ')'. Did you mean to escape it with backslash?")) saw_paren = true;
+            if (std.mem.eql(u8, d.message, "Unexpected ']'. Did you mean to escape it with backslash?")) saw_bracket = true;
+            if (std.mem.eql(u8, d.message, "Unexpected '}'. Did you mean to escape it with backslash?")) saw_brace = true;
+            try T.expectEqual(@as(u32, 1), d.span_len);
+        }
+    }
+    try T.expectEqual(@as(usize, 3), count);
+    try T.expect(saw_paren);
+    try T.expect(saw_bracket);
+    try T.expect(saw_brace);
 }
 
 test "parser: valid regex named and numeric backreferences stay clean" {
