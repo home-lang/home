@@ -125,6 +125,12 @@ Next implementation ledger:
 | Decorators | Run `.ts` / `.tsx` through Bun-compatible decorator lowering with legacy TypeScript decorators, metadata options, class/private-field helpers, and existing `bun:wrap` helper imports |
 | Native plugin bridge | Port or compile Bun's JSC/C++ bridge for `.node` loading metadata, private N-API external validation, `BUN_PLUGIN_NAME` lookup, and `build.onBeforeParse` argument/result handoff |
 
+Promotion rule: the three remaining bundler files only leave this ledger
+after their exact copied corpus file passes through `home-debug` without
+corpus-only semantic mocks. Bootstrap normalization and metadata probes
+are allowed as scaffolding, but they must stay documented as no-credit
+until the copied Bun source path actually owns the behavior.
+
 Native plugin audit note (2026-05-26): the copied fixture has a harness
 preprocessing shim for the upstream `import ... with { type: "file" }`
 fixture references and `harness.makeTree`, so the next rebuilt runner can

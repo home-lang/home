@@ -393,6 +393,11 @@ Verification target:
 
 ```sh
 ./pantry/.bin/zig build test -Dfilter=home_test --summary all
+./pantry/.bin/zig build test -Dfilter=home_rt --summary all
+./pantry/.bin/zig build debug --summary all
+./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/transpiler/transpiler.test.js
+./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/transpiler/decorators.test.ts
+./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts
 ./zig-out/bin/home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=bundler-core-itbundled
 ./zig-out/bin/home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=bundler-transpiler-bootstrap
 bunx --bun pickier docs/BUN_PARITY_PLAN.md docs/PARITY-BUN.md packages/home_test/src/PORTING_STATUS.md
@@ -401,13 +406,19 @@ git diff --check -- docs/BUN_PARITY_PLAN.md docs/PARITY-BUN.md packages/home_tes
 
 Runtime compile frontier: the current non-JSC runtime gate is green.
 `./pantry/.bin/zig build test -Dfilter=home_rt --summary all` now passes
-on 2026-05-26 with **1388 / 1388 tests passed**. The bridge layer that made this green is
+on 2026-05-26 with **1392 / 1392 tests passed**. The bridge layer that made this green is
 still compile-frontier substrate, not JS-callable parity credit: it adds
 missing Bun/JSC aliases, Zig 0.17 compatibility shims, parked subprocess
 owners, CowSlice/CowString exposure, and test-only C++ extern stubs for
 the non-JSC build gate. The latest runtime slice also compiles the copied
 `runtime/cli/test/parallel` subtree through `home_rt` and adds focused
 frame-ingest plus aggregate JUnit parsing tests.
+
+Promotion rule for the last three bundler files: a file only leaves the
+frontier when its exact copied corpus file passes through `home-debug`
+without a corpus-only semantic mock, and the relevant upstream Bun source
+path is named in the commit notes. Metadata probes and bootstrap
+normalization can stay as scaffolding, but they are not parity credit.
 
 Bundler tranche exit criteria:
 
