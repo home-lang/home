@@ -68,6 +68,15 @@ tranche is:
 | Transpiler API surface | `bundler/transpiler/transpiler.test.js` | `Bun.Transpiler` and broader transpiler API behavior |
 | Native plugin final | `bundler/native-plugin.test.ts` | Native plugin ABI, node-gyp build, `.node` loading, `onBeforeParse`, crash-name behavior |
 
+Fresh single-file probes on 2026-05-26 in
+`/private/tmp/home-bun-parity-main`:
+
+| File | Result | Current blocker |
+|---|---|---|
+| `bundler/transpiler/transpiler.test.js` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed | Native `Bun.Transpiler.transformSync` is reached; CRLF and empty-type-parameter probes now advance, and the current bootstrap-body blocker is malformed-enum parse-error behavior |
+| `bundler/transpiler/decorators.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed | `SyntaxError: Invalid character: '@'` |
+| `bundler/native-plugin.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed, 1 unsupported | Corpus preprocessing reports `unsupported module syntax`; native-plugin ABI work remains |
+
 Decorator helper groundwork (2026-05-26): the corpus harness now provides
 Bun's `bun:wrap` helper module for native-transpiled decorator output,
 including the legacy TypeScript decorator helpers and standard decorator
@@ -90,6 +99,15 @@ host callback boundary. The callback body still uses the bootstrap
 normalization transform so the suite stays green; `decorators.test.ts`
 and `transpiler.test.js` still need the copied Bun parser/lowerer/printer
 path before promotion.
+
+Next implementation ledger:
+
+| Work item | Required shape |
+|---|---|
+| Native transpiler body | Replace bootstrap normalization with Bun's `Parser.init -> parse -> Symbol.Map.initList -> js_printer.printAst` flow, preserving loader flags, minify flags, `define`, sourcemap/output behavior, and parser diagnostics mapped to JSC exceptions |
+| `scan` / `scanImports` | Replace the current native bootstrap scanner with Bun import-record traversal; preserve empty-input shapes, omit `require` from `scan`, include it in `scanImports`, and return `{ kind, path }` records |
+| Decorators | Run `.ts` / `.tsx` through Bun-compatible decorator lowering with legacy TypeScript decorators, metadata options, class/private-field helpers, and existing `bun:wrap` helper imports |
+| Native plugin bridge | Port or compile Bun's JSC/C++ bridge for `.node` loading metadata, private N-API external validation, `BUN_PLUGIN_NAME` lookup, and `build.onBeforeParse` argument/result handoff |
 
 Native plugin audit note (2026-05-26): the copied fixture currently stops
 at corpus preprocessing with `unsupported module syntax`, but its true

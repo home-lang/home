@@ -2513,13 +2513,11 @@ const harness_prelude =
     \\    );
     \\    this.scan = function(source, loader) {
     \\      validateLoader(loader);
-    \\      if (String(source).length === 0) return { imports: [], exports: [] };
-    \\      __home_unsupported("Only Bun.Transpiler invalid loader validation is supported by this bootstrap path");
+    \\      return __home_transpilerScanNative(nativeHandle, String(source), loader === undefined || loader === null ? undefined : String(loader), false);
     \\    };
     \\    this.scanImports = function(source, loader) {
     \\      validateLoader(loader);
-    \\      if (String(source).length === 0) return [];
-    \\      __home_unsupported("Only Bun.Transpiler invalid loader validation is supported by this bootstrap path");
+    \\      return __home_transpilerScanNative(nativeHandle, String(source), loader === undefined || loader === null ? undefined : String(loader), true);
     \\    };
     \\    this.transformSync = function(source, loader) {
     \\      validateLoader(loader);

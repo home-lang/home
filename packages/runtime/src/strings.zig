@@ -173,6 +173,14 @@ pub fn eqlComptimeIgnoreLen(a: anytype, comptime b: []const u8) bool {
     return true;
 }
 
+pub fn eqlCaseInsensitiveASCIIICheckLength(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |left, right| {
+        if (std.ascii.toLower(left) != std.ascii.toLower(right)) return false;
+    }
+    return true;
+}
+
 pub fn isAllASCII(slice: []const u8) bool {
     return firstNonASCII(slice) == null;
 }
@@ -579,4 +587,9 @@ test "eqlComptimeIgnoreLen is case-insensitive" {
     try std.testing.expect(eqlComptimeIgnoreLen("HELLO", "hello"));
     try std.testing.expect(eqlComptimeIgnoreLen("Hello", "hello"));
     try std.testing.expect(!eqlComptimeIgnoreLen("world", "hello"));
+}
+
+test "eqlCaseInsensitiveASCIIICheckLength requires matching length" {
+    try std.testing.expect(eqlCaseInsensitiveASCIIICheckLength("BROWSER", "browser"));
+    try std.testing.expect(!eqlCaseInsensitiveASCIIICheckLength("bun", "bunny"));
 }

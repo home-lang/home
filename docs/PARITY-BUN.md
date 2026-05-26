@@ -212,6 +212,15 @@ zero extras. The remaining bundler file frontier is:
 | Transpiler API surface | `bundler/transpiler/transpiler.test.js` |
 | Native plugin final | `bundler/native-plugin.test.ts` |
 
+Fresh single-file evidence from `/private/tmp/home-bun-parity-main` on
+2026-05-26 keeps all three files out of the passing ledger:
+
+| File | Result | Current blocker |
+|---|---|---|
+| `bundler/transpiler/transpiler.test.js` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed | Native `Bun.Transpiler` bridge is reached; CRLF and empty-type-parameter probes now advance, and the current bootstrap-body blocker is malformed-enum parse-error behavior |
+| `bundler/transpiler/decorators.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed | Parser/lowerer path still rejects top-level legacy decorators: `SyntaxError: Invalid character: '@'` |
+| `bundler/native-plugin.test.ts` | `./zig-out/bin/home-debug test ...` fails with 0 passed, 1 failed, 1 unsupported | Corpus preprocessing reports `unsupported module syntax`; the file still needs the native plugin bridge |
+
 Native plugin audit on 2026-05-26: `bundler/native-plugin.test.ts` is not
 a bootstrap-only fixture. It needs Bun's native/JSC plugin bridge:
 node-gyp-built `.node` loading, `BUN_PLUGIN_NAME` / symbol lookup through
@@ -246,6 +255,26 @@ routes `transformSync`/`transform` through native callbacks. The transform
 body is still the bootstrap-normalization body; the next parity close is
 to swap in the copied Bun `Parser.init -> parse -> js_printer.printAst`
 path and then promote `bundler/transpiler/transpiler.test.js`.
+
+The native transpiler body is the next high-value work chunk. It should
+carry Bun's loader-specific parser flags, minify flags, `define`
+replacement, diagnostics, sourcemap/output options, and the
+`Symbol.Map.initList` / printer setup instead of extending the bootstrap
+normalizer. `scan` and `scanImports` now cross a native callback boundary
+with a bootstrap scanner for static imports, dynamic imports, and
+`require()` in `scanImports`; the faithful close is to replace that
+scanner with Bun import records while preserving `scan("")` as
+`{ imports: [], exports: [] }`, `scanImports("")` as `[]`, `scan`
+omitting `require`, `scanImports` including it, and both exposing Bun's
+`{ kind, path }` record shape.
+
+Decorator promotion depends on the same parser/lowerer/printer handoff,
+with legacy TypeScript decorator flags, metadata behavior, class/private
+field helper emission, and the already-present `bun:wrap` helpers. Native
+plugin promotion is separate: do not count it until the node-gyp-built
+fixture addon loads as `.node`, the private N-API external is validated,
+and `build.onBeforeParse` exchanges real
+`OnBeforeParseArguments` / `OnBeforeParseResult` values with the bundler.
 
 The source module follow-through for these bundler gates is to replace
 the `__home_expect_bundled` bootstrap stub with a real `itBundled`

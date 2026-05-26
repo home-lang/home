@@ -46,6 +46,11 @@ pub const handleOom = Global.handleOom;
 pub const default_allocator: std.mem.Allocator = std.heap.smp_allocator;
 pub const StackOverflow = error{StackOverflow};
 
+pub noinline fn outOfMemory() noreturn {
+    @branchHint(.cold);
+    @panic("home_rt: out of memory");
+}
+
 pub inline fn unreachablePanic(comptime fmts: []const u8, args: anytype) noreturn {
     std.debug.panic(fmts, args);
 }
@@ -134,7 +139,44 @@ pub const ImportRecord = @import("options_types/import_record.zig").ImportRecord
 pub const ImportKind = @import("options_types/import_record.zig").ImportKind;
 pub const schema = @import("options_types/schema.zig");
 pub const bake = struct {
-    pub const Framework = struct {};
+    pub const Framework = struct {
+        is_built_in_react: bool = false,
+        file_system_router_types: []FileSystemRouterType = &.{},
+        server_components: ?ServerComponents = null,
+        react_fast_refresh: ?ReactFastRefresh = null,
+        built_in_modules: StringArrayHashMapUnmanaged(BuiltInModule) = .empty,
+
+        pub const none: Framework = .{};
+
+        pub const FileSystemRouterType = struct {
+            root: []const u8 = "",
+            prefix: []const u8 = "",
+            entry_server: []const u8 = "",
+            entry_client: ?[]const u8 = null,
+            ignore_underscores: bool = false,
+            ignore_dirs: []const []const u8 = &.{},
+            extensions: []const []const u8 = &.{},
+            style: void = {},
+            allow_layouts: bool = false,
+        };
+
+        pub const BuiltInModule = union(enum) {
+            import: []const u8,
+            code: []const u8,
+        };
+
+        pub const ServerComponents = struct {
+            separate_ssr_graph: bool = false,
+            server_runtime_import: []const u8 = "",
+            server_register_client_reference: []const u8 = "registerClientReference",
+            server_register_server_reference: []const u8 = "registerServerReference",
+            client_register_server_reference: []const u8 = "registerServerReference",
+        };
+
+        pub const ReactFastRefresh = struct {
+            import_source: []const u8 = "react-refresh/runtime",
+        };
+    };
 };
 pub const fs = @import("resolver/fs.zig");
 
@@ -478,6 +520,27 @@ pub const StringArrayHashMapContext = struct {
     pub fn eql(_: @This(), a: []const u8, b: []const u8, _: usize) bool {
         return strings.eqlLong(a, b, true);
     }
+
+    pub fn pre(input: []const u8) Prehashed {
+        return .{
+            .value = StringArrayHashMapContext.hash(.{}, input),
+            .input = input,
+        };
+    }
+
+    pub const Prehashed = struct {
+        value: u32,
+        input: []const u8,
+
+        pub fn hash(this: @This(), s: []const u8) u32 {
+            if (s.ptr == this.input.ptr and s.len == this.input.len) return this.value;
+            return StringArrayHashMapContext.hash(.{}, s);
+        }
+
+        pub fn eql(_: @This(), a: []const u8, b: []const u8, _: usize) bool {
+            return strings.eqlLong(a, b, true);
+        }
+    };
 };
 
 pub const StringHashMapContext = struct {
@@ -488,6 +551,57 @@ pub const StringHashMapContext = struct {
     pub fn eql(_: @This(), a: []const u8, b: []const u8) bool {
         return strings.eqlLong(a, b, true);
     }
+
+    pub fn pre(input: []const u8) Prehashed {
+        return .{
+            .value = StringHashMapContext.hash(.{}, input),
+            .input = input,
+        };
+    }
+
+    pub const Prehashed = struct {
+        value: u64,
+        input: []const u8,
+
+        pub fn hash(this: @This(), s: []const u8) u64 {
+            if (s.ptr == this.input.ptr and s.len == this.input.len) return this.value;
+            return StringHashMapContext.hash(.{}, s);
+        }
+
+        pub fn eql(_: @This(), a: []const u8, b: []const u8) bool {
+            return strings.eqlLong(a, b, true);
+        }
+    };
+
+    pub const PrehashedCaseInsensitive = struct {
+        value: u64,
+        input: []const u8,
+
+        pub fn init(allocator: std.mem.Allocator, input: []const u8) PrehashedCaseInsensitive {
+            const out = allocator.alloc(u8, input.len) catch outOfMemory();
+            for (input, out) |from, *to| {
+                to.* = std.ascii.toLower(from);
+            }
+            return .{
+                .value = StringHashMapContext.hash(.{}, out),
+                .input = out,
+            };
+        }
+
+        pub fn hash(this: @This(), s: []const u8) u64 {
+            if (s.ptr == this.input.ptr and s.len == this.input.len) return this.value;
+            var hasher = std.hash.Wyhash.init(0);
+            for (s) |c| {
+                const lower = std.ascii.toLower(c);
+                hasher.update((&lower)[0..1]);
+            }
+            return hasher.final();
+        }
+
+        pub fn eql(_: @This(), a: []const u8, b: []const u8) bool {
+            return strings.eqlCaseInsensitiveASCIIICheckLength(a, b);
+        }
+    };
 };
 
 pub fn StringArrayHashMap(comptime Type: type) type {
@@ -597,6 +711,15 @@ pub const StringSet = struct {
         self.map.deinit();
     }
 };
+
+test "StringHashMapContext prehashed lookup works with std HashMap" {
+    const allocator = std.testing.allocator;
+    var map: StringHashMapUnmanaged(u8) = .empty;
+    defer map.deinit(allocator);
+
+    try map.put(allocator, "answer", 42);
+    try std.testing.expectEqual(@as(u8, 42), map.getAdapted("answer", StringHashMapContext.pre("answer")).?);
+}
 
 const baby_list = @import("collections/baby_list.zig");
 pub const BabyList = baby_list.BabyList;
@@ -1260,6 +1383,10 @@ pub const meta = struct {
     pub const typeBaseNameT = @import("meta/meta.zig").typeBaseNameT;
     pub const bits = @import("meta/bits.zig");
     pub const traits = @import("meta/traits.zig");
+
+    pub fn typeName(comptime Type: type) []const u8 {
+        return typeBaseName(@typeName(Type));
+    }
 
     pub fn ReturnOf(comptime function: anytype) type {
         return ReturnOfType(@TypeOf(function));

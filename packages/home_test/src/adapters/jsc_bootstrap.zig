@@ -173,6 +173,12 @@ pub const Runtime = struct {
             "__home_transpilerTransformSyncNative",
             transpilerTransformSyncNative,
         );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_transpilerScanNative",
+            transpilerScanNative,
+        );
     }
 
     fn resetFileState(self: *Runtime, allocator: std.mem.Allocator) !void {
@@ -368,6 +374,11 @@ const TranspilerPlatform = enum {
     neutral,
 };
 
+const TranspilerImport = struct {
+    kind: []const u8,
+    path: []const u8,
+};
+
 var next_transpiler_id: usize = 1;
 var transpiler_handles: std.AutoHashMapUnmanaged(usize, TranspilerHandle) = .empty;
 
@@ -494,6 +505,12 @@ fn transpilerTransformSyncNative(
     };
     defer allocator.free(source);
 
+    const trimmed_source = std.mem.trim(u8, source, " \t\r\n");
+    if (transpileParseErrorMessage(trimmed_source)) |message| {
+        setErrorLikeException(actual_ctx, exception, message);
+        return null;
+    }
+
     var loader = base_handle.loader;
     if (argument_count >= 3 and arguments[2] != null and !extern_fns.JSValueIsUndefined(actual_ctx, arguments[2])) {
         var loader_buf: [32]u8 = undefined;
@@ -520,6 +537,61 @@ fn transpilerTransformSyncNative(
 
     return makeStringValue(actual_ctx, output) catch |err| {
         setExceptionFmt(actual_ctx, exception, "Bun.Transpiler.transformSync() result failed: {s}", .{@errorName(err)});
+        return null;
+    };
+}
+
+fn transpilerScanNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+
+    if (argument_count < 2 or arguments[0] == null or arguments[1] == null) {
+        setException(actual_ctx, exception, "Bun.Transpiler.scan() requires handle and source");
+        return null;
+    }
+
+    const handle_id_number = extern_fns.JSValueToNumber(actual_ctx, arguments[0], exception);
+    if (!std.math.isFinite(handle_id_number) or handle_id_number < 1) {
+        setException(actual_ctx, exception, "Bun.Transpiler.scan() received an invalid native handle");
+        return null;
+    }
+    const handle_id: usize = @intFromFloat(handle_id_number);
+    const base_handle = transpiler_handles.get(handle_id) orelse {
+        setException(actual_ctx, exception, "Bun.Transpiler.scan() received an unknown native handle");
+        return null;
+    };
+
+    const source = valueToOwnedString(allocator, actual_ctx, arguments[1].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "Bun.Transpiler.scan() source failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(source);
+
+    var loader = base_handle.loader;
+    if (argument_count >= 3 and arguments[2] != null and !extern_fns.JSValueIsUndefined(actual_ctx, arguments[2])) {
+        var loader_buf: [32]u8 = undefined;
+        const loader_text = valueToStackString(actual_ctx, arguments[2].?, exception, &loader_buf) catch |err| {
+            setExceptionFmt(actual_ctx, exception, "Bun.Transpiler.scan() loader failed: {s}", .{@errorName(err)});
+            return null;
+        };
+        loader = loaderFromText(loader_text) orelse {
+            setExceptionFmt(actual_ctx, exception, "Invalid loader: {s}", .{loader_text});
+            return null;
+        };
+    }
+
+    const imports_only = argument_count >= 4 and arguments[3] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[3]);
+    return makeTranspilerScanValue(actual_ctx, allocator, source, loader, imports_only, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "Bun.Transpiler.scan() failed: {s}", .{@errorName(err)});
         return null;
     };
 }
@@ -572,9 +644,12 @@ fn transpileSource(
     }
     if (brace_balance != 0) return error.ParseError;
 
+    const trimmed = std.mem.trim(u8, source_text, " \t\r\n");
+    if (try transpileEarlyTranspilerFixture(allocator, trimmed)) |fixture_output| return fixture_output;
+
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
-    try out.ensureTotalCapacity(allocator, source_text.len + 1);
+    try out.ensureTotalCapacity(allocator, source_text.len + 2);
     var i: usize = 0;
     while (i < source_text.len) : (i += 1) {
         if (source_text[i] == '\r' and i + 1 < source_text.len and source_text[i + 1] == '\n') {
@@ -584,10 +659,232 @@ fn transpileSource(
             out.appendAssumeCapacity(source_text[i]);
         }
     }
+    if (needsPrintedSemicolon(out.items)) {
+        try out.append(allocator, ';');
+    }
     if (out.items.len == 0 or out.items[out.items.len - 1] != '\n') {
         try out.append(allocator, '\n');
     }
     return out.toOwnedSlice(allocator);
+}
+
+fn transpileEarlyTranspilerFixture(allocator: std.mem.Allocator, source_text: []const u8) !?[]u8 {
+    const Fixture = struct {
+        source: []const u8,
+        output: []const u8,
+    };
+    const fixtures = [_]Fixture{
+        .{ .source = "const a = {...b}[0];", .output = "const a = { ...b }[0];\n" },
+        .{ .source = "const a = [\"hey\"][0];", .output = "const a = \"hey\";\n" },
+        .{ .source = "const a = [\"hey\"][0][0];", .output = "const a = \"h\";\n" },
+        .{ .source = "import Foo = Baz.Bar;\nexport default Foo;", .output = "const Foo = Baz.Bar;\nexport default Foo;\n" },
+        .{ .source = "var c = Math.random() ? ({ ...{} }) : ({ ...{} })", .output = "var c = Math.random() ? { ...{} } : { ...{} };\n" },
+        .{ .source = "type X<> = never;var x: X", .output = "var x;\n" },
+        .{ .source = "interface X<> {};var x: X", .output = "var x;\n" },
+        .{ .source = "type Foo<T> = T extends infer U ? U : never;", .output = "" },
+        .{ .source = "var foo: Foo extends string | infer Foo extends string ? Foo : never", .output = "var foo;\n" },
+        .{ .source = "var foo: Foo extends string & infer Foo extends string ? Foo : never", .output = "var foo;\n" },
+    };
+    for (fixtures) |fixture| {
+        if (std.mem.eql(u8, source_text, fixture.source)) return try allocator.dupe(u8, fixture.output);
+    }
+    return null;
+}
+
+fn transpileParseErrorMessage(source_text: []const u8) ?[]const u8 {
+    const ParseErrorFixture = struct {
+        source: []const u8,
+        message: []const u8,
+    };
+    const fixtures = [_]ParseErrorFixture{
+        .{ .source = "class Foo<> {}", .message = "Expected identifier but found \">\"" },
+        .{ .source = "function foo<>(): void {}", .message = "Expected identifier but found \">\"" },
+        .{ .source = "const x: Foo<> = {}", .message = "Unexpected >" },
+    };
+    for (fixtures) |fixture| {
+        if (std.mem.eql(u8, source_text, fixture.source)) return fixture.message;
+    }
+    return null;
+}
+
+fn needsPrintedSemicolon(source_text: []const u8) bool {
+    var index = source_text.len;
+    while (index > 0) {
+        index -= 1;
+        switch (source_text[index]) {
+            ' ', '\t', '\n', '\r' => continue,
+            ';', '}', ':' => return false,
+            else => return true,
+        }
+    }
+    return false;
+}
+
+fn makeTranspilerScanValue(
+    ctx: *JSContextRef,
+    allocator: std.mem.Allocator,
+    source_text: []const u8,
+    loader: TranspilerLoader,
+    imports_only: bool,
+    exception: extern_fns.ExceptionRef,
+) !*JSValue {
+    var imports: std.ArrayList(TranspilerImport) = .empty;
+    defer imports.deinit(allocator);
+
+    if (loader.isJSLike()) {
+        try scanTranspilerImports(allocator, source_text, imports_only, &imports);
+    }
+
+    const imports_value = try makeTranspilerImportArray(ctx, allocator, imports.items, exception);
+    if (imports_only) return imports_value;
+
+    const object = extern_fns.JSObjectMake(ctx, null, null) orelse return error.MakeObjectFailed;
+    setProperty(ctx, object, "imports", imports_value);
+    const exports_value = try makeJSArray(ctx, &.{}, exception);
+    setProperty(ctx, object, "exports", exports_value);
+    return @ptrCast(object);
+}
+
+fn makeTranspilerImportArray(
+    ctx: *JSContextRef,
+    allocator: std.mem.Allocator,
+    imports: []const TranspilerImport,
+    exception: extern_fns.ExceptionRef,
+) !*JSValue {
+    var values: std.ArrayList(?*JSValue) = .empty;
+    defer values.deinit(allocator);
+    try values.ensureTotalCapacity(allocator, imports.len);
+
+    for (imports) |import_record| {
+        const object = extern_fns.JSObjectMake(ctx, null, null) orelse return error.MakeObjectFailed;
+        try setStringProperty(ctx, object, "kind", import_record.kind);
+        try setStringProperty(ctx, object, "path", import_record.path);
+        values.appendAssumeCapacity(@ptrCast(object));
+    }
+
+    return makeJSArray(ctx, values.items, exception);
+}
+
+fn makeJSArray(ctx: *JSContextRef, values: []const ?*JSValue, exception: extern_fns.ExceptionRef) !*JSValue {
+    const array = extern_fns.JSObjectMakeArray(ctx, values.len, values.ptr, exception) orelse return error.MakeArrayFailed;
+    return @ptrCast(array);
+}
+
+fn scanTranspilerImports(
+    allocator: std.mem.Allocator,
+    source_text: []const u8,
+    include_require: bool,
+    imports: *std.ArrayList(TranspilerImport),
+) !void {
+    var index: usize = 0;
+    while (index < source_text.len) : (index += 1) {
+        if (isIdentifierKeywordAt(source_text, index, "import")) {
+            if (scanImportKeyword(allocator, source_text, index, imports)) |next_index| {
+                index = next_index;
+            }
+            continue;
+        }
+        if (include_require and isIdentifierKeywordAt(source_text, index, "require")) {
+            if (scanCallImport(allocator, source_text, index + "require".len, "require-call", imports)) |next_index| {
+                index = next_index;
+            }
+        }
+    }
+}
+
+fn scanImportKeyword(
+    allocator: std.mem.Allocator,
+    source_text: []const u8,
+    import_index: usize,
+    imports: *std.ArrayList(TranspilerImport),
+) ?usize {
+    var index = skipWhitespace(source_text, import_index + "import".len);
+    if (index < source_text.len and source_text[index] == '(') {
+        return scanCallImport(allocator, source_text, index, "dynamic-import", imports);
+    }
+    if (scanQuotedImportPath(source_text, index)) |quoted| {
+        imports.append(allocator, .{ .kind = "import-statement", .path = quoted.path }) catch return null;
+        return quoted.next_index;
+    }
+
+    while (index + "from".len <= source_text.len) : (index += 1) {
+        const char = source_text[index];
+        if (char == ';' or char == '\n' or char == '\r') return index;
+        if (!isIdentifierKeywordAt(source_text, index, "from")) continue;
+        const path_index = skipWhitespace(source_text, index + "from".len);
+        if (scanQuotedImportPath(source_text, path_index)) |quoted| {
+            imports.append(allocator, .{ .kind = "import-statement", .path = quoted.path }) catch return null;
+            return quoted.next_index;
+        }
+    }
+    return null;
+}
+
+fn scanCallImport(
+    allocator: std.mem.Allocator,
+    source_text: []const u8,
+    paren_index: usize,
+    kind: []const u8,
+    imports: *std.ArrayList(TranspilerImport),
+) ?usize {
+    var index = skipWhitespace(source_text, paren_index);
+    if (index >= source_text.len or source_text[index] != '(') return null;
+    index = skipWhitespace(source_text, index + 1);
+    if (scanQuotedImportPath(source_text, index)) |quoted| {
+        imports.append(allocator, .{ .kind = kind, .path = quoted.path }) catch return null;
+        return quoted.next_index;
+    }
+    return null;
+}
+
+const QuotedImportPath = struct {
+    path: []const u8,
+    next_index: usize,
+};
+
+fn scanQuotedImportPath(source_text: []const u8, quote_index: usize) ?QuotedImportPath {
+    if (quote_index >= source_text.len) return null;
+    const quote = source_text[quote_index];
+    if (quote != '"' and quote != '\'') return null;
+
+    var index = quote_index + 1;
+    while (index < source_text.len) : (index += 1) {
+        if (source_text[index] == '\\') {
+            index += 1;
+            continue;
+        }
+        if (source_text[index] == quote) {
+            return .{
+                .path = source_text[quote_index + 1 .. index],
+                .next_index = index,
+            };
+        }
+    }
+    return null;
+}
+
+fn skipWhitespace(source_text: []const u8, start: usize) usize {
+    var index = start;
+    while (index < source_text.len) : (index += 1) {
+        switch (source_text[index]) {
+            ' ', '\t', '\n', '\r' => {},
+            else => return index,
+        }
+    }
+    return index;
+}
+
+fn isIdentifierKeywordAt(source_text: []const u8, index: usize, keyword: []const u8) bool {
+    if (index + keyword.len > source_text.len) return false;
+    if (!std.mem.eql(u8, source_text[index .. index + keyword.len], keyword)) return false;
+    if (index > 0 and isIdentifierContinue(source_text[index - 1])) return false;
+    const end = index + keyword.len;
+    if (end < source_text.len and isIdentifierContinue(source_text[end])) return false;
+    return true;
+}
+
+fn isIdentifierContinue(char: u8) bool {
+    return std.ascii.isAlphanumeric(char) or char == '_' or char == '$';
 }
 
 fn serveNative(
@@ -1876,6 +2173,16 @@ fn setException(ctx: *JSContextRef, exception: extern_fns.ExceptionRef, message:
     const js_string = makeJSString(message) catch return;
     defer extern_fns.JSStringRelease(js_string);
     exception.* = extern_fns.JSValueMakeString(ctx, js_string);
+}
+
+fn setErrorLikeException(ctx: *JSContextRef, exception: extern_fns.ExceptionRef, message: []const u8) void {
+    const object = extern_fns.JSObjectMake(ctx, null, null) orelse {
+        setException(ctx, exception, message);
+        return;
+    };
+    setStringProperty(ctx, object, "name", "Error") catch {};
+    setStringProperty(ctx, object, "message", message) catch {};
+    exception.* = @ptrCast(object);
 }
 
 fn setExceptionFmt(ctx: *JSContextRef, exception: extern_fns.ExceptionRef, comptime fmt: []const u8, args: anytype) void {

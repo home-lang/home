@@ -243,6 +243,15 @@ classified by next faithful work batch:
 | B. Transpiler API surface | `bundler/transpiler/transpiler.test.js` | `Bun.Transpiler`, loader validation, transform APIs, and callback behavior |
 | C. Native plugin final | `bundler/native-plugin.test.ts` | Native plugin ABI, node-gyp build, `.node` loading, `onBeforeParse`, crash-name behavior |
 
+Fresh single-file probes on 2026-05-26 in
+`/private/tmp/home-bun-parity-main`:
+
+| Command | Result | Current blocker |
+|---|---|---|
+| `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/transpiler/transpiler.test.js` | Fails before promotion: 0 passed, 1 failed | Enters `Bun.Transpiler.transformSync`; CRLF and empty-type-parameter probes now advance, and the current bootstrap-body blocker is the malformed-enum parse-error section |
+| `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/transpiler/decorators.test.ts` | Fails before promotion: 0 passed, 1 failed | `SyntaxError: Invalid character: '@'` |
+| `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts` | Fails before promotion: 0 passed, 1 failed, 1 unsupported | Corpus preprocessing still reports `unsupported module syntax`; true closure still needs native-plugin ABI work |
+
 Decorator helper follow-through on 2026-05-26: the native corpus harness
 now exposes Bun's `bun:wrap` runtime helper surface for transformed output:
 legacy TypeScript decorator helpers, standard decorator helpers,
@@ -272,6 +281,15 @@ Bun parser/printer dependency cone is finished. The next faithful chunk
 is to replace that body with the real parser-to-printer path
 (`Parser.init`, `parse`, `js_printer.printAst`), including `define`,
 scan/scanImports, and decorator lowering.
+
+Next-work ledger for the three-file frontier:
+
+| Work item | Faithful implementation target | Promotion evidence required |
+|---|---|---|
+| Native `transformSync` body | Port Bun's in-process parser/printer flow: `Parser.init`, `parse`, `Symbol.Map.initList`, `js_printer.printAst`, sourcemap/output options, loader-specific parser flags, minify flags, `define`, and diagnostics mapped to JSC exceptions | `bundler/transpiler/transpiler.test.js` single-file run passes, then joins a green subset without changing expectations |
+| `scan` / `scanImports` | Replace the current native bootstrap scanner with callbacks over Bun import records; `scan("")` returns `{ imports: [], exports: [] }`, `scanImports("")` returns `[]`, `scan` omits `require`, `scanImports` includes it, and records expose Bun's `{ kind, path }` shape | Focused `Bun.Transpiler` tests plus the promoted `transpiler.test.js` cases that exercise scan APIs |
+| Decorator lowering | Feed `.ts` / `.tsx` through the copied Bun parser/lowerer/printer with legacy TypeScript decorator flags, metadata options, class-field/private-field helper emission, and existing `bun:wrap` helper imports | `bundler/transpiler/decorators.test.ts` single-file run passes without a corpus-local rewrite |
+| Native plugin bridge | Port or compile Bun's JSC/C++ native plugin bridge and wire it to copied `ParseTask.zig`, N-API external validation, `.node` loading metadata, and `onBeforeParse` result handoff | `bundler/native-plugin.test.ts` single-file run passes after node-gyp builds the fixture addon |
 
 Native plugin audit on 2026-05-26: `bundler/native-plugin.test.ts`
 still reports `unsupported module syntax` at the corpus preprocessor, but
