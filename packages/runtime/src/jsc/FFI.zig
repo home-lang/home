@@ -522,9 +522,9 @@ pub const TagValueTrue = (OtherTag | BoolTag) | @"true";
 pub const TagValueUndefined = OtherTag | UndefinedTag;
 pub const TagValueNull = OtherTag;
 pub const NotCellMask = NumberTag | OtherTag;
-pub const MAX_INT32 = @import("std").zig.c_translation.promoteIntLiteral(c_int, 2147483648, .decimal);
-pub const MAX_INT52 = @import("std").zig.c_translation.promoteIntLiteral(c_int, 9007199254740991, .decimal);
-pub const NumberTag = @import("std").zig.c_translation.promoteIntLiteral(c_longlong, 0xfffe000000000000, .hex);
+pub const MAX_INT32 = 2147483648;
+pub const MAX_INT52 = 9007199254740991;
+pub const NumberTag = 0xfffe000000000000;
 
 const bun = @import("bun");
 const jsc = bun.jsc;

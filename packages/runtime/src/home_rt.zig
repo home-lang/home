@@ -45,35 +45,7 @@ pub const JSOOM = OOM || JSError;
 pub const handleOom = Global.handleOom;
 pub const default_allocator: std.mem.Allocator = std.heap.smp_allocator;
 
-pub const String = struct {
-    bytes: []const u8 = "",
-
-    pub const empty = String{};
-
-    pub fn borrowUTF8(value: []const u8) String {
-        return .{ .bytes = value };
-    }
-
-    pub fn ascii(value: []const u8) String {
-        return borrowUTF8(value);
-    }
-
-    pub fn slice(this: String) []const u8 {
-        return this.bytes;
-    }
-
-    pub fn byteSlice(this: String) []const u8 {
-        return this.bytes;
-    }
-
-    pub fn isEmpty(this: String) bool {
-        return this.bytes.len == 0;
-    }
-
-    pub fn toUTF8(this: String, _: std.mem.Allocator) jsc.ZigString.Slice {
-        return jsc.ZigString.Slice.fromUTF8NeverFree(this.bytes);
-    }
-};
+pub const String = @import("string/string.zig").String;
 
 pub inline fn copy(comptime T: type, dest: []T, src: []const T) void {
     @memcpy(dest[0..src.len], src);
@@ -203,6 +175,7 @@ pub const jsc = struct {
     pub const GetterSetter = @import("jsc/GetterSetter.zig").GetterSetter;
     pub const StaticExport = @import("jsc/static_export.zig");
     pub const ErrorCode = @import("jsc/ErrorCode.zig").ErrorCode;
+    pub const Error = anyerror;
     pub const CommonAbortReason = @import("jsc/CommonAbortReason.zig").CommonAbortReason;
     // Fourth-wave port batch (2026-05-17, 8-agent parallel dispatch):
     pub const Exception = @import("jsc/Exception.zig").Exception;
@@ -219,6 +192,7 @@ pub const jsc = struct {
     pub const JSFunction = @import("jsc/JSFunction.zig").JSFunction;
     pub const JSModuleLoader = @import("jsc/JSModuleLoader.zig").JSModuleLoader;
     pub const Errorable = @import("jsc/Errorable.zig").Errorable;
+    pub const ErrorableString = Errorable(String);
     pub const DeferredError = @import("jsc/DeferredError.zig").DeferredError;
     pub const DecodedJSValue = @import("jsc/DecodedJSValue.zig").DecodedJSValue;
     pub const Strong = struct {
@@ -315,6 +289,7 @@ pub const jsc = struct {
     pub const promise = @import("jsc/promise.zig");
     pub const iterator = @import("jsc/iterator.zig");
     pub const global = @import("jsc/global.zig");
+    pub const WebCore = @import("home_rt").runtime.webcore;
     pub const host_fn = @import("jsc/host_fn.zig");
     pub const JSHostFn = host_fn.JSHostFn;
     pub const JSHostFnZig = host_fn.JSHostFnZig;

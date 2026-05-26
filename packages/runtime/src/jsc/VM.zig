@@ -18,9 +18,8 @@
 const std = @import("std");
 const home_rt = @import("home_rt");
 
-// JSC bridge stubs — re-attach in Phase 12.2.
-const JSGlobalObject = opaque {};
-const JSValue = enum(i64) { zero = 0, _ };
+const JSGlobalObject = home_rt.jsc.JSGlobalObject;
+const JSValue = home_rt.jsc.JSValue;
 
 pub const VM = opaque {
     pub const HeapType = enum(u8) {
@@ -175,9 +174,16 @@ pub const VM = opaque {
         JSC__VM__clearHasTerminationRequest(vm);
     }
 
-    // `throwError(...)` omitted — wraps the throw in a
-    // `jsc.ExceptionValidationScope` which depends on the still-unported
-    // `TopExceptionScope` substrate.
+    extern fn JSC__VM__throwError(*VM, *JSGlobalObject, JSValue) void;
+    pub fn throwError(vm: *VM, global_object: *JSGlobalObject, value: JSValue) error{JSError} {
+        var scope: home_rt.jsc.ExceptionValidationScope = undefined;
+        scope.init(global_object, @src());
+        defer scope.deinit();
+        scope.assertNoException();
+        JSC__VM__throwError(vm, global_object, value);
+        scope.assertExceptionPresenceMatches(true);
+        return error.JSError;
+    }
 
     extern fn JSC__VM__releaseWeakRefs(vm: *VM) void;
     pub fn releaseWeakRefs(vm: *VM) void {
