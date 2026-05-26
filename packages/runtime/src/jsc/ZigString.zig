@@ -220,6 +220,41 @@ pub const ZigString = extern struct {
         return this.slice();
     }
 
+    /// Materialize this ZigString as a UTF-8 `Slice`. For Latin-1
+    /// / UTF-8 contents the inner bytes are borrowed (no allocation,
+    /// no free); for UTF-16 contents the code units are converted
+    /// via `home_rt.strings.toUTF8Alloc` and the resulting buffer is
+    /// owned by the returned Slice. Mirrors `bun.ZigString.toSlice`.
+    /// On OOM during the UTF-16 path, returns `Slice.empty` so call
+    /// sites read the same shape (caller checks `.length()` first).
+    pub fn toSlice(this: ZigString, allocator: std.mem.Allocator) Slice {
+        if (this.is16Bit()) {
+            const utf16 = this.utf16SliceAligned();
+            const owned = home_rt.strings.toUTF8Alloc(allocator, utf16) catch return Slice.empty;
+            return Slice.init(allocator, owned);
+        }
+        return Slice.fromUTF8NeverFree(this.slice());
+    }
+
+    /// Compare this ZigString against a comptime byte literal. Returns
+    /// true iff the lengths match and every code unit equals the
+    /// corresponding byte. For UTF-16 strings the comparison is
+    /// per-code-unit, so high code points (>= 0x80) only match if
+    /// the comptime side spells them as the same raw byte — typical
+    /// usage is ASCII-only comparison against keywords (`"length"`,
+    /// `"undefined"`, etc.). Mirrors `bun.ZigString.eqlComptime`.
+    pub fn eqlComptime(this: ZigString, comptime value: []const u8) bool {
+        if (this.len != value.len) return false;
+        if (this.is16Bit()) {
+            const utf16 = this.utf16SliceAligned();
+            inline for (value, 0..) |v, idx| {
+                if (utf16[idx] != v) return false;
+            }
+            return true;
+        }
+        return std.mem.eql(u8, this.slice(), value);
+    }
+
     pub inline fn full(this: *const ZigString) []const u8 {
         return untagged(this._unsafe_ptr_do_not_use)[0..this.len];
     }
@@ -420,6 +455,39 @@ test "ZigString.fromStringPointer reads from a backing buffer" {
     var out: ZigString = undefined;
     ZigString.fromStringPointer(.{ .offset = 6, .length = 5 }, buf, &out);
     try std.testing.expectEqualStrings("world", out.slice());
+}
+
+test "ZigString.toSlice borrows for Latin-1 (no allocation)" {
+    const z = ZigString.init("hello");
+    const slice = z.toSlice(std.testing.allocator);
+    defer slice.deinit();
+    try std.testing.expectEqualStrings("hello", slice.slice());
+    try std.testing.expect(!slice.isAllocated());
+}
+
+test "ZigString.toSlice allocates for UTF-16" {
+    const utf16: []const u16 = &.{ 'h', 'i', 0x4E2D }; // "hi中"
+    const z = ZigString.initUTF16(utf16);
+    const slice = z.toSlice(std.testing.allocator);
+    defer slice.deinit();
+    // 中 (U+4E2D) is 3 bytes in UTF-8.
+    try std.testing.expectEqualStrings("hi\xE4\xB8\xAD", slice.slice());
+    try std.testing.expect(slice.isAllocated());
+}
+
+test "ZigString.eqlComptime: Latin-1 path matches and rejects by length" {
+    const z = ZigString.init("length");
+    try std.testing.expect(z.eqlComptime("length"));
+    try std.testing.expect(!z.eqlComptime("lengths"));
+    try std.testing.expect(!z.eqlComptime("Length"));
+}
+
+test "ZigString.eqlComptime: UTF-16 path checks per code unit" {
+    const utf16: []const u16 = &.{ 'a', 'b', 'c' };
+    const z = ZigString.initUTF16(utf16);
+    try std.testing.expect(z.eqlComptime("abc"));
+    try std.testing.expect(!z.eqlComptime("ab"));
+    try std.testing.expect(!z.eqlComptime("abd"));
 }
 
 test "ZigString.Slice round-trip + deinit no-op for borrows" {
