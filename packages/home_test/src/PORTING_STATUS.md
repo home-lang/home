@@ -68,6 +68,32 @@ tranche is:
 | Transpiler API surface | `bundler/transpiler/transpiler.test.js` | `Bun.Transpiler` and broader transpiler API behavior |
 | Native plugin final | `bundler/native-plugin.test.ts` | Native plugin ABI, node-gyp build, `.node` loading, `onBeforeParse`, crash-name behavior |
 
+Read-only corpus inventory on 2026-05-26, counted from
+`packages/runtime/test/bun-corpus` using `*.test.{ts,js,mjs,cjs}` and
+`*.spec.{ts,js}` patterns:
+
+| Bucket | Files | Next ownership note |
+|---|---:|---|
+| `js/` | 998 | General runtime/API surface after the JS-callable bridge matures |
+| `regression/` | 384 | Bug-regression ratchet after core API ladders are stable |
+| `cli/` | 150 | Subprocess matrix; Pantry/package-manager divergences must stay explicit |
+| `bundler/` | 89 | Active ratchet: 86 unique green, 3-file frontier left |
+| `napi/` | 59 | Native addon/libuv/N-API tranche after native plugin gate |
+| `bake/` | 24 | Server-heavy tranche after bundler completion |
+| `integration/` | 20 | Cross-surface follow-up tranche |
+| Small buckets | 11 | `internal` 7 plus one each for `config`, `package-json-lint`, `snippets`, and `v8` |
+| Total audited by these file patterns | 1735 | Separate from the broader 4013-file Bun-style discovery denominator |
+
+Large-agent handoff for the current bundler frontier:
+
+1. Decorator semantics: promote `bundler/transpiler/decorators.test.ts`
+   after parser/transpiler decorator lowering is faithful.
+2. Transpiler and macro API: promote `bundler/transpiler/transpiler.test.js`
+   after `Bun.Transpiler` and macro import behavior exist in Home.
+3. Native plugin final: close `native-plugin.test.ts` last with real
+   `.node` loading, plugin symbol registration, `onBeforeParse`, and
+   crash-name evidence.
+
 Fresh single-file probes on 2026-05-26 in
 `/private/tmp/home-bun-parity-main`:
 

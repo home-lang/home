@@ -81,7 +81,46 @@ cross the integration gates. Bun is refactoring parts of its runtime from
 Zig to Rust upstream; Home intentionally copies and maintains Bun's Zig
 source rather than treating the Rust rewrite as parity source.
 
+### Faithful Zig Source Policy
+
+The source of truth for copied runtime behavior is the pinned Zig tree in
+`/Users/chrisbreuer/Code/bun`, not Bun's newer Rust refactors. When Bun
+replaces a Zig subsystem with Rust upstream, Home keeps the last pinned
+Zig implementation as maintained Home source until a deliberate Home
+design decision replaces it.
+
+Porting rules for source agents:
+
+- Copy whole upstream Zig subsystems in large chunks before local
+  massage, keeping the original file layout, attribution, and upstream
+  comments unless they are mechanically invalid in Home.
+- Rewrite imports, allocator names, Zig 0.17 stdlib drift, and Home
+  subsystem boundaries as integration work; do not change semantics to
+  make a narrow fixture pass.
+- Record dormant copied files separately from integrated files. A copied
+  file gets no integrated-parity credit until it is Home-import-rewritten,
+  build-wired, and covered by a focused test or corpus gate.
+- Prefer upstream Bun behavior over Home convenience. Pantry is the
+  intentional package-manager divergence; everything else needs an
+  explicit documented compatibility decision before diverging.
+- For tests, port Bun's tests to run logically against Home. Rewriting a
+  test is allowed only to adapt harness plumbing, never to weaken the
+  behavioral assertion.
+
 ## Phase Goals
+
+### Process State
+
+**Last updated:** 2026-05-26. Bun source presence is complete for the
+pinned `/Users/chrisbreuer/Code/bun` Zig checkout, but integrated runtime
+parity remains at the last audited **552 / 1193 (~46.3%)** until a fresh
+integration audit moves it. The executable corpus ratchet is focused on
+the remaining 3-file bundler frontier after `minimal-js`,
+`bundler-core-itbundled`, and `bundler-transpiler-bootstrap` established
+green Home-run bootstrap slices. The next work is intentionally split
+across big independent agent chunks: decorator semantics,
+`Bun.Transpiler` and macro surface, native plugin ABI, then
+Bake/server-heavy corpus.
 
 ### Phase 0 - Measurement And Audit Hygiene
 
@@ -166,6 +205,15 @@ Current corpus scale for the next ratchet:
 
 | Bucket | Count | Notes |
 |---|---:|---|
+| Copied Bun-style test files in read-only corpus audit | 1735 | `*.test.{ts,js,mjs,cjs}` / `*.spec.{ts,js}` under `packages/runtime/test/bun-corpus` |
+| `js/` test files | 998 | Largest remaining general-runtime corpus bucket |
+| `regression/` test files | 384 | Broad bug/regression frontier after API ladders mature |
+| `cli/` test files | 150 | CLI/run/install/test subprocess behavior; Pantry divergence must be documented |
+| `bundler/` test files | 89 | Current active corpus ratchet; 86 unique green and 3 files left |
+| `napi/` test files | 59 | Native addon / libuv / N-API gate after native plugin bridge |
+| `bake/` test files | 24 | Next server-heavy tranche after bundler |
+| `integration/` test files | 20 | Cross-surface integration frontier |
+| Small corpus buckets | 11 | `internal` 7, plus one each for `config`, `package-json-lint`, `snippets`, and `v8` |
 | Discovered Bun-style test files | 4013 | Full copied-corpus scale for Home's Bun-style test discovery |
 | Minimal-JS subset entries | ~418 | Bootstrap subset currently used for the smallest JS-capable corpus gate |
 | Minimal-JS unique files | 417 | One duplicate entry remains in the subset ledger |
@@ -242,6 +290,19 @@ classified by next faithful work batch:
 | A. Legacy decorator transpiler semantics | `bundler/transpiler/decorators.test.ts` | Top-level legacy decorator lowering; latest probe reaches the real parser blocker, `SyntaxError: Invalid character: '@'` |
 | B. Transpiler API surface | `bundler/transpiler/transpiler.test.js` | `Bun.Transpiler`, loader validation, transform APIs, and callback behavior |
 | C. Native plugin final | `bundler/native-plugin.test.ts` | Native plugin ABI, node-gyp build, `.node` loading, `onBeforeParse`, crash-name behavior |
+
+Agent handoff order for the remaining bundler work:
+
+1. **Decorator semantics agent:** copy/integrate the parser and
+   transpiler decorator lowering substrate needed by
+   `bundler/transpiler/decorators.test.ts`.
+2. **Transpiler/macro agent:** wire `Bun.Transpiler`, macro import
+   resolution, macro execution, and the wider transpiler API enough to
+   promote `bundler/transpiler/transpiler.test.js`.
+3. **Native plugin agent:** keep `bundler/native-plugin.test.ts` last
+   and close it only with real native addon build, `.node` load,
+   N-API/plugin symbol registration, `onBeforeParse`, and crash-name
+   evidence.
 
 Fresh single-file probes on 2026-05-26 in
 `/private/tmp/home-bun-parity-main`:

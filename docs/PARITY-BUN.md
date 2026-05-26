@@ -27,6 +27,14 @@ workstreams live in [`BUN_PARITY_PLAN.md`](./BUN_PARITY_PLAN.md).
 > Source-presence audit:
 > [`BUN_ZIG_SOURCE_AUDIT_2026-05-26.md`](./BUN_ZIG_SOURCE_AUDIT_2026-05-26.md).
 
+Source policy: Home's Bun runtime parity tracks the pinned Zig source in
+`/Users/chrisbreuer/Code/bun` even as upstream Bun moves subsystems to
+Rust. Copied Zig stays in the source-presence ledger until it is
+Home-import-rewritten, Zig 0.17-clean, build-wired, and tested. Runtime
+API rows below move only when the behavior is callable through Home's JS
+runtime or a native Home corpus gate; dormant source copies and bootstrap
+harness shims do not count as JS-visible parity.
+
 Legend:
 
 - 🟢 **Fully implemented** — JS-callable today.

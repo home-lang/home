@@ -743,7 +743,7 @@ fn makeDirPathAbsoluteCompat(dirname: []const u8) !void {
         buf[index] = prev;
 
         if (rc == 0) continue;
-        switch (@as(std.c.E, @enumFromInt(std.c._errno().*))) {
+        switch (std.c.errno(rc)) {
             .EXIST => continue,
             .ACCES => return error.AccessDenied,
             .NAMETOOLONG => return error.NameTooLong,
