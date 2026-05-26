@@ -10195,6 +10195,28 @@ pub const Parser = struct {
                     std.mem.eql(u8, name, "symbol");
             },
             .template_literal_type => return true,
+            // Unions/intersections of valid key types are themselves
+            // valid index-key types (`[k: string | number]`,
+            // `[k: `${string}x` & `${string}y`]`). tsc's grammar check
+            // (`checkGrammarIndexSignature`) recurses into the
+            // constituents and only reports TS1268 when one is invalid.
+            // Empty member lists fall back to invalid.
+            .union_type => {
+                const members = hir_mod.unionTypeMembers(self.hir, key_type);
+                if (members.len == 0) return false;
+                for (members) |m| {
+                    if (!self.indexSignatureKeyTypeIsValid(m)) return false;
+                }
+                return true;
+            },
+            .intersection_type => {
+                const members = hir_mod.intersectionTypeMembers(self.hir, key_type);
+                if (members.len == 0) return false;
+                for (members) |m| {
+                    if (!self.indexSignatureKeyTypeIsValid(m)) return false;
+                }
+                return true;
+            },
             else => return false,
         }
     }
@@ -22741,6 +22763,38 @@ test "parser: malformed interface index signatures use upstream recovery diagnos
     _ = try invalid_key.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), invalid_key.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1268), invalid_key.parser.diagnostics.items[0].code);
+}
+
+test "parser: union/intersection index-key types do not trigger TS1268" {
+    // tsc's grammar check recurses into union/intersection constituents
+    // and only reports TS1268 when one is invalid. `[k: string | number]`
+    // and `[k: `${string}x` & `${string}y`]` are valid. Mirrors
+    // indexSignatures1.ts (lines 38/70-73 carry TS2374/TS1337, never a
+    // bare TS1268 on the union/intersection itself).
+    var union_key = try newTestSetup("type T = {\n  [k: string | number]: any;\n}");
+    defer destroyTestSetup(union_key);
+    _ = try union_key.parser.parseSourceFile();
+    for (union_key.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1268);
+    }
+
+    var inter_key = try newTestSetup("type T = {\n  [k: `${string}x` & `${string}y`]: any;\n}");
+    defer destroyTestSetup(inter_key);
+    _ = try inter_key.parser.parseSourceFile();
+    for (inter_key.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1268);
+    }
+
+    // Negative: a union with an invalid constituent (`boolean`) still
+    // reports TS1268.
+    var bad_union = try newTestSetup("type T = {\n  [k: string | boolean]: any;\n}");
+    defer destroyTestSetup(bad_union);
+    _ = try bad_union.parser.parseSourceFile();
+    var saw_1268 = false;
+    for (bad_union.parser.diagnostics.items) |d| {
+        if (d.code == 1268) saw_1268 = true;
+    }
+    try T.expect(saw_1268);
 }
 
 test "parser: index signature parameter initializer reports TS1020" {
